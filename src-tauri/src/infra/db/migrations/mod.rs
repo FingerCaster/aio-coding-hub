@@ -6,10 +6,11 @@ mod v25_to_v26;
 mod v26_to_v27;
 mod v27_to_v28;
 mod v28_to_v29;
+mod v29_to_v30;
 
 use rusqlite::Connection;
 
-const LATEST_SCHEMA_VERSION: i64 = 29;
+const LATEST_SCHEMA_VERSION: i64 = 30;
 const MAX_COMPAT_SCHEMA_VERSION: i64 = 33;
 const MIN_SUPPORTED_SCHEMA_VERSION: i64 = 25;
 
@@ -39,7 +40,7 @@ pub(super) fn apply_migrations(conn: &mut Connection) -> crate::shared::error::A
         tracing::info!(to_version = user_version, "sqlite baseline schema created");
     }
 
-    // Incremental migrations from v25 to v29
+    // Incremental migrations from v25 to v30
     while user_version < LATEST_SCHEMA_VERSION {
         let from_version = user_version;
         match user_version {
@@ -47,6 +48,7 @@ pub(super) fn apply_migrations(conn: &mut Connection) -> crate::shared::error::A
             26 => v26_to_v27::migrate_v26_to_v27(conn)?,
             27 => v27_to_v28::migrate_v27_to_v28(conn)?,
             28 => v28_to_v29::migrate_v28_to_v29(conn)?,
+            29 => v29_to_v30::migrate_v29_to_v30(conn)?,
             v => {
                 tracing::error!(
                     version = v,

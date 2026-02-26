@@ -79,6 +79,8 @@ mod tests {
             name: format!("p{id}"),
             base_urls: vec!["https://example.com".to_string()],
             base_url_mode: providers::ProviderBaseUrlMode::Order,
+            auth_mode: providers::ProviderAuthMode::ApiKey,
+            oauth_account_id: None,
             api_key_plaintext: String::new(),
             claude_models: providers::ClaudeModels::default(),
             limit_5h_usd: None,

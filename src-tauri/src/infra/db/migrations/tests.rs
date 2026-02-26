@@ -639,7 +639,7 @@ INSERT INTO skills(
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 29);
+    assert_eq!(user_version, 30);
 
     assert!(test_has_column(&conn, "workspaces", "cli_key"));
     assert!(test_has_column(&conn, "workspace_active", "workspace_id"));
@@ -653,6 +653,8 @@ INSERT INTO skills(
     assert!(test_has_column(&conn, "providers", "daily_reset_time"));
     assert!(test_has_column(&conn, "providers", "limit_weekly_usd"));
     assert!(test_has_column(&conn, "providers", "limit_monthly_usd"));
+    assert!(test_has_column(&conn, "providers", "auth_mode"));
+    assert!(test_has_column(&conn, "providers", "oauth_account_id"));
     assert!(test_has_column(&conn, "providers", "limit_total_usd"));
 
     let claude_default_ws_id: i64 = conn
@@ -759,7 +761,7 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 29);
+    assert_eq!(user_version, 30);
 
     // Verify all tables exist
     let tables: Vec<String> = {
@@ -975,7 +977,7 @@ PRAGMA user_version = 33;
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 29);
+    assert_eq!(user_version, 30);
 
     assert!(test_has_column(&conn, "providers", "limit_5h_usd"));
     assert!(test_has_column(&conn, "providers", "limit_daily_usd"));

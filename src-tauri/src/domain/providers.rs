@@ -246,6 +246,32 @@ impl ProviderBaseUrlMode {
     }
 }
 
+#[derive(Debug, Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+#[allow(dead_code)]
+pub enum ProviderAuthMode {
+    ApiKey,
+    Oauth,
+}
+
+impl ProviderAuthMode {
+    fn parse(input: &str) -> Option<Self> {
+        match input.trim() {
+            "api_key" => Some(Self::ApiKey),
+            "oauth" => Some(Self::Oauth),
+            _ => None,
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn as_str(self) -> &'static str {
+        match self {
+            Self::ApiKey => "api_key",
+            Self::Oauth => "oauth",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct ProviderSummary {
     pub id: i64,
@@ -253,6 +279,8 @@ pub struct ProviderSummary {
     pub name: String,
     pub base_urls: Vec<String>,
     pub base_url_mode: ProviderBaseUrlMode,
+    pub auth_mode: ProviderAuthMode,
+    pub oauth_account_id: Option<i64>,
     pub claude_models: ClaudeModels,
     pub enabled: bool,
     pub priority: i64,
@@ -270,11 +298,14 @@ pub struct ProviderSummary {
 }
 
 #[derive(Debug, Clone)]
+#[allow(dead_code)]
 pub(crate) struct ProviderForGateway {
     pub id: i64,
     pub name: String,
     pub base_urls: Vec<String>,
     pub base_url_mode: ProviderBaseUrlMode,
+    pub auth_mode: ProviderAuthMode,
+    pub oauth_account_id: Option<i64>,
     pub api_key_plaintext: String,
     pub claude_models: ClaudeModels,
     pub limit_5h_usd: Option<f64>,
@@ -360,10 +391,12 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
     let claude_models_json: String = row.get("claude_models_json")?;
     let tags_json: String = row.get("tags_json")?;
     let base_url_mode_raw: String = row.get("base_url_mode")?;
+    let auth_mode_raw: String = row.get("auth_mode")?;
     let daily_reset_mode_raw: String = row.get("daily_reset_mode")?;
     let daily_reset_time_raw: String = row.get("daily_reset_time")?;
     let base_url_mode =
         ProviderBaseUrlMode::parse(&base_url_mode_raw).unwrap_or(ProviderBaseUrlMode::Order);
+    let auth_mode = ProviderAuthMode::parse(&auth_mode_raw).unwrap_or(ProviderAuthMode::ApiKey);
     let daily_reset_mode =
         DailyResetMode::parse(&daily_reset_mode_raw).unwrap_or(DailyResetMode::Fixed);
     let daily_reset_time = normalize_reset_time_hms_lossy(&daily_reset_time_raw);
@@ -374,6 +407,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
         name: row.get("name")?,
         base_urls: base_urls_from_row(&base_url_fallback, &base_urls_json),
         base_url_mode,
+        auth_mode,
+        oauth_account_id: row.get("oauth_account_id")?,
         claude_models: if cli_key == "claude" {
             claude_models_from_json(&claude_models_json)
         } else {
@@ -418,6 +453,8 @@ SELECT
   base_url,
   base_urls_json,
   base_url_mode,
+  auth_mode,
+  oauth_account_id,
   claude_models_json,
   tags_json,
   enabled,
@@ -558,6 +595,8 @@ SELECT
   base_url,
   base_urls_json,
   base_url_mode,
+  auth_mode,
+  oauth_account_id,
   claude_models_json,
   tags_json,
 	  enabled,
@@ -600,11 +639,13 @@ fn map_gateway_provider_row(
     let base_url_fallback: String = row.get("base_url")?;
     let base_urls_json: String = row.get("base_urls_json")?;
     let base_url_mode_raw: String = row.get("base_url_mode")?;
+    let auth_mode_raw: String = row.get("auth_mode")?;
     let claude_models_json: String = row.get("claude_models_json")?;
     let daily_reset_mode_raw: String = row.get("daily_reset_mode")?;
     let daily_reset_time_raw: String = row.get("daily_reset_time")?;
     let base_url_mode =
         ProviderBaseUrlMode::parse(&base_url_mode_raw).unwrap_or(ProviderBaseUrlMode::Order);
+    let auth_mode = ProviderAuthMode::parse(&auth_mode_raw).unwrap_or(ProviderAuthMode::ApiKey);
     let daily_reset_mode =
         DailyResetMode::parse(&daily_reset_mode_raw).unwrap_or(DailyResetMode::Fixed);
     let daily_reset_time = normalize_reset_time_hms_lossy(&daily_reset_time_raw);
@@ -613,6 +654,8 @@ fn map_gateway_provider_row(
         name: row.get("name")?,
         base_urls: base_urls_from_row(&base_url_fallback, &base_urls_json),
         base_url_mode,
+        auth_mode,
+        oauth_account_id: row.get("oauth_account_id")?,
         api_key_plaintext: row.get("api_key_plaintext")?,
         claude_models: if cli_key == "claude" {
             claude_models_from_json(&claude_models_json)
@@ -644,6 +687,8 @@ SELECT
   p.base_url,
   p.base_urls_json,
   p.base_url_mode,
+  p.auth_mode,
+  p.oauth_account_id,
   p.api_key_plaintext,
   p.claude_models_json,
   p.limit_5h_usd,
@@ -691,6 +736,8 @@ SELECT
   base_url,
   base_urls_json,
   base_url_mode,
+  auth_mode,
+  oauth_account_id,
   api_key_plaintext,
   claude_models_json,
   limit_5h_usd,
@@ -791,6 +838,8 @@ SELECT
   base_url,
   base_urls_json,
   base_url_mode,
+  auth_mode,
+  oauth_account_id,
   api_key_plaintext,
   claude_models_json,
   limit_5h_usd,

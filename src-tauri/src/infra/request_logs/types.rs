@@ -26,6 +26,7 @@ pub struct RequestLogInsert {
     pub cache_creation_1h_input_tokens: Option<i64>,
     pub usage_json: Option<String>,
     pub requested_model: Option<String>,
+    pub oauth_account_id: Option<i64>,
     pub created_at_ms: i64,
     pub created_at: i64,
 }

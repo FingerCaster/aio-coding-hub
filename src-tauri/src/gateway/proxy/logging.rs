@@ -90,6 +90,7 @@ fn request_log_insert_from_args(
         cache_creation_1h_input_tokens: metrics.cache_creation_1h_input_tokens,
         usage_json,
         requested_model,
+        oauth_account_id: None,
         created_at_ms,
         created_at,
     })

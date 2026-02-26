@@ -9,8 +9,8 @@ pub mod test_support;
 pub(crate) use app::{app_state, notice, resident};
 pub(crate) use domain::{
     claude_model_validation, claude_model_validation_history, claude_plugins, cli_sessions, cost,
-    cost_stats, mcp, prompts, provider_limit_usage, providers, skills, sort_modes, usage,
-    usage_stats, workspace_switch, workspaces,
+    cost_stats, mcp, oauth_accounts, prompts, provider_limit_usage, providers, skills, sort_modes,
+    usage, usage_stats, workspace_switch, workspaces,
 };
 pub(crate) use gateway::session_manager;
 pub(crate) use infra::{
@@ -376,6 +376,16 @@ pub fn run() {
             cli_proxy_sync_enabled,
             // ── provider_limit_usage ──
             provider_limit_usage_v1,
+            // ── oauth_accounts ──
+            oauth_accounts_list,
+            oauth_account_get,
+            oauth_account_upsert,
+            oauth_account_delete,
+            oauth_account_set_status,
+            oauth_account_force_refresh,
+            oauth_account_manual_add,
+            oauth_start_login,
+            oauth_account_fetch_limits,
             // ── workspaces ──
             workspaces_list,
             workspace_create,
