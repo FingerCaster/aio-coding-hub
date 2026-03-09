@@ -210,7 +210,7 @@ fn parse_callback_request(request: &str) -> OAuthCallbackPayload {
     if let Some(query) = path.split_once('?').map(|(_, q)| q) {
         for pair in query.split('&') {
             if let Some((key, value)) = pair.split_once('=') {
-                let decoded = url_decode(value);
+                let decoded = crate::gateway::util::url_decode_component(value);
                 match key {
                     "code" => payload.code = Some(decoded),
                     "state" => payload.state = Some(decoded),
@@ -223,43 +223,4 @@ fn parse_callback_request(request: &str) -> OAuthCallbackPayload {
     }
 
     payload
-}
-
-fn url_decode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len());
-    let bytes = input.as_bytes();
-    let mut i = 0;
-    while i < bytes.len() {
-        match bytes[i] {
-            b'+' => {
-                out.push(' ');
-                i += 1;
-            }
-            b'%' if i + 2 < bytes.len() => {
-                let hi = hex_val(bytes[i + 1]);
-                let lo = hex_val(bytes[i + 2]);
-                if let (Some(hi), Some(lo)) = (hi, lo) {
-                    out.push((hi * 16 + lo) as char);
-                    i += 3;
-                } else {
-                    out.push('%');
-                    i += 1;
-                }
-            }
-            b => {
-                out.push(b as char);
-                i += 1;
-            }
-        }
-    }
-    out
-}
-
-fn hex_val(b: u8) -> Option<u8> {
-    match b {
-        b'0'..=b'9' => Some(b - b'0'),
-        b'a'..=b'f' => Some(b - b'a' + 10),
-        b'A'..=b'F' => Some(b - b'A' + 10),
-        _ => None,
-    }
 }

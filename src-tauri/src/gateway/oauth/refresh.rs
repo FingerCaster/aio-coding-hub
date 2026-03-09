@@ -2,20 +2,10 @@
 
 use super::provider_trait::OAuthTokenSet;
 use super::token_exchange::{refresh_access_token, TokenRefreshRequest};
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::shared::time::now_unix_seconds;
 
 const REFRESH_LINEAR_RETRY_MAX_ATTEMPTS: u32 = 3;
 const REFRESH_LINEAR_RETRY_BASE_DELAY_SECS: u64 = 2;
-
-fn now_secs() -> i64 {
-    SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs() as i64)
-        .unwrap_or_else(|_| {
-            tracing::warn!("system clock is before Unix epoch; treating as t=0 for refresh check");
-            0
-        })
-}
 
 pub(crate) fn should_refresh_now(expires_at: Option<i64>, refresh_lead_s: i64) -> bool {
     let Some(expires_at) = expires_at else {
@@ -23,7 +13,7 @@ pub(crate) fn should_refresh_now(expires_at: Option<i64>, refresh_lead_s: i64) -
         // silently serve a potentially-expired token forever.
         return true;
     };
-    let now = now_secs();
+    let now = now_unix_seconds();
     now >= (expires_at - refresh_lead_s)
 }
 

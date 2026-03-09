@@ -32,7 +32,7 @@ export type ProviderSummary = {
   note: string;
   created_at: number;
   updated_at: number;
-  auth_mode: string;
+  auth_mode: "api_key" | "oauth";
   oauth_provider_type: string | null;
   oauth_email: string | null;
   oauth_expires_at: number | null;

@@ -1568,6 +1568,24 @@ pub(crate) struct ProviderOAuthDetails {
     pub oauth_last_refreshed_at: Option<i64>,
 }
 
+fn map_oauth_details_row(row: &rusqlite::Row) -> rusqlite::Result<ProviderOAuthDetails> {
+    Ok(ProviderOAuthDetails {
+        id: row.get(0)?,
+        cli_key: row.get(1)?,
+        oauth_provider_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
+        oauth_access_token: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
+        oauth_refresh_token: row.get(4)?,
+        oauth_id_token: row.get(5)?,
+        oauth_token_uri: row.get(6)?,
+        oauth_client_id: row.get(7)?,
+        oauth_client_secret: row.get(8)?,
+        oauth_expires_at: row.get(9)?,
+        oauth_email: row.get(10)?,
+        oauth_refresh_lead_s: row.get(11)?,
+        oauth_last_refreshed_at: row.get(12)?,
+    })
+}
+
 pub(crate) fn get_oauth_details(
     db: &crate::db::Db,
     provider_id: i64,
@@ -1581,23 +1599,7 @@ SELECT id, cli_key, oauth_provider_type, oauth_access_token, oauth_refresh_token
 FROM providers WHERE id = ?1 AND auth_mode = 'oauth'
 "#,
         rusqlite::params![provider_id],
-        |row| {
-            Ok(ProviderOAuthDetails {
-                id: row.get(0)?,
-                cli_key: row.get(1)?,
-                oauth_provider_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                oauth_access_token: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                oauth_refresh_token: row.get(4)?,
-                oauth_id_token: row.get(5)?,
-                oauth_token_uri: row.get(6)?,
-                oauth_client_id: row.get(7)?,
-                oauth_client_secret: row.get(8)?,
-                oauth_expires_at: row.get(9)?,
-                oauth_email: row.get(10)?,
-                oauth_refresh_lead_s: row.get(11)?,
-                oauth_last_refreshed_at: row.get(12)?,
-            })
-        },
+        map_oauth_details_row,
     )
     .optional()
     .map_err(|e| crate::shared::error::db_err!("failed to query OAuth details: {e}"))?
@@ -1637,23 +1639,7 @@ WHERE auth_mode = 'oauth'
         .map_err(|e| db_err!("prepare list_oauth_providers_needing_refresh: {e}"))?;
 
     let rows = stmt
-        .query_map(rusqlite::params![now], |row| {
-            Ok(ProviderOAuthDetails {
-                id: row.get(0)?,
-                cli_key: row.get(1)?,
-                oauth_provider_type: row.get::<_, Option<String>>(2)?.unwrap_or_default(),
-                oauth_access_token: row.get::<_, Option<String>>(3)?.unwrap_or_default(),
-                oauth_refresh_token: row.get(4)?,
-                oauth_id_token: row.get(5)?,
-                oauth_token_uri: row.get(6)?,
-                oauth_client_id: row.get(7)?,
-                oauth_client_secret: row.get(8)?,
-                oauth_expires_at: row.get(9)?,
-                oauth_email: row.get(10)?,
-                oauth_refresh_lead_s: row.get(11)?,
-                oauth_last_refreshed_at: row.get(12)?,
-            })
-        })
+        .query_map(rusqlite::params![now], map_oauth_details_row)
         .map_err(|e| db_err!("query list_oauth_providers_needing_refresh: {e}"))?;
 
     let mut out = Vec::new();

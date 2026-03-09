@@ -5,7 +5,6 @@
 //! through the gateway don't hit expired-token errors.
 
 use super::refresh::refresh_provider_token_with_retry;
-use super::registry::global_registry;
 use crate::providers;
 use tokio::sync::watch;
 
@@ -15,35 +14,11 @@ const POLL_INTERVAL_SECS: u64 = 60;
 fn resolve_oauth_adapter_for_details(
     details: &providers::ProviderOAuthDetails,
 ) -> Result<&'static dyn crate::gateway::oauth::provider_trait::OAuthProvider, String> {
-    let registry = global_registry();
-    let cli_key = details.cli_key.trim();
-    let provider_type = details.oauth_provider_type.trim();
-    let adapter = if provider_type.is_empty() {
-        registry
-            .get_by_cli_key(cli_key)
-            .ok_or_else(|| format!("SEC_INVALID_INPUT: no OAuth adapter for cli_key={cli_key}"))?
-    } else {
-        registry
-            .get_by_provider_type(provider_type)
-            .ok_or_else(|| {
-                format!("SEC_INVALID_INPUT: no OAuth adapter for provider_type={provider_type}")
-            })?
-    };
-
-    if adapter.cli_key() != cli_key {
-        return Err(format!(
-            "SEC_INVALID_STATE: oauth adapter mismatch for provider_id={} (cli_key={cli_key}, provider_type={}, resolved_cli_key={})",
-            details.id,
-            if provider_type.is_empty() {
-                "<empty>"
-            } else {
-                provider_type
-            },
-            adapter.cli_key()
-        ));
-    }
-
-    Ok(adapter)
+    super::registry::resolve_oauth_adapter(
+        &details.cli_key,
+        details.id,
+        Some(details.oauth_provider_type.as_str()),
+    )
 }
 
 /// Spawns the background OAuth refresh loop.

@@ -178,7 +178,7 @@ pub(super) fn body_for_introspection<'a>(
     }
 }
 
-fn url_decode_component(input: &str) -> String {
+pub(crate) fn url_decode_component(input: &str) -> String {
     let bytes = input.as_bytes();
     let mut out: Vec<u8> = Vec::with_capacity(input.len());
     let mut i = 0usize;
@@ -335,7 +335,7 @@ pub(super) fn infer_requested_model_info(
     }
 }
 
-pub(super) fn encode_url_component(input: &str) -> String {
+pub(crate) fn encode_url_component(input: &str) -> String {
     url_encode_component(input)
 }
 

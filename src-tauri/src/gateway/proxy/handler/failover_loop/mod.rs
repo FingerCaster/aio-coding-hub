@@ -105,34 +105,12 @@ fn resolve_oauth_adapter_for_provider(
 ) -> crate::shared::error::AppResult<
     &'static dyn crate::gateway::oauth::provider_trait::OAuthProvider,
 > {
-    let registry = crate::gateway::oauth::registry::global_registry();
-    let provider_type = oauth_provider_type.map(str::trim).unwrap_or_default();
-    let adapter = if provider_type.is_empty() {
-        registry
-            .get_by_cli_key(cli_key)
-            .ok_or_else(|| format!("SEC_INVALID_INPUT: no OAuth adapter for cli_key={cli_key}"))?
-    } else {
-        registry
-            .get_by_provider_type(provider_type)
-            .ok_or_else(|| {
-                format!("SEC_INVALID_INPUT: no OAuth adapter for provider_type={provider_type}")
-            })?
-    };
-
-    if adapter.cli_key() != cli_key {
-        return Err(format!(
-            "SEC_INVALID_STATE: oauth adapter mismatch for provider_id={provider_id} (cli_key={cli_key}, provider_type={}, resolved_cli_key={})",
-            if provider_type.is_empty() {
-                "<empty>"
-            } else {
-                provider_type
-            },
-            adapter.cli_key()
-        )
-        .into());
-    }
-
-    Ok(adapter)
+    crate::gateway::oauth::registry::resolve_oauth_adapter(
+        cli_key,
+        provider_id,
+        oauth_provider_type,
+    )
+    .map_err(Into::into)
 }
 
 /// Resolve the effective API credential for a provider.

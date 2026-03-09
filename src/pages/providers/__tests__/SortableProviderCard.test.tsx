@@ -84,7 +84,9 @@ describe("pages/providers/SortableProviderCard", () => {
       oauth_email: "user@example.com",
     });
 
-    expect(screen.getByText(/OAuth \(user@example.com\)/)).toBeInTheDocument();
+    // OAuth badge is a button; email is rendered in a separate span
+    expect(screen.getByText("OAuth")).toBeInTheDocument();
+    expect(screen.getByText("user@example.com")).toBeInTheDocument();
   });
 
   it("renders OAuth badge with error styling", () => {
@@ -105,17 +107,18 @@ describe("pages/providers/SortableProviderCard", () => {
     });
 
     const badge = screen.getByText("OAuth");
-    expect(badge.getAttribute("title")).toBe("OAuth 已连接");
+    expect(badge.getAttribute("title")).toContain("OAuth 已连接");
   });
 
-  it("renders OAuth limits chips and fetch button", () => {
+  it("renders OAuth button that triggers limits fetch", () => {
     renderCard({
       auth_mode: "oauth",
     });
 
-    expect(screen.getByTitle("OAuth 账号 5h 限额")).toBeInTheDocument();
-    expect(screen.getByTitle("OAuth 账号每周限额")).toBeInTheDocument();
-    expect(screen.getByText("用量")).toBeInTheDocument();
+    // OAuth button renders with "OAuth" text and acts as the fetch trigger
+    const oauthButton = screen.getByText("OAuth");
+    expect(oauthButton).toBeInTheDocument();
+    expect(oauthButton.tagName).toBe("BUTTON");
   });
 
   it("fetches OAuth limits on button click", async () => {
@@ -128,7 +131,7 @@ describe("pages/providers/SortableProviderCard", () => {
       auth_mode: "oauth",
     });
 
-    fireEvent.click(screen.getByText("用量"));
+    fireEvent.click(screen.getByText("OAuth"));
 
     await waitFor(() => expect(vi.mocked(providerOAuthFetchLimits)).toHaveBeenCalledWith(1));
   });
@@ -140,7 +143,7 @@ describe("pages/providers/SortableProviderCard", () => {
       auth_mode: "oauth",
     });
 
-    fireEvent.click(screen.getByText("用量"));
+    fireEvent.click(screen.getByText("OAuth"));
 
     await waitFor(() => expect(vi.mocked(toast)).toHaveBeenCalledWith("获取 OAuth 用量失败"));
   });
@@ -152,7 +155,7 @@ describe("pages/providers/SortableProviderCard", () => {
       auth_mode: "oauth",
     });
 
-    fireEvent.click(screen.getByText("用量"));
+    fireEvent.click(screen.getByText("OAuth"));
 
     await waitFor(() =>
       expect(vi.mocked(toast)).toHaveBeenCalledWith(expect.stringContaining("获取 OAuth 用量失败"))

@@ -2,7 +2,7 @@
 
 use super::provider_trait::OAuthTokenSet;
 use crate::shared::security::mask_token;
-use std::time::{SystemTime, UNIX_EPOCH};
+use crate::shared::time::now_unix_seconds;
 
 #[derive(Debug)]
 pub(crate) struct TokenExchangeRequest {
@@ -150,16 +150,7 @@ async fn parse_token_response(resp: reqwest::Response) -> Result<OAuthTokenSet, 
     let expires_at = json
         .get("expires_in")
         .and_then(|v| v.as_i64())
-        .and_then(|secs| match SystemTime::now().duration_since(UNIX_EPOCH) {
-            Ok(d) => Some(d.as_secs() as i64 + secs),
-            Err(_) => {
-                tracing::warn!(
-                    "token_exchange: system clock before Unix epoch; \
-                     expires_at omitted to avoid invalid epoch timestamp"
-                );
-                None
-            }
-        });
+        .map(|secs| now_unix_seconds() + secs);
 
     Ok(OAuthTokenSet {
         access_token,

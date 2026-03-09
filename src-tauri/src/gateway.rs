@@ -11,7 +11,7 @@ pub(crate) mod session_manager;
 mod streams;
 mod thinking_budget_rectifier;
 mod thinking_signature_rectifier;
-mod util;
+pub(crate) mod util;
 mod warmup;
 
 pub use manager::GatewayManager;

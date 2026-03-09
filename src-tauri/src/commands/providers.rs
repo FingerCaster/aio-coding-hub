@@ -397,50 +397,14 @@ pub(crate) async fn base_url_ping_ms(base_url: String) -> Result<u64, String> {
     base_url_probe::probe_base_url_ms(&client, &base_url, std::time::Duration::from_secs(3)).await
 }
 
-fn urlencoding_encode(input: &str) -> String {
-    let mut out = String::with_capacity(input.len() * 3);
-    for b in input.as_bytes() {
-        let c = *b as char;
-        if matches!(c, 'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '.' | '_' | '~') {
-            out.push(c);
-        } else {
-            out.push('%');
-            out.push_str(&format!("{:02X}", b));
-        }
-    }
-    out
-}
-
 fn resolve_oauth_adapter_for_details(
     details: &providers::ProviderOAuthDetails,
 ) -> Result<&'static dyn crate::gateway::oauth::provider_trait::OAuthProvider, String> {
-    let registry = crate::gateway::oauth::registry::global_registry();
-    let provider_type = details.oauth_provider_type.trim();
-    let adapter = if provider_type.is_empty() {
-        registry
-            .get_by_cli_key(&details.cli_key)
-            .ok_or_else(|| format!("no adapter for cli_key={}", details.cli_key))?
-    } else {
-        registry
-            .get_by_provider_type(provider_type)
-            .ok_or_else(|| format!("no adapter for provider_type={provider_type}"))?
-    };
-
-    if adapter.cli_key() != details.cli_key {
-        return Err(format!(
-            "SEC_INVALID_STATE: OAuth provider mismatch for provider_id={} (cli_key={}, provider_type={}, resolved_cli_key={})",
-            details.id,
-            details.cli_key,
-            if provider_type.is_empty() {
-                "<empty>"
-            } else {
-                provider_type
-            },
-            adapter.cli_key()
-        ));
-    }
-
-    Ok(adapter)
+    crate::gateway::oauth::registry::resolve_oauth_adapter(
+        &details.cli_key,
+        details.id,
+        Some(details.oauth_provider_type.as_str()),
+    )
 }
 
 #[tauri::command]
@@ -505,18 +469,18 @@ pub(crate) async fn provider_oauth_start_flow(
     let mut authorize_url = format!(
         "{}?client_id={}&redirect_uri={}&response_type=code&scope={}&state={}&code_challenge={}&code_challenge_method=S256",
         endpoints.auth_url,
-        urlencoding_encode(&endpoints.client_id),
-        urlencoding_encode(&redirect_uri),
-        urlencoding_encode(&scopes),
-        urlencoding_encode(&oauth_state),
-        urlencoding_encode(&pkce.code_challenge),
+        crate::gateway::util::encode_url_component(&endpoints.client_id),
+        crate::gateway::util::encode_url_component(&redirect_uri),
+        crate::gateway::util::encode_url_component(&scopes),
+        crate::gateway::util::encode_url_component(&oauth_state),
+        crate::gateway::util::encode_url_component(&pkce.code_challenge),
     );
 
     for (key, value) in adapter.extra_authorize_params() {
         authorize_url.push('&');
-        authorize_url.push_str(&urlencoding_encode(key));
+        authorize_url.push_str(&crate::gateway::util::encode_url_component(key));
         authorize_url.push('=');
-        authorize_url.push_str(&urlencoding_encode(value));
+        authorize_url.push_str(&crate::gateway::util::encode_url_component(value));
     }
 
     // Force a fresh login session to avoid stale PKCE/state conflicts on retry.
