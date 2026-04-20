@@ -34,6 +34,7 @@ describe("tauri capabilities contract", () => {
       "core:event:allow-listen",
       "core:event:allow-unlisten",
       "core:window:allow-start-dragging",
+      "core:window:allow-internal-toggle-maximize",
     ]);
   });
 });
