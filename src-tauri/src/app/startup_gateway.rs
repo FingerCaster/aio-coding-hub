@@ -7,7 +7,7 @@ pub(crate) async fn start(
     app_handle: &tauri::AppHandle,
     db: crate::db::Db,
     settings: &crate::settings::AppSettings,
-) -> Option<crate::gateway::GatewayStatus> {
+) -> Result<crate::gateway::GatewayStatus, String> {
     let preferred_port = settings.preferred_port;
     let enable_cli_proxy_startup_recovery = settings.enable_cli_proxy_startup_recovery;
 
@@ -30,7 +30,7 @@ pub(crate) async fn start(
                 )
                 .await;
             }
-            return None;
+            return Err(format!("网关启动失败：{err}"));
         }
     };
 
@@ -40,7 +40,7 @@ pub(crate) async fn start(
         status.clone(),
     );
 
-    Some(status)
+    Ok(status)
 }
 
 pub(crate) async fn sync_cli_proxy_after_autostart(

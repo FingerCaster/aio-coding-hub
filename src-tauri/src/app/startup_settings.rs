@@ -6,7 +6,7 @@ use tauri::Manager;
 
 pub(crate) async fn read(
     app_handle: &tauri::AppHandle,
-) -> Result<crate::settings::AppSettings, ()> {
+) -> Result<crate::settings::AppSettings, String> {
     let settings = match blocking::run("startup_read_settings", {
         let app_handle = app_handle.clone();
         move || settings::read(&app_handle)
@@ -27,7 +27,7 @@ pub(crate) async fn read(
             )
             .await;
             resident::show_main_window(app_handle);
-            return Err(());
+            return Err(format!("设置读取失败：{err}"));
         }
     };
 

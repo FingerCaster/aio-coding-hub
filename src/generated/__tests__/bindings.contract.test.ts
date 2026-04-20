@@ -4,6 +4,7 @@ import { HOME_USAGE_PERIOD_VALUES } from "../../constants/homeUsagePeriods";
 import bindingsSource from "../bindings.ts?raw";
 import heartbeatSource from "../../../src-tauri/src/app/heartbeat_watchdog.rs?raw";
 import noticeSource from "../../../src-tauri/src/app/notice.rs?raw";
+import startupStateSource from "../../../src-tauri/src/app/startup_state.rs?raw";
 
 function extractStringUnionLiterals(source: string, typeName: string) {
   const match = source.match(new RegExp(`export type ${typeName} = (.+)$`, "m"));
@@ -36,6 +37,8 @@ describe("generated/bindings.ts contract", () => {
     expect(bindingsSource).toContain("desktop_updater_check");
     expect(bindingsSource).toContain("app_about_get");
     expect(bindingsSource).toContain("app_heartbeat_pong");
+    expect(bindingsSource).toContain("app_startup_status_get");
+    expect(bindingsSource).toContain("app_startup_retry");
     expect(bindingsSource).toContain("app_frontend_error_report");
     expect(bindingsSource).toContain("app_data_reset");
     expect(bindingsSource).toContain("gateway_status");
@@ -101,5 +104,8 @@ describe("generated/bindings.ts contract", () => {
       appEventNames.heartbeat
     );
     expect(extractRustStringConst(noticeSource, "NOTICE_EVENT_NAME")).toBe(appEventNames.notice);
+    expect(extractRustStringConst(startupStateSource, "APP_STARTUP_STATUS_EVENT_NAME")).toBe(
+      appEventNames.startupStatus
+    );
   });
 });

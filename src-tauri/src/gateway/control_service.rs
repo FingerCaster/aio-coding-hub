@@ -11,7 +11,7 @@ use super::codex_session_id::CodexSessionIdCache;
 use super::events::{GatewayLogEvent, GATEWAY_LOG_EVENT_NAME, GATEWAY_STATUS_EVENT_NAME};
 use super::proxy::{GatewayErrorCode, ProviderBaseUrlPingCache, RecentErrorCache};
 use super::routes::build_router;
-use super::runtime::{GatewayAppState, GatewayRuntime};
+use super::runtime::{GatewayAppState, GatewayRuntime, GatewayRuntimeInit};
 use super::util::now_unix_seconds;
 use super::GatewayProviderCircuitStatus;
 
@@ -112,7 +112,7 @@ impl GatewayControlService {
             }
         });
 
-        let runtime = GatewayRuntime::new(
+        let runtime = GatewayRuntime::new(GatewayRuntimeInit {
             port,
             base_url,
             listen_addr,
@@ -122,7 +122,7 @@ impl GatewayControlService {
             shutdown,
             task,
             background_tasks,
-        );
+        });
         let status = runtime.status();
         *running = Some(runtime);
         crate::app::heartbeat_watchdog::gated_emit(app, GATEWAY_STATUS_EVENT_NAME, &status);

@@ -17,6 +17,9 @@ vi.mock("../services/notification/taskCompleteNotifyEvents", () => ({
   listenTaskCompleteNotifyEvents: vi.fn().mockResolvedValue(() => {}),
 }));
 vi.mock("../services/app/startup", () => ({
+  appStartupStatusGet: vi.fn(),
+  appStartupRetry: vi.fn(),
+  listenAppStartupStatusEvents: vi.fn(),
   startupSyncDefaultPromptsFromFilesOncePerSession: vi.fn().mockResolvedValue(undefined),
   startupSyncModelPricesOnce: vi.fn().mockResolvedValue(undefined),
 }));
@@ -53,8 +56,13 @@ vi.mock("../app/settingsRuntimeController", () => ({
   applySettingsRuntimeSnapshot: vi.fn(),
   resetSettingsRuntimeController: vi.fn(),
 }));
+vi.mock("../app/startupStatusStore", () => ({
+  listenAppStartupStatusSnapshot: vi.fn().mockResolvedValue(() => {}),
+  syncAppStartupStatusSnapshot: vi.fn().mockResolvedValue(undefined),
+}));
 
 import { listenAppHeartbeat } from "../services/app/appHeartbeat";
+import { listenAppStartupStatusSnapshot, syncAppStartupStatusSnapshot } from "../app/startupStatusStore";
 import {
   registerBackgroundTask,
   setBackgroundTaskSchedulerForeground,
@@ -89,8 +97,10 @@ describe("App bootstrap", () => {
     vi.mocked(listenGatewayEvents).mockResolvedValue(() => {});
     vi.mocked(listenNoticeEvents).mockResolvedValue(() => {});
     vi.mocked(listenTaskCompleteNotifyEvents).mockResolvedValue(() => {});
+    vi.mocked(listenAppStartupStatusSnapshot).mockResolvedValue(() => {});
     vi.mocked(startupSyncModelPricesOnce).mockResolvedValue(undefined);
     vi.mocked(startupSyncDefaultPromptsFromFilesOncePerSession).mockResolvedValue(undefined);
+    vi.mocked(syncAppStartupStatusSnapshot).mockResolvedValue(undefined);
     vi.mocked(resetSettingsRuntimeController).mockImplementation(() => {});
     vi.mocked(settingsGet).mockResolvedValue(
       createTestAppSettings({
@@ -105,9 +115,11 @@ describe("App bootstrap", () => {
 
     await vi.waitFor(() => {
       expect(listenAppHeartbeat).toHaveBeenCalledTimes(1);
+      expect(listenAppStartupStatusSnapshot).toHaveBeenCalledTimes(1);
       expect(listenGatewayEvents).toHaveBeenCalledTimes(1);
       expect(listenNoticeEvents).toHaveBeenCalledTimes(1);
       expect(listenTaskCompleteNotifyEvents).toHaveBeenCalledTimes(1);
+      expect(syncAppStartupStatusSnapshot).toHaveBeenCalledTimes(1);
       expect(startupSyncModelPricesOnce).toHaveBeenCalledTimes(1);
       expect(startupSyncDefaultPromptsFromFilesOncePerSession).toHaveBeenCalledTimes(1);
       expect(applySettingsRuntimeSnapshot).toHaveBeenCalledWith(

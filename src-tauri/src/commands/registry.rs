@@ -29,6 +29,8 @@ macro_rules! generated_command_registry {
             app_exit => crate::commands::app::app_exit,
             app_restart => crate::commands::app::app_restart,
             app_heartbeat_pong => crate::commands::app::app_heartbeat_pong,
+            app_startup_status_get => crate::commands::app::app_startup_status_get,
+            app_startup_retry => crate::commands::app::app_startup_retry,
             app_frontend_error_report => crate::commands::app::app_frontend_error_report,
             desktop_clipboard_write_text => crate::commands::desktop::desktop_clipboard_write_text,
             desktop_dialog_open => crate::commands::desktop::desktop_dialog_open,

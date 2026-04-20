@@ -6,6 +6,7 @@ import { HOME_USAGE_PERIOD_VALUES } from "../homeUsagePeriods";
 import bindingsSource from "../../generated/bindings.ts?raw";
 import heartbeatSource from "../../../src-tauri/src/app/heartbeat_watchdog.rs?raw";
 import noticeSource from "../../../src-tauri/src/app/notice.rs?raw";
+import startupStateSource from "../../../src-tauri/src/app/startup_state.rs?raw";
 import gatewayEventsSource from "../../../src-tauri/src/gateway/events.rs?raw";
 import gatewayErrorCodeSource from "../../../src-tauri/src/gateway/proxy/error_code.rs?raw";
 
@@ -37,6 +38,9 @@ describe("cross-layer contracts", () => {
       appEventNames.heartbeat
     );
     expect(extractRustStringConst(noticeSource, "NOTICE_EVENT_NAME")).toBe(appEventNames.notice);
+    expect(extractRustStringConst(startupStateSource, "APP_STARTUP_STATUS_EVENT_NAME")).toBe(
+      appEventNames.startupStatus
+    );
   });
 
   it("keeps gateway event names aligned with Rust emitters", () => {

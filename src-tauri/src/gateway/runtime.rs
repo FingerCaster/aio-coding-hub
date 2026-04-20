@@ -42,6 +42,18 @@ pub(crate) type GatewayRuntimeHandles = (
     tauri::async_runtime::JoinHandle<()>,
 );
 
+pub(super) struct GatewayRuntimeInit {
+    pub(super) port: u16,
+    pub(super) base_url: String,
+    pub(super) listen_addr: String,
+    pub(super) circuit: Arc<circuit_breaker::CircuitBreaker>,
+    pub(super) session: Arc<session_manager::SessionManager>,
+    pub(super) recent_errors: Arc<Mutex<RecentErrorCache>>,
+    pub(super) shutdown: oneshot::Sender<()>,
+    pub(super) task: tauri::async_runtime::JoinHandle<()>,
+    pub(super) background_tasks: GatewayBackgroundTasks,
+}
+
 pub(crate) struct GatewayRuntime {
     port: u16,
     base_url: String,
@@ -55,27 +67,17 @@ pub(crate) struct GatewayRuntime {
 }
 
 impl GatewayRuntime {
-    pub(super) fn new(
-        port: u16,
-        base_url: String,
-        listen_addr: String,
-        circuit: Arc<circuit_breaker::CircuitBreaker>,
-        session: Arc<session_manager::SessionManager>,
-        recent_errors: Arc<Mutex<RecentErrorCache>>,
-        shutdown: oneshot::Sender<()>,
-        task: tauri::async_runtime::JoinHandle<()>,
-        background_tasks: GatewayBackgroundTasks,
-    ) -> Self {
+    pub(super) fn new(init: GatewayRuntimeInit) -> Self {
         Self {
-            port,
-            base_url,
-            listen_addr,
-            circuit,
-            session,
-            recent_errors,
-            shutdown,
-            task,
-            background_tasks,
+            port: init.port,
+            base_url: init.base_url,
+            listen_addr: init.listen_addr,
+            circuit: init.circuit,
+            session: init.session,
+            recent_errors: init.recent_errors,
+            shutdown: init.shutdown,
+            task: init.task,
+            background_tasks: init.background_tasks,
         }
     }
 

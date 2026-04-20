@@ -33,6 +33,8 @@ pub(crate) struct FrontendErrorReportInput {
     user_agent: Option<String>,
 }
 
+pub(crate) use crate::app::startup_state::AppStartupStatus;
+
 #[tauri::command]
 #[specta::specta]
 pub(crate) fn app_about_get() -> AppAboutInfo {
@@ -101,6 +103,19 @@ pub(crate) fn app_heartbeat_pong(app: tauri::AppHandle) -> Result<bool, String> 
     let watchdog = app.state::<crate::app::heartbeat_watchdog::HeartbeatWatchdogState>();
     watchdog.record_pong();
     Ok(true)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) fn app_startup_status_get(app: tauri::AppHandle) -> AppStartupStatus {
+    crate::app::startup_state::startup_status_snapshot(&app)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) fn app_startup_retry(app: tauri::AppHandle) -> AppStartupStatus {
+    let _ = crate::app::startup_tasks::spawn(app.clone());
+    crate::app::startup_state::startup_status_snapshot(&app)
 }
 
 #[tauri::command]
