@@ -405,10 +405,7 @@ mod tests {
     fn canonical_settings_json_keeps_default_fields() {
         let canonical = canonical_settings_json(&AppSettings::default()).unwrap();
         let serialized_defaults = serde_json::to_value(AppSettings::default()).unwrap();
-        assert_eq!(
-            canonical,
-            serialized_defaults
-        );
+        assert_eq!(canonical, serialized_defaults);
     }
 
     #[test]

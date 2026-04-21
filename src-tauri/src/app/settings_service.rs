@@ -1014,8 +1014,14 @@ mod tests {
 
         let update: SettingsUpdate = serde_json::from_value(json).expect("should deserialize");
         assert_eq!(update.cx2cc_fallback_model_opus.as_deref(), Some("gpt-5"));
-        assert_eq!(update.cx2cc_fallback_model_sonnet.as_deref(), Some("gpt-4.1"));
-        assert_eq!(update.cx2cc_fallback_model_haiku.as_deref(), Some("gpt-4.1-mini"));
+        assert_eq!(
+            update.cx2cc_fallback_model_sonnet.as_deref(),
+            Some("gpt-4.1")
+        );
+        assert_eq!(
+            update.cx2cc_fallback_model_haiku.as_deref(),
+            Some("gpt-4.1-mini")
+        );
         assert_eq!(update.cx2cc_fallback_model_main.as_deref(), Some("gpt-5.4"));
         assert_eq!(update.cx2cc_model_reasoning_effort.as_deref(), Some("high"));
         assert_eq!(update.cx2cc_service_tier.as_deref(), Some("flex"));
