@@ -317,6 +317,7 @@ describe("hooks/useTheme", () => {
 
     // Check that the listener was registered
     expect(mockTauriListen).toHaveBeenCalled();
+    vi.mocked(setDesktopWindowTheme).mockClear();
 
     // Fire Tauri theme change event
     act(() => {
@@ -326,6 +327,8 @@ describe("hooks/useTheme", () => {
     expect(result.current.theme).toBe("system");
     expect(result.current.resolvedTheme).toBe("dark");
     expect(document.documentElement.classList.contains("dark")).toBe(true);
+    expect(setDesktopWindowTheme).toHaveBeenCalledTimes(1);
+    expect(setDesktopWindowTheme).toHaveBeenLastCalledWith("system");
 
     media.restore();
   });

@@ -148,6 +148,7 @@ function setupTauriThemeListener() {
     if (currentSnapshot.resolvedTheme !== theme) {
       currentSnapshot = { ...currentSnapshot, resolvedTheme: theme };
       emitChange();
+      syncNativeTheme("system");
       // Sync DOM class for the new resolved theme
       if (typeof document !== "undefined") {
         document.documentElement.classList.toggle("dark", theme === "dark");
