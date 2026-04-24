@@ -7,6 +7,7 @@ const allowedRawTauriImportFiles = new Set([
   "services/desktop/event.ts",
   "services/desktop/updater.ts",
   "services/tauriInvoke.ts",
+  "services/desktop/themeEvent.ts",
 ]);
 
 const allowedRawInvokeFiles = new Set(["services/tauriInvoke.ts", "services/desktop/updater.ts"]);
