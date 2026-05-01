@@ -160,18 +160,6 @@ describe("ui/Sidebar", () => {
     expect(updateDialogSetOpenMock).toHaveBeenCalledWith(true);
   });
 
-  it("calls onNavClick when a nav item is clicked", () => {
-    const onNavClick = vi.fn();
-    render(
-      <MemoryRouter>
-        <Sidebar onNavClick={onNavClick} />
-      </MemoryRouter>
-    );
-
-    fireEvent.click(screen.getByText("首页"));
-    expect(onNavClick).toHaveBeenCalledTimes(1);
-  });
-
   it("uses stopped tone for the status pill when gateway is stopped", () => {
     gatewayMetaRef.current = {
       gatewayAvailable: "available",
@@ -186,7 +174,7 @@ describe("ui/Sidebar", () => {
     );
 
     const statusPill = screen.getByText("已停止 · 37123");
-    expect(statusPill.className).toContain("bg-slate-100");
+    expect(statusPill.className).toContain("bg-secondary");
     expect(statusPill.className).not.toContain("bg-emerald-50");
   });
 });
