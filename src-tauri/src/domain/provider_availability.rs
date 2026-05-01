@@ -161,6 +161,29 @@ fn redact_key_param(msg: &str) -> String {
         .unwrap_or_else(|_| msg.to_string())
 }
 
+fn looks_like_auth_failure(status: u16, response_text: &str) -> bool {
+    if matches!(status, 401 | 403) {
+        return true;
+    }
+
+    let lower = response_text.to_ascii_lowercase();
+    [
+        "api key not valid",
+        "invalid api key",
+        "invalid_api_key",
+        "invalid x-api-key",
+        "authentication",
+        "unauthorized",
+        "permission denied",
+    ]
+    .iter()
+    .any(|needle| lower.contains(needle))
+}
+
+fn is_probe_available_status(status: u16, response_text: &str) -> bool {
+    status < 500 && !looks_like_auth_failure(status, response_text)
+}
+
 pub async fn test_provider_availability(
     db: db::Db,
     provider_id: i64,
@@ -243,13 +266,15 @@ pub async fn test_provider_availability(
     match result {
         Ok(resp) => {
             let status = resp.status().as_u16();
-            // Provider is "available" if we get any response that isn't an auth failure.
-            // A 400 (bad model) or 429 (rate limit) still proves the provider is reachable.
-            let ok = status != 401 && status != 403;
-
             let body_bytes = resp.bytes().await.unwrap_or_default();
             let preview =
                 String::from_utf8_lossy(&body_bytes[..body_bytes.len().min(500)]).to_string();
+            // Provider is "available" if the endpoint responds without an auth
+            // failure or upstream 5xx. 400/404 model errors and 429 rate limits
+            // still prove the configured base URL and credential reached the
+            // provider, but Gemini invalid API keys are reported as 400 and must
+            // not be treated as available.
+            let ok = is_probe_available_status(status, &preview);
 
             let error = if ok {
                 None
@@ -372,5 +397,22 @@ mod tests {
             "连接失败: https://host/v1beta/models?alt=sse&key=***&other=1"
         );
         assert!(!redacted.contains("sk-secret"));
+    }
+
+    #[test]
+    fn probe_status_rejects_5xx_and_auth_errors_but_allows_model_or_rate_limit_errors() {
+        assert!(is_probe_available_status(
+            400,
+            r#"{"error":{"message":"model not found"}}"#
+        ));
+        assert!(is_probe_available_status(404, "model not found"));
+        assert!(is_probe_available_status(429, "rate limit exceeded"));
+
+        assert!(!is_probe_available_status(500, "upstream error"));
+        assert!(!is_probe_available_status(401, "unauthorized"));
+        assert!(!is_probe_available_status(
+            400,
+            r#"{"error":{"message":"API key not valid. Please pass a valid API key."}}"#
+        ));
     }
 }

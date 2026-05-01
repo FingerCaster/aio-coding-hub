@@ -1,4 +1,4 @@
-import { fireEvent, render, screen, within } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { CliManagerClaudeTab } from "../ClaudeTab";
@@ -515,5 +515,49 @@ describe("components/cli-manager/tabs/ClaudeTab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "重试" }));
     expect(refetch).toHaveBeenCalled();
+  });
+
+  it("keeps the hook editor open when saving hooks fails", async () => {
+    const mutateAsync = vi.fn().mockRejectedValue(new Error("save hooks boom"));
+    vi.mocked(useCliManagerClaudeHooksSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync,
+    } as any);
+
+    render(
+      <CliManagerClaudeTab
+        claudeAvailable="available"
+        claudeLoading={false}
+        claudeInfo={createClaudeInfo()}
+        claudeSettingsLoading={false}
+        claudeSettingsSaving={false}
+        claudeSettings={createClaudeSettings()}
+        providers={null}
+        refreshClaude={vi.fn()}
+        openClaudeConfigDir={vi.fn()}
+        persistClaudeSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /添加/ }));
+    fireEvent.change(screen.getByPlaceholderText("要执行的 shell 命令"), {
+      target: { value: "echo fail" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledWith({
+        groups: [
+          {
+            event: "PreToolUse",
+            matcher: "",
+            hooks: [{ hook_type: "command", command: "echo fail", timeout: null }],
+          },
+        ],
+      });
+    });
+
+    expect(screen.getByText("添加 Hook")).toBeInTheDocument();
+    expect(toast).toHaveBeenCalledWith("保存 Hooks 失败：请稍后重试");
   });
 });

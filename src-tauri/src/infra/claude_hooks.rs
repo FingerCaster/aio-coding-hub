@@ -102,35 +102,108 @@ fn parse_hooks_from_root(root: &serde_json::Value) -> Vec<ClaudeHookGroup> {
     groups
 }
 
+#[derive(Debug, Clone)]
+struct ExistingHookGroup {
+    event: String,
+    matcher: String,
+    raw_group: serde_json::Map<String, serde_json::Value>,
+    hook_slots: Vec<ExistingHookSlot>,
+}
+
+#[derive(Debug, Clone)]
+enum ExistingHookSlot {
+    Supported(serde_json::Map<String, serde_json::Value>),
+    Unsupported(serde_json::Value),
+}
+
+fn existing_hook_groups_from_root(root: &serde_json::Value) -> Vec<ExistingHookGroup> {
+    let Some(hooks_obj) = root.get("hooks").and_then(|v| v.as_object()) else {
+        return Vec::new();
+    };
+
+    let mut groups = Vec::new();
+    for (event, matcher_groups) in hooks_obj {
+        let Some(matcher_arr) = matcher_groups.as_array() else {
+            continue;
+        };
+        for matcher_group in matcher_arr {
+            let Some(mg) = matcher_group.as_object() else {
+                continue;
+            };
+            let matcher = mg
+                .get("matcher")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string();
+            let mut hook_slots = Vec::new();
+
+            if let Some(hooks) = mg.get("hooks").and_then(|v| v.as_array()) {
+                for hook in hooks {
+                    match hook.as_object() {
+                        Some(obj) if obj.get("command").and_then(|v| v.as_str()).is_some() => {
+                            hook_slots.push(ExistingHookSlot::Supported(obj.clone()));
+                        }
+                        _ => hook_slots.push(ExistingHookSlot::Unsupported(hook.clone())),
+                    }
+                }
+            }
+
+            groups.push(ExistingHookGroup {
+                event: event.clone(),
+                matcher,
+                raw_group: mg.clone(),
+                hook_slots,
+            });
+        }
+    }
+
+    groups
+}
+
+#[cfg(test)]
 fn groups_to_json(groups: &[ClaudeHookGroup]) -> serde_json::Value {
+    groups_to_json_with_existing(groups, None)
+}
+
+fn groups_to_json_with_existing(
+    groups: &[ClaudeHookGroup],
+    existing_root: Option<&serde_json::Value>,
+) -> serde_json::Value {
+    let existing_groups = existing_root
+        .map(existing_hook_groups_from_root)
+        .unwrap_or_default();
+    let mut used_existing = vec![false; existing_groups.len()];
+
     let mut hooks_map = serde_json::Map::new();
-    for group in groups {
+    for (group_index, group) in groups.iter().enumerate() {
+        let existing_index = existing_groups
+            .iter()
+            .enumerate()
+            .find_map(|(index, existing)| {
+                (!used_existing[index]
+                    && existing.event == group.event
+                    && existing.matcher == group.matcher)
+                    .then_some(index)
+            })
+            .or_else(|| {
+                (group_index < existing_groups.len() && !used_existing[group_index])
+                    .then_some(group_index)
+            });
+        let existing = existing_index.map(|index| {
+            used_existing[index] = true;
+            &existing_groups[index]
+        });
+
         let entry = hooks_map
             .entry(group.event.clone())
             .or_insert_with(|| serde_json::Value::Array(Vec::new()));
         let arr = entry.as_array_mut().expect("hooks event must be array");
 
-        let hook_entries: Vec<serde_json::Value> = group
-            .hooks
-            .iter()
-            .map(|h| {
-                let mut obj = serde_json::Map::new();
-                obj.insert(
-                    "type".to_string(),
-                    serde_json::Value::String(h.hook_type.clone()),
-                );
-                obj.insert(
-                    "command".to_string(),
-                    serde_json::Value::String(h.command.clone()),
-                );
-                if let Some(t) = h.timeout {
-                    obj.insert("timeout".to_string(), serde_json::Value::Number(t.into()));
-                }
-                serde_json::Value::Object(obj)
-            })
-            .collect();
+        let hook_entries = merge_hook_entries(&group.hooks, existing);
 
-        let mut mg = serde_json::Map::new();
+        let mut mg = existing
+            .map(|existing| existing.raw_group.clone())
+            .unwrap_or_default();
         mg.insert(
             "matcher".to_string(),
             serde_json::Value::String(group.matcher.clone()),
@@ -139,6 +212,57 @@ fn groups_to_json(groups: &[ClaudeHookGroup]) -> serde_json::Value {
         arr.push(serde_json::Value::Object(mg));
     }
     serde_json::Value::Object(hooks_map)
+}
+
+fn hook_entry_to_json(
+    hook: &ClaudeHookEntry,
+    existing: Option<serde_json::Map<String, serde_json::Value>>,
+) -> serde_json::Value {
+    let mut obj = existing.unwrap_or_default();
+    obj.insert(
+        "type".to_string(),
+        serde_json::Value::String(hook.hook_type.clone()),
+    );
+    obj.insert(
+        "command".to_string(),
+        serde_json::Value::String(hook.command.clone()),
+    );
+    if let Some(timeout) = hook.timeout {
+        obj.insert(
+            "timeout".to_string(),
+            serde_json::Value::Number(timeout.into()),
+        );
+    } else {
+        obj.remove("timeout");
+    }
+    serde_json::Value::Object(obj)
+}
+
+fn merge_hook_entries(
+    hooks: &[ClaudeHookEntry],
+    existing: Option<&ExistingHookGroup>,
+) -> Vec<serde_json::Value> {
+    let Some(existing) = existing else {
+        return hooks
+            .iter()
+            .map(|hook| hook_entry_to_json(hook, None))
+            .collect();
+    };
+
+    let mut next_hooks = hooks.iter();
+    let mut entries = Vec::new();
+    for slot in &existing.hook_slots {
+        match slot {
+            ExistingHookSlot::Supported(raw) => {
+                if let Some(hook) = next_hooks.next() {
+                    entries.push(hook_entry_to_json(hook, Some(raw.clone())));
+                }
+            }
+            ExistingHookSlot::Unsupported(value) => entries.push(value.clone()),
+        }
+    }
+    entries.extend(next_hooks.map(|hook| hook_entry_to_json(hook, None)));
+    entries
 }
 
 pub fn claude_hooks_get<R: tauri::Runtime>(
@@ -180,12 +304,20 @@ pub fn claude_hooks_set<R: tauri::Runtime>(
             .to_string()
             .into());
     }
+    let next_hooks = if input.groups.is_empty() {
+        None
+    } else {
+        Some(groups_to_json_with_existing(&input.groups, Some(&root)))
+    };
     let obj = root.as_object_mut().expect("root must be object");
 
-    if input.groups.is_empty() {
-        obj.remove("hooks");
-    } else {
-        obj.insert("hooks".to_string(), groups_to_json(&input.groups));
+    match next_hooks {
+        Some(hooks) => {
+            obj.insert("hooks".to_string(), hooks);
+        }
+        None => {
+            obj.remove("hooks");
+        }
     }
 
     let mut out = serde_json::to_vec_pretty(&root)

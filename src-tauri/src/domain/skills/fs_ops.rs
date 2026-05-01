@@ -1,6 +1,6 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 
 const MANAGED_MARKER_FILE: &str = ".aio-coding-hub.managed";
 const SOURCE_MARKER_FILE: &str = ".aio-coding-hub.source.json";
@@ -171,6 +171,57 @@ pub(super) fn is_managed_dir(dir: &Path) -> bool {
     dir.join(MANAGED_MARKER_FILE).exists()
 }
 
+pub(super) fn exists_or_is_link(path: &Path) -> bool {
+    std::fs::symlink_metadata(path).is_ok()
+}
+
+fn normalize_for_prefix_check(path: &Path) -> PathBuf {
+    let mut normalized = PathBuf::new();
+    for component in path.components() {
+        match component {
+            Component::CurDir => {}
+            Component::ParentDir => {
+                normalized.pop();
+            }
+            _ => normalized.push(component.as_os_str()),
+        }
+    }
+    normalized
+}
+
+fn canonicalize_allow_missing(path: &Path) -> PathBuf {
+    if let Ok(canonical) = path.canonicalize() {
+        return canonical;
+    }
+
+    let normalized = normalize_for_prefix_check(path);
+    let mut cursor = normalized.as_path();
+    let mut missing = Vec::new();
+
+    loop {
+        if let Ok(existing_prefix) = cursor.canonicalize() {
+            let mut resolved = existing_prefix;
+            for component in missing.iter().rev() {
+                resolved.push(component);
+            }
+            return resolved;
+        }
+
+        let Some(file_name) = cursor.file_name() else {
+            return normalized;
+        };
+        missing.push(file_name.to_os_string());
+
+        let Some(parent) = cursor.parent() else {
+            return normalized;
+        };
+        if parent == cursor {
+            return normalized;
+        }
+        cursor = parent;
+    }
+}
+
 pub(super) fn is_managed_link_to_ssot(dir: &Path, ssot_root: &Path) -> bool {
     if !is_symlink_or_junction(dir) {
         return false;
@@ -183,12 +234,8 @@ pub(super) fn is_managed_link_to_ssot(dir: &Path, ssot_root: &Path) -> bool {
     } else {
         dir.parent().unwrap_or_else(|| Path::new(".")).join(&target)
     };
-    let Ok(canonical_target) = resolved.canonicalize() else {
-        return false;
-    };
-    let Ok(canonical_ssot) = ssot_root.canonicalize() else {
-        return false;
-    };
+    let canonical_target = canonicalize_allow_missing(&resolved);
+    let canonical_ssot = canonicalize_allow_missing(ssot_root);
     canonical_target.starts_with(&canonical_ssot)
 }
 

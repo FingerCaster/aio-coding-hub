@@ -1,6 +1,7 @@
 use super::fs_ops::{
-    copy_dir_recursive, create_skill_link, has_skill_md, is_managed_dir, is_managed_link_to_ssot,
-    is_symlink, remove_managed_dir, remove_marker, write_source_metadata, SkillSourceMetadata,
+    copy_dir_recursive, create_skill_link, exists_or_is_link, has_skill_md, is_managed_dir,
+    is_managed_link_to_ssot, is_symlink, is_symlink_or_junction, remove_managed_dir, remove_marker,
+    write_source_metadata, SkillSourceMetadata,
 };
 use super::installed::{generate_unique_skill_key, get_skill_by_id, get_skill_by_id_for_workspace};
 use super::paths::{cli_skills_root, ensure_skills_roots, ssot_skills_root, validate_cli_key};
@@ -19,7 +20,7 @@ use std::collections::HashSet;
 use std::path::Path;
 
 fn is_external_local_skill_dir(path: &Path) -> crate::shared::error::AppResult<bool> {
-    if !path.exists() || is_managed_dir(path) {
+    if !exists_or_is_link(path) || is_managed_dir(path) {
         return Ok(false);
     }
     if is_symlink(path)? {
@@ -78,7 +79,7 @@ fn sync_to_cli<R: tauri::Runtime>(
         .map_err(|e| format!("failed to create {}: {e}", cli_root.display()))?;
     let target = cli_root.join(skill_key);
 
-    if target.exists() {
+    if exists_or_is_link(&target) {
         if is_managed_dir(&target)
             || is_managed_link_to_ssot(&target, ssot_dir.parent().unwrap_or(ssot_dir))
         {
@@ -101,7 +102,7 @@ fn remove_from_cli<R: tauri::Runtime>(
 ) -> crate::shared::error::AppResult<()> {
     let cli_root = cli_skills_root(app, cli_key)?;
     let target = cli_root.join(skill_key);
-    if !target.exists() {
+    if !exists_or_is_link(&target) {
         return Ok(());
     }
     let ssot_root = ssot_skills_root(app)?;
@@ -119,7 +120,7 @@ fn ensure_local_target_for_return(
     local_target: &Path,
     ssot_dir: &Path,
 ) -> crate::shared::error::AppResult<()> {
-    if local_target.exists() {
+    if exists_or_is_link(local_target) {
         let ssot_root = ssot_dir.parent().unwrap_or(ssot_dir);
         if is_managed_dir(local_target) || is_managed_link_to_ssot(local_target, ssot_root) {
             remove_managed_dir(local_target)?;
@@ -153,7 +154,7 @@ fn remove_managed_targets_except<R: tauri::Runtime>(
     for cli_key in SUPPORTED_CLI_KEYS {
         let root = cli_skills_root(app, cli_key)?;
         let target = root.join(skill_key);
-        if target == keep_target || !target.exists() {
+        if target == keep_target || !exists_or_is_link(&target) {
             continue;
         }
         if is_managed_dir(&target) || is_managed_link_to_ssot(&target, &ssot_root) {
@@ -409,7 +410,7 @@ pub fn uninstall<R: tauri::Runtime>(
     for cli_key in SUPPORTED_CLI_KEYS {
         let root = cli_skills_root(app, cli_key)?;
         let target = root.join(&skill.skill_key);
-        if target.exists()
+        if exists_or_is_link(&target)
             && !is_managed_dir(&target)
             && !is_managed_link_to_ssot(&target, &ssot_root)
             && !is_external_local_skill_dir(&target)?
@@ -495,7 +496,7 @@ fn sync_enabled_skill_keys_for_cli<R: tauri::Runtime>(
             let entry = entry
                 .map_err(|e| format!("failed to read dir entry {}: {e}", cli_root.display()))?;
             let path = entry.path();
-            if !path.is_dir() {
+            if !path.is_dir() && !is_symlink_or_junction(&path) {
                 continue;
             }
             if !is_managed_dir(&path) && !is_managed_link_to_ssot(&path, &ssot_root) {

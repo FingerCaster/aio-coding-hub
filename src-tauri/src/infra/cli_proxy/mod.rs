@@ -262,6 +262,7 @@ fn apply_proxy_config<R: tauri::Runtime>(
     validate_cli_key(cli_key)?;
 
     let targets = target_files(app, cli_key)?;
+    let mut prepared_writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(targets.len());
 
     for t in targets {
         let current = read_optional_file(&t.path)?;
@@ -320,7 +321,11 @@ fn apply_proxy_config<R: tauri::Runtime>(
             _ => return Err(format!("SEC_INVALID_INPUT: unknown cli_key={cli_key}").into()),
         };
 
-        let _ = write_file_atomic_if_changed(&t.path, &bytes)?;
+        prepared_writes.push((t.path, bytes));
+    }
+
+    for (path, bytes) in prepared_writes {
+        let _ = write_file_atomic_if_changed(&path, &bytes)?;
     }
 
     Ok(())

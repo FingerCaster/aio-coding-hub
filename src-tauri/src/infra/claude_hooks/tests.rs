@@ -59,3 +59,71 @@ fn groups_to_json_preserves_non_hook_root_fields_when_patched_by_caller() {
     assert_eq!(root["permissions"]["allow"][0], "Bash(ls)");
     assert_eq!(parse_hooks_from_root(&root).len(), 1);
 }
+
+#[test]
+fn groups_to_json_with_existing_preserves_unknown_hook_fields_and_entries() {
+    let existing = serde_json::json!({
+        "hooks": {
+            "PreToolUse": [{
+                "matcher": "Edit|Write",
+                "metadata": { "owner": "user" },
+                "hooks": [
+                    {
+                        "type": "custom",
+                        "payload": { "position": "before" }
+                    },
+                    {
+                        "type": "command",
+                        "command": "echo old 1",
+                        "timeout": 30,
+                        "description": "keep first"
+                    },
+                    "legacy-middle",
+                    {
+                        "type": "command",
+                        "command": "echo old 2",
+                        "note": "keep second"
+                    },
+                    {
+                        "type": "custom",
+                        "payload": { "position": "after" }
+                    }
+                ]
+            }]
+        }
+    });
+
+    let patched = groups_to_json_with_existing(
+        &[ClaudeHookGroup {
+            event: "PreToolUse".to_string(),
+            matcher: "Edit|Write".to_string(),
+            hooks: vec![
+                ClaudeHookEntry {
+                    hook_type: "command".to_string(),
+                    command: "echo new 1".to_string(),
+                    timeout: None,
+                },
+                ClaudeHookEntry {
+                    hook_type: "command".to_string(),
+                    command: "echo new 2".to_string(),
+                    timeout: Some(5),
+                },
+            ],
+        }],
+        Some(&existing),
+    );
+
+    let group = &patched["PreToolUse"][0];
+    assert_eq!(group["metadata"]["owner"], "user");
+    assert_eq!(group["hooks"][0]["type"], "custom");
+    assert_eq!(group["hooks"][0]["payload"]["position"], "before");
+    assert_eq!(group["hooks"][1]["command"], "echo new 1");
+    assert_eq!(group["hooks"][1]["description"], "keep first");
+    assert!(group["hooks"][1].get("timeout").is_none());
+    assert_eq!(group["hooks"][2], "legacy-middle");
+    assert_eq!(group["hooks"][3]["command"], "echo new 2");
+    assert_eq!(group["hooks"][3]["note"], "keep second");
+    assert_eq!(group["hooks"][3]["timeout"], 5);
+    assert_eq!(group["hooks"][4]["type"], "custom");
+    assert_eq!(group["hooks"][4]["payload"]["position"], "after");
+}

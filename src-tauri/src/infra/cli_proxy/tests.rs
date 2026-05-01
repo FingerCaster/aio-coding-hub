@@ -376,6 +376,58 @@ fn codex_proxy_auth_json_rejects_non_object_root() {
 }
 
 #[test]
+fn codex_proxy_enable_does_not_partially_write_config_when_auth_json_is_invalid() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let original_config = r#"[model_providers.openai]
+name = "openai"
+base_url = "https://api.openai.com/v1"
+"#;
+    let invalid_auth = r#"{ "tokens": "#;
+
+    write_codex_direct_files(&handle, original_config, invalid_auth);
+
+    let result = set_enabled(&handle, "codex", true, base_origin).expect("enable codex");
+    assert!(!result.ok, "enable must fail: {result:?}");
+    assert_eq!(
+        result.error_code.as_deref(),
+        Some("CLI_PROXY_ENABLE_FAILED")
+    );
+    assert!(
+        result.message.contains("CLI_PROXY_INVALID_AUTH_JSON"),
+        "unexpected message: {}",
+        result.message
+    );
+
+    let config_path = codex_config_path(&handle).expect("codex config path");
+    let auth_path = codex_auth_path(&handle).expect("codex auth path");
+    assert_eq!(
+        std::fs::read_to_string(&config_path).expect("read config"),
+        original_config,
+        "config.toml must stay untouched when a later target fails to parse"
+    );
+    assert_eq!(
+        std::fs::read_to_string(&auth_path).expect("read auth"),
+        invalid_auth,
+        "auth.json must stay untouched on parse failure"
+    );
+    assert_eq!(
+        std::fs::read_to_string(auth_path.with_extension("json.invalid-backup"))
+            .expect("read invalid backup"),
+        invalid_auth
+    );
+
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("manifest should preserve backup snapshot");
+    assert!(
+        !manifest.enabled,
+        "failed enable should not mark the proxy as enabled"
+    );
+}
+
+#[test]
 fn status_all_skips_gateway_check_when_gateway_not_running_even_if_codex_is_applied() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();

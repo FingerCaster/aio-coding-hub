@@ -317,9 +317,11 @@ function ClaudeHooksSection() {
       try {
         await hooksMutation.mutateAsync({ groups: nextGroups });
         toast("已保存 Hooks 配置");
+        return true;
       } catch (err) {
         logToConsole("error", "保存 Hooks 配置失败", { error: String(err) });
         toast("保存 Hooks 失败：请稍后重试");
+        return false;
       }
     },
     [hooksMutation]
@@ -359,10 +361,16 @@ function ClaudeHooksSection() {
       return;
     }
 
+    const timeout = editor.timeout.trim() ? Number(editor.timeout.trim()) : null;
+    if (timeout != null && (!Number.isSafeInteger(timeout) || timeout < 0)) {
+      toast("超时必须为非负安全整数");
+      return;
+    }
+
     const editedHook = {
       hook_type: "command" as const,
       command: editor.command.trim(),
-      timeout: editor.timeout.trim() ? Number(editor.timeout.trim()) : null,
+      timeout,
     };
 
     const next = [...groups];
@@ -383,15 +391,15 @@ function ClaudeHooksSection() {
       });
     }
 
-    await persistGroups(next);
-    setEditor(null);
+    const ok = await persistGroups(next);
+    if (ok) setEditor(null);
   }
 
   async function handleDelete() {
     if (deleteTarget == null) return;
     const next = groups.filter((_, index) => index !== deleteTarget);
-    await persistGroups(next);
-    setDeleteTarget(null);
+    const ok = await persistGroups(next);
+    if (ok) setDeleteTarget(null);
   }
 
   return (
