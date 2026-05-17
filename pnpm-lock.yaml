@@ -4,6 +4,17 @@ settings:
   autoInstallPeers: true
   excludeLinksFromLockfile: false
 
+overrides:
+  brace-expansion@1.1.12: 1.1.13
+  brace-expansion@2.0.2: 2.0.3
+  flatted@3.3.3: 3.4.2
+  lodash: ^4.18.1
+  minimatch@3.1.2: 3.1.4
+  minimatch@9.0.5: 9.0.7
+  picomatch@2.3.1: 2.3.2
+  picomatch@4.0.3: 4.0.4
+  rollup: ^4.60.1
+
 importers:
 
   .:
@@ -2531,7 +2542,7 @@ packages:
     resolution: {integrity: sha512-tIbYtZbucOs0BRGqPJkshJUYdL+SDH7dVM8gjy+ERp3WAUjLEFJE+02kanyHtwjWOnwrKYBiwAmM0p4kLJAnXg==}
     engines: {node: '>=12.0.0'}
     peerDependencies:
-      picomatch: ^3 || ^4
+      picomatch: 4.0.4
     peerDependenciesMeta:
       picomatch:
         optional: true

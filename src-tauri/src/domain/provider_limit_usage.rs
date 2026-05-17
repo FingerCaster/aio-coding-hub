@@ -63,8 +63,7 @@ fn current_unix_seconds(conn: &Connection) -> crate::shared::error::AppResult<i6
 
 fn values_clause(row_count: usize, column_count: usize) -> String {
     let row = format!("({})", crate::db::sql_placeholders(column_count));
-    std::iter::repeat(row)
-        .take(row_count)
+    std::iter::repeat_n(row, row_count)
         .collect::<Vec<_>>()
         .join(",")
 }
