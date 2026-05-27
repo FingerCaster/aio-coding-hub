@@ -59,11 +59,11 @@
     --sidebar-control: 0 0% 100% / 0.8;
     --sidebar-control-border: 220 13% 91% / 0.8;
     --sidebar-control-muted: 220 14% 96% / 0.8;
-    --sidebar-control-inset: 220 20% 98% / 0.9;
+    --sidebar-control-inset: 220 16% 93% / 0.9;
     --sidebar-option-active: 0 0% 100%;
     --shadow-sidebar-control: 0 8px 30px rgb(0 0 0 / 0.02);
     --shadow-sidebar-control-hover: 0 12px 40px rgb(0 0 0 / 0.05);
-    --shadow-sidebar-option: 0 1px 2.5px rgb(0 0 0 / 0.06);
+    --shadow-sidebar-option: 0 1px 3px rgb(0 0 0 / 0.1);
 
     /* Live trace premium cards */
     --trace-live-from: 0 0% 100% / 0.95;

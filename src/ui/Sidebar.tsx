@@ -373,10 +373,10 @@ export function Sidebar({ className }: SidebarProps) {
                     const isActive = theme === option.value;
                     const activeColorClass =
                       option.value === "light"
-                        ? "bg-sidebar-option-active text-theme-option-light shadow-sidebar-option"
+                        ? "bg-sidebar-option-active text-theme-option-light shadow-sidebar-option border border-sidebar-control-border"
                         : option.value === "dark"
-                          ? "bg-sidebar-option-active text-theme-option-dark shadow-sidebar-option"
-                          : "bg-sidebar-option-active text-theme-option-system shadow-sidebar-option";
+                          ? "bg-sidebar-option-active text-theme-option-dark shadow-sidebar-option border border-sidebar-control-border"
+                          : "bg-sidebar-option-active text-theme-option-system shadow-sidebar-option border border-sidebar-control-border";
 
                     return (
                       <button
@@ -387,14 +387,14 @@ export function Sidebar({ className }: SidebarProps) {
                           "focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-primary/20",
                           isActive
                             ? activeColorClass
-                            : "text-muted-foreground/60 hover:text-sidebar-foreground"
+                            : "text-muted-foreground hover:text-sidebar-foreground"
                         )}
                         aria-pressed={isActive}
                         aria-label={`切换到 ${option.label} 主题`}
                         title={`切换到 ${option.label} 主题`}
                         onClick={() => setTheme(option.value)}
                       >
-                        <option.icon className="h-3 w-3 shrink-0" aria-hidden="true" />
+                        <option.icon className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
                       </button>
                     );
                   })}
