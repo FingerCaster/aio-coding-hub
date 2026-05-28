@@ -29,6 +29,9 @@ const devPreviewRef = vi.hoisted(() => ({
 const themeRef = vi.hoisted(() => ({
   current: { theme: "system", resolvedTheme: "light", setTheme: vi.fn() } as any,
 }));
+const platformRef = vi.hoisted(() => ({
+  current: { isWindows: false },
+}));
 const cliProxyMocks = vi.hoisted(() => {
   const requestCliProxyEnabledSwitch = vi.fn();
   const setPendingCliProxyEnablePrompt = vi.fn();
@@ -69,6 +72,9 @@ vi.mock("../../hooks/useTheme", () => ({
 vi.mock("../../hooks/useCliProxyControls", () => ({
   useCliProxyControls: () => cliProxyMocks.current,
 }));
+vi.mock("../../utils/platform", () => ({
+  isWindowsRuntime: () => platformRef.current.isWindows,
+}));
 
 describe("ui/Sidebar", () => {
   beforeEach(() => {
@@ -97,6 +103,7 @@ describe("ui/Sidebar", () => {
       installTotalBytes: null,
       installDownloadedBytes: 0,
     };
+    platformRef.current = { isWindows: false };
   });
 
   it("renders base status without update candidate", () => {
@@ -112,6 +119,19 @@ describe("ui/Sidebar", () => {
     expect(within(gatewayStatus).getByText("网关检查中")).toBeInTheDocument();
     expect(screen.getByText("Port: —")).toBeInTheDocument();
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
+  });
+
+  it("hides the sidebar logo on Windows runtime", () => {
+    platformRef.current = { isWindows: true };
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByAltText("AIO Logo")).not.toBeInTheDocument();
+    expect(screen.getByText("AIO Coding Hub")).toBeInTheDocument();
   });
 
   it("switches theme from the sidebar control", () => {

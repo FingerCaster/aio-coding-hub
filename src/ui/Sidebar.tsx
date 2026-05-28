@@ -27,6 +27,7 @@ import { updateDialogSetOpen } from "../hooks/useUpdateMeta";
 import { useCliProxyControls } from "../hooks/useCliProxyControls";
 import { openDesktopUrl } from "../services/desktop/opener";
 import type { CliKey } from "../services/providers/providers";
+import { isWindowsRuntime } from "../utils/platform";
 import { Button } from "./Button";
 import { Dialog } from "./Dialog";
 import { Switch } from "./Switch";
@@ -121,6 +122,7 @@ export function Sidebar({ className }: SidebarProps) {
       ? "发现新版本（portable：打开下载页）"
       : "发现新版本（点击更新）"
     : "AIO Coding Hub GitHub 仓库";
+  const showSidebarLogo = !isWindowsRuntime();
 
   function handleRepoClick(event: ReactMouseEvent<HTMLAnchorElement>) {
     event.preventDefault();
@@ -149,10 +151,11 @@ export function Sidebar({ className }: SidebarProps) {
         <div data-tauri-drag-region className="px-5 pb-3.5 pt-7">
           <div className="flex items-center justify-between">
             <div className="flex items-center gap-2.5">
-              {/* Premium abstract AIO high-tech SVG Logo */}
-              <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-lg shadow-sm shadow-primary/10">
-                <img src="/logo.jpg" alt="AIO Logo" className="h-full w-full object-cover" />
-              </div>
+              {showSidebarLogo ? (
+                <div className="flex h-6 w-6 shrink-0 items-center justify-center overflow-hidden rounded-lg shadow-sm shadow-primary/10">
+                  <img src="/logo.jpg" alt="AIO Logo" className="h-full w-full object-cover" />
+                </div>
+              ) : null}
               <div className="flex flex-col">
                 <span className="text-[16px] font-extrabold tracking-tight text-sidebar-foreground">
                   AIO Coding Hub

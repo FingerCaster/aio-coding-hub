@@ -590,7 +590,7 @@ export function HomeOverviewPanel({
 
   const overviewInfoPanel = (
     <Card padding="sm" className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="shrink-0 overflow-x-auto scrollbar-overlay">
+      <div className="shrink-0 overflow-x-auto scrollbar-none">
         <TabList
           ariaLabel="概览状态切换"
           items={legacySessionsTabs}
@@ -602,7 +602,7 @@ export function HomeOverviewPanel({
           onChange={setSessionsTab}
           size="sm"
           className="w-max min-w-full"
-          buttonClassName="whitespace-nowrap flex-1"
+          buttonClassName="whitespace-nowrap flex-1 text-xs font-semibold md:text-sm px-2.5 md:px-3"
         />
       </div>
 
@@ -691,7 +691,7 @@ export function HomeOverviewPanel({
 
   const logsPrimaryInfoPanel = (
     <Card padding="sm" className="flex h-full min-h-0 flex-1 flex-col">
-      <div className="shrink-0 overflow-x-auto scrollbar-overlay">
+      <div className="shrink-0 overflow-x-auto scrollbar-none">
         <TabList
           ariaLabel="新布局信息切换"
           items={logsPrimaryTabs}
@@ -703,7 +703,7 @@ export function HomeOverviewPanel({
           onChange={(next) => setSessionsTab(next as HomeOverviewTabKey)}
           size="sm"
           className="w-max min-w-full"
-          buttonClassName="whitespace-nowrap flex-1"
+          buttonClassName="whitespace-nowrap flex-1 text-xs font-semibold md:text-sm px-2.5 md:px-3"
         />
       </div>
 

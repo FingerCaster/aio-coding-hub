@@ -24,10 +24,10 @@ const LIVE_TRACE_MAX_AGE_MS = 15 * 60 * 1000;
 const STALE_TRACE_TIMEOUT_MS = 5 * 60 * 1000;
 const OVERVIEW_REFRESH_INTERVAL_MS = 60 * 1000;
 const TABLE_TH_CLASS =
-  "border-b border-border bg-secondary/70 px-3 py-2.5 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground dark:border-border dark:bg-secondary/70 dark:text-muted-foreground";
-const TABLE_TD_CLASS = "border-b border-border px-3 py-3 dark:border-border";
+  "border-b border-border bg-secondary/70 px-3 py-2 text-left text-xs font-medium uppercase tracking-wide text-muted-foreground dark:border-border dark:bg-secondary/70 dark:text-muted-foreground";
+const TABLE_TD_CLASS = "border-b border-border px-3 py-2 dark:border-border";
 const TABLE_MONO_TD_CLASS =
-  "border-b border-border px-3 py-3 font-mono text-xs tabular-nums text-secondary-foreground dark:border-border dark:text-secondary-foreground";
+  "border-b border-border px-3 py-2 font-mono text-xs tabular-nums text-secondary-foreground dark:border-border dark:text-secondary-foreground";
 const TABLE_TH_MAIN_CLASS = "text-[11px] font-medium tracking-normal text-muted-foreground";
 const TABLE_TH_NOTE_CLASS = "text-[9px] font-normal tracking-normal text-muted-foreground";
 const TODAY_PROVIDER_QUERY_CONFIG = {
