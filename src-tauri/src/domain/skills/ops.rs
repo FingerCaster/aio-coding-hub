@@ -4,6 +4,7 @@ use super::fs_ops::{
     skill_dir_content_hash, write_source_metadata, SkillSourceMetadata,
 };
 use super::installed::{generate_unique_skill_key, get_skill_by_id, get_skill_by_id_for_workspace};
+use super::local::managed_marker_belongs_to_installed_skill;
 use super::paths::{cli_skills_root, ensure_skills_roots, ssot_skills_root, validate_cli_key};
 use super::repo_cache::ensure_repo_cache;
 use super::skill_md::parse_skill_md;
@@ -496,7 +497,7 @@ pub fn return_to_local<R: tauri::Runtime>(
 
 fn sync_enabled_skill_keys_for_cli<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    _conn: &Connection,
+    conn: &Connection,
     cli_key: &str,
     enabled_list: Vec<String>,
 ) -> crate::shared::error::AppResult<()> {
@@ -519,7 +520,10 @@ fn sync_enabled_skill_keys_for_cli<R: tauri::Runtime>(
             if !path.is_dir() && !is_symlink_or_junction(&path) {
                 continue;
             }
-            if !is_managed_dir(&path) && !is_managed_link_to_ssot(&path, &ssot_root) {
+            let managed_marker_belongs_to_installed =
+                managed_marker_belongs_to_installed_skill(conn, &path)?;
+            let managed_link_to_ssot = is_managed_link_to_ssot(&path, &ssot_root);
+            if !managed_marker_belongs_to_installed && !managed_link_to_ssot {
                 continue;
             }
             let dir_name = path

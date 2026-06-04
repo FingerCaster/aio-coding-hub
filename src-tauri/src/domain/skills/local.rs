@@ -28,7 +28,7 @@ fn summarize_local_skill_dir(
     if !path.is_dir() && !is_symlink_or_junction(path) {
         return Ok(None);
     }
-    if is_managed_dir(path) || is_managed_link_to_ssot(path, ssot_root) {
+    if is_managed_link_to_ssot(path, ssot_root) {
         return Ok(None);
     }
 
@@ -61,6 +61,22 @@ fn summarize_local_skill_dir(
         source_branch: source.as_ref().map(|item| item.source_branch.clone()),
         source_subdir: source.as_ref().map(|item| item.source_subdir.clone()),
     }))
+}
+
+pub(super) fn managed_marker_belongs_to_installed_skill(
+    conn: &Connection,
+    path: &Path,
+) -> crate::shared::error::AppResult<bool> {
+    if !is_managed_dir(path) {
+        return Ok(false);
+    }
+
+    let dir_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("");
+    if dir_name.is_empty() {
+        return Ok(true);
+    }
+
+    skill_key_exists(conn, dir_name)
 }
 
 fn installed_skill_id_by_source(
@@ -179,6 +195,9 @@ pub fn local_list<R: tauri::Runtime>(
         let entry =
             entry.map_err(|e| format!("failed to read dir entry {}: {e}", root.display()))?;
         let path = entry.path();
+        if managed_marker_belongs_to_installed_skill(&conn, &path)? {
+            continue;
+        }
         let Some(summary) = summarize_local_skill_dir(&path, &ssot_root, Some(&npx_lock))? else {
             continue;
         };
@@ -318,7 +337,7 @@ pub fn delete_local<R: tauri::Runtime>(
             .to_string()
             .into());
     }
-    if is_managed_dir(&local_dir) {
+    if managed_marker_belongs_to_installed_skill(&conn, &local_dir)? {
         return Err(format!(
             "SKILL_LOCAL_DELETE_BLOCKED_MANAGED: {}",
             local_dir.display()
@@ -368,7 +387,8 @@ pub fn import_local<R: tauri::Runtime>(
             .to_string()
             .into());
     }
-    if is_managed_dir(&local_dir) {
+    let skill_key_already_exists = skill_key_exists(&conn, &dir_name)?;
+    if is_managed_dir(&local_dir) && skill_key_already_exists {
         return Err(
             "SKILL_ALREADY_MANAGED: skill already managed by aio-coding-hub"
                 .to_string()
@@ -399,7 +419,7 @@ pub fn import_local<R: tauri::Runtime>(
         }
     }
 
-    if skill_key_exists(&conn, &dir_name)? {
+    if skill_key_already_exists {
         return Err("SKILL_IMPORT_CONFLICT: same skill_key already exists"
             .to_string()
             .into());

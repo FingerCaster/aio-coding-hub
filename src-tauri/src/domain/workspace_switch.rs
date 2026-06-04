@@ -331,6 +331,7 @@ pub fn apply(
 
     let local_skills_swap = match skills::swap_local_skills_for_workspace_switch(
         app,
+        &conn,
         &cli_key,
         from_workspace_id,
         workspace_id,

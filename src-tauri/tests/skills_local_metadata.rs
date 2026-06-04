@@ -4,6 +4,7 @@ use rusqlite::params;
 use support::SkillTestFixture;
 
 const SOURCE_METADATA_FILE: &str = ".aio-coding-hub.source.json";
+const MANAGED_MARKER_FILE: &str = ".aio-coding-hub.managed";
 
 #[test]
 fn skills_local_list_skips_managed_ssot_links() {
@@ -30,6 +31,119 @@ fn skills_local_list_skips_managed_ssot_links() {
         rows.iter()
             .all(|row| support::json_str(row, "dir_name") != fix.skill_key),
         "managed skill link should not be reported as a local skill: {rows:?}"
+    );
+}
+
+#[test]
+fn skills_local_list_skips_managed_marker_when_skill_key_exists() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+
+    aio_coding_hub_lib::test_support::init_db(&handle).expect("init db");
+    let fix = SkillTestFixture::new(&app, &handle, "codex", "Codex Managed Marker List");
+
+    let managed_dir = fix.cli_skills_root.join(&fix.skill_key);
+    std::fs::create_dir_all(&managed_dir).expect("create managed local skill dir");
+    std::fs::write(managed_dir.join(MANAGED_MARKER_FILE), "aio-coding-hub\n")
+        .expect("write managed marker");
+    std::fs::write(managed_dir.join("SKILL.md"), "---\nname: Context7\n---\n")
+        .expect("write local skill md");
+
+    let rows = support::json_array(
+        aio_coding_hub_lib::test_support::skills_local_list_json(&handle, fix.workspace_id)
+            .expect("list local skills"),
+    );
+
+    assert!(
+        rows.iter()
+            .all(|row| support::json_str(row, "dir_name") != fix.skill_key),
+        "managed marker for an installed skill should stay hidden from local list: {rows:?}"
+    );
+}
+
+#[test]
+fn copied_foreign_managed_skill_can_be_listed_and_imported() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+
+    aio_coding_hub_lib::test_support::init_db(&handle).expect("init db");
+    let fix = SkillTestFixture::new(&app, &handle, "claude", "Claude Copied Managed Skill");
+
+    let dir_name = "copied-managed-skill";
+    let local_dir = fix.cli_skills_root.join(dir_name);
+    std::fs::create_dir_all(&local_dir).expect("create copied local skill dir");
+    std::fs::write(local_dir.join(MANAGED_MARKER_FILE), "aio-coding-hub\n")
+        .expect("write copied managed marker");
+    std::fs::write(
+        local_dir.join(SOURCE_METADATA_FILE),
+        serde_json::json!({
+            "source_git_url": "https://github.com/acme/copied-skills",
+            "source_branch": "main",
+            "source_subdir": "skills/copied-managed-skill"
+        })
+        .to_string(),
+    )
+    .expect("write copied source metadata");
+    std::fs::write(
+        local_dir.join("SKILL.md"),
+        "---\nname: Copied Managed Skill\ndescription: Copied from another machine\n---\n",
+    )
+    .expect("write local skill md");
+
+    let rows = support::json_array(
+        aio_coding_hub_lib::test_support::skills_local_list_json(&handle, fix.workspace_id)
+            .expect("list local skills"),
+    );
+    let row = rows
+        .iter()
+        .find(|row| support::json_str(row, "dir_name") == dir_name)
+        .expect("copied managed skill row");
+    assert_eq!(support::json_str(row, "name"), "Copied Managed Skill");
+
+    let imported = aio_coding_hub_lib::test_support::skill_import_local_json(
+        &handle,
+        fix.workspace_id,
+        dir_name,
+    )
+    .expect("import copied managed skill");
+
+    assert_eq!(
+        support::json_str(&imported, "source_git_url"),
+        "https://github.com/acme/copied-skills"
+    );
+    assert_eq!(support::json_str(&imported, "source_branch"), "main");
+    assert_eq!(
+        support::json_str(&imported, "source_subdir"),
+        "skills/copied-managed-skill"
+    );
+}
+
+#[test]
+fn skills_sync_keeps_copied_foreign_managed_skill_dir() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+
+    aio_coding_hub_lib::test_support::init_db(&handle).expect("init db");
+    let fix = SkillTestFixture::new(&app, &handle, "claude", "Claude Sync Foreign Managed");
+
+    let copied_dir = fix.cli_skills_root.join("copied-managed-skill");
+    std::fs::create_dir_all(&copied_dir).expect("create copied skill dir");
+    std::fs::write(copied_dir.join(MANAGED_MARKER_FILE), "aio-coding-hub\n")
+        .expect("write copied managed marker");
+    std::fs::write(copied_dir.join("SKILL.md"), "name: Copied Managed\n")
+        .expect("write copied skill md");
+
+    aio_coding_hub_lib::test_support::skill_set_enabled_json(
+        &handle,
+        fix.workspace_id,
+        fix.skill_id,
+        true,
+    )
+    .expect("enable skill and sync cli");
+
+    assert!(
+        copied_dir.exists(),
+        "sync should not remove a copied managed-marker local skill that is not installed in this DB"
     );
 }
 

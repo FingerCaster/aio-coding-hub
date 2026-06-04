@@ -221,8 +221,11 @@ pub fn skills_swap_local_for_workspace_switch<R: tauri::Runtime>(
     from_workspace_id: Option<i64>,
     to_workspace_id: i64,
 ) -> crate::shared::error::AppResult<()> {
+    let db = crate::infra::db::init(app)?;
+    let conn = db.open_connection()?;
     let _ = crate::domain::skills::swap_local_skills_for_workspace_switch(
         app,
+        &conn,
         cli_key,
         from_workspace_id,
         to_workspace_id,
