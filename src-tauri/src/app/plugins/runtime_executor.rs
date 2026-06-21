@@ -1,6 +1,8 @@
 //! Usage: Runtime dispatch for gateway plugin execution.
 
-use crate::domain::plugins::{PluginDetail, PluginRuntime};
+use crate::app::plugins::runtime_manager::{PluginRuntimeManager, RuntimeDispatch};
+use crate::app::plugins::runtime_policy::RuntimePolicy;
+use crate::domain::plugins::PluginDetail;
 use crate::gateway::plugins::context::{GatewayHookResult, GatewayVisibleHookContext};
 use crate::gateway::plugins::permissions::GatewayPluginError;
 use crate::gateway::plugins::pipeline::{GatewayHookFuture, GatewayPluginExecutor};
@@ -31,28 +33,26 @@ impl RuntimeGatewayPluginExecutor {
         plugin: &PluginDetail,
         context: GatewayVisibleHookContext,
     ) -> Result<GatewayHookResult, GatewayPluginError> {
-        match &plugin.manifest.runtime {
-            PluginRuntime::DeclarativeRules { .. } => self
+        let manager = PluginRuntimeManager::new(RuntimePolicy {
+            wasm_enabled: self.policy.wasm_enabled,
+            process_enabled: false,
+        });
+
+        match manager.runtime_dispatch(&plugin.manifest.runtime)? {
+            RuntimeDispatch::DeclarativeRules => self
                 .rule_runtime
                 .execute_declarative_rules_plugin(plugin, context),
-            PluginRuntime::Native { engine }
-                if plugin.summary.plugin_id == "official.privacy-filter"
-                    && engine == "privacyFilter" =>
+            RuntimeDispatch::NativePrivacyFilter
+                if plugin.summary.plugin_id == "official.privacy-filter" =>
             {
                 self.rule_runtime
                     .execute_official_privacy_filter_plugin(plugin, context)
             }
-            PluginRuntime::Native { engine } => Err(GatewayPluginError::new(
+            RuntimeDispatch::NativePrivacyFilter => Err(GatewayPluginError::new(
                 "PLUGIN_UNSUPPORTED_RUNTIME",
-                format!("unsupported native plugin runtime engine: {engine}"),
+                "unsupported native plugin runtime engine: privacyFilter",
             )),
-            PluginRuntime::Wasm { .. } if !self.policy.wasm_enabled => {
-                Err(GatewayPluginError::new(
-                    "PLUGIN_RUNTIME_DISABLED",
-                    "wasm runtime execution is disabled by host policy",
-                ))
-            }
-            PluginRuntime::Wasm { .. } => Err(GatewayPluginError::new(
+            RuntimeDispatch::WasmNotWired => Err(GatewayPluginError::new(
                 "PLUGIN_WASM_NOT_WIRED",
                 "wasm runtime policy is enabled but gateway execution is not wired in this release",
             )),
@@ -162,6 +162,32 @@ mod tests {
             .expect("rule runtime executes");
 
         assert_eq!(result.action, GatewayHookAction::Continue);
+    }
+
+    #[test]
+    fn runtime_executor_rejects_non_official_privacy_filter_native_runtime() {
+        let executor = RuntimeGatewayPluginExecutor::for_tests(RuntimeExecutionPolicy {
+            wasm_enabled: false,
+        });
+        let plugin = plugin_detail(
+            "example.privacy-filter",
+            PluginRuntime::Native {
+                engine: "privacyFilter".to_string(),
+            },
+            "native:privacyFilter".to_string(),
+            None,
+        );
+        let context = hook_context("gateway.request.afterBodyRead", "trace-native");
+
+        let err = executor
+            .execute_plugin_sync(&plugin, context)
+            .expect_err("non-official native privacy filter should be rejected");
+
+        assert_eq!(err.code(), "PLUGIN_UNSUPPORTED_RUNTIME");
+        assert_eq!(
+            err.to_string(),
+            "PLUGIN_UNSUPPORTED_RUNTIME: unsupported native plugin runtime engine: privacyFilter"
+        );
     }
 
     fn executor() -> RuntimeGatewayPluginExecutor {

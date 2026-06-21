@@ -6,4 +6,6 @@ pub(crate) mod privacy_filter;
 pub(crate) mod process_runtime;
 pub(crate) mod rule_runtime;
 pub(crate) mod runtime_executor;
+pub(crate) mod runtime_manager;
+pub(crate) mod runtime_policy;
 pub(crate) mod wasm_runtime;
