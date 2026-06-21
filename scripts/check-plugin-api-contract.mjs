@@ -164,20 +164,49 @@ if (contract) {
     "default scaffold contract token"
   );
 
-  const rust = readText("src-tauri/src/domain/plugins.rs");
-  requireIncludes("src-tauri/src/domain/plugins.rs", rust, contract.activeHooks, "active hook");
-  requireIncludes("src-tauri/src/domain/plugins.rs", rust, contract.reservedHooks, "reserved hook");
+  const rustContract = readText("src-tauri/src/gateway/plugins/contract.rs");
   requireIncludes(
-    "src-tauri/src/domain/plugins.rs",
-    rust,
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
+    contract.activeHooks,
+    "active hook"
+  );
+  requireIncludes(
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
+    contract.reservedHooks,
+    "reserved hook"
+  );
+  requireIncludes(
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
     contract.activePermissions,
     "active permission"
   );
   requireIncludes(
-    "src-tauri/src/domain/plugins.rs",
-    rust,
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
     contract.reservedPermissions,
     "reserved permission"
+  );
+
+  const rust = readText("src-tauri/src/domain/plugins.rs");
+  requireIncludes(
+    "src-tauri/src/domain/plugins.rs",
+    rust,
+    [...contract.activePermissions, ...contract.reservedPermissions],
+    "permission risk"
+  );
+  requireIncludes(
+    "src-tauri/src/domain/plugins.rs",
+    rust,
+    [
+      "crate::gateway::plugins::contract::is_active_hook",
+      "crate::gateway::plugins::contract::is_reserved_hook",
+      "crate::gateway::plugins::contract::is_reserved_permission",
+      "crate::gateway::plugins::contract::hook_contract",
+    ],
+    "contract metadata call-through"
   );
   requireIncludesCaseInsensitive(
     "src-tauri/src/domain/plugins.rs",

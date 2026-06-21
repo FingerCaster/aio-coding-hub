@@ -45,13 +45,24 @@ function writePassingScaffold(root) {
     "declarativeRules wasm gateway.request.afterBodyRead request.body.read request.body.write"
   );
   writeFileSync(
-    join(root, "src-tauri/src/domain/plugins.rs"),
+    join(root, "src-tauri/src/gateway/plugins/contract.rs"),
     [
       "gateway.request.afterBodyRead gateway.response.headers",
-      "request.body.read network.fetch declarativeRules wasm native privacyFilter",
+      "request.body.read network.fetch",
+    ].join("\n")
+  );
+  writeFileSync(
+    join(root, "src-tauri/src/domain/plugins.rs"),
+    [
+      "declarativeRules wasm native privacyFilter",
+      "crate::gateway::plugins::contract::is_active_hook",
+      "crate::gateway::plugins::contract::is_reserved_hook",
+      "crate::gateway::plugins::contract::is_reserved_permission",
+      "crate::gateway::plugins::contract::hook_contract",
       "pub fn is_active_gateway_hook(hook: &str) -> bool { hook == \"gateway.request.afterBodyRead\" }",
       "pub fn is_reserved_gateway_hook(hook: &str) -> bool { hook == \"gateway.response.headers\" }",
       "pub fn is_reserved_permission(permission: &str) -> bool { permission == \"network.fetch\" }",
+      "fn permission_risk(permission: &str) { request.body.read; network.fetch; }",
       "PLUGIN_RESERVED_HOOK PLUGIN_RESERVED_PERMISSION",
     ].join("\n")
   );

@@ -281,31 +281,15 @@ pub fn is_known_hook(hook: &str) -> bool {
 }
 
 pub fn is_active_gateway_hook(hook: &str) -> bool {
-    matches!(
-        hook,
-        "gateway.request.afterBodyRead"
-            | "gateway.request.beforeSend"
-            | "gateway.response.chunk"
-            | "gateway.response.after"
-            | "gateway.error"
-            | "log.beforePersist"
-    )
+    crate::gateway::plugins::contract::is_active_hook(hook)
 }
 
 pub fn is_reserved_gateway_hook(hook: &str) -> bool {
-    matches!(
-        hook,
-        "gateway.request.received"
-            | "gateway.request.beforeProviderResolution"
-            | "gateway.response.headers"
-    )
+    crate::gateway::plugins::contract::is_reserved_hook(hook)
 }
 
 pub fn is_reserved_permission(permission: &str) -> bool {
-    matches!(
-        permission,
-        "plugin.storage" | "network.fetch" | "file.read" | "file.write" | "secret.read"
-    )
+    crate::gateway::plugins::contract::is_reserved_permission(permission)
 }
 
 fn validate_plugin_id(plugin_id: &str) -> Result<(), PluginValidationError> {
@@ -443,26 +427,9 @@ fn validate_hook_permissions(
 }
 
 fn hook_allows_permission(hook_name: &str, permission: &str) -> bool {
-    match permission {
-        "request.meta.read"
-        | "request.header.read"
-        | "request.header.readSensitive"
-        | "request.header.write"
-        | "request.body.read"
-        | "request.body.write" => matches!(
-            hook_name,
-            "gateway.request.afterBodyRead" | "gateway.request.beforeSend"
-        ),
-        "response.header.read"
-        | "response.header.write"
-        | "response.body.read"
-        | "response.body.write" => {
-            matches!(hook_name, "gateway.response.after" | "gateway.error")
-        }
-        "stream.inspect" | "stream.modify" => hook_name == "gateway.response.chunk",
-        "log.redact" => hook_name == "log.beforePersist",
-        _ => false,
-    }
+    crate::gateway::plugins::contract::hook_contract(hook_name).is_some_and(|hook| {
+        hook.read_permissions.contains(&permission) || hook.write_permissions.contains(&permission)
+    })
 }
 
 fn validate_permission_scope(
