@@ -389,7 +389,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
           <label className="flex items-start gap-2 rounded-lg border border-border bg-muted p-3">
             <input
               type="checkbox"
-              aria-label="同时清理该 Provider 的用量统计"
+              aria-label="同时删除该 Provider 的用量统计和请求日志"
               checked={clearUsageStatsOnDelete}
               onChange={(event) => setClearUsageStatsOnDelete(event.currentTarget.checked)}
               disabled={deleting}
@@ -397,10 +397,10 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
             />
             <span className="min-w-0">
               <span className="block text-sm font-medium text-foreground">
-                同时清理该 Provider 的用量统计
+                同时删除该 Provider 的用量统计和请求日志
               </span>
               <span className="mt-1 block text-xs text-muted-foreground">
-                清理后该 Provider 不再参与用量统计汇总，请求日志仍会保留。
+                删除后该 Provider 的历史请求日志和用量统计都将移除。
               </span>
             </span>
           </label>

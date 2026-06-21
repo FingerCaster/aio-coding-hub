@@ -139,6 +139,32 @@ fn ensure_plugin_tables_is_idempotent() {
 }
 
 #[test]
+fn ensure_patch_drops_legacy_request_attempt_logs_table() {
+    let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
+    apply_migrations(&mut conn).expect("create current schema");
+
+    conn.execute_batch(
+        r#"
+CREATE TABLE request_attempt_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  trace_id TEXT NOT NULL,
+  provider_id INTEGER NOT NULL
+);
+"#,
+    )
+    .expect("create legacy request_attempt_logs table");
+
+    assert!(test_has_table(&conn, "request_attempt_logs"));
+
+    apply_migrations(&mut conn).expect("apply migrations");
+
+    assert!(!test_has_table(&conn, "request_attempt_logs"));
+
+    apply_migrations(&mut conn).expect("apply migrations twice");
+    assert!(!test_has_table(&conn, "request_attempt_logs"));
+}
+
+#[test]
 fn ensure_patch_adds_reset_credit_count_to_existing_oauth_snapshot_table() {
     let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
     conn.execute_batch(

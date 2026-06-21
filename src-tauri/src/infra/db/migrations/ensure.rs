@@ -19,10 +19,19 @@ pub(super) fn apply_ensure_patches(conn: &mut Connection) -> crate::shared::erro
     ensure_provider_note(conn)?;
     ensure_provider_source_provider_id(conn)?;
     ensure_provider_bridge_type(conn)?;
+    drop_legacy_request_attempt_logs_table(conn)?;
     ensure_request_logs_extended_columns(conn)?;
     ensure_provider_stream_idle_timeout(conn)?;
     ensure_skills_update_columns(conn)?;
     ensure_plugin_tables(conn)?;
+    Ok(())
+}
+
+fn drop_legacy_request_attempt_logs_table(
+    conn: &mut Connection,
+) -> crate::shared::error::AppResult<()> {
+    conn.execute_batch("DROP TABLE IF EXISTS request_attempt_logs;")
+        .map_err(|e| format!("failed to drop legacy request_attempt_logs table: {e}"))?;
     Ok(())
 }
 

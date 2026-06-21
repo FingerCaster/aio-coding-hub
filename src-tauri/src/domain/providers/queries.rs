@@ -1163,10 +1163,10 @@ pub fn delete(
 
     if clear_usage_stats {
         tx.execute(
-            "UPDATE request_logs SET excluded_from_stats = 1 WHERE final_provider_id = ?1",
+            "DELETE FROM request_logs WHERE final_provider_id = ?1",
             params![provider_id],
         )
-        .map_err(|e| db_err!("failed to clear provider usage stats: {e}"))?;
+        .map_err(|e| db_err!("failed to delete provider request logs: {e}"))?;
     }
 
     tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;

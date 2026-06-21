@@ -423,8 +423,11 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
           id: deleteTarget.id,
           name: deleteTarget.name,
           clear_usage_stats: clearUsageStats,
+          delete_request_logs: clearUsageStats,
         });
-        toast(clearUsageStats ? "Provider 已删除，相关用量统计已清理" : "Provider 已删除");
+        toast(
+          clearUsageStats ? "Provider 已删除，相关请求日志和用量统计已删除" : "Provider 已删除"
+        );
         setDeleteTarget(null);
       } catch (error) {
         logToConsole("error", "删除 Provider 失败", {

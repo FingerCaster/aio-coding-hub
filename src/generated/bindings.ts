@@ -2155,10 +2155,7 @@ export type ClaudeSettingsState = {
   env_claude_code_proxy_resolves_hosts: boolean;
   env_claude_code_skip_prompt_history: boolean;
 };
-export type ClearRequestLogsResult = {
-  request_logs_deleted: number;
-  request_attempt_logs_deleted: number;
-};
+export type ClearRequestLogsResult = { request_logs_deleted: number };
 export type CliProxyResult = {
   trace_id: string;
   cli_key: string;

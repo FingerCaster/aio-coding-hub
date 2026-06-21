@@ -444,8 +444,11 @@ describe("pages/providers/ProvidersView", () => {
     // Delete provider 1.
     fireEvent.click(screen.getAllByTitle("删除")[0]!);
     expect(
-      screen.getByRole("checkbox", { name: "同时清理该 Provider 的用量统计" })
+      screen.getByRole("checkbox", { name: "同时删除该 Provider 的用量统计和请求日志" })
     ).not.toBeChecked();
+    expect(
+      screen.getByText("删除后该 Provider 的历史请求日志和用量统计都将移除。")
+    ).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
     await waitFor(() =>
       expect(deleteMutation.mutateAsync).toHaveBeenCalledWith({
@@ -511,7 +514,7 @@ describe("pages/providers/ProvidersView", () => {
 
     fireEvent.click(screen.getByTitle("删除"));
     const cleanupCheckbox = screen.getByRole("checkbox", {
-      name: "同时清理该 Provider 的用量统计",
+      name: "同时删除该 Provider 的用量统计和请求日志",
     });
     fireEvent.click(cleanupCheckbox);
     fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
