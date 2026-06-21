@@ -48,6 +48,11 @@
   "hookMatrix": {
     "gateway.request.afterBodyRead": {
       "phase": "after request body read and before upstream provider send",
+      "kind": "request",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": [
         "request.meta.read",
         "request.header.read",
@@ -70,6 +75,11 @@
     },
     "gateway.request.beforeSend": {
       "phase": "after provider resolution and before upstream provider send",
+      "kind": "request",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": [
         "request.meta.read",
         "request.header.read",
@@ -92,6 +102,11 @@
     },
     "gateway.response.chunk": {
       "phase": "for each bounded streaming response chunk",
+      "kind": "stream",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["stream.inspect"],
       "writePermissions": ["stream.modify"],
       "mutationFields": ["streamChunk"],
@@ -99,6 +114,11 @@
     },
     "gateway.response.after": {
       "phase": "after a complete non-streaming upstream response body is available",
+      "kind": "response",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
       "mutationFields": ["headers", "responseBody"],
@@ -111,6 +131,11 @@
     },
     "gateway.error": {
       "phase": "after gateway error response materialization and before it is sent",
+      "kind": "response",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
       "mutationFields": ["headers", "responseBody"],
@@ -123,6 +148,11 @@
     },
     "log.beforePersist": {
       "phase": "before gateway request log persistence",
+      "kind": "log",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["log.redact"],
       "writePermissions": ["log.redact"],
       "mutationFields": ["logMessage"],

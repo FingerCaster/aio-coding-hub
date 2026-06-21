@@ -59,6 +59,28 @@ function requireRegex(path, text, regex, label) {
   }
 }
 
+function requireObject(path, value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    failures.push(`${path} must be an object`);
+    return null;
+  }
+  return value;
+}
+
+function requireArray(path, value) {
+  if (!Array.isArray(value)) {
+    failures.push(`${path} must be an array`);
+    return [];
+  }
+  return value;
+}
+
+function requireOneOf(path, value, allowed) {
+  if (!allowed.includes(value)) {
+    failures.push(`${path} must be one of ${allowed.join(", ")}`);
+  }
+}
+
 function runtimeTokens(contract) {
   return [...contract.communityRuntimes, ...contract.policyGatedRuntimes];
 }
@@ -75,6 +97,30 @@ const contractPath = "docs/plugins/plugin-api-v1-contract.json";
 const contract = readJson(contractPath);
 
 if (contract) {
+  const matrix = requireObject(`${contractPath}.hookMatrix`, contract.hookMatrix) ?? {};
+  for (const hook of contract.activeHooks ?? []) {
+    const entry = requireObject(`hookMatrix.${hook}`, matrix[hook]);
+    if (!entry) continue;
+    requireOneOf(`hookMatrix.${hook}.kind`, entry.kind, ["request", "response", "stream", "log"]);
+    requireOneOf(`hookMatrix.${hook}.status`, entry.status, ["active", "reserved"]);
+    if (entry.status !== "active") {
+      failures.push(`hookMatrix.${hook}.status must be active`);
+    }
+    requireArray(`hookMatrix.${hook}.readPermissions`, entry.readPermissions);
+    requireArray(`hookMatrix.${hook}.writePermissions`, entry.writePermissions);
+    requireArray(`hookMatrix.${hook}.mutationFields`, entry.mutationFields);
+    requireArray(`hookMatrix.${hook}.contextFields`, entry.contextFields);
+    if (entry.defaultFailurePolicy !== contract.defaultFailurePolicy) {
+      failures.push(`hookMatrix.${hook}.defaultFailurePolicy must equal defaultFailurePolicy`);
+    }
+    if (entry.timeoutMs !== contract.defaultHookTimeoutMs) {
+      failures.push(`hookMatrix.${hook}.timeoutMs must equal defaultHookTimeoutMs`);
+    }
+    requireOneOf(`hookMatrix.${hook}.reservedHeaderPolicy`, entry.reservedHeaderPolicy, [
+      "block-gateway-owned",
+    ]);
+  }
+
   const sdk = readText("packages/plugin-sdk/src/index.ts");
   requireIncludes("packages/plugin-sdk/src/index.ts", sdk, contract.activeHooks, "active hook");
   requireIncludes("packages/plugin-sdk/src/index.ts", sdk, contract.reservedHooks, "reserved hook");
