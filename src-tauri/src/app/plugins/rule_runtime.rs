@@ -1,6 +1,7 @@
 //! Usage: Declarative, no-code plugin rule runtime.
 
 use super::privacy_filter::{PrivacyFilter, PrivacyFilterError, PrivacyFilterOptions};
+use super::runtime_cache::{runtime_cache_key, RuntimeCacheKeyInput};
 use crate::gateway::plugins::context::{
     GatewayHookAction, GatewayHookResult, GatewayVisibleHookContext,
 };
@@ -311,15 +312,18 @@ fn rule_runtime_cache_key(plugin: &PluginDetail) -> String {
         .unwrap_or(plugin.manifest.version.as_str());
     let installed_dir = plugin.installed_dir.as_deref().unwrap_or("");
     let updated_at = plugin.summary.updated_at;
-    let rules = match &plugin.manifest.runtime {
+    let runtime_key = match &plugin.manifest.runtime {
         PluginRuntime::DeclarativeRules { rules } => rules.join("\u{1f}"),
         PluginRuntime::Native { engine } => format!("native:{engine}"),
         PluginRuntime::Wasm { abi_version, .. } => format!("wasm:{abi_version}"),
     };
-    format!(
-        "{}\u{1e}{}\u{1e}{}\u{1e}{}\u{1e}{}",
-        plugin.summary.plugin_id, version, installed_dir, updated_at, rules
-    )
+    runtime_cache_key(RuntimeCacheKeyInput {
+        plugin_id: plugin.summary.plugin_id.as_str(),
+        version,
+        installed_dir,
+        updated_at,
+        runtime_key: runtime_key.as_str(),
+    })
 }
 
 fn privacy_filter_cache_key(plugin: &PluginDetail) -> String {
@@ -330,10 +334,13 @@ fn privacy_filter_cache_key(plugin: &PluginDetail) -> String {
         .unwrap_or(plugin.manifest.version.as_str());
     let installed_dir = plugin.installed_dir.as_deref().unwrap_or("");
     let updated_at = plugin.summary.updated_at;
-    format!(
-        "{}\u{1e}{}\u{1e}{}\u{1e}{}",
-        plugin.summary.plugin_id, version, installed_dir, updated_at
-    )
+    runtime_cache_key(RuntimeCacheKeyInput {
+        plugin_id: plugin.summary.plugin_id.as_str(),
+        version,
+        installed_dir,
+        updated_at,
+        runtime_key: "native:privacyFilter",
+    })
 }
 
 #[cfg(test)]
