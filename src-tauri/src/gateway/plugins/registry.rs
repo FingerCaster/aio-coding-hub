@@ -56,8 +56,30 @@ impl HookRegistry {
 mod tests {
     use super::*;
     use crate::gateway::plugins::contract::{
-        HookKind, DEFAULT_FAILURE_POLICY, DEFAULT_HOOK_TIMEOUT_MS,
+        HookContract, HookKind, ACTIVE_HOOKS, DEFAULT_FAILURE_POLICY, DEFAULT_HOOK_TIMEOUT_MS,
+        RESERVED_HOOKS,
     };
+
+    fn assert_contracts_have_registry_descriptors(contracts: &[HookContract]) {
+        let registry = HookRegistry::new();
+
+        for contract in contracts {
+            let hook_name = GatewayPluginHookName::from_str(contract.id).unwrap_or_else(|| {
+                panic!("hook contract {} should parse as hook name", contract.id)
+            });
+            let descriptor = registry
+                .descriptor(hook_name)
+                .unwrap_or_else(|| panic!("descriptor missing for hook {}", contract.id));
+
+            assert_eq!(descriptor.id, contract.id);
+        }
+    }
+
+    #[test]
+    fn registry_descriptors_mirror_every_hook_contract() {
+        assert_contracts_have_registry_descriptors(ACTIVE_HOOKS);
+        assert_contracts_have_registry_descriptors(RESERVED_HOOKS);
+    }
 
     #[test]
     fn registry_resolves_active_request_hook() {
