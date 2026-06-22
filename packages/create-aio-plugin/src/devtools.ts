@@ -277,6 +277,9 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
 
   const runtimeKind = manifestRuntimeKind(manifest);
   const runtime = manifest.runtime;
+  if (!runtimeKind) {
+    diagnostics.push(runtimeShapeDiagnostic(manifest));
+  }
 
   if (runtimeKind === "declarativeRules" && runtime.kind === "declarativeRules") {
     for (const rulePath of runtime.rules) {
@@ -350,6 +353,35 @@ function manifestRuntimeKind(
     return "wasm";
   }
   return null;
+}
+
+function runtimeShapeDiagnostic(manifest: Partial<PluginManifest>): PluginDiagnostic {
+  const runtime = asRecord(manifest.runtime);
+  if (!runtime) {
+    return {
+      severity: "error",
+      code: "PLUGIN_INVALID_RUNTIME",
+      message: "plugin runtime must be an object",
+      path: "plugin.json#/runtime",
+      hint: "Set runtime to a Plugin API v1 runtime object.",
+    };
+  }
+  if (runtime.kind === "declarativeRules") {
+    return {
+      severity: "error",
+      code: "PLUGIN_INVALID_RUNTIME",
+      message: "declarativeRules runtime requires a rules array",
+      path: "plugin.json#/runtime",
+      hint: 'Use runtime: { kind: "declarativeRules", rules: ["rules/main.json"] }.',
+    };
+  }
+  return {
+    severity: "error",
+    code: "PLUGIN_INVALID_RUNTIME",
+    message: "plugin runtime kind is not supported by create-aio-plugin doctor",
+    path: "plugin.json#/runtime",
+    hint: "Use declarativeRules or wasm for community plugin packages.",
+  };
 }
 
 function doctorManifestSummary(

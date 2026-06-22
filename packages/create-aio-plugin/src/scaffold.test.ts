@@ -221,13 +221,13 @@ describe("create-aio-plugin scaffold", () => {
     const result = doctorPluginFiles({ "plugin.json": "{}\n" });
 
     expect(result.ok).toBe(false);
-    expect(result.diagnostics).toEqual([
+    expect(result.diagnostics).toContainEqual(
       expect.objectContaining({
         severity: "error",
         code: "PLUGIN_INVALID_ID",
         path: "plugin.json",
-      }),
-    ]);
+      })
+    );
   });
 
   it("doctor distinguishes empty and non-object plugin.json content", () => {
@@ -321,6 +321,28 @@ describe("create-aio-plugin scaffold", () => {
     );
     expect(wasmResult.diagnostics).toContainEqual(
       expect.objectContaining({ code: "PLUGIN_WASM_POLICY_GATED" })
+    );
+  });
+
+  it("doctor rejects malformed runtime shapes that SDK validation does not catch", () => {
+    const files = createPluginScaffold({
+      id: "acme.redactor",
+      name: "Redactor",
+      template: "rule",
+    });
+    const manifest = JSON.parse(files["plugin.json"] ?? "{}") as Record<string, unknown>;
+    manifest.runtime = { kind: "declarativeRules", rules: "rules/main.json" };
+    files["plugin.json"] = `${JSON.stringify(manifest, null, 2)}\n`;
+
+    const result = doctorPluginFiles(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_INVALID_RUNTIME",
+        path: "plugin.json#/runtime",
+      })
     );
   });
 
