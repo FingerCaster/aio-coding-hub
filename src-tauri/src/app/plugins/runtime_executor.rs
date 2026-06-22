@@ -1,5 +1,7 @@
 //! Usage: Runtime dispatch for gateway plugin execution.
 
+use crate::app::plugins::official_privacy_filter_runtime::OfficialPrivacyFilterRuntime;
+use crate::app::plugins::rule_runtime::RuleRuntimeGatewayPluginExecutor;
 use crate::app::plugins::runtime_manager::{PluginRuntimeManager, RuntimeDispatch};
 use crate::app::plugins::runtime_policy::RuntimePolicy;
 use crate::domain::plugins::PluginDetail;
@@ -14,7 +16,8 @@ pub(crate) struct RuntimeExecutionPolicy {
 
 #[derive(Default)]
 pub(crate) struct RuntimeGatewayPluginExecutor {
-    rule_runtime: crate::app::plugins::rule_runtime::RuleRuntimeGatewayPluginExecutor,
+    rule_runtime: RuleRuntimeGatewayPluginExecutor,
+    privacy_filter_runtime: OfficialPrivacyFilterRuntime,
     policy: RuntimeExecutionPolicy,
 }
 
@@ -22,8 +25,8 @@ impl RuntimeGatewayPluginExecutor {
     #[cfg(test)]
     pub(crate) fn for_tests(policy: RuntimeExecutionPolicy) -> Self {
         Self {
-            rule_runtime:
-                crate::app::plugins::rule_runtime::RuleRuntimeGatewayPluginExecutor::default(),
+            rule_runtime: RuleRuntimeGatewayPluginExecutor::default(),
+            privacy_filter_runtime: OfficialPrivacyFilterRuntime::default(),
             policy,
         }
     }
@@ -42,9 +45,9 @@ impl RuntimeGatewayPluginExecutor {
             RuntimeDispatch::DeclarativeRules => self
                 .rule_runtime
                 .execute_declarative_rules_plugin(plugin, context),
-            RuntimeDispatch::NativePrivacyFilter => self
-                .rule_runtime
-                .execute_official_privacy_filter_plugin(plugin, context),
+            RuntimeDispatch::NativePrivacyFilter => {
+                self.privacy_filter_runtime.execute_plugin(plugin, context)
+            }
             RuntimeDispatch::WasmNotWired => Err(GatewayPluginError::new(
                 "PLUGIN_WASM_NOT_WIRED",
                 "wasm runtime policy is enabled but gateway execution is not wired in this release",
@@ -54,6 +57,13 @@ impl RuntimeGatewayPluginExecutor {
 
     pub(crate) fn retain_runtime_caches_for_plugins(&self, plugins: &[PluginDetail]) {
         self.rule_runtime.retain_runtime_caches_for_plugins(plugins);
+        self.privacy_filter_runtime
+            .retain_runtime_caches_for_plugins(plugins);
+    }
+
+    #[cfg(test)]
+    fn privacy_filter_cache_size_for_tests(&self) -> usize {
+        self.privacy_filter_runtime.cache_size_for_tests()
     }
 }
 
@@ -183,6 +193,25 @@ mod tests {
         );
     }
 
+    #[test]
+    fn runtime_executor_retain_prunes_official_privacy_filter_runtime_cache() {
+        let executor = executor();
+        let plugin = official_privacy_filter_plugin_detail(json!({
+            "redactBeforeUpstream": true,
+            "redactLogs": true
+        }));
+        let context = hook_context("log.beforePersist", "trace-privacy");
+
+        executor
+            .execute_plugin_sync(&plugin, context)
+            .expect("official privacy filter runtime executes");
+        assert_eq!(executor.privacy_filter_cache_size_for_tests(), 1);
+
+        executor.retain_runtime_caches_for_plugins(&[]);
+
+        assert_eq!(executor.privacy_filter_cache_size_for_tests(), 0);
+    }
+
     fn executor() -> RuntimeGatewayPluginExecutor {
         RuntimeGatewayPluginExecutor::for_tests(RuntimeExecutionPolicy {
             wasm_enabled: false,
@@ -226,6 +255,35 @@ mod tests {
             "declarativeRules".to_string(),
             Some(installed_dir),
         )
+    }
+
+    fn official_privacy_filter_plugin_detail(config: serde_json::Value) -> PluginDetail {
+        let fixture = crate::app::plugins::official::official_plugin("official.privacy-filter")
+            .expect("official privacy filter fixture");
+        let permissions = fixture.manifest.permissions.clone();
+        PluginDetail {
+            summary: PluginSummary {
+                id: 1,
+                plugin_id: fixture.manifest.id.clone(),
+                name: fixture.manifest.name.clone(),
+                current_version: Some(fixture.manifest.version.clone()),
+                status: PluginStatus::Enabled,
+                runtime: "native:privacyFilter".to_string(),
+                permission_risk: PluginPermissionRisk::High,
+                update_available: false,
+                last_error: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+            manifest: fixture.manifest,
+            install_source: PluginInstallSource::Official,
+            installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
+            config,
+            granted_permissions: permissions,
+            pending_permissions: vec![],
+            audit_logs: vec![],
+            runtime_failures: vec![],
+        }
     }
 
     fn plugin_detail(

@@ -2,6 +2,7 @@
 
 pub(crate) mod official;
 pub(crate) mod official_assets;
+pub(crate) mod official_privacy_filter_runtime;
 pub(crate) mod privacy_filter;
 pub(crate) mod process_runtime;
 pub(crate) mod rule_runtime;
