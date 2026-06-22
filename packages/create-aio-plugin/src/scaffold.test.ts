@@ -293,6 +293,37 @@ describe("create-aio-plugin scaffold", () => {
     );
   });
 
+  it("doctor treats empty runtime files as present", () => {
+    const ruleFiles = createPluginScaffold({
+      id: "acme.redactor",
+      name: "Redactor",
+      template: "rule",
+    });
+    ruleFiles["rules/main.json"] = "";
+
+    const ruleResult = doctorPluginFiles(ruleFiles);
+
+    expect(ruleResult.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "PLUGIN_RULE_FILE_MISSING" })
+    );
+
+    const wasmFiles = createPluginScaffold({
+      id: "acme.policy",
+      name: "Policy",
+      template: "wasm",
+    });
+    wasmFiles["plugin.wasm"] = "";
+
+    const wasmResult = doctorPluginFiles(wasmFiles);
+
+    expect(wasmResult.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "PLUGIN_WASM_ENTRY_MISSING" })
+    );
+    expect(wasmResult.diagnostics).toContainEqual(
+      expect.objectContaining({ code: "PLUGIN_WASM_POLICY_GATED" })
+    );
+  });
+
   it("doctor command reads a real plugin directory and returns non-zero for errors", () => {
     const root = mkdtempSync(join(tmpdir(), "aio-plugin-doctor-"));
     writeScaffold(root, createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" }));

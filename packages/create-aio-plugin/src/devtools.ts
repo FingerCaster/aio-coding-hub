@@ -280,7 +280,7 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
 
   if (runtimeKind === "declarativeRules" && runtime.kind === "declarativeRules") {
     for (const rulePath of runtime.rules) {
-      if (!files[rulePath]) {
+      if (files[rulePath] == null) {
         diagnostics.push({
           severity: "error",
           code: "PLUGIN_RULE_FILE_MISSING",
@@ -294,7 +294,7 @@ export function doctorPluginFiles(files: ScaffoldFiles, options: DoctorOptions =
 
   if (runtimeKind === "wasm") {
     const entry = manifest.entry ?? "plugin.wasm";
-    if (!files[entry]) {
+    if (files[entry] == null) {
       diagnostics.push({
         severity: "error",
         code: "PLUGIN_WASM_ENTRY_MISSING",
