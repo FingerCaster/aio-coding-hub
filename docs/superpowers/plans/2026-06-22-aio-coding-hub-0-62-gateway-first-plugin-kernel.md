@@ -45,7 +45,7 @@
 - Modify: `src-tauri/src/app/plugins/rule_runtime.rs`
 - Modify: `src-tauri/src/app/plugins/runtime_executor.rs`
 
-- [ ] **Step 1: Confirm the regression test exists**
+- [x] **Step 1: Confirm the regression test exists**
 
 Open `src-tauri/src/app/plugins/runtime_executor.rs` and confirm the test module contains this test:
 
@@ -70,7 +70,7 @@ fn runtime_executor_retain_prunes_official_privacy_filter_runtime_cache() {
 }
 ```
 
-- [ ] **Step 2: Verify the regression test passes against the current implementation**
+- [x] **Step 2: Verify the regression test passes against the current implementation**
 
 Run:
 
@@ -80,7 +80,7 @@ cd src-tauri && cargo test runtime_executor_retain_prunes_official_privacy_filte
 
 Expected: `1 passed; 0 failed`.
 
-- [ ] **Step 3: Confirm runtime ownership boundaries in code**
+- [x] **Step 3: Confirm runtime ownership boundaries in code**
 
 Confirm `src-tauri/src/app/plugins/rule_runtime.rs` contains no privacy-filter ownership:
 
@@ -98,7 +98,7 @@ RuntimeDispatch::NativePrivacyFilter => {
 }
 ```
 
-- [ ] **Step 4: Run focused behavior checks**
+- [x] **Step 4: Run focused behavior checks**
 
 Run:
 
@@ -112,7 +112,7 @@ Expected:
 - `official_privacy_filter --lib`: `32 passed; 0 failed`
 - `rule_runtime_prunes_cache_entries_not_in_active_plugin_keys --lib`: `1 passed; 0 failed`
 
-- [ ] **Step 5: Run compile and formatting checks**
+- [x] **Step 5: Run compile and formatting checks**
 
 Run:
 
@@ -124,7 +124,7 @@ cd src-tauri && RUSTFLAGS=-Dwarnings cargo check --locked
 
 Expected: all commands exit `0`.
 
-- [ ] **Step 6: Commit the runtime split**
+- [x] **Step 6: Commit the runtime split**
 
 Run:
 
@@ -143,7 +143,7 @@ Expected: commit succeeds and contains only the runtime split.
 **Files:**
 - Modify: `src-tauri/src/gateway/plugins/contract.rs`
 
-- [ ] **Step 1: Write the failing duplicate-field test**
+- [x] **Step 1: Write the failing duplicate-field test**
 
 Append this helper and test inside the existing `#[cfg(test)] mod tests` in `src-tauri/src/gateway/plugins/contract.rs`:
 
@@ -169,7 +169,7 @@ fn hook_contract_arrays_do_not_contain_duplicates() {
 }
 ```
 
-- [ ] **Step 2: Run the test and verify it fails for the current duplicate**
+- [x] **Step 2: Run the test and verify it fails for the current duplicate**
 
 Run:
 
@@ -183,7 +183,7 @@ Expected before the fix: failure containing:
 gateway.request.beforeSend context_fields contains duplicate value request.query
 ```
 
-- [ ] **Step 3: Fix the duplicate context field**
+- [x] **Step 3: Fix the duplicate context field**
 
 In `src-tauri/src/gateway/plugins/contract.rs`, update the `gateway.request.beforeSend` `context_fields` array from:
 
@@ -218,7 +218,7 @@ context_fields: &[
 ],
 ```
 
-- [ ] **Step 4: Run the test and verify it passes**
+- [x] **Step 4: Run the test and verify it passes**
 
 Run:
 
@@ -228,7 +228,7 @@ cd src-tauri && cargo test hook_contract_arrays_do_not_contain_duplicates --lib
 
 Expected: `1 passed; 0 failed`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -244,7 +244,7 @@ Expected: commit succeeds.
 **Files:**
 - Modify: `src-tauri/src/gateway/plugins/registry.rs`
 
-- [ ] **Step 1: Add a descriptor mirror test**
+- [x] **Step 1: Add a descriptor mirror test**
 
 Inside `#[cfg(test)] mod tests` in `src-tauri/src/gateway/plugins/registry.rs`, add this test:
 
@@ -277,7 +277,7 @@ fn registry_descriptors_mirror_every_hook_contract() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 Run:
 
@@ -287,7 +287,7 @@ cd src-tauri && cargo test registry_descriptors_mirror_every_hook_contract --lib
 
 Expected: `1 passed; 0 failed`.
 
-- [ ] **Step 3: Run existing registry tests**
+- [x] **Step 3: Run existing registry tests**
 
 Run:
 
@@ -297,7 +297,7 @@ cd src-tauri && cargo test gateway::plugins::registry --lib
 
 Expected: all registry tests pass.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Run:
 
@@ -313,7 +313,7 @@ Expected: commit succeeds.
 **Files:**
 - Modify: `src-tauri/src/gateway/plugins/pipeline.rs`
 
-- [ ] **Step 1: Add the default timeout alignment test**
+- [x] **Step 1: Add the default timeout alignment test**
 
 Inside the existing `#[cfg(test)] mod tests` in `src-tauri/src/gateway/plugins/pipeline.rs`, add:
 
@@ -329,7 +329,7 @@ fn default_pipeline_timeout_matches_plugin_contract() {
 }
 ```
 
-- [ ] **Step 2: Run the focused test**
+- [x] **Step 2: Run the focused test**
 
 Run:
 
@@ -339,7 +339,7 @@ cd src-tauri && cargo test default_pipeline_timeout_matches_plugin_contract --li
 
 Expected: `1 passed; 0 failed`.
 
-- [ ] **Step 3: Run pipeline plugin tests**
+- [x] **Step 3: Run pipeline plugin tests**
 
 Run:
 
@@ -349,7 +349,7 @@ cd src-tauri && cargo test gateway_plugin_pipeline --lib
 
 Expected: all matching pipeline tests pass, with existing performance smoke tests still ignored.
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 Run:
 
@@ -366,7 +366,7 @@ Expected: commit succeeds.
 - Modify: `scripts/check-plugin-api-contract.mjs`
 - Modify: `scripts/check-plugin-api-contract.selftest.mjs`
 
-- [ ] **Step 1: Add the failing self-test fixture**
+- [x] **Step 1: Add the failing self-test fixture**
 
 In `scripts/check-plugin-api-contract.selftest.mjs`, append this fixture near the other hook metadata fixtures:
 
@@ -416,7 +416,7 @@ if (
 }
 ```
 
-- [ ] **Step 2: Run the self-test and verify it fails**
+- [x] **Step 2: Run the self-test and verify it fails**
 
 Run:
 
@@ -426,7 +426,7 @@ node scripts/check-plugin-api-contract.selftest.mjs
 
 Expected before implementation: failure because the checker does not yet report duplicate `readPermissions`.
 
-- [ ] **Step 3: Implement duplicate array detection**
+- [x] **Step 3: Implement duplicate array detection**
 
 In `scripts/check-plugin-api-contract.mjs`, add this helper after `requireArray`:
 
@@ -457,7 +457,7 @@ requireUniqueArray(`hookMatrix.${hook}.contextFields`, contextFields);
 
 Keep the existing permission dependency checks using `readPermissions` and `writePermissions`.
 
-- [ ] **Step 4: Run contract checks**
+- [x] **Step 4: Run contract checks**
 
 Run:
 
@@ -468,7 +468,7 @@ node scripts/check-plugin-api-contract.selftest.mjs
 
 Expected: both commands exit `0`.
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 Run:
 
@@ -630,7 +630,7 @@ Expected: commit succeeds and contains only the SDK permission dependency alignm
 - Modify: `docs/plugins/reference/compatibility.md`
 - Modify: `scripts/check-plugin-system-docs.mjs`
 
-- [ ] **Step 1: Add required phrases to docs check**
+- [x] **Step 1: Add required phrases to docs check**
 
 In `scripts/check-plugin-system-docs.mjs`, extend the `docs/plugins/architecture/audit.md` entry so its `phrases` array includes:
 
@@ -641,7 +641,7 @@ In `scripts/check-plugin-system-docs.mjs`, extend the `docs/plugins/architecture
 
 The entry should still include the existing phrases for `official.privacy-filter`, `declarativeRules`, `WASM`, `native`, `信任边界`, and `性能与稳定性建议`.
 
-- [ ] **Step 2: Run docs check and verify it fails**
+- [x] **Step 2: Run docs check and verify it fails**
 
 Run:
 
@@ -651,7 +651,7 @@ pnpm check:plugin-system-docs
 
 Expected before doc updates: failure pointing at the missing provider API phrases in `docs/plugins/architecture/audit.md`.
 
-- [ ] **Step 3: Update architecture audit**
+- [x] **Step 3: Update architecture audit**
 
 In `docs/plugins/architecture/audit.md`, extend the `0.62 Platform Kernel Decision` section with this paragraph:
 
@@ -659,7 +659,7 @@ In `docs/plugins/architecture/audit.md`, extend the `0.62 Platform Kernel Decisi
 0.62 does not add public provider plugin APIs. Provider adapter facades remain internal so gateway selection, failover, circuit breaking, limits, OAuth handling, and session binding stay owned by the Rust gateway core.
 ```
 
-- [ ] **Step 4: Confirm compatibility doc still has the public API boundary**
+- [x] **Step 4: Confirm compatibility doc still has the public API boundary**
 
 Ensure `docs/plugins/reference/compatibility.md` contains:
 
@@ -671,7 +671,7 @@ Plugin API v1 remains externally compatible in 0.62
 
 If any line is missing, add it to the 0.62 compatibility section.
 
-- [ ] **Step 5: Run docs check**
+- [x] **Step 5: Run docs check**
 
 Run:
 
@@ -681,7 +681,7 @@ pnpm check:plugin-system-docs
 
 Expected: command exits `0`.
 
-- [ ] **Step 6: Commit**
+- [x] **Step 6: Commit**
 
 Run:
 
@@ -829,3 +829,18 @@ Compatibility conclusions:
 - Plugin API v1 remains externally compatible for this plan scope.
 - Provider Plugin API remains closed; provider adapter facades are still internal.
 - Performance smoke did not show gateway hot path regression for the measured plugin pipeline budgets.
+
+### Completion Audit: 2026-06-22
+
+Requirement-by-requirement evidence:
+
+- **Document 0.62 goals and architecture:** covered by `docs/superpowers/specs/2026-06-21-aio-coding-hub-0-62-plugin-platform-kernel-design.md` and `docs/superpowers/specs/2026-06-22-aio-coding-hub-0-62-gateway-first-plugin-kernel-design.md`.
+- **Preserve Plugin API v1 external compatibility:** verified by the Task 7 diff review, `pnpm check:plugin-api-contract`, SDK tests, and the SDK hook-scoped permission dependency fix in `5a105c0a`.
+- **Contract layer drift detection:** covered by `0ef09198`, `5a105c0a`, `pnpm check:plugin-api-contract`, and `node scripts/check-plugin-api-contract.selftest.mjs`.
+- **Hook registry and descriptor alignment:** covered by `53068274`, `214d6163`, `03791477`, `84b5a354`, `cargo test plugin --lib`, and targeted gateway hook tests.
+- **Runtime ownership clarity:** covered by `3b8ed702`, runtime-focused plugin tests, and `cargo test plugin --lib`.
+- **Provider adapter remains internal:** covered by `773992b2`, `d7d54ed1`, `0431be89`, `cargo test provider --lib`, and `pnpm check:plugin-system-docs`.
+- **Frontend/backend boundary remains host-owned for plugin execution:** covered by the spec non-goals and the absence of public provider plugin API or WebView/JS runtime changes in the Task 7 diff review.
+- **Release verification gates:** covered by the 2026-06-22 verification run, `pnpm plugin:perf-smoke`, and the pushed branch pre-push checks.
+
+Final status for this plan: the 0.62 Gateway-first plugin kernel plan is implemented and verified on branch `codex/plugin-platform-kernel-0-62`. Future work should be tracked as new 0.62 follow-up specs or post-0.62 provider/plugin API RFCs rather than extending this completed plan.
