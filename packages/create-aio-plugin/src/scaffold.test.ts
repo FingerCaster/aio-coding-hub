@@ -293,7 +293,7 @@ describe("create-aio-plugin scaffold", () => {
     );
   });
 
-  it("validate strict rejects rules with missing target, matcher, or action", () => {
+  it("validate strict rejects rules with missing id, target, match, or action", () => {
     const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
     files["rules/main.json"] = `${JSON.stringify(
       {
@@ -304,11 +304,13 @@ describe("create-aio-plugin scaffold", () => {
             action: { kind: "replace", replacement: "[x]" },
           },
           {
+            id: "missing-match",
             hook: "gateway.request.afterBodyRead",
             target: { field: "request.body" },
             action: { kind: "replace", replacement: "[x]" },
           },
           {
+            id: "missing-action",
             hook: "gateway.request.afterBodyRead",
             target: { field: "request.body" },
             match: { regex: "SECRET" },
@@ -322,6 +324,12 @@ describe("create-aio-plugin scaffold", () => {
     const result = validatePluginFilesStrict(files);
 
     expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_RULE_ID_MISSING",
+        path: "rules/main.json#/rules/0/id",
+      })
+    );
     expect(result.diagnostics).toContainEqual(
       expect.objectContaining({
         code: "PLUGIN_RULE_TARGET_MISSING",
@@ -344,6 +352,29 @@ describe("create-aio-plugin scaffold", () => {
       expect.objectContaining({
         code: "PLUGIN_RULE_ACTION_MISSING",
         path: "rules/main.json#/rules/2/action",
+      })
+    );
+  });
+
+  it("validate strict rejects the legacy matcher alias because the host runtime requires match", () => {
+    const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
+    const document = JSON.parse(files["rules/main.json"] ?? "{}") as {
+      rules?: Array<Record<string, unknown>>;
+    };
+    const rule = document.rules?.[0];
+    if (rule) {
+      rule.matcher = rule.match;
+      delete rule.match;
+    }
+    files["rules/main.json"] = `${JSON.stringify(document, null, 2)}\n`;
+
+    const result = validatePluginFilesStrict(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_RULE_MATCHER_MISSING",
+        path: "rules/main.json#/rules/0/match",
       })
     );
   });
@@ -428,7 +459,7 @@ describe("create-aio-plugin scaffold", () => {
     );
   });
 
-  it("validate strict allows host-compatible write-only request hooks", () => {
+  it("validate strict rejects write-only request rules because matching needs body read access", () => {
     const files = rulePluginFilesWithRule({
       hook: "gateway.request.beforeSend",
       target: { field: "request.body" },
@@ -441,15 +472,16 @@ describe("create-aio-plugin scaffold", () => {
 
     const result = validatePluginFilesStrict(files);
 
-    expect(result.ok).toBe(true);
-    expect(result.diagnostics).not.toContainEqual(
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
       expect.objectContaining({
         code: "PLUGIN_RULE_PERMISSION_MISMATCH",
+        message: expect.stringContaining("request.body.read"),
       })
     );
   });
 
-  it("validate strict allows host-compatible write-only gateway error response hooks", () => {
+  it("validate strict rejects write-only gateway error response rules because matching needs body read access", () => {
     const files = rulePluginFilesWithRule({
       hook: "gateway.error",
       target: { field: "response.body" },
@@ -462,7 +494,69 @@ describe("create-aio-plugin scaffold", () => {
 
     const result = validatePluginFilesStrict(files);
 
-    expect(result.ok).toBe(true);
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_RULE_PERMISSION_MISMATCH",
+        message: expect.stringContaining("response.body.read"),
+      })
+    );
+  });
+
+  it("validate strict rejects request body targets on gateway error hooks", () => {
+    const files = rulePluginFilesWithRule({
+      hook: "gateway.error",
+      target: { field: "request.body" },
+    });
+
+    const result = validatePluginFilesStrict(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_RULE_TARGET_INCOMPATIBLE_WITH_HOOK",
+        path: "rules/main.json#/rules/0/target/field",
+        hint: "Use one of: response.body.",
+      })
+    );
+  });
+
+  it("validate strict skips permission mismatch noise when action is invalid", () => {
+    const files = rulePluginFilesWithRule({
+      hook: "gateway.request.afterBodyRead",
+      target: { field: "request.body" },
+    });
+    const manifest = JSON.parse(files["plugin.json"] ?? "{}") as {
+      permissions: string[];
+    };
+    manifest.permissions = [];
+    files["plugin.json"] = `${JSON.stringify(manifest, null, 2)}\n`;
+    files["rules/main.json"] = `${JSON.stringify(
+      {
+        rules: [
+          {
+            id: "invalid-action",
+            hook: "gateway.request.afterBodyRead",
+            target: { field: "request.body" },
+            match: { regex: "SECRET" },
+            action: { kind: "drop" },
+          },
+        ],
+      },
+      null,
+      2
+    )}\n`;
+
+    const result = validatePluginFilesStrict(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: "PLUGIN_RULE_ACTION_INVALID",
+        path: "rules/main.json#/rules/0/action/kind",
+      })
+    );
     expect(result.diagnostics).not.toContainEqual(
       expect.objectContaining({
         code: "PLUGIN_RULE_PERMISSION_MISMATCH",

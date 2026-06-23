@@ -380,7 +380,7 @@ const RULE_TARGET_FIELDS_BY_HOOK: Record<string, readonly string[]> = {
   "gateway.request.beforeSend": ["request.body"],
   "gateway.response.after": ["response.body"],
   "gateway.response.chunk": ["stream.chunk"],
-  "gateway.error": ["request.body", "response.body"],
+  "gateway.error": ["response.body"],
   "log.beforePersist": ["log.message"],
 };
 
@@ -452,6 +452,16 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
         return;
       }
 
+      if (typeof rule.id !== "string" || rule.id.length === 0) {
+        diagnostics.push({
+          severity: "error",
+          code: "PLUGIN_RULE_ID_MISSING",
+          message: "rule id is required",
+          path: `${rulePath}#/rules/${index}/id`,
+          hint: "Set id to a stable string so host diagnostics can identify this rule.",
+        });
+      }
+
       const hook = typeof rule.hook === "string" ? rule.hook : "";
       if (!hook) {
         diagnostics.push({
@@ -481,7 +491,7 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
           hint: "Set target.field to the hook-visible field the rule should inspect.",
         });
       }
-      const matcher = asRecord(rule.matcher) ?? asRecord(rule.match);
+      const matcher = asRecord(rule.match);
       if (!matcher) {
         diagnostics.push({
           severity: "error",
@@ -520,7 +530,8 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
         });
       }
       const actionKind = typeof action?.kind === "string" ? action.kind : "";
-      diagnostics.push(...ruleActionDiagnostics(action, actionKind, rulePath, index));
+      const actionDiagnostics = ruleActionDiagnostics(action, actionKind, rulePath, index);
+      diagnostics.push(...actionDiagnostics);
       const allowedFields = RULE_TARGET_FIELDS_BY_HOOK[hook] ?? [];
       let targetCompatible = true;
       if (hook && targetField && allowedFields.length > 0 && !allowedFields.includes(targetField)) {
@@ -534,9 +545,9 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
         });
       }
 
-      if (!targetCompatible || !targetField) return;
+      if (!targetCompatible || !targetField || !action || actionDiagnostics.length > 0) return;
 
-      for (const permission of permissionsForRuleTarget(hook, targetField, actionKind)) {
+      for (const permission of permissionsForRuleTarget(targetField, actionKind)) {
         if (!grantedPermissions.has(permission)) {
           diagnostics.push({
             severity: "error",
@@ -555,11 +566,10 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
   return diagnostics;
 }
 
-function permissionsForRuleTarget(hook: string, field: string, actionKind: string): string[] {
+function permissionsForRuleTarget(field: string, actionKind: string): string[] {
   const mutates = actionKind === "replace" || actionKind === "appendMessage";
   switch (field) {
     case "response.body":
-      if (mutates && hook === "gateway.error") return ["response.body.write"];
       return mutates ? ["response.body.read", "response.body.write"] : ["response.body.read"];
     case "stream.chunk":
       return mutates ? ["stream.inspect", "stream.modify"] : ["stream.inspect"];
@@ -567,7 +577,6 @@ function permissionsForRuleTarget(hook: string, field: string, actionKind: strin
       return ["log.redact"];
     case "request.body":
     default:
-      if (mutates && hook === "gateway.request.beforeSend") return ["request.body.write"];
       return mutates ? ["request.body.read", "request.body.write"] : ["request.body.read"];
   }
 }
