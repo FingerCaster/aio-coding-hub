@@ -3,6 +3,7 @@
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  Copy,
   Download,
   RotateCcw,
   Upload,
@@ -12,6 +13,7 @@ import {
   ShieldAlert,
   Trash2,
 } from "lucide-react";
+import { copyText } from "../services/clipboard";
 import { openDesktopSinglePath } from "../services/desktop/dialog";
 import type {
   JsonValue,
@@ -83,6 +85,13 @@ function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
   return null;
 }
 
+function detailValue(details: JsonValue, key: string) {
+  const value = jsonRecord(details)?.[key];
+  if (typeof value !== "string") return null;
+  const trimmed = value.trim();
+  return trimmed ? trimmed : null;
+}
+
 function isUnsigned(detail: PluginDetail) {
   return detail.audit_logs.some((log) => jsonRecord(log.details)?.unsigned === true);
 }
@@ -115,6 +124,112 @@ function detailRows(detail: PluginDetail) {
     ["宿主版本", detail.manifest.hostCompatibility.app],
     ["插件 API", detail.manifest.hostCompatibility.pluginApi],
   ];
+}
+
+function TraceIdButton({ traceId }: { traceId: string | null | undefined }) {
+  if (!traceId) return <span className="font-mono text-xs text-muted-foreground">-</span>;
+  const value = traceId;
+
+  async function handleCopy() {
+    try {
+      await copyText(value);
+      toast.success("Trace ID 已复制");
+    } catch (error) {
+      toast.error(formatActionFailureToast("复制 Trace ID", error).toast);
+    }
+  }
+
+  return (
+    <Button
+      size="sm"
+      variant="ghost"
+      className="h-auto min-h-0 px-1.5 py-0.5 font-mono text-xs"
+      onClick={handleCopy}
+      title="复制 Trace ID"
+    >
+      <Copy className="h-3 w-3" />
+      {value}
+    </Button>
+  );
+}
+
+function RuntimeObservabilitySection({ detail }: { detail: PluginDetail }) {
+  const failures = detail.runtime_failures.slice(0, 5);
+  const auditLogs = detail.audit_logs.slice(0, 8);
+  const empty = failures.length === 0 && auditLogs.length === 0;
+
+  return (
+    <Section title="运行观测">
+      {empty ? (
+        <div className="rounded-md border border-dashed border-border px-3 py-4 text-sm text-muted-foreground">
+          还没有记录到插件运行事件
+        </div>
+      ) : (
+        <div className="grid gap-2">
+          {failures.map((failure) => (
+            <div
+              key={`failure-${failure.id}`}
+              className="rounded-md border border-border px-3 py-2"
+            >
+              <div className="flex flex-wrap items-start justify-between gap-2 text-sm">
+                <span className="font-medium text-foreground">{failure.message}</span>
+                <span className="rounded-md bg-destructive/10 px-2 py-0.5 text-xs font-semibold text-destructive">
+                  {failure.failure_kind}
+                </span>
+              </div>
+              <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-2">
+                <div>
+                  <div>Hook</div>
+                  <div className="break-words font-mono text-foreground">
+                    {failure.hook_name ?? "-"}
+                  </div>
+                </div>
+                <div>
+                  <div>Trace ID</div>
+                  <TraceIdButton traceId={failure.trace_id} />
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {auditLogs.map((log) => {
+            const hookName = detailValue(log.details, "hookName");
+            const failureKind = detailValue(log.details, "failureKind");
+
+            return (
+              <div key={`audit-${log.id}`} className="rounded-md border border-border px-3 py-2">
+                <div className="flex flex-wrap items-start justify-between gap-2 text-sm">
+                  <span className="font-medium text-foreground">{log.message}</span>
+                  <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                    {log.risk_level}
+                  </span>
+                </div>
+                <div className="mt-1 break-words font-mono text-xs text-muted-foreground">
+                  {log.event_type}
+                </div>
+                <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-3">
+                  <div>
+                    <div>Hook</div>
+                    <div className="break-words font-mono text-foreground">{hookName ?? "-"}</div>
+                  </div>
+                  <div>
+                    <div>Failure</div>
+                    <div className="break-words font-mono text-foreground">
+                      {failureKind ?? "-"}
+                    </div>
+                  </div>
+                  <div>
+                    <div>Trace ID</div>
+                    <TraceIdButton traceId={log.trace_id} />
+                  </div>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+      )}
+    </Section>
+  );
 }
 
 function PluginListRow({
@@ -355,6 +470,8 @@ function PluginDetailPanel({
         />
       </Section>
 
+      <RuntimeObservabilitySection detail={detail} />
+
       <Section title="开发者信息">
         <div className="grid gap-2 text-sm sm:grid-cols-2">
           {detailRows(detail).map(([label, value]) => (
@@ -383,20 +500,6 @@ function PluginDetailPanel({
             </div>
           ))}
         </div>
-
-        {detail.audit_logs.length > 0 ? (
-          <div className="grid gap-2">
-            {detail.audit_logs.slice(0, 5).map((log) => (
-              <div key={log.id} className="rounded-md border border-border px-3 py-2 text-sm">
-                <div className="flex flex-wrap justify-between gap-2">
-                  <span className="font-medium">{log.message}</span>
-                  <span className="text-xs text-muted-foreground">{log.risk_level}</span>
-                </div>
-                <div className="mt-1 font-mono text-xs text-muted-foreground">{log.event_type}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
       </Section>
     </div>
   );

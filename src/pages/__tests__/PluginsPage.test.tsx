@@ -38,6 +38,8 @@ vi.mock("../../services/desktop/dialog", async () => {
   return { ...actual, openDesktopSinglePath: vi.fn() };
 });
 
+vi.mock("../../services/clipboard", () => ({ copyText: vi.fn().mockResolvedValue(undefined) }));
+
 vi.mock("../../query/plugins", async () => {
   const actual = await vi.importActual<typeof import("../../query/plugins")>("../../query/plugins");
   return {
@@ -194,6 +196,105 @@ describe("pages/PluginsPage", () => {
     expect(screen.getByText("设置")).toBeInTheDocument();
     expect(screen.getByText("开发者信息")).toBeInTheDocument();
     expect(screen.getByText("读取你发送给模型的内容")).toBeInTheDocument();
+  });
+
+  it("renders runtime failures in the runtime observability section", async () => {
+    const { copyText } = await import("../../services/clipboard");
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({
+        audit_logs: [],
+        runtime_failures: [
+          {
+            id: 11,
+            plugin_id: "community.prompt-helper",
+            hook_name: "gateway.request.afterBodyRead",
+            failure_kind: "timeout",
+            message: "Hook timed out after 30s",
+            trace_id: "trace-runtime-1",
+            created_at: 41,
+          },
+        ],
+      }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.getByText("运行观测")).toBeInTheDocument();
+    expect(screen.getByText("Hook timed out after 30s")).toBeInTheDocument();
+    expect(screen.getByText("timeout")).toBeInTheDocument();
+    expect(screen.getAllByText("gateway.request.afterBodyRead").length).toBeGreaterThan(0);
+
+    fireEvent.click(screen.getByRole("button", { name: /trace-runtime-1/ }));
+
+    await waitFor(() => {
+      expect(copyText).toHaveBeenCalledWith("trace-runtime-1");
+      expect(toast.success).toHaveBeenCalledWith("Trace ID 已复制");
+    });
+  });
+
+  it("renders audit logs with risk, event, trace, and detail fields", () => {
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({
+        runtime_failures: [],
+        audit_logs: [
+          {
+            id: 12,
+            plugin_id: "community.prompt-helper",
+            trace_id: "trace-audit-1",
+            event_type: "plugin.hook.failed",
+            risk_level: "high",
+            message: "Plugin hook failed closed",
+            details: { hookName: "gateway.response.beforeSend", failureKind: "exception" },
+            created_at: 42,
+          },
+        ],
+      }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.getByText("plugin.hook.failed")).toBeInTheDocument();
+    expect(screen.getByText("high")).toBeInTheDocument();
+    expect(screen.getByText("trace-audit-1")).toBeInTheDocument();
+    expect(screen.getByText("gateway.response.beforeSend")).toBeInTheDocument();
+    expect(screen.getByText("exception")).toBeInTheDocument();
+  });
+
+  it("shows an empty runtime observability state when no events were recorded", () => {
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginQuery).mockReturnValue({
+      data: detail({ audit_logs: [], runtime_failures: [] }),
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.getByText("还没有记录到插件运行事件")).toBeInTheDocument();
   });
 
   it("disables plugin actions while config save is pending", () => {
