@@ -411,12 +411,12 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
   );
 
   for (const rulePath of runtime.rules) {
-    const text = files[rulePath];
-    if (!text) continue;
+    if (!hasPluginFile(files, rulePath)) continue;
+    const text = files[rulePath] ?? "";
 
-    let document: { rules?: unknown[] };
+    let document: Record<string, unknown> | null;
     try {
-      document = JSON.parse(text) as { rules?: unknown[] };
+      document = asRecord(JSON.parse(text) as unknown);
     } catch (error) {
       diagnostics.push({
         severity: "error",
@@ -428,7 +428,7 @@ function strictRuleDiagnostics(files: ScaffoldFiles, manifest: PluginManifest): 
       continue;
     }
 
-    if (!Array.isArray(document.rules)) {
+    if (!document || !Array.isArray(document.rules)) {
       diagnostics.push({
         severity: "error",
         code: "PLUGIN_RULES_MISSING_ARRAY",

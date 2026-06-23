@@ -221,6 +221,38 @@ describe("create-aio-plugin scaffold", () => {
     );
   });
 
+  it("validate strict rejects empty declarative rule documents", () => {
+    const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
+    files["rules/main.json"] = "";
+
+    const result = validatePluginFilesStrict(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_RULE_FILE_INVALID_JSON",
+        path: "rules/main.json",
+      })
+    );
+  });
+
+  it("validate strict rejects non-object declarative rule documents", () => {
+    const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
+    files["rules/main.json"] = "null";
+
+    const result = validatePluginFilesStrict(files);
+
+    expect(result.ok).toBe(false);
+    expect(result.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_RULES_MISSING_ARRAY",
+        path: "rules/main.json#/rules",
+      })
+    );
+  });
+
   it("validate strict rejects rules whose hook is not declared by the manifest", () => {
     const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
     const manifest = JSON.parse(files["plugin.json"] ?? "{}") as {
