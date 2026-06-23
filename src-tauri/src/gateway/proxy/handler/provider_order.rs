@@ -107,6 +107,15 @@ mod tests {
     }
 
     #[test]
+    fn acceptance_bound_order_ignores_unknown_and_duplicate_provider_ids() {
+        let mut providers = vec![provider(1), provider(2), provider(3), provider(4)];
+
+        reorder_providers_by_bound_order(&mut providers, &[3, 99, 3, 1]);
+
+        assert_eq!(ids(&providers), vec![3, 1, 2, 4]);
+    }
+
+    #[test]
     fn apply_session_preference_rotates_from_bound_provider_when_present() {
         let mut providers = vec![provider(11), provider(22), provider(33)];
         let selected = apply_session_provider_preference(&mut providers, 22, Some(&[11, 22, 33]));

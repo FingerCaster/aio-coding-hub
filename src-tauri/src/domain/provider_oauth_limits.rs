@@ -607,4 +607,41 @@ INSERT INTO provider_oauth_limit_snapshots(
         assert_eq!(first_count, Some(4));
         assert_eq!(second_count, Some(1));
     }
+
+    #[test]
+    fn acceptance_oauth_exhausted_snapshot_is_scoped_to_provider() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db = db::init_for_tests(&dir.path().join("oauth-limits-scope.db")).expect("init db");
+        let now = now_unix_seconds();
+        let exhausted_provider_id = insert_test_provider_named(&db, "OAuth exhausted");
+        let healthy_provider_id = insert_test_provider_named(&db, "OAuth healthy");
+
+        save_exhausted_snapshot(&db, exhausted_provider_id, Some(now + 3_600))
+            .expect("save exhausted snapshot");
+        save_snapshot(
+            &db,
+            OAuthLimitSnapshotInput {
+                provider_id: healthy_provider_id,
+                limit_short_label: Some("5h"),
+                limit_5h_text: Some("25%"),
+                limit_weekly_text: Some("80%"),
+                limit_5h_reset_at: None,
+                limit_weekly_reset_at: None,
+                reset_credit_available_count: Some(3),
+            },
+        )
+        .expect("save healthy snapshot");
+
+        let conn = db.open_connection().expect("open");
+        assert_eq!(
+            gate_snapshot(&conn, exhausted_provider_id, now).expect("gate exhausted"),
+            OAuthLimitGate::Limited {
+                reset_at: Some(now + 3_600)
+            }
+        );
+        assert_eq!(
+            gate_snapshot(&conn, healthy_provider_id, now).expect("gate healthy"),
+            OAuthLimitGate::Allow
+        );
+    }
 }
