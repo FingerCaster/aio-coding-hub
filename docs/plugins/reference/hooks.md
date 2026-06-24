@@ -2,8 +2,8 @@
 
 Hooks 是网关和日志 pipeline 中稳定的扩展点。Plugin API v1 刻意保持 active surface 小而明确，让社区插件能清楚判断调用时机、权限边界和 mutation 行为。
 
-默认 vNext hook timeout: 150 ms.
-默认 vNext failure policy: `fail-open`.
+默认 v1 hook timeout: 150 ms.
+默认 v1 failure policy: `fail-open`.
 
 Reserved hooks 在宿主实现对应调用点前，会被 manifest validation 拒绝：
 

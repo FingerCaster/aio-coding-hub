@@ -413,6 +413,23 @@ if (contract) {
     contract.reservedPermissions,
     "reserved permission"
   );
+  for (const hook of contract.activeHooks ?? []) {
+    const entry = matrix?.[hook];
+    if (!entry) continue;
+    const timeoutToken = `${entry.timeoutMs} ms`;
+    const hookRow = manifestSpec
+      .split("\n")
+      .find((line) => line.includes(`| \`${hook}\``));
+    if (!hookRow) {
+      failures.push(`docs/plugin-manifest-v1.md is missing hook table row for ${hook}`);
+      continue;
+    }
+    if (!hookRow.includes(timeoutToken)) {
+      failures.push(
+        `docs/plugin-manifest-v1.md hook ${hook} row must include timeout ${timeoutToken}`
+      );
+    }
+  }
 
   const hooksDocPath = "docs/plugins/reference/hooks.md";
   const hooksDoc = readText(hooksDocPath);

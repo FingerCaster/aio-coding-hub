@@ -44,7 +44,7 @@ Plugin IDs 使用 `publisher.plugin-name` 格式。
 
 Versions 必须遵循 SemVer。Pre-release versions 可用于本地开发和 unsigned packages；marketplace stable releases 应使用 release versions。
 
-`apiVersion` 独立于 app version。宿主可以在同一 major API 内添加 backward-compatible fields。Breaking changes 需要新的 major API。
+`apiVersion` 独立于 app version。0.62.x 只支持 Plugin API major `1`，所以 manifest 的 `apiVersion` 必须是 `1.x.y`。宿主可以在同一 major API 内添加 backward-compatible fields。Breaking changes 需要新的 major API。
 
 ## 4. Runtime
 
@@ -102,12 +102,12 @@ Active hooks in plugin API v1 是当前已经接入 gateway 或 log pipeline 的
 
 | Hook | 触发时机 | 可修改内容 | 默认超时 | 默认失败策略 | 匹配权限 |
 | --- | --- | --- | --- | --- | --- |
-| `gateway.request.afterBodyRead` | Body reader 完成 allowed body buffering 后 | JSON body、raw body metadata | 200 ms | fail-open | `request.body.read`, `request.body.write` |
-| `gateway.request.beforeSend` | reqwest 发送 upstream request 前 | headers 和 body | 300 ms | fail-open 或 security fail-closed | `request.header.write`, `request.body.write` |
-| `gateway.response.chunk` | CLI output 前的 stream chunk | chunk pass、replace、block、warn | 20 ms | security fail-closed、non-security fail-open | `stream.inspect`, `stream.modify` |
-| `gateway.response.after` | 大小预算内的完整 non-stream response | body pass、replace、block、warn | 300 ms | security fail-closed、non-security fail-open | `response.body.read`, `response.body.write` |
-| `gateway.error` | 观察到 host 或 upstream error 后 | 不隐藏 host error | 100 ms | fail-open | `request.meta.read` |
-| `log.beforePersist` | Request 或 audit log 持久化前 | redacted log fields | 100 ms | fail-closed-to-host-redaction | `log.redact` |
+| `gateway.request.afterBodyRead` | Body reader 完成 allowed body buffering 后 | headers 和 request body | 150 ms | fail-open | `request.meta.read`, `request.header.read`, `request.header.readSensitive`, `request.body.read`, `request.header.write`, `request.body.write` |
+| `gateway.request.beforeSend` | provider resolution 后、reqwest 发送 upstream request 前 | headers 和 request body | 150 ms | fail-open | `request.meta.read`, `request.header.read`, `request.header.readSensitive`, `request.body.read`, `request.header.write`, `request.body.write` |
+| `gateway.response.chunk` | 每个 bounded streaming response chunk | stream chunk | 150 ms | fail-open | `stream.inspect`, `stream.modify` |
+| `gateway.response.after` | 大小预算内的完整 non-stream response | headers 和 response body | 150 ms | fail-open | `response.header.read`, `response.body.read`, `response.header.write`, `response.body.write` |
+| `gateway.error` | gateway error response materialization 后、发送前 | headers 和 error response body | 150 ms | fail-open | `response.header.read`, `response.body.read`, `response.header.write`, `response.body.write` |
+| `log.beforePersist` | Request 或 audit log 持久化前 | log message | 150 ms | fail-open | `log.redact` |
 
 Streaming hooks 接收 bounded chunks 和固定大小 sliding window，不会接收无限制完整响应。
 

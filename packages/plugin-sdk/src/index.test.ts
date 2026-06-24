@@ -160,6 +160,19 @@ describe("validateManifest", () => {
     });
   });
 
+  it("rejects future manifest apiVersion majors even when hostCompatibility supports v1", () => {
+    const result = validateManifest({
+      ...manifest,
+      apiVersion: "2.0.0",
+      hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
+    });
+
+    expect(result).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_INCOMPATIBLE_API" },
+    });
+  });
+
   it("rejects wasm ABI versions outside v1", () => {
     const result = validateManifest({
       ...manifest,

@@ -357,7 +357,7 @@ pub fn validate_manifest(
 ) -> Result<(), PluginValidationError> {
     validate_plugin_id(&manifest.id)?;
     validate_semver(&manifest.version, "PLUGIN_INVALID_VERSION")?;
-    validate_semver(&manifest.api_version, "PLUGIN_INVALID_API_VERSION")?;
+    validate_manifest_api_version(&manifest.api_version)?;
     validate_runtime(manifest)?;
     validate_hooks(&manifest.hooks)?;
     validate_permissions(&manifest.permissions)?;
@@ -422,6 +422,26 @@ fn validate_semver(version: &str, code: &str) -> Result<(), PluginValidationErro
     parse_semver(version)
         .map(|_| ())
         .ok_or_else(|| PluginValidationError::new(code, format!("invalid SemVer: {version}")))
+}
+
+fn validate_manifest_api_version(api_version: &str) -> Result<(), PluginValidationError> {
+    validate_semver(api_version, "PLUGIN_INVALID_API_VERSION")?;
+    let Some((major, _, _)) = parse_semver(api_version) else {
+        return Err(PluginValidationError::new(
+            "PLUGIN_INVALID_API_VERSION",
+            format!("invalid plugin apiVersion: {api_version}"),
+        ));
+    };
+    if major != SUPPORTED_PLUGIN_API_MAJOR {
+        return Err(PluginValidationError::new(
+            "PLUGIN_INCOMPATIBLE_API",
+            format!(
+                "plugin apiVersion {api_version} is not supported; supported major is {}",
+                SUPPORTED_PLUGIN_API_MAJOR
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_runtime(manifest: &PluginManifest) -> Result<(), PluginValidationError> {
@@ -847,6 +867,20 @@ mod tests {
         let manifest: PluginManifest = serde_json::from_value(raw).unwrap();
         let err = validate_manifest(&manifest, "0.56.0").unwrap_err();
         assert_eq!(err.code, "PLUGIN_INCOMPATIBLE_HOST");
+    }
+
+    #[test]
+    fn validate_manifest_rejects_future_api_version_major_even_when_compat_range_mentions_v1() {
+        let mut raw = valid_manifest();
+        raw["apiVersion"] = serde_json::json!("2.0.0");
+        raw["hostCompatibility"]["pluginApi"] = serde_json::json!("^1.0.0");
+        let manifest: PluginManifest = serde_json::from_value(raw).unwrap();
+
+        let err = validate_manifest(&manifest, "0.56.0").unwrap_err();
+
+        assert_eq!(err.code, "PLUGIN_INCOMPATIBLE_API");
+        assert!(err.message.contains("apiVersion"));
+        assert!(err.message.contains("2.0.0"));
     }
 
     #[test]

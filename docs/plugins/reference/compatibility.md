@@ -16,7 +16,7 @@ WASM 插件还需要声明 WASM ABI 版本：
 { "kind": "wasm", "abiVersion": "1.0.0" }
 ```
 
-宿主会拒绝不支持的主版本。未来插件 API 变更必须保持向后兼容；无法兼容时，需要提升主版本并让旧插件继续按旧契约运行或被明确标记为不兼容。
+宿主会拒绝不支持的主版本。0.62.x 只支持 Plugin API major `1`，因此 manifest 的 `apiVersion` 必须是 `1.x.y`，即使 `hostCompatibility.pluginApi` 声明支持 `^1.0.0` 也不能使用 `2.0.0`。未来插件 API 变更必须保持向后兼容；无法兼容时，需要提升主版本并让旧插件继续按旧契约运行或被明确标记为不兼容。
 
 ## 0.62 Internal Platform Kernel
 

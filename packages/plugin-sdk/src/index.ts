@@ -204,8 +204,17 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
   if (!/^[a-z0-9][a-z0-9-]*(\.[a-z0-9][a-z0-9-]*)+$/.test(manifest.id)) {
     return invalid("PLUGIN_INVALID_ID", "plugin id must look like publisher.plugin-name");
   }
-  if (!isSemver(manifest.version) || !isSemver(manifest.apiVersion)) {
-    return invalid("PLUGIN_INVALID_VERSION", "version and apiVersion must be SemVer");
+  if (!isSemver(manifest.version)) {
+    return invalid("PLUGIN_INVALID_VERSION", "version must be SemVer");
+  }
+  if (!isSemver(manifest.apiVersion)) {
+    return invalid("PLUGIN_INVALID_API_VERSION", "apiVersion must be SemVer");
+  }
+  if (semverMajor(manifest.apiVersion) !== 1) {
+    return invalid(
+      "PLUGIN_INCOMPATIBLE_API",
+      "apiVersion must use plugin API major version 1"
+    );
   }
   if (manifest.runtime.kind === "declarativeRules" && manifest.runtime.rules.length === 0) {
     return invalid("PLUGIN_INVALID_RUNTIME", "declarativeRules runtime requires rules");
