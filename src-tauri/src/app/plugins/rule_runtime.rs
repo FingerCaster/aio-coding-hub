@@ -19,6 +19,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const MAX_RULE_REGEX_PATTERN_BYTES: usize = 4 * 1024;
+pub(crate) const MAX_RULE_FILE_BYTES: usize = 256 * 1024;
 const MAX_RULE_REGEX_COMPILED_BYTES: usize = 2 * 1024 * 1024;
 const MAX_RULES_PER_RUNTIME: usize = 256;
 
@@ -371,7 +372,23 @@ fn load_rule_runtime(plugin: &PluginDetail) -> Result<RuleRuntime, RuleRuntimeEr
                 ),
             ));
         }
-        let bytes = fs::read(std::path::Path::new(root_dir).join(rule_path)).map_err(|err| {
+        let path = std::path::Path::new(root_dir).join(rule_path);
+        let metadata = fs::metadata(&path).map_err(|err| {
+            RuleRuntimeError::new(
+                "PLUGIN_RULE_READ_FAILED",
+                format!(
+                    "failed to read rule file metadata for plugin {}: {err}",
+                    plugin.summary.plugin_id
+                ),
+            )
+        })?;
+        if metadata.len() > MAX_RULE_FILE_BYTES as u64 {
+            return Err(RuleRuntimeError::new(
+                "PLUGIN_RULE_FILE_TOO_LARGE",
+                format!("rule file exceeds {MAX_RULE_FILE_BYTES} bytes: {rule_path}"),
+            ));
+        }
+        let bytes = fs::read(&path).map_err(|err| {
             RuleRuntimeError::new(
                 "PLUGIN_RULE_READ_FAILED",
                 format!(
@@ -998,6 +1015,10 @@ mod tests {
         }
     }
 
+    fn rule_plugin_detail(plugin_id: &str, installed_dir: String) -> PluginDetail {
+        rule_plugin(plugin_id, "1.0.0", installed_dir)
+    }
+
     fn rule_plugin_with_updated_at(
         plugin_id: &str,
         version: &str,
@@ -1032,6 +1053,23 @@ mod tests {
             .to_string(),
         )
         .expect("write rule file");
+    }
+
+    #[test]
+    fn rule_runtime_rejects_rule_files_over_byte_limit() {
+        let dir = tempfile::tempdir().expect("temp plugin dir");
+        let rules_dir = dir.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).expect("rules dir");
+        std::fs::write(
+            rules_dir.join("main.json"),
+            format!("{{\"rules\":[]}}{}", " ".repeat(MAX_RULE_FILE_BYTES + 1)),
+        )
+        .expect("rule file");
+
+        let plugin = rule_plugin_detail("example.rules", dir.path().to_string_lossy().to_string());
+        let err = load_rule_runtime(&plugin).expect_err("oversized rule file should be rejected");
+
+        assert_eq!(err.code(), "PLUGIN_RULE_FILE_TOO_LARGE");
     }
 
     #[test]

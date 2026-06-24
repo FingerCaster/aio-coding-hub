@@ -174,6 +174,10 @@ Capture groups 使用 Rust regex replacement syntax：
 - Hook execution 受 gateway plugin timeout 约束。
 - 当 target 无法解析为 JSON syntax 时，会跳过 invalid JSON targets。
 
+## Artifact Limits
+
+Declarative rule files are loaded under a host byte budget before JSON parsing and regex compilation. 0.62.3 limits each rule file to 256 KiB and rejects oversized rule files with `PLUGIN_RULE_FILE_TOO_LARGE`, then applies normal plugin failure and lifecycle handling. This keeps plugin package content from turning runtime load into an unbounded memory allocation.
+
 ## 本地 Replay 兼容性
 
 `create-aio-plugin replay` 为本地 fixtures 实现宿主支持的 v1.1 declarative rule subset。它刻意保持确定性，不执行 WASM、process plugins、network calls 或 host-only native engines。

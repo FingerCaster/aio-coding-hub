@@ -11,6 +11,8 @@ use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::sync::{Arc, Mutex};
 
+pub(crate) const MAX_PRIVACY_FILTER_RULE_FILE_BYTES: usize = 1024 * 1024;
+
 #[derive(Default)]
 pub(crate) struct OfficialPrivacyFilterRuntime {
     cache: Mutex<HashMap<String, Arc<PrivacyFilter>>>,
@@ -118,6 +120,17 @@ fn load_official_privacy_filter(
         ))
     })?;
     let rules_path = std::path::Path::new(root_dir).join("rules/gitleaks.toml");
+    let metadata = fs::metadata(&rules_path).map_err(|err| {
+        PrivacyFilterError::new(format!(
+            "failed to read privacy-filter gitleaks rules metadata for plugin {}: {err}",
+            plugin.summary.plugin_id
+        ))
+    })?;
+    if metadata.len() > MAX_PRIVACY_FILTER_RULE_FILE_BYTES as u64 {
+        return Err(PrivacyFilterError::new(format!(
+            "privacy filter rule file exceeds {MAX_PRIVACY_FILTER_RULE_FILE_BYTES} bytes"
+        )));
+    }
     let raw = fs::read_to_string(&rules_path).map_err(|err| {
         PrivacyFilterError::new(format!(
             "failed to read privacy-filter gitleaks rules for plugin {}: {err}",
@@ -631,6 +644,15 @@ mod tests {
         }
     }
 
+    fn official_privacy_filter_plugin_detail_with_dir(
+        installed_dir: String,
+        config: serde_json::Value,
+    ) -> PluginDetail {
+        let mut plugin = official_privacy_filter_detail(config);
+        plugin.installed_dir = Some(installed_dir);
+        plugin
+    }
+
     fn execute_official_privacy_filter_request(
         config: serde_json::Value,
         body: impl Into<String>,
@@ -653,6 +675,30 @@ mod tests {
             "redactBeforeUpstream": true,
             "redactLogs": true
         })
+    }
+
+    #[test]
+    fn official_privacy_filter_rejects_rule_file_over_byte_limit() {
+        let dir = tempfile::tempdir().expect("temp plugin dir");
+        let rules_dir = dir.path().join("rules");
+        std::fs::create_dir_all(&rules_dir).expect("rules dir");
+        std::fs::write(
+            rules_dir.join("gitleaks.toml"),
+            format!(
+                "title = \"rules\"\n{}",
+                " ".repeat(MAX_PRIVACY_FILTER_RULE_FILE_BYTES + 1)
+            ),
+        )
+        .expect("rules file");
+
+        let plugin = official_privacy_filter_plugin_detail_with_dir(
+            dir.path().to_string_lossy().to_string(),
+            serde_json::json!({ "redactLogs": true }),
+        );
+
+        let err = load_official_privacy_filter(&plugin).expect_err("oversized rules should fail");
+
+        assert!(err.to_string().contains("privacy filter rule file exceeds"));
     }
 
     #[test]

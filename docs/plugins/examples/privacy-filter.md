@@ -47,6 +47,8 @@ Provider request shapes：
 
 Gateway boundary note：Privacy Filter 会接收原始 client-to-gateway body，因为 gateway 必须先看到 prompt 才能脱敏。它的保护保证是：当插件启用并选中匹配策略和处理范围后，gateway-to-upstream provider request body 中的白名单字段和 persisted request logs 会被脱敏。日志脱敏由 `redactLogs` 和 `sensitiveTypes` 控制，不受 request `redactionScopes` 影响。如果你检查 hook 执行前的本地 client request，仍可能看到原始输入。
 
+Official privacy filter rules are loaded under a 1 MiB host byte budget. Community plugins cannot use `native:privacyFilter`; community redaction plugins should use `declarativeRules` until WASM is fully lifecycle-managed.
+
 重要限制：
 
 和 upstream 一样，Privacy Filter 是 irreversible redaction。它不会在 upstream processing 后把原始敏感值恢复到模型响应中。
