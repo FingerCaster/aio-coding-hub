@@ -267,10 +267,11 @@ async fn apply_log_before_persist_hook(
     };
     match plugin_pipeline.run_log_hook(input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 db,
                 &args.trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             if !apply_log_hook_message_to_args(args, output.message.as_str()) {
                 tracing::warn!(

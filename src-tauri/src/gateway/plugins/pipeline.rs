@@ -11,6 +11,7 @@ use super::permissions::{
 };
 use super::registry::HookRegistry;
 use crate::domain::plugins::{PluginDetail, PluginStatus};
+use crate::shared::time::now_unix_millis;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
@@ -126,6 +127,26 @@ pub(crate) struct GatewayPluginAuditEvent {
 }
 
 #[derive(Debug, Clone, PartialEq)]
+pub(crate) struct GatewayPluginHookExecutionReport {
+    pub(crate) plugin_id: String,
+    pub(crate) trace_id: String,
+    pub(crate) hook_name: String,
+    pub(crate) runtime_kind: String,
+    pub(crate) status: String,
+    pub(crate) started_at_ms: i64,
+    pub(crate) duration_ms: i64,
+    pub(crate) failure_kind: Option<String>,
+    pub(crate) error_code: Option<String>,
+    pub(crate) failure_policy: Option<String>,
+    pub(crate) circuit_state: Option<String>,
+    pub(crate) context_budget: serde_json::Value,
+    pub(crate) output_budget: serde_json::Value,
+    pub(crate) mutation_summary: serde_json::Value,
+    pub(crate) replayable: bool,
+    pub(crate) replay_export_reason: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GatewayBlockResponse {
     pub(crate) status: u16,
     pub(crate) reason: String,
@@ -137,6 +158,7 @@ pub(crate) struct GatewayRequestHookOutput {
     pub(crate) body: Bytes,
     pub(crate) blocked: Option<GatewayBlockResponse>,
     pub(crate) audit_events: Vec<GatewayPluginAuditEvent>,
+    pub(crate) execution_reports: Vec<GatewayPluginHookExecutionReport>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -145,6 +167,7 @@ pub(crate) struct GatewayResponseHookOutput {
     pub(crate) body: Bytes,
     pub(crate) blocked: Option<GatewayBlockResponse>,
     pub(crate) audit_events: Vec<GatewayPluginAuditEvent>,
+    pub(crate) execution_reports: Vec<GatewayPluginHookExecutionReport>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
@@ -152,12 +175,14 @@ pub(crate) struct GatewayStreamHookOutput {
     pub(crate) chunk: Bytes,
     pub(crate) blocked: Option<GatewayBlockResponse>,
     pub(crate) audit_events: Vec<GatewayPluginAuditEvent>,
+    pub(crate) execution_reports: Vec<GatewayPluginHookExecutionReport>,
 }
 
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct GatewayLogHookOutput {
     pub(crate) message: String,
     pub(crate) audit_events: Vec<GatewayPluginAuditEvent>,
+    pub(crate) execution_reports: Vec<GatewayPluginHookExecutionReport>,
 }
 
 #[derive(Clone, Default)]
@@ -225,6 +250,7 @@ impl GatewayPluginPipeline {
         let mut headers = input.headers.clone();
         let mut body = input.body.clone();
         let mut audit_events = Vec::new();
+        let mut execution_reports = Vec::new();
 
         let plugins = self.plugins_for_hook(input.hook_name);
         for plugin in plugins.iter() {
@@ -236,6 +262,21 @@ impl GatewayPluginPipeline {
                     "medium",
                     "Plugin hook skipped because its circuit is open",
                     serde_json::json!({ "reason": "circuit_open" }),
+                ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms: now_unix_millis(),
+                        duration_ms: 0,
+                        status: "circuitOpen",
+                        failure_kind: Some("circuit_open"),
+                        error_code: None,
+                        mutation_summary: serde_json::json!({ "changed": false }),
+                        replayable: false,
+                        replay_export_reason: Some("hook skipped because plugin circuit is open"),
+                    },
                 ));
                 continue;
             }
@@ -250,6 +291,8 @@ impl GatewayPluginPipeline {
                 self.config.context_budget,
             );
             let truncation = VisibleTruncationState::from_context(&visible);
+            let started_at_ms = now_unix_millis();
+            let started = Instant::now();
             let future = self.executor.execute_request_hook(plugin, visible);
             let result = match tokio::time::timeout(self.config.hook_timeout, future).await {
                 Ok(Ok(result)) => result,
@@ -263,8 +306,33 @@ impl GatewayPluginPipeline {
                         "Plugin hook failed",
                         serde_json::json!({ "error": err.to_string() }),
                     ));
-                    if failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed {
-                        return Err(err.with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        input.hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("hook_error"),
+                            error_code: Some(err.code_for_logging()),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            err,
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
@@ -284,12 +352,37 @@ impl GatewayPluginPipeline {
                         "Plugin hook timed out",
                         serde_json::json!({ "failureKind": "timeout" }),
                     ));
-                    if failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed {
-                        return Err(GatewayPluginError::new(
+                    let fail_closed =
+                        failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        input.hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("timeout"),
+                            error_code: Some("PLUGIN_HOOK_TIMEOUT"),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        let err = GatewayPluginError::new(
                             "PLUGIN_HOOK_TIMEOUT",
                             format!("plugin hook timed out: {}", plugin.summary.plugin_id),
-                        )
-                        .with_audit_events(audit_events));
+                        );
+                        return Err(attach_plugin_diagnostics(
+                            err,
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
@@ -311,19 +404,61 @@ impl GatewayPluginPipeline {
                     "Plugin hook returned unauthorized mutations",
                     serde_json::json!({ "error": err.to_string() }),
                 ));
-                if failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed {
-                    return Err(err.with_audit_events(audit_events));
+                let fail_closed =
+                    failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed;
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: budget_or_policy_status(err.code_for_logging()),
+                        failure_kind: Some(failure_kind_for_error_code(err.code_for_logging())),
+                        error_code: Some(err.code_for_logging()),
+                        mutation_summary: mutation_summary(&result),
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
+                if fail_closed {
+                    return Err(attach_plugin_diagnostics(
+                        err,
+                        audit_events,
+                        execution_reports,
+                    ));
                 }
                 continue;
             }
 
             self.record_success(&plugin.summary.plugin_id);
-            apply_header_patch(&mut headers, &result.headers)
-                .map_err(|err| err.with_audit_events(audit_events.clone()))?;
-            if let Some(next_body) = result.request_body {
-                body = Bytes::from(next_body);
+            if let Err(err) = apply_header_patch(&mut headers, &result.headers) {
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: "policyRejected",
+                        failure_kind: Some(failure_kind_for_error_code(err.code_for_logging())),
+                        error_code: Some(err.code_for_logging()),
+                        mutation_summary: mutation_summary(&result),
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
+                return Err(attach_plugin_diagnostics(
+                    err,
+                    audit_events,
+                    execution_reports,
+                ));
+            }
+            if let Some(next_body) = result.request_body.as_ref() {
+                body = Bytes::from(next_body.clone());
             }
             if result.action == GatewayHookAction::Block {
+                let mutation_summary = mutation_summary(&result);
                 let reason = result
                     .reason
                     .unwrap_or_else(|| "Plugin blocked gateway request".to_string());
@@ -335,6 +470,21 @@ impl GatewayPluginPipeline {
                     "Plugin blocked gateway request",
                     serde_json::json!({ "reason": reason }),
                 ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: "blocked",
+                        failure_kind: None,
+                        error_code: None,
+                        mutation_summary,
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
                 return Ok(GatewayRequestHookOutput {
                     headers,
                     body,
@@ -343,8 +493,24 @@ impl GatewayPluginPipeline {
                         reason,
                     }),
                     audit_events,
+                    execution_reports,
                 });
             }
+            execution_reports.push(self.hook_execution_report(
+                plugin,
+                input.hook_name,
+                input.trace_id.as_str(),
+                HookReportOutcome {
+                    started_at_ms,
+                    duration_ms: duration_ms_i64(started),
+                    status: "completed",
+                    failure_kind: None,
+                    error_code: None,
+                    mutation_summary: mutation_summary(&result),
+                    replayable: true,
+                    replay_export_reason: None,
+                },
+            ));
             audit_events.push(audit_event(
                 plugin,
                 input.hook_name,
@@ -360,6 +526,7 @@ impl GatewayPluginPipeline {
             body,
             blocked: None,
             audit_events,
+            execution_reports,
         })
     }
 
@@ -370,6 +537,7 @@ impl GatewayPluginPipeline {
         let mut headers = input.headers.clone();
         let mut body = input.body.clone();
         let mut audit_events = Vec::new();
+        let mut execution_reports = Vec::new();
 
         let plugins = self.plugins_for_hook(input.hook_name);
         for plugin in plugins.iter() {
@@ -381,6 +549,21 @@ impl GatewayPluginPipeline {
                     "medium",
                     "Plugin hook skipped because its circuit is open",
                     serde_json::json!({ "reason": "circuit_open" }),
+                ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms: now_unix_millis(),
+                        duration_ms: 0,
+                        status: "circuitOpen",
+                        failure_kind: Some("circuit_open"),
+                        error_code: None,
+                        mutation_summary: serde_json::json!({ "changed": false }),
+                        replayable: false,
+                        replay_export_reason: Some("hook skipped because plugin circuit is open"),
+                    },
                 ));
                 continue;
             }
@@ -395,6 +578,8 @@ impl GatewayPluginPipeline {
                 self.config.context_budget,
             );
             let truncation = VisibleTruncationState::from_context(&visible);
+            let started_at_ms = now_unix_millis();
+            let started = Instant::now();
             let result = match tokio::time::timeout(
                 self.config.hook_timeout,
                 self.executor.execute_response_hook(plugin, visible),
@@ -405,17 +590,66 @@ impl GatewayPluginPipeline {
                 Ok(Err(err)) => {
                     self.record_failure(&plugin.summary.plugin_id);
                     audit_events.push(failed_event(plugin, input.hook_name, &err.to_string()));
-                    if failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed {
-                        return Err(err.with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        input.hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("hook_error"),
+                            error_code: Some(err.code_for_logging()),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            err,
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
                 Err(_) => {
                     self.record_failure(&plugin.summary.plugin_id);
                     audit_events.push(timeout_event(plugin, input.hook_name));
-                    if failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed {
-                        return Err(timeout_error(&plugin.summary.plugin_id)
-                            .with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        input.hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("timeout"),
+                            error_code: Some("PLUGIN_HOOK_TIMEOUT"),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            timeout_error(&plugin.summary.plugin_id),
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
@@ -430,19 +664,61 @@ impl GatewayPluginPipeline {
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, input.hook_name, &err.to_string()));
-                if failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed {
-                    return Err(err.with_audit_events(audit_events));
+                let fail_closed =
+                    failure_policy(plugin, input.hook_name) == FailurePolicy::FailClosed;
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: budget_or_policy_status(err.code_for_logging()),
+                        failure_kind: Some(failure_kind_for_error_code(err.code_for_logging())),
+                        error_code: Some(err.code_for_logging()),
+                        mutation_summary: mutation_summary(&result),
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
+                if fail_closed {
+                    return Err(attach_plugin_diagnostics(
+                        err,
+                        audit_events,
+                        execution_reports,
+                    ));
                 }
                 continue;
             }
 
             self.record_success(&plugin.summary.plugin_id);
-            apply_header_patch(&mut headers, &result.headers)
-                .map_err(|err| err.with_audit_events(audit_events.clone()))?;
-            if let Some(next_body) = result.response_body {
-                body = Bytes::from(next_body);
+            if let Err(err) = apply_header_patch(&mut headers, &result.headers) {
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: "policyRejected",
+                        failure_kind: Some(failure_kind_for_error_code(err.code_for_logging())),
+                        error_code: Some(err.code_for_logging()),
+                        mutation_summary: mutation_summary(&result),
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
+                return Err(attach_plugin_diagnostics(
+                    err,
+                    audit_events,
+                    execution_reports,
+                ));
+            }
+            if let Some(next_body) = result.response_body.as_ref() {
+                body = Bytes::from(next_body.clone());
             }
             if result.action == GatewayHookAction::Block {
+                let mutation_summary = mutation_summary(&result);
                 let reason = result
                     .reason
                     .unwrap_or_else(|| "Plugin blocked gateway response".to_string());
@@ -454,6 +730,21 @@ impl GatewayPluginPipeline {
                     "Plugin blocked gateway response",
                     serde_json::json!({ "reason": reason }),
                 ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    input.hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: "blocked",
+                        failure_kind: None,
+                        error_code: None,
+                        mutation_summary,
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
                 return Ok(GatewayResponseHookOutput {
                     headers,
                     body,
@@ -462,8 +753,24 @@ impl GatewayPluginPipeline {
                         reason,
                     }),
                     audit_events,
+                    execution_reports,
                 });
             }
+            execution_reports.push(self.hook_execution_report(
+                plugin,
+                input.hook_name,
+                input.trace_id.as_str(),
+                HookReportOutcome {
+                    started_at_ms,
+                    duration_ms: duration_ms_i64(started),
+                    status: "completed",
+                    failure_kind: None,
+                    error_code: None,
+                    mutation_summary: mutation_summary(&result),
+                    replayable: true,
+                    replay_export_reason: None,
+                },
+            ));
             audit_events.push(completed_event(plugin, input.hook_name));
         }
 
@@ -472,6 +779,7 @@ impl GatewayPluginPipeline {
             body,
             blocked: None,
             audit_events,
+            execution_reports,
         })
     }
 
@@ -482,6 +790,7 @@ impl GatewayPluginPipeline {
         let hook_name = GatewayPluginHookName::ResponseChunk;
         let mut chunk = input.chunk.clone();
         let mut audit_events = Vec::new();
+        let mut execution_reports = Vec::new();
 
         let plugins = self.plugins_for_hook(hook_name);
         for plugin in plugins.iter() {
@@ -493,6 +802,21 @@ impl GatewayPluginPipeline {
                     "medium",
                     "Plugin hook skipped because its circuit is open",
                     serde_json::json!({ "reason": "circuit_open" }),
+                ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms: now_unix_millis(),
+                        duration_ms: 0,
+                        status: "circuitOpen",
+                        failure_kind: Some("circuit_open"),
+                        error_code: None,
+                        mutation_summary: serde_json::json!({ "changed": false }),
+                        replayable: false,
+                        replay_export_reason: Some("hook skipped because plugin circuit is open"),
+                    },
                 ));
                 continue;
             }
@@ -506,6 +830,8 @@ impl GatewayPluginPipeline {
                 self.config.context_budget,
             );
             let truncation = VisibleTruncationState::from_context(&visible);
+            let started_at_ms = now_unix_millis();
+            let started = Instant::now();
             let result = match tokio::time::timeout(
                 self.config.hook_timeout,
                 self.executor.execute_stream_hook(plugin, visible),
@@ -516,17 +842,66 @@ impl GatewayPluginPipeline {
                 Ok(Err(err)) => {
                     self.record_failure(&plugin.summary.plugin_id);
                     audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
-                    if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
-                        return Err(err.with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("hook_error"),
+                            error_code: Some(err.code_for_logging()),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            err,
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
                 Err(_) => {
                     self.record_failure(&plugin.summary.plugin_id);
                     audit_events.push(timeout_event(plugin, hook_name));
-                    if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
-                        return Err(timeout_error(&plugin.summary.plugin_id)
-                            .with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("timeout"),
+                            error_code: Some("PLUGIN_HOOK_TIMEOUT"),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            timeout_error(&plugin.summary.plugin_id),
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
@@ -541,17 +916,38 @@ impl GatewayPluginPipeline {
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
-                if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
-                    return Err(err.with_audit_events(audit_events));
+                let fail_closed = failure_policy(plugin, hook_name) == FailurePolicy::FailClosed;
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: budget_or_policy_status(err.code_for_logging()),
+                        failure_kind: Some(failure_kind_for_error_code(err.code_for_logging())),
+                        error_code: Some(err.code_for_logging()),
+                        mutation_summary: mutation_summary(&result),
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
+                if fail_closed {
+                    return Err(attach_plugin_diagnostics(
+                        err,
+                        audit_events,
+                        execution_reports,
+                    ));
                 }
                 continue;
             }
 
             self.record_success(&plugin.summary.plugin_id);
-            if let Some(next_chunk) = result.stream_chunk {
-                chunk = Bytes::from(next_chunk);
+            if let Some(next_chunk) = result.stream_chunk.as_ref() {
+                chunk = Bytes::from(next_chunk.clone());
             }
             if result.action == GatewayHookAction::Block {
+                let mutation_summary = mutation_summary(&result);
                 let reason = result
                     .reason
                     .unwrap_or_else(|| "Plugin blocked gateway stream".to_string());
@@ -563,6 +959,21 @@ impl GatewayPluginPipeline {
                     "Plugin blocked gateway stream",
                     serde_json::json!({ "reason": reason }),
                 ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: "blocked",
+                        failure_kind: None,
+                        error_code: None,
+                        mutation_summary,
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
                 return Ok(GatewayStreamHookOutput {
                     chunk,
                     blocked: Some(GatewayBlockResponse {
@@ -570,14 +981,31 @@ impl GatewayPluginPipeline {
                         reason,
                     }),
                     audit_events,
+                    execution_reports,
                 });
             }
+            execution_reports.push(self.hook_execution_report(
+                plugin,
+                hook_name,
+                input.trace_id.as_str(),
+                HookReportOutcome {
+                    started_at_ms,
+                    duration_ms: duration_ms_i64(started),
+                    status: "completed",
+                    failure_kind: None,
+                    error_code: None,
+                    mutation_summary: mutation_summary(&result),
+                    replayable: true,
+                    replay_export_reason: None,
+                },
+            ));
         }
 
         Ok(GatewayStreamHookOutput {
             chunk,
             blocked: None,
             audit_events,
+            execution_reports,
         })
     }
 
@@ -588,6 +1016,7 @@ impl GatewayPluginPipeline {
         let hook_name = GatewayPluginHookName::LogBeforePersist;
         let mut message = input.message.clone();
         let mut audit_events = Vec::new();
+        let mut execution_reports = Vec::new();
 
         let plugins = self.plugins_for_hook(hook_name);
         for plugin in plugins.iter() {
@@ -599,6 +1028,21 @@ impl GatewayPluginPipeline {
                     "medium",
                     "Plugin hook skipped because its circuit is open",
                     serde_json::json!({ "reason": "circuit_open" }),
+                ));
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms: now_unix_millis(),
+                        duration_ms: 0,
+                        status: "circuitOpen",
+                        failure_kind: Some("circuit_open"),
+                        error_code: None,
+                        mutation_summary: serde_json::json!({ "changed": false }),
+                        replayable: false,
+                        replay_export_reason: Some("hook skipped because plugin circuit is open"),
+                    },
                 ));
                 continue;
             }
@@ -612,6 +1056,8 @@ impl GatewayPluginPipeline {
                 self.config.context_budget,
             );
             let truncation = VisibleTruncationState::from_context(&visible);
+            let started_at_ms = now_unix_millis();
+            let started = Instant::now();
             let result = match tokio::time::timeout(
                 self.config.hook_timeout,
                 self.executor.execute_log_hook(plugin, visible),
@@ -622,17 +1068,66 @@ impl GatewayPluginPipeline {
                 Ok(Err(err)) => {
                     self.record_failure(&plugin.summary.plugin_id);
                     audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
-                    if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
-                        return Err(err.with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("hook_error"),
+                            error_code: Some(err.code_for_logging()),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            err,
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
                 Err(_) => {
                     self.record_failure(&plugin.summary.plugin_id);
                     audit_events.push(timeout_event(plugin, hook_name));
-                    if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
-                        return Err(timeout_error(&plugin.summary.plugin_id)
-                            .with_audit_events(audit_events));
+                    let fail_closed =
+                        failure_policy(plugin, hook_name) == FailurePolicy::FailClosed;
+                    execution_reports.push(self.hook_execution_report(
+                        plugin,
+                        hook_name,
+                        input.trace_id.as_str(),
+                        HookReportOutcome {
+                            started_at_ms,
+                            duration_ms: duration_ms_i64(started),
+                            status: if fail_closed {
+                                "failedClosed"
+                            } else {
+                                "failedOpen"
+                            },
+                            failure_kind: Some("timeout"),
+                            error_code: Some("PLUGIN_HOOK_TIMEOUT"),
+                            mutation_summary: serde_json::json!({ "changed": false }),
+                            replayable: true,
+                            replay_export_reason: None,
+                        },
+                    ));
+                    if fail_closed {
+                        return Err(attach_plugin_diagnostics(
+                            timeout_error(&plugin.summary.plugin_id),
+                            audit_events,
+                            execution_reports,
+                        ));
                     }
                     continue;
                 }
@@ -647,22 +1142,58 @@ impl GatewayPluginPipeline {
             ) {
                 self.record_failure(&plugin.summary.plugin_id);
                 audit_events.push(failed_event(plugin, hook_name, &err.to_string()));
-                if failure_policy(plugin, hook_name) == FailurePolicy::FailClosed {
-                    return Err(err.with_audit_events(audit_events));
+                let fail_closed = failure_policy(plugin, hook_name) == FailurePolicy::FailClosed;
+                execution_reports.push(self.hook_execution_report(
+                    plugin,
+                    hook_name,
+                    input.trace_id.as_str(),
+                    HookReportOutcome {
+                        started_at_ms,
+                        duration_ms: duration_ms_i64(started),
+                        status: budget_or_policy_status(err.code_for_logging()),
+                        failure_kind: Some(failure_kind_for_error_code(err.code_for_logging())),
+                        error_code: Some(err.code_for_logging()),
+                        mutation_summary: mutation_summary(&result),
+                        replayable: true,
+                        replay_export_reason: None,
+                    },
+                ));
+                if fail_closed {
+                    return Err(attach_plugin_diagnostics(
+                        err,
+                        audit_events,
+                        execution_reports,
+                    ));
                 }
                 continue;
             }
 
             self.record_success(&plugin.summary.plugin_id);
-            if let Some(next_message) = result.log_message {
-                message = next_message;
+            if let Some(next_message) = result.log_message.as_ref() {
+                message = next_message.clone();
             }
+            execution_reports.push(self.hook_execution_report(
+                plugin,
+                hook_name,
+                input.trace_id.as_str(),
+                HookReportOutcome {
+                    started_at_ms,
+                    duration_ms: duration_ms_i64(started),
+                    status: "completed",
+                    failure_kind: None,
+                    error_code: None,
+                    mutation_summary: mutation_summary(&result),
+                    replayable: true,
+                    replay_export_reason: None,
+                },
+            ));
             audit_events.push(completed_event(plugin, hook_name));
         }
 
         Ok(GatewayLogHookOutput {
             message,
             audit_events,
+            execution_reports,
         })
     }
 
@@ -777,12 +1308,71 @@ impl GatewayPluginPipeline {
             GatewayPluginCircuitSnapshot::default(),
         );
     }
+
+    fn hook_execution_report(
+        &self,
+        plugin: &PluginDetail,
+        hook_name: GatewayPluginHookName,
+        trace_id: &str,
+        outcome: HookReportOutcome,
+    ) -> GatewayPluginHookExecutionReport {
+        GatewayPluginHookExecutionReport {
+            plugin_id: plugin.summary.plugin_id.clone(),
+            trace_id: trace_id.to_string(),
+            hook_name: hook_name.as_str().to_string(),
+            runtime_kind: runtime_kind(plugin),
+            status: outcome.status.to_string(),
+            started_at_ms: outcome.started_at_ms,
+            duration_ms: outcome.duration_ms,
+            failure_kind: outcome.failure_kind.map(str::to_string),
+            error_code: outcome.error_code.map(str::to_string),
+            failure_policy: Some(failure_policy(plugin, hook_name).as_str().to_string()),
+            circuit_state: Some(self.circuit_state_for_report(&plugin.summary.plugin_id)),
+            context_budget: context_budget_summary(self.config.context_budget),
+            output_budget: mutation_budget_summary(self.config.mutation_budget),
+            mutation_summary: outcome.mutation_summary,
+            replayable: outcome.replayable,
+            replay_export_reason: outcome.replay_export_reason.map(str::to_string),
+        }
+    }
+
+    fn circuit_state_for_report(&self, plugin_id: &str) -> String {
+        let circuits = self
+            .circuits
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match circuits.get(plugin_id) {
+            Some(snapshot) if snapshot.open && snapshot.half_open => "halfOpen".to_string(),
+            Some(snapshot) if snapshot.open => "open".to_string(),
+            _ => "closed".to_string(),
+        }
+    }
+}
+
+struct HookReportOutcome {
+    started_at_ms: i64,
+    duration_ms: i64,
+    status: &'static str,
+    failure_kind: Option<&'static str>,
+    error_code: Option<&'static str>,
+    mutation_summary: serde_json::Value,
+    replayable: bool,
+    replay_export_reason: Option<&'static str>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum FailurePolicy {
     FailOpen,
     FailClosed,
+}
+
+impl FailurePolicy {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::FailOpen => "fail-open",
+            Self::FailClosed => "fail-closed",
+        }
+    }
 }
 
 fn enforce_hook_result_with_budget(
@@ -808,6 +1398,15 @@ fn enforce_hook_result_with_budget(
         .iter()
         .all(|permission| descriptor.allows_read_permission(permission)));
     enforce_descriptor_permissions_with_budget(descriptor, permissions, result, budget)
+}
+
+fn attach_plugin_diagnostics(
+    err: GatewayPluginError,
+    audit_events: Vec<GatewayPluginAuditEvent>,
+    execution_reports: Vec<GatewayPluginHookExecutionReport>,
+) -> GatewayPluginError {
+    err.with_audit_events(audit_events)
+        .with_execution_reports(execution_reports)
 }
 
 fn enforce_untruncated_context_mutations(
@@ -877,6 +1476,94 @@ fn plugin_hook(
         .hooks
         .iter()
         .find(|hook| hook.name == hook_name.as_str())
+}
+
+fn runtime_kind(plugin: &PluginDetail) -> String {
+    match &plugin.manifest.runtime {
+        crate::domain::plugins::PluginRuntime::DeclarativeRules { .. } => {
+            "declarativeRules".to_string()
+        }
+        crate::domain::plugins::PluginRuntime::Native { engine } => format!("native:{engine}"),
+        crate::domain::plugins::PluginRuntime::Wasm { .. } => "wasm".to_string(),
+    }
+}
+
+fn duration_ms_i64(started: Instant) -> i64 {
+    started.elapsed().as_millis().min(i64::MAX as u128) as i64
+}
+
+fn budget_or_policy_status(error_code: &str) -> &'static str {
+    match error_code {
+        "PLUGIN_OUTPUT_TOO_LARGE" | "PLUGIN_CONTEXT_TRUNCATED" => "budgetRejected",
+        "PLUGIN_PERMISSION_DENIED" | "PLUGIN_RESERVED_HEADER" | "PLUGIN_UNKNOWN_HOOK" => {
+            "policyRejected"
+        }
+        _ => "failedOpen",
+    }
+}
+
+fn failure_kind_for_error_code(error_code: &str) -> &'static str {
+    match error_code {
+        "PLUGIN_OUTPUT_TOO_LARGE" => "output_budget",
+        "PLUGIN_CONTEXT_TRUNCATED" => "context_budget",
+        "PLUGIN_PERMISSION_DENIED" => "permission_denied",
+        "PLUGIN_RESERVED_HEADER" => "reserved_header",
+        "PLUGIN_UNKNOWN_HOOK" => "unknown_hook",
+        _ => "hook_error",
+    }
+}
+
+fn context_budget_summary(budget: GatewayPluginContextBudget) -> serde_json::Value {
+    serde_json::json!({
+        "bodyBytes": budget.body_bytes,
+        "streamBytes": budget.stream_bytes,
+        "logBytes": budget.log_bytes,
+        "normalizedMessages": budget.normalized_messages,
+        "normalizedMessageTextBytes": budget.normalized_message_text_bytes,
+    })
+}
+
+fn mutation_budget_summary(budget: GatewayPluginMutationBudget) -> serde_json::Value {
+    serde_json::json!({
+        "bodyBytes": budget.body_bytes,
+        "streamBytes": budget.stream_bytes,
+        "logBytes": budget.log_bytes,
+        "headerCount": budget.header_count,
+        "headerValueBytes": budget.header_value_bytes,
+    })
+}
+
+fn mutation_summary(result: &GatewayHookResult) -> serde_json::Value {
+    let fields = [
+        (
+            "requestBody",
+            result.request_body.as_ref().map(|value| value.len()),
+        ),
+        (
+            "responseBody",
+            result.response_body.as_ref().map(|value| value.len()),
+        ),
+        (
+            "streamChunk",
+            result.stream_chunk.as_ref().map(|value| value.len()),
+        ),
+        (
+            "logMessage",
+            result.log_message.as_ref().map(|value| value.len()),
+        ),
+    ]
+    .into_iter()
+    .filter_map(|(field, bytes)| {
+        bytes.map(|bytes| serde_json::json!({ "field": field, "bytes": bytes }))
+    })
+    .collect::<Vec<_>>();
+
+    serde_json::json!({
+        "changed": !fields.is_empty() || !result.headers.is_empty() || result.action == GatewayHookAction::Block,
+        "fields": fields,
+        "headersChanged": result.headers.len(),
+        "blocked": result.action == GatewayHookAction::Block,
+    })
 }
 
 fn build_plugin_snapshot(plugins: Vec<PluginDetail>) -> GatewayPluginSnapshot {
@@ -2051,6 +2738,55 @@ mod tests {
             !(event.hook_name == "gateway.response.chunk"
                 && event.event_type == "plugin.hook.completed")
         }));
+        assert!(output.execution_reports.iter().any(|report| {
+            report.plugin_id == "plugin.stream"
+                && report.hook_name == "gateway.response.chunk"
+                && report.status == "completed"
+                && report.mutation_summary["changed"] == serde_json::json!(true)
+        }));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_plugin_pipeline_records_runtime_report_for_fail_closed_timeout() {
+        let executor = InMemoryGatewayPluginExecutor::new().with_request_async_handler(
+            "plugin.slow",
+            |_ctx| async {
+                tokio::time::sleep(Duration::from_millis(50)).await;
+                GatewayHookResult::continue_unchanged()
+            },
+        );
+        let mut plugin = plugin("plugin.slow", 10, vec!["request.body.read"]);
+        plugin.manifest.hooks[0].failure_policy = Some("fail-closed".to_string());
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig {
+                hook_timeout: Duration::from_millis(1),
+                circuit_failure_threshold: 1,
+                circuit_cooldown: Duration::from_secs(60),
+                ..GatewayPluginPipelineConfig::default()
+            },
+        );
+
+        let err = pipeline
+            .run_request_hook(request_input())
+            .await
+            .expect_err("fail-closed timeout should fail the request");
+
+        assert_eq!(err.code(), "PLUGIN_HOOK_TIMEOUT");
+        assert!(err.audit_events().iter().any(|event| {
+            event.event_type == "plugin.hook.failed"
+                && event.details.get("failureKind") == Some(&serde_json::json!("timeout"))
+        }));
+        let reports = err.execution_reports();
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].plugin_id, "plugin.slow");
+        assert_eq!(reports[0].status, "failedClosed");
+        assert_eq!(reports[0].failure_kind.as_deref(), Some("timeout"));
+        assert_eq!(
+            reports[0].error_code.as_deref(),
+            Some("PLUGIN_HOOK_TIMEOUT")
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]

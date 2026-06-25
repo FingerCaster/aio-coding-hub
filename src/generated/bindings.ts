@@ -1577,6 +1577,16 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async pluginListRuntimeReports(
+    input: PluginListRuntimeReportsInput
+  ): Promise<Result<PluginHookExecutionReport[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_list_runtime_reports", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async requestLogsList(
     cliKey: string,
     limit: number | null
@@ -2731,6 +2741,26 @@ export type PluginDetail = {
 export type PluginGetInput = { pluginId: string };
 export type PluginGrantPermissionsInput = { pluginId: string; permissions: string[] };
 export type PluginHook = { name: string; priority?: number; failurePolicy?: string | null };
+export type PluginHookExecutionReport = {
+  id: number;
+  plugin_id: string;
+  trace_id: string | null;
+  hook_name: string;
+  runtime_kind: string;
+  status: string;
+  started_at_ms: number;
+  duration_ms: number;
+  failure_kind: string | null;
+  error_code: string | null;
+  failure_policy: string | null;
+  circuit_state: string | null;
+  context_budget: JsonValue;
+  output_budget: JsonValue;
+  mutation_summary: JsonValue;
+  replayable: boolean;
+  replay_export_reason: string | null;
+  created_at: number;
+};
 export type PluginHookLifecycleSummary = {
   name: string;
   priority: number;
@@ -2776,6 +2806,12 @@ export type PluginLifecycleChange = {
 };
 export type PluginLifecycleNotice = { severity: string; code: string; message: string };
 export type PluginListAuditLogsInput = { pluginId: string | null; limit: number | null };
+export type PluginListRuntimeReportsInput = {
+  pluginId: string | null;
+  hookName: string | null;
+  traceId: string | null;
+  limit: number | null;
+};
 export type PluginManifest = {
   id: string;
   name: string;

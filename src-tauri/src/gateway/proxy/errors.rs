@@ -175,10 +175,11 @@ pub(super) async fn apply_gateway_error_hook(
 
     let output = match pipeline.run_response_hook(input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 db,
                 &trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             output
         }

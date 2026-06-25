@@ -1105,6 +1105,34 @@ CREATE TABLE IF NOT EXISTS plugin_runtime_failures (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_runtime_failures_plugin_created_at
   ON plugin_runtime_failures(plugin_id, created_at);
+
+CREATE TABLE IF NOT EXISTS plugin_hook_execution_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_id TEXT NOT NULL,
+  trace_id TEXT,
+  hook_name TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at_ms INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  failure_kind TEXT,
+  error_code TEXT,
+  failure_policy TEXT,
+  circuit_state TEXT,
+  context_budget_json TEXT NOT NULL DEFAULT '{}',
+  output_budget_json TEXT NOT NULL DEFAULT '{}',
+  mutation_summary_json TEXT NOT NULL DEFAULT '{}',
+  replayable INTEGER NOT NULL DEFAULT 0,
+  replay_export_reason TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_created_at
+  ON plugin_hook_execution_reports(plugin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_trace_id
+  ON plugin_hook_execution_reports(trace_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_hook_created_at
+  ON plugin_hook_execution_reports(plugin_id, hook_name, created_at);
 "#,
     )
     .map_err(|e| format!("failed to ensure plugin tables: {e}"))?;

@@ -129,10 +129,11 @@ where
                 };
                 match pipeline.run_stream_hook(input).await {
                     Ok(output) => {
-                        crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+                        crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                             &db,
                             &trace_id,
                             output.audit_events.clone(),
+                            output.execution_reports.clone(),
                         );
                         if let Some(blocked) = output.blocked {
                             tracing::warn!(

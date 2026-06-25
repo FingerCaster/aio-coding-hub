@@ -2,7 +2,7 @@
 
 use super::context::{GatewayHookResult, GatewayPluginHookName};
 use super::mutation;
-use super::pipeline::GatewayPluginAuditEvent;
+use super::pipeline::{GatewayPluginAuditEvent, GatewayPluginHookExecutionReport};
 use super::registry::HookRegistry;
 use std::fmt;
 
@@ -11,6 +11,7 @@ pub(crate) struct GatewayPluginError {
     code: &'static str,
     message: String,
     audit_events: Vec<GatewayPluginAuditEvent>,
+    execution_reports: Vec<GatewayPluginHookExecutionReport>,
 }
 
 impl GatewayPluginError {
@@ -19,6 +20,7 @@ impl GatewayPluginError {
             code,
             message: message.into(),
             audit_events: Vec::new(),
+            execution_reports: Vec::new(),
         }
     }
 
@@ -40,13 +42,31 @@ impl GatewayPluginError {
         self
     }
 
+    pub(crate) fn with_execution_reports(
+        mut self,
+        mut execution_reports: Vec<GatewayPluginHookExecutionReport>,
+    ) -> Self {
+        execution_reports.extend(self.execution_reports);
+        self.execution_reports = execution_reports;
+        self
+    }
+
     #[cfg(test)]
     pub(crate) fn audit_events(&self) -> &[GatewayPluginAuditEvent] {
         &self.audit_events
     }
 
+    #[cfg(test)]
+    pub(crate) fn execution_reports(&self) -> &[GatewayPluginHookExecutionReport] {
+        &self.execution_reports
+    }
+
     pub(crate) fn take_audit_events(&mut self) -> Vec<GatewayPluginAuditEvent> {
         std::mem::take(&mut self.audit_events)
+    }
+
+    pub(crate) fn take_execution_reports(&mut self) -> Vec<GatewayPluginHookExecutionReport> {
+        std::mem::take(&mut self.execution_reports)
     }
 }
 

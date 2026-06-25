@@ -3,7 +3,8 @@
 use crate::app::plugin_service;
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::domain::plugins::{
-    PluginAuditLog, PluginDetail, PluginInstallPreview, PluginInstallSource, PluginUpdateDiff,
+    PluginAuditLog, PluginDetail, PluginHookExecutionReport, PluginInstallPreview,
+    PluginInstallSource, PluginUpdateDiff,
 };
 use crate::infra::plugins::market::PluginMarketListing;
 use crate::{blocking, plugins};
@@ -60,6 +61,15 @@ pub(crate) struct PluginRevokePermissionInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PluginListAuditLogsInput {
     pub plugin_id: Option<String>,
+    pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginListRuntimeReportsInput {
+    pub plugin_id: Option<String>,
+    pub hook_name: Option<String>,
+    pub trace_id: Option<String>,
     pub limit: Option<usize>,
 }
 
@@ -556,6 +566,27 @@ pub(crate) async fn plugin_list_audit_logs(
         crate::infra::plugins::repository::list_audit_logs(
             &db,
             input.plugin_id.as_deref(),
+            input.limit.unwrap_or(50),
+        )
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn plugin_list_runtime_reports(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    input: PluginListRuntimeReportsInput,
+) -> Result<Vec<PluginHookExecutionReport>, String> {
+    let db = ensure_db_ready(app, db_state.inner()).await?;
+    blocking::run("plugin_list_runtime_reports", move || {
+        crate::infra::plugins::runtime_reports::list_hook_execution_reports(
+            &db,
+            input.plugin_id.as_deref(),
+            input.hook_name.as_deref(),
+            input.trace_id.as_deref(),
             input.limit.unwrap_or(50),
         )
     })

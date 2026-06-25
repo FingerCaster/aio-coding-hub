@@ -230,6 +230,28 @@ pub struct PluginRuntimeFailure {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+pub struct PluginHookExecutionReport {
+    pub id: i64,
+    pub plugin_id: String,
+    pub trace_id: Option<String>,
+    pub hook_name: String,
+    pub runtime_kind: String,
+    pub status: String,
+    pub started_at_ms: i64,
+    pub duration_ms: i64,
+    pub failure_kind: Option<String>,
+    pub error_code: Option<String>,
+    pub failure_policy: Option<String>,
+    pub circuit_state: Option<String>,
+    pub context_budget: serde_json::Value,
+    pub output_budget: serde_json::Value,
+    pub mutation_summary: serde_json::Value,
+    pub replayable: bool,
+    pub replay_export_reason: Option<String>,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginLifecycleNotice {
