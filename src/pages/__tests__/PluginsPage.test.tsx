@@ -7,7 +7,9 @@ import { toast } from "sonner";
 import { PluginsPage } from "../PluginsPage";
 import type {
   PluginDetail,
+  PluginHookExecutionReport,
   PluginInstallPreview,
+  PluginReplayFixture,
   PluginSummary,
   PluginUpdateDiff,
 } from "../../services/plugins";
@@ -21,9 +23,11 @@ import {
   usePluginInstallOfficialMutation,
   usePluginPreviewFromFileMutation,
   usePluginPreviewUpdateFromFileMutation,
+  usePluginExportReplayFixtureMutation,
   usePluginQuery,
   usePluginRollbackMutation,
   usePluginSaveConfigMutation,
+  usePluginRuntimeReportsQuery,
   usePluginUpdateFromFileMutation,
   usePluginsListQuery,
   usePluginUninstallMutation,
@@ -57,6 +61,7 @@ vi.mock("../../query/plugins", async () => {
     usePluginInstallOfficialMutation: vi.fn(),
     usePluginPreviewFromFileMutation: vi.fn(),
     usePluginPreviewUpdateFromFileMutation: vi.fn(),
+    usePluginExportReplayFixtureMutation: vi.fn(),
     usePluginUpdateFromFileMutation: vi.fn(),
     usePluginRollbackMutation: vi.fn(),
     usePluginEnableMutation: vi.fn(),
@@ -64,6 +69,7 @@ vi.mock("../../query/plugins", async () => {
     usePluginDisableMutation: vi.fn(),
     usePluginUninstallMutation: vi.fn(),
     usePluginSaveConfigMutation: vi.fn(),
+    usePluginRuntimeReportsQuery: vi.fn(),
   };
 });
 
@@ -222,6 +228,75 @@ function updateDiff(overrides: Partial<PluginUpdateDiff> = {}): PluginUpdateDiff
   };
 }
 
+function runtimeReport(
+  overrides: Partial<PluginHookExecutionReport> = {}
+): PluginHookExecutionReport {
+  return {
+    id: 1,
+    plugin_id: "community.prompt-helper",
+    trace_id: "trace-report-1",
+    hook_name: "gateway.request.afterBodyRead",
+    runtime_kind: "declarativeRules",
+    status: "completed",
+    started_at_ms: 1000,
+    duration_ms: 9,
+    failure_kind: null,
+    error_code: null,
+    failure_policy: "fail-open",
+    circuit_state: "closed",
+    context_budget: {},
+    output_budget: {},
+    mutation_summary: { changed: true, field: "requestBody" },
+    replayable: true,
+    replay_export_reason: null,
+    created_at: 10,
+    ...overrides,
+  };
+}
+
+function replayFixture(overrides: Partial<PluginReplayFixture> = {}): PluginReplayFixture {
+  return {
+    schemaVersion: 1,
+    traceId: "trace-report-1",
+    source: {
+      appVersion: "0.62.3",
+      traceId: "trace-report-1",
+      exportedAtMs: 1000,
+      requestLogId: 1,
+      createdAtMs: 900,
+    },
+    hookName: "gateway.request.afterBodyRead",
+    pluginId: "community.prompt-helper",
+    request: {
+      cliKey: "codex",
+      sessionId: null,
+      method: "POST",
+      path: "/v1/responses",
+      query: null,
+      provider: "OpenAI Primary",
+      providerSource: null,
+      model: "gpt-5-mini",
+      headers: null,
+      body: null,
+      normalizedMessages: [],
+      meta: {},
+    },
+    response: {
+      status: 200,
+      errorCode: null,
+      headers: null,
+      body: null,
+      chunks: [],
+      meta: {},
+    },
+    log: { body: null, meta: {} },
+    attempts: [],
+    runtimeReports: [],
+    notes: ["request body is not persisted"],
+    ...overrides,
+  };
+}
+
 function mutation(overrides: Record<string, unknown> = {}) {
   return {
     mutateAsync: vi.fn().mockResolvedValue(detail()),
@@ -257,6 +332,15 @@ describe("pages/PluginsPage", () => {
     vi.mocked(usePluginDisableMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginUninstallMutation).mockReturnValue(mutation() as any);
     vi.mocked(usePluginSaveConfigMutation).mockReturnValue(mutation() as any);
+    vi.mocked(usePluginExportReplayFixtureMutation).mockReturnValue(
+      mutation({ mutateAsync: vi.fn().mockResolvedValue(replayFixture()) }) as any
+    );
+    vi.mocked(usePluginRuntimeReportsQuery).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
     vi.mocked(usePluginQuery).mockReturnValue({
       data: detail(),
       isLoading: false,
@@ -337,6 +421,45 @@ describe("pages/PluginsPage", () => {
     expect(lifecyclePanel).not.toBeNull();
     expect(within(lifecyclePanel as HTMLElement).getByText("签名状态未记录")).toBeInTheDocument();
     expect(screen.queryByText("签名已验证")).not.toBeInTheDocument();
+  });
+
+  it("renders runtime reports and exports replay fixtures", async () => {
+    const { copyText } = await import("../../services/clipboard");
+    const exportReplay = vi.fn().mockResolvedValue(replayFixture());
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginRuntimeReportsQuery).mockReturnValue({
+      data: [runtimeReport()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginExportReplayFixtureMutation).mockReturnValue(
+      mutation({ mutateAsync: exportReplay }) as any
+    );
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.getByText("declarativeRules")).toBeInTheDocument();
+    expect(screen.getByText("9ms")).toBeInTheDocument();
+    expect(screen.getByText("trace-report-1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /导出 Replay/ }));
+
+    await waitFor(() => {
+      expect(exportReplay).toHaveBeenCalledWith({
+        traceId: "trace-report-1",
+        hookName: "gateway.request.afterBodyRead",
+        pluginId: "community.prompt-helper",
+      });
+      expect(copyText).toHaveBeenCalledWith(expect.stringContaining('"traceId": "trace-report-1"'));
+      expect(toast.success).toHaveBeenCalledWith("Replay fixture 已复制");
+    });
   });
 
   it("uses only the latest lifecycle audit for trust state", () => {
@@ -425,6 +548,50 @@ describe("pages/PluginsPage", () => {
     await waitFor(() => {
       expect(copyText).toHaveBeenCalledWith("trace-runtime-1");
       expect(toast.success).toHaveBeenCalledWith("Trace ID 已复制");
+    });
+  });
+
+  it("renders structured runtime reports and copies replay fixtures", async () => {
+    const { copyText } = await import("../../services/clipboard");
+    const mutateAsync = vi.fn().mockResolvedValue(replayFixture());
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginRuntimeReportsQuery).mockReturnValue({
+      data: [
+        runtimeReport({
+          trace_id: "trace-report-1",
+          duration_ms: 17,
+          status: "completed",
+        }),
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+    vi.mocked(usePluginExportReplayFixtureMutation).mockReturnValue(
+      mutation({ mutateAsync }) as any
+    );
+
+    renderWithProviders(<PluginsPage />);
+
+    expect(screen.getByText("completed")).toBeInTheDocument();
+    expect(screen.getByText("17ms")).toBeInTheDocument();
+    expect(screen.getByText("trace-report-1")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /导出 Replay/ }));
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledWith({
+        traceId: "trace-report-1",
+        hookName: "gateway.request.afterBodyRead",
+        pluginId: "community.prompt-helper",
+      });
+      expect(copyText).toHaveBeenCalledWith(expect.stringContaining('"traceId": "trace-report-1"'));
+      expect(toast.success).toHaveBeenCalledWith("Replay fixture 已复制");
     });
   });
 

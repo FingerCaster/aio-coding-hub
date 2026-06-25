@@ -4,7 +4,7 @@ use crate::app::plugin_service;
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::domain::plugins::{
     PluginAuditLog, PluginDetail, PluginHookExecutionReport, PluginInstallPreview,
-    PluginInstallSource, PluginUpdateDiff,
+    PluginInstallSource, PluginReplayFixture, PluginUpdateDiff,
 };
 use crate::infra::plugins::market::PluginMarketListing;
 use crate::{blocking, plugins};
@@ -71,6 +71,14 @@ pub(crate) struct PluginListRuntimeReportsInput {
     pub hook_name: Option<String>,
     pub trace_id: Option<String>,
     pub limit: Option<usize>,
+}
+
+#[derive(Debug, Clone, serde::Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct PluginExportReplayFixtureInput {
+    pub trace_id: String,
+    pub hook_name: String,
+    pub plugin_id: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, specta::Type)]
@@ -588,6 +596,28 @@ pub(crate) async fn plugin_list_runtime_reports(
             input.hook_name.as_deref(),
             input.trace_id.as_deref(),
             input.limit.unwrap_or(50),
+        )
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn plugin_export_replay_fixture(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    input: PluginExportReplayFixtureInput,
+) -> Result<PluginReplayFixture, String> {
+    let db = ensure_db_ready(app, db_state.inner()).await?;
+    blocking::run("plugin_export_replay_fixture", move || {
+        crate::infra::plugins::replay_export::export_plugin_replay_fixture(
+            &db,
+            crate::infra::plugins::replay_export::ExportPluginReplayFixtureInput {
+                trace_id: input.trace_id,
+                hook_name: input.hook_name,
+                plugin_id: input.plugin_id,
+            },
         )
     })
     .await

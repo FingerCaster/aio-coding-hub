@@ -5,11 +5,13 @@ import {
   type JsonValue,
   type PluginAuditLog,
   type PluginDetail,
+  type PluginHookExecutionReport,
   type PluginInstallPreview,
   type PluginInstallSource,
   type PluginManifest,
   type PluginMarketListing,
   type PluginPermissionRisk,
+  type PluginReplayFixture,
   type PluginRuntime,
   type PluginStatus,
   type PluginSummary,
@@ -21,11 +23,13 @@ export type {
   JsonValue,
   PluginAuditLog,
   PluginDetail,
+  PluginHookExecutionReport,
   PluginInstallPreview,
   PluginInstallSource,
   PluginManifest,
   PluginMarketListing,
   PluginPermissionRisk,
+  PluginReplayFixture,
   PluginRuntime,
   PluginStatus,
   PluginSummary,
@@ -34,6 +38,8 @@ export type {
 
 const PLUGIN_AUDIT_LOG_DEFAULT_LIMIT = 50;
 const PLUGIN_AUDIT_LOG_MAX_LIMIT = 500;
+const PLUGIN_RUNTIME_REPORT_DEFAULT_LIMIT = 50;
+const PLUGIN_RUNTIME_REPORT_MAX_LIMIT = 500;
 
 function normalizeRequiredText(label: string, value: string): string {
   const normalized = value.trim();
@@ -54,6 +60,11 @@ export function normalizePluginFilePath(filePath: string): string {
 function clampAuditLimit(limit: number | null | undefined): number {
   if (limit == null || !Number.isFinite(limit)) return PLUGIN_AUDIT_LOG_DEFAULT_LIMIT;
   return Math.min(PLUGIN_AUDIT_LOG_MAX_LIMIT, Math.max(1, Math.trunc(limit)));
+}
+
+function clampRuntimeReportLimit(limit: number | null | undefined): number {
+  if (limit == null || !Number.isFinite(limit)) return PLUGIN_RUNTIME_REPORT_DEFAULT_LIMIT;
+  return Math.min(PLUGIN_RUNTIME_REPORT_MAX_LIMIT, Math.max(1, Math.trunc(limit)));
 }
 
 function normalizePermissions(permissions: readonly string[]): string[] {
@@ -314,5 +325,42 @@ export async function pluginListAuditLogs(input: {
     cmd: "plugin_list_audit_logs",
     args: { pluginId, limit },
     invoke: async () => commands.pluginListAuditLogs({ pluginId, limit }),
+  });
+}
+
+export async function pluginListRuntimeReports(input: {
+  pluginId?: string | null;
+  hookName?: string | null;
+  traceId?: string | null;
+  limit?: number | null;
+}) {
+  const pluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+  const hookName =
+    input.hookName == null ? null : normalizeRequiredText("hookName", input.hookName);
+  const traceId = input.traceId == null ? null : normalizeRequiredText("traceId", input.traceId);
+  const limit = clampRuntimeReportLimit(input.limit);
+
+  return invokeGeneratedIpc<PluginHookExecutionReport[]>({
+    title: "读取插件运行报告失败",
+    cmd: "plugin_list_runtime_reports",
+    args: { pluginId, hookName, traceId, limit },
+    invoke: async () => commands.pluginListRuntimeReports({ pluginId, hookName, traceId, limit }),
+  });
+}
+
+export async function pluginExportReplayFixture(input: {
+  traceId: string;
+  hookName: string;
+  pluginId?: string | null;
+}) {
+  const traceId = normalizeRequiredText("traceId", input.traceId);
+  const hookName = normalizeRequiredText("hookName", input.hookName);
+  const pluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+
+  return invokeGeneratedIpc<PluginReplayFixture>({
+    title: "导出插件 replay fixture 失败",
+    cmd: "plugin_export_replay_fixture",
+    args: { traceId, hookName, pluginId },
+    invoke: async () => commands.pluginExportReplayFixture({ traceId, hookName, pluginId }),
   });
 }

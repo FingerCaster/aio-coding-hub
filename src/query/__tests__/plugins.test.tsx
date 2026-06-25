@@ -8,6 +8,8 @@ import {
   pluginInstallRemote,
   pluginInstallOfficial,
   pluginList,
+  pluginListRuntimeReports,
+  pluginExportReplayFixture,
   pluginQuarantineRevoked,
   pluginRevokePermission,
   pluginRollback,
@@ -24,8 +26,10 @@ import {
   usePluginInstallRemoteMutation,
   usePluginQuery,
   usePluginQuarantineRevokedMutation,
+  usePluginExportReplayFixtureMutation,
   usePluginRevokePermissionMutation,
   usePluginRollbackMutation,
+  usePluginRuntimeReportsQuery,
   usePluginsListQuery,
   usePluginSaveConfigMutation,
   usePluginUninstallMutation,
@@ -42,6 +46,8 @@ vi.mock("../../services/plugins", async () => {
     pluginEnable: vi.fn(),
     pluginInstallRemote: vi.fn(),
     pluginInstallOfficial: vi.fn(),
+    pluginListRuntimeReports: vi.fn(),
+    pluginExportReplayFixture: vi.fn(),
     pluginQuarantineRevoked: vi.fn(),
     pluginUpdateFromFile: vi.fn(),
     pluginRollback: vi.fn(),
@@ -137,6 +143,121 @@ describe("query/plugins", () => {
 
     expect(client.getQueryState(pluginKeys.list())).toBeTruthy();
     expect(client.getQueryState(pluginKeys.detail("community.prompt-helper"))).toBeTruthy();
+  });
+
+  it("queries runtime reports and caches exported replay fixtures", async () => {
+    vi.mocked(pluginListRuntimeReports).mockResolvedValue([
+      {
+        id: 1,
+        plugin_id: "community.prompt-helper",
+        trace_id: "trace-replay-1",
+        hook_name: "gateway.request.afterBodyRead",
+        runtime_kind: "declarativeRules",
+        status: "completed",
+        started_at_ms: 1000,
+        duration_ms: 7,
+        failure_kind: null,
+        error_code: null,
+        failure_policy: "fail-open",
+        circuit_state: "closed",
+        context_budget: {},
+        output_budget: {},
+        mutation_summary: { changed: true },
+        replayable: true,
+        replay_export_reason: null,
+        created_at: 10,
+      },
+    ]);
+    vi.mocked(pluginExportReplayFixture).mockResolvedValue({
+      schemaVersion: 1,
+      traceId: "trace-replay-1",
+      source: {
+        appVersion: "0.62.3",
+        traceId: "trace-replay-1",
+        exportedAtMs: 1000,
+        requestLogId: 1,
+        createdAtMs: 900,
+      },
+      hookName: "gateway.request.afterBodyRead",
+      pluginId: "community.prompt-helper",
+      request: {
+        cliKey: "codex",
+        sessionId: null,
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        provider: "OpenAI Primary",
+        providerSource: null,
+        model: "gpt-5-mini",
+        headers: null,
+        body: null,
+        normalizedMessages: [],
+        meta: {},
+      },
+      response: {
+        status: 200,
+        errorCode: null,
+        headers: null,
+        body: null,
+        chunks: [],
+        meta: {},
+      },
+      log: { body: null, meta: {} },
+      attempts: [],
+      runtimeReports: [],
+      notes: [],
+    });
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+
+    renderHook(
+      () =>
+        usePluginRuntimeReportsQuery({
+          pluginId: " community.prompt-helper ",
+          hookName: "gateway.request.afterBodyRead",
+          traceId: "trace-replay-1",
+          limit: 25,
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => {
+      expect(pluginListRuntimeReports).toHaveBeenCalledWith({
+        pluginId: "community.prompt-helper",
+        hookName: "gateway.request.afterBodyRead",
+        traceId: "trace-replay-1",
+        limit: 25,
+      });
+    });
+    expect(
+      client.getQueryState(
+        pluginKeys.runtimeReports(
+          "community.prompt-helper",
+          "gateway.request.afterBodyRead",
+          "trace-replay-1",
+          25
+        )
+      )
+    ).toBeTruthy();
+
+    const { result } = renderHook(() => usePluginExportReplayFixtureMutation(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({
+        pluginId: " community.prompt-helper ",
+        hookName: "gateway.request.afterBodyRead",
+        traceId: "trace-replay-1",
+      });
+    });
+
+    expect(
+      client.getQueryData(
+        pluginKeys.replayFixture(
+          "trace-replay-1",
+          "gateway.request.afterBodyRead",
+          "community.prompt-helper"
+        )
+      )
+    ).toMatchObject({ traceId: "trace-replay-1" });
   });
 
   it("invalidates list and detail queries after mutations", async () => {

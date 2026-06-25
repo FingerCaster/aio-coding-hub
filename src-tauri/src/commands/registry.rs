@@ -183,6 +183,7 @@ macro_rules! generated_command_registry {
             plugin_revoke_permission => crate::commands::plugins::plugin_revoke_permission,
             plugin_list_audit_logs => crate::commands::plugins::plugin_list_audit_logs,
             plugin_list_runtime_reports => crate::commands::plugins::plugin_list_runtime_reports,
+            plugin_export_replay_fixture => crate::commands::plugins::plugin_export_replay_fixture,
             // ── request_logs ──
             request_logs_list => crate::commands::request_logs::request_logs_list,
             request_logs_list_all => crate::commands::request_logs::request_logs_list_all,

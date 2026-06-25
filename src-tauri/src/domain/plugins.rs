@@ -252,6 +252,84 @@ pub struct PluginHookExecutionReport {
     pub created_at: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReplayFixture {
+    pub schema_version: u32,
+    pub trace_id: String,
+    pub source: PluginReplayFixtureSource,
+    pub hook_name: String,
+    pub plugin_id: Option<String>,
+    pub request: PluginReplayFixtureRequest,
+    pub response: PluginReplayFixtureResponse,
+    pub log: PluginReplayFixtureLog,
+    pub attempts: Vec<PluginReplayFixtureAttempt>,
+    pub runtime_reports: Vec<PluginHookExecutionReport>,
+    pub notes: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReplayFixtureSource {
+    pub app_version: String,
+    pub trace_id: String,
+    pub exported_at_ms: i64,
+    pub request_log_id: i64,
+    pub created_at_ms: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReplayFixtureRequest {
+    pub cli_key: String,
+    pub session_id: Option<String>,
+    pub method: Option<String>,
+    pub path: Option<String>,
+    pub query: Option<String>,
+    pub provider: Option<String>,
+    pub provider_source: Option<String>,
+    pub model: Option<String>,
+    pub headers: Option<serde_json::Value>,
+    pub body: Option<serde_json::Value>,
+    pub normalized_messages: Vec<serde_json::Value>,
+    pub meta: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReplayFixtureResponse {
+    pub status: Option<i64>,
+    pub error_code: Option<String>,
+    pub headers: Option<serde_json::Value>,
+    pub body: Option<serde_json::Value>,
+    pub chunks: Vec<serde_json::Value>,
+    pub meta: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReplayFixtureLog {
+    pub body: Option<serde_json::Value>,
+    pub meta: serde_json::Value,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct PluginReplayFixtureAttempt {
+    pub id: i64,
+    pub trace_id: String,
+    pub cli_key: String,
+    pub attempt_index: i64,
+    pub provider_id: i64,
+    pub provider_name: String,
+    pub base_url: String,
+    pub outcome: String,
+    pub status: Option<i64>,
+    pub attempt_started_ms: i64,
+    pub attempt_duration_ms: i64,
+    pub created_at: i64,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct PluginLifecycleNotice {

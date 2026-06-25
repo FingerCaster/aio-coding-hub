@@ -246,6 +246,14 @@ export const pluginKeys = {
     [...pluginsAllKey, "updatePreview", filePath] as const,
   auditLogs: (pluginId: string | null, limit: number | null) =>
     [...pluginsAllKey, "auditLogs", pluginId, limit] as const,
+  runtimeReports: (
+    pluginId: string | null,
+    hookName: string | null,
+    traceId: string | null,
+    limit: number | null
+  ) => [...pluginsAllKey, "runtimeReports", pluginId, hookName, traceId, limit] as const,
+  replayFixture: (traceId: string | null, hookName: string | null, pluginId: string | null) =>
+    [...pluginsAllKey, "replayFixture", traceId, hookName, pluginId] as const,
 };
 
 const settingsAllKey = ["settings"] as const;

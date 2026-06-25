@@ -17,6 +17,7 @@ import { openDesktopSinglePath } from "../services/desktop/dialog";
 import type {
   JsonValue,
   PluginDetail,
+  PluginHookExecutionReport,
   PluginInstallPreview,
   PluginPermissionRisk,
   PluginStatus,
@@ -35,9 +36,11 @@ import {
   usePluginInstallOfficialMutation,
   usePluginPreviewFromFileMutation,
   usePluginPreviewUpdateFromFileMutation,
+  usePluginExportReplayFixtureMutation,
   usePluginQuery,
   usePluginRollbackMutation,
   usePluginSaveConfigMutation,
+  usePluginRuntimeReportsQuery,
   usePluginUninstallMutation,
   usePluginUpdateFromFileMutation,
   usePluginsListQuery,
@@ -167,10 +170,39 @@ function TraceIdButton({ traceId }: { traceId: string | null | undefined }) {
   );
 }
 
+function reportFailureLabel(report: PluginHookExecutionReport) {
+  return report.failure_kind ?? report.error_code ?? "-";
+}
+
 function RuntimeObservabilitySection({ detail }: { detail: PluginDetail }) {
+  const reportsQuery = usePluginRuntimeReportsQuery({
+    pluginId: detail.summary.plugin_id,
+    limit: 8,
+  });
+  const replayExportMutation = usePluginExportReplayFixtureMutation();
+  const reports = reportsQuery.data?.slice(0, 8) ?? [];
   const failures = detail.runtime_failures.slice(0, 5);
   const auditLogs = detail.audit_logs.slice(0, 8);
-  const empty = failures.length === 0 && auditLogs.length === 0;
+  const empty =
+    reports.length === 0 &&
+    failures.length === 0 &&
+    auditLogs.length === 0 &&
+    !reportsQuery.isLoading;
+
+  async function handleExportReplayFixture(report: PluginHookExecutionReport) {
+    if (!report.trace_id) return;
+    try {
+      const fixture = await replayExportMutation.mutateAsync({
+        traceId: report.trace_id,
+        hookName: report.hook_name,
+        pluginId: report.plugin_id,
+      });
+      await copyText(JSON.stringify(fixture, null, 2));
+      toast.success("Replay fixture 已复制");
+    } catch (error) {
+      toast.error(formatActionFailureToast("导出 replay fixture", error).toast);
+    }
+  }
 
   return (
     <Section title="运行观测">
@@ -180,6 +212,62 @@ function RuntimeObservabilitySection({ detail }: { detail: PluginDetail }) {
         </div>
       ) : (
         <div className="grid gap-2">
+          {reportsQuery.isLoading ? (
+            <div className="rounded-md border border-border px-3 py-3 text-sm text-muted-foreground">
+              正在读取插件运行报告
+            </div>
+          ) : null}
+
+          {reports.map((report) => (
+            <div key={`report-${report.id}`} className="rounded-md border border-border px-3 py-2">
+              <div className="flex flex-wrap items-start justify-between gap-2 text-sm">
+                <span className="font-medium text-foreground">{report.status}</span>
+                <span className="rounded-md border border-border px-2 py-0.5 text-xs text-muted-foreground">
+                  {report.runtime_kind}
+                </span>
+              </div>
+              <div className="mt-2 grid gap-2 text-xs text-muted-foreground sm:grid-cols-4">
+                <div>
+                  <div>Hook</div>
+                  <div className="break-words font-mono text-foreground">{report.hook_name}</div>
+                </div>
+                <div>
+                  <div>耗时</div>
+                  <div className="break-words font-mono text-foreground">
+                    {report.duration_ms}ms
+                  </div>
+                </div>
+                <div>
+                  <div>Failure</div>
+                  <div className="break-words font-mono text-foreground">
+                    {reportFailureLabel(report)}
+                  </div>
+                </div>
+                <div>
+                  <div>Trace ID</div>
+                  <TraceIdButton traceId={report.trace_id} />
+                </div>
+              </div>
+              <div className="mt-2 flex flex-wrap items-center gap-2">
+                <Button
+                  size="sm"
+                  variant="secondary"
+                  disabled={!report.trace_id || replayExportMutation.isPending}
+                  onClick={() => void handleExportReplayFixture(report)}
+                  title={report.replay_export_reason ?? "导出 replay fixture"}
+                >
+                  <Download className="h-3.5 w-3.5" />
+                  导出 Replay
+                </Button>
+                {report.replay_export_reason ? (
+                  <span className="text-xs text-muted-foreground">
+                    {report.replay_export_reason}
+                  </span>
+                ) : null}
+              </div>
+            </div>
+          ))}
+
           {failures.map((failure) => (
             <div
               key={`failure-${failure.id}`}

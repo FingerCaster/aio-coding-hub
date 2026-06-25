@@ -12,8 +12,10 @@ import {
   pluginInstallOfficial,
   pluginList,
   pluginListAuditLogs,
+  pluginListRuntimeReports,
   pluginPreviewFromFile,
   pluginPreviewUpdateFromFile,
+  pluginExportReplayFixture,
   pluginQuarantineRevoked,
   pluginRevokePermission,
   pluginRollback,
@@ -81,6 +83,50 @@ export function usePluginAuditLogsQuery(
     queryFn: () => pluginListAuditLogs({ pluginId: normalizedPluginId, limit }),
     enabled: (options?.enabled ?? true) && normalizedPluginId != null,
     placeholderData: keepPreviousData,
+  });
+}
+
+export function usePluginRuntimeReportsQuery(
+  input: {
+    pluginId: string | null;
+    hookName?: string | null;
+    traceId?: string | null;
+    limit?: number | null;
+  },
+  options?: { enabled?: boolean }
+) {
+  const normalizedPluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+  const hookName = input.hookName ?? null;
+  const traceId = input.traceId ?? null;
+  const limit = input.limit ?? 50;
+
+  return useQuery({
+    queryKey: pluginKeys.runtimeReports(normalizedPluginId, hookName, traceId, limit),
+    queryFn: () =>
+      pluginListRuntimeReports({
+        pluginId: normalizedPluginId,
+        hookName,
+        traceId,
+        limit,
+      }),
+    enabled: (options?.enabled ?? true) && normalizedPluginId != null,
+    placeholderData: keepPreviousData,
+  });
+}
+
+export function usePluginExportReplayFixtureMutation() {
+  const queryClient = useQueryClient();
+
+  return useMutation({
+    mutationFn: (input: { traceId: string; hookName: string; pluginId?: string | null }) =>
+      pluginExportReplayFixture(input),
+    onSuccess: (fixture, input) => {
+      const pluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+      queryClient.setQueryData(
+        pluginKeys.replayFixture(fixture.traceId, fixture.hookName, pluginId),
+        fixture
+      );
+    },
   });
 }
 

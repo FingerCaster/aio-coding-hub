@@ -1587,6 +1587,16 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async pluginExportReplayFixture(
+    input: PluginExportReplayFixtureInput
+  ): Promise<Result<PluginReplayFixture, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_export_replay_fixture", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async requestLogsList(
     cliKey: string,
     limit: number | null
@@ -2738,6 +2748,11 @@ export type PluginDetail = {
   runtime_failures: PluginRuntimeFailure[];
   rollback_versions: string[];
 };
+export type PluginExportReplayFixtureInput = {
+  traceId: string;
+  hookName: string;
+  pluginId: string | null;
+};
 export type PluginGetInput = { pluginId: string };
 export type PluginGrantPermissionsInput = { pluginId: string; permissions: string[] };
 export type PluginHook = { name: string; priority?: number; failurePolicy?: string | null };
@@ -2865,6 +2880,63 @@ export type PluginPermissionLifecycleSummary = {
 export type PluginPermissionRisk = "low" | "medium" | "high" | "critical";
 export type PluginPreviewFromFileInput = { filePath: string };
 export type PluginPreviewUpdateFromFileInput = { filePath: string };
+export type PluginReplayFixture = {
+  schemaVersion: number;
+  traceId: string;
+  source: PluginReplayFixtureSource;
+  hookName: string;
+  pluginId: string | null;
+  request: PluginReplayFixtureRequest;
+  response: PluginReplayFixtureResponse;
+  log: PluginReplayFixtureLog;
+  attempts: PluginReplayFixtureAttempt[];
+  runtimeReports: PluginHookExecutionReport[];
+  notes: string[];
+};
+export type PluginReplayFixtureAttempt = {
+  id: number;
+  traceId: string;
+  cliKey: string;
+  attemptIndex: number;
+  providerId: number;
+  providerName: string;
+  baseUrl: string;
+  outcome: string;
+  status: number | null;
+  attemptStartedMs: number;
+  attemptDurationMs: number;
+  createdAt: number;
+};
+export type PluginReplayFixtureLog = { body: JsonValue | null; meta: JsonValue };
+export type PluginReplayFixtureRequest = {
+  cliKey: string;
+  sessionId: string | null;
+  method: string | null;
+  path: string | null;
+  query: string | null;
+  provider: string | null;
+  providerSource: string | null;
+  model: string | null;
+  headers: JsonValue | null;
+  body: JsonValue | null;
+  normalizedMessages: JsonValue[];
+  meta: JsonValue;
+};
+export type PluginReplayFixtureResponse = {
+  status: number | null;
+  errorCode: string | null;
+  headers: JsonValue | null;
+  body: JsonValue | null;
+  chunks: JsonValue[];
+  meta: JsonValue;
+};
+export type PluginReplayFixtureSource = {
+  appVersion: string;
+  traceId: string;
+  exportedAtMs: number;
+  requestLogId: number;
+  createdAtMs: number;
+};
 export type PluginRevokePermissionInput = { pluginId: string; permission: string };
 export type PluginRollbackInput = { pluginId: string; version: string };
 export type PluginRuntime =
