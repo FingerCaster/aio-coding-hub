@@ -44,10 +44,12 @@ export function PluginMarketPanel({
     setLoading(true);
     setError(null);
     try {
+      const trimmedIndexUrl = indexUrl.trim();
+      const trimmedSignature = signature.trim();
       const next = await pluginParseMarketIndex(
         indexJson,
-        indexUrl.trim() ? indexUrl : null,
-        signature.trim() ? signature : null
+        trimmedIndexUrl ? trimmedIndexUrl : null,
+        trimmedSignature ? trimmedSignature : null
       );
       setListings(next);
     } catch (error) {
