@@ -90,6 +90,12 @@ pnpm create-aio-plugin publish-check ./acme.redactor
 
 `publish-check` 只输出市场发布 metadata，不写入插件包，也不替代 `pack`、`sign`、`verify` 或宿主安装时的 checksum/signature/compatibility/revoked 检查。
 
+## 插件市场入口
+
+Plugins 页面默认展示“精选插件”，面向普通用户提供简洁安装入口。用户不需要理解 market index JSON、signature 或 trusted public key，就可以看到官方 Privacy Filter 和推荐社区示例方向。
+
+“高级来源”用于插件开发者或自定义源用户。它保留 market index URL、index JSON 和索引签名输入，但默认折叠。高级来源加载出的条目仍然走同一套安装卡片和宿主安装校验。
+
 SDK 检查命令：
 
 ```bash

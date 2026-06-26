@@ -72,6 +72,10 @@
 - risk labels。
 - revoked 状态和 install block reason。
 
+默认市场视图会把精选插件展示成用户可读卡片，只显示用途、版本、风险、信任和安装状态。完整 checksum、signature 和 raw index fields 不应占据默认视图。
+
+自定义 market index 属于高级来源。高级来源可以加载临时 URL 或粘贴 JSON，但它只是发布者和高级用户入口；真实安装仍由宿主重新执行 checksum、signature、compatibility、runtime policy 和 revoked checks。
+
 market index URL 只用于定位索引来源。trusted public key 用于校验 release signature；它不能扩大插件权限，也不能绕过 host compatibility、runtime policy、checksum、permission grant 或 quarantine 规则。
 
 ## Trust And Install Blocks

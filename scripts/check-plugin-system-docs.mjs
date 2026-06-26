@@ -71,6 +71,8 @@ const requiredDocs = [
       "pnpm create-aio-plugin pack",
       ".aio-plugin",
       "official.privacy-filter",
+      "精选插件",
+      "高级来源",
     ],
   },
   {
@@ -208,6 +210,8 @@ const requiredDocs = [
       "trusted public key",
       "revoked / incompatible install blocks",
       "plugin_export_replay_fixture",
+      "默认市场视图",
+      "自定义 market index 属于高级来源",
     ],
   },
   {
