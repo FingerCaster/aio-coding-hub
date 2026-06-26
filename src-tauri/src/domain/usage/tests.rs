@@ -98,6 +98,15 @@ fn parse_sse_done_marker_marks_completion_seen() {
 }
 
 #[test]
+fn parse_claude_message_stop_type_marks_completion_seen() {
+    let sse = b"data: {\"type\":\"message_stop\"}\n\n";
+    let mut tracker = SseUsageTracker::new("claude");
+    tracker.ingest_chunk(sse);
+    tracker.finalize();
+    assert!(tracker.completion_seen());
+}
+
+#[test]
 fn parse_codex_response_completed_marks_completion_seen() {
     let sse = b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n";
     let mut tracker = SseUsageTracker::new("codex");

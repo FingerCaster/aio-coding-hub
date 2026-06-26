@@ -396,6 +396,7 @@ fn is_completion_event_type(event_type: &str) -> bool {
             | "response.completed"
             | "message.done"
             | "message.completed"
+            | "message_stop"
             | "message.stop"
     ) || normalized.ends_with(".completed")
 }
