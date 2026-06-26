@@ -12,6 +12,8 @@
 
 Plugins 页面也会展示 `examples/prompt-helper`、`examples/redactor` 和 `examples/response-guard` 作为社区示例方向。它们不是 bundled official plugin，也不会绕过宿主的安装、权限、兼容性或签名校验。
 
+`examples/prompt-helper`、`examples/redactor` 和 `examples/response-guard` 现在由 `create-aio-plugin` 作为开发模板生成。它们帮助作者学习 Plugin API v1 和 devtools 闭环，但不是宿主内置插件，也不是默认可安装市场包。
+
 ## Privacy Filter
 
 ID: `official.privacy-filter`

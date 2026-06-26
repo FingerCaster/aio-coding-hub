@@ -57,6 +57,8 @@
 
 `pnpm create-aio-plugin publish-check <plugin-dir>` 会读取插件目录，复用打包/校验路径计算 package metadata，并输出适合放进市场索引的字段，例如 plugin id、version、checksum、signature 状态、runtime、hooks、permissions 和 compatibility summary。
 
+示例模板可以运行 publish-check，例如 `example:prompt-helper`、`example:redactor` 和 `example:response-guard` 生成的目录都应能输出发布 metadata。这个 metadata 只说明包具备发布前检查信息；它不代表示例已经被上传、签名、加入默认 market index，或变成默认可安装市场包。
+
 `publish-check` 不写 `.aio-plugin` artifact，不替代 `pack`、`sign` 或 `verify`。它的职责是让发布者在提交市场索引前看到宿主安装时会关心的 metadata。真实安装仍由宿主重新下载包、校验 checksum、校验 signature、判断 compatibility、应用 permission policy，并处理 revoked / incompatible install blocks。
 
 ## Market Index

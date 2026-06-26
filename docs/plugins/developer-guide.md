@@ -43,6 +43,16 @@ pnpm --filter create-aio-plugin test
 pnpm create-aio-plugin acme.redactor rule
 ```
 
+也可以直接从完整示例模板开始：
+
+```bash
+pnpm create-aio-plugin acme.prompt-helper example:prompt-helper
+pnpm create-aio-plugin acme.redactor example:redactor
+pnpm create-aio-plugin acme.response-guard example:response-guard
+```
+
+示例是开发模板，不是默认可安装市场包。它们用于学习 manifest、rules、fixtures、`validate --strict`、`replay --explain`、`pack` 和 `publish-check` 的完整路径；Plugins 页面里的同名精选卡片仍保持示例状态，不会绕过宿主安装校验。
+
 生成目录后，先检查 package health，再校验 `plugin.json` 和规则文件：
 
 ```bash
@@ -75,6 +85,13 @@ Codex/OpenAI Responses fixture 示例：
 ```bash
 pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/claude-request.json gateway.request.afterBodyRead
 pnpm create-aio-plugin replay --explain ./acme.redactor ./fixtures/codex-request.json gateway.request.afterBodyRead
+```
+
+例如 prompt-helper 示例可以直接回放 Claude 和 Codex fixtures：
+
+```bash
+pnpm create-aio-plugin replay --explain ./acme.prompt-helper ./acme.prompt-helper/fixtures/claude-request.json gateway.request.afterBodyRead
+pnpm create-aio-plugin replay --explain ./acme.prompt-helper ./acme.prompt-helper/fixtures/codex-request.json gateway.request.afterBodyRead
 ```
 
 如果问题来自真实网关请求，先在 Plugins 页面或 request log 操作里导出 replay fixture。宿主命令名是 `plugin_export_replay_fixture`；它会把 trace id、hook name、plugin id、attempts 和 `plugin_hook_execution_reports` 放进 fixture。当前 request logs 不持久化完整 body，所以导出结果会在 `notes` 里说明缺口，插件作者需要用本地 fixture 补齐要复现的 request/response body。

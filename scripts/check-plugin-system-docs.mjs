@@ -73,6 +73,10 @@ const requiredDocs = [
       "official.privacy-filter",
       "精选插件",
       "高级来源",
+      "example:prompt-helper",
+      "example:redactor",
+      "example:response-guard",
+      "示例是开发模板，不是默认可安装市场包",
     ],
   },
   {
@@ -141,6 +145,16 @@ const requiredDocs = [
   {
     path: "docs/plugins/examples/privacy-filter.md",
     phrases: ["official.privacy-filter", "packyme/privacy-filter", "已移除的内置示例"],
+  },
+  {
+    path: "docs/plugins/examples/README.md",
+    phrases: [
+      "example:prompt-helper",
+      "example:redactor",
+      "example:response-guard",
+      "fixtures/claude-request.json",
+      "fixtures/response-warn.json",
+    ],
   },
   {
     path: "docs/plugins/architecture/audit.md",
@@ -212,6 +226,7 @@ const requiredDocs = [
       "plugin_export_replay_fixture",
       "默认市场视图",
       "自定义 market index 属于高级来源",
+      "示例模板可以运行 publish-check",
     ],
   },
   {
