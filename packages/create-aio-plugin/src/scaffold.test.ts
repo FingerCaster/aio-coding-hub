@@ -1933,6 +1933,218 @@ describe("create-aio-plugin scaffold", () => {
   });
 });
 
+describe("create-aio-plugin example templates", () => {
+  it("generates and replays the prompt-helper example", () => {
+    const files = createPluginScaffold({
+      id: "acme.prompt-helper",
+      name: "Prompt Helper",
+      template: "example:prompt-helper",
+    });
+
+    expect(files["plugin.json"]).toContain('"id": "acme.prompt-helper"');
+    expect(files["rules/main.json"]).toContain("prompt-helper-claude");
+    expect(files["fixtures/claude-request.json"]).toBeDefined();
+    expect(files["fixtures/codex-request.json"]).toBeDefined();
+    expect(validatePluginFilesStrict(files).ok).toBe(true);
+
+    const claudeFixture = JSON.parse(files["fixtures/claude-request.json"] ?? "{}") as unknown;
+    const claudeExplain = replayHookExplain(
+      files,
+      "gateway.request.afterBodyRead",
+      claudeFixture
+    );
+
+    expect(claudeExplain).toMatchObject({
+      pluginId: "acme.prompt-helper",
+      actionKind: "replace",
+      matchedRuleIds: ["prompt-helper-claude"],
+      mutationSummary: { changed: true, field: "requestBody", targetField: "request.body" },
+    });
+    expect(JSON.stringify(claudeExplain.result)).toContain("Keep answers concise");
+
+    const codexFixture = JSON.parse(files["fixtures/codex-request.json"] ?? "{}") as unknown;
+    const codexExplain = replayHookExplain(
+      files,
+      "gateway.request.afterBodyRead",
+      codexFixture
+    );
+
+    expect(codexExplain).toMatchObject({
+      actionKind: "replace",
+      matchedRuleIds: ["prompt-helper-codex"],
+      mutationSummary: {
+        changed: true,
+        field: "requestBody",
+        targetField: "request.body",
+        jsonPath: "$.input[*].content[*].text",
+      },
+    });
+
+    expectExampleCanPackAndPublishCheck(files, "acme.prompt-helper");
+  });
+
+  it("generates and replays the redactor example", () => {
+    const files = createPluginScaffold({
+      id: "acme.redactor",
+      name: "Redactor",
+      template: "example:redactor",
+    });
+
+    expect(files["plugin.json"]).toContain('"id": "acme.redactor"');
+    expect(files["rules/main.json"]).toContain("redact-request-secrets");
+    expect(files["fixtures/request-hit.json"]).toBeDefined();
+    expect(files["fixtures/request-miss.json"]).toBeDefined();
+    expect(files["fixtures/log-redact.json"]).toBeDefined();
+    expect(validatePluginFilesStrict(files).ok).toBe(true);
+
+    const hitFixture = JSON.parse(files["fixtures/request-hit.json"] ?? "{}") as unknown;
+    const hitExplain = replayHookExplain(files, "gateway.request.beforeSend", hitFixture);
+    expect(hitExplain).toMatchObject({
+      actionKind: "replace",
+      matchedRuleIds: ["redact-request-secrets"],
+      mutationSummary: { changed: true, field: "requestBody", targetField: "request.body" },
+    });
+    expect(JSON.stringify(hitExplain.result)).toContain("[REDACTED]");
+
+    const missFixture = JSON.parse(files["fixtures/request-miss.json"] ?? "{}") as unknown;
+    const missExplain = replayHookExplain(files, "gateway.request.beforeSend", missFixture);
+    expect(missExplain).toMatchObject({
+      actionKind: "pass",
+      mutationSummary: { changed: false },
+    });
+
+    const logFixture = JSON.parse(files["fixtures/log-redact.json"] ?? "{}") as unknown;
+    const logExplain = replayHookExplain(files, "log.beforePersist", logFixture);
+    expect(logExplain).toMatchObject({
+      actionKind: "replace",
+      matchedRuleIds: ["redact-log-secrets"],
+      mutationSummary: { changed: true, field: "logMessage", targetField: "log.message" },
+    });
+
+    expectExampleCanPackAndPublishCheck(files, "acme.redactor");
+  });
+
+  it("generates and replays the response-guard example", () => {
+    const files = createPluginScaffold({
+      id: "acme.response-guard",
+      name: "Response Guard",
+      template: "example:response-guard",
+    });
+
+    expect(files["plugin.json"]).toContain('"id": "acme.response-guard"');
+    expect(files["rules/main.json"]).toContain("response-guard-review-marker");
+    expect(files["fixtures/response-warn.json"]).toBeDefined();
+    expect(files["fixtures/response-pass.json"]).toBeDefined();
+    expect(validatePluginFilesStrict(files).ok).toBe(true);
+
+    const warnFixture = JSON.parse(files["fixtures/response-warn.json"] ?? "{}") as unknown;
+    const warnExplain = replayHookExplain(files, "gateway.response.after", warnFixture);
+    expect(warnExplain).toMatchObject({
+      actionKind: "replace",
+      matchedRuleIds: ["response-guard-review-marker"],
+      mutationSummary: { changed: true, field: "responseBody", targetField: "response.body" },
+    });
+    expect(JSON.stringify(warnExplain.result)).toContain("[REVIEW_REQUIRED]");
+
+    const passFixture = JSON.parse(files["fixtures/response-pass.json"] ?? "{}") as unknown;
+    const passExplain = replayHookExplain(files, "gateway.response.after", passFixture);
+    expect(passExplain).toMatchObject({
+      actionKind: "pass",
+      mutationSummary: { changed: false },
+    });
+
+    expectExampleCanPackAndPublishCheck(files, "acme.response-guard");
+  });
+
+  it.each([
+    ["acme.prompt-helper", "example:prompt-helper"],
+    ["acme.redactor", "example:redactor"],
+    ["acme.response-guard", "example:response-guard"],
+  ] as const)("writes %s through the CLI example template %s", (pluginId, template) => {
+    const cwd = mkdtempSync(join(tmpdir(), "aio-plugin-example-"));
+    const scaffoldOutput: string[] = [];
+    const validateOutput: string[] = [];
+    const packOutput: string[] = [];
+    const publishOutput: string[] = [];
+
+    expect(
+      runCreateAioPluginCli([pluginId, template], cwd, {
+        log: (line) => scaffoldOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    expect(existsSync(join(cwd, pluginId, "plugin.json"))).toBe(true);
+    expect(existsSync(join(cwd, pluginId, "rules/main.json"))).toBe(true);
+    expect(existsSync(join(cwd, pluginId, "README.md"))).toBe(true);
+
+    expect(
+      runCreateAioPluginCli(["validate", "--strict", `./${pluginId}`], cwd, {
+        log: (line) => validateOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+    expect(JSON.parse(validateOutput[0] ?? "{}")).toMatchObject({ ok: true });
+
+    expect(
+      runCreateAioPluginCli(["pack", `./${pluginId}`], cwd, {
+        log: (line) => packOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    const packResult = JSON.parse(packOutput[0] ?? "{}") as {
+      path: string;
+      checksum: string;
+      sizeBytes: number;
+    };
+    expect(packResult.path).toBe(join(cwd, `${pluginId}.aio-plugin`));
+    expect(packResult.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(packResult.sizeBytes).toBeGreaterThan(0);
+    expect(existsSync(packResult.path)).toBe(true);
+
+    expect(
+      runCreateAioPluginCli(["publish-check", `./${pluginId}`], cwd, {
+        log: (line) => publishOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    const publishResult = JSON.parse(publishOutput[0] ?? "{}") as {
+      artifactPath: string;
+      manifestId: string;
+      checksum: string;
+      signatureVerified: boolean;
+    };
+    expect(publishResult).toMatchObject({
+      artifactPath: join(cwd, `${pluginId}.aio-plugin`),
+      manifestId: pluginId,
+      signatureVerified: false,
+    });
+    expect(publishResult.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+});
+
+function expectExampleCanPackAndPublishCheck(files: Record<string, string>, manifestId: string) {
+  const packed = packPlugin(files);
+  const result = publishCheckPluginBytes(packed.bytes, {
+    checksum: packed.checksum,
+    manifest: files["plugin.json"] ?? "",
+  });
+
+  expect(packed.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect(result).toMatchObject({
+    ok: true,
+    manifestId,
+    runtime: "declarativeRules",
+    checksumVerified: true,
+    signatureVerified: false,
+    unsigned: true,
+  });
+  expect(result.hooks.length).toBeGreaterThan(0);
+  expect(result.permissions.length).toBeGreaterThan(0);
+}
+
 function writeScaffold(root: string, files: Record<string, string>): void {
   for (const [path, content] of Object.entries(files)) {
     const fullPath = join(root, path);
