@@ -104,15 +104,6 @@ INSERT INTO plugin_hook_execution_reports(
     Ok(report)
 }
 
-pub(crate) fn prune_hook_execution_reports_for_plugin(
-    db: &db::Db,
-    plugin_id: &str,
-    max_reports: usize,
-) -> AppResult<usize> {
-    let conn = db.open_connection()?;
-    prune_hook_execution_reports_for_plugin_with_conn(&conn, plugin_id, max_reports)
-}
-
 fn prune_hook_execution_reports_for_plugin_with_conn(
     conn: &rusqlite::Connection,
     plugin_id: &str,
@@ -134,14 +125,6 @@ WHERE id IN (
         )
         .map_err(|e| db_err!("failed to prune plugin hook execution reports by cap: {e}"))?;
     Ok(deleted)
-}
-
-pub(crate) fn prune_hook_execution_reports_before(
-    db: &db::Db,
-    cutoff_created_at: i64,
-) -> AppResult<usize> {
-    let conn = db.open_connection()?;
-    prune_hook_execution_reports_before_with_conn(&conn, cutoff_created_at)
 }
 
 fn prune_hook_execution_reports_before_with_conn(
@@ -356,7 +339,11 @@ mod tests {
             .unwrap();
         }
 
-        let deleted = prune_hook_execution_reports_for_plugin(&db, "community.cap", 3).unwrap();
+        let conn = db.open_connection().unwrap();
+        let deleted =
+            prune_hook_execution_reports_for_plugin_with_conn(&conn, "community.cap", 3).unwrap();
+        drop(conn);
+
         let reports =
             list_hook_execution_reports(&db, Some("community.cap"), None, None, 10).unwrap();
 
@@ -382,11 +369,40 @@ mod tests {
         .unwrap();
         drop(conn);
 
-        let deleted = prune_hook_execution_reports_before(&db, 2).unwrap();
+        let conn = db.open_connection().unwrap();
+        let deleted = prune_hook_execution_reports_before_with_conn(&conn, 2).unwrap();
+        drop(conn);
+
         let reports =
             list_hook_execution_reports(&db, Some("community.age"), None, None, 10).unwrap();
 
         assert_eq!(deleted, 1);
+        assert_eq!(reports.len(), 1);
+        assert_eq!(reports[0].trace_id.as_deref(), Some("trace-new"));
+    }
+
+    #[test]
+    fn repository_auto_prunes_old_plugin_hook_execution_reports_after_recording() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+
+        record_hook_execution_report(&db, report_input("community.auto-age", "trace-old")).unwrap();
+
+        let conn = db.open_connection().unwrap();
+        conn.execute(
+            "UPDATE plugin_hook_execution_reports SET created_at = ?1 WHERE trace_id = ?2",
+            rusqlite::params![1_i64, "trace-old"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let new_report =
+            record_hook_execution_report(&db, report_input("community.auto-age", "trace-new"))
+                .unwrap();
+        let reports =
+            list_hook_execution_reports(&db, Some("community.auto-age"), None, None, 10).unwrap();
+
+        assert_eq!(new_report.trace_id.as_deref(), Some("trace-new"));
         assert_eq!(reports.len(), 1);
         assert_eq!(reports[0].trace_id.as_deref(), Some("trace-new"));
     }

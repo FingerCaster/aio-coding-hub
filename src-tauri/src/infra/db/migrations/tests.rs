@@ -308,6 +308,10 @@ fn ensure_plugin_tables_is_idempotent() {
         "plugin_permissions",
         "permissions_json"
     ));
+    assert!(test_has_index(
+        &conn,
+        "idx_plugin_hook_execution_reports_created_at"
+    ));
 }
 
 #[test]

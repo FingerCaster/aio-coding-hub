@@ -1143,6 +1143,8 @@ CREATE TABLE IF NOT EXISTS plugin_hook_execution_reports (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_created_at
   ON plugin_hook_execution_reports(plugin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_created_at
+  ON plugin_hook_execution_reports(created_at);
 CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_trace_id
   ON plugin_hook_execution_reports(trace_id);
 CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_hook_created_at
