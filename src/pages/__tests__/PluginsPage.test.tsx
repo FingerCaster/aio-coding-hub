@@ -15,6 +15,7 @@ import type {
 } from "../../services/plugins";
 import { pluginParseMarketIndex } from "../../services/plugins";
 import { openDesktopSinglePath } from "../../services/desktop/dialog";
+import { openDesktopUrl } from "../../services/desktop/opener";
 import { createTestQueryClient } from "../../test/utils/reactQuery";
 import {
   usePluginDisableMutation,
@@ -49,6 +50,13 @@ vi.mock("../../services/desktop/dialog", async () => {
     "../../services/desktop/dialog"
   );
   return { ...actual, openDesktopSinglePath: vi.fn() };
+});
+
+vi.mock("../../services/desktop/opener", async () => {
+  const actual = await vi.importActual<typeof import("../../services/desktop/opener")>(
+    "../../services/desktop/opener"
+  );
+  return { ...actual, openDesktopUrl: vi.fn() };
 });
 
 vi.mock("../../services/clipboard", () => ({ copyText: vi.fn().mockResolvedValue(undefined) }));
@@ -557,7 +565,7 @@ describe("pages/PluginsPage", () => {
     });
   });
 
-  it("renders featured marketplace by default and keeps advanced source fields folded", () => {
+  it("renders user focused plugin actions and keeps advanced source fields folded", () => {
     vi.mocked(usePluginsListQuery).mockReturnValue({
       data: [summary()],
       isLoading: false,
@@ -567,13 +575,36 @@ describe("pages/PluginsPage", () => {
 
     renderWithProviders(<PluginsPage />);
 
-    expect(screen.getByText("精选插件")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "插件文档" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "导入 .aio-plugin" })).toBeInTheDocument();
+    expect(screen.getByText("官方插件")).toBeInTheDocument();
     expect(screen.getByText("Privacy Filter")).toBeInTheDocument();
-    expect(screen.getByText("Prompt Helper")).toBeInTheDocument();
-    expect(screen.getByText("Redactor")).toBeInTheDocument();
-    expect(screen.getByText("Response Guard")).toBeInTheDocument();
+    expect(screen.queryByText("精选插件")).not.toBeInTheDocument();
+    expect(screen.queryByText("Prompt Helper")).not.toBeInTheDocument();
+    expect(screen.queryByText("Redactor")).not.toBeInTheDocument();
+    expect(screen.queryByText("Response Guard")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("市场索引 JSON")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("市场索引 URL")).not.toBeInTheDocument();
+  });
+
+  it("opens plugin documentation through the desktop opener", async () => {
+    vi.mocked(openDesktopUrl).mockResolvedValue(true as any);
+    vi.mocked(usePluginsListQuery).mockReturnValue({
+      data: [summary()],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+    } as any);
+
+    renderWithProviders(<PluginsPage />);
+
+    fireEvent.click(screen.getByRole("button", { name: "插件文档" }));
+
+    await waitFor(() => {
+      expect(openDesktopUrl).toHaveBeenCalledWith(
+        "https://github.com/dyndynjyxa/aio-coding-hub/blob/main/docs/plugins/README.md"
+      );
+    });
   });
 
   it("reveals advanced market source inputs only after expanding the section", () => {
@@ -620,7 +651,7 @@ describe("pages/PluginsPage", () => {
     });
   });
 
-  it("marks example cards as disabled examples", () => {
+  it("hides example cards from the default user layout", () => {
     vi.mocked(usePluginsListQuery).mockReturnValue({
       data: [summary()],
       isLoading: false,
@@ -630,12 +661,10 @@ describe("pages/PluginsPage", () => {
 
     renderWithProviders(<PluginsPage />);
 
-    const promptHelperCard = screen.getByText("Prompt Helper").closest("article");
-    expect(promptHelperCard).not.toBeNull();
-    expect(
-      within(promptHelperCard as HTMLElement).getByRole("button", { name: "示例" })
-    ).toBeDisabled();
-    expect(screen.getAllByText("示例插件暂未发布为可安装包").length).toBeGreaterThan(0);
+    expect(screen.queryByText("Prompt Helper")).not.toBeInTheDocument();
+    expect(screen.queryByText("Redactor")).not.toBeInTheDocument();
+    expect(screen.queryByText("Response Guard")).not.toBeInTheDocument();
+    expect(screen.queryByText("示例插件暂未发布为可安装包")).not.toBeInTheDocument();
   });
 
   it("loads advanced market listings into cards and routes safe installs remotely", async () => {

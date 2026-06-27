@@ -2,8 +2,18 @@
 
 import { useEffect, useMemo, useState } from "react";
 import { toast } from "sonner";
-import { Download, Upload, Power, PowerOff, RefreshCw, ShieldAlert, Trash2 } from "lucide-react";
+import {
+  BookOpen,
+  Download,
+  Upload,
+  Power,
+  PowerOff,
+  RefreshCw,
+  ShieldAlert,
+  Trash2,
+} from "lucide-react";
 import { openDesktopSinglePath } from "../services/desktop/dialog";
+import { openDesktopUrl } from "../services/desktop/opener";
 import type {
   JsonValue,
   PluginDetail,
@@ -88,6 +98,9 @@ const TRUST_EVENT_TYPES = new Set([
   "plugin.rollback",
   "plugin.official.installed",
 ]);
+
+const PLUGIN_DOCS_URL =
+  "https://github.com/dyndynjyxa/aio-coding-hub/blob/main/docs/plugins/README.md";
 
 function latestTrustAudit(detail: PluginDetail) {
   return detail.audit_logs
@@ -479,6 +492,14 @@ export function PluginsPage() {
     }
   }
 
+  async function handleOpenPluginDocs() {
+    try {
+      await openDesktopUrl(PLUGIN_DOCS_URL);
+    } catch (error) {
+      toast.error(formatActionFailureToast("打开插件文档", error).toast);
+    }
+  }
+
   async function handleUpdate() {
     const filePath = await openDesktopSinglePath({
       title: "选择更新插件包",
@@ -524,10 +545,16 @@ export function PluginsPage() {
           title="插件"
           subtitle="为 AIO Coding Hub 增加本地能力。插件可以在请求发送前、响应返回后或日志保存前处理内容。"
           actions={
-            <Button onClick={handleImport} disabled={busy}>
-              <Download className="h-4 w-4" />
-              导入 .aio-plugin
-            </Button>
+            <>
+              <Button variant="secondary" onClick={handleOpenPluginDocs}>
+                <BookOpen className="h-4 w-4" />
+                插件文档
+              </Button>
+              <Button onClick={handleImport} disabled={busy}>
+                <Download className="h-4 w-4" />
+                导入 .aio-plugin
+              </Button>
+            </>
           }
         />
 
