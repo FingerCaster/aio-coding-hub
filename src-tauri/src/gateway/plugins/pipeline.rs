@@ -1480,6 +1480,7 @@ fn plugin_hook(
 
 fn runtime_kind(plugin: &PluginDetail) -> String {
     match &plugin.manifest.runtime {
+        crate::domain::plugins::PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
         crate::domain::plugins::PluginRuntime::DeclarativeRules { .. } => {
             "declarativeRules".to_string()
         }
@@ -1910,6 +1911,10 @@ mod tests {
                     failure_policy: Some("fail-open".to_string()),
                 }],
                 permissions: permissions.iter().map(|item| item.to_string()).collect(),
+                main: None,
+                activation_events: vec![],
+                contributes: None,
+                capabilities: vec![],
                 host_compatibility: crate::domain::plugins::PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),

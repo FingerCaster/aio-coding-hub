@@ -292,6 +292,7 @@ fn rule_runtime_cache_key(plugin: &PluginDetail) -> String {
     let installed_dir = plugin.installed_dir.as_deref().unwrap_or("");
     let updated_at = plugin.summary.updated_at;
     let runtime_key = match &plugin.manifest.runtime {
+        PluginRuntime::ExtensionHost { language } => format!("extensionHost:{language}"),
         PluginRuntime::DeclarativeRules { rules } => rules.join("\u{1f}"),
         PluginRuntime::Native { engine } => format!("native:{engine}"),
         PluginRuntime::Wasm { abi_version, .. } => format!("wasm:{abi_version}"),
@@ -1148,6 +1149,10 @@ mod tests {
                     "request.body.read".to_string(),
                     "request.body.write".to_string(),
                 ],
+                main: None,
+                activation_events: vec![],
+                contributes: None,
+                capabilities: vec![],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),

@@ -35,9 +35,16 @@ export type PluginPermission =
   | "file.write"
   | "secret.read";
 
-export type PluginRuntime =
+export type ExtensionRuntime = {
+  kind: "extensionHost";
+  language: "typescript";
+};
+
+export type LegacyPluginRuntime =
   | { kind: "declarativeRules"; rules: string[] }
   | { kind: "wasm"; abiVersion: string; memoryLimitBytes?: number };
+
+export type PluginRuntime = ExtensionRuntime | LegacyPluginRuntime;
 
 export type PluginHook = {
   name: GatewayHookName;
@@ -51,6 +58,103 @@ export type PluginHostCompatibility = {
   platforms?: string[];
 };
 
+export type ActivationEvent =
+  | "onStartup"
+  | `onCommand:${string}`
+  | `onProviderEditor:${string}`
+  | `onProtocolBridge:${string}`
+  | `onGatewayHook:${string}`;
+
+export type UiContributionSlot =
+  | "app.sidebar.items"
+  | "home.overview.cards"
+  | "providers.editor.sections"
+  | "providers.editor.fields"
+  | "providers.card.badges"
+  | "providers.card.actions"
+  | "settings.sections"
+  | "logs.detail.tabs"
+  | "logs.detail.actions"
+  | "usage.panels"
+  | "plugins.detail.panels";
+
+export type PluginCapability =
+  | "commands.execute"
+  | "storage.plugin"
+  | "diagnostics.read"
+  | "provider.extensionValues"
+  | "provider.requestPreparation"
+  | "provider.modelDiscovery"
+  | "provider.healthCheck"
+  | "protocol.bridge"
+  | "gateway.hooks";
+
+export type HostRenderedField =
+  | { type: "text"; key: string; label: string; placeholder?: string; required?: boolean }
+  | { type: "password"; key: string; label: string; placeholder?: string; required?: boolean }
+  | { type: "number"; key: string; label: string; min?: number; max?: number; step?: number }
+  | { type: "boolean"; key: string; label: string }
+  | { type: "select"; key: string; label: string; options: Array<{ value: string; label: string }> }
+  | { type: "textarea"; key: string; label: string; rows?: number }
+  | { type: "info"; key: string; label: string; value: string }
+  | { type: "button"; key: string; label: string; command: string };
+
+export type HostRenderedSchema =
+  | { type: "section"; fields: HostRenderedField[] }
+  | { type: "panel"; fields: HostRenderedField[] }
+  | { type: "badge"; label: string; tone?: "neutral" | "success" | "warning" | "danger" };
+
+export type UiContribution = {
+  id: string;
+  title?: string;
+  order?: number;
+  schema: HostRenderedSchema;
+  when?: string;
+};
+
+export type ProviderContribution = {
+  providerType: string;
+  displayName: string;
+  targetCliKeys: Array<"claude" | "codex" | "gemini">;
+  extensionNamespace: string;
+};
+
+export type ProtocolContribution = {
+  protocolId: string;
+  direction: "inbound" | "outbound" | "both";
+};
+
+export type ProtocolBridgeContribution = {
+  bridgeType: string;
+  inboundProtocol: string;
+  outboundProtocol: string;
+  supportsStreaming?: boolean;
+};
+
+export type CommandContribution = {
+  command: string;
+  title: string;
+  category?: string;
+};
+
+export type GatewayHookContribution = PluginHook;
+
+export type GatewayRuleContribution = {
+  id?: string;
+  rules: string[];
+  hooks?: GatewayHookName[];
+};
+
+export type PluginContributes = {
+  providers?: ProviderContribution[];
+  protocols?: ProtocolContribution[];
+  protocolBridges?: ProtocolBridgeContribution[];
+  commands?: CommandContribution[];
+  gatewayHooks?: GatewayHookContribution[];
+  gatewayRules?: GatewayRuleContribution[];
+  ui?: Partial<Record<UiContributionSlot, UiContribution[]>>;
+};
+
 export type JsonValue =
   | null
   | boolean
@@ -59,15 +163,16 @@ export type JsonValue =
   | JsonValue[]
   | { [key: string]: JsonValue | undefined };
 
-export type PluginManifest = {
+type PluginManifestBase = {
   id: string;
   name: string;
   version: string;
   apiVersion: string;
-  runtime: PluginRuntime;
-  hooks: PluginHook[];
-  permissions: PluginPermission[];
   hostCompatibility: PluginHostCompatibility;
+  main?: string;
+  activationEvents?: ActivationEvent[];
+  contributes?: PluginContributes;
+  capabilities?: PluginCapability[];
   entry?: string;
   configSchema?: JsonValue;
   configVersion?: number;
@@ -80,6 +185,20 @@ export type PluginManifest = {
   signature?: string;
   category?: string;
 };
+
+export type PluginManifest = PluginManifestBase &
+  (
+    | {
+        runtime: ExtensionRuntime;
+        hooks?: PluginHook[];
+        permissions?: PluginPermission[];
+      }
+    | {
+        runtime: LegacyPluginRuntime;
+        hooks: PluginHook[];
+        permissions: PluginPermission[];
+      }
+  );
 
 export type GatewayNormalizedMessage = {
   role: string;
@@ -196,6 +315,32 @@ const RESERVED_PERMISSIONS = new Set<PluginPermission>([
   "secret.read",
 ]);
 
+const KNOWN_UI_SLOTS = new Set<UiContributionSlot>([
+  "app.sidebar.items",
+  "home.overview.cards",
+  "providers.editor.sections",
+  "providers.editor.fields",
+  "providers.card.badges",
+  "providers.card.actions",
+  "settings.sections",
+  "logs.detail.tabs",
+  "logs.detail.actions",
+  "usage.panels",
+  "plugins.detail.panels",
+]);
+
+const KNOWN_CAPABILITIES = new Set<PluginCapability>([
+  "commands.execute",
+  "storage.plugin",
+  "diagnostics.read",
+  "provider.extensionValues",
+  "provider.requestPreparation",
+  "provider.modelDiscovery",
+  "provider.healthCheck",
+  "protocol.bridge",
+  "gateway.hooks",
+]);
+
 export function permissionRisk(permission: PluginPermission): PluginPermissionRisk {
   return PERMISSION_RISKS[permission];
 }
@@ -237,10 +382,24 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
       "hostCompatibility.pluginApi must support plugin API v1"
     );
   }
-  if (manifest.hooks.length === 0) {
+  if (manifest.runtime.kind === "extensionHost") {
+    if (!manifest.main || manifest.main.trim() === "") {
+      return invalid("PLUGIN_MISSING_MAIN", "extensionHost runtime requires main");
+    }
+    if (manifest.runtime.language !== "typescript") {
+      return invalid("PLUGIN_INVALID_RUNTIME", "extensionHost language must be typescript");
+    }
+    const contributionError = validateContributes(manifest.contributes ?? {});
+    if (contributionError) return contributionError;
+    return validateCapabilities(manifest.capabilities ?? []);
+  }
+
+  const hooks = manifest.hooks ?? [];
+  const permissions = manifest.permissions ?? [];
+  if (hooks.length === 0) {
     return invalid("PLUGIN_MISSING_HOOKS", "plugin must declare at least one hook");
   }
-  for (const hook of manifest.hooks) {
+  for (const hook of hooks) {
     if (RESERVED_HOOKS.has(hook.name)) {
       return invalid(
         "PLUGIN_RESERVED_HOOK",
@@ -251,7 +410,7 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
       return invalid("PLUGIN_UNKNOWN_HOOK", `unknown hook: ${hook.name}`);
     }
   }
-  for (const permission of manifest.permissions) {
+  for (const permission of permissions) {
     if (RESERVED_PERMISSIONS.has(permission)) {
       return invalid(
         "PLUGIN_RESERVED_PERMISSION",
@@ -262,10 +421,28 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
       return invalid("PLUGIN_UNKNOWN_PERMISSION", `unknown permission: ${permission}`);
     }
   }
-  const permissionSetError = validatePermissionSet(manifest);
+  const permissionSetError = validatePermissionSet(hooks, permissions);
   if (permissionSetError) return permissionSetError;
-  const permissionScopeError = validatePermissionScope(manifest);
+  const permissionScopeError = validatePermissionScope(hooks, permissions);
   if (permissionScopeError) return permissionScopeError;
+  return { ok: true };
+}
+
+function validateContributes(contributes: PluginContributes): ValidationResult | null {
+  for (const slot of Object.keys(contributes.ui ?? {})) {
+    if (!KNOWN_UI_SLOTS.has(slot as UiContributionSlot)) {
+      return invalid("PLUGIN_UNKNOWN_UI_SLOT", `unknown UI contribution slot: ${slot}`);
+    }
+  }
+  return null;
+}
+
+function validateCapabilities(capabilities: readonly PluginCapability[]): ValidationResult {
+  for (const capability of capabilities) {
+    if (!KNOWN_CAPABILITIES.has(capability)) {
+      return invalid("PLUGIN_UNKNOWN_CAPABILITY", `unknown capability: ${capability}`);
+    }
+  }
   return { ok: true };
 }
 
@@ -295,9 +472,12 @@ function supportsPluginApiV1(value: string): boolean {
   return trimmed === "^1.0.0" || trimmed === "1.x.x" || trimmed === ">=1.0.0 <2.0.0";
 }
 
-function validatePermissionSet(manifest: PluginManifest): ValidationResult | null {
-  const set = new Set(manifest.permissions);
-  const hooks = new Set(manifest.hooks.map((hook) => hook.name));
+function validatePermissionSet(
+  pluginHooks: readonly PluginHook[],
+  permissions: readonly PluginPermission[]
+): ValidationResult | null {
+  const set = new Set(permissions);
+  const hooks = new Set(pluginHooks.map((hook) => hook.name));
 
   if (
     hooks.has("gateway.request.afterBodyRead") &&
@@ -357,10 +537,13 @@ function hookAllowsPermission(hookName: GatewayHookName, permission: PluginPermi
   return false;
 }
 
-function validatePermissionScope(manifest: PluginManifest): ValidationResult | null {
-  for (const permission of manifest.permissions) {
+function validatePermissionScope(
+  hooks: readonly PluginHook[],
+  permissions: readonly PluginPermission[]
+): ValidationResult | null {
+  for (const permission of permissions) {
     if (RESERVED_PERMISSIONS.has(permission)) continue;
-    if (!manifest.hooks.some((hook) => hookAllowsPermission(hook.name, permission))) {
+    if (!hooks.some((hook) => hookAllowsPermission(hook.name, permission))) {
       return invalid(
         "PLUGIN_PERMISSION_SCOPE_MISMATCH",
         `permission ${permission} does not apply to any declared hook`

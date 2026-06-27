@@ -223,6 +223,10 @@ mod tests {
                     failure_policy: Some("fail-open".to_string()),
                 }],
                 permissions: vec![],
+                main: None,
+                activation_events: vec![],
+                contributes: None,
+                capabilities: vec![],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),

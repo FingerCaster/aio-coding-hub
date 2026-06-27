@@ -64,6 +64,10 @@ impl RuntimeGatewayPluginExecutor {
                 "PLUGIN_WASM_NOT_WIRED",
                 "wasm runtime policy is enabled but gateway execution is not wired in this release",
             )),
+            RuntimeDispatch::ExtensionHostNotWired => Err(GatewayPluginError::new(
+                "PLUGIN_EXTENSION_HOST_NOT_WIRED",
+                "extension host runtime execution is not wired in this release",
+            )),
         }
     }
 
@@ -408,6 +412,10 @@ mod tests {
                     "request.body.read".to_string(),
                     "request.body.write".to_string(),
                 ],
+                main: None,
+                activation_events: vec![],
+                contributes: None,
+                capabilities: vec![],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),

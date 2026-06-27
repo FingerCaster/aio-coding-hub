@@ -826,6 +826,10 @@ mod tests {
                     "request.body.read".to_string(),
                     "request.body.write".to_string(),
                 ],
+                main: None,
+                activation_events: vec![],
+                contributes: None,
+                capabilities: vec![],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),

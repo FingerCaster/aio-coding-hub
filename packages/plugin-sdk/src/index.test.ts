@@ -1,4 +1,4 @@
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, test } from "vitest";
 import contract from "../../../docs/plugins/plugin-api-v1-contract.json";
 import {
   type PluginHookContext,
@@ -19,7 +19,113 @@ const manifest: PluginManifest = {
   hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
 };
 
+const openRouterManifest: PluginManifest = {
+  id: "acme.openrouter",
+  name: "OpenRouter Provider",
+  version: "0.1.0",
+  apiVersion: "1.0.0",
+  main: "dist/extension.js",
+  runtime: { kind: "extensionHost", language: "typescript" },
+  activationEvents: ["onStartup", "onProviderEditor:openrouter"],
+  contributes: {
+    providers: [
+      {
+        providerType: "openrouter",
+        displayName: "OpenRouter",
+        targetCliKeys: ["claude", "codex"],
+        extensionNamespace: "openrouter",
+      },
+    ],
+    ui: {
+      "providers.editor.sections": [
+        {
+          id: "openrouter-routing",
+          title: "OpenRouter 路由",
+          order: 100,
+          schema: {
+            type: "section",
+            fields: [
+              { type: "text", key: "route", label: "Route" },
+              { type: "boolean", key: "fallbackEnabled", label: "启用模型兜底" },
+            ],
+          },
+        },
+      ],
+    },
+    commands: [
+      {
+        command: "acme.openrouter.refreshModels",
+        title: "刷新 OpenRouter 模型",
+        category: "Provider",
+      },
+    ],
+  },
+  capabilities: ["provider.extensionValues", "commands.execute"],
+  hostCompatibility: {
+    app: ">=0.62.0 <1.0.0",
+    pluginApi: "^1.0.0",
+    platforms: ["macos", "windows", "linux"],
+  },
+};
+
 describe("validateManifest", () => {
+  test("validates extension host provider manifest", () => {
+    expect(validateManifest(openRouterManifest)).toEqual({ ok: true });
+  });
+
+  test("rejects extension host manifest without main", () => {
+    const manifest = { ...openRouterManifest, main: undefined };
+    expect(validateManifest(manifest as PluginManifest)).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_MISSING_MAIN",
+        message: "extensionHost runtime requires main",
+      },
+    });
+  });
+
+  test("rejects unknown UI contribution slot", () => {
+    const manifest = {
+      ...openRouterManifest,
+      contributes: {
+        ui: {
+          "providers.editor.unknown": [],
+        },
+      },
+    };
+    expect(validateManifest(manifest as PluginManifest).ok).toBe(false);
+  });
+
+  test("validates protocol bridge manifest", () => {
+    const manifest: PluginManifest = {
+      id: "acme.bridge",
+      name: "Claude OpenAI Gemini Bridge",
+      version: "0.1.0",
+      apiVersion: "1.0.0",
+      main: "dist/extension.js",
+      runtime: { kind: "extensionHost", language: "typescript" },
+      activationEvents: ["onProtocolBridge:acme.bridge.openai-gemini"],
+      contributes: {
+        protocols: [
+          { protocolId: "openai.chat", direction: "both" },
+          { protocolId: "gemini.generateContent", direction: "both" },
+        ],
+        protocolBridges: [
+          {
+            bridgeType: "acme.bridge.openai-gemini",
+            inboundProtocol: "openai.chat",
+            outboundProtocol: "gemini.generateContent",
+            supportsStreaming: true,
+          },
+        ],
+      },
+      capabilities: ["protocol.bridge"],
+      hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+    };
+
+    expect(validateManifest(manifest)).toEqual({ ok: true });
+  });
+
   it("rejects reserved hooks until the host wires them", () => {
     const result = validateManifest({
       ...manifest,

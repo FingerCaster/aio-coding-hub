@@ -756,6 +756,7 @@ fn detail_from_row(row: &rusqlite::Row<'_>) -> Result<PluginDetailRow, rusqlite:
 
 fn runtime_name(manifest: &PluginManifest) -> String {
     match manifest.runtime {
+        PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
         PluginRuntime::DeclarativeRules { .. } => "declarativeRules".to_string(),
         PluginRuntime::Native { ref engine } => format!("native:{engine}"),
         PluginRuntime::Wasm { .. } => "wasm".to_string(),

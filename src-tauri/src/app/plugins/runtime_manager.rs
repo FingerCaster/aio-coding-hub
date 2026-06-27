@@ -9,6 +9,7 @@ pub(crate) enum RuntimeDispatch {
     DeclarativeRules,
     NativePrivacyFilter,
     WasmNotWired,
+    ExtensionHostNotWired,
 }
 
 pub(crate) struct PluginRuntimeManager {
@@ -49,6 +50,7 @@ impl PluginRuntimeManager {
         let _process_enabled = self.policy.process_enabled;
 
         match runtime {
+            PluginRuntime::ExtensionHost { .. } => Ok(RuntimeDispatch::ExtensionHostNotWired),
             PluginRuntime::DeclarativeRules { .. } => Ok(RuntimeDispatch::DeclarativeRules),
             PluginRuntime::Native { engine }
                 if plugin_id == "official.privacy-filter" && engine == "privacyFilter" =>

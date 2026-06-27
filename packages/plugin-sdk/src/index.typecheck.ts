@@ -1,9 +1,13 @@
 import {
+  type ActivationEvent,
   type GatewayHookName,
   type PluginHookResult,
+  type PluginCapability,
+  type PluginContributes,
   type PluginManifest,
   type PluginPermission,
   type PluginRuntime,
+  type UiContributionSlot,
   permissionRisk,
   validateManifest,
 } from "./index";
@@ -22,6 +26,9 @@ const manifest: PluginManifest = {
 const runtime: PluginRuntime = manifest.runtime;
 const hook: GatewayHookName = manifest.hooks[0].name;
 const permission: PluginPermission = "request.body.read";
+const activationEvent: ActivationEvent = "onProviderEditor:openrouter";
+const capability: PluginCapability = "provider.extensionValues";
+const slot: UiContributionSlot = "providers.editor.sections";
 
 if (runtime.kind !== "declarativeRules") {
   throw new Error("unexpected runtime");
@@ -33,6 +40,55 @@ if (hook !== "gateway.request.afterBodyRead") {
 
 if (permissionRisk(permission) !== "high") {
   throw new Error("unexpected risk");
+}
+
+const extensionManifest: PluginManifest = {
+  id: "acme.openrouter",
+  name: "OpenRouter Provider",
+  version: "0.1.0",
+  apiVersion: "1.0.0",
+  main: "dist/extension.js",
+  runtime: { kind: "extensionHost", language: "typescript" },
+  activationEvents: ["onStartup", activationEvent],
+  contributes: {
+    providers: [
+      {
+        providerType: "openrouter",
+        displayName: "OpenRouter",
+        targetCliKeys: ["claude", "codex"],
+        extensionNamespace: "openrouter",
+      },
+    ],
+    ui: {
+      [slot]: [
+        {
+          id: "openrouter-routing",
+          title: "OpenRouter routing",
+          schema: {
+            type: "section",
+            fields: [{ type: "text", key: "route", label: "Route" }],
+          },
+        },
+      ],
+    },
+  },
+  capabilities: [capability, "commands.execute"],
+  hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+};
+
+const extensionRuntime: PluginRuntime = extensionManifest.runtime;
+if (extensionRuntime.kind !== "extensionHost") {
+  throw new Error("unexpected extension runtime");
+}
+
+const contributes: PluginContributes = extensionManifest.contributes ?? {};
+if (contributes.ui?.[slot]?.[0]?.schema.type !== "section") {
+  throw new Error("extension UI contributions should be representable");
+}
+
+const extensionResult = validateManifest(extensionManifest);
+if (!extensionResult.ok) {
+  throw new Error(extensionResult.error.message);
 }
 
 const result = validateManifest(manifest);

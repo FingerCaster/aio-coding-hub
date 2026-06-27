@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
 
+use super::plugin_contributions::{is_known_capability, is_known_ui_slot, PluginContributes};
+
 pub type PluginId = String;
 
 const SUPPORTED_PLUGIN_API_MAJOR: u64 = 1;
@@ -12,8 +14,19 @@ pub struct PluginManifest {
     #[serde(rename = "apiVersion")]
     pub api_version: String,
     pub runtime: PluginRuntime,
+    #[serde(default)]
     pub hooks: Vec<PluginHook>,
+    #[serde(default)]
     pub permissions: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub main: Option<String>,
+    #[serde(rename = "activationEvents")]
+    #[serde(default)]
+    pub activation_events: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub contributes: Option<PluginContributes>,
+    #[serde(default)]
+    pub capabilities: Vec<String>,
     #[serde(rename = "hostCompatibility")]
     pub host_compatibility: PluginHostCompatibility,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -45,6 +58,9 @@ pub struct PluginManifest {
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PluginRuntime {
+    ExtensionHost {
+        language: String,
+    },
     DeclarativeRules {
         rules: Vec<String>,
     },
@@ -459,10 +475,20 @@ pub fn validate_manifest(
     validate_semver(&manifest.version, "PLUGIN_INVALID_VERSION")?;
     validate_manifest_api_version(&manifest.api_version)?;
     validate_runtime(manifest)?;
-    validate_hooks(&manifest.hooks)?;
-    validate_permissions(&manifest.permissions)?;
-    validate_hook_permissions(&manifest.hooks, &manifest.permissions)?;
-    validate_permission_scope(&manifest.hooks, &manifest.permissions)?;
+    match &manifest.runtime {
+        PluginRuntime::ExtensionHost { .. } => {
+            validate_contributes(manifest.contributes.as_ref())?;
+            validate_capabilities(&manifest.capabilities)?;
+        }
+        PluginRuntime::DeclarativeRules { .. }
+        | PluginRuntime::Native { .. }
+        | PluginRuntime::Wasm { .. } => {
+            validate_hooks(&manifest.hooks)?;
+            validate_permissions(&manifest.permissions)?;
+            validate_hook_permissions(&manifest.hooks, &manifest.permissions)?;
+            validate_permission_scope(&manifest.hooks, &manifest.permissions)?;
+        }
+    }
     validate_config_schema(manifest.config_schema.as_ref())?;
     validate_host_compatibility(&manifest.host_compatibility, host_version)?;
     Ok(())
@@ -546,6 +572,24 @@ fn validate_manifest_api_version(api_version: &str) -> Result<(), PluginValidati
 
 fn validate_runtime(manifest: &PluginManifest) -> Result<(), PluginValidationError> {
     match &manifest.runtime {
+        PluginRuntime::ExtensionHost { language } => {
+            if manifest
+                .main
+                .as_deref()
+                .map_or(true, |main| main.trim().is_empty())
+            {
+                return Err(PluginValidationError::new(
+                    "PLUGIN_MISSING_MAIN",
+                    "extensionHost runtime requires main",
+                ));
+            }
+            if language != "typescript" {
+                return Err(PluginValidationError::new(
+                    "PLUGIN_INVALID_RUNTIME",
+                    "extensionHost language must be typescript",
+                ));
+            }
+        }
         PluginRuntime::DeclarativeRules { rules } => {
             if rules.is_empty() {
                 return Err(PluginValidationError::new(
@@ -575,6 +619,35 @@ fn validate_runtime(manifest: &PluginManifest) -> Result<(), PluginValidationErr
                     "WASM ABI major version is not supported",
                 ));
             }
+        }
+    }
+    Ok(())
+}
+
+fn validate_contributes(
+    contributes: Option<&PluginContributes>,
+) -> Result<(), PluginValidationError> {
+    let Some(contributes) = contributes else {
+        return Ok(());
+    };
+    for slot in contributes.ui.keys() {
+        if !is_known_ui_slot(slot) {
+            return Err(PluginValidationError::new(
+                "PLUGIN_UNKNOWN_UI_SLOT",
+                format!("unknown UI contribution slot: {slot}"),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_capabilities(capabilities: &[String]) -> Result<(), PluginValidationError> {
+    for capability in capabilities {
+        if !is_known_capability(capability) {
+            return Err(PluginValidationError::new(
+                "PLUGIN_UNKNOWN_CAPABILITY",
+                format!("unknown capability: {capability}"),
+            ));
         }
     }
     Ok(())
@@ -853,6 +926,67 @@ mod tests {
         let manifest: PluginManifest = serde_json::from_value(valid_manifest()).unwrap();
         validate_manifest(&manifest, "0.56.0").unwrap();
         assert_eq!(manifest.id.as_str(), "community.prompt-helper");
+    }
+
+    #[test]
+    fn validates_extension_host_provider_manifest() {
+        let manifest = serde_json::json!({
+            "id": "acme.openrouter",
+            "name": "OpenRouter Provider",
+            "version": "0.1.0",
+            "apiVersion": "1.0.0",
+            "main": "dist/extension.js",
+            "runtime": { "kind": "extensionHost", "language": "typescript" },
+            "activationEvents": ["onStartup", "onProviderEditor:openrouter"],
+            "contributes": {
+                "providers": [{
+                    "providerType": "openrouter",
+                    "displayName": "OpenRouter",
+                    "targetCliKeys": ["claude", "codex"],
+                    "extensionNamespace": "openrouter"
+                }],
+                "ui": {
+                    "providers.editor.sections": [{
+                        "id": "openrouter-routing",
+                        "title": "OpenRouter 路由",
+                        "order": 100,
+                        "schema": {
+                            "type": "section",
+                            "fields": [{ "type": "text", "key": "route", "label": "Route" }]
+                        }
+                    }]
+                },
+                "commands": [{
+                    "command": "acme.openrouter.refreshModels",
+                    "title": "刷新 OpenRouter 模型"
+                }]
+            },
+            "capabilities": ["provider.extensionValues", "commands.execute"],
+            "hostCompatibility": { "app": ">=0.62.0 <1.0.0", "pluginApi": "^1.0.0" }
+        });
+        let manifest: PluginManifest = serde_json::from_value(manifest).unwrap();
+
+        validate_manifest(&manifest, "0.62.0").unwrap();
+    }
+
+    #[test]
+    fn extension_host_manifest_rejects_unknown_slot() {
+        let manifest = serde_json::json!({
+            "id": "acme.bad-slot",
+            "name": "Bad Slot",
+            "version": "0.1.0",
+            "apiVersion": "1.0.0",
+            "main": "dist/extension.js",
+            "runtime": { "kind": "extensionHost", "language": "typescript" },
+            "activationEvents": ["onStartup"],
+            "contributes": { "ui": { "providers.editor.unknown": [] } },
+            "capabilities": [],
+            "hostCompatibility": { "app": ">=0.62.0 <1.0.0", "pluginApi": "^1.0.0" }
+        });
+        let manifest: PluginManifest = serde_json::from_value(manifest).unwrap();
+
+        let err = validate_manifest(&manifest, "0.62.0").unwrap_err();
+        assert_eq!(err.code, "PLUGIN_UNKNOWN_UI_SLOT");
     }
 
     #[test]

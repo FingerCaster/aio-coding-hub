@@ -351,6 +351,16 @@ fn compare_prerelease_identifiers(
 
 fn runtime_lifecycle_summary(manifest: &PluginManifest) -> PluginRuntimeLifecycleSummary {
     match &manifest.runtime {
+        PluginRuntime::ExtensionHost { .. } => PluginRuntimeLifecycleSummary {
+            kind: "extensionHost".to_string(),
+            label: "Extension Host".to_string(),
+            supported: false,
+            blocking_reasons: vec![lifecycle_notice(
+                "warn",
+                "PLUGIN_EXTENSION_HOST_NOT_WIRED",
+                "extension host runtime execution is not wired in this release",
+            )],
+        },
         PluginRuntime::DeclarativeRules { .. } => PluginRuntimeLifecycleSummary {
             kind: "declarativeRules".to_string(),
             label: "Declarative Rules".to_string(),
@@ -1567,6 +1577,10 @@ fn ensure_required_permissions_granted(detail: &PluginDetail) -> AppResult<()> {
 
 fn ensure_runtime_enabled(manifest: &PluginManifest) -> AppResult<()> {
     match &manifest.runtime {
+        PluginRuntime::ExtensionHost { .. } => Err(AppError::new(
+            "PLUGIN_RUNTIME_DISABLED",
+            "extension host runtime execution is not wired in this release",
+        )),
         PluginRuntime::DeclarativeRules { .. } => Ok(()),
         PluginRuntime::Native { engine }
             if manifest.id == "official.privacy-filter" && engine == "privacyFilter" =>

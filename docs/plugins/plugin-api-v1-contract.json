@@ -1,7 +1,87 @@
 {
   "apiVersion": "1.0.0",
+  "manifestVersion": "1.0.0",
   "defaultHookTimeoutMs": 150,
   "defaultFailurePolicy": "fail-open",
+  "runtimes": {
+    "extensionHost": {
+      "language": "typescript",
+      "requiresMain": true,
+      "status": "contract"
+    },
+    "declarativeRules": {
+      "status": "legacy",
+      "requiresHooks": true
+    },
+    "wasm": {
+      "status": "policy-gated",
+      "requiresHooks": true
+    },
+    "native:privacyFilter": {
+      "status": "official"
+    }
+  },
+  "activationEvents": [
+    "onStartup",
+    "onCommand:<command>",
+    "onProviderEditor:<providerType>",
+    "onProtocolBridge:<bridgeType>",
+    "onGatewayHook:<hookName>"
+  ],
+  "capabilities": [
+    "commands.execute",
+    "storage.plugin",
+    "diagnostics.read",
+    "provider.extensionValues",
+    "provider.requestPreparation",
+    "provider.modelDiscovery",
+    "provider.healthCheck",
+    "protocol.bridge",
+    "gateway.hooks"
+  ],
+  "uiContributionSlots": [
+    "app.sidebar.items",
+    "home.overview.cards",
+    "providers.editor.sections",
+    "providers.editor.fields",
+    "providers.card.badges",
+    "providers.card.actions",
+    "settings.sections",
+    "logs.detail.tabs",
+    "logs.detail.actions",
+    "usage.panels",
+    "plugins.detail.panels"
+  ],
+  "contributionPoints": [
+    "providers",
+    "protocols",
+    "protocolBridges",
+    "commands",
+    "gatewayHooks",
+    "gatewayRules",
+    "ui"
+  ],
+  "providerContribution": {
+    "requiredFields": ["providerType", "displayName", "targetCliKeys", "extensionNamespace"],
+    "targetCliKeys": ["claude", "codex", "gemini"]
+  },
+  "protocolContribution": {
+    "requiredFields": ["protocolId", "direction"],
+    "directions": ["inbound", "outbound", "both"]
+  },
+  "protocolBridgeContribution": {
+    "requiredFields": ["bridgeType", "inboundProtocol", "outboundProtocol"],
+    "optionalFields": ["supportsStreaming"]
+  },
+  "commandContribution": {
+    "requiredFields": ["command", "title"],
+    "optionalFields": ["category"]
+  },
+  "hostRenderedSchema": {
+    "schemaTypes": ["section", "panel", "badge"],
+    "fieldTypes": ["text", "password", "number", "boolean", "select", "textarea", "info", "button"],
+    "badgeTones": ["neutral", "success", "warning", "danger"]
+  },
   "activeHooks": [
     "gateway.request.afterBodyRead",
     "gateway.request.beforeSend",
@@ -171,7 +251,7 @@
       "contextFields": ["traceId", "log.message"]
     }
   },
-  "communityRuntimes": ["declarativeRules"],
+  "communityRuntimes": ["extensionHost", "declarativeRules"],
   "policyGatedRuntimes": ["wasm"],
   "officialRuntimes": ["native:privacyFilter"]
 }

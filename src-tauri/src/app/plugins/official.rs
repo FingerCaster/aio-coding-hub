@@ -126,6 +126,7 @@ mod tests {
         let fixture = official_plugin(plugin_id).expect("official plugin fixture");
         let permissions = fixture.manifest.permissions.clone();
         let runtime = match &fixture.manifest.runtime {
+            PluginRuntime::ExtensionHost { .. } => "extensionHost".to_string(),
             PluginRuntime::DeclarativeRules { .. } => "declarativeRules".to_string(),
             PluginRuntime::Native { engine } => format!("native:{engine}"),
             PluginRuntime::Wasm { .. } => "wasm".to_string(),
