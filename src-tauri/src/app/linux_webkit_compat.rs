@@ -17,7 +17,7 @@
 //! Users can opt out by setting `WEBKIT_DISABLE_COMPOSITING_MODE` to any value
 //! before launching the app.
 //!
-//! Ref: <https://github.com/dyndynjyxa/aio-coding-hub/issues/93>
+//! Ref: <https://github.com/FingerCaster/aio-coding-hub/issues/93>
 
 /// Apply WebKitGTK compatibility patches for Linux/Wayland.
 ///

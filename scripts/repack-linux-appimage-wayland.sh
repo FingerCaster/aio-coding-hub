@@ -35,7 +35,7 @@
 #   - fuse / fuse2   Required by AppImage extraction (or use --appimage-extract
 #                    which works without FUSE).
 #
-# Ref: https://github.com/dyndynjyxa/aio-coding-hub/issues/93
+# Ref: https://github.com/FingerCaster/aio-coding-hub/issues/93
 
 set -euo pipefail
 

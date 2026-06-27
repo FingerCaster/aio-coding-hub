@@ -42,7 +42,7 @@
   "plugins": {
     "updater": {
       "endpoints": [
-        "https://github.com/dyndynjyxa/aio-coding-hub/releases/latest/download/latest.json"
+        "https://github.com/FingerCaster/aio-coding-hub/releases/latest/download/latest.json"
       ],
       "pubkey": "dW50cnVzdGVkIGNvbW1lbnQ6IG1pbmlzaWduIHB1YmxpYyBrZXk6IDYzQzM1RUIxM0I1MzQxNjQKUldSa1FWTTdzVjdEWXdCNE5mbGZHTWFNczZrT1UrMzZPdjJRWldHTlQ3WnZIV3dEM0U1S1BFaWEK",
       "windows": {

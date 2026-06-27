@@ -43,13 +43,16 @@ fn settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<Path
     Ok(app_paths::app_data_dir(app)?.join("settings.json"))
 }
 
-fn legacy_settings_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<PathBuf> {
-    let config_dir = app
-        .path()
-        .config_dir()
-        .map_err(|e| format!("failed to resolve legacy config dir: {e}"))?;
+fn legacy_settings_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<Option<PathBuf>> {
+    let Some(config_dir) = app.path().config_dir().ok() else {
+        return Ok(None);
+    };
 
-    Ok(config_dir.join(LEGACY_IDENTIFIER).join("settings.json"))
+    Ok(Some(
+        config_dir.join(LEGACY_IDENTIFIER).join("settings.json"),
+    ))
 }
 
 fn invalid_settings_json(reason: impl std::fmt::Display) -> crate::shared::error::AppError {
@@ -173,38 +176,39 @@ pub fn read<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppSettin
     }
 
     if !path.exists() {
-        let legacy_path = legacy_settings_path(app)?;
-        if legacy_path.exists() {
-            let content = read_settings_json_file(&legacy_path)?;
-            let (settings, schema_version_present, raw_settings_json) =
-                parse_settings_json(&content)?;
+        if let Some(legacy_path) = legacy_settings_path(app)? {
+            if legacy_path.exists() {
+                let content = read_settings_json_file(&legacy_path)?;
+                let (settings, schema_version_present, raw_settings_json) =
+                    parse_settings_json(&content)?;
 
-            if settings.preferred_port < 1024 {
-                return Err(
-                    "SEC_INVALID_INPUT: invalid settings.json: preferred_port must be between 1024 and 65535"
-                        .to_string()
-                        .into(),
-                );
-            }
-            if settings.log_retention_days == 0 {
-                return Err(
-                    "SEC_INVALID_INPUT: invalid settings.json: log_retention_days must be >= 1"
-                        .to_string()
-                        .into(),
-                );
-            }
+                if settings.preferred_port < 1024 {
+                    return Err(
+                        "SEC_INVALID_INPUT: invalid settings.json: preferred_port must be between 1024 and 65535"
+                            .to_string()
+                            .into(),
+                    );
+                }
+                if settings.log_retention_days == 0 {
+                    return Err(
+                        "SEC_INVALID_INPUT: invalid settings.json: log_retention_days must be >= 1"
+                            .to_string()
+                            .into(),
+                    );
+                }
 
-            // Best-effort migration: copy legacy settings into the new dotdir (do not delete legacy file).
-            let mut settings = settings;
-            let repaired =
-                repair_settings(&mut settings, schema_version_present, &raw_settings_json)?;
-            validate_bounds(&settings)?;
-            if repaired {
-                // best-effort: persist sanitized defaults
+                // Best-effort migration: copy legacy settings into the new dotdir (do not delete legacy file).
+                let mut settings = settings;
+                let repaired =
+                    repair_settings(&mut settings, schema_version_present, &raw_settings_json)?;
+                validate_bounds(&settings)?;
+                if repaired {
+                    // best-effort: persist sanitized defaults
+                }
+                let _ = write(app, &settings);
+                cache_settings(&path, &settings);
+                return Ok(settings);
             }
-            let _ = write(app, &settings);
-            cache_settings(&path, &settings);
-            return Ok(settings);
         }
 
         let settings = AppSettings::default();

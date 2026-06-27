@@ -5,7 +5,7 @@
 
 **Local AI CLI Unified Gateway** — Route Claude Code / Codex / Gemini CLI through a single entry point
 
-[![Release](https://img.shields.io/github/v/release/dyndynjyxa/aio-coding-hub?style=flat-square)](https://github.com/dyndynjyxa/aio-coding-hub/releases)
+[![Release](https://img.shields.io/github/v/release/FingerCaster/aio-coding-hub?style=flat-square)](https://github.com/FingerCaster/aio-coding-hub/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20|%20macOS%20|%20Linux-lightgrey?style=flat-square)](#installation)
 
@@ -108,7 +108,7 @@
 
 ### Download from Releases (Recommended)
 
-Go to [Releases](https://github.com/dyndynjyxa/aio-coding-hub/releases) and download for your platform:
+Go to [Releases](https://github.com/FingerCaster/aio-coding-hub/releases) and download for your platform:
 
 <!-- SUPPORT_MATRIX_RELEASE_DOWNLOAD:START -->
 | Platform | Official release packages |
@@ -135,7 +135,7 @@ yay -S aio-coding-hub-bin
 **AppImage users**
 
 The app automatically detects Wayland sessions and sets `WEBKIT_DISABLE_COMPOSITING_MODE=1`
-to prevent EGL display initialisation crashes (see [issue #93](https://github.com/dyndynjyxa/aio-coding-hub/issues/93)).
+to prevent EGL display initialisation crashes (see [issue #93](https://github.com/FingerCaster/aio-coding-hub/issues/93)).
 If you still see a blank white window, use the `*-wayland.AppImage` artifact from the Release page
 (bundled EGL/Mesa libraries stripped; system versions are used instead):
 
@@ -177,7 +177,7 @@ sudo apt-get install -y libwebkit2gtk-4.1-dev libappindicator3-dev librsvg2-dev 
 </details>
 
 ```bash
-git clone https://github.com/dyndynjyxa/aio-coding-hub.git
+git clone https://github.com/FingerCaster/aio-coding-hub.git
 cd aio-coding-hub
 pnpm install
 
@@ -274,4 +274,4 @@ docs: update installation guide
 
 ---
 
-[![Stargazers over time](https://starchart.cc/dyndynjyxa/aio-coding-hub.svg?variant=adaptive)](https://starchart.cc/dyndynjyxa/aio-coding-hub)
+[![Stargazers over time](https://starchart.cc/FingerCaster/aio-coding-hub.svg?variant=adaptive)](https://starchart.cc/FingerCaster/aio-coding-hub)

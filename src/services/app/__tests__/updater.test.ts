@@ -1,6 +1,10 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { AIO_REPO_URL } from "../../../constants/urls";
 import { tauriInvoke } from "../../../test/mocks/tauri";
 import { setTauriRuntime } from "../../../test/utils/tauriRuntime";
+
+const AIO_REPO_PATH = new URL(AIO_REPO_URL).pathname.split("/").filter(Boolean);
+const AIO_RELEASE_TAG_URL = `${AIO_REPO_URL}/releases/tag/aio-coding-hub-v0.60.0`;
 
 describe("services/app/updater", () => {
   beforeEach(() => {
@@ -68,7 +72,7 @@ describe("services/app/updater", () => {
       version: "0.60.0",
       currentVersion: "0.59.0",
       date: "2026-06-14T15:58:48Z",
-      body: "See release: https://github.com/dyndynjyxa/aio-coding-hub/releases/tag/aio-coding-hub-v0.60.0",
+      body: `See release: ${AIO_RELEASE_TAG_URL}`,
     } as any);
 
     const fetchMock = vi.fn().mockResolvedValue({
@@ -88,7 +92,7 @@ describe("services/app/updater", () => {
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
-      "https://api.github.com/repos/dyndynjyxa/aio-coding-hub/releases/tags/aio-coding-hub-v0.60.0",
+      `https://api.github.com/repos/${AIO_REPO_PATH[0]}/${AIO_REPO_PATH[1]}/releases/tags/aio-coding-hub-v0.60.0`,
       expect.objectContaining({
         headers: expect.objectContaining({ accept: "application/vnd.github+json" }),
       })
@@ -100,8 +104,7 @@ describe("services/app/updater", () => {
 
     setTauriRuntime();
 
-    const fallbackBody =
-      "See release: https://github.com/dyndynjyxa/aio-coding-hub/releases/tag/aio-coding-hub-v0.60.0";
+    const fallbackBody = AIO_RELEASE_TAG_URL;
     vi.mocked(tauriInvoke).mockResolvedValueOnce({
       rid: 4,
       version: "0.60.0",

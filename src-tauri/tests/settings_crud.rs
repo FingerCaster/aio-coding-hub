@@ -37,6 +37,41 @@ fn settings_read_defaults() {
         json_i64(&settings, "circuit_breaker_open_duration_minutes"),
         30
     );
+    assert_eq!(
+        settings["update_releases_url"],
+        serde_json::json!("https://github.com/FingerCaster/aio-coding-hub/releases")
+    );
+}
+
+#[test]
+fn settings_migrates_legacy_update_releases_url_to_fork() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+
+    let mut settings =
+        aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read defaults");
+    settings["schema_version"] = serde_json::json!(35);
+    settings["update_releases_url"] =
+        serde_json::json!("https://github.com/dyndynjyxa/aio-coding-hub/releases");
+
+    let app_data_dir =
+        aio_coding_hub_lib::test_support::app_data_dir(&handle).expect("app data dir");
+    std::fs::write(
+        app_data_dir.join("settings.json"),
+        serde_json::to_vec_pretty(&settings).expect("serialize legacy settings"),
+    )
+    .expect("write legacy settings");
+
+    aio_coding_hub_lib::test_support::clear_settings_cache();
+
+    let migrated =
+        aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read migrated");
+
+    assert_eq!(migrated["schema_version"], serde_json::json!(36));
+    assert_eq!(
+        migrated["update_releases_url"],
+        serde_json::json!("https://github.com/FingerCaster/aio-coding-hub/releases")
+    );
 }
 
 #[test]

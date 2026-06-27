@@ -22,7 +22,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 35,
+  schema_version: 36,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -50,7 +50,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   upstream_first_byte_timeout_seconds: 30,
   upstream_stream_idle_timeout_seconds: 120,
   upstream_request_timeout_non_streaming_seconds: 0,
-  update_releases_url: "https://github.com/dyndynjyxa/aio-coding-hub/releases",
+  update_releases_url: "https://github.com/FingerCaster/aio-coding-hub/releases",
   failover_max_attempts_per_provider: 5,
   failover_max_providers_to_try: 5,
   circuit_breaker_failure_threshold: 5,

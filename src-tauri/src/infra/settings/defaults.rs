@@ -2,7 +2,7 @@
 
 use std::time::Duration;
 
-pub const SCHEMA_VERSION: u32 = 35;
+pub const SCHEMA_VERSION: u32 = 36;
 pub const DEFAULT_GATEWAY_PORT: u16 = 37123;
 pub const MAX_GATEWAY_PORT: u16 = 37199;
 pub const DEFAULT_PROVIDER_COOLDOWN_SECONDS: u32 = 30;
@@ -97,6 +97,8 @@ pub const MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE: i64 = 1_000_000_000;
 pub(super) const SETTINGS_FILE_MAX_BYTES: usize = 1024 * 1024;
 
 pub(super) const LEGACY_IDENTIFIER: &str = "io.aio.gateway";
-pub(super) const DEFAULT_UPDATE_RELEASES_URL: &str =
+pub(super) const LEGACY_UPDATE_RELEASES_URL: &str =
     "https://github.com/dyndynjyxa/aio-coding-hub/releases";
+pub(super) const DEFAULT_UPDATE_RELEASES_URL: &str =
+    "https://github.com/FingerCaster/aio-coding-hub/releases";
 pub(super) const CACHE_TTL: Duration = Duration::from_secs(5);

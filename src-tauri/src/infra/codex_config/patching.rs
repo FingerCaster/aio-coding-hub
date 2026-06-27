@@ -809,7 +809,7 @@ pub(super) fn patch_config_toml(
             // When remote_compaction is enabled, Codex requires the provider to be named
             // "OpenAI" for the Remote Compact feature to work. Rename the entire
             // [model_providers.aio] table to [model_providers.OpenAI] and update model_provider.
-            // See: https://github.com/dyndynjyxa/aio-coding-hub/issues/197
+            // See: https://github.com/FingerCaster/aio-coding-hub/issues/197
             if v {
                 upsert_root_key(
                     &mut lines,

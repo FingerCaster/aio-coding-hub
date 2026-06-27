@@ -5,7 +5,7 @@
 
 **本地 AI CLI 统一网关** — 让 Claude Code / Codex / Gemini CLI 请求走同一个入口
 
-[![Release](https://img.shields.io/github/v/release/dyndynjyxa/aio-coding-hub?style=flat-square)](https://github.com/dyndynjyxa/aio-coding-hub/releases)
+[![Release](https://img.shields.io/github/v/release/FingerCaster/aio-coding-hub?style=flat-square)](https://github.com/FingerCaster/aio-coding-hub/releases)
 [![License](https://img.shields.io/badge/license-MIT-blue?style=flat-square)](LICENSE)
 [![Platform](https://img.shields.io/badge/platform-Windows%20|%20macOS%20|%20Linux-lightgrey?style=flat-square)](#安装)
 
@@ -117,7 +117,7 @@
 
 ### 从 Release 下载（推荐）
 
-前往 [Releases](https://github.com/dyndynjyxa/aio-coding-hub/releases) 下载对应平台安装包：
+前往 [Releases](https://github.com/FingerCaster/aio-coding-hub/releases) 下载对应平台安装包：
 
 <!-- SUPPORT_MATRIX_RELEASE_DOWNLOAD:START -->
 | 平台 | 官方发布安装包 |
@@ -143,7 +143,7 @@ yay -S aio-coding-hub-bin
 
 **AppImage 用户**
 
-应用在 Wayland 下启动时会自动检测并注入 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 以避免 EGL 冲突崩溃（见 [issue #93](https://github.com/dyndynjyxa/aio-coding-hub/issues/93)）。
+应用在 Wayland 下启动时会自动检测并注入 `WEBKIT_DISABLE_COMPOSITING_MODE=1` 以避免 EGL 冲突崩溃（见 [issue #93](https://github.com/FingerCaster/aio-coding-hub/issues/93)）。
 若仍遇到白屏，可改用 Release 中附带的 `*-wayland.AppImage`（已剥离内置 EGL/Mesa 库，使用系统版本）：
 
 ```bash
@@ -184,7 +184,7 @@ sudo apt-get install -y libasound2-dev libwebkit2gtk-4.1-dev libappindicator3-de
 </details>
 
 ```bash
-git clone https://github.com/dyndynjyxa/aio-coding-hub.git
+git clone https://github.com/FingerCaster/aio-coding-hub.git
 cd aio-coding-hub
 pnpm install
 
@@ -293,4 +293,4 @@ docs: update installation guide
 
 ---
 
-[![Stargazers over time](https://starchart.cc/dyndynjyxa/aio-coding-hub.svg?variant=adaptive)](https://starchart.cc/dyndynjyxa/aio-coding-hub)
+[![Stargazers over time](https://starchart.cc/FingerCaster/aio-coding-hub.svg?variant=adaptive)](https://starchart.cc/FingerCaster/aio-coding-hub)

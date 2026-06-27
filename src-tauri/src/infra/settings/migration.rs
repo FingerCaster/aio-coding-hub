@@ -657,9 +657,37 @@ fn migrate_add_codex_reasoning_guard_compare_mode(
     true
 }
 
+fn migrate_update_releases_url_to_fork(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    // v36: Point the default update release URL at this fork's release page.
+    if schema_version_present
+        && settings.schema_version >= SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK
+    {
+        return false;
+    }
+
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK,
+    );
+
+    let current = settings.update_releases_url.trim().to_string();
+    if current.is_empty() || current == LEGACY_UPDATE_RELEASES_URL {
+        settings.update_releases_url = DEFAULT_UPDATE_RELEASES_URL.to_string();
+        changed = true;
+    }
+
+    changed
+}
+
+pub(super) const SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK: u32 = 36;
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 29] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 30] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -689,6 +717,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 29] = [
     migrate_add_codex_oauth_compatible_proxy_mode,
     migrate_add_codex_reasoning_guard,
     migrate_add_codex_reasoning_guard_compare_mode,
+    migrate_update_releases_url_to_fork,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1194,6 +1223,33 @@ mod tests {
         assert_eq!(
             s.codex_reasoning_guard_compare_mode,
             CodexReasoningGuardCompareMode::Equals
+        );
+    }
+
+    #[test]
+    fn migrate_update_releases_url_to_fork_rewrites_legacy_default() {
+        let mut s = AppSettings {
+            schema_version: 35,
+            update_releases_url: LEGACY_UPDATE_RELEASES_URL.to_string(),
+            ..Default::default()
+        };
+        assert!(migrate_update_releases_url_to_fork(&mut s, true));
+        assert_eq!(s.schema_version, SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK);
+        assert_eq!(s.update_releases_url, DEFAULT_UPDATE_RELEASES_URL);
+    }
+
+    #[test]
+    fn migrate_update_releases_url_to_fork_preserves_custom_url() {
+        let mut s = AppSettings {
+            schema_version: 35,
+            update_releases_url: "https://mirror.example.invalid/releases".to_string(),
+            ..Default::default()
+        };
+        assert!(migrate_update_releases_url_to_fork(&mut s, true));
+        assert_eq!(s.schema_version, SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK);
+        assert_eq!(
+            s.update_releases_url,
+            "https://mirror.example.invalid/releases"
         );
     }
 
