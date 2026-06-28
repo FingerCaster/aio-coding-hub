@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.4](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.3...aio-coding-hub-v0.60.4) (2026-06-28)
+
+
+### Features
+
+* **codex:** add model-aware reasoning guard stats and ui ([7e7b011](https://github.com/FingerCaster/aio-coding-hub/commit/7e7b011a94ea640e9ccfc5289d37777389ae28f1))
+
 ## [0.60.3](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.2...aio-coding-hub-v0.60.3) (2026-06-28)
 
 
