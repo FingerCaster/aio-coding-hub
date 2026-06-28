@@ -227,6 +227,54 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getByText("claude-sonnet → gpt-5.4")).toBeInTheDocument();
   });
 
+  it("renders Codex model with reasoning effort from explicit settings or unknown fallback", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          showCustomTooltip={false}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={makeRequestLogs([
+            {
+              id: 43,
+              trace_id: "t-codex-effort-explicit",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-5.5",
+              status: 200,
+              special_settings_json: JSON.stringify([
+                { type: "codex_reasoning_effort", source: "request", effort: "high" },
+              ]),
+              final_provider_name: "Provider A",
+              created_at: Math.floor(Date.now() / 1000),
+            },
+            {
+              id: 44,
+              trace_id: "t-codex-effort-unknown",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-future",
+              status: 200,
+              final_provider_name: "Provider B",
+              created_at: Math.floor(Date.now() / 1000),
+            },
+          ])}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByTitle("Codex / gpt-5.5-high")).toBeInTheDocument();
+    expect(screen.getByTitle("Codex / gpt-future-unknown")).toBeInTheDocument();
+  });
+
   it("shows dual TTFB only for reasoning-guard request logs", () => {
     render(
       <MemoryRouter>
@@ -483,7 +531,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     );
 
     expect(screen.getAllByText("claude-3-opus")).toHaveLength(1);
-    expect(screen.getByText("gpt-5")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5-unknown")).toBeInTheDocument();
     expect(screen.getAllByText("进行中")).toHaveLength(2);
     expect(screen.queryByText("当前没有最近使用记录")).not.toBeInTheDocument();
   });
@@ -1232,7 +1280,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    expect(screen.getAllByTitle("Codex / gpt-5.4").length).toBeGreaterThan(0);
+    expect(screen.getAllByTitle("Codex / gpt-5.4-none").length).toBeGreaterThan(0);
     expect(screen.getAllByTitle("Claude / claude-sonnet-4").length).toBeGreaterThan(0);
     expect(screen.getAllByTitle("Gemini / gemini-2.5-pro").length).toBeGreaterThan(0);
     expect(screen.getAllByText("claude-sonnet-4 → gpt-5.4").length).toBeGreaterThan(0);
@@ -1403,7 +1451,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByTitle("Codex / gpt-5.4")).toBeInTheDocument();
+    expect(screen.getByTitle("Codex / gpt-5.4-none")).toBeInTheDocument();
     expect(screen.getAllByText("P1").length).toBeGreaterThan(0);
     expect(screen.getByText("流中断")).toBeInTheDocument();
     expect(screen.queryByText("3.20s")).not.toBeInTheDocument();

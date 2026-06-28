@@ -1,7 +1,9 @@
 import { describe, expect, it } from "vitest";
 import {
   countCodexReasoningGuardSpecialSettings,
+  formatCodexReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
+  resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
 } from "../requestLogSpecialSettings";
@@ -124,5 +126,64 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       latestRuleLabel: "<= 516",
       latestReasoningTokens: 300,
     });
+  });
+
+  it("resolves explicit Codex reasoning effort from special settings", () => {
+    const settings = JSON.stringify([
+      {
+        type: "codex_reasoning_effort",
+        source: "request",
+        effort: " HIGH ",
+      },
+    ]);
+
+    expect(resolveCodexReasoningEffort("gpt-5.5", settings)).toEqual({
+      effort: "high",
+      source: "request",
+    });
+  });
+
+  it("uses conservative Codex effort defaults and unknown fallback", () => {
+    expect(resolveCodexReasoningEffort(" gpt-5.5 ", null)).toEqual({
+      effort: "medium",
+      source: "default",
+    });
+    expect(resolveCodexReasoningEffort("gpt-5.4-mini", "bad-json")).toEqual({
+      effort: "none",
+      source: "default",
+    });
+    expect(resolveCodexReasoningEffort("gpt-5.5-pro", null)).toEqual({
+      effort: "high",
+      source: "default",
+    });
+    expect(resolveCodexReasoningEffort("gpt-5.4-pro", null)).toEqual({
+      effort: "medium",
+      source: "default",
+    });
+    expect(resolveCodexReasoningEffort("gpt-future", null)).toEqual({
+      effort: "unknown",
+      source: "unknown",
+    });
+  });
+
+  it("does not use defaults when an explicit Codex reasoning effort is invalid", () => {
+    const settings = JSON.stringify([
+      {
+        type: "codex_reasoning_effort",
+        source: "request",
+        rawEffort: "turbo",
+      },
+    ]);
+
+    expect(resolveCodexReasoningEffort("gpt-5.5", settings)).toEqual({
+      effort: "unknown",
+      source: "unknown",
+    });
+  });
+
+  it("formats Codex reasoning effort source labels", () => {
+    expect(formatCodexReasoningEffortSource("request")).toBe("请求显式");
+    expect(formatCodexReasoningEffortSource("default")).toBe("默认推断");
+    expect(formatCodexReasoningEffortSource("unknown")).toBe("未知");
   });
 });

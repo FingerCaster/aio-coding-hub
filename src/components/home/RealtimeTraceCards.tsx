@@ -24,7 +24,7 @@ import {
   computeEffectiveInputTokens,
   computeStatusBadge,
   FolderBadge,
-  formatClaudeModelMappingText,
+  formatRequestLogModelText,
   FreeBadge,
   getErrorCodeLabel,
   hasCodexReasoningGuardRetryAttempt,
@@ -187,8 +187,11 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
             : `${attemptRoute.startProvider} → ${attemptRoute.endProvider}${extra}`;
         })();
 
-        const modelText = formatClaudeModelMappingText(
+        const modelText = formatRequestLogModelText(
+          trace.cli_key,
           trace.requested_model,
+          // Live traces do not carry request special settings, so Codex effort here is model-only.
+          null,
           trace.claude_model_mapping
         );
         const cliLabel = cliShortLabel(trace.cli_key);

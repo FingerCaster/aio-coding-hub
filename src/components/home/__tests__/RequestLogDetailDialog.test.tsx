@@ -200,6 +200,80 @@ describe("home/RequestLogDetailDialog", () => {
     expectMetricValue("费用系数", "x1.50");
   });
 
+  it("shows Codex reasoning effort and source on the summary tab", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          { type: "codex_reasoning_effort", source: "request", effort: "high" },
+        ]),
+        usage_json: JSON.stringify({
+          output_tokens_details: {
+            reasoning_tokens: 256,
+          },
+        }),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expectMetricValue("思考等级", "high");
+    expectMetricValue("等级来源", "请求显式");
+  });
+
+  it("shows unknown Codex reasoning effort when no explicit or known default exists", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-future",
+        status: 200,
+        error_code: null,
+        special_settings_json: null,
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expectMetricValue("思考等级", "unknown");
+    expectMetricValue("等级来源", "未知");
+  });
+
+  it("shows Codex reasoning effort even when token metrics are absent", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        duration_ms: undefined,
+        ttfb_ms: null,
+        visible_ttfb_ms: null,
+        input_tokens: null,
+        output_tokens: null,
+        total_tokens: null,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cache_creation_5m_input_tokens: null,
+        cache_creation_1h_input_tokens: null,
+        usage_json: null,
+        cost_usd: null,
+        special_settings_json: null,
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getByText("关键指标")).toBeInTheDocument();
+    expectMetricValue("思考等级", "medium");
+    expectMetricValue("等级来源", "默认推断");
+  });
+
   it("falls back to raw usage_json when JSON parsing fails without rendering raw json section", () => {
     setRequestLogQueryState({ selectedLog: createSelectedLog({ usage_json: "not-json" }) });
     setTraceStoreState({ traces: [] });

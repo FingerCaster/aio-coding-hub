@@ -248,6 +248,7 @@ describe("components/home/RealtimeTraceCards", () => {
     }
     expect(screen.getByText("workspace-alpha")).toBeInTheDocument();
     expect(screen.getAllByText("未知").length).toBeGreaterThan(0); // model/provider fallback
+    expect(screen.getByTitle("Codex / gpt-5-codex-unknown")).toBeInTheDocument();
     expect(screen.getAllByText("P3").length).toBeGreaterThan(0);
     expect(screen.getByText("流中断")).toBeInTheDocument();
     expect(screen.getAllByText("会话复用").length).toBeGreaterThan(0);

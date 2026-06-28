@@ -11,6 +11,7 @@ import {
   FastModeBadge,
   FolderBadge,
   formatClaudeModelMappingText,
+  formatRequestLogModelText,
   FreeBadge,
   getErrorCodeLabel,
   hasClaudeModelMappingSpecialSetting,
@@ -109,6 +110,23 @@ describe("components/home/HomeLogShared", () => {
     ).toBe("claude-sonnet → gpt-5.4");
     expect(formatClaudeModelMappingText(" fallback-model ", null)).toBe("fallback-model");
     expect(formatClaudeModelMappingText("   ", null)).toBe("未知");
+    expect(formatRequestLogModelText("codex", "gpt-5.5", null)).toBe("gpt-5.5-medium");
+    expect(
+      formatRequestLogModelText(
+        "codex",
+        "gpt-5.5",
+        JSON.stringify([{ type: "codex_reasoning_effort", effort: "high" }])
+      )
+    ).toBe("gpt-5.5-high");
+    expect(
+      formatRequestLogModelText(
+        "codex",
+        "gpt-5.5",
+        JSON.stringify([{ type: "codex_reasoning_effort", rawEffort: "turbo" }])
+      )
+    ).toBe("gpt-5.5-unknown");
+    expect(formatRequestLogModelText("codex", "gpt-future", null)).toBe("gpt-future-unknown");
+    expect(formatRequestLogModelText("claude", "claude-sonnet", null)).toBe("claude-sonnet");
 
     expect(hasPriorityServiceTierSpecialSetting(null)).toBe(false);
     expect(hasPriorityServiceTierSpecialSetting("bad-json")).toBe(false);

@@ -13,6 +13,7 @@ use crate::gateway::proxy::compute_observe_request;
 use crate::gateway::proxy::handler::early_error::{
     build_early_error_log_ctx, early_error_contract, respond_early_error_with_spawn, EarlyErrorKind,
 };
+use crate::gateway::response_fixer;
 use crate::gateway::util::{infer_requested_model_info, LARGE_REQUEST_BODY_BYTES};
 
 pub(in crate::gateway::proxy::handler) struct ModelInferenceMiddleware;
@@ -28,6 +29,13 @@ impl ModelInferenceMiddleware {
         );
         ctx.requested_model = model_info.model;
         ctx.requested_model_location = model_info.location;
+
+        record_codex_reasoning_effort(
+            &ctx.cli_key,
+            ctx.introspection_json.as_ref(),
+            ctx.requested_model.as_deref(),
+            &ctx.special_settings,
+        );
 
         ctx.observe_request = compute_observe_request(
             &ctx.cli_key,
@@ -67,6 +75,83 @@ pub(in crate::gateway::proxy::handler) fn large_body_missing_model_message(
          the body may have been truncated or malformed by an upstream client/proxy. \
          Please verify the request body integrity and JSON format."
     )
+}
+
+fn record_codex_reasoning_effort(
+    cli_key: &str,
+    introspection_json: Option<&serde_json::Value>,
+    requested_model: Option<&str>,
+    special_settings: &std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
+) {
+    if cli_key != "codex" {
+        return;
+    }
+
+    let Some(root) = introspection_json else {
+        return;
+    };
+    let Some(extracted) = extract_codex_reasoning_effort(root) else {
+        return;
+    };
+
+    response_fixer::push_special_setting(
+        special_settings,
+        serde_json::json!({
+            "type": "codex_reasoning_effort",
+            "scope": "request",
+            "source": "request",
+            "effort": extracted.effort,
+            "rawEffort": extracted.raw_effort,
+            "requestedModel": requested_model,
+            "pointer": extracted.pointer,
+        }),
+    );
+}
+
+struct ExtractedCodexReasoningEffort {
+    effort: Option<String>,
+    raw_effort: String,
+    pointer: &'static str,
+}
+
+fn extract_codex_reasoning_effort(
+    root: &serde_json::Value,
+) -> Option<ExtractedCodexReasoningEffort> {
+    for (pointer, value) in [
+        (
+            "/reasoning/effort",
+            root.pointer("/reasoning/effort")
+                .and_then(serde_json::Value::as_str),
+        ),
+        (
+            "/reasoning_effort",
+            root.get("reasoning_effort")
+                .and_then(serde_json::Value::as_str),
+        ),
+        (
+            "/reasoningEffort",
+            root.get("reasoningEffort")
+                .and_then(serde_json::Value::as_str),
+        ),
+    ] {
+        let Some(raw_effort) = value else {
+            continue;
+        };
+        return Some(ExtractedCodexReasoningEffort {
+            effort: normalize_codex_reasoning_effort(raw_effort),
+            raw_effort: raw_effort.trim().to_string(),
+            pointer,
+        });
+    }
+    None
+}
+
+fn normalize_codex_reasoning_effort(value: &str) -> Option<String> {
+    let effort = value.trim().to_ascii_lowercase();
+    match effort.as_str() {
+        "none" | "minimal" | "low" | "medium" | "high" | "xhigh" => Some(effort),
+        _ => None,
+    }
 }
 
 #[cfg(test)]
@@ -113,5 +198,52 @@ mod tests {
         assert!(message.contains("model"));
         assert!(message.contains(&format!("{} MB", LARGE_REQUEST_BODY_BYTES / (1024 * 1024))));
         assert!(message.contains("truncated"));
+    }
+
+    #[test]
+    fn extracts_nested_codex_reasoning_effort_first() {
+        let root = serde_json::json!({
+            "model": "gpt-5.5",
+            "reasoning": { "effort": " HIGH " },
+            "reasoning_effort": "low",
+            "reasoningEffort": "medium"
+        });
+
+        let extracted = extract_codex_reasoning_effort(&root).expect("effort");
+        assert_eq!(extracted.effort.as_deref(), Some("high"));
+        assert_eq!(extracted.raw_effort, "HIGH");
+        assert_eq!(extracted.pointer, "/reasoning/effort");
+    }
+
+    #[test]
+    fn extracts_reasoning_effort_aliases() {
+        let snake = serde_json::json!({ "reasoning_effort": "xhigh" });
+        let camel = serde_json::json!({ "reasoningEffort": "minimal" });
+
+        let snake_extracted = extract_codex_reasoning_effort(&snake).expect("snake effort");
+        let camel_extracted = extract_codex_reasoning_effort(&camel).expect("camel effort");
+
+        assert_eq!(snake_extracted.effort.as_deref(), Some("xhigh"));
+        assert_eq!(snake_extracted.raw_effort, "xhigh");
+        assert_eq!(snake_extracted.pointer, "/reasoning_effort");
+        assert_eq!(camel_extracted.effort.as_deref(), Some("minimal"));
+        assert_eq!(camel_extracted.raw_effort, "minimal");
+        assert_eq!(camel_extracted.pointer, "/reasoningEffort");
+    }
+
+    #[test]
+    fn ignores_invalid_codex_reasoning_effort_values() {
+        let root = serde_json::json!({
+            "reasoning": { "effort": "turbo" },
+            "reasoning_effort": "",
+            "reasoningEffort": 123
+        });
+
+        let extracted = extract_codex_reasoning_effort(&root).expect("explicit effort field");
+        assert_eq!(extracted.effort, None);
+        assert_eq!(extracted.raw_effort, "turbo");
+        assert_eq!(extracted.pointer, "/reasoning/effort");
+        assert!(normalize_codex_reasoning_effort("medium").is_some());
+        assert!(normalize_codex_reasoning_effort("unknown").is_none());
     }
 }

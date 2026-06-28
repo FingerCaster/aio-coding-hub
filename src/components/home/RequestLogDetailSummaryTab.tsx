@@ -14,8 +14,10 @@ import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
   FastModeBadge,
+  formatCodexReasoningEffortSource,
   hasCodexReasoningGuardSpecialSetting,
   hasPriorityServiceTierSpecialSetting,
+  resolveCodexReasoningEffort,
   resolveRequestLogUsageReasoningTokens,
 } from "./HomeLogShared";
 
@@ -40,6 +42,11 @@ export function RequestLogDetailSummaryTab({
 }: RequestLogDetailSummaryTabProps) {
   const auditMeta = buildRequestLogAuditMeta(selectedLog);
   const usageReasoningTokens = resolveRequestLogUsageReasoningTokens(selectedLog.usage_json);
+  const codexReasoningEffort =
+    selectedLog.cli_key === "codex"
+      ? resolveCodexReasoningEffort(selectedLog.requested_model, selectedLog.special_settings_json)
+      : null;
+  const showKeyMetrics = hasTokens || codexReasoningEffort != null;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -81,7 +88,7 @@ export function RequestLogDetailSummaryTab({
       ) : null}
 
       {/* Key metrics */}
-      {hasTokens ? (
+      {showKeyMetrics ? (
         <Card padding="sm">
           <div className="flex flex-wrap items-start justify-between gap-3">
             <div className="text-sm font-semibold text-foreground">关键指标</div>
@@ -102,6 +109,15 @@ export function RequestLogDetailSummaryTab({
             <MetricCard label="输入 Token" value={selectedLog.input_tokens} />
             <MetricCard label="输出 Token" value={selectedLog.output_tokens} />
             <MetricCard label="思考 Token" value={usageReasoningTokens} />
+            {codexReasoningEffort ? (
+              <>
+                <MetricCard label="思考等级" value={codexReasoningEffort.effort} />
+                <MetricCard
+                  label="等级来源"
+                  value={formatCodexReasoningEffortSource(codexReasoningEffort.source)}
+                />
+              </>
+            ) : null}
             <MetricCard label="缓存创建" value={resolveCacheWriteValue(selectedLog)} />
             <MetricCard label="缓存读取" value={selectedLog.cache_read_input_tokens} />
             <MetricCard label="总耗时" value={formatDurationMs(displayDurationMs)} />

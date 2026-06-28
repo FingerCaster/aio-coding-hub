@@ -47,7 +47,7 @@ import {
   computeEffectiveInputTokens,
   computeStatusBadge,
   FastModeBadge,
-  formatClaudeModelMappingText,
+  formatRequestLogModelText,
   FolderBadge,
   FreeBadge,
   getErrorCodeLabel,
@@ -158,8 +158,10 @@ const RequestLogCard = memo(function RequestLogCard({
 
   const providerTitle = providerText;
 
-  const modelText = formatClaudeModelMappingText(
+  const modelText = formatRequestLogModelText(
+    log.cli_key,
     log.requested_model,
+    log.special_settings_json,
     resolveClaudeModelMappingFromSpecialSettings(log.special_settings_json, log.final_provider_id)
   );
 

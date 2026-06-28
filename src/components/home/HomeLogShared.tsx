@@ -8,8 +8,10 @@ import {
   type ClaudeModelMapping,
 } from "../../services/gateway/claudeModelMapping";
 import {
+  formatCodexReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
   parseRequestLogSpecialSettings,
+  resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
 } from "../../services/gateway/requestLogSpecialSettings";
@@ -55,6 +57,7 @@ export type RequestLogAuditMeta = {
 };
 
 export { hasClaudeModelMappingSpecialSetting, resolveClaudeModelMappingFromSpecialSettings };
+export { formatCodexReasoningEffortSource, resolveCodexReasoningEffort };
 
 export function hasCodexReasoningGuardSpecialSetting(
   specialSettingsJson: string | null | undefined
@@ -133,6 +136,19 @@ export function formatClaudeModelMappingText(
 
   const fallback = requestedModel?.trim();
   return fallback || "未知";
+}
+
+export function formatRequestLogModelText(
+  cliKey: CliKey | string,
+  requestedModel: string | null | undefined,
+  specialSettingsJson?: string | null,
+  mapping?: ClaudeModelMapping | null
+) {
+  const modelText = formatClaudeModelMappingText(requestedModel, mapping);
+  if (cliKey !== "codex") return modelText;
+
+  const effort = resolveCodexReasoningEffort(requestedModel, specialSettingsJson).effort;
+  return `${modelText}-${effort}`;
 }
 
 type CodexServiceTierResultSetting = {
