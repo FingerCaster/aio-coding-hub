@@ -2341,6 +2341,11 @@ export type CodexConfigTomlValidationResult = {
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
 export type CodexReasoningGuardCompareMode = "equals" | "less_than_or_equal";
+export type CodexReasoningGuardModelRule = {
+  requested_model: string;
+  compare_mode: CodexReasoningGuardCompareMode;
+  reasoning_equals: number[];
+};
 export type CodexSessionIdCompletionUpdate = { enableCodexSessionIdCompletion: boolean };
 export type ConfigImportResult = {
   providers_imported: number;
@@ -2983,6 +2988,18 @@ export type RequestAttemptLog = {
 export type CodexReasoningGuardStats = {
   hit_request_count: number;
   hit_attempt_count: number;
+  normal_request_count: number;
+  total_request_count: number;
+  hit_rate: number;
+  by_model: CodexReasoningGuardModelStat[];
+};
+export type CodexReasoningGuardModelStat = {
+  requested_model: string;
+  total_request_count: number;
+  hit_request_count: number;
+  normal_request_count: number;
+  hit_attempt_count: number;
+  hit_rate: number;
 };
 export type RequestLogDetail = {
   id: number;
@@ -3135,6 +3152,7 @@ export type SettingsUpdate = {
   codexReasoningGuardEnabled: boolean | null;
   codexReasoningGuardCompareMode: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardReasoningEquals: number[] | null;
+  codexReasoningGuardModelRules: CodexReasoningGuardModelRule[] | null;
   cx2CcFallbackModelOpus: string | null;
   cx2CcFallbackModelSonnet: string | null;
   cx2CcFallbackModelHaiku: string | null;
@@ -3170,6 +3188,7 @@ export type SettingsView = {
   codex_reasoning_guard_enabled: boolean;
   codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode;
   codex_reasoning_guard_reasoning_equals: number[];
+  codex_reasoning_guard_model_rules: CodexReasoningGuardModelRule[];
   auto_start: boolean;
   start_minimized: boolean;
   tray_enabled: boolean;

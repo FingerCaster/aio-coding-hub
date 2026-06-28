@@ -142,6 +142,7 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             codex_reasoning_guard_enabled: rs.codex_reasoning_guard_enabled,
             codex_reasoning_guard_compare_mode: rs.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: rs.codex_reasoning_guard_reasoning_equals,
+            codex_reasoning_guard_model_rules: rs.codex_reasoning_guard_model_rules,
             max_attempts_per_provider: rs.max_attempts_per_provider,
             max_providers_to_try: rs.max_providers_to_try,
             provider_cooldown_secs: rs.provider_cooldown_secs,

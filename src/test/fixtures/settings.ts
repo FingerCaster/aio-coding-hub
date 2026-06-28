@@ -24,6 +24,7 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     codex_reasoning_guard_enabled: true,
     codex_reasoning_guard_compare_mode: "equals",
     codex_reasoning_guard_reasoning_equals: [516],
+    codex_reasoning_guard_model_rules: [],
     auto_start: false,
     start_minimized: false,
     tray_enabled: true,

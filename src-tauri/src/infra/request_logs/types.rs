@@ -145,7 +145,21 @@ pub struct SessionStatsAggregate {
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct CodexReasoningGuardModelStat {
+    pub requested_model: String,
+    pub total_request_count: i64,
+    pub hit_request_count: i64,
+    pub normal_request_count: i64,
+    pub hit_attempt_count: i64,
+    pub hit_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct CodexReasoningGuardStats {
     pub hit_request_count: i64,
     pub hit_attempt_count: i64,
+    pub normal_request_count: i64,
+    pub total_request_count: i64,
+    pub hit_rate: f64,
+    pub by_model: Vec<CodexReasoningGuardModelStat>,
 }

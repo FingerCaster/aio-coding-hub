@@ -498,9 +498,11 @@ where
 
             if let Some(matched) = codex_reasoning_guard::detect_from_json(
                 common.cli_key.as_str(),
+                common.requested_model.as_deref(),
                 &aggregated,
                 common.codex_reasoning_guard_compare_mode,
                 common.codex_reasoning_guard_reasoning_equals.as_slice(),
+                common.codex_reasoning_guard_model_rules.as_slice(),
             ) {
                 codex_reasoning_guard::push_special_setting(
                     &common.special_settings,

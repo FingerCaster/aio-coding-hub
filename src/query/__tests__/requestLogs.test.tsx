@@ -367,6 +367,10 @@ describe("query/requestLogs", () => {
     vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue({
       hit_request_count: 5,
       hit_attempt_count: 8,
+      normal_request_count: 15,
+      total_request_count: 20,
+      hit_rate: 0.25,
+      by_model: [],
     });
 
     const client = createTestQueryClient();
@@ -380,6 +384,10 @@ describe("query/requestLogs", () => {
       expect(result.current.data).toEqual({
         hit_request_count: 5,
         hit_attempt_count: 8,
+        normal_request_count: 15,
+        total_request_count: 20,
+        hit_rate: 0.25,
+        by_model: [],
       });
     });
 

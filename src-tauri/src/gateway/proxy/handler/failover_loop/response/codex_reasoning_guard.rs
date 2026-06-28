@@ -3,12 +3,14 @@
 use crate::gateway::events::{decision_chain as dc, FailoverAttempt};
 use crate::gateway::proxy::ErrorCategory;
 use crate::gateway::response_fixer;
-use crate::settings::CodexReasoningGuardCompareMode;
+use crate::settings::{CodexReasoningGuardCompareMode, CodexReasoningGuardModelRule};
 use axum::http::StatusCode;
 use std::sync::{Arc, Mutex};
 
 pub(super) const CODEX_REASONING_GUARD_ERROR_CODE: &str = "GW_CODEX_REASONING_GUARD";
 pub(super) const CODEX_REASONING_GUARD_REASON_CODE: &str = "codex_reasoning_guard";
+const CODEX_REASONING_GUARD_RULE_SOURCE_GLOBAL_DEFAULT: &str = "global_default";
+const CODEX_REASONING_GUARD_RULE_SOURCE_MODEL_RULE: &str = "model_rule";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(super) struct CodexReasoningGuardMatch {
@@ -16,6 +18,17 @@ pub(super) struct CodexReasoningGuardMatch {
     pub(super) pointer: &'static str,
     pub(super) compare_mode: CodexReasoningGuardCompareMode,
     pub(super) matched_rule_value: i64,
+    pub(super) requested_model: Option<String>,
+    pub(super) rule_source: &'static str,
+    pub(super) rule_model: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy)]
+struct ResolvedCodexReasoningGuardRule<'a> {
+    compare_mode: CodexReasoningGuardCompareMode,
+    configured_values: &'a [i64],
+    rule_source: &'static str,
+    rule_model: Option<&'a str>,
 }
 
 const REASONING_POINTERS: &[&str] = &[
@@ -27,13 +40,21 @@ const REASONING_POINTERS: &[&str] = &[
 
 pub(super) fn detect_from_json(
     cli_key: &str,
+    requested_model: Option<&str>,
     value: &serde_json::Value,
-    compare_mode: CodexReasoningGuardCompareMode,
-    configured_values: &[i64],
+    fallback_compare_mode: CodexReasoningGuardCompareMode,
+    fallback_values: &[i64],
+    model_rules: &[CodexReasoningGuardModelRule],
 ) -> Option<CodexReasoningGuardMatch> {
-    if cli_key != "codex" || configured_values.is_empty() {
+    if cli_key != "codex" {
         return None;
     }
+    let resolved_rule = resolve_guard_rule(
+        requested_model,
+        fallback_compare_mode,
+        fallback_values,
+        model_rules,
+    )?;
 
     for pointer in REASONING_POINTERS {
         let Some(raw) = value.pointer(pointer) else {
@@ -48,19 +69,62 @@ pub(super) fn detect_from_json(
         let Some(reasoning_tokens) = reasoning_tokens else {
             continue;
         };
-        if let Some(matched_rule_value) =
-            find_matched_rule_value(compare_mode, reasoning_tokens, configured_values)
-        {
+        if let Some(matched_rule_value) = find_matched_rule_value(
+            resolved_rule.compare_mode,
+            reasoning_tokens,
+            resolved_rule.configured_values,
+        ) {
             return Some(CodexReasoningGuardMatch {
                 reasoning_tokens,
                 pointer,
-                compare_mode,
+                compare_mode: resolved_rule.compare_mode,
                 matched_rule_value,
+                requested_model: requested_model
+                    .map(str::trim)
+                    .filter(|model| !model.is_empty())
+                    .map(ToOwned::to_owned),
+                rule_source: resolved_rule.rule_source,
+                rule_model: resolved_rule.rule_model.map(ToOwned::to_owned),
             });
         }
     }
 
     None
+}
+
+fn resolve_guard_rule<'a>(
+    requested_model: Option<&str>,
+    fallback_compare_mode: CodexReasoningGuardCompareMode,
+    fallback_values: &'a [i64],
+    model_rules: &'a [CodexReasoningGuardModelRule],
+) -> Option<ResolvedCodexReasoningGuardRule<'a>> {
+    let requested_model = requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty());
+    if let Some(requested_model) = requested_model {
+        if let Some(rule) = model_rules
+            .iter()
+            .find(|rule| rule.requested_model == requested_model)
+        {
+            if !rule.reasoning_equals.is_empty() {
+                return Some(ResolvedCodexReasoningGuardRule {
+                    compare_mode: rule.compare_mode,
+                    configured_values: &rule.reasoning_equals,
+                    rule_source: CODEX_REASONING_GUARD_RULE_SOURCE_MODEL_RULE,
+                    rule_model: Some(rule.requested_model.as_str()),
+                });
+            }
+        }
+    }
+    if fallback_values.is_empty() {
+        return None;
+    }
+    Some(ResolvedCodexReasoningGuardRule {
+        compare_mode: fallback_compare_mode,
+        configured_values: fallback_values,
+        rule_source: CODEX_REASONING_GUARD_RULE_SOURCE_GLOBAL_DEFAULT,
+        rule_model: None,
+    })
 }
 
 fn find_matched_rule_value(
@@ -108,6 +172,9 @@ pub(super) fn push_special_setting(
             "compareModeSymbol": compare_mode_symbol(matched.compare_mode),
             "matchedRuleValue": matched.matched_rule_value,
             "pointer": matched.pointer,
+            "requestedModel": matched.requested_model,
+            "ruleSource": matched.rule_source,
+            "ruleModel": matched.rule_model,
             "retryAttemptNumber": retry_index,
             "retryAttemptNumberNext": retry_index.saturating_add(1),
             "displayStatus": StatusCode::BAD_GATEWAY.as_u16(),
@@ -145,11 +212,12 @@ pub(super) fn record_guard_retry_attempt(
         error_code: Some(CODEX_REASONING_GUARD_ERROR_CODE),
         decision: Some("retry_same_provider"),
         reason: Some(format!(
-            "codex reasoning guard matched reasoning_tokens={} {} {} via {}",
+            "codex reasoning guard matched reasoning_tokens={} {} {} via {} ({})",
             matched.reasoning_tokens,
             compare_mode_symbol(matched.compare_mode),
             matched.matched_rule_value,
-            matched.pointer
+            matched.pointer,
+            matched.rule_source
         )),
         selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
         reason_code: Some(CODEX_REASONING_GUARD_REASON_CODE),
@@ -174,15 +242,21 @@ mod tests {
 
         let matched = detect_from_json(
             "codex",
+            Some("gpt-5-codex"),
             &value,
             CodexReasoningGuardCompareMode::Equals,
             &[516, 1024],
+            &[],
         )
         .expect("should match");
 
         assert_eq!(matched.reasoning_tokens, 516);
         assert_eq!(matched.matched_rule_value, 516);
         assert_eq!(matched.compare_mode, CodexReasoningGuardCompareMode::Equals);
+        assert_eq!(
+            matched.rule_source,
+            CODEX_REASONING_GUARD_RULE_SOURCE_GLOBAL_DEFAULT
+        );
     }
 
     #[test]
@@ -193,9 +267,11 @@ mod tests {
 
         let matched = detect_from_json(
             "codex",
+            Some("gpt-5-codex"),
             &value,
             CodexReasoningGuardCompareMode::Equals,
             &[516],
+            &[],
         );
 
         assert!(matched.is_none());
@@ -209,9 +285,11 @@ mod tests {
 
         let matched = detect_from_json(
             "codex",
+            Some("gpt-5-codex"),
             &value,
             CodexReasoningGuardCompareMode::LessThanOrEqual,
             &[516],
+            &[],
         )
         .expect("should match");
 
@@ -231,9 +309,11 @@ mod tests {
 
         let matched = detect_from_json(
             "codex",
+            Some("gpt-5-codex"),
             &value,
             CodexReasoningGuardCompareMode::LessThanOrEqual,
             &[1024, 516, 2048],
+            &[],
         )
         .expect("should match");
 
@@ -248,11 +328,69 @@ mod tests {
 
         let matched = detect_from_json(
             "codex",
+            Some("gpt-5-codex"),
             &value,
             CodexReasoningGuardCompareMode::LessThanOrEqual,
             &[516],
+            &[],
         );
 
         assert!(matched.is_none());
+    }
+
+    #[test]
+    fn detect_from_json_prefers_exact_model_rule() {
+        let value = serde_json::json!({
+            "usage": { "output_tokens_details": { "reasoning_tokens": 600 } }
+        });
+
+        let matched = detect_from_json(
+            "codex",
+            Some("gpt-5-codex"),
+            &value,
+            CodexReasoningGuardCompareMode::Equals,
+            &[516],
+            &[CodexReasoningGuardModelRule {
+                requested_model: "gpt-5-codex".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+                reasoning_equals: vec![700],
+            }],
+        )
+        .expect("should match model rule");
+
+        assert_eq!(matched.matched_rule_value, 700);
+        assert_eq!(
+            matched.rule_source,
+            CODEX_REASONING_GUARD_RULE_SOURCE_MODEL_RULE
+        );
+        assert_eq!(matched.rule_model.as_deref(), Some("gpt-5-codex"));
+    }
+
+    #[test]
+    fn detect_from_json_falls_back_to_global_rule_when_model_rule_missing() {
+        let value = serde_json::json!({
+            "usage": { "output_tokens_details": { "reasoning_tokens": 516 } }
+        });
+
+        let matched = detect_from_json(
+            "codex",
+            Some("gpt-5-mini-codex"),
+            &value,
+            CodexReasoningGuardCompareMode::Equals,
+            &[516],
+            &[CodexReasoningGuardModelRule {
+                requested_model: "gpt-5-codex".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+                reasoning_equals: vec![700],
+            }],
+        )
+        .expect("should fall back to global rule");
+
+        assert_eq!(matched.matched_rule_value, 516);
+        assert_eq!(
+            matched.rule_source,
+            CODEX_REASONING_GUARD_RULE_SOURCE_GLOBAL_DEFAULT
+        );
+        assert!(matched.rule_model.is_none());
     }
 }

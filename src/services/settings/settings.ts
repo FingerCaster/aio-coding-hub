@@ -1,5 +1,6 @@
 import {
   type CodexReasoningGuardCompareMode,
+  type CodexReasoningGuardModelRule,
   commands,
   type CodexHomeMode,
   type GatewayListenMode,
@@ -18,6 +19,7 @@ import { validateSettingsSetInput } from "./settingsValidation";
 
 export type {
   CodexReasoningGuardCompareMode,
+  CodexReasoningGuardModelRule,
   CodexHomeMode,
   GatewayListenMode,
   HomeUsagePeriod,
@@ -90,6 +92,7 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   codexReasoningGuardEnabled: "codex_reasoning_guard_enabled",
   codexReasoningGuardCompareMode: "codex_reasoning_guard_compare_mode",
   codexReasoningGuardReasoningEquals: "codex_reasoning_guard_reasoning_equals",
+  codexReasoningGuardModelRules: "codex_reasoning_guard_model_rules",
   cx2CcFallbackModelOpus: "cx2cc_fallback_model_opus",
   cx2CcFallbackModelSonnet: "cx2cc_fallback_model_sonnet",
   cx2CcFallbackModelHaiku: "cx2cc_fallback_model_haiku",
@@ -217,6 +220,7 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): GeneratedSettingsUp
     codexReasoningGuardEnabled: input.codexReasoningGuardEnabled ?? null,
     codexReasoningGuardCompareMode: input.codexReasoningGuardCompareMode ?? null,
     codexReasoningGuardReasoningEquals: input.codexReasoningGuardReasoningEquals ?? null,
+    codexReasoningGuardModelRules: input.codexReasoningGuardModelRules ?? null,
     cx2CcFallbackModelOpus: input.cx2CcFallbackModelOpus ?? null,
     cx2CcFallbackModelSonnet: input.cx2CcFallbackModelSonnet ?? null,
     cx2CcFallbackModelHaiku: input.cx2CcFallbackModelHaiku ?? null,

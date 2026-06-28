@@ -20,8 +20,11 @@ import type {
   AppSettings,
   CodexHomeMode,
   CodexReasoningGuardCompareMode,
+  CodexReasoningGuardModelRule,
 } from "../../../services/settings/settings";
 import {
+  MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
+  MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN,
   MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN,
   MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE,
 } from "../../../services/settings/settingsValidation";
@@ -32,17 +35,21 @@ import { cn } from "../../../utils/cn";
 import { CliVersionBadge } from "../CliVersionBadge";
 import { Button } from "../../../ui/Button";
 import { Card } from "../../../ui/Card";
+import { Dialog } from "../../../ui/Dialog";
 import { Input } from "../../../ui/Input";
 import { Select } from "../../../ui/Select";
 import { Switch } from "../../../ui/Switch";
 import { RadioGroup } from "../../../ui/RadioGroup";
 import {
   AlertTriangle,
+  BarChart3,
   CheckCircle2,
   ExternalLink,
   FileJson,
   FolderOpen,
+  Plus,
   RefreshCw,
+  Trash2,
   Terminal,
   Settings,
 } from "lucide-react";
@@ -56,6 +63,75 @@ const GPT_54_CONTEXT_WINDOW = 1_000_000;
 const GPT_54_AUTO_COMPACT_TOKEN_LIMIT = 900_000;
 const FAST_SERVICE_TIER = "fast";
 type PersistConfigLocationResult = "saved" | "validation_failed" | "persist_failed";
+type CodexReasoningGuardDetailsTab = "rules" | "stats";
+type CodexReasoningGuardModelRuleDraft = {
+  requestedModel: string;
+  compareMode: CodexReasoningGuardCompareMode;
+  valuesText: string;
+};
+
+const CODEX_REASONING_GUARD_PERCENT_FORMATTER = new Intl.NumberFormat("zh-CN", {
+  style: "percent",
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
+
+function formatCodexReasoningGuardValues(values: number[] | null | undefined) {
+  return (values && values.length > 0 ? values : [516]).join(", ");
+}
+
+function formatCodexReasoningGuardRuleLabel(
+  compareMode: CodexReasoningGuardCompareMode,
+  values: number[] | null | undefined
+) {
+  const symbol = compareMode === "less_than_or_equal" ? "<=" : "==";
+  return `${symbol} ${formatCodexReasoningGuardValues(values)}`;
+}
+
+function formatCodexReasoningGuardHitRate(value: number | null | undefined) {
+  return CODEX_REASONING_GUARD_PERCENT_FORMATTER.format(value ?? 0);
+}
+
+function codexReasoningGuardCompareModeHelperText(compareMode: CodexReasoningGuardCompareMode) {
+  return compareMode === "less_than_or_equal"
+    ? "多个值请用英文逗号分隔。命中条件为 reasoning_tokens 小于等于任一规则值；若有多个阈值，会优先匹配更贴近的较小阈值。"
+    : "多个值请用英文逗号分隔。默认规则是 516。命中后会在同一 provider 上继续重试。";
+}
+
+function buildCodexReasoningGuardModelRuleDrafts(
+  rules: CodexReasoningGuardModelRule[] | null | undefined
+): CodexReasoningGuardModelRuleDraft[] {
+  return (rules ?? []).map((rule) => ({
+    requestedModel: rule.requested_model,
+    compareMode: rule.compare_mode,
+    valuesText: formatCodexReasoningGuardValues(rule.reasoning_equals),
+  }));
+}
+
+function resolveCodexReasoningGuardRuleForModel(
+  settings: AppSettings | null | undefined,
+  requestedModel: string
+) {
+  if (!settings) {
+    return { label: "—", sourceLabel: "—" };
+  }
+  const modelRule = settings.codex_reasoning_guard_model_rules.find(
+    (rule) => rule.requested_model === requestedModel
+  );
+  if (modelRule) {
+    return {
+      label: formatCodexReasoningGuardRuleLabel(modelRule.compare_mode, modelRule.reasoning_equals),
+      sourceLabel: "模型规则",
+    };
+  }
+  return {
+    label: formatCodexReasoningGuardRuleLabel(
+      settings.codex_reasoning_guard_compare_mode,
+      settings.codex_reasoning_guard_reasoning_equals
+    ),
+    sourceLabel: "全局默认",
+  };
+}
 
 function buildModelPatch(
   model: string,
@@ -151,6 +227,7 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_enabled"
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
+        | "codex_reasoning_guard_model_rules"
       >
     >
   ) => Promise<boolean> | boolean;
@@ -239,6 +316,15 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardValuesError, setCodexReasoningGuardValuesError] = useState<
     string | null
   >(null);
+  const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
+  const [codexReasoningGuardDetailsTab, setCodexReasoningGuardDetailsTab] =
+    useState<CodexReasoningGuardDetailsTab>("rules");
+  const [codexReasoningGuardModelRuleDrafts, setCodexReasoningGuardModelRuleDrafts] = useState<
+    CodexReasoningGuardModelRuleDraft[]
+  >([]);
+  const [codexReasoningGuardModelRuleErrors, setCodexReasoningGuardModelRuleErrors] = useState<
+    Record<number, string>
+  >({});
 
   const [tomlAdvancedOpen, setTomlAdvancedOpen] = useState(false);
   const [tomlEditEnabled, setTomlEditEnabled] = useState(false);
@@ -300,15 +386,24 @@ export function CliManagerCodexTab({
     setConfigLocationError(null);
   }, [appSettings?.codex_home_mode, appSettings?.codex_home_override]);
 
+  const syncCodexReasoningGuardDrafts = useCallback(
+    (source: AppSettings | null | undefined = appSettings) => {
+      const values = source?.codex_reasoning_guard_reasoning_equals ?? [516];
+      setCodexReasoningGuardValuesText(values.join(", "));
+      setCodexReasoningGuardCompareMode(source?.codex_reasoning_guard_compare_mode ?? "equals");
+      setCodexReasoningGuardValuesError(null);
+      setCodexReasoningGuardModelRuleDrafts(
+        buildCodexReasoningGuardModelRuleDrafts(source?.codex_reasoning_guard_model_rules)
+      );
+      setCodexReasoningGuardModelRuleErrors({});
+    },
+    [appSettings]
+  );
+
   useEffect(() => {
-    const values = appSettings?.codex_reasoning_guard_reasoning_equals ?? [516];
-    setCodexReasoningGuardValuesText(values.join(", "));
-    setCodexReasoningGuardCompareMode(appSettings?.codex_reasoning_guard_compare_mode ?? "equals");
-    setCodexReasoningGuardValuesError(null);
-  }, [
-    appSettings?.codex_reasoning_guard_compare_mode,
-    appSettings?.codex_reasoning_guard_reasoning_equals,
-  ]);
+    if (codexReasoningGuardDetailsOpen) return;
+    syncCodexReasoningGuardDrafts(appSettings);
+  }, [codexReasoningGuardDetailsOpen, appSettings, syncCodexReasoningGuardDrafts]);
 
   function readSavedConfigLocationState() {
     const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
@@ -676,37 +771,134 @@ export function CliManagerCodexTab({
     return { ok: true, values };
   }
 
-  async function persistCodexReasoningGuardValues(raw: string) {
-    if (!appSettings) return;
-    if (!persistCodexReasoningGuardSettings) return;
-    const parsed = parseCodexReasoningGuardValues(raw);
-    if (!parsed.ok) {
-      setCodexReasoningGuardValuesError(parsed.message);
+  function updateCodexReasoningGuardModelRuleDraft(
+    index: number,
+    patch: Partial<CodexReasoningGuardModelRuleDraft>
+  ) {
+    setCodexReasoningGuardModelRuleDrafts((prev) =>
+      prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    );
+    setCodexReasoningGuardModelRuleErrors((prev) => {
+      if (!(index in prev)) return prev;
+      const next = { ...prev };
+      delete next[index];
+      return next;
+    });
+  }
+
+  function addCodexReasoningGuardModelRuleDraft() {
+    setCodexReasoningGuardModelRuleDrafts((prev) => {
+      if (prev.length >= MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN) {
+        return prev;
+      }
+      return [
+        ...prev,
+        {
+          requestedModel: "",
+          compareMode: "equals",
+          valuesText: "516",
+        },
+      ];
+    });
+  }
+
+  function removeCodexReasoningGuardModelRuleDraft(index: number) {
+    setCodexReasoningGuardModelRuleDrafts((prev) =>
+      prev.filter((_, itemIndex) => itemIndex !== index)
+    );
+    setCodexReasoningGuardModelRuleErrors((prev) => {
+      const next: Record<number, string> = {};
+      for (const [key, value] of Object.entries(prev)) {
+        const numericKey = Number(key);
+        if (numericKey === index) continue;
+        next[numericKey > index ? numericKey - 1 : numericKey] = value;
+      }
+      return next;
+    });
+  }
+
+  async function saveCodexReasoningGuardRules() {
+    if (!appSettings || !persistCodexReasoningGuardSettings) return;
+
+    const parsedGlobalValues = parseCodexReasoningGuardValues(codexReasoningGuardValuesText);
+    if (!parsedGlobalValues.ok) {
+      setCodexReasoningGuardValuesError(parsedGlobalValues.message);
       return;
     }
+
+    const nextRuleErrors: Record<number, string> = {};
+    const nextModelRules: CodexReasoningGuardModelRule[] = [];
+    const seenModels = new Set<string>();
+
+    for (const [index, draft] of codexReasoningGuardModelRuleDrafts.entries()) {
+      const requestedModel = draft.requestedModel.trim();
+      if (!requestedModel) {
+        nextRuleErrors[index] = "请填写模型名。";
+        continue;
+      }
+      if (requestedModel.length > MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN) {
+        nextRuleErrors[index] = `模型名必须 <= ${MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN} 字符。`;
+        continue;
+      }
+      if (/[\u0000-\u001f\u007f-\u009f]/u.test(requestedModel)) {
+        nextRuleErrors[index] = "模型名不能包含控制字符。";
+        continue;
+      }
+      if (seenModels.has(requestedModel)) {
+        nextRuleErrors[index] = "模型规则不能重复。";
+        continue;
+      }
+
+      const parsedValues = parseCodexReasoningGuardValues(draft.valuesText);
+      if (!parsedValues.ok) {
+        nextRuleErrors[index] = parsedValues.message;
+        continue;
+      }
+
+      seenModels.add(requestedModel);
+      nextModelRules.push({
+        requested_model: requestedModel,
+        compare_mode: draft.compareMode,
+        reasoning_equals: parsedValues.values,
+      });
+    }
+
+    if (Object.keys(nextRuleErrors).length > 0) {
+      setCodexReasoningGuardValuesError(null);
+      setCodexReasoningGuardModelRuleErrors(nextRuleErrors);
+      return;
+    }
+
     setCodexReasoningGuardValuesError(null);
-    setCodexReasoningGuardValuesText(parsed.values.join(", "));
+    setCodexReasoningGuardModelRuleErrors({});
+    setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
+    setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
+
     const saved = await persistCodexReasoningGuardSettings({
-      codex_reasoning_guard_reasoning_equals: parsed.values,
+      codex_reasoning_guard_compare_mode: codexReasoningGuardCompareMode,
+      codex_reasoning_guard_reasoning_equals: parsedGlobalValues.values,
+      codex_reasoning_guard_model_rules: nextModelRules,
     });
     if (!saved) {
-      setCodexReasoningGuardValuesText(
-        (appSettings.codex_reasoning_guard_reasoning_equals ?? [516]).join(", ")
-      );
+      syncCodexReasoningGuardDrafts(appSettings);
     }
   }
 
-  async function persistCodexReasoningGuardCompareMode(nextMode: CodexReasoningGuardCompareMode) {
-    if (!appSettings) return;
-    if (!persistCodexReasoningGuardSettings) return;
-    setCodexReasoningGuardCompareMode(nextMode);
-    const saved = await persistCodexReasoningGuardSettings({
-      codex_reasoning_guard_compare_mode: nextMode,
+  const codexReasoningGuardModelStats = useMemo(() => {
+    return [...(codexReasoningGuardStats?.by_model ?? [])].sort((left, right) => {
+      if (left.hit_request_count !== right.hit_request_count) {
+        return right.hit_request_count - left.hit_request_count;
+      }
+      if (left.total_request_count !== right.total_request_count) {
+        return right.total_request_count - left.total_request_count;
+      }
+      return left.requested_model.localeCompare(right.requested_model);
     });
-    if (!saved) {
-      setCodexReasoningGuardCompareMode(appSettings.codex_reasoning_guard_compare_mode ?? "equals");
-    }
-  }
+  }, [codexReasoningGuardStats?.by_model]);
+
+  const codexReasoningGuardTopHitModel = useMemo(() => {
+    return codexReasoningGuardModelStats.find((row) => row.hit_request_count > 0) ?? null;
+  }, [codexReasoningGuardModelStats]);
 
   return (
     <div className="space-y-6">
@@ -1077,19 +1269,34 @@ export function CliManagerCodexTab({
                         时，不把结果直接回给 Codex，而是在当前 provider 上继续重试，并且不计入熔断。
                       </div>
                     </div>
-                    <Switch
-                      aria-label="切换 Codex 降智拦截"
-                      checked={appSettings.codex_reasoning_guard_enabled}
-                      onCheckedChange={(checked) =>
-                        void persistCodexReasoningGuardSettings?.({
-                          codex_reasoning_guard_enabled: checked,
-                        })
-                      }
-                      disabled={reasoningGuardControlsDisabled}
-                    />
+                    <div className="flex items-center gap-2 self-start">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => {
+                          syncCodexReasoningGuardDrafts(appSettings);
+                          setCodexReasoningGuardDetailsTab("rules");
+                          setCodexReasoningGuardDetailsOpen(true);
+                        }}
+                      >
+                        <BarChart3 className="h-3.5 w-3.5" />
+                        详情
+                      </Button>
+                      <Switch
+                        aria-label="切换 Codex 降智拦截"
+                        checked={appSettings.codex_reasoning_guard_enabled}
+                        onCheckedChange={(checked) =>
+                          void persistCodexReasoningGuardSettings?.({
+                            codex_reasoning_guard_enabled: checked,
+                          })
+                        }
+                        disabled={reasoningGuardControlsDisabled}
+                      />
+                    </div>
                   </div>
 
-                  <div className="grid grid-cols-1 gap-3 md:grid-cols-2">
+                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
                     <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                         命中请求数
@@ -1110,70 +1317,384 @@ export function CliManagerCodexTab({
                           : String(codexReasoningGuardStats?.hit_attempt_count ?? 0)}
                       </div>
                     </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        降智命中率
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningGuardStatsLoading
+                          ? "..."
+                          : formatCodexReasoningGuardHitRate(codexReasoningGuardStats?.hit_rate)}
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        降智 {codexReasoningGuardStats?.hit_request_count ?? 0} / 正常{" "}
+                        {codexReasoningGuardStats?.normal_request_count ?? 0}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        模型规则
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {appSettings.codex_reasoning_guard_model_rules.length}
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">按模型精确匹配</div>
+                    </div>
                   </div>
 
-                  <div className="rounded-lg border border-border/70 bg-secondary/80 p-3 dark:border-border dark:bg-secondary/80">
-                    <div className="flex flex-col gap-3 md:flex-row md:items-end">
-                      <label className="flex-1 text-xs font-medium text-secondary-foreground">
-                        <span className="block">reasoning_tokens 规则值</span>
-                        <Input
-                          value={codexReasoningGuardValuesText}
-                          onChange={(e) => {
-                            setCodexReasoningGuardValuesText(e.currentTarget.value);
-                            if (codexReasoningGuardValuesError) {
-                              const parsed = parseCodexReasoningGuardValues(e.currentTarget.value);
-                              setCodexReasoningGuardValuesError(parsed.ok ? null : parsed.message);
-                            }
-                          }}
-                          onBlur={() =>
-                            void persistCodexReasoningGuardValues(codexReasoningGuardValuesText)
-                          }
-                          onKeyDown={(e) => {
-                            if (e.key === "Enter") e.currentTarget.blur();
-                          }}
-                          placeholder="516"
-                          className={cn(
-                            "mt-3 font-mono text-xs",
-                            codexReasoningGuardValuesError &&
-                              "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                          )}
-                          disabled={reasoningGuardControlsDisabled}
-                        />
-                      </label>
-                      <label className="text-xs font-medium text-secondary-foreground md:w-[180px]">
-                        <span className="block">比较方式</span>
-                        <Select
-                          value={codexReasoningGuardCompareMode}
-                          onChange={(e) =>
-                            void persistCodexReasoningGuardCompareMode(
-                              e.currentTarget.value as CodexReasoningGuardCompareMode
-                            )
-                          }
-                          disabled={reasoningGuardControlsDisabled}
-                          className="mt-3 font-mono text-xs"
-                        >
-                          <option value="equals">等于 (==)</option>
-                          <option value="less_than_or_equal">小于等于 (&lt;=)</option>
-                        </Select>
-                      </label>
+                  <div className="grid gap-2 rounded-lg border border-border/70 bg-secondary/80 p-3 text-xs text-muted-foreground dark:border-border dark:bg-secondary/80">
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>全局默认规则</span>
+                      <span className="font-mono text-secondary-foreground">
+                        {formatCodexReasoningGuardRuleLabel(
+                          appSettings.codex_reasoning_guard_compare_mode,
+                          appSettings.codex_reasoning_guard_reasoning_equals
+                        )}
+                      </span>
                     </div>
-                    <div
-                      className={cn(
-                        "mt-2 text-[11px] leading-relaxed",
-                        codexReasoningGuardValuesError
-                          ? "text-rose-600 dark:text-rose-400"
-                          : "text-muted-foreground"
-                      )}
-                    >
-                      {codexReasoningGuardValuesError ??
-                        (codexReasoningGuardCompareMode === "less_than_or_equal"
-                          ? "多个值请用英文逗号分隔。命中条件为 reasoning_tokens 小于等于任一规则值；若有多个阈值，会优先匹配更贴近的较小阈值。"
-                          : "多个值请用英文逗号分隔。默认规则是 516。命中后会在同一 provider 上继续重试。")}
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>最高命中模型</span>
+                      <span className="text-secondary-foreground">
+                        {codexReasoningGuardTopHitModel
+                          ? `${codexReasoningGuardTopHitModel.requested_model} · ${formatCodexReasoningGuardHitRate(
+                              codexReasoningGuardTopHitModel.hit_rate
+                            )}`
+                          : "暂无命中"}
+                      </span>
                     </div>
                   </div>
                 </div>
               </div>
             ) : null}
+            <Dialog
+              open={codexReasoningGuardDetailsOpen}
+              onOpenChange={(next) => {
+                setCodexReasoningGuardDetailsOpen(next);
+                if (!next) {
+                  syncCodexReasoningGuardDrafts(appSettings);
+                }
+              }}
+              title="降智拦截详情"
+              description="外层页面只保留总览；完整规则编辑和按模型统计放在这里。"
+              className="max-w-5xl"
+            >
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      命中请求数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : String(codexReasoningGuardStats?.hit_request_count ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      命中次数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : String(codexReasoningGuardStats?.hit_attempt_count ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      正常请求数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : String(codexReasoningGuardStats?.normal_request_count ?? 0)}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      降智命中率
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningGuardStatsLoading
+                        ? "..."
+                        : formatCodexReasoningGuardHitRate(codexReasoningGuardStats?.hit_rate)}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="inline-flex rounded-lg border border-border bg-secondary/40 p-1">
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                      codexReasoningGuardDetailsTab === "rules"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => setCodexReasoningGuardDetailsTab("rules")}
+                  >
+                    规则
+                  </button>
+                  <button
+                    type="button"
+                    className={cn(
+                      "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                      codexReasoningGuardDetailsTab === "stats"
+                        ? "bg-background text-foreground shadow-sm"
+                        : "text-muted-foreground hover:text-foreground"
+                    )}
+                    onClick={() => setCodexReasoningGuardDetailsTab("stats")}
+                  >
+                    统计
+                  </button>
+                </div>
+
+                {codexReasoningGuardDetailsTab === "rules" ? (
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
+                      <div className="text-sm font-semibold text-foreground">全局回退规则</div>
+                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        只有在当前请求模型没有精确匹配到模型规则时，才会回落到这里。
+                      </div>
+                      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">reasoning_tokens 规则值</span>
+                          <Input
+                            value={codexReasoningGuardValuesText}
+                            onChange={(e) => {
+                              setCodexReasoningGuardValuesText(e.currentTarget.value);
+                              if (codexReasoningGuardValuesError) {
+                                const parsed = parseCodexReasoningGuardValues(
+                                  e.currentTarget.value
+                                );
+                                setCodexReasoningGuardValuesError(
+                                  parsed.ok ? null : parsed.message
+                                );
+                              }
+                            }}
+                            placeholder="516"
+                            className={cn(
+                              "mt-3 font-mono text-xs",
+                              codexReasoningGuardValuesError &&
+                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                            )}
+                            disabled={reasoningGuardControlsDisabled}
+                          />
+                        </label>
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">比较方式</span>
+                          <Select
+                            value={codexReasoningGuardCompareMode}
+                            onChange={(e) => {
+                              setCodexReasoningGuardCompareMode(
+                                e.currentTarget.value as CodexReasoningGuardCompareMode
+                              );
+                              setCodexReasoningGuardValuesError(null);
+                            }}
+                            disabled={reasoningGuardControlsDisabled}
+                            className="mt-3 font-mono text-xs"
+                          >
+                            <option value="equals">等于 (==)</option>
+                            <option value="less_than_or_equal">小于等于 (&lt;=)</option>
+                          </Select>
+                        </label>
+                      </div>
+                      <div
+                        className={cn(
+                          "mt-2 text-[11px] leading-relaxed",
+                          codexReasoningGuardValuesError
+                            ? "text-rose-600 dark:text-rose-400"
+                            : "text-muted-foreground"
+                        )}
+                      >
+                        {codexReasoningGuardValuesError ??
+                          codexReasoningGuardCompareModeHelperText(codexReasoningGuardCompareMode)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
+                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-foreground">模型规则</div>
+                          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                            这里按 <span className="font-mono">requested_model</span>{" "}
+                            精确匹配；没匹配到的请求，才会走上面的全局回退规则。
+                          </div>
+                        </div>
+                        <Button
+                          variant="secondary"
+                          size="sm"
+                          className="gap-2"
+                          onClick={addCodexReasoningGuardModelRuleDraft}
+                          disabled={
+                            reasoningGuardControlsDisabled ||
+                            codexReasoningGuardModelRuleDrafts.length >=
+                              MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN
+                          }
+                        >
+                          <Plus className="h-3.5 w-3.5" />
+                          新增模型规则
+                        </Button>
+                      </div>
+
+                      <div className="mt-4 space-y-3">
+                        {codexReasoningGuardModelRuleDrafts.length === 0 ? (
+                          <div className="rounded-lg border border-dashed border-border/70 bg-background/60 px-4 py-5 text-center text-xs text-muted-foreground">
+                            暂无模型规则，当前所有 Codex 请求都会回落到全局默认规则。
+                          </div>
+                        ) : (
+                          codexReasoningGuardModelRuleDrafts.map((draft, index) => (
+                            <div
+                              key={`${draft.requestedModel || "rule"}-${index}`}
+                              className="rounded-lg border border-border/70 bg-background/80 p-3"
+                            >
+                              <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_220px_minmax(0,1fr)_auto]">
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">模型名</span>
+                                  <Input
+                                    value={draft.requestedModel}
+                                    onChange={(e) =>
+                                      updateCodexReasoningGuardModelRuleDraft(index, {
+                                        requestedModel: e.currentTarget.value,
+                                      })
+                                    }
+                                    placeholder="例如：gpt-5-codex"
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={reasoningGuardControlsDisabled}
+                                  />
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">比较方式</span>
+                                  <Select
+                                    value={draft.compareMode}
+                                    onChange={(e) =>
+                                      updateCodexReasoningGuardModelRuleDraft(index, {
+                                        compareMode: e.currentTarget
+                                          .value as CodexReasoningGuardCompareMode,
+                                      })
+                                    }
+                                    disabled={reasoningGuardControlsDisabled}
+                                    className="mt-3 font-mono text-xs"
+                                  >
+                                    <option value="equals">等于 (==)</option>
+                                    <option value="less_than_or_equal">小于等于 (&lt;=)</option>
+                                  </Select>
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">reasoning_tokens 规则值</span>
+                                  <Input
+                                    value={draft.valuesText}
+                                    onChange={(e) =>
+                                      updateCodexReasoningGuardModelRuleDraft(index, {
+                                        valuesText: e.currentTarget.value,
+                                      })
+                                    }
+                                    placeholder="516"
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={reasoningGuardControlsDisabled}
+                                  />
+                                </label>
+                                <div className="flex items-end">
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`删除模型规则 ${index + 1}`}
+                                    onClick={() => removeCodexReasoningGuardModelRuleDraft(index)}
+                                    disabled={reasoningGuardControlsDisabled}
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+                              {codexReasoningGuardModelRuleErrors[index] ? (
+                                <div className="mt-2 text-[11px] text-rose-600 dark:text-rose-400">
+                                  {codexReasoningGuardModelRuleErrors[index]}
+                                </div>
+                              ) : (
+                                <div className="mt-2 text-[11px] text-muted-foreground">
+                                  {codexReasoningGuardCompareModeHelperText(draft.compareMode)}
+                                </div>
+                              )}
+                            </div>
+                          ))
+                        )}
+                      </div>
+
+                      <div className="mt-4 flex items-center justify-between gap-3">
+                        <div className="text-[11px] text-muted-foreground">
+                          最多支持 {MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN} 条模型规则。
+                        </div>
+                        <Button
+                          size="sm"
+                          className="gap-2"
+                          onClick={() => void saveCodexReasoningGuardRules()}
+                          disabled={reasoningGuardControlsDisabled}
+                        >
+                          <Settings className="h-3.5 w-3.5" />
+                          保存规则
+                        </Button>
+                      </div>
+                    </div>
+                  </div>
+                ) : (
+                  <div className="space-y-4">
+                    <div className="rounded-lg border border-border/70 bg-secondary/60 p-4 text-xs text-muted-foreground">
+                      共统计 {codexReasoningGuardStats?.total_request_count ?? 0} 个 Codex
+                      请求；命中降智 {codexReasoningGuardStats?.hit_request_count ?? 0} 次，不命中{" "}
+                      {codexReasoningGuardStats?.normal_request_count ?? 0} 次。
+                    </div>
+                    {codexReasoningGuardModelStats.length === 0 ? (
+                      <div className="rounded-lg border border-dashed border-border/70 bg-background/60 px-4 py-5 text-center text-xs text-muted-foreground">
+                        还没有可展示的 Codex 请求统计。
+                      </div>
+                    ) : (
+                      <div className="overflow-x-auto rounded-lg border border-border/70">
+                        <table className="min-w-full divide-y divide-border text-sm">
+                          <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                            <tr>
+                              <th className="px-3 py-2 font-medium">模型</th>
+                              <th className="px-3 py-2 font-medium">命中请求</th>
+                              <th className="px-3 py-2 font-medium">正常请求</th>
+                              <th className="px-3 py-2 font-medium">命中率</th>
+                              <th className="px-3 py-2 font-medium">命中次数</th>
+                              <th className="px-3 py-2 font-medium">当前规则</th>
+                              <th className="px-3 py-2 font-medium">规则来源</th>
+                            </tr>
+                          </thead>
+                          <tbody className="divide-y divide-border bg-background/80">
+                            {codexReasoningGuardModelStats.map((row) => {
+                              const ruleInfo = resolveCodexReasoningGuardRuleForModel(
+                                appSettings,
+                                row.requested_model
+                              );
+                              return (
+                                <tr key={row.requested_model}>
+                                  <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                    {row.requested_model}
+                                  </td>
+                                  <td className="px-3 py-2">{row.hit_request_count}</td>
+                                  <td className="px-3 py-2">{row.normal_request_count}</td>
+                                  <td className="px-3 py-2">
+                                    {formatCodexReasoningGuardHitRate(row.hit_rate)}
+                                  </td>
+                                  <td className="px-3 py-2">{row.hit_attempt_count}</td>
+                                  <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                    {ruleInfo.label}
+                                  </td>
+                                  <td className="px-3 py-2 text-muted-foreground">
+                                    {ruleInfo.sourceLabel}
+                                  </td>
+                                </tr>
+                              );
+                            })}
+                          </tbody>
+                        </table>
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </Dialog>
           </div>
         </div>
 

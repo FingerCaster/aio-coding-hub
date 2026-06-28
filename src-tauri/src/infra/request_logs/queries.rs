@@ -7,10 +7,14 @@ use serde::Deserialize;
 use std::collections::HashMap;
 
 use super::costing::cost_usd_from_femto;
-use super::{CodexReasoningGuardStats, RequestLogDetail, RequestLogRouteHop, RequestLogSummary};
+use super::{
+    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogRouteHop,
+    RequestLogSummary,
+};
 
 const CLAUDE_VISIBLE_LOG_PATH: &str = "/v1/messages";
 const CLAUDE_VISIBLE_LOG_CONDITION: &str = "(cli_key != 'claude' OR path = '/v1/messages')";
+const UNKNOWN_CODEX_REQUESTED_MODEL_LABEL: &str = "未识别模型";
 
 /// Common SELECT fields for request_logs queries (summary view).
 const REQUEST_LOG_SUMMARY_FIELDS: &str = "
@@ -590,34 +594,166 @@ pub fn codex_reasoning_guard_stats(
     db: &db::Db,
 ) -> crate::shared::error::AppResult<CodexReasoningGuardStats> {
     let conn = db.open_connection()?;
-    let sql = r#"
+    let overall_sql = format!(
+        r#"
+WITH codex_requests AS (
+  SELECT
+    id,
+    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model
+  FROM request_logs
+  WHERE cli_key = 'codex'
+),
+guard_hit_attempts AS (
+  SELECT
+    request_logs.id AS request_id,
+    COALESCE(NULLIF(TRIM(request_logs.requested_model), ''), '{unknown}') AS requested_model
+  FROM request_logs
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE request_logs.cli_key = 'codex'
+    AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+),
+guard_hit_requests AS (
+  SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
+  FROM guard_hit_attempts
+  GROUP BY request_id, requested_model
+)
 SELECT
-  COUNT(DISTINCT request_logs.id) AS hit_request_count,
-  COUNT(1) AS hit_attempt_count
-FROM request_logs
-JOIN json_each(request_logs.special_settings_json) AS special
-WHERE request_logs.cli_key = 'codex'
-  AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
-"#;
+  COALESCE((SELECT COUNT(*) FROM guard_hit_requests), 0) AS hit_request_count,
+  COALESCE((SELECT SUM(hit_attempt_count) FROM guard_hit_requests), 0) AS hit_attempt_count,
+  COALESCE((SELECT COUNT(*) FROM codex_requests), 0) AS total_request_count
+"#,
+        unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
+    );
 
-    let stats = conn
-        .query_row(sql, [], |row| {
-            Ok(CodexReasoningGuardStats {
-                hit_request_count: row.get::<_, i64>("hit_request_count")?.max(0),
-                hit_attempt_count: row.get::<_, i64>("hit_attempt_count")?.max(0),
-            })
+    let (hit_request_count, hit_attempt_count, total_request_count) = conn
+        .query_row(&overall_sql, [], |row| {
+            Ok((
+                row.get::<_, i64>("hit_request_count")?.max(0),
+                row.get::<_, i64>("hit_attempt_count")?.max(0),
+                row.get::<_, i64>("total_request_count")?.max(0),
+            ))
         })
-        .map_err(|e| db_err!("failed to query codex reasoning guard stats: {e}"))?;
+        .map_err(|e| db_err!("failed to query codex reasoning guard summary stats: {e}"))?;
 
-    Ok(stats)
+    let by_model_sql = format!(
+        r#"
+WITH codex_requests AS (
+  SELECT
+    id,
+    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model
+  FROM request_logs
+  WHERE cli_key = 'codex'
+),
+guard_hit_attempts AS (
+  SELECT
+    request_logs.id AS request_id,
+    COALESCE(NULLIF(TRIM(request_logs.requested_model), ''), '{unknown}') AS requested_model
+  FROM request_logs
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE request_logs.cli_key = 'codex'
+    AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+),
+guard_hit_requests AS (
+  SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
+  FROM guard_hit_attempts
+  GROUP BY request_id, requested_model
+),
+totals_by_model AS (
+  SELECT requested_model, COUNT(*) AS total_request_count
+  FROM codex_requests
+  GROUP BY requested_model
+),
+hits_by_model AS (
+  SELECT
+    requested_model,
+    COUNT(*) AS hit_request_count,
+    COALESCE(SUM(hit_attempt_count), 0) AS hit_attempt_count
+  FROM guard_hit_requests
+  GROUP BY requested_model
+)
+SELECT
+  totals_by_model.requested_model AS requested_model,
+  totals_by_model.total_request_count AS total_request_count,
+  COALESCE(hits_by_model.hit_request_count, 0) AS hit_request_count,
+  totals_by_model.total_request_count - COALESCE(hits_by_model.hit_request_count, 0) AS normal_request_count,
+  COALESCE(hits_by_model.hit_attempt_count, 0) AS hit_attempt_count
+FROM totals_by_model
+LEFT JOIN hits_by_model ON hits_by_model.requested_model = totals_by_model.requested_model
+ORDER BY
+  COALESCE(hits_by_model.hit_request_count, 0) DESC,
+  totals_by_model.total_request_count DESC,
+  totals_by_model.requested_model ASC
+"#,
+        unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
+    );
+
+    let mut stmt = conn
+        .prepare(&by_model_sql)
+        .map_err(|e| db_err!("failed to prepare codex reasoning guard model stats query: {e}"))?;
+    let mut rows = stmt
+        .query([])
+        .map_err(|e| db_err!("failed to run codex reasoning guard model stats query: {e}"))?;
+
+    let mut by_model = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| db_err!("failed to read codex reasoning guard model stats row: {e}"))?
+    {
+        let total_model_requests = row
+            .get::<_, i64>("total_request_count")
+            .map_err(|e| db_err!("invalid codex reasoning guard total_request_count: {e}"))?
+            .max(0);
+        let hit_model_requests = row
+            .get::<_, i64>("hit_request_count")
+            .map_err(|e| db_err!("invalid codex reasoning guard hit_request_count: {e}"))?
+            .max(0);
+        let hit_rate = if total_model_requests > 0 {
+            hit_model_requests as f64 / total_model_requests as f64
+        } else {
+            0.0
+        };
+
+        by_model.push(CodexReasoningGuardModelStat {
+            requested_model: row
+                .get("requested_model")
+                .map_err(|e| db_err!("invalid codex reasoning guard requested_model: {e}"))?,
+            total_request_count: total_model_requests,
+            hit_request_count: hit_model_requests,
+            normal_request_count: row
+                .get::<_, i64>("normal_request_count")
+                .map_err(|e| db_err!("invalid codex reasoning guard normal_request_count: {e}"))?
+                .max(0),
+            hit_attempt_count: row
+                .get::<_, i64>("hit_attempt_count")
+                .map_err(|e| db_err!("invalid codex reasoning guard hit_attempt_count: {e}"))?
+                .max(0),
+            hit_rate,
+        });
+    }
+
+    let normal_request_count = (total_request_count - hit_request_count).max(0);
+    let hit_rate = if total_request_count > 0 {
+        hit_request_count as f64 / total_request_count as f64
+    } else {
+        0.0
+    };
+
+    Ok(CodexReasoningGuardStats {
+        hit_request_count,
+        hit_attempt_count,
+        normal_request_count,
+        total_request_count,
+        hit_rate,
+        by_model,
+    })
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        final_provider_from_attempts, get_by_id, get_by_trace_id, list_after_id_all, list_recent,
-        list_recent_all, load_source_provider_info_map, parse_attempts, route_from_attempts,
-        start_provider_from_attempts,
+        codex_reasoning_guard_stats, final_provider_from_attempts, get_by_id, get_by_trace_id,
+        list_after_id_all, list_recent, list_recent_all, load_source_provider_info_map,
+        parse_attempts, route_from_attempts, start_provider_from_attempts,
     };
     use crate::db;
     use rusqlite::Connection;
@@ -637,6 +773,37 @@ INSERT INTO request_logs (
   NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, 'model', NULL, 1.0, ?5, ?6, 0)
 "#,
             rusqlite::params![id, trace_id, cli_key, path, id * 1000, id],
+        )
+        .unwrap();
+    }
+
+    fn seed_codex_request_log_with_special_settings(
+        conn: &Connection,
+        id: i64,
+        trace_id: &str,
+        requested_model: Option<&str>,
+        special_settings_json: Option<&str>,
+    ) {
+        conn.execute(
+            r#"
+INSERT INTO request_logs (
+  id, trace_id, cli_key, session_id, method, path, query, excluded_from_stats,
+  special_settings_json, status, error_code, duration_ms, ttfb_ms, attempts_json,
+  input_tokens, output_tokens, total_tokens, cache_read_input_tokens,
+  cache_creation_input_tokens, cache_creation_5m_input_tokens,
+  cache_creation_1h_input_tokens, usage_json, requested_model, cost_usd_femto,
+  cost_multiplier, created_at_ms, created_at, final_provider_id
+) VALUES (?1, ?2, 'codex', NULL, 'POST', '/v1/responses', NULL, 0, ?3, 200, NULL, 10, 5, '[]',
+  NULL, NULL, NULL, NULL, NULL, NULL, NULL, NULL, ?4, NULL, 1.0, ?5, ?6, 0)
+"#,
+            rusqlite::params![
+                id,
+                trace_id,
+                special_settings_json,
+                requested_model,
+                id * 1000,
+                id
+            ],
         )
         .unwrap();
     }
@@ -912,5 +1079,69 @@ INSERT INTO request_logs (
 
         let detail = get_by_id(&db, 11).unwrap();
         assert_eq!(detail.session_id.as_deref(), Some("sess-123"));
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_split_by_model_and_ratio() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-codex-hit-a",
+            Some("gpt-5-codex"),
+            Some(r#"[{"type":"codex_reasoning_guard"},{"type":"codex_reasoning_guard"}]"#),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-codex-normal-a",
+            Some("gpt-5-codex"),
+            None,
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-codex-hit-b",
+            Some("gpt-5-mini-codex"),
+            Some(r#"[{"type":"codex_reasoning_guard"}]"#),
+        );
+        seed_codex_request_log_with_special_settings(&conn, 4, "trace-codex-unknown", None, None);
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db).unwrap();
+        assert_eq!(stats.hit_request_count, 2);
+        assert_eq!(stats.hit_attempt_count, 3);
+        assert_eq!(stats.normal_request_count, 2);
+        assert_eq!(stats.total_request_count, 4);
+        assert!((stats.hit_rate - 0.5).abs() < f64::EPSILON);
+
+        assert_eq!(stats.by_model.len(), 3);
+        assert_eq!(stats.by_model[0].requested_model, "gpt-5-codex");
+        assert_eq!(stats.by_model[0].total_request_count, 2);
+        assert_eq!(stats.by_model[0].hit_request_count, 1);
+        assert_eq!(stats.by_model[0].normal_request_count, 1);
+        assert_eq!(stats.by_model[0].hit_attempt_count, 2);
+        assert!((stats.by_model[0].hit_rate - 0.5).abs() < f64::EPSILON);
+
+        assert_eq!(stats.by_model[1].requested_model, "gpt-5-mini-codex");
+        assert_eq!(stats.by_model[1].total_request_count, 1);
+        assert_eq!(stats.by_model[1].hit_request_count, 1);
+        assert_eq!(stats.by_model[1].normal_request_count, 0);
+        assert_eq!(stats.by_model[1].hit_attempt_count, 1);
+        assert!((stats.by_model[1].hit_rate - 1.0).abs() < f64::EPSILON);
+
+        assert_eq!(
+            stats.by_model[2].requested_model,
+            super::UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
+        );
+        assert_eq!(stats.by_model[2].total_request_count, 1);
+        assert_eq!(stats.by_model[2].hit_request_count, 0);
+        assert_eq!(stats.by_model[2].normal_request_count, 1);
+        assert_eq!(stats.by_model[2].hit_attempt_count, 0);
+        assert!((stats.by_model[2].hit_rate - 0.0).abs() < f64::EPSILON);
     }
 }

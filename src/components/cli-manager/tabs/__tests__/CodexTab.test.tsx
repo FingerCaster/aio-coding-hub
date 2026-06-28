@@ -85,6 +85,27 @@ function createAppSettings(overrides: Parameters<typeof createTestAppSettings>[0
   });
 }
 
+function createReasoningGuardStats(overrides: Partial<any> = {}) {
+  return {
+    hit_request_count: 4,
+    hit_attempt_count: 9,
+    normal_request_count: 28,
+    total_request_count: 32,
+    hit_rate: 0.125,
+    by_model: [
+      {
+        requested_model: "gpt-5-codex",
+        total_request_count: 20,
+        hit_request_count: 4,
+        normal_request_count: 16,
+        hit_attempt_count: 9,
+        hit_rate: 0.2,
+      },
+    ],
+    ...overrides,
+  };
+}
+
 describe("components/cli-manager/tabs/CodexTab", () => {
   it("handles sandbox confirm flow and toggles", () => {
     const persistCodexConfig = vi.fn();
@@ -246,7 +267,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           toml: 'approval_policy = "on-request"\\n',
         }}
         appSettings={createAppSettings({ codex_reasoning_guard_enabled: false })}
-        codexReasoningGuardStats={{ hit_request_count: 4, hit_attempt_count: 9 }}
+        codexReasoningGuardStats={createReasoningGuardStats()}
         refreshCodex={vi.fn()}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}
@@ -258,6 +279,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByText("命中请求数")).toBeInTheDocument();
     expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByText("9")).toBeInTheDocument();
+    expect(screen.getByText("12.5%")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "切换 Codex 降智拦截" }));
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
@@ -280,7 +302,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           toml: 'approval_policy = "on-request"\\n',
         }}
         appSettings={createAppSettings({ codex_reasoning_guard_enabled: true })}
-        codexReasoningGuardStats={{ hit_request_count: 4, hit_attempt_count: 9 }}
+        codexReasoningGuardStats={createReasoningGuardStats()}
         refreshCodex={vi.fn()}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}
@@ -295,7 +317,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
   });
 
-  it("persists Codex reasoning guard values on blur", () => {
+  it("saves Codex reasoning guard rules from detail dialog", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 
     render(
@@ -322,16 +344,20 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    const input = screen.getByDisplayValue("516");
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    const input = within(dialog).getAllByDisplayValue("516")[0] as HTMLInputElement;
     fireEvent.change(input, { target: { value: "516, 1024" } });
-    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_compare_mode: "equals",
       codex_reasoning_guard_reasoning_equals: [516, 1024],
+      codex_reasoning_guard_model_rules: [],
     });
   });
 
-  it("persists Codex reasoning guard compare mode", () => {
+  it("saves Codex reasoning guard compare mode and model rules", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 
     render(
@@ -358,11 +384,29 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    const compareSelect = screen.getByDisplayValue("等于 (==)");
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    const compareSelect = within(dialog).getAllByDisplayValue("等于 (==)")[0] as HTMLSelectElement;
     fireEvent.change(compareSelect, { target: { value: "less_than_or_equal" } });
+    fireEvent.click(screen.getByRole("button", { name: "新增模型规则" }));
+    fireEvent.change(within(dialog).getByPlaceholderText("例如：gpt-5-codex"), {
+      target: { value: "gpt-5-mini-codex" },
+    });
+    fireEvent.change(within(dialog).getAllByDisplayValue("516")[1] as HTMLInputElement, {
+      target: { value: "256" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_compare_mode: "less_than_or_equal",
+      codex_reasoning_guard_reasoning_equals: [516],
+      codex_reasoning_guard_model_rules: [
+        {
+          requested_model: "gpt-5-mini-codex",
+          compare_mode: "equals",
+          reasoning_equals: [256],
+        },
+      ],
     });
     expect(
       screen.getByText(
@@ -398,9 +442,11 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    const input = screen.getByDisplayValue("516");
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    const input = within(dialog).getAllByDisplayValue("516")[0] as HTMLInputElement;
     fireEvent.change(input, { target: { value: "516, nope" } });
-    fireEvent.blur(input);
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
     expect(screen.getByText("只支持非负整数，多个值请用逗号分隔。")).toBeInTheDocument();

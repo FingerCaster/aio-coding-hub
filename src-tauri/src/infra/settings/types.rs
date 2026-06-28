@@ -55,6 +55,25 @@ pub enum CodexReasoningGuardCompareMode {
     LessThanOrEqual,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(default)]
+pub struct CodexReasoningGuardModelRule {
+    pub requested_model: String,
+    #[serde(default)]
+    pub compare_mode: CodexReasoningGuardCompareMode,
+    pub reasoning_equals: Vec<i64>,
+}
+
+impl Default for CodexReasoningGuardModelRule {
+    fn default() -> Self {
+        Self {
+            requested_model: String::new(),
+            compare_mode: CodexReasoningGuardCompareMode::default(),
+            reasoning_equals: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(default)]
 pub struct WslTargetCli {
@@ -109,6 +128,8 @@ pub struct AppSettings {
     #[serde(default)]
     pub codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode,
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
+    #[serde(default)]
+    pub codex_reasoning_guard_model_rules: Vec<CodexReasoningGuardModelRule>,
     pub auto_start: bool,
     // Start with window hidden when auto-starting (silent startup).
     pub start_minimized: bool,
@@ -195,6 +216,7 @@ impl Default for AppSettings {
             codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::default(),
             codex_reasoning_guard_reasoning_equals: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
                 .to_vec(),
+            codex_reasoning_guard_model_rules: Vec::new(),
             auto_start: false,
             start_minimized: false,
             tray_enabled: true,

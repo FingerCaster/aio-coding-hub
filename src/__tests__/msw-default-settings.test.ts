@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 36,
+      schema_version: 37,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -24,6 +24,7 @@ describe("MSW defaults", () => {
       codex_reasoning_guard_enabled: true,
       codex_reasoning_guard_compare_mode: "equals",
       codex_reasoning_guard_reasoning_equals: [516],
+      codex_reasoning_guard_model_rules: [],
       auto_start: false,
       start_minimized: false,
       tray_enabled: true,

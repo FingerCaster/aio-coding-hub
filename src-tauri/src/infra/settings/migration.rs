@@ -1,8 +1,11 @@
 //! Usage: Schema migrations and input sanitization for settings upgrades.
 
 use super::defaults::*;
-use super::types::{AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode};
+use super::types::{
+    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardModelRule,
+};
 use crate::shared::error::AppResult;
+use std::collections::HashSet;
 
 pub(super) fn normalize_cli_priority_order(input: &[String]) -> Vec<String> {
     let mut order = Vec::with_capacity(crate::shared::cli_key::SUPPORTED_CLI_KEYS.len());
@@ -74,6 +77,51 @@ pub(super) fn sanitize_cli_priority_order(settings: &mut AppSettings) -> bool {
     let normalized = normalize_cli_priority_order(&settings.cli_priority_order);
     let changed = settings.cli_priority_order != normalized;
     settings.cli_priority_order = normalized;
+    changed
+}
+
+pub(super) fn sanitize_codex_reasoning_guard_model_rules(settings: &mut AppSettings) -> bool {
+    let mut changed = false;
+    let mut seen_models = HashSet::new();
+    let mut normalized = Vec::with_capacity(settings.codex_reasoning_guard_model_rules.len());
+
+    for rule in &settings.codex_reasoning_guard_model_rules {
+        let requested_model = rule.requested_model.trim().to_string();
+        if requested_model.is_empty() {
+            changed = true;
+            continue;
+        }
+        if !seen_models.insert(requested_model.clone()) {
+            changed = true;
+            continue;
+        }
+
+        let normalized_rule = CodexReasoningGuardModelRule {
+            requested_model,
+            compare_mode: rule.compare_mode,
+            reasoning_equals: if rule.reasoning_equals.is_empty() {
+                changed = true;
+                DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec()
+            } else {
+                rule.reasoning_equals.clone()
+            },
+        };
+        if &normalized_rule != rule {
+            changed = true;
+        }
+        normalized.push(normalized_rule);
+    }
+
+    if normalized.len() > MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN {
+        normalized.truncate(MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN);
+        changed = true;
+    }
+
+    if settings.codex_reasoning_guard_model_rules != normalized {
+        settings.codex_reasoning_guard_model_rules = normalized;
+        changed = true;
+    }
+
     changed
 }
 
@@ -685,9 +733,21 @@ fn migrate_update_releases_url_to_fork(
 
 pub(super) const SCHEMA_VERSION_UPDATE_RELEASES_URL_TO_FORK: u32 = 36;
 
+fn migrate_add_codex_reasoning_guard_model_rules(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    // v37: Add model-specific Codex reasoning guard rules (default empty).
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_MODEL_RULES,
+    )
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 30] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 31] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -718,6 +778,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 30] = [
     migrate_add_codex_reasoning_guard,
     migrate_add_codex_reasoning_guard_compare_mode,
     migrate_update_releases_url_to_fork,
+    migrate_add_codex_reasoning_guard_model_rules,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -742,6 +803,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_upstream_timeouts(settings);
     repaired |= sanitize_response_fixer_limits(settings);
     repaired |= sanitize_codex_home_override(settings);
+    repaired |= sanitize_codex_reasoning_guard_model_rules(settings);
     repaired |= sanitize_cli_priority_order(settings);
     let canonical = super::persistence::canonical_settings_json(settings)?;
     repaired |= raw_settings_json != &canonical;

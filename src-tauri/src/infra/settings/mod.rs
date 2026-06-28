@@ -18,6 +18,6 @@ pub use defaults::{
 pub(crate) use persistence::validate_bounds;
 pub use persistence::{clear_cache, log_retention_days_fail_open, read, write};
 pub use types::{
-    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, GatewayListenMode, HomeUsagePeriod,
-    WslHostAddressMode, WslTargetCli,
+    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardModelRule,
+    GatewayListenMode, HomeUsagePeriod, WslHostAddressMode, WslTargetCli,
 };

@@ -11,6 +11,7 @@ use super::types::{
 use crate::app_paths;
 use crate::shared::error::AppResult;
 use crate::shared::fs::read_file_with_max_len;
+use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{OnceLock, RwLock};
@@ -131,6 +132,28 @@ fn validate_optional_bounded_string(field: &str, value: &str, max_len: usize) ->
         return Err(format!("SEC_INVALID_INPUT: {field} must be <= {max_len} characters").into());
     }
     validate_no_control_chars(field, raw)
+}
+
+fn validate_codex_reasoning_guard_values(field: &str, values: &[i64]) -> AppResult<()> {
+    if values.is_empty() {
+        return Err(format!("SEC_INVALID_INPUT: {field} must not be empty").into());
+    }
+    if values.len() > MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {field} must contain <= {MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN} values"
+        )
+        .into());
+    }
+    if values
+        .iter()
+        .any(|value| *value < 0 || *value > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE)
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {field} values must be between 0 and {MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE}"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 pub(super) fn parse_settings_json(
@@ -325,32 +348,48 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         &settings.cx2cc_service_tier,
         MAX_CX2CC_OPTIONAL_FIELD_LEN,
     )?;
-    if settings.codex_reasoning_guard_reasoning_equals.is_empty() {
-        return Err(
-            "SEC_INVALID_INPUT: codex_reasoning_guard_reasoning_equals must not be empty".into(),
-        );
-    }
-    if settings.codex_reasoning_guard_reasoning_equals.len()
-        > MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN
-    {
-        return Err(format!(
-            "SEC_INVALID_INPUT: codex_reasoning_guard_reasoning_equals must contain <= {MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN} values"
-        )
-        .into());
-    }
-    if settings
-        .codex_reasoning_guard_reasoning_equals
-        .iter()
-        .any(|value| *value < 0 || *value > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE)
-    {
-        return Err(format!(
-            "SEC_INVALID_INPUT: codex_reasoning_guard_reasoning_equals values must be between 0 and {MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE}"
-        )
-        .into());
-    }
+    validate_codex_reasoning_guard_values(
+        "codex_reasoning_guard_reasoning_equals",
+        &settings.codex_reasoning_guard_reasoning_equals,
+    )?;
     match settings.codex_reasoning_guard_compare_mode {
         CodexReasoningGuardCompareMode::Equals
         | CodexReasoningGuardCompareMode::LessThanOrEqual => {}
+    }
+    if settings.codex_reasoning_guard_model_rules.len() > MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_model_rules must contain <= {MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN} rules"
+        )
+        .into());
+    }
+    let mut seen_requested_models = HashSet::new();
+    for (index, rule) in settings
+        .codex_reasoning_guard_model_rules
+        .iter()
+        .enumerate()
+    {
+        let field_prefix = format!("codex_reasoning_guard_model_rules[{index}]");
+        let requested_model = rule.requested_model.trim();
+        validate_non_empty_bounded_string(
+            &format!("{field_prefix}.requested_model"),
+            requested_model,
+            MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
+        )?;
+        if !seen_requested_models.insert(requested_model.to_string()) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: duplicate codex reasoning guard model rule for {requested_model}"
+            )
+            .into());
+        }
+        match rule.compare_mode {
+            CodexReasoningGuardCompareMode::Equals
+            | CodexReasoningGuardCompareMode::LessThanOrEqual => {}
+        }
+        validate_codex_reasoning_guard_values(
+            &format!("{field_prefix}.reasoning_equals"),
+            &rule.reasoning_equals,
+        )?;
     }
     validate_update_releases_url(&settings.update_releases_url)?;
     if settings.log_retention_days == 0 {

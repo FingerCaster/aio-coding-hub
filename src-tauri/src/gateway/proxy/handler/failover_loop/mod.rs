@@ -197,6 +197,7 @@ where
         codex_reasoning_guard_enabled: input.codex_reasoning_guard_enabled,
         codex_reasoning_guard_compare_mode: input.codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals: &input.codex_reasoning_guard_reasoning_equals,
+        codex_reasoning_guard_model_rules: &input.codex_reasoning_guard_model_rules,
         max_attempts_per_provider: input.max_attempts_per_provider,
         enable_response_fixer: input.enable_response_fixer,
         response_fixer_stream_config: input.response_fixer_stream_config,

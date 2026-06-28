@@ -42,6 +42,8 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_enabled: bool,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
+    pub(super) codex_reasoning_guard_model_rules:
+        Vec<crate::settings::CodexReasoningGuardModelRule>,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) provider_cooldown_secs: i64,
@@ -96,6 +98,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_enabled,
             codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals,
+            codex_reasoning_guard_model_rules,
             max_attempts_per_provider,
             max_providers_to_try,
             provider_cooldown_secs,
@@ -181,6 +184,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_enabled,
             codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals,
+            codex_reasoning_guard_model_rules,
             max_attempts_per_provider,
             max_providers_to_try,
             provider_cooldown_secs,
@@ -286,6 +290,8 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_enabled: bool,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
+    pub(super) codex_reasoning_guard_model_rules:
+        Vec<crate::settings::CodexReasoningGuardModelRule>,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) provider_cooldown_secs: i64,

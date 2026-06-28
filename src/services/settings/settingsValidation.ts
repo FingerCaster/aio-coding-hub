@@ -1,5 +1,6 @@
 import type {
   CodexReasoningGuardCompareMode,
+  CodexReasoningGuardModelRule,
   GatewayListenMode,
   SensitiveStringUpdate,
   WslHostAddressMode,
@@ -12,6 +13,8 @@ export const MAX_UPSTREAM_PROXY_PASSWORD_LEN = 4096;
 export const MAX_CX2CC_MODEL_NAME_LEN = 128;
 export const MAX_CX2CC_OPTIONAL_FIELD_LEN = 64;
 export const MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN = 32;
+export const MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN = 32;
+export const MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN = 128;
 export const MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE = 1_000_000_000;
 export const MIN_PREFERRED_PORT = 1024;
 export const MAX_PREFERRED_PORT = 65535;
@@ -323,6 +326,7 @@ export type SettingsSetValidationInput = {
   cx2CcServiceTier?: string | null;
   codexReasoningGuardReasoningEquals?: number[] | null;
   codexReasoningGuardCompareMode?: CodexReasoningGuardCompareMode | null;
+  codexReasoningGuardModelRules?: CodexReasoningGuardModelRule[] | null;
 };
 
 export function validateSettingsSetInput(input: SettingsSetValidationInput): string | null {
@@ -460,6 +464,54 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       input.codexReasoningGuardCompareMode !== "less_than_or_equal"
     ) {
       return "Codex 降智拦截比较模式仅支持 equals 或 less_than_or_equal";
+    }
+  }
+
+  if (input.codexReasoningGuardModelRules != null) {
+    const rules = input.codexReasoningGuardModelRules;
+    if (!Array.isArray(rules)) {
+      return "Codex 模型规则必须是列表";
+    }
+    if (rules.length > MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN) {
+      return `Codex 模型规则最多支持 ${MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN} 条`;
+    }
+
+    const seenModels = new Set<string>();
+    for (const rule of rules) {
+      const requestedModel = rule?.requested_model?.trim() ?? "";
+      if (!requestedModel) {
+        return "Codex 模型规则必须填写模型名";
+      }
+      if (utf8Length(requestedModel) > MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN) {
+        return `Codex 模型名必须 <= ${MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN} 字符`;
+      }
+      if (CONTROL_CHAR_PATTERN.test(requestedModel)) {
+        return "Codex 模型名不能包含控制字符";
+      }
+      if (seenModels.has(requestedModel)) {
+        return `Codex 模型规则不能重复：${requestedModel}`;
+      }
+      seenModels.add(requestedModel);
+
+      if (rule.compare_mode !== "equals" && rule.compare_mode !== "less_than_or_equal") {
+        return "Codex 模型规则比较模式仅支持 equals 或 less_than_or_equal";
+      }
+
+      const values = rule.reasoning_equals;
+      if (!Array.isArray(values) || values.length === 0) {
+        return `Codex 模型规则 ${requestedModel} 至少需要一个 reasoning_tokens 值`;
+      }
+      if (values.length > MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN) {
+        return `Codex 模型规则 ${requestedModel} 最多支持 ${MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN} 个值`;
+      }
+      for (const value of values) {
+        if (!Number.isSafeInteger(value)) {
+          return `Codex 模型规则 ${requestedModel} 必须是整数列表`;
+        }
+        if (value < 0 || value > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE) {
+          return `Codex 模型规则 ${requestedModel} 的值必须在 0 到 ${MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE} 之间`;
+        }
+      }
     }
   }
 

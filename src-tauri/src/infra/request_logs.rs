@@ -13,8 +13,8 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 mod types;
 pub use types::{
-    CodexReasoningGuardStats, RequestLogDetail, RequestLogInsert, RequestLogRouteHop,
-    RequestLogSummary, SessionStatsAggregate,
+    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogInsert,
+    RequestLogRouteHop, RequestLogSummary, SessionStatsAggregate,
 };
 
 mod costing;
