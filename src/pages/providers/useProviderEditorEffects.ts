@@ -47,6 +47,7 @@ export type EffectDeps = {
   setBaseUrlRows: (v: BaseUrlRow[]) => void;
   setPingingAll: (v: boolean) => void;
   setClaudeModels: (v: ClaudeModels) => void;
+  setTestModel: (v: string) => void;
   setTags: React.Dispatch<React.SetStateAction<string[]>>;
   setTagInput: (v: string) => void;
   setStreamIdleTimeoutSeconds: (v: string) => void;
@@ -92,6 +93,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,
+    setTestModel,
     setTags,
     setTagInput,
     setStreamIdleTimeoutSeconds,
@@ -134,6 +136,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
       setBaseUrlRows(buildBaseUrlRows(createInitialValues, newBaseUrlRow));
       setPingingAll(false);
       setClaudeModels(createInitialValues?.claude_models ?? {});
+      setTestModel(createInitialValues?.availability_test_model ?? "");
       setTags(createInitialValues?.tags ?? []);
       setTagInput("");
       setStreamIdleTimeoutSeconds(valueOrEmpty(createInitialValues?.stream_idle_timeout_seconds));
@@ -165,6 +168,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setBaseUrlRows(snapshot.base_urls.map((url) => newBaseUrlRow(url)));
     setPingingAll(false);
     setClaudeModels(snapshot.claude_models ?? {});
+    setTestModel(snapshot.availability_test_model ?? "");
     setTags(snapshot.tags ?? []);
     setTagInput("");
     setStreamIdleTimeoutSeconds(valueOrEmpty(snapshot.stream_idle_timeout_seconds));
@@ -204,6 +208,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setBaseUrlMode,
     setBaseUrlRows,
     setClaudeModels,
+    setTestModel,
     setCx2ccSourceValue,
     setOauthLoading,
     setOauthStatus,

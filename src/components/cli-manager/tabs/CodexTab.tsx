@@ -59,6 +59,7 @@ const LazyCodeEditor = lazy(() =>
 );
 
 const GPT_54_MODEL = "gpt-5.4";
+const DEFAULT_CODEX_PROVIDER_TEST_MODEL = "gpt-5.4-mini";
 const GPT_54_CONTEXT_WINDOW = 1_000_000;
 const GPT_54_AUTO_COMPACT_TOKEN_LIMIT = 900_000;
 const FAST_SERVICE_TIER = "fast";
@@ -215,11 +216,15 @@ export type CliManagerCodexTabProps = {
   codexReasoningGuardStats?: CodexReasoningGuardStats | null;
   codexReasoningGuardStatsLoading?: boolean;
   appSettings?: AppSettings | null;
+  commonSettingsSaving?: boolean;
   codexHomeSettingsSaving?: boolean;
   refreshCodex: () => Promise<void> | void;
   openCodexConfigDir: () => Promise<void> | void;
   persistCodexConfig: (patch: CodexConfigPatch) => Promise<void> | void;
   persistCodexConfigToml: (toml: string) => Promise<boolean> | boolean;
+  persistCommonSettings?: (
+    patch: Partial<AppSettings>
+  ) => Promise<AppSettings | null> | AppSettings | null;
   persistCodexReasoningGuardSettings?: (
     patch: Partial<
       Pick<
@@ -287,11 +292,13 @@ export function CliManagerCodexTab({
   codexReasoningGuardStats,
   codexReasoningGuardStatsLoading = false,
   appSettings,
+  commonSettingsSaving = false,
   codexHomeSettingsSaving = false,
   refreshCodex,
   openCodexConfigDir,
   persistCodexConfig,
   persistCodexConfigToml,
+  persistCommonSettings,
   persistCodexReasoningGuardSettings,
   persistCodexHomeSettings,
   persistCodexOauthCompatibleProxyMode,
@@ -299,6 +306,9 @@ export function CliManagerCodexTab({
 }: CliManagerCodexTabProps) {
   const [versionRefreshToken, setVersionRefreshToken] = useState(0);
   const [modelText, setModelText] = useState("");
+  const [providerTestModelText, setProviderTestModelText] = useState(
+    DEFAULT_CODEX_PROVIDER_TEST_MODEL
+  );
   const [contextWindowText, setContextWindowText] = useState("");
   const [autoCompactLimitText, setAutoCompactLimitText] = useState("");
   const [sandboxModeText, setSandboxModeText] = useState("");
@@ -378,6 +388,12 @@ export function CliManagerCodexTab({
   }, [codexConfig]);
 
   useEffect(() => {
+    setProviderTestModelText(
+      appSettings?.codex_provider_test_model?.trim() || DEFAULT_CODEX_PROVIDER_TEST_MODEL
+    );
+  }, [appSettings?.codex_provider_test_model]);
+
+  useEffect(() => {
     const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
     const savedMode =
       appSettings?.codex_home_mode ?? (savedOverride ? "custom" : "user_home_default");
@@ -425,6 +441,8 @@ export function CliManagerCodexTab({
   const configLocationBusy = saving || codexHomeSettingsSaving;
   const configLocationControlsDisabled = configLocationBusy || selectingCodexHomeDir;
   const commonSettingsControlsDisabled = codexHomeSettingsSaving || !appSettings;
+  const providerTestModelControlsDisabled =
+    commonSettingsSaving || !appSettings || !persistCommonSettings;
   const proxyModeControlsDisabled =
     commonSettingsControlsDisabled || !persistCodexOauthCompatibleProxyMode;
   const reasoningGuardControlsDisabled =
@@ -435,6 +453,23 @@ export function CliManagerCodexTab({
       await refreshCodex();
     } finally {
       setVersionRefreshToken((value) => value + 1);
+    }
+  }
+
+  async function saveProviderTestModel(nextValue: string) {
+    if (!persistCommonSettings || !appSettings || providerTestModelControlsDisabled) {
+      return;
+    }
+    const normalized = nextValue.trim() || DEFAULT_CODEX_PROVIDER_TEST_MODEL;
+    setProviderTestModelText(normalized);
+    try {
+      const updated = await persistCommonSettings({
+        codex_provider_test_model: normalized,
+      });
+      const saved = updated?.codex_provider_test_model?.trim() || normalized;
+      setProviderTestModelText(saved);
+    } catch {
+      setProviderTestModelText(appSettings.codex_provider_test_model || normalized);
     }
   }
 
@@ -1725,6 +1760,20 @@ export function CliManagerCodexTab({
                     placeholder="例如：gpt-5-codex"
                     className="font-mono w-[280px] max-w-full"
                     disabled={saving}
+                  />
+                </SettingItem>
+
+                <SettingItem
+                  label="供应商测试默认模型"
+                  subtitle={`Codex 供应商做“可用性测试”时使用的全局模型。Provider 编辑页不单独填写时，会回退到这里；默认值是 ${DEFAULT_CODEX_PROVIDER_TEST_MODEL}。`}
+                >
+                  <Input
+                    value={providerTestModelText}
+                    onChange={(e) => setProviderTestModelText(e.currentTarget.value)}
+                    onBlur={() => void saveProviderTestModel(providerTestModelText)}
+                    placeholder={DEFAULT_CODEX_PROVIDER_TEST_MODEL}
+                    className="font-mono w-[280px] max-w-full"
+                    disabled={providerTestModelControlsDisabled}
                   />
                 </SettingItem>
 

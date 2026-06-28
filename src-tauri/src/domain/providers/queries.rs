@@ -31,6 +31,9 @@ fn decode_provider_row(
         } else {
             ClaudeModels::default()
         },
+        availability_test_model: normalize_model_slot(
+            row.get::<_, Option<String>>("availability_test_model")?,
+        ),
         limit_5h_usd: row.get("limit_5h_usd")?,
         limit_daily_usd: row.get("limit_daily_usd")?,
         daily_reset_mode: DailyResetMode::parse(&daily_reset_mode_raw)
@@ -60,6 +63,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
         base_urls: decoded.base_urls,
         base_url_mode: decoded.base_url_mode,
         claude_models: decoded.claude_models,
+        availability_test_model: decoded.availability_test_model,
         enabled: row.get::<_, i64>("enabled")? != 0,
         priority: row.get("priority")?,
         cost_multiplier: row.get("cost_multiplier")?,
@@ -106,6 +110,7 @@ SELECT
   base_urls_json,
   base_url_mode,
   claude_models_json,
+  availability_test_model,
   tags_json,
   note,
   enabled,
@@ -363,6 +368,7 @@ SELECT
   base_urls_json,
   base_url_mode,
   claude_models_json,
+  availability_test_model,
   tags_json,
   note,
   enabled,
@@ -463,6 +469,7 @@ SELECT
   p.base_url_mode,
   p.api_key_plaintext,
   p.claude_models_json,
+  p.availability_test_model,
   p.limit_5h_usd,
   p.limit_daily_usd,
   p.daily_reset_mode,
@@ -515,6 +522,7 @@ SELECT
   base_url_mode,
   api_key_plaintext,
   claude_models_json,
+  availability_test_model,
   limit_5h_usd,
   limit_daily_usd,
   daily_reset_mode,
@@ -652,6 +660,7 @@ SELECT
   base_url_mode,
   api_key_plaintext,
   claude_models_json,
+  availability_test_model,
   limit_5h_usd,
   limit_daily_usd,
   daily_reset_mode,
@@ -703,6 +712,7 @@ pub fn upsert(
         cost_multiplier,
         priority,
         claude_models,
+        availability_test_model,
         limit_5h_usd,
         limit_daily_usd,
         daily_reset_mode,
@@ -855,6 +865,11 @@ pub fn upsert(
             } else {
                 ClaudeModels::default()
             };
+            let availability_test_model = if cli_key == "codex" {
+                normalize_model_slot(availability_test_model)
+            } else {
+                None
+            };
             let claude_models_json =
                 serde_json::to_string(&claude_models).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
 
@@ -884,6 +899,7 @@ INSERT INTO providers(
   base_url_mode,
   auth_mode,
   claude_models_json,
+  availability_test_model,
   supported_models_json,
   model_mapping_json,
   api_key_plaintext,
@@ -905,7 +921,7 @@ INSERT INTO providers(
   stream_idle_timeout_seconds,
   created_at,
   updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, '{}', '{}', ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '{}', '{}', ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27)
 "#,
                 params![
                     cli_key,
@@ -915,6 +931,7 @@ INSERT INTO providers(
                     base_url_mode.as_str(),
                     requested_auth_mode.as_str(),
                     claude_models_json,
+                    availability_test_model,
                     api_key,
                     sort_order,
                     enabled_to_int(enabled),
@@ -965,13 +982,14 @@ INSERT INTO providers(
                 String,
                 String,
                 String,
+                Option<String>,
                 Option<i64>,
             );
             let existing: Option<ExistingProviderRow> = tx
                 .query_row(
-                    "SELECT cli_key, api_key_plaintext, priority, claude_models_json, auth_mode, daily_reset_mode, daily_reset_time, tags_json, note, stream_idle_timeout_seconds FROM providers WHERE id = ?1",
+                    "SELECT cli_key, api_key_plaintext, priority, claude_models_json, auth_mode, daily_reset_mode, daily_reset_time, tags_json, note, availability_test_model, stream_idle_timeout_seconds FROM providers WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?)),
                 )
                 .optional()
                 .map_err(|e| db_err!("failed to query provider: {e}"))?;
@@ -986,6 +1004,7 @@ INSERT INTO providers(
                 existing_daily_reset_time_raw,
                 existing_tags_json,
                 existing_note,
+                existing_availability_test_model,
                 existing_stream_idle_timeout_seconds,
             )) = existing
             else {
@@ -1027,6 +1046,14 @@ INSERT INTO providers(
                     .map_err(|e| format!("SYSTEM_ERROR: {e}"))?
             } else {
                 "{}".to_string()
+            };
+            let next_availability_test_model = if cli_key == "codex" {
+                match availability_test_model {
+                    Some(value) => normalize_model_slot(Some(value)),
+                    None => normalize_model_slot(existing_availability_test_model),
+                }
+            } else {
+                None
             };
 
             let next_limit_5h_usd = validate_limit_usd("limit_5h_usd", limit_5h_usd)?;
@@ -1075,26 +1102,27 @@ SET
   base_url_mode = ?4,
   auth_mode = ?5,
   claude_models_json = ?6,
+  availability_test_model = ?7,
   supported_models_json = '{}',
   model_mapping_json = '{}',
-  api_key_plaintext = ?7,
-  enabled = ?8,
-  cost_multiplier = ?9,
-  priority = ?10,
-  limit_5h_usd = ?11,
-  limit_daily_usd = ?12,
-  daily_reset_mode = ?13,
-  daily_reset_time = ?14,
-  limit_weekly_usd = ?15,
-  limit_monthly_usd = ?16,
-  limit_total_usd = ?17,
-  tags_json = ?18,
-  note = ?19,
-  source_provider_id = ?20,
-  bridge_type = ?21,
-  stream_idle_timeout_seconds = ?22,
-  updated_at = ?23
-WHERE id = ?24
+  api_key_plaintext = ?8,
+  enabled = ?9,
+  cost_multiplier = ?10,
+  priority = ?11,
+  limit_5h_usd = ?12,
+  limit_daily_usd = ?13,
+  daily_reset_mode = ?14,
+  daily_reset_time = ?15,
+  limit_weekly_usd = ?16,
+  limit_monthly_usd = ?17,
+  limit_total_usd = ?18,
+  tags_json = ?19,
+  note = ?20,
+  source_provider_id = ?21,
+  bridge_type = ?22,
+  stream_idle_timeout_seconds = ?23,
+  updated_at = ?24
+WHERE id = ?25
 "#,
                 params![
                     name,
@@ -1103,6 +1131,7 @@ WHERE id = ?24
                     base_url_mode.as_str(),
                     next_auth_mode,
                     next_claude_models_json,
+                    next_availability_test_model,
                     next_api_key,
                     enabled_to_int(enabled),
                     cost_multiplier,

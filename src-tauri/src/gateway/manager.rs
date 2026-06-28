@@ -236,6 +236,7 @@ mod tests {
                 cost_multiplier: 1.0,
                 priority: Some(100),
                 claude_models: None,
+                availability_test_model: None,
                 limit_5h_usd: None,
                 limit_daily_usd: None,
                 daily_reset_mode: Some(providers::DailyResetMode::Fixed),

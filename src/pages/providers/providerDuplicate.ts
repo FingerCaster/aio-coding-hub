@@ -9,6 +9,7 @@ export type ProviderEditorInitialValues = {
   base_urls: string[];
   base_url_mode: "order" | "ping";
   claude_models: ClaudeModels;
+  availability_test_model: string;
   enabled: boolean;
   cost_multiplier: number;
   limit_5h_usd: number | null;
@@ -64,6 +65,7 @@ export function buildDuplicatedProviderInitialValues(
     base_urls: [...provider.base_urls],
     base_url_mode: provider.base_url_mode,
     claude_models: { ...(provider.claude_models ?? {}) } as ClaudeModels,
+    availability_test_model: provider.availability_test_model ?? "",
     enabled: provider.enabled,
     cost_multiplier: provider.cost_multiplier,
     limit_5h_usd: provider.limit_5h_usd,

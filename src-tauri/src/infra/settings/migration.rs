@@ -80,6 +80,18 @@ pub(super) fn sanitize_cli_priority_order(settings: &mut AppSettings) -> bool {
     changed
 }
 
+pub(super) fn sanitize_codex_provider_test_model(settings: &mut AppSettings) -> bool {
+    let normalized = settings.codex_provider_test_model.trim();
+    let next = if normalized.is_empty() {
+        DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
+    } else {
+        normalized.to_string()
+    };
+    let changed = settings.codex_provider_test_model != next;
+    settings.codex_provider_test_model = next;
+    changed
+}
+
 pub(super) fn sanitize_codex_reasoning_guard_model_rules(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     let mut seen_models = HashSet::new();
@@ -745,9 +757,29 @@ fn migrate_add_codex_reasoning_guard_model_rules(
     )
 }
 
+fn migrate_add_codex_provider_test_model(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_PROVIDER_TEST_MODEL,
+    ) {
+        return false;
+    }
+
+    if settings.codex_provider_test_model.trim().is_empty() {
+        settings.codex_provider_test_model = DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string();
+        return true;
+    }
+
+    false
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 31] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 32] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -779,6 +811,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 31] = [
     migrate_add_codex_reasoning_guard_compare_mode,
     migrate_update_releases_url_to_fork,
     migrate_add_codex_reasoning_guard_model_rules,
+    migrate_add_codex_provider_test_model,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -803,6 +836,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_upstream_timeouts(settings);
     repaired |= sanitize_response_fixer_limits(settings);
     repaired |= sanitize_codex_home_override(settings);
+    repaired |= sanitize_codex_provider_test_model(settings);
     repaired |= sanitize_codex_reasoning_guard_model_rules(settings);
     repaired |= sanitize_cli_priority_order(settings);
     let canonical = super::persistence::canonical_settings_json(settings)?;

@@ -252,6 +252,10 @@ export const handlers = [
       source_provider_id:
         typeof input.sourceProviderId === "number" ? input.sourceProviderId : null,
       bridge_type: typeof input.bridgeType === "string" ? input.bridgeType : null,
+      availability_test_model:
+        typeof input.availabilityTestModel === "string"
+          ? input.availabilityTestModel || null
+          : (existing?.availability_test_model ?? null),
       api_key_configured:
         input.authMode === "oauth"
           ? false

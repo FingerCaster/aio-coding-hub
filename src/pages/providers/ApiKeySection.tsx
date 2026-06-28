@@ -29,6 +29,9 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
     apiKeyField,
     apiKeyConfigured,
     apiKeyValue,
+    cliKey,
+    testModel,
+    setTestModel,
     costMultiplierValue,
     copyApiKey,
   } = props.form;
@@ -148,6 +151,20 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
           </div>
         </FormField>
       </div>
+
+      {cliKey === "codex" ? (
+        <FormField
+          label="测试模型"
+          hint="仅用于供应商可用性测试。留空时会使用 Codex 页里的全局测试模型。"
+        >
+          <Input
+            value={testModel}
+            onChange={(e) => setTestModel(e.currentTarget.value)}
+            placeholder="例如：gpt-5.4-mini"
+            disabled={saving}
+          />
+        </FormField>
+      ) : null}
     </>
   );
 }

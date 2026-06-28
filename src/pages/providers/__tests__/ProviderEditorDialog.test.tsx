@@ -83,6 +83,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     oauth_last_error: null,
     source_provider_id: null,
     bridge_type: null,
+    availability_test_model: null,
     api_key_configured: partial.api_key_configured ?? false,
     ...partial,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
@@ -99,6 +100,7 @@ function makeInitialValues(
     base_urls: ["https://example.com/v1"],
     base_url_mode: "order",
     claude_models: { main_model: "claude-copy" },
+    availability_test_model: "",
     enabled: true,
     cost_multiplier: 1.5,
     limit_5h_usd: 5,
@@ -276,6 +278,52 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith("claude"));
     await waitFor(() => expect(onOpenChange).toHaveBeenCalledWith(false));
+  });
+
+  it("shows and saves the codex availability test model", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 8,
+        cli_key: "codex",
+        name: "Codex Provider",
+        base_urls: ["https://example.com/v1"],
+        availability_test_model: "gpt-5.4",
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+
+    fireEvent.change(dialog.getByPlaceholderText("default"), {
+      target: { value: "Codex Provider" },
+    });
+    fireEvent.change(dialog.getByPlaceholderText("sk-…"), { target: { value: "sk-test" } });
+    fireEvent.change(dialog.getByPlaceholderText(/中转 endpoint/), {
+      target: { value: "https://example.com/v1" },
+    });
+    fireEvent.change(dialog.getByPlaceholderText("例如：gpt-5.4-mini"), {
+      target: { value: "gpt-5.4" },
+    });
+
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cliKey: "codex",
+          availabilityTestModel: "gpt-5.4",
+        })
+      )
+    );
   });
 
   it("keeps the dialog open when provider upsert rejects during create save", async () => {

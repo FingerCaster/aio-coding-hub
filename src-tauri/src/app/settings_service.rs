@@ -81,6 +81,7 @@ pub(crate) struct SettingsUpdate {
     pub codex_home_mode: Option<settings::CodexHomeMode>,
     pub codex_home_override: Option<String>,
     pub codex_oauth_compatible_proxy_mode: Option<bool>,
+    pub codex_provider_test_model: Option<String>,
     pub codex_reasoning_guard_enabled: Option<bool>,
     pub codex_reasoning_guard_compare_mode: Option<settings::CodexReasoningGuardCompareMode>,
     pub codex_reasoning_guard_reasoning_equals: Option<Vec<i64>>,
@@ -149,6 +150,7 @@ pub(crate) struct SettingsView {
     pub codex_home_mode: settings::CodexHomeMode,
     pub codex_home_override: String,
     pub codex_oauth_compatible_proxy_mode: bool,
+    pub codex_provider_test_model: String,
     pub codex_reasoning_guard_enabled: bool,
     pub codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
@@ -272,6 +274,7 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_home_mode: value.codex_home_mode,
             codex_home_override: value.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: value.codex_oauth_compatible_proxy_mode,
+            codex_provider_test_model: value.codex_provider_test_model.clone(),
             codex_reasoning_guard_enabled: value.codex_reasoning_guard_enabled,
             codex_reasoning_guard_compare_mode: value.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: value
@@ -591,6 +594,7 @@ pub(crate) async fn settings_set_impl(
         codex_home_mode,
         codex_home_override,
         codex_oauth_compatible_proxy_mode,
+        codex_provider_test_model,
         codex_reasoning_guard_enabled,
         codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals,
@@ -655,6 +659,15 @@ pub(crate) async fn settings_set_impl(
                 .to_string();
             let codex_oauth_compatible_proxy_mode = codex_oauth_compatible_proxy_mode
                 .unwrap_or(previous.codex_oauth_compatible_proxy_mode);
+            let codex_provider_test_model = codex_provider_test_model
+                .unwrap_or(previous.codex_provider_test_model.clone())
+                .trim()
+                .to_string();
+            let codex_provider_test_model = if codex_provider_test_model.is_empty() {
+                settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
+            } else {
+                codex_provider_test_model
+            };
             let codex_reasoning_guard_enabled = codex_reasoning_guard_enabled
                 .unwrap_or(previous.codex_reasoning_guard_enabled);
             let codex_reasoning_guard_compare_mode = codex_reasoning_guard_compare_mode
@@ -785,6 +798,7 @@ pub(crate) async fn settings_set_impl(
                 codex_home_mode,
                 codex_home_override,
                 codex_oauth_compatible_proxy_mode,
+                codex_provider_test_model,
                 codex_reasoning_guard_enabled,
                 codex_reasoning_guard_compare_mode,
                 codex_reasoning_guard_reasoning_equals,

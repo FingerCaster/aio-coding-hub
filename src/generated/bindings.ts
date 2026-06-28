@@ -2943,6 +2943,7 @@ export type ProviderSummary = {
   oauth_last_error: string | null;
   source_provider_id: number | null;
   bridge_type: string | null;
+  availability_test_model: string | null;
   stream_idle_timeout_seconds: number | null;
   api_key_configured: boolean;
 };
@@ -2958,6 +2959,7 @@ export type ProviderUpsertInput = {
   costMultiplier: number;
   priority: number | null;
   claudeModels: ClaudeModels | null;
+  availabilityTestModel: string | null;
   limit5hUsd: number | null;
   limitDailyUsd: number | null;
   dailyResetMode: DailyResetMode | null;
@@ -3149,6 +3151,7 @@ export type SettingsUpdate = {
   codexHomeMode: CodexHomeMode | null;
   codexHomeOverride: string | null;
   codexOauthCompatibleProxyMode: boolean | null;
+  codexProviderTestModel: string | null;
   codexReasoningGuardEnabled: boolean | null;
   codexReasoningGuardCompareMode: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardReasoningEquals: number[] | null;
@@ -3185,6 +3188,7 @@ export type SettingsView = {
   codex_home_mode: CodexHomeMode;
   codex_home_override: string;
   codex_oauth_compatible_proxy_mode: boolean;
+  codex_provider_test_model: string;
   codex_reasoning_guard_enabled: boolean;
   codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode;
   codex_reasoning_guard_reasoning_equals: number[];

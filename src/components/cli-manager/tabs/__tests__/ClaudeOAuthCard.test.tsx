@@ -57,6 +57,7 @@ function makeProvider(overrides: Partial<ProviderSummary> = {}): ProviderSummary
     oauth_last_error: null,
     source_provider_id: null,
     bridge_type: null,
+    availability_test_model: null,
     api_key_configured: overrides.api_key_configured ?? false,
     ...overrides,
     stream_idle_timeout_seconds: overrides.stream_idle_timeout_seconds ?? null,

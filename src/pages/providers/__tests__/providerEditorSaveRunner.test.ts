@@ -38,6 +38,7 @@ function makeSavedProvider(partial: Partial<ProviderSummary> = {}): ProviderSumm
     source_provider_id: partial.source_provider_id ?? null,
     bridge_type: partial.bridge_type ?? null,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    availability_test_model: partial.availability_test_model ?? null,
     api_key_configured: partial.api_key_configured ?? true,
   };
 }
@@ -62,6 +63,7 @@ function makeContext(overrides: Partial<SaveActionContext> = {}): SaveActionCont
     baseUrlRows: [{ id: "1", url: "https://example.com/v1", ping: { status: "idle" } }],
     tags: [],
     claudeModels: {},
+    testModel: "",
     streamIdleTimeoutSeconds: "",
     apiKeyConfigured: false,
     isCodexGatewaySource: false,

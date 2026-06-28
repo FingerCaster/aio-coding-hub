@@ -53,6 +53,7 @@ export type FormActionContext = {
   baseUrlRows: BaseUrlRow[];
   tags: string[];
   claudeModels: ClaudeModels;
+  testModel: string;
   streamIdleTimeoutSeconds: string;
   apiKeyConfigured: boolean;
   apiKeyValue: string;
@@ -75,6 +76,7 @@ export type ProviderEditorPayloadContext = {
   baseUrlRows: BaseUrlRow[];
   tags: string[];
   claudeModels: ClaudeModels;
+  testModel: string;
   streamIdleTimeoutSeconds: string;
   apiKeyConfigured: boolean;
   isCodexGatewaySource: boolean;

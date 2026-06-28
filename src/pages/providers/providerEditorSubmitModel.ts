@@ -122,6 +122,7 @@ export function buildProviderEditorUpsertInput(
         : parsed.data.api_key.trim() || null,
     enabled: parsed.data.enabled,
     costMultiplier: effectiveCostMultiplier,
+    availabilityTestModel: ctx.cliKey === "codex" ? ctx.testModel : null,
     limit5hUsd: parsed.data.limit_5h_usd,
     limitDailyUsd: parsed.data.limit_daily_usd,
     dailyResetMode: parsed.data.daily_reset_mode,

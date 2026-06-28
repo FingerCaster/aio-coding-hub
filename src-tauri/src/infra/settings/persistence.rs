@@ -338,6 +338,11 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     ] {
         validate_non_empty_bounded_string(field, value, MAX_CX2CC_MODEL_NAME_LEN)?;
     }
+    validate_non_empty_bounded_string(
+        "codex_provider_test_model",
+        &settings.codex_provider_test_model,
+        MAX_CODEX_PROVIDER_TEST_MODEL_NAME_LEN,
+    )?;
     validate_optional_bounded_string(
         "cx2cc_model_reasoning_effort",
         &settings.cx2cc_model_reasoning_effort,
@@ -526,6 +531,7 @@ pub fn write<R: tauri::Runtime>(
     settings.update_releases_url = settings.update_releases_url.trim().to_string();
     settings.upstream_proxy_url = settings.upstream_proxy_url.trim().to_string();
     settings.upstream_proxy_username = settings.upstream_proxy_username.trim().to_string();
+    settings.codex_provider_test_model = settings.codex_provider_test_model.trim().to_string();
     settings.cx2cc_fallback_model_opus = settings.cx2cc_fallback_model_opus.trim().to_string();
     settings.cx2cc_fallback_model_sonnet = settings.cx2cc_fallback_model_sonnet.trim().to_string();
     settings.cx2cc_fallback_model_haiku = settings.cx2cc_fallback_model_haiku.trim().to_string();

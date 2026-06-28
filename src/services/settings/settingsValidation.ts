@@ -12,6 +12,7 @@ export const MAX_UPSTREAM_PROXY_USERNAME_LEN = 256;
 export const MAX_UPSTREAM_PROXY_PASSWORD_LEN = 4096;
 export const MAX_CX2CC_MODEL_NAME_LEN = 128;
 export const MAX_CX2CC_OPTIONAL_FIELD_LEN = 64;
+export const MAX_CODEX_PROVIDER_TEST_MODEL_NAME_LEN = 128;
 export const MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN = 32;
 export const MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN = 32;
 export const MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN = 128;
@@ -263,6 +264,15 @@ export function validateCx2ccFallbackModel(fieldLabel: string, value: string): s
   return validateNoControlChars(fieldLabel, raw);
 }
 
+function validateCodexProviderTestModel(fieldLabel: string, value: string): string | null {
+  const raw = value.trim();
+  if (!raw) return `${fieldLabel}不能为空`;
+  if (utf8Length(raw) > MAX_CODEX_PROVIDER_TEST_MODEL_NAME_LEN) {
+    return `${fieldLabel}必须 <= ${MAX_CODEX_PROVIDER_TEST_MODEL_NAME_LEN} 字符`;
+  }
+  return validateNoControlChars(fieldLabel, raw);
+}
+
 export function validateCx2ccOptionalField(fieldLabel: string, value: string): string | null {
   const raw = value.trim();
   if (!raw) return null;
@@ -324,6 +334,7 @@ export type SettingsSetValidationInput = {
   cx2CcFallbackModelMain?: string | null;
   cx2CcModelReasoningEffort?: string | null;
   cx2CcServiceTier?: string | null;
+  codexProviderTestModel?: string | null;
   codexReasoningGuardReasoningEquals?: number[] | null;
   codexReasoningGuardCompareMode?: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardModelRules?: CodexReasoningGuardModelRule[] | null;
@@ -437,6 +448,14 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   ] as const) {
     if (value == null) continue;
     const message = validateCx2ccOptionalField(fieldLabel, value);
+    if (message) return message;
+  }
+
+  if (input.codexProviderTestModel != null) {
+    const message = validateCodexProviderTestModel(
+      "Codex 全局测试模型",
+      input.codexProviderTestModel
+    );
     if (message) return message;
   }
 

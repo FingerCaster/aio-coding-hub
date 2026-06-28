@@ -3,6 +3,10 @@
 use super::defaults::*;
 use serde::{Deserialize, Serialize};
 
+fn default_codex_provider_test_model() -> String {
+    DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayListenMode {
@@ -122,6 +126,8 @@ pub struct AppSettings {
     // Codex CLI proxy OAuth compatible mode. When enabled, proxy takeover
     // manages config.toml only and leaves auth.json untouched.
     pub codex_oauth_compatible_proxy_mode: bool,
+    #[serde(default = "default_codex_provider_test_model")]
+    pub codex_provider_test_model: String,
     // Codex reasoning guard: detect degraded reasoning token signatures and
     // retry the same provider without affecting circuit breaker state.
     pub codex_reasoning_guard_enabled: bool,
@@ -212,6 +218,7 @@ impl Default for AppSettings {
             codex_home_mode: CodexHomeMode::default(),
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
+            codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
             codex_reasoning_guard_enabled: DEFAULT_CODEX_REASONING_GUARD_ENABLED,
             codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::default(),
             codex_reasoning_guard_reasoning_equals: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS

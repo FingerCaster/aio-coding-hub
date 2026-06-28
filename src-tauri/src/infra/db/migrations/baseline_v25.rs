@@ -36,6 +36,7 @@ CREATE TABLE IF NOT EXISTS providers (
   supported_models_json TEXT NOT NULL DEFAULT '{}',
   model_mapping_json TEXT NOT NULL DEFAULT '{}',
   claude_models_json TEXT NOT NULL DEFAULT '{}',
+  availability_test_model TEXT DEFAULT NULL,
   UNIQUE(cli_key, name)
 );
 

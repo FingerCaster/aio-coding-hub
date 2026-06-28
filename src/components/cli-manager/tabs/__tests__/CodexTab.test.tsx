@@ -249,6 +249,59 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(persistCodexOauthCompatibleProxyMode).toHaveBeenCalledWith(true);
   });
 
+  it("persists the global provider test model and falls back to the default when blank", async () => {
+    const persistCommonSettings = vi
+      .fn()
+      .mockResolvedValueOnce(createAppSettings({ codex_provider_test_model: "gpt-5.4" }))
+      .mockResolvedValueOnce(createAppSettings({ codex_provider_test_model: "gpt-5.4-mini" }));
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings({ codex_provider_test_model: "gpt-5-codex" })}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCommonSettings={persistCommonSettings}
+      />
+    );
+
+    const field = screen.getByText("供应商测试默认模型").parentElement?.parentElement;
+    expect(field).toBeTruthy();
+    const input = within(field as HTMLElement).getByRole("textbox");
+
+    fireEvent.change(input, { target: { value: "  gpt-5.4  " } });
+    fireEvent.blur(input);
+
+    await waitFor(() =>
+      expect(persistCommonSettings).toHaveBeenNthCalledWith(1, {
+        codex_provider_test_model: "gpt-5.4",
+      })
+    );
+
+    fireEvent.change(input, { target: { value: "   " } });
+    fireEvent.blur(input);
+
+    await waitFor(() =>
+      expect(persistCommonSettings).toHaveBeenNthCalledWith(2, {
+        codex_provider_test_model: "gpt-5.4-mini",
+      })
+    );
+  });
+
   it("persists Codex reasoning guard toggle and renders hit stats", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
     const { rerender } = render(

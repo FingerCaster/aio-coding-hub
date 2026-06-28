@@ -15,6 +15,7 @@ function makeContext(
     baseUrlRows: [{ id: "1", url: "https://example.com/v1", ping: { status: "idle" } }],
     tags: [],
     claudeModels: {},
+    testModel: "",
     streamIdleTimeoutSeconds: "",
     apiKeyConfigured: false,
     isCodexGatewaySource: false,
@@ -94,5 +95,19 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     expect(result.value.payload.bridgeType).toBe("cx2cc");
     expect(result.value.payload.sourceProviderId).toBeNull();
     expect(result.value.payload.authMode).toBe("api_key");
+  });
+
+  it("passes codex availability test model through the payload", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        cliKey: "codex",
+        testModel: "gpt-5.4",
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.payload.availabilityTestModel).toBe("gpt-5.4");
   });
 });

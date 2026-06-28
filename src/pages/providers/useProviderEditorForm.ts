@@ -63,6 +63,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const [baseUrlRows, setBaseUrlRows] = useState<BaseUrlRow[]>(() => [newBaseUrlRow()]);
   const [pingingAll, setPingingAll] = useState(false);
   const [claudeModels, setClaudeModels] = useState<ClaudeModels>({});
+  const [testModel, setTestModel] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
   const [streamIdleTimeoutSeconds, setStreamIdleTimeoutSeconds] = useState("");
@@ -223,6 +224,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,
+    setTestModel,
     setTags,
     setTagInput,
     setStreamIdleTimeoutSeconds,
@@ -260,6 +262,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       baseUrlRows,
       tags,
       claudeModels,
+      testModel,
       streamIdleTimeoutSeconds,
       apiKeyConfigured,
       isCodexGatewaySource,
@@ -276,6 +279,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       baseUrlRows,
       tags,
       claudeModels,
+      testModel,
       streamIdleTimeoutSeconds,
       apiKeyConfigured,
       isCodexGatewaySource,
@@ -433,6 +437,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     newBaseUrlRow,
     claudeModels,
     setClaudeModels,
+    testModel,
+    setTestModel,
     claudeModelCount,
     streamIdleTimeoutSeconds,
     setStreamIdleTimeoutSeconds,

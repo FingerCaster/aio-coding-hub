@@ -532,6 +532,7 @@ mod tests {
                 cost_multiplier: 1.0,
                 priority: None,
                 claude_models: None,
+                availability_test_model: None,
                 limit_5h_usd: Some(10.0),
                 limit_daily_usd: Some(10.0),
                 daily_reset_mode: Some(DailyResetMode::Rolling),

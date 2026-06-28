@@ -95,6 +95,7 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
     oauth_last_error: null,
     source_provider_id: null,
     bridge_type: null,
+    availability_test_model: null,
     stream_idle_timeout_seconds: null,
     api_key_configured: false,
     ...overrides,

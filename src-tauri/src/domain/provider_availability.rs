@@ -33,6 +33,7 @@ struct LoadedProvider {
     name: String,
     base_urls: Vec<String>,
     api_key_plaintext: String,
+    availability_test_model: Option<String>,
     auth_mode: String,
     source_provider_id: Option<i64>,
     bridge_type: Option<String>,
@@ -113,10 +114,21 @@ async fn load_provider_for_test(db: db::Db, provider_id: i64) -> AppResult<Loade
 
         let conn = db.open_connection()?;
         #[allow(clippy::type_complexity)]
-        let row: Option<(i64, String, String, String, String, String, String, Option<i64>, Option<String>)> = conn
+        let row: Option<(
+            i64,
+            String,
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            String,
+            Option<i64>,
+            Option<String>,
+        )> = conn
             .query_row(
                 r#"
-SELECT id, cli_key, name, base_url, base_urls_json, api_key_plaintext, auth_mode, source_provider_id, bridge_type
+SELECT id, cli_key, name, base_url, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, source_provider_id, bridge_type
 FROM providers
 WHERE id = ?1
 "#,
@@ -132,13 +144,14 @@ WHERE id = ?1
                         row.get(6)?,
                         row.get(7)?,
                         row.get(8)?,
+                        row.get(9)?,
                     ))
                 },
             )
             .optional()
             .map_err(|e| format!("DB_ERROR: {e}"))?;
 
-        let Some((id, cli_key, name, base_url_fallback, base_urls_json, api_key_plaintext, auth_mode, source_provider_id, bridge_type)) = row else {
+        let Some((id, cli_key, name, base_url_fallback, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, source_provider_id, bridge_type)) = row else {
             return Err("DB_NOT_FOUND: provider not found".into());
         };
 
@@ -163,6 +176,7 @@ WHERE id = ?1
             name,
             base_urls,
             api_key_plaintext,
+            availability_test_model: normalize_probe_model(availability_test_model.as_deref()),
             auth_mode,
             source_provider_id,
             bridge_type,
@@ -171,10 +185,28 @@ WHERE id = ?1
     .await
 }
 
+fn normalize_probe_model(value: Option<&str>) -> Option<String> {
+    let trimmed = value?.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    Some(trimmed.to_string())
+}
+
+fn resolve_codex_probe_model_from_sources(
+    provider_override: Option<&str>,
+    global_setting: Option<&str>,
+) -> String {
+    normalize_probe_model(provider_override)
+        .or_else(|| normalize_probe_model(global_setting))
+        .unwrap_or_else(|| crate::settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string())
+}
+
 fn build_probe_request(
     cli_key: &str,
     base_url: &str,
     api_key: &str,
+    model_override: Option<&str>,
 ) -> AppResult<(String, HeaderMap, serde_json::Value)> {
     let base = base_url.trim_end_matches('/');
 
@@ -203,7 +235,7 @@ fn build_probe_request(
             }
             headers.insert("content-type", HeaderValue::from_static("application/json"));
             let body = serde_json::json!({
-                "model": "gpt-4o-mini",
+                "model": model_override.unwrap_or(crate::settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL),
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "ping"}]
             });
@@ -253,7 +285,8 @@ fn is_probe_available_status(status: u16, response_text: &str) -> bool {
     status < 500 && !looks_like_auth_failure(status, response_text)
 }
 
-pub async fn test_provider_availability(
+pub async fn test_provider_availability<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     db: db::Db,
     provider_id: i64,
 ) -> AppResult<ProviderAvailabilityResult> {
@@ -314,8 +347,26 @@ pub async fn test_provider_availability(
         });
     }
 
-    let (url, headers, body) =
-        build_probe_request(&provider.cli_key, &base_url, &provider.api_key_plaintext)?;
+    let codex_probe_model = if provider.cli_key == "codex" {
+        match normalize_probe_model(provider.availability_test_model.as_deref()) {
+            Some(model) => Some(model),
+            None => {
+                let settings = crate::settings::read(app)?;
+                Some(resolve_codex_probe_model_from_sources(
+                    None,
+                    Some(settings.codex_provider_test_model.as_str()),
+                ))
+            }
+        }
+    } else {
+        None
+    };
+    let (url, headers, body) = build_probe_request(
+        &provider.cli_key,
+        &base_url,
+        &provider.api_key_plaintext,
+        codex_probe_model.as_deref(),
+    )?;
 
     let client = reqwest::Client::builder()
         .user_agent(format!(
@@ -415,7 +466,7 @@ mod tests {
     #[test]
     fn build_probe_request_for_claude_uses_messages_endpoint_and_x_api_key() {
         let (url, headers, body) =
-            build_probe_request("claude", "https://api.example.com/", "sk-claude")
+            build_probe_request("claude", "https://api.example.com/", "sk-claude", None)
                 .expect("claude request");
 
         assert_eq!(url, "https://api.example.com/v1/messages");
@@ -426,13 +477,18 @@ mod tests {
 
     #[test]
     fn build_probe_request_for_codex_uses_chat_completions_and_bearer_auth() {
-        let (url, headers, body) =
-            build_probe_request("codex", "https://api.example.com", "sk-openai")
-                .expect("codex request");
+        let (url, headers, body) = build_probe_request(
+            "codex",
+            "https://api.example.com",
+            "sk-openai",
+            Some("gpt-test"),
+        )
+        .expect("codex request");
 
         assert_eq!(url, "https://api.example.com/v1/chat/completions");
         assert_eq!(header_value(&headers, "authorization"), "Bearer sk-openai");
         assert_eq!(body["messages"][0]["content"], "ping");
+        assert_eq!(body["model"], "gpt-test");
     }
 
     #[test]
@@ -441,6 +497,7 @@ mod tests {
             "gemini",
             "https://generativelanguage.googleapis.com/",
             "sk-google",
+            None,
         )
         .expect("gemini request");
 
@@ -454,11 +511,27 @@ mod tests {
 
     #[test]
     fn build_probe_request_rejects_unsupported_cli_key() {
-        let err = build_probe_request("unknown", "https://api.example.com", "secret")
+        let err = build_probe_request("unknown", "https://api.example.com", "secret", None)
             .unwrap_err()
             .to_string();
 
         assert_eq!(err, "UNSUPPORTED_CLI_KEY: unknown");
+    }
+
+    #[test]
+    fn resolve_codex_probe_model_from_sources_prefers_provider_override_then_global_then_default() {
+        assert_eq!(
+            resolve_codex_probe_model_from_sources(Some("gpt-provider"), Some("gpt-global")),
+            "gpt-provider"
+        );
+        assert_eq!(
+            resolve_codex_probe_model_from_sources(Some("   "), Some("gpt-global")),
+            "gpt-global"
+        );
+        assert_eq!(
+            resolve_codex_probe_model_from_sources(None, Some("   ")),
+            crate::settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL
+        );
     }
 
     #[test]
