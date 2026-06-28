@@ -1,14 +1,14 @@
-fn embed_windows_test_manifest() {
+fn embed_windows_common_controls_manifest() {
     let target_os = std::env::var("CARGO_CFG_TARGET_OS").ok();
     let target_env = std::env::var("CARGO_CFG_TARGET_ENV").ok();
     if target_os.as_deref() != Some("windows") || target_env.as_deref() != Some("msvc") {
         return;
     }
 
-    // Windows cargo test integration binaries do not get the Tauri app manifest by default.
-    // That leaves the test exe without a resource section, so desktop dependencies such as
-    // comctl32 may resolve the legacy Common Controls DLL and fail at process startup
-    // (STATUS_ENTRYPOINT_NOT_FOUND) before any Rust test code runs.
+    // Windows cargo test integration binaries and cargo examples do not get the Tauri app
+    // manifest by default. That leaves those exes without a resource section, so desktop
+    // dependencies such as comctl32 may resolve the legacy Common Controls DLL and fail at
+    // process startup (STATUS_ENTRYPOINT_NOT_FOUND) before any Rust code runs.
     let manifest = r#"<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
   <dependency>
     <dependentAssembly>
@@ -34,9 +34,14 @@ fn embed_windows_test_manifest() {
         "cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}",
         manifest_path.display()
     );
+    println!("cargo:rustc-link-arg-examples=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-examples=/MANIFESTINPUT:{}",
+        manifest_path.display()
+    );
 }
 
 fn main() {
-    embed_windows_test_manifest();
+    embed_windows_common_controls_manifest();
     tauri_build::build()
 }
