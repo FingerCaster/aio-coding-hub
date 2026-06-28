@@ -1,5 +1,18 @@
 # Changelog
 
+## [0.60.3](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.2...aio-coding-hub-v0.60.3) (2026-06-28)
+
+
+### Features
+
+* add codex reasoning guard compare modes ([0b6d324](https://github.com/FingerCaster/aio-coding-hub/commit/0b6d324))
+
+
+### Bug Fixes
+
+* correct guard-aware TTFB tracking and display ([bfa1491](https://github.com/FingerCaster/aio-coding-hub/commit/bfa1491))
+* use fork-owned update sources ([aaeb366](https://github.com/FingerCaster/aio-coding-hub/commit/aaeb366))
+
 ## [0.60.2](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.1...aio-coding-hub-v0.60.2) (2026-06-21)
 
 
