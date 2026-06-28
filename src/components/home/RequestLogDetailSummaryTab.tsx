@@ -99,6 +99,7 @@ export function RequestLogDetailSummaryTab({
           <div className="mt-3 grid gap-2 grid-cols-2 sm:grid-cols-3 lg:grid-cols-4">
             <MetricCard label="输入 Token" value={selectedLog.input_tokens} />
             <MetricCard label="输出 Token" value={selectedLog.output_tokens} />
+            <MetricCard label="思考 Token" value={auditMeta.reasoningTokens} />
             <MetricCard label="缓存创建" value={resolveCacheWriteValue(selectedLog)} />
             <MetricCard label="缓存读取" value={selectedLog.cache_read_input_tokens} />
             <MetricCard label="总耗时" value={formatDurationMs(displayDurationMs)} />

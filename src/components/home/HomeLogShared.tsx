@@ -51,6 +51,7 @@ export type RequestLogAuditMeta = {
   summary: string | null;
   tags: RequestLogAuditTag[];
   providerFallbackText: string | null;
+  reasoningTokens: number | null;
 };
 
 export { hasClaudeModelMappingSpecialSetting, resolveClaudeModelMappingFromSpecialSettings };
@@ -249,6 +250,7 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
         : isAllProvidersUnavailable
           ? "无可用供应商"
           : null,
+    reasoningTokens: codexReasoningGuard.latestReasoningTokens,
   };
 }
 

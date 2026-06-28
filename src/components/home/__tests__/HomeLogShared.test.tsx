@@ -181,6 +181,7 @@ describe("components/home/HomeLogShared", () => {
     });
     expect(reasoningGuard.tags.map((tag) => tag.label)).toContain("降智命中 2 <= 516");
     expect(reasoningGuard.tags[0]?.title).toContain("规则 <= 516");
+    expect(reasoningGuard.reasoningTokens).toBe(300);
     expect(reasoningGuard.summary).toBe(
       "本次请求命中了 2 次 Codex 降智拦截（规则 <= 516），并在同一 provider 上继续重试。"
     );
@@ -210,7 +211,12 @@ describe("components/home/HomeLogShared", () => {
       status: 200,
       special_settings_json: "bad-json",
     });
-    expect(plain).toMatchObject({ muted: false, summary: null, providerFallbackText: null });
+    expect(plain).toMatchObject({
+      muted: false,
+      summary: null,
+      providerFallbackText: null,
+      reasoningTokens: null,
+    });
   });
 
   it("computes status badges across success, failover, errors, and client aborts", () => {

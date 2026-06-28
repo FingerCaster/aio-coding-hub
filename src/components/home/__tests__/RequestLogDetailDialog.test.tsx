@@ -272,6 +272,39 @@ describe("home/RequestLogDetailDialog", () => {
     expect(screen.getByText("最终供应商：未知")).toBeInTheDocument();
   });
 
+  it("shows thought token when it is the only token metric available", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        input_tokens: null,
+        output_tokens: null,
+        total_tokens: null,
+        cache_read_input_tokens: null,
+        cache_creation_input_tokens: null,
+        cache_creation_5m_input_tokens: null,
+        cache_creation_1h_input_tokens: null,
+        cost_usd: null,
+        duration_ms: undefined,
+        ttfb_ms: null,
+        visible_ttfb_ms: null,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            compareMode: "equals",
+            compareModeSymbol: "==",
+            matchedRuleValue: 516,
+            reasoningTokens: 516,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getByText("关键指标")).toBeInTheDocument();
+    expectMetricValue("思考 Token", "516");
+  });
+
   it("shows failover success and prefers the 1h cache creation metric when present", () => {
     setRequestLogQueryState({
       selectedLog: createSelectedLog({

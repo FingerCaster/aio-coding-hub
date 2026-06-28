@@ -109,6 +109,7 @@ export function RequestLogDetailDialog({
       selectedLog.cache_creation_input_tokens != null ||
       selectedLog.cache_creation_5m_input_tokens != null ||
       selectedLog.cache_creation_1h_input_tokens != null ||
+      auditMeta?.reasoningTokens != null ||
       selectedLog.cost_usd != null ||
       selectedLog.duration_ms != null ||
       selectedLog.ttfb_ms != null ||
