@@ -78,6 +78,37 @@ describe("components/UpdateDialog", () => {
     expect(screen.getByText("新增功能")).toBeInTheDocument();
   });
 
+  it("opens changelog markdown links in the system browser", async () => {
+    vi.mocked(useUpdateMeta).mockReturnValue({
+      about: { run_mode: "desktop", app_version: "0.0.0" },
+      updateCandidate: {
+        rid: 1,
+        version: "1.2.0",
+        currentVersion: "1.1.0",
+        date: "2026-04-12T11:00:00Z",
+        body: "## [1.2.0](https://example.com/releases/tag/v1.2.0)\n\n* feature ([abc123](https://example.com/commit/abc123))",
+      },
+      checkingUpdate: false,
+      dialogOpen: true,
+      installingUpdate: false,
+      installError: null,
+      installTotalBytes: null,
+      installDownloadedBytes: 0,
+    } as any);
+
+    vi.mocked(tauriOpenUrl).mockResolvedValue(undefined as never);
+    const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(<UpdateDialog />);
+
+    fireEvent.click(screen.getByRole("link", { name: "abc123" }));
+
+    await waitFor(() => {
+      expect(tauriOpenUrl).toHaveBeenCalledWith("https://example.com/commit/abc123");
+    });
+    expect(windowOpen).not.toHaveBeenCalled();
+  });
+
   it("renders publish date, installing progress, and install error state", () => {
     vi.mocked(useUpdateMeta).mockReturnValue({
       about: { run_mode: "desktop", app_version: "0.0.0" },

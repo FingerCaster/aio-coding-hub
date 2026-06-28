@@ -6,6 +6,7 @@ import {
   quotePlugin,
   thematicBreakPlugin,
 } from "@mdxeditor/editor";
+import type { MouseEvent } from "react";
 import { toast } from "sonner";
 import { AIO_RELEASES_URL } from "../constants/urls";
 import { logToConsole } from "../services/consoleLog";
@@ -19,6 +20,11 @@ import {
 import { Button } from "../ui/Button";
 import { Dialog } from "../ui/Dialog";
 import { formatBytes, formatIsoDateTime } from "../utils/formatters";
+
+function readClickedHref(event: MouseEvent<HTMLElement>) {
+  const anchor = (event.target as Element | null)?.closest?.("a[href]");
+  return anchor instanceof HTMLAnchorElement ? anchor.getAttribute("href") : null;
+}
 
 const READONLY_PLUGINS = [
   headingsPlugin(),
@@ -44,6 +50,24 @@ export function UpdateDialog() {
       } catch {}
       toast("打开下载页失败：请查看控制台日志");
     }
+  }
+
+  async function openChangelogLink(url: string) {
+    try {
+      await openDesktopUrl(url);
+    } catch (err) {
+      logToConsole("error", "打开更新日志链接失败", { error: String(err), url });
+      toast("打开链接失败：请查看控制台日志");
+    }
+  }
+
+  function onChangelogClick(event: MouseEvent<HTMLDivElement>) {
+    const href = readClickedHref(event);
+    if (!href) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void openChangelogLink(href);
   }
 
   async function installUpdate() {
@@ -121,7 +145,10 @@ export function UpdateDialog() {
         {updateCandidate?.body ? (
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">更新日志</span>
-            <div className="max-h-60 overflow-y-auto rounded-lg border border-border bg-white dark:bg-secondary text-sm text-secondary-foreground">
+            <div
+              className="max-h-60 overflow-y-auto rounded-lg border border-border bg-white dark:bg-secondary text-sm text-secondary-foreground"
+              onClick={onChangelogClick}
+            >
               <MDXEditor
                 markdown={updateCandidate.body}
                 readOnly
