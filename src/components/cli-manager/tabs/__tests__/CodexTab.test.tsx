@@ -468,6 +468,61 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     ).toBeInTheDocument();
   });
 
+  it("defaults missing Codex model rule compare mode to equals", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\n',
+        }}
+        appSettings={createAppSettings({
+          codex_reasoning_guard_model_rules: [
+            {
+              requested_model: "gpt-5-mini-codex",
+              reasoning_equals: [256],
+            },
+          ],
+        })}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+
+    expect(within(dialog).getByDisplayValue("gpt-5-mini-codex")).toBeInTheDocument();
+    expect(within(dialog).getAllByDisplayValue("等于 (==)")[1]).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_compare_mode: "equals",
+      codex_reasoning_guard_reasoning_equals: [516],
+      codex_reasoning_guard_model_rules: [
+        {
+          requested_model: "gpt-5-mini-codex",
+          compare_mode: "equals",
+          reasoning_equals: [256],
+        },
+      ],
+    });
+  });
+
   it("shows validation for invalid Codex reasoning guard values", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 

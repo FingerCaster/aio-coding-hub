@@ -1634,10 +1634,7 @@ export const commands = {
   },
   async requestLogsCodexReasoningGuardStats(): Promise<Result<CodexReasoningGuardStats, string>> {
     try {
-      return {
-        status: "ok",
-        data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats"),
-      };
+      return { status: "ok", data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats") };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -2343,8 +2340,24 @@ export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom"
 export type CodexReasoningGuardCompareMode = "equals" | "less_than_or_equal";
 export type CodexReasoningGuardModelRule = {
   requested_model: string;
-  compare_mode: CodexReasoningGuardCompareMode;
+  compare_mode?: CodexReasoningGuardCompareMode;
   reasoning_equals: number[];
+};
+export type CodexReasoningGuardModelStat = {
+  requested_model: string;
+  total_request_count: number;
+  hit_request_count: number;
+  normal_request_count: number;
+  hit_attempt_count: number;
+  hit_rate: number;
+};
+export type CodexReasoningGuardStats = {
+  hit_request_count: number;
+  hit_attempt_count: number;
+  normal_request_count: number;
+  total_request_count: number;
+  hit_rate: number;
+  by_model: CodexReasoningGuardModelStat[];
 };
 export type CodexSessionIdCompletionUpdate = { enableCodexSessionIdCompletion: boolean };
 export type ConfigImportResult = {
@@ -2922,6 +2935,7 @@ export type ProviderSummary = {
   base_urls: string[];
   base_url_mode: ProviderBaseUrlMode;
   claude_models: ClaudeModels;
+  availability_test_model: string | null;
   enabled: boolean;
   priority: number;
   cost_multiplier: number;
@@ -2943,7 +2957,6 @@ export type ProviderSummary = {
   oauth_last_error: string | null;
   source_provider_id: number | null;
   bridge_type: string | null;
-  availability_test_model: string | null;
   stream_idle_timeout_seconds: number | null;
   api_key_configured: boolean;
 };
@@ -2986,22 +2999,6 @@ export type RequestAttemptLog = {
   attempt_started_ms: number;
   attempt_duration_ms: number;
   created_at: number;
-};
-export type CodexReasoningGuardStats = {
-  hit_request_count: number;
-  hit_attempt_count: number;
-  normal_request_count: number;
-  total_request_count: number;
-  hit_rate: number;
-  by_model: CodexReasoningGuardModelStat[];
-};
-export type CodexReasoningGuardModelStat = {
-  requested_model: string;
-  total_request_count: number;
-  hit_request_count: number;
-  normal_request_count: number;
-  hit_attempt_count: number;
-  hit_rate: number;
 };
 export type RequestLogDetail = {
   id: number;

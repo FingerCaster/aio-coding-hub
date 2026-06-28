@@ -512,7 +512,8 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       }
       seenModels.add(requestedModel);
 
-      if (rule.compare_mode !== "equals" && rule.compare_mode !== "less_than_or_equal") {
+      const compareMode = rule.compare_mode ?? "equals";
+      if (compareMode !== "equals" && compareMode !== "less_than_or_equal") {
         return "Codex 模型规则比较模式仅支持 equals 或 less_than_or_equal";
       }
 

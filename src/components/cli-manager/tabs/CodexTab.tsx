@@ -81,6 +81,12 @@ function formatCodexReasoningGuardValues(values: number[] | null | undefined) {
   return (values && values.length > 0 ? values : [516]).join(", ");
 }
 
+function resolveCodexReasoningGuardCompareMode(
+  compareMode: CodexReasoningGuardCompareMode | null | undefined
+): CodexReasoningGuardCompareMode {
+  return compareMode ?? "equals";
+}
+
 function formatCodexReasoningGuardRuleLabel(
   compareMode: CodexReasoningGuardCompareMode,
   values: number[] | null | undefined
@@ -104,7 +110,7 @@ function buildCodexReasoningGuardModelRuleDrafts(
 ): CodexReasoningGuardModelRuleDraft[] {
   return (rules ?? []).map((rule) => ({
     requestedModel: rule.requested_model,
-    compareMode: rule.compare_mode,
+    compareMode: resolveCodexReasoningGuardCompareMode(rule.compare_mode),
     valuesText: formatCodexReasoningGuardValues(rule.reasoning_equals),
   }));
 }
@@ -121,7 +127,10 @@ function resolveCodexReasoningGuardRuleForModel(
   );
   if (modelRule) {
     return {
-      label: formatCodexReasoningGuardRuleLabel(modelRule.compare_mode, modelRule.reasoning_equals),
+      label: formatCodexReasoningGuardRuleLabel(
+        resolveCodexReasoningGuardCompareMode(modelRule.compare_mode),
+        modelRule.reasoning_equals
+      ),
       sourceLabel: "模型规则",
     };
   }
