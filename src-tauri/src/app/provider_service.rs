@@ -30,6 +30,7 @@ pub(crate) struct ProviderUpsertInput {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Option<Vec<providers::ProviderExtensionValuesInput>>,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -149,6 +150,7 @@ pub(crate) async fn provider_upsert(
         source_provider_id,
         bridge_type,
         stream_idle_timeout_seconds,
+        extension_values,
     } = input;
 
     let is_create = provider_id.is_none();
@@ -195,6 +197,7 @@ pub(crate) async fn provider_upsert(
                 source_provider_id,
                 bridge_type,
                 stream_idle_timeout_seconds,
+                extension_values: extension_values.unwrap_or_default(),
             },
         )?;
 
@@ -249,8 +252,10 @@ pub(crate) async fn provider_duplicate(
 ) -> Result<providers::ProviderSummary, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     let result = blocking::run("provider_duplicate", move || {
-        let conn = db.open_connection()?;
-        let source = providers::get_by_id(&conn, provider_id)?;
+        let source = {
+            let conn = db.open_connection()?;
+            providers::get_by_id(&conn, provider_id)?
+        };
         let siblings = providers::list_by_cli(&db, &source.cli_key)?;
         let api_key = if source.auth_mode == "api_key" && source.source_provider_id.is_none() {
             Some(providers::get_api_key_plaintext(&db, provider_id)?)
@@ -258,7 +263,7 @@ pub(crate) async fn provider_duplicate(
             None
         };
 
-        providers::upsert(
+        let duplicated = providers::upsert(
             &db,
             providers::ProviderUpsertParams {
                 provider_id: None,
@@ -287,8 +292,12 @@ pub(crate) async fn provider_duplicate(
                 source_provider_id: source.source_provider_id,
                 bridge_type: source.bridge_type.clone(),
                 stream_idle_timeout_seconds: source.stream_idle_timeout_seconds,
+                extension_values: vec![],
             },
-        )
+        )?;
+        let copy_conn = db.open_connection()?;
+        providers::copy_extension_values(&copy_conn, source.id, duplicated.id)?;
+        providers::get_by_id(&copy_conn, duplicated.id)
     })
     .await
     .map_err(Into::into);
@@ -544,6 +553,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
             api_key_configured: true,
         };
 
@@ -628,6 +638,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
             api_key_configured: true,
         };
 

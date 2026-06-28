@@ -5,8 +5,8 @@ mod types;
 mod validation;
 
 pub use types::{
-    ClaudeModels, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode, ProviderSummary,
-    ProviderUpsertParams,
+    ClaudeModels, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode,
+    ProviderExtensionValuesInput, ProviderSummary, ProviderUpsertParams,
 };
 
 #[allow(unused_imports)]
@@ -22,7 +22,7 @@ pub use queries::{
 
 pub(crate) use queries::{
     active_sort_mode_id_for_gateway, claude_terminal_launch_context, clear_oauth, cli_key_by_id,
-    get_by_id, get_oauth_details, get_source_provider_for_gateway,
+    copy_extension_values, get_by_id, get_oauth_details, get_source_provider_for_gateway,
     list_enabled_for_gateway_in_mode, list_enabled_for_gateway_using_active_mode,
     list_oauth_providers_needing_refresh, set_enabled, set_oauth_last_error, update_oauth_tokens,
     update_oauth_tokens_if_last_refreshed_matches,

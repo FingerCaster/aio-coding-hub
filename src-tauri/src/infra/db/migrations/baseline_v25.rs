@@ -184,6 +184,20 @@ CREATE TABLE IF NOT EXISTS provider_circuit_breakers (
 
 CREATE INDEX IF NOT EXISTS idx_provider_circuit_breakers_state ON provider_circuit_breakers(state);
 
+CREATE TABLE IF NOT EXISTS provider_extension_values (
+  provider_id INTEGER NOT NULL,
+  plugin_id TEXT NOT NULL,
+  namespace TEXT NOT NULL,
+  values_json TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, plugin_id, namespace),
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+  FOREIGN KEY(plugin_id) REFERENCES plugins(plugin_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_extension_values_plugin_namespace
+  ON provider_extension_values(plugin_id, namespace);
+
 CREATE TABLE IF NOT EXISTS provider_pool_order (
   cli_key TEXT NOT NULL,
   provider_id INTEGER NOT NULL,

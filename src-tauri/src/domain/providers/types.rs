@@ -83,6 +83,7 @@ pub struct ProviderUpsertParams {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValuesInput>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
@@ -196,6 +197,23 @@ impl ProviderBaseUrlMode {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderExtensionValues {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub values: serde_json::Value,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderExtensionValuesInput {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub values: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ProviderSummary {
     pub id: i64,
@@ -226,6 +244,7 @@ pub struct ProviderSummary {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValues>,
     pub api_key_configured: bool,
 }
 
@@ -255,6 +274,7 @@ pub(crate) struct ProviderForGateway {
     #[allow(dead_code)] // Will be read when failover_loop uses bridge_type for dispatch.
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValues>,
 }
 
 #[derive(Debug, Clone)]

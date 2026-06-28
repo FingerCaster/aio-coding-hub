@@ -84,6 +84,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
         stream_idle_timeout_seconds: parse_positive_optional_u32(
             row.get("stream_idle_timeout_seconds").unwrap_or(None),
         ),
+        extension_values: Vec::new(),
         api_key_configured: row
             .get::<_, Option<i64>>("api_key_configured")
             .unwrap_or(None)
@@ -92,12 +93,153 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
     })
 }
 
+fn list_extension_values(
+    conn: &Connection,
+    provider_id: i64,
+) -> crate::shared::error::AppResult<Vec<ProviderExtensionValues>> {
+    let mut stmt = conn
+        .prepare_cached(
+            r#"
+SELECT
+  plugin_id,
+  namespace,
+  values_json,
+  updated_at
+FROM provider_extension_values
+WHERE provider_id = ?1
+ORDER BY plugin_id ASC, namespace ASC
+"#,
+        )
+        .map_err(|e| db_err!("failed to prepare provider extension values query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![provider_id], |row| {
+            let values_json: String = row.get("values_json")?;
+            let values = serde_json::from_str::<serde_json::Value>(&values_json)
+                .unwrap_or_else(|_| serde_json::Value::Object(serde_json::Map::new()));
+
+            Ok(ProviderExtensionValues {
+                plugin_id: row.get("plugin_id")?,
+                namespace: row.get("namespace")?,
+                values,
+                updated_at: row.get("updated_at")?,
+            })
+        })
+        .map_err(|e| db_err!("failed to list provider extension values: {e}"))?;
+
+    let mut values = Vec::new();
+    for row in rows {
+        values.push(row.map_err(|e| db_err!("failed to read provider extension value: {e}"))?);
+    }
+    Ok(values)
+}
+
+fn fill_summary_extension_values(
+    conn: &Connection,
+    summary: &mut ProviderSummary,
+) -> crate::shared::error::AppResult<()> {
+    summary.extension_values = list_extension_values(conn, summary.id)?;
+    Ok(())
+}
+
+fn fill_gateway_extension_values(
+    conn: &Connection,
+    provider: &mut ProviderForGateway,
+) -> crate::shared::error::AppResult<()> {
+    provider.extension_values = list_extension_values(conn, provider.id)?;
+    Ok(())
+}
+
+fn save_extension_values(
+    conn: &Connection,
+    provider_id: i64,
+    values: &[ProviderExtensionValuesInput],
+) -> crate::shared::error::AppResult<bool> {
+    if values.is_empty() {
+        return Ok(false);
+    }
+
+    let now = now_unix_seconds();
+    for value in values {
+        let plugin_id = value.plugin_id.trim();
+        if plugin_id.is_empty() {
+            return Err("SEC_INVALID_INPUT: extension_values.plugin_id is required"
+                .to_string()
+                .into());
+        }
+
+        let namespace = value.namespace.trim();
+        if namespace.is_empty() {
+            return Err("SEC_INVALID_INPUT: extension_values.namespace is required"
+                .to_string()
+                .into());
+        }
+
+        let values_json =
+            serde_json::to_string(&value.values).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
+
+        conn.execute(
+            r#"
+INSERT INTO provider_extension_values(
+  provider_id,
+  plugin_id,
+  namespace,
+  values_json,
+  updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5)
+ON CONFLICT(provider_id, plugin_id, namespace) DO UPDATE SET
+  values_json = excluded.values_json,
+  updated_at = excluded.updated_at
+"#,
+            params![provider_id, plugin_id, namespace, values_json, now],
+        )
+        .map_err(|e| db_err!("failed to save provider extension values: {e}"))?;
+    }
+
+    Ok(true)
+}
+
+pub(crate) fn copy_extension_values(
+    conn: &Connection,
+    from_provider_id: i64,
+    to_provider_id: i64,
+) -> crate::shared::error::AppResult<()> {
+    let now = now_unix_seconds();
+    conn.execute(
+        r#"
+INSERT INTO provider_extension_values(
+  provider_id,
+  plugin_id,
+  namespace,
+  values_json,
+  updated_at
+)
+SELECT
+  ?2,
+  plugin_id,
+  namespace,
+  values_json,
+  ?3
+FROM provider_extension_values
+WHERE provider_id = ?1
+ON CONFLICT(provider_id, plugin_id, namespace) DO UPDATE SET
+  values_json = excluded.values_json,
+  updated_at = excluded.updated_at
+"#,
+        params![from_provider_id, to_provider_id, now],
+    )
+    .map_err(|e| db_err!("failed to copy provider extension values: {e}"))?;
+
+    Ok(())
+}
+
 pub(crate) fn get_by_id(
     conn: &Connection,
     provider_id: i64,
 ) -> crate::shared::error::AppResult<ProviderSummary> {
-    conn.query_row(
-        r#"
+    let mut summary = conn
+        .query_row(
+            r#"
 SELECT
   id,
   cli_key,
@@ -132,12 +274,15 @@ SELECT
 FROM providers
 WHERE id = ?1
 "#,
-        params![provider_id],
-        row_to_summary,
-    )
-    .optional()
-    .map_err(|e| db_err!("failed to query provider: {e}"))?
-    .ok_or_else(|| crate::shared::error::AppError::from("DB_NOT_FOUND: provider not found"))
+            params![provider_id],
+            row_to_summary,
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to query provider: {e}"))?
+        .ok_or_else(|| crate::shared::error::AppError::from("DB_NOT_FOUND: provider not found"))?;
+
+    fill_summary_extension_values(conn, &mut summary)?;
+    Ok(summary)
 }
 
 pub(crate) fn claude_terminal_launch_context(
@@ -408,7 +553,9 @@ ORDER BY
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| db_err!("failed to read provider row: {e}"))?);
+        let mut item = row.map_err(|e| db_err!("failed to read provider row: {e}"))?;
+        fill_summary_extension_values(&conn, &mut item)?;
+        items.push(item);
     }
 
     Ok(items)
@@ -443,6 +590,7 @@ fn map_gateway_provider_row(
         stream_idle_timeout_seconds: parse_positive_optional_u32(
             row.get("stream_idle_timeout_seconds").unwrap_or(None),
         ),
+        extension_values: Vec::new(),
     })
 }
 
@@ -494,7 +642,9 @@ ORDER BY mp.sort_order ASC
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?);
+        let mut item = row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?;
+        fill_gateway_extension_values(conn, &mut item)?;
+        items.push(item);
     }
     Ok(items)
 }
@@ -553,7 +703,9 @@ ORDER BY
 
     let mut items = Vec::new();
     for row in rows {
-        items.push(row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?);
+        let mut item = row.map_err(|e| db_err!("failed to read gateway provider row: {e}"))?;
+        fill_gateway_extension_values(conn, &mut item)?;
+        items.push(item);
     }
     Ok(items)
 }
@@ -641,7 +793,7 @@ pub(crate) fn get_source_provider_for_gateway(
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
 
-    let provider = conn
+    let mut provider = conn
         .query_row(
             r#"
 SELECT
@@ -675,6 +827,7 @@ WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND cli_key = 'code
         .ok_or_else(|| {
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
+    fill_gateway_extension_values(&conn, &mut provider)?;
     Ok((provider, cli_key_owned))
 }
 
@@ -715,6 +868,7 @@ pub fn upsert(
         source_provider_id,
         bridge_type,
         stream_idle_timeout_seconds,
+        extension_values,
     } = input;
     let cli_key = cli_key.trim();
     validate_cli_key(cli_key)?;
@@ -841,6 +995,9 @@ pub fn upsert(
 
     match provider_id {
         None => {
+            let tx = conn
+                .transaction()
+                .map_err(|e| db_err!("failed to start transaction: {e}"))?;
             let priority = priority.unwrap_or(DEFAULT_PRIORITY);
             let api_key = match is_oauth || is_cx2cc {
                 true => api_key.unwrap_or(""),
@@ -848,7 +1005,7 @@ pub fn upsert(
                     api_key.ok_or_else(|| "SEC_INVALID_INPUT: api_key is required".to_string())?
                 }
             };
-            let sort_order = next_sort_order(&conn, cli_key)?;
+            let sort_order = next_sort_order(&tx, cli_key)?;
 
             let claude_models = if cli_key == "claude" {
                 claude_models.unwrap_or_default().normalized()
@@ -874,7 +1031,7 @@ pub fn upsert(
                 .map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
             let note_value = normalize_note(note.as_deref())?;
 
-            conn.execute(
+            tx.execute(
                 r#"
 INSERT INTO providers(
   cli_key,
@@ -947,7 +1104,9 @@ INSERT INTO providers(
                 other => db_err!("failed to insert provider: {other}"),
             })?;
 
-            let id = conn.last_insert_rowid();
+            let id = tx.last_insert_rowid();
+            save_extension_values(&tx, id, &extension_values)?;
+            tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
             Ok(get_by_id(&conn, id)?)
         }
         Some(id) => {
@@ -1135,6 +1294,7 @@ WHERE id = ?24
                 other => db_err!("failed to update provider: {other}"),
             })?;
 
+            save_extension_values(&tx, id, &extension_values)?;
             tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
 
             get_by_id(&conn, id)

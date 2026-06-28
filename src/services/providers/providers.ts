@@ -5,6 +5,7 @@ import {
   type ProviderAuthMode as GeneratedProviderAuthMode,
   type ProviderAvailabilityResult,
   type ProviderBaseUrlMode as GeneratedProviderBaseUrlMode,
+  type ProviderExtensionValuesInput,
   type ProviderOAuthDeviceCodeCancelResult as GeneratedProviderOAuthDeviceCodeCancelResult,
   type ProviderOAuthDeviceCodePollResult as GeneratedProviderOAuthDeviceCodePollResult,
   type ProviderOAuthDeviceCodeStartResult as GeneratedProviderOAuthDeviceCodeStartResult,
@@ -32,6 +33,7 @@ import { createRiskyIpcConfirm } from "../ipcConfirm";
 
 export type {
   ProviderAvailabilityResult,
+  ProviderExtensionValuesInput,
   GeneratedProviderOAuthDeviceCodePollResult as ProviderOAuthDeviceCodePollResult,
   GeneratedProviderOAuthDeviceCodeStartResult as ProviderOAuthDeviceCodeStartResult,
   GeneratedProviderOAuthDeviceCodeCancelResult as ProviderOAuthDeviceCodeCancelResult,
@@ -99,6 +101,7 @@ type ProviderUpsertFieldMap = {
   sourceProviderId: "sourceProviderId";
   bridgeType: "bridgeType";
   streamIdleTimeoutSeconds: "streamIdleTimeoutSeconds";
+  extensionValues: "extensionValues";
 };
 
 type ProviderUpsertAuthority = RemapGeneratedKeys<
@@ -187,6 +190,7 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
     note: input.note ?? null,
     sourceProviderId,
     bridgeType: input.bridgeType ?? null,
+    extensionValues: input.extensionValues ?? [],
   } satisfies Omit<GeneratedProviderUpsertInput, "streamIdleTimeoutSeconds">;
 
   if (Object.prototype.hasOwnProperty.call(input, "streamIdleTimeoutSeconds")) {

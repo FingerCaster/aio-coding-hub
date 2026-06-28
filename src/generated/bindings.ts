@@ -3187,6 +3187,17 @@ export type ProviderContribution = {
   targetCliKeys: TargetCliKey[];
   extensionNamespace: string;
 };
+export type ProviderExtensionValues = {
+  pluginId: string;
+  namespace: string;
+  values: JsonValue;
+  updatedAt: number;
+};
+export type ProviderExtensionValuesInput = {
+  pluginId: string;
+  namespace: string;
+  values: JsonValue;
+};
 export type ProviderLimitUsageRow = {
   cli_key: string;
   provider_id: number;
@@ -3292,6 +3303,7 @@ export type ProviderSummary = {
   source_provider_id: number | null;
   bridge_type: string | null;
   stream_idle_timeout_seconds: number | null;
+  extension_values: ProviderExtensionValues[];
   api_key_configured: boolean;
 };
 export type ProviderUpsertInput = {
@@ -3318,6 +3330,7 @@ export type ProviderUpsertInput = {
   sourceProviderId: number | null;
   bridgeType: string | null;
   streamIdleTimeoutSeconds: number | null;
+  extensionValues: ProviderExtensionValuesInput[] | null;
 };
 export type RequestAttemptLog = {
   id: number;

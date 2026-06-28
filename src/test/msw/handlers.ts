@@ -264,6 +264,14 @@ export const handlers = [
             ? input.streamIdleTimeoutSeconds
             : null
           : (existing?.stream_idle_timeout_seconds ?? null),
+      extension_values: Array.isArray(input.extensionValues)
+        ? input.extensionValues.map((value) => ({
+            pluginId: value.pluginId,
+            namespace: value.namespace,
+            values: value.values,
+            updatedAt: now,
+          }))
+        : (existing?.extension_values ?? []),
     };
 
     setProvidersState(

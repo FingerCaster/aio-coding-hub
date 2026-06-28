@@ -34,6 +34,7 @@ fn insert_provider(db: &crate::db::Db, name: &str, enabled: bool) -> providers::
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
         },
     )
     .expect("insert provider");

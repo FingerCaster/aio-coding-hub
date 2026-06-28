@@ -315,6 +315,34 @@ fn ensure_plugin_tables_is_idempotent() {
 }
 
 #[test]
+fn migrations_create_provider_extension_values_table() {
+    let mut conn = rusqlite::Connection::open_in_memory().unwrap();
+    apply_migrations(&mut conn).expect("apply migrations");
+
+    assert!(test_has_table(&conn, "provider_extension_values"));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "provider_id"
+    ));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "plugin_id"
+    ));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "namespace"
+    ));
+    assert!(test_has_column(
+        &conn,
+        "provider_extension_values",
+        "values_json"
+    ));
+}
+
+#[test]
 fn ensure_patch_drops_legacy_request_attempt_logs_table() {
     let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
     apply_migrations(&mut conn).expect("create current schema");
