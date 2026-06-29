@@ -3157,6 +3157,8 @@ export type SettingsUpdate = {
   codexReasoningGuardCompareMode: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardReasoningEquals: number[] | null;
   codexReasoningGuardModelRules: CodexReasoningGuardModelRule[] | null;
+  codexReasoningGuardBackoffAfterHits: number | null;
+  codexReasoningGuardBackoffMs: number | null;
   cx2CcFallbackModelOpus: string | null;
   cx2CcFallbackModelSonnet: string | null;
   cx2CcFallbackModelHaiku: string | null;
@@ -3194,6 +3196,8 @@ export type SettingsView = {
   codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode;
   codex_reasoning_guard_reasoning_equals: number[];
   codex_reasoning_guard_model_rules: CodexReasoningGuardModelRule[];
+  codex_reasoning_guard_backoff_after_hits: number;
+  codex_reasoning_guard_backoff_ms: number;
   auto_start: boolean;
   start_minimized: boolean;
   tray_enabled: boolean;

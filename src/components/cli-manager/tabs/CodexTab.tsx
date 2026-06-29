@@ -23,6 +23,11 @@ import type {
   CodexReasoningGuardModelRule,
 } from "../../../services/settings/settings";
 import {
+  DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
+  DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS,
+  DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS,
+  MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
+  MAX_CODEX_REASONING_GUARD_BACKOFF_MS,
   MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
   MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN,
   MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN,
@@ -78,7 +83,9 @@ const CODEX_REASONING_GUARD_PERCENT_FORMATTER = new Intl.NumberFormat("zh-CN", {
 });
 
 function formatCodexReasoningGuardValues(values: number[] | null | undefined) {
-  return (values && values.length > 0 ? values : [516]).join(", ");
+  return (
+    values && values.length > 0 ? values : DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+  ).join(", ");
 }
 
 function resolveCodexReasoningGuardCompareMode(
@@ -102,7 +109,7 @@ function formatCodexReasoningGuardHitRate(value: number | null | undefined) {
 function codexReasoningGuardCompareModeHelperText(compareMode: CodexReasoningGuardCompareMode) {
   return compareMode === "less_than_or_equal"
     ? "多个值请用英文逗号分隔。命中条件为 reasoning_tokens 小于等于任一规则值；若有多个阈值，会优先匹配更贴近的较小阈值。"
-    : "多个值请用英文逗号分隔。默认规则是 516。命中后会在同一 provider 上继续重试。";
+    : `多个值请用英文逗号分隔。默认规则是 ${DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.join(", ")}。命中后会在同一 provider 上继续重试。`;
 }
 
 function buildCodexReasoningGuardModelRuleDrafts(
@@ -242,6 +249,8 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
+        | "codex_reasoning_guard_backoff_after_hits"
+        | "codex_reasoning_guard_backoff_ms"
       >
     >
   ) => Promise<boolean> | boolean;
@@ -335,6 +344,14 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardValuesError, setCodexReasoningGuardValuesError] = useState<
     string | null
   >(null);
+  const [codexReasoningGuardBackoffAfterHitsText, setCodexReasoningGuardBackoffAfterHitsText] =
+    useState(String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS));
+  const [codexReasoningGuardBackoffMsText, setCodexReasoningGuardBackoffMsText] = useState(
+    String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS)
+  );
+  const [codexReasoningGuardBackoffError, setCodexReasoningGuardBackoffError] = useState<
+    string | null
+  >(null);
   const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
   const [codexReasoningGuardDetailsTab, setCodexReasoningGuardDetailsTab] =
     useState<CodexReasoningGuardDetailsTab>("rules");
@@ -413,10 +430,22 @@ export function CliManagerCodexTab({
 
   const syncCodexReasoningGuardDrafts = useCallback(
     (source: AppSettings | null | undefined = appSettings) => {
-      const values = source?.codex_reasoning_guard_reasoning_equals ?? [516];
+      const values =
+        source?.codex_reasoning_guard_reasoning_equals ??
+        DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS;
       setCodexReasoningGuardValuesText(values.join(", "));
       setCodexReasoningGuardCompareMode(source?.codex_reasoning_guard_compare_mode ?? "equals");
+      setCodexReasoningGuardBackoffAfterHitsText(
+        String(
+          source?.codex_reasoning_guard_backoff_after_hits ??
+            DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS
+        )
+      );
+      setCodexReasoningGuardBackoffMsText(
+        String(source?.codex_reasoning_guard_backoff_ms ?? DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS)
+      );
       setCodexReasoningGuardValuesError(null);
+      setCodexReasoningGuardBackoffError(null);
       setCodexReasoningGuardModelRuleDrafts(
         buildCodexReasoningGuardModelRuleDrafts(source?.codex_reasoning_guard_model_rules)
       );
@@ -815,6 +844,25 @@ export function CliManagerCodexTab({
     return { ok: true, values };
   }
 
+  function parseCodexReasoningGuardInteger(
+    raw: string,
+    label: string,
+    max: number
+  ): { ok: true; value: number } | { ok: false; message: string } {
+    const valueText = raw.trim();
+    if (!valueText) {
+      return { ok: false, message: `${label}不能为空。` };
+    }
+    if (!/^\d+$/u.test(valueText)) {
+      return { ok: false, message: `${label}必须是非负整数。` };
+    }
+    const value = Number(valueText);
+    if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+      return { ok: false, message: `${label}必须在 0 到 ${max} 之间。` };
+    }
+    return { ok: true, value };
+  }
+
   function updateCodexReasoningGuardModelRuleDraft(
     index: number,
     patch: Partial<CodexReasoningGuardModelRuleDraft>
@@ -870,6 +918,26 @@ export function CliManagerCodexTab({
       return;
     }
 
+    const parsedBackoffAfterHits = parseCodexReasoningGuardInteger(
+      codexReasoningGuardBackoffAfterHitsText,
+      "等待触发次数",
+      MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS
+    );
+    if (!parsedBackoffAfterHits.ok) {
+      setCodexReasoningGuardBackoffError(parsedBackoffAfterHits.message);
+      return;
+    }
+
+    const parsedBackoffMs = parseCodexReasoningGuardInteger(
+      codexReasoningGuardBackoffMsText,
+      "等待时间",
+      MAX_CODEX_REASONING_GUARD_BACKOFF_MS
+    );
+    if (!parsedBackoffMs.ok) {
+      setCodexReasoningGuardBackoffError(parsedBackoffMs.message);
+      return;
+    }
+
     const nextRuleErrors: Record<number, string> = {};
     const nextModelRules: CodexReasoningGuardModelRule[] = [];
     const seenModels = new Set<string>();
@@ -914,14 +982,19 @@ export function CliManagerCodexTab({
     }
 
     setCodexReasoningGuardValuesError(null);
+    setCodexReasoningGuardBackoffError(null);
     setCodexReasoningGuardModelRuleErrors({});
     setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
+    setCodexReasoningGuardBackoffAfterHitsText(String(parsedBackoffAfterHits.value));
+    setCodexReasoningGuardBackoffMsText(String(parsedBackoffMs.value));
     setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
 
     const saved = await persistCodexReasoningGuardSettings({
       codex_reasoning_guard_compare_mode: codexReasoningGuardCompareMode,
       codex_reasoning_guard_reasoning_equals: parsedGlobalValues.values,
       codex_reasoning_guard_model_rules: nextModelRules,
+      codex_reasoning_guard_backoff_after_hits: parsedBackoffAfterHits.value,
+      codex_reasoning_guard_backoff_ms: parsedBackoffMs.value,
     });
     if (!saved) {
       syncCodexReasoningGuardDrafts(appSettings);
@@ -1406,6 +1479,15 @@ export function CliManagerCodexTab({
                           : "暂无命中"}
                       </span>
                     </div>
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>连续命中等待</span>
+                      <span className="font-mono text-secondary-foreground">
+                        {appSettings.codex_reasoning_guard_backoff_after_hits === 0 ||
+                        appSettings.codex_reasoning_guard_backoff_ms === 0
+                          ? "已关闭"
+                          : `第 ${appSettings.codex_reasoning_guard_backoff_after_hits} 次起 / ${appSettings.codex_reasoning_guard_backoff_ms}ms`}
+                      </span>
+                    </div>
                   </div>
                 </div>
               </div>
@@ -1516,7 +1598,7 @@ export function CliManagerCodexTab({
                                 );
                               }
                             }}
-                            placeholder="516"
+                            placeholder={DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.join(", ")}
                             className={cn(
                               "mt-3 font-mono text-xs",
                               codexReasoningGuardValuesError &&
@@ -1553,6 +1635,69 @@ export function CliManagerCodexTab({
                       >
                         {codexReasoningGuardValuesError ??
                           codexReasoningGuardCompareModeHelperText(codexReasoningGuardCompareMode)}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
+                      <div className="text-sm font-semibold text-foreground">连续命中等待</div>
+                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        同一请求内降智拦截连续命中达到阈值后，继续请求前先等待一段时间。任一值设为{" "}
+                        <span className="font-mono">0</span> 即关闭等待。
+                      </div>
+                      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">达到命中次数</span>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS}
+                            step={1}
+                            value={codexReasoningGuardBackoffAfterHitsText}
+                            onChange={(e) => {
+                              setCodexReasoningGuardBackoffAfterHitsText(e.currentTarget.value);
+                              setCodexReasoningGuardBackoffError(null);
+                            }}
+                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS)}
+                            className={cn(
+                              "mt-3 font-mono text-xs",
+                              codexReasoningGuardBackoffError &&
+                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                            )}
+                            disabled={reasoningGuardControlsDisabled}
+                          />
+                        </label>
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">等待毫秒数</span>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={MAX_CODEX_REASONING_GUARD_BACKOFF_MS}
+                            step={100}
+                            value={codexReasoningGuardBackoffMsText}
+                            onChange={(e) => {
+                              setCodexReasoningGuardBackoffMsText(e.currentTarget.value);
+                              setCodexReasoningGuardBackoffError(null);
+                            }}
+                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS)}
+                            className={cn(
+                              "mt-3 font-mono text-xs",
+                              codexReasoningGuardBackoffError &&
+                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                            )}
+                            disabled={reasoningGuardControlsDisabled}
+                          />
+                        </label>
+                      </div>
+                      <div
+                        className={cn(
+                          "mt-2 text-[11px] leading-relaxed",
+                          codexReasoningGuardBackoffError
+                            ? "text-rose-600 dark:text-rose-400"
+                            : "text-muted-foreground"
+                        )}
+                      >
+                        {codexReasoningGuardBackoffError ??
+                          `默认第 ${DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS} 次命中开始，每次继续请求前等待 ${DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS}ms。`}
                       </div>
                     </div>
 

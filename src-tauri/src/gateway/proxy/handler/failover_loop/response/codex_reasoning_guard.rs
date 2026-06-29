@@ -6,6 +6,7 @@ use crate::gateway::response_fixer;
 use crate::settings::{CodexReasoningGuardCompareMode, CodexReasoningGuardModelRule};
 use axum::http::StatusCode;
 use std::sync::{Arc, Mutex};
+use std::time::Duration;
 
 pub(super) const CODEX_REASONING_GUARD_ERROR_CODE: &str = "GW_CODEX_REASONING_GUARD";
 pub(super) const CODEX_REASONING_GUARD_REASON_CODE: &str = "codex_reasoning_guard";
@@ -158,6 +159,7 @@ pub(super) fn push_special_setting(
     provider_name: &str,
     retry_index: u32,
     matched: &CodexReasoningGuardMatch,
+    backoff: CodexReasoningGuardBackoffDecision,
 ) {
     response_fixer::push_special_setting(
         special_settings,
@@ -179,8 +181,56 @@ pub(super) fn push_special_setting(
             "retryAttemptNumberNext": retry_index.saturating_add(1),
             "displayStatus": StatusCode::BAD_GATEWAY.as_u16(),
             "action": "retry_same_provider_no_circuit",
+            "backoffApplied": backoff.applied,
+            "backoffAfterHits": backoff.after_hits,
+            "backoffMs": backoff.ms,
+            "guardHitNumber": backoff.hit_number,
         }),
     );
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CodexReasoningGuardBackoffDecision {
+    pub(super) applied: bool,
+    pub(super) after_hits: u32,
+    pub(super) ms: u32,
+    pub(super) hit_number: u32,
+}
+
+impl CodexReasoningGuardBackoffDecision {
+    fn disabled(hit_number: u32, after_hits: u32) -> Self {
+        Self {
+            applied: false,
+            after_hits,
+            ms: 0,
+            hit_number,
+        }
+    }
+}
+
+pub(super) fn backoff_decision(
+    current_hits: u32,
+    backoff_after_hits: u32,
+    backoff_ms: u32,
+) -> CodexReasoningGuardBackoffDecision {
+    let hit_number = current_hits.saturating_add(1);
+    if backoff_after_hits == 0 || backoff_ms == 0 || hit_number < backoff_after_hits {
+        return CodexReasoningGuardBackoffDecision::disabled(hit_number, backoff_after_hits);
+    }
+
+    CodexReasoningGuardBackoffDecision {
+        applied: true,
+        after_hits: backoff_after_hits,
+        ms: backoff_ms,
+        hit_number,
+    }
+}
+
+pub(super) async fn apply_backoff_if_needed(decision: CodexReasoningGuardBackoffDecision) {
+    if !decision.applied {
+        return;
+    }
+    tokio::time::sleep(Duration::from_millis(decision.ms as u64)).await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -257,6 +307,43 @@ mod tests {
             matched.rule_source,
             CODEX_REASONING_GUARD_RULE_SOURCE_GLOBAL_DEFAULT
         );
+    }
+
+    #[test]
+    fn backoff_decision_applies_at_threshold_and_afterward() {
+        assert_eq!(
+            backoff_decision(3, 5, 1_000),
+            CodexReasoningGuardBackoffDecision {
+                applied: false,
+                after_hits: 5,
+                ms: 0,
+                hit_number: 4,
+            }
+        );
+        assert_eq!(
+            backoff_decision(4, 5, 1_000),
+            CodexReasoningGuardBackoffDecision {
+                applied: true,
+                after_hits: 5,
+                ms: 1_000,
+                hit_number: 5,
+            }
+        );
+        assert_eq!(
+            backoff_decision(5, 5, 1_000),
+            CodexReasoningGuardBackoffDecision {
+                applied: true,
+                after_hits: 5,
+                ms: 1_000,
+                hit_number: 6,
+            }
+        );
+    }
+
+    #[test]
+    fn backoff_decision_supports_zero_as_disabled() {
+        assert!(!backoff_decision(9, 0, 1_000).applied);
+        assert!(!backoff_decision(9, 5, 0).applied);
     }
 
     #[test]

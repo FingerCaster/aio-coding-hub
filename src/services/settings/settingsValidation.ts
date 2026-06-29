@@ -18,6 +18,11 @@ export const MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN = 32;
 export const MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN = 32;
 export const MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN = 128;
 export const MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE = 1_000_000_000;
+export const DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS = [516, 1034, 1552] as const;
+export const DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS = 5;
+export const DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS = 1_000;
+export const MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS = 100;
+export const MAX_CODEX_REASONING_GUARD_BACKOFF_MS = 60_000;
 export const MIN_PREFERRED_PORT = 1024;
 export const MAX_PREFERRED_PORT = 65535;
 export const MIN_LOG_RETENTION_DAYS = 1;
@@ -380,6 +385,8 @@ export type SettingsSetValidationInput = {
   codexReasoningGuardReasoningEquals?: number[] | null;
   codexReasoningGuardCompareMode?: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardModelRules?: CodexReasoningGuardModelRule[] | null;
+  codexReasoningGuardBackoffAfterHits?: number | null;
+  codexReasoningGuardBackoffMs?: number | null;
 };
 
 export function validateSettingsSetInput(input: SettingsSetValidationInput): string | null {
@@ -528,6 +535,24 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       input.codexReasoningGuardCompareMode !== "less_than_or_equal"
     ) {
       return "Codex 降智拦截比较模式仅支持 equals 或 less_than_or_equal";
+    }
+  }
+
+  for (const [fieldLabel, value, max] of [
+    [
+      "Codex 降智拦截等待触发次数",
+      input.codexReasoningGuardBackoffAfterHits,
+      MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
+    ],
+    [
+      "Codex 降智拦截等待时间",
+      input.codexReasoningGuardBackoffMs,
+      MAX_CODEX_REASONING_GUARD_BACKOFF_MS,
+    ],
+  ] as const) {
+    if (value == null) continue;
+    if (!Number.isSafeInteger(value) || value < 0 || value > max) {
+      return `${fieldLabel}必须为 0-${max} 的整数`;
     }
   }
 

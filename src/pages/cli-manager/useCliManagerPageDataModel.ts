@@ -478,6 +478,8 @@ export function useCliManagerPageDataModel() {
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
+        | "codex_reasoning_guard_backoff_after_hits"
+        | "codex_reasoning_guard_backoff_ms"
       >
     >
   ) {

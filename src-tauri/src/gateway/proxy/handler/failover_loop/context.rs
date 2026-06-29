@@ -42,6 +42,8 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_reasoning_equals: &'a [i64],
     pub(super) codex_reasoning_guard_model_rules:
         &'a [crate::settings::CodexReasoningGuardModelRule],
+    pub(super) codex_reasoning_guard_backoff_after_hits: u32,
+    pub(super) codex_reasoning_guard_backoff_ms: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -75,6 +77,8 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_reasoning_equals: &'a [i64],
     pub(super) codex_reasoning_guard_model_rules:
         &'a [crate::settings::CodexReasoningGuardModelRule],
+    pub(super) codex_reasoning_guard_backoff_after_hits: u32,
+    pub(super) codex_reasoning_guard_backoff_ms: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -117,6 +121,8 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             codex_reasoning_guard_compare_mode: args.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: args.codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules: args.codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_backoff_after_hits: args.codex_reasoning_guard_backoff_after_hits,
+            codex_reasoning_guard_backoff_ms: args.codex_reasoning_guard_backoff_ms,
             enable_response_fixer: args.enable_response_fixer,
             response_fixer_stream_config: args.response_fixer_stream_config,
             response_fixer_non_stream_config: args.response_fixer_non_stream_config,
@@ -157,6 +163,8 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules:
         Vec<crate::settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_backoff_after_hits: u32,
+    pub(super) codex_reasoning_guard_backoff_ms: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -192,6 +200,8 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
                 .codex_reasoning_guard_reasoning_equals
                 .to_vec(),
             codex_reasoning_guard_model_rules: ctx.codex_reasoning_guard_model_rules.to_vec(),
+            codex_reasoning_guard_backoff_after_hits: ctx.codex_reasoning_guard_backoff_after_hits,
+            codex_reasoning_guard_backoff_ms: ctx.codex_reasoning_guard_backoff_ms,
             enable_response_fixer: ctx.enable_response_fixer,
             response_fixer_stream_config: ctx.response_fixer_stream_config,
             response_fixer_non_stream_config: ctx.response_fixer_non_stream_config,

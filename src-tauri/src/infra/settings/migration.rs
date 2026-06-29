@@ -843,9 +843,46 @@ fn migrate_add_upstream_retry_policy(
     sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy)
 }
 
+fn migrate_add_codex_reasoning_guard_backoff(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_BACKOFF,
+    ) {
+        return false;
+    }
+
+    settings.codex_reasoning_guard_backoff_after_hits =
+        DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS;
+    settings.codex_reasoning_guard_backoff_ms = DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS;
+    true
+}
+
+fn migrate_update_codex_reasoning_guard_defaults(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_UPDATE_CODEX_REASONING_GUARD_DEFAULTS,
+    ) {
+        return false;
+    }
+
+    if settings.codex_reasoning_guard_reasoning_equals == [516] {
+        settings.codex_reasoning_guard_reasoning_equals =
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec();
+    }
+    true
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 33] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 35] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -879,6 +916,8 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 33] = [
     migrate_add_codex_reasoning_guard_model_rules,
     migrate_add_codex_provider_test_model,
     migrate_add_upstream_retry_policy,
+    migrate_add_codex_reasoning_guard_backoff,
+    migrate_update_codex_reasoning_guard_defaults,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1369,7 +1408,10 @@ mod tests {
         assert!(migrate_add_codex_reasoning_guard(&mut s, true));
         assert_eq!(s.schema_version, SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD);
         assert!(s.codex_reasoning_guard_enabled);
-        assert_eq!(s.codex_reasoning_guard_reasoning_equals, vec![516]);
+        assert_eq!(
+            s.codex_reasoning_guard_reasoning_equals,
+            vec![516, 1034, 1552]
+        );
     }
 
     #[test]
@@ -1388,6 +1430,52 @@ mod tests {
             s.codex_reasoning_guard_compare_mode,
             CodexReasoningGuardCompareMode::Equals
         );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_backoff_bumps_schema_version() {
+        let mut s = AppSettings {
+            schema_version: 39,
+            codex_reasoning_guard_backoff_after_hits: 0,
+            codex_reasoning_guard_backoff_ms: 0,
+            ..Default::default()
+        };
+        assert!(migrate_add_codex_reasoning_guard_backoff(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_BACKOFF
+        );
+        assert_eq!(s.codex_reasoning_guard_backoff_after_hits, 5);
+        assert_eq!(s.codex_reasoning_guard_backoff_ms, 1_000);
+    }
+
+    #[test]
+    fn migrate_update_codex_reasoning_guard_defaults_updates_only_old_default() {
+        let mut s = AppSettings {
+            schema_version: 40,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            ..Default::default()
+        };
+        assert!(migrate_update_codex_reasoning_guard_defaults(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_UPDATE_CODEX_REASONING_GUARD_DEFAULTS
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_reasoning_equals,
+            vec![516, 1034, 1552]
+        );
+
+        let mut custom = AppSettings {
+            schema_version: 40,
+            codex_reasoning_guard_reasoning_equals: vec![777],
+            ..Default::default()
+        };
+        assert!(migrate_update_codex_reasoning_guard_defaults(
+            &mut custom,
+            true
+        ));
+        assert_eq!(custom.codex_reasoning_guard_reasoning_equals, vec![777]);
     }
 
     #[test]

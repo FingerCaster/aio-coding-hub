@@ -172,6 +172,8 @@ pub struct AppSettings {
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
     #[serde(default)]
     pub codex_reasoning_guard_model_rules: Vec<CodexReasoningGuardModelRule>,
+    pub codex_reasoning_guard_backoff_after_hits: u32,
+    pub codex_reasoning_guard_backoff_ms: u32,
     pub auto_start: bool,
     // Start with window hidden when auto-starting (silent startup).
     pub start_minimized: bool,
@@ -262,6 +264,9 @@ impl Default for AppSettings {
             codex_reasoning_guard_reasoning_equals: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
                 .to_vec(),
             codex_reasoning_guard_model_rules: Vec::new(),
+            codex_reasoning_guard_backoff_after_hits:
+                DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
+            codex_reasoning_guard_backoff_ms: DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS,
             auto_start: false,
             start_minimized: false,
             tray_enabled: true,

@@ -399,7 +399,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情" }));
     const dialog = screen.getByRole("dialog");
-    const input = within(dialog).getAllByDisplayValue("516")[0] as HTMLInputElement;
+    const input = within(dialog).getByDisplayValue("516, 1034, 1552") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "516, 1024" } });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
@@ -407,6 +407,54 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       codex_reasoning_guard_compare_mode: "equals",
       codex_reasoning_guard_reasoning_equals: [516, 1024],
       codex_reasoning_guard_model_rules: [],
+      codex_reasoning_guard_backoff_after_hits: 5,
+      codex_reasoning_guard_backoff_ms: 1000,
+    });
+  });
+
+  it("saves Codex reasoning guard backoff settings from detail dialog", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("达到命中次数"), {
+      target: { value: "7" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("等待毫秒数"), {
+      target: { value: "1500" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_compare_mode: "equals",
+      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
+      codex_reasoning_guard_model_rules: [],
+      codex_reasoning_guard_backoff_after_hits: 7,
+      codex_reasoning_guard_backoff_ms: 1500,
     });
   });
 
@@ -445,14 +493,16 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     fireEvent.change(within(dialog).getByPlaceholderText("例如：gpt-5-codex"), {
       target: { value: "gpt-5-mini-codex" },
     });
-    fireEvent.change(within(dialog).getAllByDisplayValue("516")[1] as HTMLInputElement, {
+    fireEvent.change(within(dialog).getByDisplayValue("516") as HTMLInputElement, {
       target: { value: "256" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_compare_mode: "less_than_or_equal",
-      codex_reasoning_guard_reasoning_equals: [516],
+      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
+      codex_reasoning_guard_backoff_after_hits: 5,
+      codex_reasoning_guard_backoff_ms: 1000,
       codex_reasoning_guard_model_rules: [
         {
           requested_model: "gpt-5-mini-codex",
@@ -512,7 +562,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_compare_mode: "equals",
-      codex_reasoning_guard_reasoning_equals: [516],
+      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
+      codex_reasoning_guard_backoff_after_hits: 5,
+      codex_reasoning_guard_backoff_ms: 1000,
       codex_reasoning_guard_model_rules: [
         {
           requested_model: "gpt-5-mini-codex",
@@ -552,7 +604,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "详情" }));
     const dialog = screen.getByRole("dialog");
-    const input = within(dialog).getAllByDisplayValue("516")[0] as HTMLInputElement;
+    const input = within(dialog).getByDisplayValue("516, 1034, 1552") as HTMLInputElement;
     fireEvent.change(input, { target: { value: "516, nope" } });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 

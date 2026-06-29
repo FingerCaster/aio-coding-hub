@@ -87,6 +87,8 @@ pub(crate) struct SettingsUpdate {
     pub codex_reasoning_guard_compare_mode: Option<settings::CodexReasoningGuardCompareMode>,
     pub codex_reasoning_guard_reasoning_equals: Option<Vec<i64>>,
     pub codex_reasoning_guard_model_rules: Option<Vec<settings::CodexReasoningGuardModelRule>>,
+    pub codex_reasoning_guard_backoff_after_hits: Option<u32>,
+    pub codex_reasoning_guard_backoff_ms: Option<u32>,
     #[serde(rename = "cx2CcFallbackModelOpus")]
     #[specta(rename = "cx2CcFallbackModelOpus")]
     pub cx2cc_fallback_model_opus: Option<String>,
@@ -156,6 +158,8 @@ pub(crate) struct SettingsView {
     pub codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
+    pub codex_reasoning_guard_backoff_after_hits: u32,
+    pub codex_reasoning_guard_backoff_ms: u32,
     pub auto_start: bool,
     pub start_minimized: bool,
     pub tray_enabled: bool,
@@ -283,6 +287,9 @@ impl From<&settings::AppSettings> for SettingsView {
                 .codex_reasoning_guard_reasoning_equals
                 .clone(),
             codex_reasoning_guard_model_rules: value.codex_reasoning_guard_model_rules.clone(),
+            codex_reasoning_guard_backoff_after_hits: value
+                .codex_reasoning_guard_backoff_after_hits,
+            codex_reasoning_guard_backoff_ms: value.codex_reasoning_guard_backoff_ms,
             auto_start: value.auto_start,
             start_minimized: value.start_minimized,
             tray_enabled: value.tray_enabled,
@@ -603,6 +610,8 @@ pub(crate) async fn settings_set_impl(
         codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals,
         codex_reasoning_guard_model_rules,
+        codex_reasoning_guard_backoff_after_hits,
+        codex_reasoning_guard_backoff_ms,
         cx2cc_fallback_model_opus,
         cx2cc_fallback_model_sonnet,
         cx2cc_fallback_model_haiku,
@@ -680,6 +689,11 @@ pub(crate) async fn settings_set_impl(
                 .unwrap_or(previous.codex_reasoning_guard_reasoning_equals.clone());
             let codex_reasoning_guard_model_rules = codex_reasoning_guard_model_rules
                 .unwrap_or(previous.codex_reasoning_guard_model_rules.clone());
+            let codex_reasoning_guard_backoff_after_hits =
+                codex_reasoning_guard_backoff_after_hits
+                    .unwrap_or(previous.codex_reasoning_guard_backoff_after_hits);
+            let codex_reasoning_guard_backoff_ms = codex_reasoning_guard_backoff_ms
+                .unwrap_or(previous.codex_reasoning_guard_backoff_ms);
             let cx2cc_fallback_model_opus = cx2cc_fallback_model_opus
                 .unwrap_or(previous.cx2cc_fallback_model_opus.clone())
                 .trim()
@@ -810,6 +824,8 @@ pub(crate) async fn settings_set_impl(
                 codex_reasoning_guard_compare_mode,
                 codex_reasoning_guard_reasoning_equals,
                 codex_reasoning_guard_model_rules,
+                codex_reasoning_guard_backoff_after_hits,
+                codex_reasoning_guard_backoff_ms,
                 auto_start: next_auto_start,
                 start_minimized,
                 tray_enabled,

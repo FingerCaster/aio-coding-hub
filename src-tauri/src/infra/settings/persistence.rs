@@ -357,6 +357,20 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         "codex_reasoning_guard_reasoning_equals",
         &settings.codex_reasoning_guard_reasoning_equals,
     )?;
+    if settings.codex_reasoning_guard_backoff_after_hits
+        > MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_backoff_after_hits must be <= {MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS}"
+        )
+        .into());
+    }
+    if settings.codex_reasoning_guard_backoff_ms > MAX_CODEX_REASONING_GUARD_BACKOFF_MS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_backoff_ms must be <= {MAX_CODEX_REASONING_GUARD_BACKOFF_MS}"
+        )
+        .into());
+    }
     match settings.codex_reasoning_guard_compare_mode {
         CodexReasoningGuardCompareMode::Equals
         | CodexReasoningGuardCompareMode::LessThanOrEqual => {}

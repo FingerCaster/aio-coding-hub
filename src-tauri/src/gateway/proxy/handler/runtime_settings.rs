@@ -23,6 +23,8 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_backoff_after_hits: u32,
+    pub(super) codex_reasoning_guard_backoff_ms: u32,
     pub(super) enable_claude_metadata_user_id_injection: bool,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
@@ -130,6 +132,12 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_model_rules: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_model_rules.clone())
             .unwrap_or_default(),
+        codex_reasoning_guard_backoff_after_hits: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_backoff_after_hits)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS),
+        codex_reasoning_guard_backoff_ms: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_backoff_ms)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS),
         enable_claude_metadata_user_id_injection: settings_cfg
             .map(|cfg| cfg.enable_claude_metadata_user_id_injection)
             .unwrap_or(true)

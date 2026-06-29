@@ -928,12 +928,18 @@ where
                 common.codex_reasoning_guard_reasoning_equals.as_slice(),
                 common.codex_reasoning_guard_model_rules.as_slice(),
             ) {
+                let backoff_decision = codex_reasoning_guard::backoff_decision(
+                    retry_state.codex_reasoning_guard_hits,
+                    common.codex_reasoning_guard_backoff_after_hits,
+                    common.codex_reasoning_guard_backoff_ms,
+                );
                 codex_reasoning_guard::push_special_setting(
                     &common.special_settings,
                     provider_id,
                     provider_ctx_owned.provider_name_base.as_str(),
                     retry_index,
                     &matched,
+                    backoff_decision,
                 );
                 codex_reasoning_guard::record_guard_retry_attempt(
                     attempts,
@@ -967,6 +973,7 @@ where
                 retry_state.codex_reasoning_guard_hits =
                     retry_state.codex_reasoning_guard_hits.saturating_add(1);
                 retry_state.allow_next_retry_beyond_max_attempts = true;
+                codex_reasoning_guard::apply_backoff_if_needed(backoff_decision).await;
                 return LoopControl::ContinueRetry;
             }
         }
