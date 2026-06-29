@@ -2,6 +2,7 @@
 
 use crate::app::plugin_service;
 use crate::app::plugins::contribution_registry::ActiveContributionSnapshot;
+use crate::app::plugins::extension_host_registry::ExtensionHostRuntimeState;
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::domain::plugins::{
     PluginAuditLog, PluginDetail, PluginExtensionExecutionReport, PluginHookExecutionReport,
@@ -296,10 +297,11 @@ pub(crate) async fn plugin_install_from_file(
 pub(crate) async fn plugin_update_from_file(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
+    registry_state: tauri::State<'_, ExtensionHostRuntimeState>,
     input: PluginInstallFromFileInput,
 ) -> Result<PluginDetail, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
-    blocking::run("plugin_update_from_file", move || {
+    let detail = blocking::run("plugin_update_from_file", move || {
         let path = PathBuf::from(&input.file_path);
         let cache_dir = crate::app_paths::plugins_cache_dir(&app)?;
         let installed_dir = crate::app_paths::plugins_installed_dir(&app)?;
@@ -315,7 +317,9 @@ pub(crate) async fn plugin_update_from_file(
         .and_then(|detail| ensure_plugin_runtime_dirs(&app, detail))
     })
     .await
-    .map_err(Into::into)
+    .map_err(String::from)?;
+    dispose_plugin_extension_host_after_lifecycle_change(&registry_state, &detail).await;
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -323,15 +327,18 @@ pub(crate) async fn plugin_update_from_file(
 pub(crate) async fn plugin_rollback(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
+    registry_state: tauri::State<'_, ExtensionHostRuntimeState>,
     input: PluginRollbackInput,
 ) -> Result<PluginDetail, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
-    blocking::run("plugin_rollback", move || {
+    let detail = blocking::run("plugin_rollback", move || {
         plugin_service::rollback_plugin_to_version(&db, &input.plugin_id, &input.version)
             .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
     })
     .await
-    .map_err(Into::into)
+    .map_err(String::from)?;
+    dispose_plugin_extension_host_after_lifecycle_change(&registry_state, &detail).await;
+    Ok(detail)
 }
 
 fn market_index_trusted_public_key(
@@ -470,10 +477,11 @@ pub(crate) async fn plugin_install_official(
 pub(crate) async fn plugin_quarantine_revoked(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
+    registry_state: tauri::State<'_, ExtensionHostRuntimeState>,
     input: PluginGetInput,
 ) -> Result<PluginDetail, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
-    blocking::run("plugin_quarantine_revoked", move || {
+    let detail = blocking::run("plugin_quarantine_revoked", move || {
         plugin_service::quarantine_revoked_plugin(
             &db,
             &input.plugin_id,
@@ -482,7 +490,9 @@ pub(crate) async fn plugin_quarantine_revoked(
         .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
     })
     .await
-    .map_err(Into::into)
+    .map_err(String::from)?;
+    dispose_plugin_extension_host_after_lifecycle_change(&registry_state, &detail).await;
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -531,20 +541,32 @@ fn refresh_running_gateway_plugins(
     Ok(detail)
 }
 
+async fn dispose_plugin_extension_host_after_lifecycle_change(
+    registry_state: &ExtensionHostRuntimeState,
+    detail: &PluginDetail,
+) {
+    registry_state
+        .dispose_plugin_if_initialized(&detail.summary.plugin_id)
+        .await;
+}
+
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn plugin_disable(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
+    registry_state: tauri::State<'_, ExtensionHostRuntimeState>,
     input: PluginGetInput,
 ) -> Result<PluginDetail, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
-    blocking::run("plugin_disable", move || {
+    let detail = blocking::run("plugin_disable", move || {
         plugin_service::disable_plugin(&db, &input.plugin_id)
             .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
     })
     .await
-    .map_err(Into::into)
+    .map_err(String::from)?;
+    dispose_plugin_extension_host_after_lifecycle_change(&registry_state, &detail).await;
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -552,15 +574,18 @@ pub(crate) async fn plugin_disable(
 pub(crate) async fn plugin_uninstall(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
+    registry_state: tauri::State<'_, ExtensionHostRuntimeState>,
     input: PluginGetInput,
 ) -> Result<PluginDetail, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
-    blocking::run("plugin_uninstall", move || {
+    let detail = blocking::run("plugin_uninstall", move || {
         plugin_service::uninstall_plugin(&db, &input.plugin_id)
             .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
     })
     .await
-    .map_err(Into::into)
+    .map_err(String::from)?;
+    dispose_plugin_extension_host_after_lifecycle_change(&registry_state, &detail).await;
+    Ok(detail)
 }
 
 #[tauri::command]
@@ -880,5 +905,46 @@ INSERT INTO plugin_market_sources(
         assert!(policy.expected_checksum.is_none());
         assert!(policy.signature.is_none());
         assert!(policy.public_key.is_none());
+    }
+
+    #[test]
+    fn plugin_lifecycle_commands_dispose_extension_host_instances_after_success() {
+        let source = std::fs::read_to_string(file!()).expect("read plugin commands source");
+        for function_name in [
+            "plugin_disable",
+            "plugin_uninstall",
+            "plugin_update_from_file",
+            "plugin_rollback",
+            "plugin_quarantine_revoked",
+        ] {
+            let body = command_body(&source, function_name);
+            assert!(
+                body.contains("registry_state: tauri::State<'_, ExtensionHostRuntimeState>"),
+                "{function_name} should receive ExtensionHostRuntimeState"
+            );
+            assert!(
+                body.contains("dispose_plugin_extension_host_after_lifecycle_change"),
+                "{function_name} should invoke extension host disposal after lifecycle success"
+            );
+        }
+        let helper = source
+            .split("async fn dispose_plugin_extension_host_after_lifecycle_change")
+            .nth(1)
+            .expect("dispose helper should exist");
+        assert!(
+            helper.contains("dispose_plugin_if_initialized"),
+            "dispose helper should no-op unless the extension host registry is initialized"
+        );
+    }
+
+    fn command_body<'a>(source: &'a str, function_name: &str) -> &'a str {
+        let start = source
+            .find(&format!("pub(crate) async fn {function_name}"))
+            .unwrap_or_else(|| panic!("missing {function_name}"));
+        let rest = &source[start..];
+        let next = rest
+            .find("\n#[tauri::command]")
+            .unwrap_or_else(|| rest.len());
+        &rest[..next]
     }
 }

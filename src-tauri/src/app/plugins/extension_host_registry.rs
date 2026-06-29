@@ -331,6 +331,18 @@ impl ExtensionHostRuntimeState {
             registry.dispose_all().await;
         }
     }
+
+    pub(crate) async fn dispose_plugin_if_initialized(&self, plugin_id: &str) {
+        let registry = { self.registry.lock().await.clone() };
+        if let Some(registry) = registry {
+            registry.dispose_plugin(plugin_id).await;
+        }
+    }
+
+    #[cfg(test)]
+    async fn set_registry_for_tests(&self, registry: Arc<ExtensionHostInstanceRegistry>) {
+        *self.registry.lock().await = Some(registry);
+    }
 }
 
 async fn dispose_same_plugin_with_different_key(
@@ -756,5 +768,41 @@ mod tests {
 
         assert_eq!(factory.disposed_instance_ids(), vec![2]);
         assert_eq!(registry.instance_count().await, 2);
+    }
+
+    #[tokio::test]
+    async fn runtime_state_dispose_plugin_if_initialized_is_noop_before_registry_init() {
+        let state = ExtensionHostRuntimeState::default();
+
+        state.dispose_plugin_if_initialized("acme.echo").await;
+    }
+
+    #[tokio::test]
+    async fn runtime_state_dispose_plugin_if_initialized_disposes_existing_registry_instance() {
+        let state = ExtensionHostRuntimeState::default();
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = Arc::new(ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        ));
+        state.set_registry_for_tests(registry.clone()).await;
+
+        registry
+            .execute_command_with_now(
+                plugin_detail("acme.echo", "dispose"),
+                "acme.echo",
+                json!({}),
+                Instant::now(),
+            )
+            .await
+            .expect("execute command");
+
+        state.dispose_plugin_if_initialized("acme.echo").await;
+
+        assert_eq!(factory.disposed_instance_ids(), vec![1]);
+        assert_eq!(registry.instance_count().await, 0);
     }
 }
