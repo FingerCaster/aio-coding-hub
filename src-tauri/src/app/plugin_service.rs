@@ -616,7 +616,10 @@ fn compare_prerelease_identifiers(
     left.len().cmp(&right.len())
 }
 
-fn runtime_lifecycle_summary(manifest: &PluginManifest) -> PluginRuntimeLifecycleSummary {
+fn runtime_lifecycle_summary(
+    manifest: &PluginManifest,
+    source: PluginInstallSource,
+) -> PluginRuntimeLifecycleSummary {
     match &manifest.runtime {
         PluginRuntime::ExtensionHost { .. } => PluginRuntimeLifecycleSummary {
             kind: "extensionHost".to_string(),
@@ -624,7 +627,11 @@ fn runtime_lifecycle_summary(manifest: &PluginManifest) -> PluginRuntimeLifecycl
             supported: true,
             blocking_reasons: Vec::new(),
         },
-        PluginRuntime::Native { engine } if manifest.id == OFFICIAL_PRIVACY_FILTER_ID => {
+        PluginRuntime::Native { engine }
+            if source == PluginInstallSource::Official
+                && manifest.id == OFFICIAL_PRIVACY_FILTER_ID
+                && engine == "privacyFilter" =>
+        {
             PluginRuntimeLifecycleSummary {
                 kind: "native".to_string(),
                 label: format!("Native ({engine})"),
@@ -859,7 +866,7 @@ fn build_install_preview(
     let compatibility = compatibility_summary(manifest, host_version);
     let mut blocking_reasons = compatibility.blocking_reasons.clone();
     let mut warnings = Vec::new();
-    let runtime = runtime_lifecycle_summary(manifest);
+    let runtime = runtime_lifecycle_summary(manifest, source);
     blocking_reasons.extend(
         runtime
             .blocking_reasons
@@ -1011,8 +1018,8 @@ fn build_update_diff(
         ));
     }
 
-    let current_runtime = runtime_lifecycle_summary(&current.manifest);
-    let next_runtime = runtime_lifecycle_summary(manifest);
+    let current_runtime = runtime_lifecycle_summary(&current.manifest, current.install_source);
+    let next_runtime = runtime_lifecycle_summary(manifest, PluginInstallSource::Local);
     blocking_reasons.extend(
         next_runtime
             .blocking_reasons
@@ -4492,6 +4499,59 @@ INSERT INTO plugins (
 
         assert!(err.to_string().starts_with("PLUGIN_RESERVED_OFFICIAL_ID:"));
         assert!(repository::get_plugin(&db, "official.privacy-filter").is_err());
+    }
+
+    #[test]
+    fn plugin_local_install_preview_marks_fake_official_native_runtime_unsupported() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let package_path = dir
+            .path()
+            .join("fake-official-privacy-filter-preview.aio-plugin");
+        let mut manifest = local_package_manifest("official.privacy-filter", "1.0.0");
+        manifest["runtime"] = serde_json::json!({
+            "kind": "native",
+            "engine": "privacyFilter"
+        });
+        manifest["hooks"] = serde_json::json!([
+            {
+                "name": "gateway.request.afterBodyRead",
+                "priority": 10,
+                "failurePolicy": "fail-open"
+            },
+            {
+                "name": "log.beforePersist",
+                "priority": 20,
+                "failurePolicy": "fail-closed"
+            }
+        ]);
+        manifest["permissions"] =
+            serde_json::json!(["request.body.read", "request.body.write", "log.redact"]);
+        write_local_package(&package_path, manifest);
+
+        let preview = preview_plugin_from_local_package_with_policy(
+            &db,
+            &package_path,
+            &dir.path().join("plugins/cache"),
+            env!("CARGO_PKG_VERSION"),
+            LocalPackageInstallPolicy {
+                allow_unsigned: true,
+                developer_mode: true,
+                ..LocalPackageInstallPolicy::default()
+            },
+        )
+        .unwrap();
+
+        assert!(!preview.runtime.supported);
+        assert!(preview
+            .runtime
+            .blocking_reasons
+            .iter()
+            .any(|notice| notice.code == "PLUGIN_NATIVE_RUNTIME_UNSUPPORTED"));
+        assert!(preview
+            .blocking_reasons
+            .iter()
+            .any(|notice| notice.code == "PLUGIN_RESERVED_OFFICIAL_ID"));
     }
 
     #[test]
