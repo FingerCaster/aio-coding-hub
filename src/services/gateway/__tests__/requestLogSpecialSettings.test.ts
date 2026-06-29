@@ -111,6 +111,10 @@ describe("services/gateway/requestLogSpecialSettings", () => {
             compareMode: "equals",
             matchedRuleValue: 516,
             reasoningTokens: 516,
+            guardRetryPhase: "immediate",
+            actionTaken: "retry_same_provider_no_circuit",
+            guardBudgetRemaining: 9,
+            guardBudgetTotal: 10,
           },
           {
             type: "codex_reasoning_guard",
@@ -118,6 +122,12 @@ describe("services/gateway/requestLogSpecialSettings", () => {
             compareModeSymbol: "<=",
             matchedRuleValue: 516,
             reasoningTokens: 300,
+            guardRetryPhase: "delayed",
+            actionTaken: "retry_same_provider_delayed_no_circuit",
+            guardExhaustedAction: "return_error",
+            backoffMs: 1000,
+            guardBudgetRemaining: 4,
+            guardBudgetTotal: 10,
           },
         ])
       )
@@ -125,6 +135,12 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       count: 2,
       latestRuleLabel: "<= 516",
       latestReasoningTokens: 300,
+      latestPhase: "delayed",
+      latestActionTaken: "retry_same_provider_delayed_no_circuit",
+      latestExhaustedAction: "return_error",
+      latestDelayMs: 1000,
+      latestBudgetRemaining: 4,
+      latestBudgetTotal: 10,
     });
   });
 

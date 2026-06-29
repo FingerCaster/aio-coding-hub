@@ -1,5 +1,6 @@
 import type {
   CodexReasoningGuardCompareMode,
+  CodexReasoningGuardExhaustedAction,
   CodexReasoningGuardModelRule,
   GatewayListenMode,
   SensitiveStringUpdate,
@@ -21,8 +22,16 @@ export const MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE = 1_000_000_000;
 export const DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS = [516, 1034, 1552] as const;
 export const DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS = 5;
 export const DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS = 1_000;
+export const DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET = 5;
+export const DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET = 5;
+export const DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS = 1_000;
+export const DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION: CodexReasoningGuardExhaustedAction =
+  "return_error";
 export const MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS = 100;
 export const MAX_CODEX_REASONING_GUARD_BACKOFF_MS = 60_000;
+export const MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET = 100;
+export const MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET = 100;
+export const MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS = 60_000;
 export const MIN_PREFERRED_PORT = 1024;
 export const MAX_PREFERRED_PORT = 65535;
 export const MIN_LOG_RETENTION_DAYS = 1;
@@ -385,6 +394,10 @@ export type SettingsSetValidationInput = {
   codexReasoningGuardReasoningEquals?: number[] | null;
   codexReasoningGuardCompareMode?: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardModelRules?: CodexReasoningGuardModelRule[] | null;
+  codexReasoningGuardImmediateRetryBudget?: number | null;
+  codexReasoningGuardDelayedRetryBudget?: number | null;
+  codexReasoningGuardDelayedRetryMs?: number | null;
+  codexReasoningGuardExhaustedAction?: CodexReasoningGuardExhaustedAction | null;
   codexReasoningGuardBackoffAfterHits?: number | null;
   codexReasoningGuardBackoffMs?: number | null;
 };
@@ -538,7 +551,31 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
     }
   }
 
+  if (input.codexReasoningGuardExhaustedAction != null) {
+    if (
+      input.codexReasoningGuardExhaustedAction !== "return_error" &&
+      input.codexReasoningGuardExhaustedAction !== "switch_provider"
+    ) {
+      return "Codex 降智拦截预算耗尽动作仅支持 return_error 或 switch_provider";
+    }
+  }
+
   for (const [fieldLabel, value, max] of [
+    [
+      "Codex 降智拦截立即重试预算",
+      input.codexReasoningGuardImmediateRetryBudget,
+      MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
+    ],
+    [
+      "Codex 降智拦截等待重试预算",
+      input.codexReasoningGuardDelayedRetryBudget,
+      MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
+    ],
+    [
+      "Codex 降智拦截等待时间",
+      input.codexReasoningGuardDelayedRetryMs,
+      MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
+    ],
     [
       "Codex 降智拦截等待触发次数",
       input.codexReasoningGuardBackoffAfterHits,

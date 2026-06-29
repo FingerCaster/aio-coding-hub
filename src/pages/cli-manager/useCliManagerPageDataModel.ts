@@ -478,8 +478,10 @@ export function useCliManagerPageDataModel() {
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
-        | "codex_reasoning_guard_backoff_after_hits"
-        | "codex_reasoning_guard_backoff_ms"
+        | "codex_reasoning_guard_immediate_retry_budget"
+        | "codex_reasoning_guard_delayed_retry_budget"
+        | "codex_reasoning_guard_delayed_retry_ms"
+        | "codex_reasoning_guard_exhausted_action"
       >
     >
   ) {

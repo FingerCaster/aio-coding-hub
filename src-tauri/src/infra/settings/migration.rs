@@ -2,8 +2,8 @@
 
 use super::defaults::*;
 use super::types::{
-    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardModelRule,
-    UpstreamRetryPolicy,
+    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
+    CodexReasoningGuardModelRule, UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
@@ -880,9 +880,32 @@ fn migrate_update_codex_reasoning_guard_defaults(
     true
 }
 
+fn migrate_add_codex_reasoning_guard_budget(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_BUDGET,
+    ) {
+        return false;
+    }
+
+    settings.codex_reasoning_guard_immediate_retry_budget =
+        DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET;
+    settings.codex_reasoning_guard_delayed_retry_budget =
+        DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET;
+    settings.codex_reasoning_guard_delayed_retry_ms =
+        DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS;
+    settings.codex_reasoning_guard_exhausted_action =
+        CodexReasoningGuardExhaustedAction::ReturnError;
+    true
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 35] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 36] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -918,6 +941,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 35] = [
     migrate_add_upstream_retry_policy,
     migrate_add_codex_reasoning_guard_backoff,
     migrate_update_codex_reasoning_guard_defaults,
+    migrate_add_codex_reasoning_guard_budget,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1619,6 +1643,41 @@ mod tests {
         assert!(migrate_add_cli_priority_order(&mut s, true));
         assert_eq!(s.schema_version, SCHEMA_VERSION_ADD_CLI_PRIORITY_ORDER);
         assert_eq!(s.cli_priority_order, default_cli_priority_order());
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_budget_bumps_schema_and_fills_defaults() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_UPDATE_CODEX_REASONING_GUARD_DEFAULTS,
+            codex_reasoning_guard_immediate_retry_budget: 0,
+            codex_reasoning_guard_delayed_retry_budget: 0,
+            codex_reasoning_guard_delayed_retry_ms: 0,
+            codex_reasoning_guard_exhausted_action:
+                CodexReasoningGuardExhaustedAction::SwitchProvider,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_budget(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_BUDGET
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_immediate_retry_budget,
+            DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_delayed_retry_budget,
+            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_delayed_retry_ms,
+            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::ReturnError
+        );
     }
 
     #[test]

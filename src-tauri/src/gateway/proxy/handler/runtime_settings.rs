@@ -23,8 +23,10 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
-    pub(super) codex_reasoning_guard_backoff_after_hits: u32,
-    pub(super) codex_reasoning_guard_backoff_ms: u32,
+    pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
+    pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
+    pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
+    pub(super) codex_reasoning_guard_exhausted_action: settings::CodexReasoningGuardExhaustedAction,
     pub(super) enable_claude_metadata_user_id_injection: bool,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
@@ -132,12 +134,18 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_model_rules: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_model_rules.clone())
             .unwrap_or_default(),
-        codex_reasoning_guard_backoff_after_hits: settings_cfg
-            .map(|cfg| cfg.codex_reasoning_guard_backoff_after_hits)
-            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS),
-        codex_reasoning_guard_backoff_ms: settings_cfg
-            .map(|cfg| cfg.codex_reasoning_guard_backoff_ms)
-            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS),
+        codex_reasoning_guard_immediate_retry_budget: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_immediate_retry_budget)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET),
+        codex_reasoning_guard_delayed_retry_budget: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_delayed_retry_budget)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET),
+        codex_reasoning_guard_delayed_retry_ms: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_delayed_retry_ms)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS),
+        codex_reasoning_guard_exhausted_action: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_exhausted_action)
+            .unwrap_or_default(),
         enable_claude_metadata_user_id_injection: settings_cfg
             .map(|cfg| cfg.enable_claude_metadata_user_id_injection)
             .unwrap_or(true)
@@ -159,5 +167,34 @@ pub(super) fn handler_runtime_settings(
         upstream_request_timeout_non_streaming_secs: settings_cfg
             .map(|cfg| cfg.upstream_request_timeout_non_streaming_seconds)
             .unwrap_or(settings::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn codex_reasoning_guard_runtime_budget_uses_explicit_fields_only() {
+        let settings = settings::AppSettings {
+            codex_reasoning_guard_immediate_retry_budget: 2,
+            codex_reasoning_guard_delayed_retry_budget: 3,
+            codex_reasoning_guard_delayed_retry_ms: 4_000,
+            codex_reasoning_guard_exhausted_action:
+                settings::CodexReasoningGuardExhaustedAction::SwitchProvider,
+            codex_reasoning_guard_backoff_after_hits: 99,
+            codex_reasoning_guard_backoff_ms: 60_000,
+            ..Default::default()
+        };
+
+        let runtime = handler_runtime_settings(Some(&settings), false);
+
+        assert_eq!(runtime.codex_reasoning_guard_immediate_retry_budget, 2);
+        assert_eq!(runtime.codex_reasoning_guard_delayed_retry_budget, 3);
+        assert_eq!(runtime.codex_reasoning_guard_delayed_retry_ms, 4_000);
+        assert_eq!(
+            runtime.codex_reasoning_guard_exhausted_action,
+            settings::CodexReasoningGuardExhaustedAction::SwitchProvider
+        );
     }
 }

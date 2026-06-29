@@ -9,6 +9,12 @@ export type CodexReasoningGuardSummary = {
   count: number;
   latestRuleLabel: string | null;
   latestReasoningTokens: number | null;
+  latestPhase: string | null;
+  latestActionTaken: string | null;
+  latestExhaustedAction: string | null;
+  latestDelayMs: number | null;
+  latestBudgetRemaining: number | null;
+  latestBudgetTotal: number | null;
 };
 
 export type CodexReasoningEffort =
@@ -207,6 +213,12 @@ export function resolveCodexReasoningGuardSummary(
   let count = 0;
   let latestRuleLabel: string | null = null;
   let latestReasoningTokens: number | null = null;
+  let latestPhase: string | null = null;
+  let latestActionTaken: string | null = null;
+  let latestExhaustedAction: string | null = null;
+  let latestDelayMs: number | null = null;
+  let latestBudgetRemaining: number | null = null;
+  let latestBudgetTotal: number | null = null;
 
   for (const setting of settings) {
     if (setting.type === "codex_reasoning_guard") {
@@ -222,6 +234,16 @@ export function resolveCodexReasoningGuardSummary(
           ? `${compareSymbol} ${matchedRuleValue}`
           : null;
       latestReasoningTokens = Number.isFinite(reasoningTokens) ? reasoningTokens : null;
+      latestPhase = parsedSettingString(setting.guardRetryPhase) || null;
+      latestActionTaken =
+        parsedSettingString(setting.actionTaken) || parsedSettingString(setting.action) || null;
+      latestExhaustedAction = parsedSettingString(setting.guardExhaustedAction) || null;
+      const delayMs = parsedSettingNumber(setting.backoffMs);
+      const budgetRemaining = parsedSettingNumber(setting.guardBudgetRemaining);
+      const budgetTotal = parsedSettingNumber(setting.guardBudgetTotal);
+      latestDelayMs = Number.isFinite(delayMs) ? delayMs : null;
+      latestBudgetRemaining = Number.isFinite(budgetRemaining) ? budgetRemaining : null;
+      latestBudgetTotal = Number.isFinite(budgetTotal) ? budgetTotal : null;
     }
   }
 
@@ -229,5 +251,11 @@ export function resolveCodexReasoningGuardSummary(
     count,
     latestRuleLabel,
     latestReasoningTokens,
+    latestPhase,
+    latestActionTaken,
+    latestExhaustedAction,
+    latestDelayMs,
+    latestBudgetRemaining,
+    latestBudgetTotal,
   };
 }

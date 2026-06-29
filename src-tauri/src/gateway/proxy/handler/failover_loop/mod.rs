@@ -200,8 +200,12 @@ where
         codex_reasoning_guard_compare_mode: input.codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals: &input.codex_reasoning_guard_reasoning_equals,
         codex_reasoning_guard_model_rules: &input.codex_reasoning_guard_model_rules,
-        codex_reasoning_guard_backoff_after_hits: input.codex_reasoning_guard_backoff_after_hits,
-        codex_reasoning_guard_backoff_ms: input.codex_reasoning_guard_backoff_ms,
+        codex_reasoning_guard_immediate_retry_budget: input
+            .codex_reasoning_guard_immediate_retry_budget,
+        codex_reasoning_guard_delayed_retry_budget: input
+            .codex_reasoning_guard_delayed_retry_budget,
+        codex_reasoning_guard_delayed_retry_ms: input.codex_reasoning_guard_delayed_retry_ms,
+        codex_reasoning_guard_exhausted_action: input.codex_reasoning_guard_exhausted_action,
         enable_response_fixer: input.enable_response_fixer,
         response_fixer_stream_config: input.response_fixer_stream_config,
         response_fixer_non_stream_config: input.response_fixer_non_stream_config,

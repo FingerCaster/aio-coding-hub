@@ -3,7 +3,10 @@
 use crate::gateway::events::{decision_chain as dc, FailoverAttempt};
 use crate::gateway::proxy::ErrorCategory;
 use crate::gateway::response_fixer;
-use crate::settings::{CodexReasoningGuardCompareMode, CodexReasoningGuardModelRule};
+use crate::settings::{
+    CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
+    CodexReasoningGuardModelRule,
+};
 use axum::http::StatusCode;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -159,7 +162,7 @@ pub(super) fn push_special_setting(
     provider_name: &str,
     retry_index: u32,
     matched: &CodexReasoningGuardMatch,
-    backoff: CodexReasoningGuardBackoffDecision,
+    budget: CodexReasoningGuardBudgetDecision,
 ) {
     response_fixer::push_special_setting(
         special_settings,
@@ -180,57 +183,118 @@ pub(super) fn push_special_setting(
             "retryAttemptNumber": retry_index,
             "retryAttemptNumberNext": retry_index.saturating_add(1),
             "displayStatus": StatusCode::BAD_GATEWAY.as_u16(),
-            "action": "retry_same_provider_no_circuit",
-            "backoffApplied": backoff.applied,
-            "backoffAfterHits": backoff.after_hits,
-            "backoffMs": backoff.ms,
-            "guardHitNumber": backoff.hit_number,
+            "action": budget.action_taken,
+            "actionTaken": budget.action_taken,
+            "backoffApplied": budget.delay_ms > 0,
+            "backoffAfterHits": budget.immediate_budget,
+            "backoffMs": budget.delay_ms,
+            "guardHitNumber": budget.hit_number,
+            "guardRetryPhase": budget.phase,
+            "guardBudgetRemaining": budget.remaining_budget,
+            "guardBudgetTotal": budget.total_budget,
+            "guardExhaustedAction": budget.exhausted_action,
         }),
     );
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CodexReasoningGuardBackoffDecision {
-    pub(super) applied: bool,
-    pub(super) after_hits: u32,
-    pub(super) ms: u32,
+pub(super) enum CodexReasoningGuardBudgetAction {
+    RetrySameProvider,
+    ReturnError,
+    SwitchProvider,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct CodexReasoningGuardBudgetDecision {
+    pub(super) action: CodexReasoningGuardBudgetAction,
     pub(super) hit_number: u32,
+    pub(super) phase: &'static str,
+    pub(super) delay_ms: u32,
+    pub(super) immediate_budget: u32,
+    pub(super) delayed_budget: u32,
+    pub(super) total_budget: u32,
+    pub(super) remaining_budget: u32,
+    pub(super) exhausted_action: &'static str,
+    pub(super) action_taken: &'static str,
 }
 
-impl CodexReasoningGuardBackoffDecision {
-    fn disabled(hit_number: u32, after_hits: u32) -> Self {
-        Self {
-            applied: false,
-            after_hits,
-            ms: 0,
-            hit_number,
-        }
-    }
-}
-
-pub(super) fn backoff_decision(
+pub(super) fn budget_decision(
     current_hits: u32,
-    backoff_after_hits: u32,
-    backoff_ms: u32,
-) -> CodexReasoningGuardBackoffDecision {
+    immediate_budget: u32,
+    delayed_budget: u32,
+    delayed_retry_ms: u32,
+    exhausted_action: CodexReasoningGuardExhaustedAction,
+) -> CodexReasoningGuardBudgetDecision {
     let hit_number = current_hits.saturating_add(1);
-    if backoff_after_hits == 0 || backoff_ms == 0 || hit_number < backoff_after_hits {
-        return CodexReasoningGuardBackoffDecision::disabled(hit_number, backoff_after_hits);
+    let total_budget = immediate_budget.saturating_add(delayed_budget);
+    let exhausted_action_label = match exhausted_action {
+        CodexReasoningGuardExhaustedAction::ReturnError => "return_error",
+        CodexReasoningGuardExhaustedAction::SwitchProvider => "switch_provider",
+    };
+
+    if hit_number <= immediate_budget {
+        return CodexReasoningGuardBudgetDecision {
+            action: CodexReasoningGuardBudgetAction::RetrySameProvider,
+            hit_number,
+            phase: "immediate",
+            delay_ms: 0,
+            immediate_budget,
+            delayed_budget,
+            total_budget,
+            remaining_budget: total_budget.saturating_sub(hit_number),
+            exhausted_action: exhausted_action_label,
+            action_taken: "retry_same_provider_no_circuit",
+        };
     }
 
-    CodexReasoningGuardBackoffDecision {
-        applied: true,
-        after_hits: backoff_after_hits,
-        ms: backoff_ms,
-        hit_number,
+    if hit_number <= total_budget {
+        return CodexReasoningGuardBudgetDecision {
+            action: CodexReasoningGuardBudgetAction::RetrySameProvider,
+            hit_number,
+            phase: "delayed",
+            delay_ms: delayed_retry_ms,
+            immediate_budget,
+            delayed_budget,
+            total_budget,
+            remaining_budget: total_budget.saturating_sub(hit_number),
+            exhausted_action: exhausted_action_label,
+            action_taken: "retry_same_provider_delayed_no_circuit",
+        };
+    }
+
+    match exhausted_action {
+        CodexReasoningGuardExhaustedAction::ReturnError => CodexReasoningGuardBudgetDecision {
+            action: CodexReasoningGuardBudgetAction::ReturnError,
+            hit_number,
+            phase: "exhausted",
+            delay_ms: 0,
+            immediate_budget,
+            delayed_budget,
+            total_budget,
+            remaining_budget: 0,
+            exhausted_action: exhausted_action_label,
+            action_taken: "return_guard_error_no_circuit",
+        },
+        CodexReasoningGuardExhaustedAction::SwitchProvider => CodexReasoningGuardBudgetDecision {
+            action: CodexReasoningGuardBudgetAction::SwitchProvider,
+            hit_number,
+            phase: "exhausted",
+            delay_ms: 0,
+            immediate_budget,
+            delayed_budget,
+            total_budget,
+            remaining_budget: 0,
+            exhausted_action: exhausted_action_label,
+            action_taken: "switch_provider_no_circuit",
+        },
     }
 }
 
-pub(super) async fn apply_backoff_if_needed(decision: CodexReasoningGuardBackoffDecision) {
-    if !decision.applied {
+pub(super) async fn apply_delay_if_needed(decision: CodexReasoningGuardBudgetDecision) {
+    if decision.delay_ms == 0 {
         return;
     }
-    tokio::time::sleep(Duration::from_millis(decision.ms as u64)).await;
+    tokio::time::sleep(Duration::from_millis(decision.delay_ms as u64)).await;
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -248,26 +312,41 @@ pub(super) fn record_guard_retry_attempt(
     circuit_failure_count: u32,
     circuit_failure_threshold: u32,
     matched: &CodexReasoningGuardMatch,
+    budget: CodexReasoningGuardBudgetDecision,
 ) {
+    let (outcome, decision) = match budget.action {
+        CodexReasoningGuardBudgetAction::RetrySameProvider => {
+            ("codex_reasoning_guard_retry", "retry_same_provider")
+        }
+        CodexReasoningGuardBudgetAction::ReturnError => {
+            ("codex_reasoning_guard_exhausted", "abort")
+        }
+        CodexReasoningGuardBudgetAction::SwitchProvider => {
+            ("codex_reasoning_guard_switch_provider", "switch")
+        }
+    };
     attempts.push(FailoverAttempt {
         provider_id,
         provider_name: provider_name.to_string(),
         base_url: base_url.to_string(),
-        outcome: "codex_reasoning_guard_retry".to_string(),
+        outcome: outcome.to_string(),
         status: Some(StatusCode::BAD_GATEWAY.as_u16()),
         provider_index: Some(provider_index),
         retry_index: Some(retry_index),
         session_reuse,
         error_category: Some(ErrorCategory::SystemError.as_str()),
         error_code: Some(CODEX_REASONING_GUARD_ERROR_CODE),
-        decision: Some("retry_same_provider"),
+        decision: Some(decision),
         reason: Some(format!(
-            "codex reasoning guard matched reasoning_tokens={} {} {} via {} ({})",
+            "codex reasoning guard matched reasoning_tokens={} {} {} via {} ({}) hit={} phase={} action={}",
             matched.reasoning_tokens,
             compare_mode_symbol(matched.compare_mode),
             matched.matched_rule_value,
             matched.pointer,
-            matched.rule_source
+            matched.rule_source,
+            budget.hit_number,
+            budget.phase,
+            budget.action_taken
         )),
         selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
         reason_code: Some(CODEX_REASONING_GUARD_REASON_CODE),
@@ -310,40 +389,126 @@ mod tests {
     }
 
     #[test]
-    fn backoff_decision_applies_at_threshold_and_afterward() {
-        assert_eq!(
-            backoff_decision(3, 5, 1_000),
-            CodexReasoningGuardBackoffDecision {
-                applied: false,
-                after_hits: 5,
-                ms: 0,
-                hit_number: 4,
-            }
-        );
-        assert_eq!(
-            backoff_decision(4, 5, 1_000),
-            CodexReasoningGuardBackoffDecision {
-                applied: true,
-                after_hits: 5,
-                ms: 1_000,
-                hit_number: 5,
-            }
-        );
-        assert_eq!(
-            backoff_decision(5, 5, 1_000),
-            CodexReasoningGuardBackoffDecision {
-                applied: true,
-                after_hits: 5,
-                ms: 1_000,
-                hit_number: 6,
-            }
-        );
+    fn budget_decision_uses_immediate_then_delayed_budget() {
+        for current_hits in 0..5 {
+            let decision = budget_decision(
+                current_hits,
+                5,
+                5,
+                1_000,
+                CodexReasoningGuardExhaustedAction::ReturnError,
+            );
+            assert_eq!(
+                decision.action,
+                CodexReasoningGuardBudgetAction::RetrySameProvider
+            );
+            assert_eq!(decision.phase, "immediate");
+            assert_eq!(decision.delay_ms, 0);
+            assert_eq!(decision.remaining_budget, 9 - current_hits);
+        }
+
+        for current_hits in 5..10 {
+            let decision = budget_decision(
+                current_hits,
+                5,
+                5,
+                1_000,
+                CodexReasoningGuardExhaustedAction::ReturnError,
+            );
+            assert_eq!(
+                decision.action,
+                CodexReasoningGuardBudgetAction::RetrySameProvider
+            );
+            assert_eq!(decision.phase, "delayed");
+            assert_eq!(decision.delay_ms, 1_000);
+            assert_eq!(decision.remaining_budget, 9 - current_hits);
+        }
     }
 
     #[test]
-    fn backoff_decision_supports_zero_as_disabled() {
-        assert!(!backoff_decision(9, 0, 1_000).applied);
-        assert!(!backoff_decision(9, 5, 0).applied);
+    fn budget_decision_exhausts_to_configured_terminal_action() {
+        let return_error = budget_decision(
+            10,
+            5,
+            5,
+            1_000,
+            CodexReasoningGuardExhaustedAction::ReturnError,
+        );
+        assert_eq!(
+            return_error.action,
+            CodexReasoningGuardBudgetAction::ReturnError
+        );
+        assert_eq!(return_error.phase, "exhausted");
+        assert_eq!(return_error.remaining_budget, 0);
+
+        let switch_provider = budget_decision(
+            10,
+            5,
+            5,
+            1_000,
+            CodexReasoningGuardExhaustedAction::SwitchProvider,
+        );
+        assert_eq!(
+            switch_provider.action,
+            CodexReasoningGuardBudgetAction::SwitchProvider
+        );
+        assert_eq!(switch_provider.exhausted_action, "switch_provider");
+    }
+
+    #[test]
+    fn budget_decision_supports_zero_budget_edges() {
+        let delayed_first = budget_decision(
+            0,
+            0,
+            1,
+            500,
+            CodexReasoningGuardExhaustedAction::ReturnError,
+        );
+        assert_eq!(
+            delayed_first.action,
+            CodexReasoningGuardBudgetAction::RetrySameProvider
+        );
+        assert_eq!(delayed_first.phase, "delayed");
+        assert_eq!(delayed_first.delay_ms, 500);
+
+        let exhausted_first = budget_decision(
+            0,
+            0,
+            0,
+            500,
+            CodexReasoningGuardExhaustedAction::ReturnError,
+        );
+        assert_eq!(
+            exhausted_first.action,
+            CodexReasoningGuardBudgetAction::ReturnError
+        );
+
+        let immediate_only = budget_decision(
+            1,
+            2,
+            0,
+            500,
+            CodexReasoningGuardExhaustedAction::ReturnError,
+        );
+        assert_eq!(
+            immediate_only.action,
+            CodexReasoningGuardBudgetAction::RetrySameProvider
+        );
+        assert_eq!(immediate_only.phase, "immediate");
+        assert_eq!(immediate_only.remaining_budget, 0);
+
+        let exhausted_after_immediate = budget_decision(
+            2,
+            2,
+            0,
+            500,
+            CodexReasoningGuardExhaustedAction::ReturnError,
+        );
+        assert_eq!(
+            exhausted_after_immediate.action,
+            CodexReasoningGuardBudgetAction::ReturnError
+        );
+        assert_eq!(exhausted_after_immediate.phase, "exhausted");
     }
 
     #[test]

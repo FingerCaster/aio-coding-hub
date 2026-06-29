@@ -65,6 +65,25 @@ export function hasCodexReasoningGuardSpecialSetting(
   return resolveCodexReasoningGuardSummary(specialSettingsJson).count > 0;
 }
 
+function formatCodexReasoningGuardActionText(summary: {
+  latestActionTaken: string | null;
+  latestDelayMs: number | null;
+}): string {
+  if (summary.latestActionTaken === "switch_provider_no_circuit") {
+    return "预算耗尽后切换供应商";
+  }
+  if (summary.latestActionTaken === "return_guard_error_no_circuit") {
+    return "预算耗尽后返回错误";
+  }
+  if (
+    summary.latestActionTaken === "retry_same_provider_delayed_no_circuit" &&
+    summary.latestDelayMs != null
+  ) {
+    return `等待 ${summary.latestDelayMs}ms 后重试`;
+  }
+  return "继续重试";
+}
+
 function finiteJsonNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }
@@ -219,6 +238,11 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
   const codexReasoningGuardRuleSuffix = codexReasoningGuard.latestRuleLabel
     ? ` ${codexReasoningGuard.latestRuleLabel}`
     : "";
+  const codexReasoningGuardActionText = formatCodexReasoningGuardActionText(codexReasoningGuard);
+  const codexReasoningGuardBudgetSuffix =
+    codexReasoningGuard.latestBudgetTotal != null
+      ? `，剩余预算 ${codexReasoningGuard.latestBudgetRemaining ?? 0}/${codexReasoningGuard.latestBudgetTotal}`
+      : "";
 
   const tags: RequestLogAuditTag[] = [];
 
@@ -270,8 +294,8 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
           : `降智命中${codexReasoningGuardRuleSuffix}`,
         "bg-violet-50/80 text-violet-700 ring-1 ring-inset ring-violet-500/10 dark:bg-violet-500/15 dark:text-violet-200 dark:ring-violet-400/20",
         codexReasoningGuard.latestRuleLabel
-          ? `命中 Codex 降智拦截规则 ${codexReasoningGuard.latestRuleLabel} 后在当前 provider 上继续重试，不计入熔断`
-          : "命中 Codex 降智拦截后在当前 provider 上继续重试，不计入熔断"
+          ? `命中 Codex 降智拦截规则 ${codexReasoningGuard.latestRuleLabel} 后${codexReasoningGuardActionText}，不计入熔断${codexReasoningGuardBudgetSuffix}`
+          : `命中 Codex 降智拦截后${codexReasoningGuardActionText}，不计入熔断${codexReasoningGuardBudgetSuffix}`
       )
     );
   }
@@ -294,8 +318,8 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
   } else if (codexReasoningGuardHitCount > 0) {
     summary =
       codexReasoningGuardHitCount > 1
-        ? `本次请求命中了 ${codexReasoningGuardHitCount} 次 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，并在同一 provider 上继续重试。`
-        : `本次请求命中了 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，并在同一 provider 上继续重试。`;
+        ? `本次请求命中了 ${codexReasoningGuardHitCount} 次 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，${codexReasoningGuardActionText}。`
+        : `本次请求命中了 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，${codexReasoningGuardActionText}。`;
   } else if (isAllProvidersUnavailable) {
     summary = "当前没有可用 Provider，网关未继续向已熔断或冷却中的供应商发起上游请求。";
   } else if (isClientAbort) {

@@ -1,5 +1,6 @@
 import {
   type CodexReasoningGuardCompareMode,
+  type CodexReasoningGuardExhaustedAction,
   type CodexReasoningGuardModelRule,
   commands,
   type CodexHomeMode,
@@ -21,6 +22,7 @@ import { validateSettingsSetInput } from "./settingsValidation";
 
 export type {
   CodexReasoningGuardCompareMode,
+  CodexReasoningGuardExhaustedAction,
   CodexReasoningGuardModelRule,
   CodexHomeMode,
   GatewayListenMode,
@@ -99,6 +101,10 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   codexReasoningGuardCompareMode: "codex_reasoning_guard_compare_mode",
   codexReasoningGuardReasoningEquals: "codex_reasoning_guard_reasoning_equals",
   codexReasoningGuardModelRules: "codex_reasoning_guard_model_rules",
+  codexReasoningGuardImmediateRetryBudget: "codex_reasoning_guard_immediate_retry_budget",
+  codexReasoningGuardDelayedRetryBudget: "codex_reasoning_guard_delayed_retry_budget",
+  codexReasoningGuardDelayedRetryMs: "codex_reasoning_guard_delayed_retry_ms",
+  codexReasoningGuardExhaustedAction: "codex_reasoning_guard_exhausted_action",
   codexReasoningGuardBackoffAfterHits: "codex_reasoning_guard_backoff_after_hits",
   codexReasoningGuardBackoffMs: "codex_reasoning_guard_backoff_ms",
   cx2CcFallbackModelOpus: "cx2cc_fallback_model_opus",
@@ -231,6 +237,10 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): GeneratedSettingsUp
     codexReasoningGuardCompareMode: input.codexReasoningGuardCompareMode ?? null,
     codexReasoningGuardReasoningEquals: input.codexReasoningGuardReasoningEquals ?? null,
     codexReasoningGuardModelRules: input.codexReasoningGuardModelRules ?? null,
+    codexReasoningGuardImmediateRetryBudget: input.codexReasoningGuardImmediateRetryBudget ?? null,
+    codexReasoningGuardDelayedRetryBudget: input.codexReasoningGuardDelayedRetryBudget ?? null,
+    codexReasoningGuardDelayedRetryMs: input.codexReasoningGuardDelayedRetryMs ?? null,
+    codexReasoningGuardExhaustedAction: input.codexReasoningGuardExhaustedAction ?? null,
     codexReasoningGuardBackoffAfterHits: input.codexReasoningGuardBackoffAfterHits ?? null,
     codexReasoningGuardBackoffMs: input.codexReasoningGuardBackoffMs ?? null,
     cx2CcFallbackModelOpus: input.cx2CcFallbackModelOpus ?? null,

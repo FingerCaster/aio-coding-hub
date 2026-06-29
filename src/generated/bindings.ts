@@ -2338,6 +2338,7 @@ export type CodexConfigTomlValidationResult = {
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
 export type CodexReasoningGuardCompareMode = "equals" | "less_than_or_equal";
+export type CodexReasoningGuardExhaustedAction = "return_error" | "switch_provider";
 export type CodexReasoningGuardModelRule = {
   requested_model: string;
   compare_mode?: CodexReasoningGuardCompareMode;
@@ -3157,6 +3158,10 @@ export type SettingsUpdate = {
   codexReasoningGuardCompareMode: CodexReasoningGuardCompareMode | null;
   codexReasoningGuardReasoningEquals: number[] | null;
   codexReasoningGuardModelRules: CodexReasoningGuardModelRule[] | null;
+  codexReasoningGuardImmediateRetryBudget: number | null;
+  codexReasoningGuardDelayedRetryBudget: number | null;
+  codexReasoningGuardDelayedRetryMs: number | null;
+  codexReasoningGuardExhaustedAction: CodexReasoningGuardExhaustedAction | null;
   codexReasoningGuardBackoffAfterHits: number | null;
   codexReasoningGuardBackoffMs: number | null;
   cx2CcFallbackModelOpus: string | null;
@@ -3196,6 +3201,10 @@ export type SettingsView = {
   codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode;
   codex_reasoning_guard_reasoning_equals: number[];
   codex_reasoning_guard_model_rules: CodexReasoningGuardModelRule[];
+  codex_reasoning_guard_immediate_retry_budget: number;
+  codex_reasoning_guard_delayed_retry_budget: number;
+  codex_reasoning_guard_delayed_retry_ms: number;
+  codex_reasoning_guard_exhausted_action: CodexReasoningGuardExhaustedAction;
   codex_reasoning_guard_backoff_after_hits: number;
   codex_reasoning_guard_backoff_ms: number;
   auto_start: boolean;

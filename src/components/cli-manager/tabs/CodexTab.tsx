@@ -20,14 +20,18 @@ import type {
   AppSettings,
   CodexHomeMode,
   CodexReasoningGuardCompareMode,
+  CodexReasoningGuardExhaustedAction,
   CodexReasoningGuardModelRule,
 } from "../../../services/settings/settings";
 import {
-  DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
-  DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS,
+  DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
+  DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
+  DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION,
+  DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS,
-  MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
-  MAX_CODEX_REASONING_GUARD_BACKOFF_MS,
+  MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
+  MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
+  MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
   MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN,
   MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN,
@@ -249,8 +253,10 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
-        | "codex_reasoning_guard_backoff_after_hits"
-        | "codex_reasoning_guard_backoff_ms"
+        | "codex_reasoning_guard_immediate_retry_budget"
+        | "codex_reasoning_guard_delayed_retry_budget"
+        | "codex_reasoning_guard_delayed_retry_ms"
+        | "codex_reasoning_guard_exhausted_action"
       >
     >
   ) => Promise<boolean> | boolean;
@@ -344,12 +350,17 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardValuesError, setCodexReasoningGuardValuesError] = useState<
     string | null
   >(null);
-  const [codexReasoningGuardBackoffAfterHitsText, setCodexReasoningGuardBackoffAfterHitsText] =
-    useState(String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS));
-  const [codexReasoningGuardBackoffMsText, setCodexReasoningGuardBackoffMsText] = useState(
-    String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS)
+  const [codexReasoningGuardImmediateBudgetText, setCodexReasoningGuardImmediateBudgetText] =
+    useState(String(DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET));
+  const [codexReasoningGuardDelayedBudgetText, setCodexReasoningGuardDelayedBudgetText] = useState(
+    String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET)
   );
-  const [codexReasoningGuardBackoffError, setCodexReasoningGuardBackoffError] = useState<
+  const [codexReasoningGuardDelayedMsText, setCodexReasoningGuardDelayedMsText] = useState(
+    String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS)
+  );
+  const [codexReasoningGuardExhaustedAction, setCodexReasoningGuardExhaustedAction] =
+    useState<CodexReasoningGuardExhaustedAction>(DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION);
+  const [codexReasoningGuardBudgetError, setCodexReasoningGuardBudgetError] = useState<
     string | null
   >(null);
   const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
@@ -435,17 +446,30 @@ export function CliManagerCodexTab({
         DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS;
       setCodexReasoningGuardValuesText(values.join(", "));
       setCodexReasoningGuardCompareMode(source?.codex_reasoning_guard_compare_mode ?? "equals");
-      setCodexReasoningGuardBackoffAfterHitsText(
+      setCodexReasoningGuardImmediateBudgetText(
         String(
-          source?.codex_reasoning_guard_backoff_after_hits ??
-            DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS
+          source?.codex_reasoning_guard_immediate_retry_budget ??
+            DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
         )
       );
-      setCodexReasoningGuardBackoffMsText(
-        String(source?.codex_reasoning_guard_backoff_ms ?? DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS)
+      setCodexReasoningGuardDelayedBudgetText(
+        String(
+          source?.codex_reasoning_guard_delayed_retry_budget ??
+            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+        )
+      );
+      setCodexReasoningGuardDelayedMsText(
+        String(
+          source?.codex_reasoning_guard_delayed_retry_ms ??
+            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
+        )
+      );
+      setCodexReasoningGuardExhaustedAction(
+        source?.codex_reasoning_guard_exhausted_action ??
+          DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
       );
       setCodexReasoningGuardValuesError(null);
-      setCodexReasoningGuardBackoffError(null);
+      setCodexReasoningGuardBudgetError(null);
       setCodexReasoningGuardModelRuleDrafts(
         buildCodexReasoningGuardModelRuleDrafts(source?.codex_reasoning_guard_model_rules)
       );
@@ -918,23 +942,33 @@ export function CliManagerCodexTab({
       return;
     }
 
-    const parsedBackoffAfterHits = parseCodexReasoningGuardInteger(
-      codexReasoningGuardBackoffAfterHitsText,
-      "等待触发次数",
-      MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS
+    const parsedImmediateBudget = parseCodexReasoningGuardInteger(
+      codexReasoningGuardImmediateBudgetText,
+      "立即重试预算",
+      MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
     );
-    if (!parsedBackoffAfterHits.ok) {
-      setCodexReasoningGuardBackoffError(parsedBackoffAfterHits.message);
+    if (!parsedImmediateBudget.ok) {
+      setCodexReasoningGuardBudgetError(parsedImmediateBudget.message);
       return;
     }
 
-    const parsedBackoffMs = parseCodexReasoningGuardInteger(
-      codexReasoningGuardBackoffMsText,
-      "等待时间",
-      MAX_CODEX_REASONING_GUARD_BACKOFF_MS
+    const parsedDelayedBudget = parseCodexReasoningGuardInteger(
+      codexReasoningGuardDelayedBudgetText,
+      "等待重试预算",
+      MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
     );
-    if (!parsedBackoffMs.ok) {
-      setCodexReasoningGuardBackoffError(parsedBackoffMs.message);
+    if (!parsedDelayedBudget.ok) {
+      setCodexReasoningGuardBudgetError(parsedDelayedBudget.message);
+      return;
+    }
+
+    const parsedDelayedMs = parseCodexReasoningGuardInteger(
+      codexReasoningGuardDelayedMsText,
+      "等待时间",
+      MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
+    );
+    if (!parsedDelayedMs.ok) {
+      setCodexReasoningGuardBudgetError(parsedDelayedMs.message);
       return;
     }
 
@@ -982,19 +1016,22 @@ export function CliManagerCodexTab({
     }
 
     setCodexReasoningGuardValuesError(null);
-    setCodexReasoningGuardBackoffError(null);
+    setCodexReasoningGuardBudgetError(null);
     setCodexReasoningGuardModelRuleErrors({});
     setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
-    setCodexReasoningGuardBackoffAfterHitsText(String(parsedBackoffAfterHits.value));
-    setCodexReasoningGuardBackoffMsText(String(parsedBackoffMs.value));
+    setCodexReasoningGuardImmediateBudgetText(String(parsedImmediateBudget.value));
+    setCodexReasoningGuardDelayedBudgetText(String(parsedDelayedBudget.value));
+    setCodexReasoningGuardDelayedMsText(String(parsedDelayedMs.value));
     setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
 
     const saved = await persistCodexReasoningGuardSettings({
       codex_reasoning_guard_compare_mode: codexReasoningGuardCompareMode,
       codex_reasoning_guard_reasoning_equals: parsedGlobalValues.values,
       codex_reasoning_guard_model_rules: nextModelRules,
-      codex_reasoning_guard_backoff_after_hits: parsedBackoffAfterHits.value,
-      codex_reasoning_guard_backoff_ms: parsedBackoffMs.value,
+      codex_reasoning_guard_immediate_retry_budget: parsedImmediateBudget.value,
+      codex_reasoning_guard_delayed_retry_budget: parsedDelayedBudget.value,
+      codex_reasoning_guard_delayed_retry_ms: parsedDelayedMs.value,
+      codex_reasoning_guard_exhausted_action: codexReasoningGuardExhaustedAction,
     });
     if (!saved) {
       syncCodexReasoningGuardDrafts(appSettings);
@@ -1480,12 +1517,13 @@ export function CliManagerCodexTab({
                       </span>
                     </div>
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>连续命中等待</span>
+                      <span>Guard 预算</span>
                       <span className="font-mono text-secondary-foreground">
-                        {appSettings.codex_reasoning_guard_backoff_after_hits === 0 ||
-                        appSettings.codex_reasoning_guard_backoff_ms === 0
-                          ? "已关闭"
-                          : `第 ${appSettings.codex_reasoning_guard_backoff_after_hits} 次起 / ${appSettings.codex_reasoning_guard_backoff_ms}ms`}
+                        {`${appSettings.codex_reasoning_guard_immediate_retry_budget}+${appSettings.codex_reasoning_guard_delayed_retry_budget} / ${appSettings.codex_reasoning_guard_delayed_retry_ms}ms / ${
+                          appSettings.codex_reasoning_guard_exhausted_action === "switch_provider"
+                            ? "切换供应商"
+                            : "返回错误"
+                        }`}
                       </span>
                     </div>
                   </div>
@@ -1639,28 +1677,51 @@ export function CliManagerCodexTab({
                     </div>
 
                     <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
-                      <div className="text-sm font-semibold text-foreground">连续命中等待</div>
+                      <div className="text-sm font-semibold text-foreground">完整重试预算</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        同一请求内降智拦截连续命中达到阈值后，继续请求前先等待一段时间。任一值设为{" "}
-                        <span className="font-mono">0</span> 即关闭等待。
+                        每个 provider
+                        独立计算预算：先立即重试，再按等待时间重试；预算耗尽后按配置返回错误或切换下一个供应商。
                       </div>
-                      <div className="mt-4 grid gap-3 lg:grid-cols-2">
+                      <div className="mt-4 grid gap-3 lg:grid-cols-4">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">达到命中次数</span>
+                          <span className="block">立即重试次数</span>
                           <Input
                             type="number"
                             min={0}
-                            max={MAX_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS}
+                            max={MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET}
                             step={1}
-                            value={codexReasoningGuardBackoffAfterHitsText}
+                            value={codexReasoningGuardImmediateBudgetText}
                             onChange={(e) => {
-                              setCodexReasoningGuardBackoffAfterHitsText(e.currentTarget.value);
-                              setCodexReasoningGuardBackoffError(null);
+                              setCodexReasoningGuardImmediateBudgetText(e.currentTarget.value);
+                              setCodexReasoningGuardBudgetError(null);
                             }}
-                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS)}
+                            placeholder={String(
+                              DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
+                            )}
                             className={cn(
                               "mt-3 font-mono text-xs",
-                              codexReasoningGuardBackoffError &&
+                              codexReasoningGuardBudgetError &&
+                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                            )}
+                            disabled={reasoningGuardControlsDisabled}
+                          />
+                        </label>
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">等待重试次数</span>
+                          <Input
+                            type="number"
+                            min={0}
+                            max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET}
+                            step={1}
+                            value={codexReasoningGuardDelayedBudgetText}
+                            onChange={(e) => {
+                              setCodexReasoningGuardDelayedBudgetText(e.currentTarget.value);
+                              setCodexReasoningGuardBudgetError(null);
+                            }}
+                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET)}
+                            className={cn(
+                              "mt-3 font-mono text-xs",
+                              codexReasoningGuardBudgetError &&
                                 "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
                             )}
                             disabled={reasoningGuardControlsDisabled}
@@ -1671,33 +1732,49 @@ export function CliManagerCodexTab({
                           <Input
                             type="number"
                             min={0}
-                            max={MAX_CODEX_REASONING_GUARD_BACKOFF_MS}
+                            max={MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}
                             step={100}
-                            value={codexReasoningGuardBackoffMsText}
+                            value={codexReasoningGuardDelayedMsText}
                             onChange={(e) => {
-                              setCodexReasoningGuardBackoffMsText(e.currentTarget.value);
-                              setCodexReasoningGuardBackoffError(null);
+                              setCodexReasoningGuardDelayedMsText(e.currentTarget.value);
+                              setCodexReasoningGuardBudgetError(null);
                             }}
-                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS)}
+                            placeholder={String(DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS)}
                             className={cn(
                               "mt-3 font-mono text-xs",
-                              codexReasoningGuardBackoffError &&
+                              codexReasoningGuardBudgetError &&
                                 "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
                             )}
                             disabled={reasoningGuardControlsDisabled}
                           />
                         </label>
+                        <label className="text-xs font-medium text-secondary-foreground">
+                          <span className="block">预算耗尽后</span>
+                          <Select
+                            value={codexReasoningGuardExhaustedAction}
+                            onChange={(e) =>
+                              setCodexReasoningGuardExhaustedAction(
+                                e.currentTarget.value as CodexReasoningGuardExhaustedAction
+                              )
+                            }
+                            disabled={reasoningGuardControlsDisabled}
+                            className="mt-3 font-mono text-xs"
+                          >
+                            <option value="return_error">返回错误</option>
+                            <option value="switch_provider">切换供应商</option>
+                          </Select>
+                        </label>
                       </div>
                       <div
                         className={cn(
                           "mt-2 text-[11px] leading-relaxed",
-                          codexReasoningGuardBackoffError
+                          codexReasoningGuardBudgetError
                             ? "text-rose-600 dark:text-rose-400"
                             : "text-muted-foreground"
                         )}
                       >
-                        {codexReasoningGuardBackoffError ??
-                          `默认第 ${DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS} 次命中开始，每次继续请求前等待 ${DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS}ms。`}
+                        {codexReasoningGuardBudgetError ??
+                          `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`}
                       </div>
                     </div>
 

@@ -5,8 +5,8 @@ use super::migration::{
     normalize_cli_priority_order, normalize_codex_home_override, repair_settings,
 };
 use super::types::{
-    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, GatewayListenMode,
-    WslHostAddressMode,
+    AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
+    GatewayListenMode, WslHostAddressMode,
 };
 use crate::app_paths;
 use crate::shared::error::AppResult;
@@ -371,9 +371,36 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         )
         .into());
     }
+    if settings.codex_reasoning_guard_immediate_retry_budget
+        > MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_immediate_retry_budget must be <= {MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET}"
+        )
+        .into());
+    }
+    if settings.codex_reasoning_guard_delayed_retry_budget
+        > MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_delayed_retry_budget must be <= {MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET}"
+        )
+        .into());
+    }
+    if settings.codex_reasoning_guard_delayed_retry_ms > MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: codex_reasoning_guard_delayed_retry_ms must be <= {MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}"
+        )
+        .into());
+    }
     match settings.codex_reasoning_guard_compare_mode {
         CodexReasoningGuardCompareMode::Equals
         | CodexReasoningGuardCompareMode::LessThanOrEqual => {}
+    }
+    match settings.codex_reasoning_guard_exhausted_action {
+        CodexReasoningGuardExhaustedAction::ReturnError
+        | CodexReasoningGuardExhaustedAction::SwitchProvider => {}
     }
     if settings.codex_reasoning_guard_model_rules.len() > MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN
     {
@@ -698,6 +725,42 @@ mod tests {
     }
 
     #[test]
+    fn app_settings_default_contains_codex_reasoning_guard_budget_defaults() {
+        let settings = AppSettings::default();
+
+        assert_eq!(settings.codex_reasoning_guard_immediate_retry_budget, 5);
+        assert_eq!(settings.codex_reasoning_guard_delayed_retry_budget, 5);
+        assert_eq!(settings.codex_reasoning_guard_delayed_retry_ms, 1_000);
+        assert_eq!(
+            settings.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::ReturnError
+        );
+    }
+
+    #[test]
+    fn parse_settings_json_defaults_missing_codex_reasoning_guard_budget_fields() {
+        let json = r#"{
+            "schema_version": 41,
+            "codex_reasoning_guard_backoff_after_hits": 99,
+            "codex_reasoning_guard_backoff_ms": 60000
+        }"#;
+
+        let (settings, schema_version_present, _) = parse_settings_json(json).unwrap();
+
+        assert!(schema_version_present);
+        assert_eq!(settings.schema_version, 41);
+        assert_eq!(settings.codex_reasoning_guard_immediate_retry_budget, 5);
+        assert_eq!(settings.codex_reasoning_guard_delayed_retry_budget, 5);
+        assert_eq!(settings.codex_reasoning_guard_delayed_retry_ms, 1_000);
+        assert_eq!(
+            settings.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::ReturnError
+        );
+        assert_eq!(settings.codex_reasoning_guard_backoff_after_hits, 99);
+        assert_eq!(settings.codex_reasoning_guard_backoff_ms, 60_000);
+    }
+
+    #[test]
     fn canonical_settings_json_keeps_non_default_fields() {
         let settings = AppSettings {
             auto_start: true,
@@ -741,6 +804,32 @@ mod tests {
         let err = validate_bounds(&settings).unwrap_err().to_string();
 
         assert!(err.contains("failover limits too high"));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_codex_reasoning_guard_budget_above_caps() {
+        let settings = AppSettings {
+            codex_reasoning_guard_immediate_retry_budget:
+                MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET + 1,
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("codex_reasoning_guard_immediate_retry_budget must be <="));
+
+        let settings = AppSettings {
+            codex_reasoning_guard_delayed_retry_budget:
+                MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET + 1,
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("codex_reasoning_guard_delayed_retry_budget must be <="));
+
+        let settings = AppSettings {
+            codex_reasoning_guard_delayed_retry_ms: MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS + 1,
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("codex_reasoning_guard_delayed_retry_ms must be <="));
     }
 
     #[test]

@@ -195,14 +195,19 @@ describe("components/home/HomeLogShared", () => {
           compareModeSymbol: "<=",
           matchedRuleValue: 516,
           reasoningTokens: 300,
+          actionTaken: "retry_same_provider_delayed_no_circuit",
+          backoffMs: 1000,
+          guardBudgetRemaining: 4,
+          guardBudgetTotal: 10,
         },
       ]),
     });
     expect(reasoningGuard.tags.map((tag) => tag.label)).toContain("降智命中 2 <= 516");
     expect(reasoningGuard.tags[0]?.title).toContain("规则 <= 516");
+    expect(reasoningGuard.tags[0]?.title).toContain("等待 1000ms 后重试");
     expect(reasoningGuard.reasoningTokens).toBe(300);
     expect(reasoningGuard.summary).toBe(
-      "本次请求命中了 2 次 Codex 降智拦截（规则 <= 516），并在同一 provider 上继续重试。"
+      "本次请求命中了 2 次 Codex 降智拦截（规则 <= 516），等待 1000ms 后重试。"
     );
 
     const clientAbort = buildRequestLogAuditMeta({
