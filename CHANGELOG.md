@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.60.8](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.7...aio-coding-hub-v0.60.8) (2026-06-29)
+
+
+### Features
+
+* add codex reasoning guard backoff ([32b88bb](https://github.com/FingerCaster/aio-coding-hub/commit/32b88bb653069c7cb0b64c46c79d19786d0ece06))
+
+
+### Bug Fixes
+
+* **home:** reconcile realtime request state by trace id ([41f8774](https://github.com/FingerCaster/aio-coding-hub/commit/41f8774fe0662d11d7d33ef8bf800c11a25b2ab9))
+
 ## [0.60.7](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.6...aio-coding-hub-v0.60.7) (2026-06-29)
 
 
