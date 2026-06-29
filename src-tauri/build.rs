@@ -29,9 +29,14 @@ fn embed_windows_common_controls_manifest() {
     let manifest_path = out_dir.join("windows-test-manifest.xml");
     std::fs::write(&manifest_path, manifest).expect("write windows test manifest");
 
-    println!("cargo:rustc-link-arg=/MANIFEST:EMBED");
+    println!("cargo:rustc-link-arg-tests=/MANIFEST:EMBED");
     println!(
-        "cargo:rustc-link-arg=/MANIFESTINPUT:{}",
+        "cargo:rustc-link-arg-tests=/MANIFESTINPUT:{}",
+        manifest_path.display()
+    );
+    println!("cargo:rustc-link-arg-examples=/MANIFEST:EMBED");
+    println!(
+        "cargo:rustc-link-arg-examples=/MANIFESTINPUT:{}",
         manifest_path.display()
     );
 }
