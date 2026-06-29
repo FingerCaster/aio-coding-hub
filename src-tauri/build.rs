@@ -4,6 +4,9 @@ fn embed_windows_common_controls_manifest() {
     if target_os.as_deref() != Some("windows") || target_env.as_deref() != Some("msvc") {
         return;
     }
+    if std::env::var("PROFILE").ok().as_deref() != Some("debug") {
+        return;
+    }
 
     // Windows cargo test binaries do not get the Tauri app manifest by default. That
     // leaves those exes without a resource section, so desktop dependencies such as

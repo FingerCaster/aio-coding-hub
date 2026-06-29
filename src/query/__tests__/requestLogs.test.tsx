@@ -361,7 +361,7 @@ describe("query/requestLogs", () => {
     expect(attemptsOptions?.gcTime).toBe(REQUEST_LOG_DETAIL_GC_TIME_MS);
   });
 
-  it("queries Codex reasoning guard stats with a stable cache key", async () => {
+  it("queries Codex reasoning guard stats with a windowed cache key", async () => {
     setTauriRuntime();
 
     vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue({
@@ -376,7 +376,46 @@ describe("query/requestLogs", () => {
     const client = createTestQueryClient();
     const wrapper = createQueryWrapper(client);
 
-    const { result } = renderHook(() => useRequestLogsCodexReasoningGuardStatsQuery(), {
+    const { result } = renderHook(
+      () => useRequestLogsCodexReasoningGuardStatsQuery(1_770_000_000_000),
+      {
+        wrapper,
+      }
+    );
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual({
+        hit_request_count: 5,
+        hit_attempt_count: 8,
+        normal_request_count: 15,
+        total_request_count: 20,
+        hit_rate: 0.25,
+        by_model: [],
+      });
+    });
+
+    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith(1_770_000_000_000);
+    expect(
+      client.getQueryState(requestLogsKeys.codexReasoningGuardStats(1_770_000_000_000))
+    ).toBeTruthy();
+  });
+
+  it("queries all-time Codex reasoning guard stats with a null cache key", async () => {
+    setTauriRuntime();
+
+    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue({
+      hit_request_count: 5,
+      hit_attempt_count: 8,
+      normal_request_count: 15,
+      total_request_count: 20,
+      hit_rate: 0.25,
+      by_model: [],
+    });
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useRequestLogsCodexReasoningGuardStatsQuery(null), {
       wrapper,
     });
 
@@ -391,8 +430,8 @@ describe("query/requestLogs", () => {
       });
     });
 
-    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith();
-    expect(client.getQueryState(requestLogsKeys.codexReasoningGuardStats())).toBeTruthy();
+    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith(null);
+    expect(client.getQueryState(requestLogsKeys.codexReasoningGuardStats(null))).toBeTruthy();
   });
 
   it("incremental refresh mutation keeps backend rows and cache stable on empty incremental items", async () => {

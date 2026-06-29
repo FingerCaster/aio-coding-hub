@@ -155,7 +155,7 @@ describe("services/gateway/requestLogs", () => {
     await requestLogGet(1);
     await requestLogGetByTraceId("t1");
     await requestAttemptLogsByTraceId("t1", 99);
-    await requestLogsCodexReasoningGuardStats();
+    await requestLogsCodexReasoningGuardStats(1_770_000_000_000);
 
     expect(commands.requestLogsList).toHaveBeenCalledWith("claude", 10);
     expect(commands.requestLogsListAll).toHaveBeenCalledWith(20);
@@ -164,7 +164,7 @@ describe("services/gateway/requestLogs", () => {
     expect(commands.requestLogGet).toHaveBeenCalledWith(1);
     expect(commands.requestLogGetByTraceId).toHaveBeenCalledWith("t1");
     expect(commands.requestAttemptLogsByTraceId).toHaveBeenCalledWith("t1", 99);
-    expect(commands.requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith();
+    expect(commands.requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith(1_770_000_000_000);
   });
 
   it("normalizes request log list limits before ipc", async () => {
@@ -378,5 +378,18 @@ describe("services/gateway/requestLogs", () => {
     expect(commands.requestLogsListAfterId).toHaveBeenCalledWith("claude", 10, null);
     expect(commands.requestLogsListAfterIdAll).toHaveBeenCalledWith(10, null);
     expect(commands.requestAttemptLogsByTraceId).toHaveBeenCalledWith("trace-2", null);
+    expect(commands.requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith(null);
+  });
+
+  it("rejects invalid Codex reasoning guard stats timestamps", async () => {
+    vi.mocked(commands.requestLogsCodexReasoningGuardStats).mockClear();
+
+    await expect(requestLogsCodexReasoningGuardStats(0)).rejects.toThrow(
+      "SEC_INVALID_INPUT: invalid sinceCreatedAtMs=0"
+    );
+    await expect(requestLogsCodexReasoningGuardStats(1.5)).rejects.toThrow(
+      "SEC_INVALID_INPUT: invalid sinceCreatedAtMs=1.5"
+    );
+    expect(commands.requestLogsCodexReasoningGuardStats).not.toHaveBeenCalled();
   });
 });

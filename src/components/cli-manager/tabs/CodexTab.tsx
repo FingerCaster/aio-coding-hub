@@ -74,6 +74,7 @@ const GPT_54_AUTO_COMPACT_TOKEN_LIMIT = 900_000;
 const FAST_SERVICE_TIER = "fast";
 type PersistConfigLocationResult = "saved" | "validation_failed" | "persist_failed";
 type CodexReasoningGuardDetailsTab = "rules" | "stats";
+type CodexReasoningGuardStatsWindow = "session" | "all";
 type CodexReasoningGuardModelRuleDraft = {
   requestedModel: string;
   compareMode: CodexReasoningGuardCompareMode;
@@ -233,8 +234,11 @@ export type CliManagerCodexTabProps = {
   codexInfo: SimpleCliInfo | null;
   codexConfig: CodexConfigState | null;
   codexConfigToml: CodexConfigTomlState | null;
-  codexReasoningGuardStats?: CodexReasoningGuardStats | null;
-  codexReasoningGuardStatsLoading?: boolean;
+  codexReasoningGuardSessionStats?: CodexReasoningGuardStats | null;
+  codexReasoningGuardSessionStatsLoading?: boolean;
+  codexReasoningGuardAllStats?: CodexReasoningGuardStats | null;
+  codexReasoningGuardAllStatsLoading?: boolean;
+  appSessionStartedAtMs?: number | null;
   appSettings?: AppSettings | null;
   commonSettingsSaving?: boolean;
   codexHomeSettingsSaving?: boolean;
@@ -313,8 +317,11 @@ export function CliManagerCodexTab({
   codexInfo,
   codexConfig,
   codexConfigToml,
-  codexReasoningGuardStats,
-  codexReasoningGuardStatsLoading = false,
+  codexReasoningGuardSessionStats,
+  codexReasoningGuardSessionStatsLoading = false,
+  codexReasoningGuardAllStats,
+  codexReasoningGuardAllStatsLoading = false,
+  appSessionStartedAtMs = null,
   appSettings,
   commonSettingsSaving = false,
   codexHomeSettingsSaving = false,
@@ -366,6 +373,8 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
   const [codexReasoningGuardDetailsTab, setCodexReasoningGuardDetailsTab] =
     useState<CodexReasoningGuardDetailsTab>("rules");
+  const [codexReasoningGuardStatsWindow, setCodexReasoningGuardStatsWindow] =
+    useState<CodexReasoningGuardStatsWindow>("session");
   const [codexReasoningGuardModelRuleDrafts, setCodexReasoningGuardModelRuleDrafts] = useState<
     CodexReasoningGuardModelRuleDraft[]
   >([]);
@@ -509,6 +518,24 @@ export function CliManagerCodexTab({
     commonSettingsControlsDisabled || !persistCodexOauthCompatibleProxyMode;
   const reasoningGuardControlsDisabled =
     commonSettingsControlsDisabled || !persistCodexReasoningGuardSettings;
+  const codexReasoningGuardStats =
+    codexReasoningGuardStatsWindow === "session"
+      ? codexReasoningGuardSessionStats
+      : codexReasoningGuardAllStats;
+  const codexReasoningGuardStatsLoading =
+    codexReasoningGuardStatsWindow === "session"
+      ? codexReasoningGuardSessionStatsLoading
+      : codexReasoningGuardAllStatsLoading;
+  const codexReasoningGuardStatsWindowLabel =
+    codexReasoningGuardStatsWindow === "session" ? "本次应用打开后" : "全部统计";
+  const codexReasoningGuardStatsWindowDescription =
+    codexReasoningGuardStatsWindow === "session"
+      ? "只统计当前应用打开以后产生的 Codex 请求，方便先判断这次使用过程里的降智拦截。"
+      : "统计所有历史 Codex 请求，适合看长期趋势、模型差异和整体拦截比例。";
+  const appSessionStartedAtLabel =
+    appSessionStartedAtMs && Number.isFinite(appSessionStartedAtMs)
+      ? new Date(appSessionStartedAtMs).toLocaleString("zh-CN", { hour12: false })
+      : null;
 
   async function refreshCodexStatus() {
     try {
@@ -1422,8 +1449,43 @@ export function CliManagerCodexTab({
                         命中指定的 <span className="font-mono">reasoning_tokens</span>{" "}
                         时，不把结果直接回给 Codex，而是在当前 provider 上继续重试，并且不计入熔断。
                       </div>
+                      <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                        当前统计：{codexReasoningGuardStatsWindowDescription}
+                        {codexReasoningGuardStatsWindow === "session" && appSessionStartedAtLabel
+                          ? ` 会话开始：${appSessionStartedAtLabel}`
+                          : ""}
+                      </div>
                     </div>
-                    <div className="flex items-center gap-2 self-start">
+                    <div className="flex flex-wrap items-center gap-2 self-start">
+                      <div
+                        className="inline-flex rounded-lg border border-border bg-secondary/40 p-1"
+                        aria-label="降智拦截统计范围"
+                      >
+                        <button
+                          type="button"
+                          className={cn(
+                            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                            codexReasoningGuardStatsWindow === "session"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                          onClick={() => setCodexReasoningGuardStatsWindow("session")}
+                        >
+                          本次应用打开后
+                        </button>
+                        <button
+                          type="button"
+                          className={cn(
+                            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                            codexReasoningGuardStatsWindow === "all"
+                              ? "bg-background text-foreground shadow-sm"
+                              : "text-muted-foreground hover:text-foreground"
+                          )}
+                          onClick={() => setCodexReasoningGuardStatsWindow("all")}
+                        >
+                          全部统计
+                        </button>
+                      </div>
                       <Button
                         variant="secondary"
                         size="sm"
@@ -1611,6 +1673,47 @@ export function CliManagerCodexTab({
                   >
                     统计
                   </button>
+                </div>
+
+                <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-secondary/60 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <span className="font-medium text-secondary-foreground">
+                      {codexReasoningGuardStatsWindowLabel}
+                    </span>
+                    <span className="ml-2">{codexReasoningGuardStatsWindowDescription}</span>
+                    {codexReasoningGuardStatsWindow === "session" && appSessionStartedAtLabel ? (
+                      <span className="ml-2">会话开始：{appSessionStartedAtLabel}</span>
+                    ) : null}
+                  </div>
+                  <div
+                    className="inline-flex shrink-0 rounded-lg border border-border bg-secondary/40 p-1"
+                    aria-label="降智拦截统计范围"
+                  >
+                    <button
+                      type="button"
+                      className={cn(
+                        "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                        codexReasoningGuardStatsWindow === "session"
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                      onClick={() => setCodexReasoningGuardStatsWindow("session")}
+                    >
+                      本次应用打开后
+                    </button>
+                    <button
+                      type="button"
+                      className={cn(
+                        "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
+                        codexReasoningGuardStatsWindow === "all"
+                          ? "bg-background text-foreground shadow-sm"
+                          : "text-muted-foreground hover:text-foreground"
+                      )}
+                      onClick={() => setCodexReasoningGuardStatsWindow("all")}
+                    >
+                      全部统计
+                    </button>
+                  </div>
                 </div>
 
                 {codexReasoningGuardDetailsTab === "rules" ? (

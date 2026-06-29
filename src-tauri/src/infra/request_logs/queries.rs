@@ -592,8 +592,23 @@ pub fn get_by_trace_id(
 
 pub fn codex_reasoning_guard_stats(
     db: &db::Db,
+    since_created_at_ms: Option<i64>,
 ) -> crate::shared::error::AppResult<CodexReasoningGuardStats> {
     let conn = db.open_connection()?;
+    if matches!(since_created_at_ms, Some(value) if value <= 0) {
+        return Err(db_err!("invalid codex reasoning guard stats cutoff"));
+    }
+
+    let time_filter = if since_created_at_ms.is_some() {
+        " AND created_at_ms >= ?1"
+    } else {
+        ""
+    };
+    let hit_time_filter = if since_created_at_ms.is_some() {
+        " AND request_logs.created_at_ms >= ?1"
+    } else {
+        ""
+    };
     let overall_sql = format!(
         r#"
 WITH codex_requests AS (
@@ -601,7 +616,7 @@ WITH codex_requests AS (
     id,
     COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model
   FROM request_logs
-  WHERE cli_key = 'codex'
+  WHERE cli_key = 'codex'{time_filter}
 ),
 guard_hit_attempts AS (
   SELECT
@@ -610,6 +625,7 @@ guard_hit_attempts AS (
   FROM request_logs
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE request_logs.cli_key = 'codex'
+    {hit_time_filter}
     AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
 ),
 guard_hit_requests AS (
@@ -622,17 +638,23 @@ SELECT
   COALESCE((SELECT SUM(hit_attempt_count) FROM guard_hit_requests), 0) AS hit_attempt_count,
   COALESCE((SELECT COUNT(*) FROM codex_requests), 0) AS total_request_count
 "#,
-        unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
+        unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL,
+        time_filter = time_filter,
+        hit_time_filter = hit_time_filter
     );
 
     let (hit_request_count, hit_attempt_count, total_request_count) = conn
-        .query_row(&overall_sql, [], |row| {
-            Ok((
-                row.get::<_, i64>("hit_request_count")?.max(0),
-                row.get::<_, i64>("hit_attempt_count")?.max(0),
-                row.get::<_, i64>("total_request_count")?.max(0),
-            ))
-        })
+        .query_row(
+            &overall_sql,
+            params_from_iter(since_created_at_ms.iter()),
+            |row| {
+                Ok((
+                    row.get::<_, i64>("hit_request_count")?.max(0),
+                    row.get::<_, i64>("hit_attempt_count")?.max(0),
+                    row.get::<_, i64>("total_request_count")?.max(0),
+                ))
+            },
+        )
         .map_err(|e| db_err!("failed to query codex reasoning guard summary stats: {e}"))?;
 
     let by_model_sql = format!(
@@ -642,7 +664,7 @@ WITH codex_requests AS (
     id,
     COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model
   FROM request_logs
-  WHERE cli_key = 'codex'
+  WHERE cli_key = 'codex'{time_filter}
 ),
 guard_hit_attempts AS (
   SELECT
@@ -651,6 +673,7 @@ guard_hit_attempts AS (
   FROM request_logs
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE request_logs.cli_key = 'codex'
+    {hit_time_filter}
     AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
 ),
 guard_hit_requests AS (
@@ -684,14 +707,16 @@ ORDER BY
   totals_by_model.total_request_count DESC,
   totals_by_model.requested_model ASC
 "#,
-        unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
+        unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL,
+        time_filter = time_filter,
+        hit_time_filter = hit_time_filter
     );
 
     let mut stmt = conn
         .prepare(&by_model_sql)
         .map_err(|e| db_err!("failed to prepare codex reasoning guard model stats query: {e}"))?;
     let mut rows = stmt
-        .query([])
+        .query(params_from_iter(since_created_at_ms.iter()))
         .map_err(|e| db_err!("failed to run codex reasoning guard model stats query: {e}"))?;
 
     let mut by_model = Vec::new();
@@ -1112,7 +1137,7 @@ INSERT INTO request_logs (
         seed_codex_request_log_with_special_settings(&conn, 4, "trace-codex-unknown", None, None);
         drop(conn);
 
-        let stats = codex_reasoning_guard_stats(&db).unwrap();
+        let stats = codex_reasoning_guard_stats(&db, None).unwrap();
         assert_eq!(stats.hit_request_count, 2);
         assert_eq!(stats.hit_attempt_count, 3);
         assert_eq!(stats.normal_request_count, 2);
@@ -1143,5 +1168,80 @@ INSERT INTO request_logs (
         assert_eq!(stats.by_model[2].normal_request_count, 1);
         assert_eq!(stats.by_model[2].hit_attempt_count, 0);
         assert!((stats.by_model[2].hit_rate - 0.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_filters_by_created_at_ms_cutoff() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            0,
+            "trace-codex-legacy",
+            Some("gpt-5-codex"),
+            Some(r#"[{"type":"codex_reasoning_guard"}]"#),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-codex-before-cutoff",
+            Some("gpt-5-codex"),
+            None,
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-codex-after-cutoff-hit",
+            Some("gpt-5-codex"),
+            Some(r#"[{"type":"codex_reasoning_guard"},{"type":"codex_reasoning_guard"}]"#),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-codex-after-cutoff-normal",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        drop(conn);
+
+        let all_stats = codex_reasoning_guard_stats(&db, None).unwrap();
+        assert_eq!(all_stats.hit_request_count, 2);
+        assert_eq!(all_stats.hit_attempt_count, 3);
+        assert_eq!(all_stats.normal_request_count, 2);
+        assert_eq!(all_stats.total_request_count, 4);
+
+        let session_stats = codex_reasoning_guard_stats(&db, Some(2_000)).unwrap();
+        assert_eq!(session_stats.hit_request_count, 1);
+        assert_eq!(session_stats.hit_attempt_count, 2);
+        assert_eq!(session_stats.normal_request_count, 1);
+        assert_eq!(session_stats.total_request_count, 2);
+        assert_eq!(session_stats.by_model.len(), 2);
+        assert_eq!(session_stats.by_model[0].requested_model, "gpt-5-codex");
+        assert_eq!(session_stats.by_model[0].hit_request_count, 1);
+        assert_eq!(
+            session_stats.by_model[1].requested_model,
+            "gpt-5-mini-codex"
+        );
+        assert_eq!(session_stats.by_model[1].normal_request_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_rejects_non_positive_cutoff() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+
+        let zero_error = codex_reasoning_guard_stats(&db, Some(0))
+            .unwrap_err()
+            .to_string();
+        assert!(zero_error.contains("invalid codex reasoning guard stats cutoff"));
+
+        let negative_error = codex_reasoning_guard_stats(&db, Some(-1))
+            .unwrap_err()
+            .to_string();
+        assert!(negative_error.contains("invalid codex reasoning guard stats cutoff"));
     }
 }

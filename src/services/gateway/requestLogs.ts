@@ -74,6 +74,14 @@ export function normalizeRequestLogId(logId: number): number {
   return logId;
 }
 
+export function normalizeRequestLogSinceCreatedAtMs(value?: number | null): number | null {
+  if (value == null) return null;
+  if (!Number.isSafeInteger(value) || value <= 0) {
+    throw new Error(`SEC_INVALID_INPUT: invalid sinceCreatedAtMs=${value}`);
+  }
+  return value;
+}
+
 export function normalizeRequestLogCursorId(afterId: number): number {
   if (!Number.isSafeInteger(afterId) || afterId < 0) {
     throw new Error(`SEC_INVALID_INPUT: invalid afterId=${afterId}`);
@@ -237,13 +245,16 @@ export async function requestAttemptLogsByTraceId(traceId: string, limit?: numbe
   });
 }
 
-export async function requestLogsCodexReasoningGuardStats() {
+export async function requestLogsCodexReasoningGuardStats(sinceCreatedAtMs?: number | null) {
+  const normalizedSinceCreatedAtMs = normalizeRequestLogSinceCreatedAtMs(sinceCreatedAtMs);
+
   return invokeGeneratedIpc<CodexReasoningGuardStats>({
     title: "读取 Codex 降智拦截统计失败",
     cmd: "request_logs_codex_reasoning_guard_stats",
+    args: { sinceCreatedAtMs: normalizedSinceCreatedAtMs },
     invoke: async () =>
       mapGeneratedCommandResponse(
-        await commands.requestLogsCodexReasoningGuardStats(),
+        await commands.requestLogsCodexReasoningGuardStats(normalizedSinceCreatedAtMs),
         (value) => value
       ),
   });

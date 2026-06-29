@@ -1632,9 +1632,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
-  async requestLogsCodexReasoningGuardStats(): Promise<Result<CodexReasoningGuardStats, string>> {
+  async requestLogsCodexReasoningGuardStats(
+    sinceCreatedAtMs: number | null
+  ): Promise<Result<CodexReasoningGuardStats, string>> {
     try {
-      return { status: "ok", data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats") };
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats", { sinceCreatedAtMs }),
+      };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };

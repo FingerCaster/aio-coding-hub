@@ -154,10 +154,15 @@ export function useRequestAttemptLogsByTraceIdQuery(traceId: string | null, limi
   });
 }
 
-export function useRequestLogsCodexReasoningGuardStatsQuery(options?: { enabled?: boolean }) {
+export function useRequestLogsCodexReasoningGuardStatsQuery(
+  sinceCreatedAtMs?: number | null,
+  options?: { enabled?: boolean }
+) {
+  const normalizedSinceCreatedAtMs = sinceCreatedAtMs ?? null;
+
   return useQuery({
-    queryKey: requestLogsKeys.codexReasoningGuardStats(),
-    queryFn: () => requestLogsCodexReasoningGuardStats(),
+    queryKey: requestLogsKeys.codexReasoningGuardStats(normalizedSinceCreatedAtMs),
+    queryFn: () => requestLogsCodexReasoningGuardStats(normalizedSinceCreatedAtMs),
     enabled: isRequestLogsQueryEnabled(options?.enabled),
     placeholderData: keepPreviousData,
   });

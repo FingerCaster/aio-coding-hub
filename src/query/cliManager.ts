@@ -181,6 +181,9 @@ export function pickCliAvailable(info: SimpleCliInfo | ClaudeCliInfo | null) {
   return info.found ? ("available" as const) : ("unavailable" as const);
 }
 
-export function useCliManagerCodexReasoningGuardStatsQuery(options?: { enabled?: boolean }) {
-  return useRequestLogsCodexReasoningGuardStatsQuery(options);
+export function useCliManagerCodexReasoningGuardStatsQuery(
+  sinceCreatedAtMs?: number | null,
+  options?: { enabled?: boolean }
+) {
+  return useRequestLogsCodexReasoningGuardStatsQuery(sinceCreatedAtMs, options);
 }
