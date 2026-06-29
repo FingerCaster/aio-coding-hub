@@ -13,7 +13,7 @@
 
 </div>
 
-> **Credits** — Inspired by [cc-switch](https://github.com/farion1231/cc-switch), [claude-code-hub](https://github.com/ding113/claude-code-hub), and [code-switch-R](https://github.com/Rogers-F/code-switch-R).
+> **Credits** — Inspired by [cc-switch](https://github.com/farion1231/cc-switch), [claude-code-hub](https://github.com/ding113/claude-code-hub), and [code-switch-R](https://github.com/Rogers-F/code-switch-R). The Codex reasoning-token guard / retry design references [codex-retry-gateway](https://github.com/nonononull/codex-retry-gateway).
 
 ---
 
