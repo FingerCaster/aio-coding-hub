@@ -1,5 +1,13 @@
 # aio-coding-hub 0.62.1 Plugin Developer Loop Implementation Plan
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical plan contains obsolete
+> declarativeRules and local `replay --explain` success-path assumptions. Use
+> the Extension Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the 0.62.1 plugin developer loop and observability release without changing Plugin API v1 or exposing Provider Plugin API.

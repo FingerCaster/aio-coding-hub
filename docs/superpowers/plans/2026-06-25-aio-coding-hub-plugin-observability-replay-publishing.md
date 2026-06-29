@@ -1,5 +1,13 @@
 # aio-coding-hub Plugin Observability, Replay, and Publishing Implementation Plan
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical plan contains obsolete
+> declarativeRules and local `replay --explain` success-path assumptions. Use
+> the Extension Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Build the plugin observability, trace replay, developer tooling parity, example plugin, and market/publishing productization work without changing Plugin API v1.

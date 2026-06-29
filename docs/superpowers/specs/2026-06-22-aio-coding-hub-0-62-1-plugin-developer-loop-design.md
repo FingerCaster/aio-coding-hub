@@ -1,5 +1,13 @@
 # aio-coding-hub 0.62.1 Plugin Developer Loop and Observability Design
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical design contains obsolete
+> declarativeRules and local `replay --explain` success-path assumptions. Use
+> the Extension Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 ## Summary
 
 0.62.1 is the plugin developer-loop and observability release. 0.62.0 stabilized the gateway-first plugin kernel while keeping Plugin API v1 externally compatible and Provider Plugin API private. 0.62.1 keeps those boundaries and makes the existing plugin system easier to develop, validate, replay, diagnose, and maintain.

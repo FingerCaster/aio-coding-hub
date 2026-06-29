@@ -1,3 +1,4 @@
+import { spawnSync } from "node:child_process";
 import { existsSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -344,9 +345,15 @@ const replaySuccessPatterns = [
   /validate[\s\S]{0,80}replay[\s\S]{0,80}pack/,
 ];
 
-const supersededHistoricalDocs = [
+const supersededHistoricalDocsFallback = [
+  "docs/superpowers/plans/2026-06-22-aio-coding-hub-0-62-1-plugin-developer-loop.md",
+  "docs/superpowers/plans/2026-06-25-aio-coding-hub-plugin-observability-replay-publishing.md",
   "docs/superpowers/plans/2026-06-26-aio-coding-hub-plugin-example-developer-loop-phase-1.md",
+  "docs/superpowers/specs/2026-06-21-aio-coding-hub-0-62-plugin-platform-kernel-design.md",
+  "docs/superpowers/specs/2026-06-22-aio-coding-hub-0-62-1-plugin-developer-loop-design.md",
+  "docs/superpowers/specs/2026-06-25-aio-coding-hub-plugin-observability-replay-publishing-design.md",
   "docs/superpowers/specs/2026-06-26-aio-coding-hub-plugin-example-developer-loop-phase-1-design.md",
+  "docs/superpowers/specs/2026-06-27-aio-coding-hub-plugin-runtime-lifecycle-registry-design.md",
 ];
 
 function lineExplainsReplayUnsupported(line) {
@@ -358,6 +365,23 @@ function lineExplainsReplayUnsupported(line) {
     line.includes("not local `create-aio-plugin replay` execution") ||
     line.includes("not.toContain")
   );
+}
+
+function trackedSuperpowersMarkdownDocs() {
+  const result = spawnSync("git", ["ls-files", "docs/superpowers/plans", "docs/superpowers/specs"], {
+    cwd: repoRoot,
+    encoding: "utf8",
+  });
+  if (result.status !== 0) {
+    return supersededHistoricalDocsFallback;
+  }
+  return result.stdout
+    .split(/\r?\n/)
+    .filter((path) => path.endsWith(".md"));
+}
+
+function hasReplaySuccessPath(text) {
+  return replaySuccessPatterns.some((pattern) => pattern.test(text));
 }
 
 for (const doc of requiredDocs) {
@@ -405,15 +429,19 @@ for (const path of localReplayBoundaryFiles) {
   });
 }
 
-for (const path of supersededHistoricalDocs) {
+for (const path of trackedSuperpowersMarkdownDocs()) {
   const fullPath = join(repoRoot, path);
   if (!existsSync(fullPath)) {
     failures.push(`${path}: missing superseded historical document`);
     continue;
   }
-  const head = readFileSync(fullPath, "utf8").split(/\r?\n/).slice(0, 12).join("\n");
+  const text = readFileSync(fullPath, "utf8");
+  if (!hasReplaySuccessPath(text)) continue;
+  const head = text.split(/\r?\n/).slice(0, 16).join("\n");
   if (!head.includes("Status: Superseded.") || !head.includes("MUST NOT be executed")) {
-    failures.push(`${path}: obsolete plugin example plan must be marked superseded`);
+    failures.push(
+      `${path}: historical local replay/declarative-rules plan must be marked superseded`
+    );
   }
 }
 

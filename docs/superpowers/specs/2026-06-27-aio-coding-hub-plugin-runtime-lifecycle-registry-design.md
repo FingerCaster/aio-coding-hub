@@ -1,5 +1,13 @@
 # aio-coding-hub Plugin Runtime Lifecycle Registry Design
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical design still treated
+> declarativeRules as the public community plugin path. Use the Extension
+> Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 日期：2026-06-27
 
 ## Status

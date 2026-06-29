@@ -1,5 +1,13 @@
 # aio-coding-hub 0.62.0 插件平台内核设计
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical design contains obsolete
+> declarativeRules and local `replay --explain` success-path assumptions. Use
+> the Extension Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 日期：2026-06-21
 
 ## 目标
