@@ -25,10 +25,13 @@ const UNSUPPORTED_LEGACY_RUNTIME_ERROR: &str =
     "Unsupported pre-release plugin runtime; reinstall an Extension Host version";
 
 pub(crate) fn list_plugins(db: &crate::db::Db) -> AppResult<Vec<crate::plugins::PluginSummary>> {
-    Ok(repository::list_plugins(db)?
-        .into_iter()
-        .map(normalize_unsupported_legacy_plugin_summary)
-        .collect())
+    let mut out = Vec::new();
+    for summary in repository::list_plugins(db)? {
+        out.push(normalize_unsupported_legacy_plugin_summary_for_list(
+            db, summary,
+        )?);
+    }
+    Ok(out)
 }
 
 pub(crate) fn get_plugin_detail(db: &crate::db::Db, plugin_id: &str) -> AppResult<PluginDetail> {
@@ -307,28 +310,59 @@ fn is_unsupported_legacy_runtime_summary(runtime: &str) -> bool {
         || runtime.starts_with("native:") && runtime != "native:privacyFilter"
 }
 
+fn is_supported_official_native_privacy_filter_detail(detail: &PluginDetail) -> bool {
+    detail.install_source == PluginInstallSource::Official
+        && detail.summary.plugin_id == OFFICIAL_PRIVACY_FILTER_ID
+        && matches!(&detail.manifest.runtime, PluginRuntime::Native { engine } if engine == "privacyFilter")
+}
+
+fn is_unsupported_native_runtime_detail(detail: &PluginDetail) -> bool {
+    matches!(detail.manifest.runtime, PluginRuntime::Native { .. })
+        && !is_supported_official_native_privacy_filter_detail(detail)
+}
+
 fn is_unsupported_legacy_runtime_detail(detail: &PluginDetail) -> bool {
     is_unsupported_legacy_runtime_summary(&detail.summary.runtime)
+        || is_unsupported_native_runtime_detail(detail)
         || matches!(detail.manifest.runtime, PluginRuntime::ExtensionHost { .. })
             && detail.manifest.main.as_deref() == Some("legacy/unsupported.js")
+}
+
+fn normalize_unsupported_legacy_plugin_summary_for_list(
+    db: &crate::db::Db,
+    summary: crate::plugins::PluginSummary,
+) -> AppResult<crate::plugins::PluginSummary> {
+    let summary = normalize_unsupported_legacy_plugin_summary(summary);
+    if summary.runtime == "native:privacyFilter" {
+        let detail = repository::get_plugin(db, &summary.plugin_id)?;
+        return Ok(normalize_unsupported_legacy_plugin_detail(detail).summary);
+    }
+    Ok(summary)
 }
 
 fn normalize_unsupported_legacy_plugin_summary(
     mut summary: crate::plugins::PluginSummary,
 ) -> crate::plugins::PluginSummary {
     if is_unsupported_legacy_runtime_summary(&summary.runtime) {
-        summary.status = PluginStatus::Disabled;
-        summary.update_available = false;
-        summary.last_error = Some(UNSUPPORTED_LEGACY_RUNTIME_ERROR.to_string());
+        summary = mark_unsupported_legacy_plugin_summary(summary);
     }
     summary
 }
 
 fn normalize_unsupported_legacy_plugin_detail(mut detail: PluginDetail) -> PluginDetail {
     if is_unsupported_legacy_runtime_detail(&detail) {
-        detail.summary = normalize_unsupported_legacy_plugin_summary(detail.summary);
+        detail.summary = mark_unsupported_legacy_plugin_summary(detail.summary);
     }
     detail
+}
+
+fn mark_unsupported_legacy_plugin_summary(
+    mut summary: crate::plugins::PluginSummary,
+) -> crate::plugins::PluginSummary {
+    summary.status = PluginStatus::Disabled;
+    summary.update_available = false;
+    summary.last_error = Some(UNSUPPORTED_LEGACY_RUNTIME_ERROR.to_string());
+    summary
 }
 
 pub(crate) fn install_official_plugin(
@@ -3045,6 +3079,66 @@ INSERT INTO plugins (
         let detail = get_plugin_detail(&db, "local.legacy-db").unwrap();
         assert_eq!(detail.summary.status, PluginStatus::Disabled);
         assert_eq!(detail.summary.runtime, "declarativeRules");
+        assert!(detail
+            .summary
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("Unsupported pre-release plugin runtime")));
+
+        let active = enabled_plugins_for_gateway(&db).unwrap();
+        assert!(active.is_empty());
+    }
+
+    #[test]
+    fn local_native_privacy_filter_db_row_is_disabled_for_ui_and_gateway() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("local-native-plugin.db")).unwrap();
+        let manifest = community_native_manifest("acme.native-privacy-filter");
+        let manifest_json = serde_json::to_string(&manifest).unwrap();
+        let now = crate::shared::time::now_unix_seconds();
+        db.open_connection()
+            .unwrap()
+            .execute(
+                r#"
+INSERT INTO plugins (
+  plugin_id,
+  name,
+  current_version,
+  install_source,
+  status,
+  manifest_json,
+  config_json,
+  granted_permissions_json,
+  installed_dir,
+  created_at,
+  updated_at
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, '{}', '[]', NULL, ?7, ?7)
+"#,
+                rusqlite::params![
+                    "acme.native-privacy-filter",
+                    "Native Privacy Filter",
+                    "1.0.0",
+                    "local",
+                    "enabled",
+                    manifest_json,
+                    now
+                ],
+            )
+            .unwrap();
+
+        let listed = list_plugins(&db).unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].runtime, "native:privacyFilter");
+        assert_eq!(listed[0].status, PluginStatus::Disabled);
+        assert!(listed[0]
+            .last_error
+            .as_deref()
+            .is_some_and(|message| message.contains("Unsupported pre-release plugin runtime")));
+
+        let detail = get_plugin_detail(&db, "acme.native-privacy-filter").unwrap();
+        assert_eq!(detail.install_source, PluginInstallSource::Local);
+        assert_eq!(detail.summary.runtime, "native:privacyFilter");
+        assert_eq!(detail.summary.status, PluginStatus::Disabled);
         assert!(detail
             .summary
             .last_error
