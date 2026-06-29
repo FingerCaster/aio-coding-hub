@@ -13,6 +13,7 @@ use crate::shared::error::{AppError, AppResult};
 use rand::RngCore;
 use serde_json::{json, Value};
 use sha2::Digest;
+use std::collections::BTreeSet;
 use std::fs::OpenOptions;
 use std::io::Write;
 use std::path::{Path, PathBuf};
@@ -49,6 +50,7 @@ impl ExtensionHostInstance {
             Some(Arc::new(ExtensionHostApiHandler {
                 db,
                 plugin_id: manifest.id,
+                capabilities: manifest.capabilities.into_iter().collect(),
             })),
         )
         .await
@@ -237,6 +239,7 @@ pub(crate) type ExtensionHost = ExtensionHostInstance;
 struct ExtensionHostApiHandler {
     db: db::Db,
     plugin_id: String,
+    capabilities: BTreeSet<String>,
 }
 
 impl JsonRpcHostMethodHandler for ExtensionHostApiHandler {
@@ -254,7 +257,18 @@ impl JsonRpcHostMethodHandler for ExtensionHostApiHandler {
 }
 
 impl ExtensionHostApiHandler {
+    fn require_capability(&self, capability: &str) -> AppResult<()> {
+        if self.capabilities.contains(capability) {
+            return Ok(());
+        }
+        Err(AppError::new(
+            "PLUGIN_EXTENSION_HOST_FORBIDDEN",
+            format!("extension host API requires {capability}"),
+        ))
+    }
+
     fn storage_get(&self, params: Value) -> AppResult<Value> {
+        self.require_capability("storage.plugin")?;
         let plugin_id = self.host_api_plugin_id(&params)?;
         let key = required_string(&params, "key")?;
         let detail = repository::get_plugin(&self.db, plugin_id)?;
@@ -268,6 +282,7 @@ impl ExtensionHostApiHandler {
     }
 
     fn storage_set(&self, params: Value) -> AppResult<Value> {
+        self.require_capability("storage.plugin")?;
         let plugin_id = self.host_api_plugin_id(&params)?.to_string();
         let key = required_string(&params, "key")?.to_string();
         let value = params.get("value").cloned().unwrap_or(Value::Null);
@@ -310,6 +325,7 @@ impl ExtensionHostApiHandler {
     }
 
     fn diagnostics_get_runtime_reports(&self, params: Value) -> AppResult<Value> {
+        self.require_capability("diagnostics.read")?;
         let plugin_id = self.host_api_plugin_id(&params)?;
         let limit = params
             .get("limit")
@@ -487,34 +503,64 @@ fn map_process_error(err: AppError) -> AppError {
 
 #[cfg(test)]
 mod tests {
+    use crate::domain::plugins::{PluginInstallSource, PluginManifest, PluginStatus};
+    use crate::infra::plugins::repository::{self, InsertPluginInput};
     use serde_json::json;
     use std::path::Path;
     use std::time::Duration;
 
     fn write_extension_plugin(root: &Path, extension_js: &str) {
+        write_extension_plugin_with_capabilities(root, extension_js, &["commands.execute"]);
+    }
+
+    fn write_extension_plugin_with_capabilities(
+        root: &Path,
+        extension_js: &str,
+        capabilities: &[&str],
+    ) {
         std::fs::create_dir_all(root.join("dist")).expect("create dist");
+        let manifest = json!({
+            "id": "acme.echo",
+            "name": "Acme Echo",
+            "version": "1.0.0",
+            "apiVersion": "1.0.0",
+            "runtime": { "kind": "extensionHost", "language": "typescript" },
+            "main": "dist/extension.js",
+            "activationEvents": ["onCommand:acme.echo", "onCommand:acme.never"],
+            "contributes": {
+                "commands": [
+                    { "command": "acme.echo", "title": "Echo" },
+                    { "command": "acme.never", "title": "Never" }
+                ]
+            },
+            "capabilities": capabilities,
+            "hostCompatibility": { "app": ">=0.60.0", "pluginApi": "^1.0.0" }
+        });
         std::fs::write(
             root.join("plugin.json"),
-            r#"{
-              "id": "acme.echo",
-              "name": "Acme Echo",
-              "version": "1.0.0",
-              "apiVersion": "1.0.0",
-              "runtime": { "kind": "extensionHost", "language": "typescript" },
-              "main": "dist/extension.js",
-              "activationEvents": ["onCommand:acme.echo", "onCommand:acme.never"],
-              "contributes": {
-                "commands": [
-                  { "command": "acme.echo", "title": "Echo" },
-                  { "command": "acme.never", "title": "Never" }
-                ]
-              },
-              "capabilities": ["commands.execute"],
-              "hostCompatibility": { "app": ">=0.60.0", "pluginApi": "^1.0.0" }
-            }"#,
+            serde_json::to_vec_pretty(&manifest).expect("manifest json"),
         )
         .expect("write plugin.json");
         std::fs::write(root.join("dist/extension.js"), extension_js).expect("write extension.js");
+    }
+
+    fn install_extension_plugin(db: &crate::db::Db, root: &Path) -> PluginManifest {
+        let manifest = super::read_manifest(root).expect("manifest");
+        repository::insert_plugin(
+            db,
+            InsertPluginInput {
+                manifest: manifest.clone(),
+                install_source: PluginInstallSource::Local,
+                status: PluginStatus::Enabled,
+                installed_dir: Some(root.to_string_lossy().to_string()),
+            },
+        )
+        .expect("insert plugin");
+        manifest
+    }
+
+    fn init_test_db(root: &Path) -> crate::db::Db {
+        crate::db::init_for_tests(&root.join("plugins.db")).expect("init db")
     }
 
     #[tokio::test]
@@ -544,6 +590,163 @@ mod tests {
         assert!(host.is_running());
         host.dispose().await;
         assert!(!host.is_running());
+    }
+
+    #[tokio::test]
+    async fn extension_host_storage_api_allows_storage_plugin_capability() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_extension_plugin_with_capabilities(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                api.storage.set("key", { ok: true });
+                return api.storage.get("key");
+              });
+            };
+            "#,
+            &["commands.execute", "storage.plugin"],
+        );
+        let db = init_test_db(temp.path());
+        let manifest = install_extension_plugin(&db, temp.path());
+
+        let mut host =
+            super::ExtensionHost::start_with_host_api(manifest, temp.path().to_path_buf(), db)
+                .await
+                .expect("start extension host");
+
+        let result = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect("execute storage command");
+
+        assert_eq!(result, json!({ "ok": true }));
+        host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_storage_api_rejects_missing_storage_plugin_capability() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_extension_plugin(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                return globalThis.__aioHostApi(
+                  "storage.get",
+                  { pluginId: "acme.echo", key: "key" }
+                );
+              });
+            };
+            "#,
+        );
+        let db = init_test_db(temp.path());
+        let manifest = install_extension_plugin(&db, temp.path());
+
+        let mut host =
+            super::ExtensionHost::start_with_host_api(manifest, temp.path().to_path_buf(), db)
+                .await
+                .expect("start extension host");
+
+        let err = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect_err("storage API without capability should fail");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_FORBIDDEN");
+        host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_diagnostics_api_allows_diagnostics_read_capability() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_extension_plugin_with_capabilities(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                return api.diagnostics.getRuntimeReports(5);
+              });
+            };
+            "#,
+            &["commands.execute", "diagnostics.read"],
+        );
+        let db = init_test_db(temp.path());
+        let manifest = install_extension_plugin(&db, temp.path());
+
+        let mut host =
+            super::ExtensionHost::start_with_host_api(manifest, temp.path().to_path_buf(), db)
+                .await
+                .expect("start extension host");
+
+        let result = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect("execute diagnostics command");
+
+        assert!(result.as_array().is_some());
+        host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_diagnostics_api_rejects_missing_diagnostics_read_capability() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_extension_plugin(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                return globalThis.__aioHostApi(
+                  "diagnostics.getRuntimeReports",
+                  { pluginId: "acme.echo", limit: 5 }
+                );
+              });
+            };
+            "#,
+        );
+        let db = init_test_db(temp.path());
+        let manifest = install_extension_plugin(&db, temp.path());
+
+        let mut host =
+            super::ExtensionHost::start_with_host_api(manifest, temp.path().to_path_buf(), db)
+                .await
+                .expect("start extension host");
+
+        let err = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect_err("diagnostics API without capability should fail");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_FORBIDDEN");
+        host.dispose().await;
+    }
+
+    #[tokio::test]
+    async fn extension_host_commands_api_requires_commands_execute_before_command_runs() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_extension_plugin_with_capabilities(
+            temp.path(),
+            r#"
+            module.exports.activate = function(api) {
+              api.commands.registerCommand("acme.echo", function() {
+                return { executed: true };
+              });
+            };
+            "#,
+            &[],
+        );
+
+        let mut host = super::ExtensionHost::start_for_tests(temp.path())
+            .await
+            .expect("start extension host");
+
+        let err = host
+            .execute_command("acme.echo", json!({}))
+            .await
+            .expect_err("missing commands capability should fail before command execution");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_JS_ERROR");
+        host.dispose().await;
     }
 
     #[tokio::test]

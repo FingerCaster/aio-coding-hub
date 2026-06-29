@@ -2,7 +2,7 @@
 
 use crate::domain::plugin_contributions::PluginContributes;
 use crate::domain::plugins::PluginManifest;
-use rquickjs::{Context, Function, Object, Runtime, Value as JsValue};
+use rquickjs::{CatchResultExt, CaughtError, Context, Function, Object, Runtime, Value as JsValue};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::BTreeSet;
@@ -325,9 +325,11 @@ impl WorkerState {
             "#
         );
         self.with_js_deadline(|| {
-            self.context
-                .with(|ctx| ctx.eval::<(), _>(bootstrap.as_str()))
-                .map_err(js_runtime_error)
+            self.context.with(|ctx| {
+                ctx.eval::<(), _>(bootstrap.as_str())
+                    .catch(&ctx)
+                    .map_err(|err| self.js_caught_error(err))
+            })
         })
     }
 
@@ -371,35 +373,38 @@ impl WorkerState {
         }
         let declared_commands = self.declared_commands.clone();
         let plugin_id = self.manifest.id.clone();
+        let capabilities: BTreeSet<String> = self.manifest.capabilities.iter().cloned().collect();
         let host_calls = Arc::clone(&self.host_calls);
         self.with_js_deadline(|| {
             self.context.with(|ctx| {
                 let globals = ctx.globals();
                 let api = Object::new(ctx.clone()).map_err(js_runtime_error)?;
-                let commands = Object::new(ctx.clone()).map_err(js_runtime_error)?;
-                let declared_for_register = declared_commands.clone();
-                let register = Function::new(
-                    ctx.clone(),
-                    move |command: String, handler: Function<'_>| -> rquickjs::Result<()> {
-                        if !declared_for_register.contains(&command) {
-                            return Err(rquickjs::Error::new_from_js_message(
-                                "command",
-                                "declared command",
-                                format!(
-                                    "PLUGIN_EXTENSION_HOST_UNDECLARED_COMMAND: command {command} is not declared by manifest"
-                                ),
-                            ));
-                        }
-                        let globals = handler.ctx().globals();
-                        let registry: Object = globals.get("__aioCommands")?;
-                        registry.set(command.as_str(), handler)
-                    },
-                )
-                .map_err(js_runtime_error)?;
-                commands
-                    .set("registerCommand", register)
+                if capabilities.contains("commands.execute") {
+                    let commands = Object::new(ctx.clone()).map_err(js_runtime_error)?;
+                    let declared_for_register = declared_commands.clone();
+                    let register = Function::new(
+                        ctx.clone(),
+                        move |command: String, handler: Function<'_>| -> rquickjs::Result<()> {
+                            if !declared_for_register.contains(&command) {
+                                return Err(rquickjs::Error::new_from_js_message(
+                                    "command",
+                                    "declared command",
+                                    format!(
+                                        "PLUGIN_EXTENSION_HOST_UNDECLARED_COMMAND: command {command} is not declared by manifest"
+                                    ),
+                                ));
+                            }
+                            let globals = handler.ctx().globals();
+                            let registry: Object = globals.get("__aioCommands")?;
+                            registry.set(command.as_str(), handler)
+                        },
+                    )
                     .map_err(js_runtime_error)?;
-                api.set("commands", commands).map_err(js_runtime_error)?;
+                    commands
+                        .set("registerCommand", register)
+                        .map_err(js_runtime_error)?;
+                    api.set("commands", commands).map_err(js_runtime_error)?;
+                }
 
                 let host_calls_for_api = Arc::clone(&host_calls);
                 let host_call_fn = Function::new(
@@ -414,8 +419,14 @@ impl WorkerState {
                                 ),
                             )
                         })?;
-                        let value =
-                            host_call(&method, params, &host_calls_for_api).map_err(worker_error_to_js)?;
+                        let value = match host_call(&method, params, &host_calls_for_api) {
+                            Ok(value) => json!({ "ok": true, "value": value }),
+                            Err(err) => json!({
+                                "ok": false,
+                                "code": err.code,
+                                "message": err.message,
+                            }),
+                        };
                         serde_json::to_string(&value).map_err(|err| {
                             worker_error_to_js(WorkerError::new(
                                 "PLUGIN_EXTENSION_HOST_ENCODE_FAILED",
@@ -428,6 +439,27 @@ impl WorkerState {
                 globals
                     .set("__aioHostCall", host_call_fn)
                     .map_err(js_runtime_error)?;
+                ctx.eval::<(), _>(
+                    r#"
+                    globalThis.__aioHostApi = function(method, params) {
+                      const response = JSON.parse(globalThis.__aioHostCall(
+                        method,
+                        JSON.stringify(params)
+                      ));
+                      if (!response || response.ok !== true) {
+                        const code = response && response.code
+                          ? response.code
+                          : "PLUGIN_EXTENSION_HOST_API_ERROR";
+                        const message = response && response.message
+                          ? response.message
+                          : "host API returned an error";
+                        throw new Error(code + ": " + message);
+                      }
+                      return response.value;
+                    };
+                    "#,
+                )
+                .map_err(js_runtime_error)?;
 
                 let plugin_id_json = serde_json::to_string(&plugin_id).map_err(|err| {
                     WorkerError::new(
@@ -435,44 +467,49 @@ impl WorkerState {
                         format!("failed to encode plugin id for host API: {err}"),
                     )
                 })?;
-                let storage_source = format!(
-                    r#"
-                    ({{
-                      get(key) {{
-                        return JSON.parse(globalThis.__aioHostCall(
-                          "storage.get",
-                          JSON.stringify({{ pluginId: {plugin_id_json}, key }})
-                        ));
-                      }},
-                      set(key, value) {{
-                        JSON.parse(globalThis.__aioHostCall(
-                          "storage.set",
-                          JSON.stringify({{ pluginId: {plugin_id_json}, key, value }})
-                        ));
-                      }}
-                    }})
-                    "#
-                );
-                let storage: Object = ctx.eval(storage_source.as_str()).map_err(js_runtime_error)?;
-                api.set("storage", storage).map_err(js_runtime_error)?;
+                if capabilities.contains("storage.plugin") {
+                    let storage_source = format!(
+                        r#"
+                        ({{
+                          get(key) {{
+                            return globalThis.__aioHostApi(
+                              "storage.get",
+                              {{ pluginId: {plugin_id_json}, key }}
+                            );
+                          }},
+                          set(key, value) {{
+                            globalThis.__aioHostApi(
+                              "storage.set",
+                              {{ pluginId: {plugin_id_json}, key, value }}
+                            );
+                          }}
+                        }})
+                        "#
+                    );
+                    let storage: Object =
+                        ctx.eval(storage_source.as_str()).map_err(js_runtime_error)?;
+                    api.set("storage", storage).map_err(js_runtime_error)?;
+                }
 
-                let diagnostics_source = format!(
-                    r#"
-                    ({{
-                      getRuntimeReports(limit) {{
-                        return JSON.parse(globalThis.__aioHostCall(
-                          "diagnostics.getRuntimeReports",
-                          JSON.stringify({{ pluginId: {plugin_id_json}, limit }})
-                        ));
-                      }}
-                    }})
-                    "#
-                );
-                let diagnostics: Object = ctx
-                    .eval(diagnostics_source.as_str())
-                    .map_err(js_runtime_error)?;
-                api.set("diagnostics", diagnostics)
-                    .map_err(js_runtime_error)?;
+                if capabilities.contains("diagnostics.read") {
+                    let diagnostics_source = format!(
+                        r#"
+                        ({{
+                          getRuntimeReports(limit) {{
+                            return globalThis.__aioHostApi(
+                              "diagnostics.getRuntimeReports",
+                              {{ pluginId: {plugin_id_json}, limit }}
+                            );
+                          }}
+                        }})
+                        "#
+                    );
+                    let diagnostics: Object = ctx
+                        .eval(diagnostics_source.as_str())
+                        .map_err(js_runtime_error)?;
+                    api.set("diagnostics", diagnostics)
+                        .map_err(js_runtime_error)?;
+                }
 
                 let module: Object = globals.get("module").map_err(js_runtime_error)?;
                 let exports: Object = module.get("exports").map_err(js_runtime_error)?;
@@ -482,7 +519,8 @@ impl WorkerState {
                 let activate: Function = exports.get("activate").map_err(js_runtime_error)?;
                 activate
                     .call::<_, ()>((api,))
-                    .map_err(|err| self.js_runtime_error(err))
+                    .catch(&ctx)
+                    .map_err(|err| self.js_caught_error(err))
             })
         })?;
         self.activated = true;
@@ -506,7 +544,8 @@ impl WorkerState {
                         exports.get("deactivate").map_err(js_runtime_error)?;
                     deactivate
                         .call::<_, ()>(())
-                        .map_err(|err| self.js_runtime_error(err))?;
+                        .catch(&ctx)
+                        .map_err(|err| self.js_caught_error(err))?;
                 }
                 Ok(())
             })
@@ -551,7 +590,8 @@ impl WorkerState {
                     .map_err(js_runtime_error)?;
                 let result: JsValue = handler
                     .call((parsed_args,))
-                    .map_err(|err| self.js_runtime_error(err))?;
+                    .catch(&ctx)
+                    .map_err(|err| self.js_caught_error(err))?;
                 let globals = ctx.globals();
                 let json_obj: Object = globals.get("JSON").map_err(js_runtime_error)?;
                 let stringify: Function = json_obj.get("stringify").map_err(js_runtime_error)?;
@@ -590,7 +630,11 @@ impl WorkerState {
         result
     }
 
-    fn js_runtime_error(&self, err: rquickjs::Error) -> WorkerError {
+    fn js_caught_error(&self, err: CaughtError<'_>) -> WorkerError {
+        self.js_error_message(err.to_string())
+    }
+
+    fn js_error_message(&self, message: String) -> WorkerError {
         let deadline_expired = self
             .deadline
             .lock()
@@ -602,7 +646,22 @@ impl WorkerState {
                 "extension host JavaScript execution timed out",
             );
         }
-        js_runtime_error(err)
+        if message.contains("interrupted")
+            || message.contains("interrupted by")
+            || message.contains("InternalError: interrupted")
+        {
+            return WorkerError::new(
+                "PLUGIN_EXTENSION_HOST_TIMEOUT",
+                "extension host JavaScript execution timed out",
+            );
+        }
+        if let Some((code, rest)) = split_error_code(&message) {
+            return WorkerError::new(code, rest);
+        }
+        WorkerError::new(
+            "PLUGIN_EXTENSION_HOST_JS_ERROR",
+            format!("extension host JavaScript error: {message}"),
+        )
     }
 }
 
@@ -896,6 +955,14 @@ fn js_runtime_error(err: rquickjs::Error) -> WorkerError {
 
 fn split_error_code(raw: &str) -> Option<(&str, String)> {
     let message = raw.trim();
+    if let Some(start) = message.find("PLUGIN_EXTENSION_HOST_") {
+        let code_and_rest = &message[start..];
+        let (code, rest) = code_and_rest.trim().split_once(':')?;
+        let code = code.trim();
+        if code.chars().all(|ch| ch.is_ascii_uppercase() || ch == '_') {
+            return Some((code, rest.trim().to_string()));
+        }
+    }
     let (_prefix, code_and_rest) = message.split_once(':').unwrap_or(("", message));
     let (code, rest) = code_and_rest.trim().split_once(':')?;
     let code = code.trim();
