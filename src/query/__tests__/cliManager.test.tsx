@@ -6,6 +6,7 @@ import {
   type ClaudeSettingsState,
   type CodexConfigState,
   type CodexConfigTomlState,
+  type GeminiConfigState,
   type SimpleCliInfo,
   cliManagerClaudeHooksGet,
   cliManagerClaudeHooksSet,
@@ -17,6 +18,8 @@ import {
   cliManagerCodexConfigTomlGet,
   cliManagerCodexConfigTomlSet,
   cliManagerCodexInfoGet,
+  cliManagerGeminiConfigGet,
+  cliManagerGeminiConfigSet,
   cliManagerGeminiInfoGet,
 } from "../../services/cli/cliManager";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
@@ -33,9 +36,13 @@ import {
   useCliManagerCodexConfigSetMutation,
   useCliManagerCodexConfigTomlQuery,
   useCliManagerCodexConfigTomlSetMutation,
+  useCliManagerCodexReasoningGuardStatsQuery,
   useCliManagerCodexInfoQuery,
+  useCliManagerGeminiConfigQuery,
+  useCliManagerGeminiConfigSetMutation,
   useCliManagerGeminiInfoQuery,
 } from "../cliManager";
+import { useRequestLogsCodexReasoningGuardStatsQuery } from "../requestLogs";
 
 vi.mock("../../services/cli/cliManager", async () => {
   const actual = await vi.importActual<typeof import("../../services/cli/cliManager")>(
@@ -53,7 +60,17 @@ vi.mock("../../services/cli/cliManager", async () => {
     cliManagerCodexConfigSet: vi.fn(),
     cliManagerCodexConfigTomlGet: vi.fn(),
     cliManagerCodexConfigTomlSet: vi.fn(),
+    cliManagerGeminiConfigGet: vi.fn(),
+    cliManagerGeminiConfigSet: vi.fn(),
     cliManagerGeminiInfoGet: vi.fn(),
+  };
+});
+
+vi.mock("../requestLogs", async () => {
+  const actual = await vi.importActual<typeof import("../requestLogs")>("../requestLogs");
+  return {
+    ...actual,
+    useRequestLogsCodexReasoningGuardStatsQuery: vi.fn(),
   };
 });
 
@@ -173,6 +190,34 @@ function makeCodexConfigTomlState(
   };
 }
 
+function makeGeminiConfigState(overrides: Partial<GeminiConfigState> = {}): GeminiConfigState {
+  return {
+    configDir: "/tmp/.gemini",
+    configPath: "/tmp/.gemini/settings.json",
+    exists: true,
+    modelName: null,
+    modelMaxSessionTurns: null,
+    modelCompressionThreshold: null,
+    defaultApprovalMode: null,
+    enableAutoUpdate: null,
+    enableNotifications: null,
+    vimMode: null,
+    retryFetchErrors: null,
+    maxAttempts: null,
+    uiTheme: null,
+    uiHideBanner: null,
+    uiHideTips: null,
+    uiShowLineNumbers: null,
+    uiInlineThinkingMode: null,
+    usageStatisticsEnabled: null,
+    sessionRetentionEnabled: null,
+    sessionRetentionMaxAge: null,
+    planModelRouting: null,
+    securityAuthSelectedType: null,
+    ...overrides,
+  };
+}
+
 describe("query/cliManager", () => {
   it("calls cliManager queries with tauri runtime", async () => {
     setTauriRuntime();
@@ -183,6 +228,7 @@ describe("query/cliManager", () => {
     vi.mocked(cliManagerCodexInfoGet).mockResolvedValue(makeSimpleCliInfo());
     vi.mocked(cliManagerCodexConfigGet).mockResolvedValue(makeCodexConfigState());
     vi.mocked(cliManagerCodexConfigTomlGet).mockResolvedValue(makeCodexConfigTomlState());
+    vi.mocked(cliManagerGeminiConfigGet).mockResolvedValue(makeGeminiConfigState());
     vi.mocked(cliManagerGeminiInfoGet).mockResolvedValue(makeSimpleCliInfo());
 
     const client = createTestQueryClient();
@@ -194,6 +240,7 @@ describe("query/cliManager", () => {
     renderHook(() => useCliManagerCodexInfoQuery(), { wrapper });
     renderHook(() => useCliManagerCodexConfigQuery(), { wrapper });
     renderHook(() => useCliManagerCodexConfigTomlQuery(), { wrapper });
+    renderHook(() => useCliManagerGeminiConfigQuery(), { wrapper });
     renderHook(() => useCliManagerGeminiInfoQuery(), { wrapper });
 
     await waitFor(() => {
@@ -203,6 +250,7 @@ describe("query/cliManager", () => {
       expect(cliManagerCodexInfoGet).toHaveBeenCalled();
       expect(cliManagerCodexConfigGet).toHaveBeenCalled();
       expect(cliManagerCodexConfigTomlGet).toHaveBeenCalled();
+      expect(cliManagerGeminiConfigGet).toHaveBeenCalled();
       expect(cliManagerGeminiInfoGet).toHaveBeenCalled();
     });
   });
@@ -234,6 +282,7 @@ describe("query/cliManager", () => {
     renderHook(() => useCliManagerCodexInfoQuery({ enabled: false }), { wrapper });
     renderHook(() => useCliManagerCodexConfigQuery({ enabled: false }), { wrapper });
     renderHook(() => useCliManagerCodexConfigTomlQuery({ enabled: false }), { wrapper });
+    renderHook(() => useCliManagerGeminiConfigQuery({ enabled: false }), { wrapper });
     renderHook(() => useCliManagerGeminiInfoQuery({ enabled: false }), { wrapper });
 
     await Promise.resolve();
@@ -244,6 +293,7 @@ describe("query/cliManager", () => {
     expect(cliManagerCodexInfoGet).not.toHaveBeenCalled();
     expect(cliManagerCodexConfigGet).not.toHaveBeenCalled();
     expect(cliManagerCodexConfigTomlGet).not.toHaveBeenCalled();
+    expect(cliManagerGeminiConfigGet).not.toHaveBeenCalled();
     expect(cliManagerGeminiInfoGet).not.toHaveBeenCalled();
   });
 
@@ -336,27 +386,54 @@ describe("query/cliManager", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
   });
 
+  it("useCliManagerGeminiConfigSetMutation updates cache and invalidates", async () => {
+    setTauriRuntime();
+
+    const updated = makeGeminiConfigState({ modelName: "gemini-2.5-pro" });
+    vi.mocked(cliManagerGeminiConfigSet).mockResolvedValue(updated);
+
+    const client = createTestQueryClient();
+    client.setQueryData(cliManagerKeys.geminiConfig(), makeGeminiConfigState({ modelName: "old" }));
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useCliManagerGeminiConfigSetMutation(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ modelName: "gemini-2.5-pro" });
+    });
+
+    expect(client.getQueryData(cliManagerKeys.geminiConfig())).toEqual(updated);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.geminiConfig() });
+  });
+
   it("mutation hooks keep cache unchanged when service returns null", async () => {
     setTauriRuntime();
 
     vi.mocked(cliManagerClaudeSettingsSet).mockResolvedValue(null as never);
     vi.mocked(cliManagerCodexConfigSet).mockResolvedValue(null as never);
     vi.mocked(cliManagerCodexConfigTomlSet).mockResolvedValue(null as never);
+    vi.mocked(cliManagerGeminiConfigSet).mockResolvedValue(null as never);
 
     const client = createTestQueryClient();
     const wrapper = createQueryWrapper(client);
 
     client.setQueryData(cliManagerKeys.claudeSettings(), { exists: true, model: "old-claude" });
     client.setQueryData(cliManagerKeys.codexConfig(), { exists: true, model: "old-codex" });
+    client.setQueryData(
+      cliManagerKeys.geminiConfig(),
+      makeGeminiConfigState({ modelName: "old-gemini" })
+    );
 
     const claudeMutation = renderHook(() => useCliManagerClaudeSettingsSetMutation(), { wrapper });
     const codexMutation = renderHook(() => useCliManagerCodexConfigSetMutation(), { wrapper });
     const tomlMutation = renderHook(() => useCliManagerCodexConfigTomlSetMutation(), { wrapper });
+    const geminiMutation = renderHook(() => useCliManagerGeminiConfigSetMutation(), { wrapper });
 
     await act(async () => {
       await claudeMutation.result.current.mutateAsync({ model: "new-claude" });
       await codexMutation.result.current.mutateAsync({ model: "new-codex" });
       await tomlMutation.result.current.mutateAsync({ toml: 'model = "new-codex"' });
+      await geminiMutation.result.current.mutateAsync({ modelName: "new-gemini" });
     });
 
     expect(client.getQueryData(cliManagerKeys.claudeSettings())).toEqual({
@@ -367,11 +444,38 @@ describe("query/cliManager", () => {
       exists: true,
       model: "old-codex",
     });
+    expect(client.getQueryData(cliManagerKeys.geminiConfig())).toEqual(
+      makeGeminiConfigState({ modelName: "old-gemini" })
+    );
   });
 
   it("pickCliAvailable maps info to availability state", () => {
     expect(pickCliAvailable(null)).toBe("unavailable");
     expect(pickCliAvailable(makeSimpleCliInfo({ found: false }))).toBe("unavailable");
     expect(pickCliAvailable(makeSimpleCliInfo({ found: true }))).toBe("available");
+  });
+
+  it("forwards Codex reasoning guard stats queries with the requested time window", () => {
+    vi.mocked(useRequestLogsCodexReasoningGuardStatsQuery).mockReturnValue({
+      data: null,
+      isFetching: false,
+    } as any);
+
+    const sessionOptions = { enabled: true };
+    const allTimeOptions = { enabled: false };
+
+    useCliManagerCodexReasoningGuardStatsQuery(1_770_000_000_000, sessionOptions);
+    useCliManagerCodexReasoningGuardStatsQuery(null, allTimeOptions);
+
+    expect(useRequestLogsCodexReasoningGuardStatsQuery).toHaveBeenNthCalledWith(
+      1,
+      1_770_000_000_000,
+      sessionOptions
+    );
+    expect(useRequestLogsCodexReasoningGuardStatsQuery).toHaveBeenNthCalledWith(
+      2,
+      null,
+      allTimeOptions
+    );
   });
 });

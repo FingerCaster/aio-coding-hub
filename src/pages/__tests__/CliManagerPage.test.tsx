@@ -10,6 +10,7 @@ import { createTestAppSettings } from "../../test/fixtures/settings";
 import { createTestQueryClient } from "../../test/utils/reactQuery";
 import { CliManagerPage } from "../CliManagerPage";
 import { logToConsole } from "../../services/consoleLog";
+import * as appSession from "../../app/appSession";
 import {
   useSettingsCircuitBreakerNoticeSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
@@ -25,6 +26,7 @@ import {
   useCliManagerCodexConfigSetMutation,
   useCliManagerCodexConfigTomlQuery,
   useCliManagerCodexConfigTomlSetMutation,
+  useCliManagerCodexReasoningGuardStatsQuery,
   useCliManagerCodexInfoQuery,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
@@ -168,6 +170,7 @@ vi.mock("../../query/cliManager", async () => {
     useCliManagerCodexConfigSetMutation: vi.fn(),
     useCliManagerCodexConfigTomlQuery: vi.fn(),
     useCliManagerCodexConfigTomlSetMutation: vi.fn(),
+    useCliManagerCodexReasoningGuardStatsQuery: vi.fn(),
     useCliManagerGeminiConfigQuery: vi.fn(),
     useCliManagerGeminiConfigSetMutation: vi.fn(),
     useCliManagerGeminiInfoQuery: vi.fn(),
@@ -236,6 +239,12 @@ beforeEach(() => {
   } as any);
 
   vi.mocked(useProvidersListQuery).mockReturnValue({
+    data: null,
+    isFetching: false,
+    refetch: vi.fn(),
+  } as any);
+
+  vi.mocked(useCliManagerCodexReasoningGuardStatsQuery).mockReturnValue({
     data: null,
     isFetching: false,
     refetch: vi.fn(),
@@ -1058,5 +1067,112 @@ describe("pages/CliManagerPage", () => {
     expect(codexTomlRefetch).not.toHaveBeenCalled();
     expect(codexInfoRefetch).not.toHaveBeenCalled();
     expect(toast).not.toHaveBeenCalledWith("Codex 目录已切换");
+  });
+
+  it("passes session-scoped and all-time Codex reasoning guard stats into the codex tab", async () => {
+    vi.spyOn(appSession, "useAppSessionStartedAtMs").mockReturnValue(1_770_000_000_000);
+
+    vi.mocked(useSettingsQuery).mockReturnValue({
+      data: createAppSettings(),
+      isLoading: false,
+    } as any);
+    vi.mocked(useSettingsGatewayRectifierSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useSettingsCircuitBreakerNoticeSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useSettingsCodexSessionIdCompletionSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+
+    vi.mocked(useCliManagerClaudeInfoQuery).mockReturnValue({
+      data: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerClaudeSettingsQuery).mockReturnValue({
+      data: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerClaudeSettingsSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+
+    vi.mocked(useCliManagerCodexInfoQuery).mockReturnValue({
+      data: { found: true },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexConfigQuery).mockReturnValue({
+      data: { config_dir: "/codex", can_open_config_dir: true },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexConfigSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexConfigTomlQuery).mockReturnValue({
+      data: { config_path: "/codex/config.toml", exists: true, toml: "" },
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerCodexConfigTomlSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerGeminiInfoQuery).mockReturnValue({
+      data: null,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+
+    vi.mocked(useCliManagerCodexReasoningGuardStatsQuery)
+      .mockReturnValueOnce({
+        data: {
+          hit_request_count: 1,
+          hit_attempt_count: 2,
+          normal_request_count: 3,
+          total_request_count: 4,
+          hit_rate: 0.25,
+          by_model: [],
+        },
+        isFetching: false,
+        refetch: vi.fn(),
+      } as any)
+      .mockReturnValueOnce({
+        data: {
+          hit_request_count: 5,
+          hit_attempt_count: 6,
+          normal_request_count: 7,
+          total_request_count: 12,
+          hit_rate: 0.416,
+          by_model: [],
+        },
+        isFetching: true,
+        refetch: vi.fn(),
+      } as any);
+
+    renderWithProviders(<CliManagerPage />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+
+    expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(expect.any(Number), {
+      enabled: true,
+    });
+    expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(null, {
+      enabled: true,
+    });
   });
 });
