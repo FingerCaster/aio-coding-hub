@@ -1,5 +1,12 @@
 # aio-coding-hub 0.62 Gateway-first 插件内核迭代设计
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical design treats declarativeRules as a
+> stable public community runtime. Use the Extension Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 日期：2026-06-22
 
 ## 决策

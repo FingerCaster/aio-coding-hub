@@ -1,5 +1,12 @@
 # aio-coding-hub 0.62 Gateway-first Plugin Kernel Implementation Plan
 
+> Status: Superseded.
+>
+> MUST NOT be executed. This historical plan treats declarativeRules as a
+> stable public community runtime. Use the Extension Host-only plan in
+> `docs/superpowers/plans/2026-06-29-aio-coding-hub-extension-host-only-plugin-architecture.md`
+> and the current docs under `docs/plugins/` instead.
+
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
 **Goal:** Ship the 0.62 Gateway-first plugin platform kernel while keeping Plugin API v1 externally compatible and keeping Provider Plugin API private.

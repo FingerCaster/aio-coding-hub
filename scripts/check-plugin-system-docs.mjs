@@ -345,12 +345,25 @@ const replaySuccessPatterns = [
   /validate[\s\S]{0,80}replay[\s\S]{0,80}pack/,
 ];
 
+const publicDeclarativeRulesSuccessPatterns = [
+  /communityRuntimes\s*:\s*\[\s*["']declarativeRules["']\s*\]/,
+  /"communityRuntimes"\s*:\s*\[\s*"declarativeRules"\s*\]/,
+  /`?declarativeRules`?\s+(?:是|仍是|为)[^\n]{0,40}(?:稳定社区|社区稳定|默认社区|主力社区|唯一稳定社区)\s+runtime/,
+  /(?:稳定社区|社区稳定|默认社区|主力社区|唯一稳定社区)\s+runtime[^\n]{0,40}`?declarativeRules`?/,
+  /`?declarativeRules`?\s+(?:remains|is)\s+(?:the\s+)?(?:only\s+|default\s+|stable\s+){0,3}community runtime/i,
+  /(?:stable|default|only stable)\s+community runtime\s+(?:is|remains)\s+`?declarativeRules`?/i,
+  /社区插件开发主线[^\n]{0,80}`?declarativeRules`?/,
+  /当前最佳实践是\s+`?declarativeRules`?/,
+];
+
 const supersededHistoricalDocsFallback = [
   "docs/superpowers/plans/2026-06-22-aio-coding-hub-0-62-1-plugin-developer-loop.md",
+  "docs/superpowers/plans/2026-06-22-aio-coding-hub-0-62-gateway-first-plugin-kernel.md",
   "docs/superpowers/plans/2026-06-25-aio-coding-hub-plugin-observability-replay-publishing.md",
   "docs/superpowers/plans/2026-06-26-aio-coding-hub-plugin-example-developer-loop-phase-1.md",
   "docs/superpowers/specs/2026-06-21-aio-coding-hub-0-62-plugin-platform-kernel-design.md",
   "docs/superpowers/specs/2026-06-22-aio-coding-hub-0-62-1-plugin-developer-loop-design.md",
+  "docs/superpowers/specs/2026-06-22-aio-coding-hub-0-62-gateway-first-plugin-kernel-design.md",
   "docs/superpowers/specs/2026-06-25-aio-coding-hub-plugin-observability-replay-publishing-design.md",
   "docs/superpowers/specs/2026-06-26-aio-coding-hub-plugin-example-developer-loop-phase-1-design.md",
   "docs/superpowers/specs/2026-06-27-aio-coding-hub-plugin-runtime-lifecycle-registry-design.md",
@@ -382,6 +395,14 @@ function trackedSuperpowersMarkdownDocs() {
 
 function hasReplaySuccessPath(text) {
   return replaySuccessPatterns.some((pattern) => pattern.test(text));
+}
+
+function hasPublicDeclarativeRulesSuccessPath(text) {
+  return publicDeclarativeRulesSuccessPatterns.some((pattern) => pattern.test(text));
+}
+
+function hasSupersededHistoricalSuccessPath(text) {
+  return hasReplaySuccessPath(text) || hasPublicDeclarativeRulesSuccessPath(text);
 }
 
 for (const doc of requiredDocs) {
@@ -436,11 +457,11 @@ for (const path of trackedSuperpowersMarkdownDocs()) {
     continue;
   }
   const text = readFileSync(fullPath, "utf8");
-  if (!hasReplaySuccessPath(text)) continue;
+  if (!hasSupersededHistoricalSuccessPath(text)) continue;
   const head = text.split(/\r?\n/).slice(0, 16).join("\n");
   if (!head.includes("Status: Superseded.") || !head.includes("MUST NOT be executed")) {
     failures.push(
-      `${path}: historical local replay/declarative-rules plan must be marked superseded`
+      `${path}: historical local replay/declarativeRules public runtime plan must be marked superseded`
     );
   }
 }
