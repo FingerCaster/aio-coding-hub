@@ -26,6 +26,15 @@ pub(crate) type GatewayHookFuture =
 pub(crate) trait GatewayPluginExecutor: Send + Sync {
     fn retain_runtime_caches_for_plugins(&self, _plugins: &[PluginDetail]) {}
 
+    fn hook_timeout(
+        &self,
+        _plugin: &PluginDetail,
+        _hook_name: GatewayPluginHookName,
+        default_timeout: Duration,
+    ) -> Duration {
+        default_timeout
+    }
+
     fn execute_request_hook(
         &self,
         plugin: &PluginDetail,
@@ -296,8 +305,9 @@ impl GatewayPluginPipeline {
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
+            let hook_timeout = self.hook_timeout(plugin, input.hook_name);
             let future = self.executor.execute_request_hook(plugin, visible);
-            let result = match tokio::time::timeout(self.config.hook_timeout, future).await {
+            let result = match tokio::time::timeout(hook_timeout, future).await {
                 Ok(Ok(result)) => result,
                 Ok(Err(err)) => {
                     self.record_failure(&plugin.summary.plugin_id);
@@ -344,7 +354,7 @@ impl GatewayPluginPipeline {
                     tracing::warn!(
                         plugin_id = %plugin.summary.plugin_id,
                         hook_name = input.hook_name.as_str(),
-                        timeout_ms = self.config.hook_timeout.as_millis(),
+                        timeout_ms = hook_timeout.as_millis(),
                         "plugin hook timed out"
                     );
                     audit_events.push(audit_event(
@@ -584,8 +594,9 @@ impl GatewayPluginPipeline {
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
+            let hook_timeout = self.hook_timeout(plugin, input.hook_name);
             let result = match tokio::time::timeout(
-                self.config.hook_timeout,
+                hook_timeout,
                 self.executor.execute_response_hook(plugin, visible),
             )
             .await
@@ -837,8 +848,9 @@ impl GatewayPluginPipeline {
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
+            let hook_timeout = self.hook_timeout(plugin, hook_name);
             let result = match tokio::time::timeout(
-                self.config.hook_timeout,
+                hook_timeout,
                 self.executor.execute_stream_hook(plugin, visible),
             )
             .await
@@ -1064,8 +1076,9 @@ impl GatewayPluginPipeline {
             let truncation = VisibleTruncationState::from_context(&visible);
             let started_at_ms = now_unix_millis();
             let started = Instant::now();
+            let hook_timeout = self.hook_timeout(plugin, hook_name);
             let result = match tokio::time::timeout(
-                self.config.hook_timeout,
+                hook_timeout,
                 self.executor.execute_log_hook(plugin, visible),
             )
             .await
@@ -1243,6 +1256,11 @@ impl GatewayPluginPipeline {
 
     pub(crate) fn has_plugins_for_hook(&self, hook_name: GatewayPluginHookName) -> bool {
         !self.plugins_for_hook(hook_name).is_empty()
+    }
+
+    fn hook_timeout(&self, plugin: &PluginDetail, hook_name: GatewayPluginHookName) -> Duration {
+        self.executor
+            .hook_timeout(plugin, hook_name, self.config.hook_timeout)
     }
 
     #[cfg(test)]
@@ -1756,6 +1774,7 @@ pub(crate) struct InMemoryGatewayPluginExecutor {
     response_handlers: HashMap<String, TestRequestHandler>,
     stream_handlers: HashMap<String, TestRequestHandler>,
     log_handlers: HashMap<String, TestRequestHandler>,
+    hook_timeouts: HashMap<String, Duration>,
 }
 
 #[cfg(test)]
@@ -1766,7 +1785,13 @@ impl InMemoryGatewayPluginExecutor {
             response_handlers: HashMap::new(),
             stream_handlers: HashMap::new(),
             log_handlers: HashMap::new(),
+            hook_timeouts: HashMap::new(),
         }
+    }
+
+    pub(crate) fn with_hook_timeout(mut self, plugin_id: &str, timeout: Duration) -> Self {
+        self.hook_timeouts.insert(plugin_id.to_string(), timeout);
+        self
     }
 
     pub(crate) fn with_request_handler<F>(mut self, plugin_id: &str, handler: F) -> Self
@@ -1843,6 +1868,18 @@ impl InMemoryGatewayPluginExecutor {
 
 #[cfg(test)]
 impl GatewayPluginExecutor for InMemoryGatewayPluginExecutor {
+    fn hook_timeout(
+        &self,
+        plugin: &PluginDetail,
+        _hook_name: GatewayPluginHookName,
+        default_timeout: Duration,
+    ) -> Duration {
+        self.hook_timeouts
+            .get(&plugin.summary.plugin_id)
+            .copied()
+            .unwrap_or(default_timeout)
+    }
+
     fn execute_request_hook(
         &self,
         plugin: &PluginDetail,
@@ -2999,6 +3036,35 @@ mod tests {
             reports[0].error_code.as_deref(),
             Some("PLUGIN_HOOK_TIMEOUT")
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_plugin_pipeline_uses_executor_specific_hook_timeout() {
+        let executor = InMemoryGatewayPluginExecutor::new()
+            .with_hook_timeout("plugin.slow", Duration::from_millis(40))
+            .with_request_async_handler("plugin.slow", |_ctx| async {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                GatewayHookResult::continue_unchanged()
+            });
+        let plugin = plugin("plugin.slow", 10, vec!["request.body.read"]);
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig {
+                hook_timeout: Duration::from_millis(1),
+                circuit_failure_threshold: 1,
+                circuit_cooldown: Duration::from_secs(60),
+                ..GatewayPluginPipelineConfig::default()
+            },
+        );
+
+        let output = pipeline
+            .run_request_hook(request_input())
+            .await
+            .expect("executor-specific hook timeout should allow hook cleanup authority");
+
+        assert_eq!(output.body.as_ref(), request_input().body.as_ref());
+        assert_eq!(output.execution_reports[0].status, "completed");
     }
 
     #[tokio::test(flavor = "current_thread")]

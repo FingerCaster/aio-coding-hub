@@ -1,6 +1,8 @@
 //! Usage: Runtime dispatch for gateway plugin execution.
 
-use crate::app::plugins::extension_host_registry::ExtensionHostInstanceRegistry;
+use crate::app::plugins::extension_host_registry::{
+    ExtensionHostInstanceLifecycleRegistry, ExtensionHostInstanceRegistry,
+};
 use crate::app::plugins::official_privacy_filter_runtime::OfficialPrivacyFilterRuntime;
 use crate::app::plugins::runtime_lifecycle::RuntimeLifecycleRegistry;
 use crate::app::plugins::runtime_manager::{PluginRuntimeManager, RuntimeDispatch};
@@ -8,10 +10,13 @@ use crate::db;
 use crate::domain::plugins::PluginDetail;
 #[cfg(test)]
 use crate::gateway::plugins::context::GatewayHookResult;
-use crate::gateway::plugins::context::GatewayVisibleHookContext;
+use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayVisibleHookContext};
 use crate::gateway::plugins::permissions::GatewayPluginError;
 use crate::gateway::plugins::pipeline::{GatewayHookFuture, GatewayPluginExecutor};
 use std::sync::Arc;
+use std::time::Duration;
+
+const EXTENSION_HOST_GATEWAY_TIMEOUT_GRACE: Duration = Duration::from_secs(1);
 
 pub(crate) struct RuntimeGatewayPluginExecutor {
     privacy_filter_runtime: Arc<OfficialPrivacyFilterRuntime>,
@@ -34,11 +39,23 @@ impl RuntimeGatewayPluginExecutor {
         let privacy_filter_runtime = Arc::new(OfficialPrivacyFilterRuntime::default());
         let lifecycle = RuntimeLifecycleRegistry::default();
         lifecycle.register_cache(privacy_filter_runtime.clone());
+        if let Some(registry) = extension_host_registry.clone() {
+            lifecycle.register_instance_registry(Arc::new(
+                ExtensionHostInstanceLifecycleRegistry::new(registry),
+            ));
+        }
         Self {
             privacy_filter_runtime,
             lifecycle,
             extension_host_registry,
         }
+    }
+
+    #[cfg(test)]
+    fn for_tests_with_extension_host_registry(
+        extension_host_registry: Arc<ExtensionHostInstanceRegistry>,
+    ) -> Self {
+        Self::with_extension_host_registry(Some(extension_host_registry))
     }
 
     #[cfg(test)]
@@ -128,6 +145,21 @@ impl GatewayPluginExecutor for RuntimeGatewayPluginExecutor {
         self.retain_runtime_caches_for_plugins(plugins);
     }
 
+    fn hook_timeout(
+        &self,
+        plugin: &PluginDetail,
+        _hook_name: GatewayPluginHookName,
+        default_timeout: Duration,
+    ) -> Duration {
+        let manager = PluginRuntimeManager::new();
+        match manager.runtime_dispatch(&plugin.summary.plugin_id, &plugin.manifest.runtime) {
+            Ok(RuntimeDispatch::ExtensionHost) => {
+                default_timeout.saturating_add(EXTENSION_HOST_GATEWAY_TIMEOUT_GRACE)
+            }
+            _ => default_timeout,
+        }
+    }
+
     fn execute_request_hook(
         &self,
         plugin: &PluginDetail,
@@ -186,12 +218,17 @@ mod tests {
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
     };
     use crate::gateway::plugins::context::{
-        GatewayHookResult, GatewayVisibleHookContext, GatewayVisibleLogContext,
-        GatewayVisibleRequestContext, GatewayVisibleResponseContext, GatewayVisibleStreamContext,
+        GatewayHookResult, GatewayPluginHookName, GatewayRequestHookInput,
+        GatewayVisibleHookContext, GatewayVisibleLogContext, GatewayVisibleRequestContext,
+        GatewayVisibleResponseContext, GatewayVisibleStreamContext,
     };
+    use crate::gateway::plugins::pipeline::{GatewayPluginPipeline, GatewayPluginPipelineConfig};
+    use axum::body::Bytes;
+    use axum::http::{HeaderMap, Method};
     use serde_json::json;
     use std::collections::BTreeMap;
     use std::path::Path;
+    use std::time::Duration;
 
     #[test]
     fn runtime_executor_rejects_extension_host_gateway_hook_without_capability() {
@@ -291,6 +328,86 @@ mod tests {
         assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_INVALID_OUTPUT");
     }
 
+    #[tokio::test]
+    async fn runtime_executor_extension_host_pipeline_timeout_kills_warm_instance() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_gateway_extension_plugin(
+            temp.path(),
+            "gateway.request.afterBodyRead",
+            r#"(() => {
+                globalThis.__gatewayHookCalls = (globalThis.__gatewayHookCalls || 0) + 1;
+                if (globalThis.__gatewayHookCalls === 2) {
+                    while (true) {}
+                }
+                return { action: "continue" };
+            })()"#,
+        );
+        let plugin = extension_host_plugin_detail_with_root("example.extension", temp.path());
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(RuntimeGatewayPluginExecutor::for_tests()),
+            GatewayPluginPipelineConfig::default(),
+        );
+        let input = || request_input_for_pipeline();
+
+        pipeline
+            .run_request_hook(input())
+            .await
+            .expect("first extension host hook should warm an instance");
+        let timed_out = pipeline
+            .run_request_hook(input())
+            .await
+            .expect("extension host timeout should fail open through pipeline");
+
+        assert_eq!(timed_out.body.as_ref(), b"hello");
+        assert_eq!(timed_out.execution_reports.len(), 1);
+        assert_eq!(
+            timed_out.execution_reports[0].error_code.as_deref(),
+            Some("PLUGIN_EXTENSION_HOST_TIMEOUT")
+        );
+
+        let recovered = pipeline
+            .run_request_hook(input())
+            .await
+            .expect("timeout should kill the warm instance so a fresh instance can run");
+        assert_eq!(recovered.body.as_ref(), b"hello");
+        assert_eq!(recovered.execution_reports[0].status, "completed");
+    }
+
+    #[tokio::test]
+    async fn runtime_executor_retain_prunes_extension_host_gateway_instances() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_gateway_extension_plugin(
+            temp.path(),
+            "gateway.request.afterBodyRead",
+            r#"{ action: "continue" }"#,
+        );
+        let plugin = extension_host_plugin_detail_with_root("example.extension", temp.path());
+        let registry = Arc::new(ExtensionHostInstanceRegistry::new_real_for_tests());
+        let executor =
+            RuntimeGatewayPluginExecutor::for_tests_with_extension_host_registry(registry.clone());
+        let context = hook_context("gateway.request.afterBodyRead", "trace-extension");
+
+        executor
+            .execute_request_hook(&plugin, context)
+            .await
+            .expect("extension host gateway hook warms an instance");
+        assert_eq!(registry.instance_count_for_tests().await, 1);
+
+        executor.retain_runtime_caches_for_plugins(&[]);
+
+        tokio::time::timeout(Duration::from_secs(1), async {
+            loop {
+                if registry.instance_count_for_tests().await == 0 {
+                    break;
+                }
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        })
+        .await
+        .expect("retain should dispose inactive extension host gateway instances");
+    }
+
     #[test]
     fn runtime_executor_rejects_non_official_privacy_filter_native_runtime() {
         let executor = RuntimeGatewayPluginExecutor::for_tests();
@@ -370,6 +487,20 @@ mod tests {
             response: GatewayVisibleResponseContext::default(),
             stream: GatewayVisibleStreamContext::default(),
             log: GatewayVisibleLogContext::default(),
+        }
+    }
+
+    fn request_input_for_pipeline() -> GatewayRequestHookInput {
+        GatewayRequestHookInput {
+            hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+            trace_id: "trace-extension-pipeline".to_string(),
+            cli_key: "codex".to_string(),
+            method: Method::POST,
+            path: "/v1/responses".to_string(),
+            query: None,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(b"hello"),
+            requested_model: None,
         }
     }
 

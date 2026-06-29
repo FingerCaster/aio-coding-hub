@@ -2,6 +2,7 @@
 
 use super::extension_host::ExtensionHostInstance;
 use crate::app::app_state::{ensure_db_ready, DbInitState};
+use crate::app::plugins::runtime_lifecycle::PluginRuntimeInstanceRegistry;
 use crate::db;
 use crate::domain::plugins::{PluginDetail, PluginManifest, PluginRuntime};
 use crate::gateway::plugins::context::{
@@ -11,7 +12,7 @@ use crate::gateway::plugins::permissions::GatewayPluginError;
 use crate::shared::error::{AppError, AppResult};
 use serde_json::{json, Value};
 use sha2::Digest;
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::future::Future;
 use std::path::PathBuf;
 use std::pin::Pin;
@@ -392,6 +393,33 @@ impl ExtensionHostInstanceRegistry {
             .await;
     }
 
+    pub(crate) async fn retain_plugins(&self, active_plugin_ids: &HashSet<String>) {
+        let _operation_guard = self.operation_gate.write().await;
+        let removals = {
+            let mut instances = self.instances.lock().await;
+            let keys = instances
+                .keys()
+                .filter(|key| !active_plugin_ids.contains(&key.plugin_id))
+                .cloned()
+                .collect::<Vec<_>>();
+            keys.into_iter()
+                .filter_map(|key| {
+                    instances
+                        .remove(&key)
+                        .map(|instance| (key.plugin_id, instance))
+                })
+                .collect::<Vec<_>>()
+        };
+        let removed_plugin_ids = removals
+            .iter()
+            .map(|(plugin_id, _)| plugin_id.clone())
+            .collect::<HashSet<_>>();
+        dispose_instances(removals.into_iter().map(|(_, instance)| instance)).await;
+        for plugin_id in removed_plugin_ids {
+            self.remove_plugin_lock_if_orphaned(&plugin_id).await;
+        }
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn dispose_idle(&self, now: Instant) {
         let _operation_guard = self.operation_gate.read().await;
@@ -425,8 +453,20 @@ impl ExtensionHostInstanceRegistry {
     }
 
     #[cfg(test)]
+    pub(crate) fn new_real_for_tests() -> Self {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("registry.db")).expect("init db");
+        Self::new(db)
+    }
+
+    #[cfg(test)]
     async fn instance_count(&self) -> usize {
         self.instances.lock().await.len()
+    }
+
+    #[cfg(test)]
+    pub(crate) async fn instance_count_for_tests(&self) -> usize {
+        self.instance_count().await
     }
 
     #[cfg(test)]
@@ -520,6 +560,54 @@ impl ExtensionHostInstanceRegistry {
         if should_remove {
             plugin_locks.remove(plugin_id);
         }
+    }
+
+    async fn remove_plugin_lock_if_orphaned(&self, plugin_id: &str) {
+        let mut plugin_locks = self.plugin_locks.lock().await;
+        let should_remove = plugin_locks
+            .get(plugin_id)
+            .is_some_and(|current| Arc::strong_count(current) == 1);
+        if should_remove {
+            plugin_locks.remove(plugin_id);
+        }
+    }
+}
+
+pub(crate) struct ExtensionHostInstanceLifecycleRegistry {
+    registry: Arc<ExtensionHostInstanceRegistry>,
+}
+
+impl ExtensionHostInstanceLifecycleRegistry {
+    pub(crate) fn new(registry: Arc<ExtensionHostInstanceRegistry>) -> Self {
+        Self { registry }
+    }
+}
+
+impl PluginRuntimeInstanceRegistry for ExtensionHostInstanceLifecycleRegistry {
+    fn retain_for_plugins(&self, plugins: &[PluginDetail]) {
+        let active_plugin_ids = plugins
+            .iter()
+            .map(|plugin| plugin.summary.plugin_id.clone())
+            .collect::<HashSet<_>>();
+        let registry = self.registry.clone();
+        tauri::async_runtime::spawn(async move {
+            registry.retain_plugins(&active_plugin_ids).await;
+        });
+    }
+
+    fn dispose_plugin(&self, plugin_id: &str) {
+        let registry = self.registry.clone();
+        let plugin_id = plugin_id.to_string();
+        tauri::async_runtime::spawn(async move {
+            registry.dispose_plugin(&plugin_id).await;
+        });
+    }
+
+    fn dispose_all(&self) {
+        let registry = self.registry.clone();
+        tauri::async_runtime::spawn(async move {
+            registry.dispose_all().await;
+        });
     }
 }
 
@@ -1322,6 +1410,45 @@ mod tests {
 
         assert_eq!(factory.disposed_instance_ids(), vec![1]);
         assert_eq!(registry.instance_count().await, 1);
+    }
+
+    #[tokio::test]
+    async fn registry_retain_plugins_disposes_removed_plugin_instances() {
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        );
+
+        registry
+            .execute_command_with_now(
+                plugin_detail("acme.keep", "one"),
+                "acme.keep",
+                json!({}),
+                Instant::now(),
+            )
+            .await
+            .expect("first command");
+        registry
+            .execute_command_with_now(
+                plugin_detail("acme.remove", "two"),
+                "acme.remove",
+                json!({}),
+                Instant::now(),
+            )
+            .await
+            .expect("second command");
+
+        registry
+            .retain_plugins(&HashSet::from(["acme.keep".to_string()]))
+            .await;
+
+        assert_eq!(factory.disposed_instance_ids(), vec![2]);
+        assert_eq!(registry.plugin_instance_count("acme.keep").await, 1);
+        assert_eq!(registry.plugin_instance_count("acme.remove").await, 0);
     }
 
     #[tokio::test]
