@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.9](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.8...aio-coding-hub-v0.60.9) (2026-06-29)
+
+
+### Bug Fixes
+
+* **release:** avoid duplicate Windows app manifest ([0ce1e6e](https://github.com/FingerCaster/aio-coding-hub/commit/0ce1e6e8f75e0eb0ce4f5a7fedc61a012a784e12))
+
 ## [0.60.8](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.7...aio-coding-hub-v0.60.8) (2026-06-29)
 
 
