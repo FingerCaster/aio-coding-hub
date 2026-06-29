@@ -491,21 +491,15 @@ impl ExtensionHostInstanceRegistry {
             return Ok(None);
         };
 
-        match instance.execute_if_running(command, args, now).await? {
-            Some(value) => Ok(Some(value)),
-            None => {
-                let removed = {
-                    let mut instances = self.instances.lock().await;
-                    let should_remove = instances
-                        .get(key)
-                        .filter(|current| Arc::ptr_eq(current, &instance))
-                        .is_some();
-                    should_remove.then(|| instances.remove(key)).flatten()
-                };
-                if let Some(instance) = removed {
-                    instance.dispose().await;
-                }
+        match instance.execute_if_running(command, args, now).await {
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => {
+                self.remove_warm_instance_if_current(key, &instance).await;
                 Ok(None)
+            }
+            Err(error) => {
+                self.remove_warm_instance_if_current(key, &instance).await;
+                Err(error)
             }
         }
     }
@@ -524,23 +518,35 @@ impl ExtensionHostInstanceRegistry {
 
         match instance
             .execute_gateway_hook_if_running(hook, context, now)
-            .await?
+            .await
         {
-            Some(value) => Ok(Some(value)),
-            None => {
-                let removed = {
-                    let mut instances = self.instances.lock().await;
-                    let should_remove = instances
-                        .get(key)
-                        .filter(|current| Arc::ptr_eq(current, &instance))
-                        .is_some();
-                    should_remove.then(|| instances.remove(key)).flatten()
-                };
-                if let Some(instance) = removed {
-                    instance.dispose().await;
-                }
+            Ok(Some(value)) => Ok(Some(value)),
+            Ok(None) => {
+                self.remove_warm_instance_if_current(key, &instance).await;
                 Ok(None)
             }
+            Err(error) => {
+                self.remove_warm_instance_if_current(key, &instance).await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn remove_warm_instance_if_current(
+        &self,
+        key: &ExtensionHostInstanceKey,
+        instance: &Arc<ManagedExtensionHostInstance>,
+    ) {
+        let removed = {
+            let mut instances = self.instances.lock().await;
+            let should_remove = instances
+                .get(key)
+                .filter(|current| Arc::ptr_eq(current, instance))
+                .is_some();
+            should_remove.then(|| instances.remove(key)).flatten()
+        };
+        if let Some(instance) = removed {
+            instance.dispose().await;
         }
     }
 
@@ -1114,6 +1120,12 @@ mod tests {
             args: Value,
         ) -> BoxFuture<'a, AppResult<Value>> {
             Box::pin(async move {
+                if command == "fail-warm" {
+                    return Err(AppError::new(
+                        "PLUGIN_EXTENSION_CALL_TIMEOUT",
+                        "warm command failed",
+                    ));
+                }
                 self.state.lock().unwrap().executions.push(self.id);
                 Ok(json!({
                     "instanceId": self.id,
@@ -1129,6 +1141,12 @@ mod tests {
             context: Value,
         ) -> BoxFuture<'a, AppResult<Value>> {
             Box::pin(async move {
+                if hook == "gateway.failWarm" {
+                    return Err(AppError::new(
+                        "PLUGIN_EXTENSION_CALL_TIMEOUT",
+                        "warm gateway hook failed",
+                    ));
+                }
                 self.state.lock().unwrap().executions.push(self.id);
                 Ok(json!({
                     "action": "continue",
@@ -1338,6 +1356,100 @@ mod tests {
         assert!(!second.cold_start);
         assert_eq!(factory.start_count(), 1);
         assert_eq!(factory.executed_instance_ids(), vec![1, 1]);
+    }
+
+    #[tokio::test]
+    async fn registry_drops_warm_command_instance_after_execution_error() {
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        );
+        let detail = plugin_detail("acme.echo", "same");
+
+        registry
+            .execute_command_with_now(detail.clone(), "warm", json!({}), Instant::now())
+            .await
+            .expect("first command warms instance");
+        let err = registry
+            .execute_command_with_now(detail.clone(), "fail-warm", json!({}), Instant::now())
+            .await
+            .expect_err("warm command error should propagate");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_CALL_TIMEOUT");
+        assert_eq!(registry.instance_count().await, 0);
+        assert_eq!(factory.disposed_instance_ids(), vec![1]);
+
+        let next = registry
+            .execute_command_with_now(detail, "warm", json!({}), Instant::now())
+            .await
+            .expect("next command should cold start");
+
+        assert!(next.cold_start);
+        assert_eq!(factory.start_count(), 2);
+        assert_eq!(factory.executed_instance_ids(), vec![1, 2]);
+    }
+
+    #[tokio::test]
+    async fn registry_drops_warm_gateway_hook_instance_after_execution_error() {
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        );
+        let detail = plugin_detail("acme.gateway", "same");
+        let context = GatewayVisibleHookContext {
+            hook_name: GatewayPluginHookName::RequestAfterBodyRead
+                .as_str()
+                .to_string(),
+            trace_id: "trace-gateway".to_string(),
+            request: Default::default(),
+            response: Default::default(),
+            stream: Default::default(),
+            log: Default::default(),
+        };
+
+        registry
+            .execute_gateway_hook_with_now(
+                detail.clone(),
+                GatewayPluginHookName::RequestAfterBodyRead.as_str(),
+                context.clone(),
+                Instant::now(),
+            )
+            .await
+            .expect("first hook warms instance");
+        let err = registry
+            .execute_gateway_hook_with_now(
+                detail.clone(),
+                "gateway.failWarm",
+                context.clone(),
+                Instant::now(),
+            )
+            .await
+            .expect_err("warm gateway hook error should propagate");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_TIMEOUT");
+        assert_eq!(registry.instance_count().await, 0);
+        assert_eq!(factory.disposed_instance_ids(), vec![1]);
+
+        registry
+            .execute_gateway_hook_with_now(
+                detail,
+                GatewayPluginHookName::RequestAfterBodyRead.as_str(),
+                context,
+                Instant::now(),
+            )
+            .await
+            .expect("next hook should cold start");
+
+        assert_eq!(factory.start_count(), 2);
+        assert_eq!(factory.executed_instance_ids(), vec![1, 2]);
     }
 
     #[tokio::test]

@@ -444,8 +444,16 @@ impl GatewayPluginPipeline {
                 continue;
             }
 
-            self.record_success(&plugin.summary.plugin_id);
             if let Err(err) = apply_header_patch(&mut headers, &result.headers) {
+                self.record_failure(&plugin.summary.plugin_id);
+                audit_events.push(audit_event(
+                    plugin,
+                    input.hook_name,
+                    "plugin.hook.failed",
+                    "high",
+                    "Plugin hook returned rejected header mutations",
+                    serde_json::json!({ "error": err.to_string() }),
+                ));
                 execution_reports.push(self.hook_execution_report(
                     plugin,
                     input.hook_name,
@@ -475,6 +483,7 @@ impl GatewayPluginPipeline {
                 let reason = result
                     .reason
                     .unwrap_or_else(|| "Plugin blocked gateway request".to_string());
+                self.record_success(&plugin.summary.plugin_id);
                 audit_events.push(audit_event(
                     plugin,
                     input.hook_name,
@@ -509,6 +518,7 @@ impl GatewayPluginPipeline {
                     execution_reports,
                 });
             }
+            self.record_success(&plugin.summary.plugin_id);
             push_warning_event(&mut audit_events, plugin, input.hook_name, &result);
             execution_reports.push(self.hook_execution_report(
                 plugin,
@@ -706,8 +716,9 @@ impl GatewayPluginPipeline {
                 continue;
             }
 
-            self.record_success(&plugin.summary.plugin_id);
             if let Err(err) = apply_header_patch(&mut headers, &result.headers) {
+                self.record_failure(&plugin.summary.plugin_id);
+                audit_events.push(failed_event(plugin, input.hook_name, &err.to_string()));
                 execution_reports.push(self.hook_execution_report(
                     plugin,
                     input.hook_name,
@@ -737,6 +748,7 @@ impl GatewayPluginPipeline {
                 let reason = result
                     .reason
                     .unwrap_or_else(|| "Plugin blocked gateway response".to_string());
+                self.record_success(&plugin.summary.plugin_id);
                 audit_events.push(audit_event(
                     plugin,
                     input.hook_name,
@@ -771,6 +783,7 @@ impl GatewayPluginPipeline {
                     execution_reports,
                 });
             }
+            self.record_success(&plugin.summary.plugin_id);
             push_warning_event(&mut audit_events, plugin, input.hook_name, &result);
             execution_reports.push(self.hook_execution_report(
                 plugin,
@@ -2777,7 +2790,11 @@ mod tests {
                 vec!["request.header.read", "request.header.write"],
             )],
             Arc::new(executor),
-            GatewayPluginPipelineConfig::default(),
+            GatewayPluginPipelineConfig {
+                circuit_failure_threshold: 1,
+                circuit_cooldown: Duration::from_secs(60),
+                ..GatewayPluginPipelineConfig::default()
+            },
         );
 
         let err = pipeline
@@ -2786,6 +2803,13 @@ mod tests {
             .unwrap_err();
 
         assert!(err.to_string().starts_with("PLUGIN_RESERVED_HEADER:"));
+        assert!(pipeline.circuit_snapshot("plugin.headers").open);
+        assert!(err.execution_reports().iter().any(|report| {
+            report.plugin_id == "plugin.headers"
+                && report.status == "policyRejected"
+                && report.error_code.as_deref() == Some("PLUGIN_RESERVED_HEADER")
+                && report.failure_kind.as_deref() == Some("reserved_header")
+        }));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2823,6 +2847,47 @@ mod tests {
                 "unexpected error for {header_name}: {err}"
             );
         }
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_plugin_response_pipeline_rejects_reserved_header_without_resetting_circuit() {
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_response_handler("plugin.response", |_ctx| {
+                let mut result = GatewayHookResult::continue_unchanged();
+                result
+                    .headers
+                    .insert("x-trace-id".to_string(), "spoofed".to_string());
+                result
+            });
+        let mut plugin = plugin(
+            "plugin.response",
+            10,
+            vec!["response.header.read", "response.header.write"],
+        );
+        gateway_hook_mut(&mut plugin).name = "gateway.response.after".to_string();
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig {
+                circuit_failure_threshold: 1,
+                circuit_cooldown: Duration::from_secs(60),
+                ..GatewayPluginPipelineConfig::default()
+            },
+        );
+
+        let err = pipeline
+            .run_response_hook(response_input())
+            .await
+            .expect_err("reserved response header should be rejected");
+
+        assert_eq!(err.code(), "PLUGIN_RESERVED_HEADER");
+        assert!(pipeline.circuit_snapshot("plugin.response").open);
+        assert!(err.execution_reports().iter().any(|report| {
+            report.plugin_id == "plugin.response"
+                && report.status == "policyRejected"
+                && report.error_code.as_deref() == Some("PLUGIN_RESERVED_HEADER")
+                && report.failure_kind.as_deref() == Some("reserved_header")
+        }));
     }
 
     #[tokio::test(flavor = "current_thread")]
