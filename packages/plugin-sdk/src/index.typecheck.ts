@@ -1,9 +1,9 @@
 import {
   type ActivationEvent,
   type GatewayHookName,
-  type PluginHookResult,
   type PluginCapability,
   type PluginContributes,
+  type PluginHookResult,
   type PluginManifest,
   type PluginPermission,
   type PluginRuntime,
@@ -12,44 +12,30 @@ import {
   validateManifest,
 } from "./index";
 
-const manifest: PluginManifest = {
-  id: "acme.redactor",
-  name: "Redactor",
-  version: "1.0.0",
-  apiVersion: "1.0.0",
-  runtime: { kind: "declarativeRules", rules: ["rules/main.json"] },
-  hooks: [{ name: "gateway.request.afterBodyRead", priority: 10 }],
-  permissions: ["request.body.read", "log.redact"],
-  hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
-};
-
-const runtime: PluginRuntime = manifest.runtime;
-const hook: GatewayHookName = manifest.hooks[0].name;
+const gatewayHook: GatewayHookName = "gateway.request.afterBodyRead";
 const permission: PluginPermission = "request.body.read";
 const activationEvent: ActivationEvent = "onProviderEditor:openrouter";
 const capability: PluginCapability = "provider.extensionValues";
 const slot: UiContributionSlot = "providers.editor.sections";
 
-if (runtime.kind !== "declarativeRules") {
-  throw new Error("unexpected runtime");
-}
-
-if (hook !== "gateway.request.afterBodyRead") {
-  throw new Error("unexpected hook");
-}
-
 if (permissionRisk(permission) !== "high") {
   throw new Error("unexpected risk");
 }
 
-const extensionManifest: PluginManifest = {
+const manifest: PluginManifest = {
   id: "acme.openrouter",
   name: "OpenRouter Provider",
   version: "0.1.0",
   apiVersion: "1.0.0",
   main: "dist/extension.js",
   runtime: { kind: "extensionHost", language: "typescript" },
-  activationEvents: ["onStartup", activationEvent],
+  activationEvents: [
+    "onStartup",
+    "onCommand:acme.openrouter.refreshModels",
+    activationEvent,
+    "onGatewayHook:gateway.request.afterBodyRead",
+    "onProtocolBridge:acme.bridge.openai-gemini",
+  ],
   contributes: {
     providers: [
       {
@@ -57,6 +43,22 @@ const extensionManifest: PluginManifest = {
         displayName: "OpenRouter",
         targetCliKeys: ["claude", "codex"],
         extensionNamespace: "openrouter",
+      },
+    ],
+    commands: [
+      {
+        command: "acme.openrouter.refreshModels",
+        title: "Refresh OpenRouter models",
+        category: "Provider",
+      },
+    ],
+    gatewayHooks: [{ name: gatewayHook, priority: 10 }],
+    protocolBridges: [
+      {
+        bridgeType: "acme.bridge.openai-gemini",
+        inboundProtocol: "openai.chat",
+        outboundProtocol: "gemini.generateContent",
+        supportsStreaming: true,
       },
     ],
     ui: {
@@ -70,52 +72,58 @@ const extensionManifest: PluginManifest = {
           },
         },
       ],
+      "settings.sections": [
+        {
+          id: "openrouter-refresh",
+          title: "OpenRouter refresh",
+          schema: {
+            type: "panel",
+            fields: [
+              {
+                type: "button",
+                key: "refresh",
+                label: "Refresh",
+                command: "acme.openrouter.refreshModels",
+              },
+            ],
+          },
+        },
+      ],
     },
   },
-  capabilities: [capability, "commands.execute"],
+  capabilities: [capability, "commands.execute", "gateway.hooks", "protocol.bridge"],
   hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
 };
 
-const extensionRuntime: PluginRuntime = extensionManifest.runtime;
-if (extensionRuntime.kind !== "extensionHost") {
+const runtime: PluginRuntime = manifest.runtime;
+if (runtime.kind !== "extensionHost") {
   throw new Error("unexpected extension runtime");
 }
 
-const contributes: PluginContributes = extensionManifest.contributes ?? {};
+const contributes: PluginContributes = manifest.contributes ?? {};
+if (contributes.commands?.[0]?.command !== "acme.openrouter.refreshModels") {
+  throw new Error("command contributions should be representable");
+}
+
 if (contributes.ui?.[slot]?.[0]?.schema.type !== "section") {
   throw new Error("extension UI contributions should be representable");
 }
 
-const extensionResult = validateManifest(extensionManifest);
-if (!extensionResult.ok) {
-  throw new Error(extensionResult.error.message);
+if (contributes.providers?.[0]?.extensionNamespace !== "openrouter") {
+  throw new Error("provider contributions should be representable");
+}
+
+if (contributes.gatewayHooks?.[0]?.name !== gatewayHook) {
+  throw new Error("gatewayHooks contributions should be representable");
+}
+
+if (contributes.protocolBridges?.[0]?.bridgeType !== "acme.bridge.openai-gemini") {
+  throw new Error("protocol bridge contributions should be representable");
 }
 
 const result = validateManifest(manifest);
 if (!result.ok) {
   throw new Error(result.error.message);
-}
-
-const reservedHookManifest: PluginManifest = {
-  ...manifest,
-  hooks: [{ name: "gateway.request.received" }],
-  permissions: ["request.meta.read"],
-};
-const reservedHookResult = validateManifest(reservedHookManifest);
-if (reservedHookResult.ok || reservedHookResult.error.code !== "PLUGIN_RESERVED_HOOK") {
-  throw new Error("reserved hook should be rejected by SDK validation");
-}
-
-const reservedPermissionManifest: PluginManifest = {
-  ...manifest,
-  permissions: ["request.body.read", "network.fetch"],
-};
-const reservedPermissionResult = validateManifest(reservedPermissionManifest);
-if (
-  reservedPermissionResult.ok ||
-  reservedPermissionResult.error.code !== "PLUGIN_RESERVED_PERMISSION"
-) {
-  throw new Error("reserved permission should be rejected by SDK validation");
 }
 
 const replaceRequestResult: PluginHookResult = {

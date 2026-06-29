@@ -8,17 +8,6 @@ import {
   validateManifest,
 } from "./index";
 
-const manifest: PluginManifest = {
-  id: "acme.redactor",
-  name: "Redactor",
-  version: "1.0.0",
-  apiVersion: "1.0.0",
-  runtime: { kind: "declarativeRules", rules: ["rules/main.json"] },
-  hooks: [{ name: "gateway.request.afterBodyRead", priority: 10 }],
-  permissions: ["request.body.read", "request.body.write"],
-  hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
-};
-
 const openRouterManifest: PluginManifest = {
   id: "acme.openrouter",
   name: "OpenRouter Provider",
@@ -71,6 +60,40 @@ const openRouterManifest: PluginManifest = {
 describe("validateManifest", () => {
   test("validates extension host provider manifest", () => {
     expect(validateManifest(openRouterManifest)).toEqual({ ok: true });
+  });
+
+  test("rejects declarativeRules as unsupported public runtime", () => {
+    const manifest = {
+      ...openRouterManifest,
+      runtime: { kind: "declarativeRules", rules: ["rules/main.json"] },
+      hooks: [{ name: "gateway.request.afterBodyRead" }],
+      permissions: ["request.body.read"],
+    } as unknown as PluginManifest;
+
+    expect(validateManifest(manifest)).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_UNSUPPORTED_RUNTIME",
+        message: "community plugins must use extensionHost runtime",
+      },
+    });
+  });
+
+  test("rejects gatewayRules contributions", () => {
+    const manifest = {
+      ...openRouterManifest,
+      contributes: {
+        gatewayRules: [{ rules: ["rules/main.json"] }],
+      },
+    };
+
+    expect(validateManifest(manifest as PluginManifest)).toEqual({
+      ok: false,
+      error: {
+        code: "PLUGIN_INVALID_CONTRIBUTION",
+        message: "gatewayRules are no longer supported; use gatewayHooks",
+      },
+    });
   });
 
   test("rejects extension host manifest without main", () => {
@@ -216,12 +239,25 @@ describe("validateManifest", () => {
     });
   });
 
-  test("rejects gatewayRules hooks with reserved or unknown hook", () => {
+  test("validates gatewayHooks manifest", () => {
+    const manifest: PluginManifest = {
+      ...openRouterManifest,
+      contributes: {
+        gatewayHooks: [{ name: "gateway.request.afterBodyRead", priority: 10 }],
+      },
+      capabilities: ["gateway.hooks"],
+    };
+
+    expect(validateManifest(manifest)).toEqual({ ok: true });
+  });
+
+  test("rejects gatewayHooks with reserved or unknown hook", () => {
     const reservedHookManifest = {
       ...openRouterManifest,
       contributes: {
-        gatewayRules: [{ rules: ["rules/main.json"], hooks: ["gateway.request.received"] }],
+        gatewayHooks: [{ name: "gateway.request.received" }],
       },
+      capabilities: ["gateway.hooks"],
     };
     expect(validateManifest(reservedHookManifest as PluginManifest)).toMatchObject({
       ok: false,
@@ -231,8 +267,9 @@ describe("validateManifest", () => {
     const unknownHookManifest = {
       ...openRouterManifest,
       contributes: {
-        gatewayRules: [{ rules: ["rules/main.json"], hooks: ["gateway.request.missing"] }],
+        gatewayHooks: [{ name: "gateway.request.missing" }],
       },
+      capabilities: ["gateway.hooks"],
     };
     expect(validateManifest(unknownHookManifest as unknown as PluginManifest)).toMatchObject({
       ok: false,
@@ -240,54 +277,35 @@ describe("validateManifest", () => {
     });
   });
 
-  test("rejects gatewayRules hooks with malformed hook lists", () => {
-    const nonArrayHookManifest = {
-      ...openRouterManifest,
-      contributes: {
-        gatewayRules: [{ rules: ["rules/main.json"], hooks: "gateway.request.afterBodyRead" }],
-      },
-    };
-    expect(validateManifest(nonArrayHookManifest as unknown as PluginManifest)).toMatchObject({
+  test("rejects top-level legacy hooks and permissions", () => {
+    expect(
+      validateManifest({
+        ...openRouterManifest,
+        hooks: [{ name: "gateway.request.afterBodyRead" }],
+      } as unknown as PluginManifest)
+    ).toMatchObject({
       ok: false,
-      error: { code: "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION" },
+      error: { code: "PLUGIN_INVALID_MANIFEST" },
     });
 
-    const nonStringHookManifest = {
-      ...openRouterManifest,
-      contributes: {
-        gatewayRules: [{ rules: ["rules/main.json"], hooks: [123] }],
-      },
-    };
-    expect(validateManifest(nonStringHookManifest as unknown as PluginManifest)).toMatchObject({
+    expect(
+      validateManifest({
+        ...openRouterManifest,
+        permissions: ["request.body.read"],
+      } as unknown as PluginManifest)
+    ).toMatchObject({
       ok: false,
-      error: { code: "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION" },
-    });
-  });
-
-  it("rejects reserved hooks until the host wires them", () => {
-    const result = validateManifest({
-      ...manifest,
-      hooks: [{ name: "gateway.request.received" }],
-      permissions: ["request.meta.read"],
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        code: "PLUGIN_RESERVED_HOOK",
-        message:
-          "hook is reserved for a future host integration and is not active in plugin API v1: gateway.request.received",
-      },
+      error: { code: "PLUGIN_INVALID_MANIFEST" },
     });
   });
 
   it("rejects every reserved hook from the contract", () => {
     for (const hook of contract.reservedHooks) {
       const result = validateManifest({
-        ...manifest,
-        hooks: [{ name: hook as never }],
-        permissions: ["request.meta.read"],
-      });
+        ...openRouterManifest,
+        contributes: { gatewayHooks: [{ name: hook as never }] },
+        capabilities: ["gateway.hooks"],
+      } as PluginManifest);
 
       expect(result).toMatchObject({
         ok: false,
@@ -296,96 +314,125 @@ describe("validateManifest", () => {
     }
   });
 
-  it("rejects reserved permissions until host-mediated APIs exist", () => {
-    const result = validateManifest({
-      ...manifest,
-      permissions: ["request.body.read", "network.fetch"],
-    });
-
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        code: "PLUGIN_RESERVED_PERMISSION",
-        message:
-          "permission is reserved for a future host-mediated API and is not active in plugin API v1: network.fetch",
+  test("rejects contributions without required capabilities", () => {
+    const cases: Array<{ manifest: PluginManifest; message: string }> = [
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            commands: [{ command: "acme.openrouter.refreshModels", title: "Refresh models" }],
+          },
+          capabilities: [],
+        },
+        message: "commands contribution requires commands.execute",
       },
-    });
-  });
-
-  it("rejects write permissions without their required read permissions", () => {
-    expect(
-      validateManifest({
-        ...manifest,
-        permissions: ["request.body.write"],
-      })
-    ).toMatchObject({
-      ok: false,
-      error: { code: "PLUGIN_INVALID_PERMISSION_SET" },
-    });
-
-    expect(
-      validateManifest({
-        ...manifest,
-        hooks: [{ name: "gateway.response.after" }],
-        permissions: ["response.body.write"],
-      })
-    ).toMatchObject({
-      ok: false,
-      error: { code: "PLUGIN_INVALID_PERMISSION_SET" },
-    });
-
-    expect(
-      validateManifest({
-        ...manifest,
-        hooks: [{ name: "gateway.response.chunk" }],
-        permissions: ["stream.modify"],
-      })
-    ).toMatchObject({
-      ok: false,
-      error: { code: "PLUGIN_INVALID_PERMISSION_SET" },
-    });
-  });
-
-  it("allows beforeSend request body write-only manifests for host compatibility", () => {
-    const result = validateManifest({
-      ...manifest,
-      hooks: [{ name: "gateway.request.beforeSend", priority: 10 }],
-      permissions: ["request.body.write"],
-    });
-
-    expect(result).toEqual({ ok: true });
-  });
-
-  it("allows gateway error response body write-only manifests for host compatibility", () => {
-    const result = validateManifest({
-      ...manifest,
-      hooks: [{ name: "gateway.error", priority: 10 }],
-      permissions: ["response.body.write"],
-    });
-
-    expect(result).toEqual({ ok: true });
-  });
-
-  it("rejects permissions that do not apply to declared hooks", () => {
-    const scopedManifest = {
-      ...manifest,
-      hooks: [{ name: "log.beforePersist" as const, priority: 10 }],
-      permissions: ["request.body.read", "log.redact"] as const,
-    };
-
-    expect(validateManifest(scopedManifest as never)).toEqual({
-      ok: false,
-      error: {
-        code: "PLUGIN_PERMISSION_SCOPE_MISMATCH",
-        message: "permission request.body.read does not apply to any declared hook",
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            providers: [
+              {
+                providerType: "openrouter",
+                displayName: "OpenRouter",
+                targetCliKeys: ["claude", "codex"],
+                extensionNamespace: "openrouter",
+              },
+            ],
+          },
+          capabilities: [],
+        },
+        message: "provider contribution requires provider.extensionValues",
       },
-    });
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            gatewayHooks: [{ name: "gateway.request.afterBodyRead" }],
+          },
+          capabilities: [],
+        },
+        message: "gatewayHooks contribution requires gateway.hooks",
+      },
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            protocolBridges: [
+              {
+                bridgeType: "acme.bridge.openai-gemini",
+                inboundProtocol: "openai.chat",
+                outboundProtocol: "gemini.generateContent",
+              },
+            ],
+          },
+          capabilities: [],
+        },
+        message: "protocolBridges contribution requires protocol.bridge",
+      },
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            ui: {
+              "providers.editor.sections": [
+                {
+                  id: "openrouter-routing",
+                  schema: {
+                    type: "section",
+                    fields: [{ type: "text", key: "route", label: "Route" }],
+                  },
+                },
+              ],
+            },
+          },
+          capabilities: [],
+        },
+        message: "providers.editor.sections UI contribution requires provider.extensionValues",
+      },
+      {
+        manifest: {
+          ...openRouterManifest,
+          contributes: {
+            ui: {
+              "settings.sections": [
+                {
+                  id: "openrouter-refresh",
+                  schema: {
+                    type: "section",
+                    fields: [
+                      {
+                        type: "button",
+                        key: "refresh",
+                        label: "Refresh",
+                        command: "acme.openrouter.refreshModels",
+                      },
+                    ],
+                  },
+                },
+              ],
+            },
+          },
+          capabilities: [],
+        },
+        message: "UI command field requires commands.execute",
+      },
+    ];
+
+    for (const { manifest, message } of cases) {
+      expect(validateManifest(manifest)).toEqual({
+        ok: false,
+        error: {
+          code: "PLUGIN_MISSING_CAPABILITY",
+          message,
+        },
+      });
+    }
   });
 
   it("rejects manifests without a supported host compatibility range", () => {
     expect(
       validateManifest({
-        ...manifest,
+        ...openRouterManifest,
         hostCompatibility: { app: "", pluginApi: "^1.0.0" },
       })
     ).toMatchObject({
@@ -395,8 +442,8 @@ describe("validateManifest", () => {
 
     expect(
       validateManifest({
-        ...manifest,
-        hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^2.0.0" },
+        ...openRouterManifest,
+        hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^2.0.0" },
       })
     ).toMatchObject({
       ok: false,
@@ -406,9 +453,9 @@ describe("validateManifest", () => {
 
   it("rejects future manifest apiVersion majors even when hostCompatibility supports v1", () => {
     const result = validateManifest({
-      ...manifest,
+      ...openRouterManifest,
       apiVersion: "2.0.0",
-      hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
+      hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
     });
 
     expect(result).toMatchObject({
@@ -417,15 +464,15 @@ describe("validateManifest", () => {
     });
   });
 
-  it("rejects wasm ABI versions outside v1", () => {
+  it("rejects wasm as an unsupported public runtime", () => {
     const result = validateManifest({
-      ...manifest,
+      ...openRouterManifest,
       runtime: { kind: "wasm", abiVersion: "2.0.0" },
-    });
+    } as unknown as PluginManifest);
 
     expect(result).toMatchObject({
       ok: false,
-      error: { code: "PLUGIN_UNSUPPORTED_WASM_ABI" },
+      error: { code: "PLUGIN_UNSUPPORTED_RUNTIME" },
     });
   });
 });

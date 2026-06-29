@@ -40,11 +40,7 @@ export type ExtensionRuntime = {
   language: "typescript";
 };
 
-export type LegacyPluginRuntime =
-  | { kind: "declarativeRules"; rules: string[] }
-  | { kind: "wasm"; abiVersion: string; memoryLimitBytes?: number };
-
-export type PluginRuntime = ExtensionRuntime | LegacyPluginRuntime;
+export type PluginRuntime = ExtensionRuntime;
 
 export type PluginHook = {
   name: GatewayHookName;
@@ -139,19 +135,12 @@ export type CommandContribution = {
 
 export type GatewayHookContribution = PluginHook;
 
-export type GatewayRuleContribution = {
-  id?: string;
-  rules: string[];
-  hooks?: GatewayHookName[];
-};
-
 export type PluginContributes = {
   providers?: ProviderContribution[];
   protocols?: ProtocolContribution[];
   protocolBridges?: ProtocolBridgeContribution[];
   commands?: CommandContribution[];
   gatewayHooks?: GatewayHookContribution[];
-  gatewayRules?: GatewayRuleContribution[];
   ui?: Partial<Record<UiContributionSlot, UiContribution[]>>;
 };
 
@@ -186,19 +175,9 @@ type PluginManifestBase = {
   category?: string;
 };
 
-export type PluginManifest = PluginManifestBase &
-  (
-    | {
-        runtime: ExtensionRuntime;
-        hooks?: PluginHook[];
-        permissions?: PluginPermission[];
-      }
-    | {
-        runtime: LegacyPluginRuntime;
-        hooks: PluginHook[];
-        permissions: PluginPermission[];
-      }
-  );
+export type PluginManifest = PluginManifestBase & {
+  runtime: ExtensionRuntime;
+};
 
 export type GatewayNormalizedMessage = {
   role: string;
@@ -303,18 +282,6 @@ const RESERVED_HOOKS = new Set<GatewayHookName>([
   "gateway.response.headers",
 ]);
 
-const KNOWN_PERMISSIONS = new Set<PluginPermission>(
-  Object.keys(PERMISSION_RISKS) as PluginPermission[]
-);
-
-const RESERVED_PERMISSIONS = new Set<PluginPermission>([
-  "plugin.storage",
-  "network.fetch",
-  "file.read",
-  "file.write",
-  "secret.read",
-]);
-
 const KNOWN_UI_SLOTS = new Set<UiContributionSlot>([
   "app.sidebar.items",
   "home.overview.cards",
@@ -373,14 +340,20 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
   if (semverMajor(manifest.apiVersion) !== 1) {
     return invalid("PLUGIN_INCOMPATIBLE_API", "apiVersion must use plugin API major version 1");
   }
-  if (manifest.runtime.kind === "declarativeRules" && manifest.runtime.rules.length === 0) {
-    return invalid("PLUGIN_INVALID_RUNTIME", "declarativeRules runtime requires rules");
+
+  const rawManifest = manifest as Record<string, unknown>;
+  const runtime = asRecord(rawManifest.runtime);
+  if (!runtime || runtime.kind !== "extensionHost") {
+    return invalid(
+      "PLUGIN_UNSUPPORTED_RUNTIME",
+      "community plugins must use extensionHost runtime"
+    );
   }
-  if (manifest.runtime.kind === "wasm" && !isSemver(manifest.runtime.abiVersion)) {
-    return invalid("PLUGIN_INVALID_RUNTIME", "wasm runtime requires SemVer abiVersion");
+  if (hasOwn(rawManifest, "hooks")) {
+    return invalid("PLUGIN_INVALID_MANIFEST", "top-level hooks are no longer supported");
   }
-  if (manifest.runtime.kind === "wasm" && semverMajor(manifest.runtime.abiVersion) !== 1) {
-    return invalid("PLUGIN_UNSUPPORTED_WASM_ABI", "wasm abiVersion must be compatible with v1");
+  if (hasOwn(rawManifest, "permissions")) {
+    return invalid("PLUGIN_INVALID_MANIFEST", "top-level permissions are no longer supported");
   }
   if (!isSimpleCompatibilityRange(manifest.hostCompatibility.app)) {
     return invalid(
@@ -394,51 +367,23 @@ export function validateManifest(manifest: PluginManifest): ValidationResult {
       "hostCompatibility.pluginApi must support plugin API v1"
     );
   }
-  if (manifest.runtime.kind === "extensionHost") {
-    if (!manifest.main || manifest.main.trim() === "") {
-      return invalid("PLUGIN_MISSING_MAIN", "extensionHost runtime requires main");
-    }
-    if (manifest.runtime.language !== "typescript") {
-      return invalid("PLUGIN_INVALID_RUNTIME", "extensionHost language must be typescript");
-    }
-    const activationError = validateActivationEvents(manifest.activationEvents);
-    if (activationError) return activationError;
-    const contributionError = validateContributes(manifest.contributes ?? {});
-    if (contributionError) return contributionError;
-    return validateCapabilities(manifest.capabilities ?? []);
-  }
 
-  const hooks = manifest.hooks ?? [];
-  const permissions = manifest.permissions ?? [];
-  if (hooks.length === 0) {
-    return invalid("PLUGIN_MISSING_HOOKS", "plugin must declare at least one hook");
+  if (!manifest.main || manifest.main.trim() === "") {
+    return invalid("PLUGIN_MISSING_MAIN", "extensionHost runtime requires main");
   }
-  for (const hook of hooks) {
-    if (RESERVED_HOOKS.has(hook.name)) {
-      return invalid(
-        "PLUGIN_RESERVED_HOOK",
-        `hook is reserved for a future host integration and is not active in plugin API v1: ${hook.name}`
-      );
-    }
-    if (!KNOWN_HOOKS.has(hook.name)) {
-      return invalid("PLUGIN_UNKNOWN_HOOK", `unknown hook: ${hook.name}`);
-    }
+  if (manifest.runtime.language !== "typescript") {
+    return invalid("PLUGIN_INVALID_RUNTIME", "extensionHost language must be typescript");
   }
-  for (const permission of permissions) {
-    if (RESERVED_PERMISSIONS.has(permission)) {
-      return invalid(
-        "PLUGIN_RESERVED_PERMISSION",
-        `permission is reserved for a future host-mediated API and is not active in plugin API v1: ${permission}`
-      );
-    }
-    if (!KNOWN_PERMISSIONS.has(permission)) {
-      return invalid("PLUGIN_UNKNOWN_PERMISSION", `unknown permission: ${permission}`);
-    }
-  }
-  const permissionSetError = validatePermissionSet(manifest);
-  if (permissionSetError) return permissionSetError;
-  const permissionScopeError = validatePermissionScope(hooks, permissions);
-  if (permissionScopeError) return permissionScopeError;
+  const activationError = validateActivationEvents(manifest.activationEvents);
+  if (activationError) return activationError;
+  const contributes = manifest.contributes ?? {};
+  const contributionError = validateContributes(contributes);
+  if (contributionError) return contributionError;
+  const capabilities = manifest.capabilities ?? [];
+  const capabilityError = validateCapabilities(capabilities);
+  if (!capabilityError.ok) return capabilityError;
+  const dependencyError = validateCapabilityDependencies(contributes, capabilities);
+  if (dependencyError) return dependencyError;
   return { ok: true };
 }
 
@@ -482,8 +427,12 @@ function validateContributes(contributes: PluginContributes): ValidationResult |
   if (commandError) return commandError;
   const gatewayHookError = validateGatewayHookContributions(raw.gatewayHooks);
   if (gatewayHookError) return gatewayHookError;
-  const gatewayRuleError = validateGatewayRuleContributions(raw.gatewayRules);
-  if (gatewayRuleError) return gatewayRuleError;
+  if (hasOwn(raw, "gatewayRules")) {
+    return invalid(
+      "PLUGIN_INVALID_CONTRIBUTION",
+      "gatewayRules are no longer supported; use gatewayHooks"
+    );
+  }
   return validateUiContributions(raw.ui);
 }
 
@@ -602,53 +551,6 @@ function validateGatewayHookContributions(gatewayHooks: unknown): ValidationResu
   return null;
 }
 
-function validateGatewayRuleContributions(gatewayRules: unknown): ValidationResult | null {
-  if (gatewayRules == null) return null;
-  if (!Array.isArray(gatewayRules)) {
-    return invalid("PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION", "gatewayRules must be an array");
-  }
-  for (const rule of gatewayRules) {
-    const record = asRecord(rule);
-    if (
-      !record ||
-      !Array.isArray(record.rules) ||
-      record.rules.length === 0 ||
-      !record.rules.every(isNonEmptyString)
-    ) {
-      return invalid(
-        "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION",
-        "gateway rule contribution requires non-empty rules"
-      );
-    }
-    if (record.hooks !== undefined) {
-      if (!Array.isArray(record.hooks)) {
-        return invalid(
-          "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION",
-          "gateway rule hooks must be an array"
-        );
-      }
-      for (const hook of record.hooks) {
-        if (typeof hook !== "string") {
-          return invalid(
-            "PLUGIN_INVALID_GATEWAY_RULE_CONTRIBUTION",
-            "gateway rule hooks must be strings"
-          );
-        }
-        if (RESERVED_HOOKS.has(hook as GatewayHookName)) {
-          return invalid(
-            "PLUGIN_RESERVED_HOOK",
-            `hook is reserved for a future host integration and is not active in plugin API v1: ${hook}`
-          );
-        }
-        if (!KNOWN_HOOKS.has(hook as GatewayHookName)) {
-          return invalid("PLUGIN_UNKNOWN_HOOK", `unknown hook: ${hook}`);
-        }
-      }
-    }
-  }
-  return null;
-}
-
 function validateUiContributions(ui: unknown): ValidationResult | null {
   if (ui == null) return null;
   const uiRecord = asRecord(ui);
@@ -743,11 +645,68 @@ function validateCapabilities(capabilities: readonly PluginCapability[]): Valida
   return { ok: true };
 }
 
+function validateCapabilityDependencies(
+  contributes: PluginContributes,
+  capabilities: readonly PluginCapability[]
+): ValidationResult | null {
+  const capabilitySet = new Set(capabilities);
+  const requireCapability = (needed: PluginCapability, reason: string) => {
+    if (!capabilitySet.has(needed)) {
+      return invalid("PLUGIN_MISSING_CAPABILITY", `${reason} requires ${needed}`);
+    }
+    return null;
+  };
+
+  if ((contributes.commands?.length ?? 0) > 0) {
+    const error = requireCapability("commands.execute", "commands contribution");
+    if (error) return error;
+  }
+  if ((contributes.providers?.length ?? 0) > 0) {
+    const error = requireCapability("provider.extensionValues", "provider contribution");
+    if (error) return error;
+  }
+  if ((contributes.gatewayHooks?.length ?? 0) > 0) {
+    const error = requireCapability("gateway.hooks", "gatewayHooks contribution");
+    if (error) return error;
+  }
+  if ((contributes.protocolBridges?.length ?? 0) > 0) {
+    const error = requireCapability("protocol.bridge", "protocolBridges contribution");
+    if (error) return error;
+  }
+  if ((contributes.ui?.["providers.editor.sections"]?.length ?? 0) > 0) {
+    const error = requireCapability(
+      "provider.extensionValues",
+      "providers.editor.sections UI contribution"
+    );
+    if (error) return error;
+  }
+  if (uiHasButtonCommand(contributes.ui)) {
+    const error = requireCapability("commands.execute", "UI command field");
+    if (error) return error;
+  }
+  return null;
+}
+
+function uiHasButtonCommand(ui: PluginContributes["ui"]): boolean {
+  if (!ui) return false;
+  return Object.values(ui).some((contributions) =>
+    (contributions ?? []).some((contribution) => {
+      const schema = contribution.schema;
+      if (schema.type !== "section" && schema.type !== "panel") return false;
+      return schema.fields.some((field) => field.type === "button");
+    })
+  );
+}
+
 function asRecord(value: unknown): Record<string, unknown> | null {
   if (value == null || typeof value !== "object" || Array.isArray(value)) {
     return null;
   }
   return value as Record<string, unknown>;
+}
+
+function hasOwn(value: Record<string, unknown>, key: string): boolean {
+  return Object.prototype.hasOwnProperty.call(value, key);
 }
 
 function isNonEmptyString(value: unknown): value is string {
@@ -778,82 +737,4 @@ function isSimpleCompatibilityRange(value: string): boolean {
 function supportsPluginApiV1(value: string): boolean {
   const trimmed = value.trim();
   return trimmed === "^1.0.0" || trimmed === "1.x.x" || trimmed === ">=1.0.0 <2.0.0";
-}
-
-function validatePermissionSet(manifest: PluginManifest): ValidationResult | null {
-  const set = new Set(manifest.permissions ?? []);
-  const hooks = new Set((manifest.hooks ?? []).map((hook) => hook.name));
-
-  if (
-    hooks.has("gateway.request.afterBodyRead") &&
-    set.has("request.body.write") &&
-    !set.has("request.body.read")
-  ) {
-    return invalid(
-      "PLUGIN_INVALID_PERMISSION_SET",
-      "request.body.write requires request.body.read"
-    );
-  }
-  if (
-    hooks.has("gateway.response.after") &&
-    set.has("response.body.write") &&
-    !set.has("response.body.read")
-  ) {
-    return invalid(
-      "PLUGIN_INVALID_PERMISSION_SET",
-      "response.body.write requires response.body.read"
-    );
-  }
-  if (
-    hooks.has("gateway.response.chunk") &&
-    set.has("stream.modify") &&
-    !set.has("stream.inspect")
-  ) {
-    return invalid("PLUGIN_INVALID_PERMISSION_SET", "stream.modify requires stream.inspect");
-  }
-  return null;
-}
-
-function hookAllowsPermission(hookName: GatewayHookName, permission: PluginPermission): boolean {
-  if (
-    permission === "request.meta.read" ||
-    permission === "request.header.read" ||
-    permission === "request.header.readSensitive" ||
-    permission === "request.header.write" ||
-    permission === "request.body.read" ||
-    permission === "request.body.write"
-  ) {
-    return (
-      hookName === "gateway.request.afterBodyRead" || hookName === "gateway.request.beforeSend"
-    );
-  }
-  if (
-    permission === "response.header.read" ||
-    permission === "response.header.write" ||
-    permission === "response.body.read" ||
-    permission === "response.body.write"
-  ) {
-    return hookName === "gateway.response.after" || hookName === "gateway.error";
-  }
-  if (permission === "stream.inspect" || permission === "stream.modify") {
-    return hookName === "gateway.response.chunk";
-  }
-  if (permission === "log.redact") return hookName === "log.beforePersist";
-  return false;
-}
-
-function validatePermissionScope(
-  hooks: readonly PluginHook[],
-  permissions: readonly PluginPermission[]
-): ValidationResult | null {
-  for (const permission of permissions) {
-    if (RESERVED_PERMISSIONS.has(permission)) continue;
-    if (!hooks.some((hook) => hookAllowsPermission(hook.name, permission))) {
-      return invalid(
-        "PLUGIN_PERMISSION_SCOPE_MISMATCH",
-        `permission ${permission} does not apply to any declared hook`
-      );
-    }
-  }
-  return null;
 }
