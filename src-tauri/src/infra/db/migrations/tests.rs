@@ -873,7 +873,7 @@ INSERT INTO providers(
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 34);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     for column in [
         "auth_mode",
@@ -1129,7 +1129,7 @@ INSERT INTO skills(
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 34);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     assert!(test_has_column(&conn, "workspaces", "cli_key"));
     assert!(test_has_column(&conn, "workspace_active", "workspace_id"));
@@ -1250,7 +1250,7 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 34);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     // Verify all tables exist
     let tables: Vec<String> = {
@@ -1486,7 +1486,7 @@ PRAGMA user_version = 33;
     let user_version: i64 = conn
         .pragma_query_value(None, "user_version", |row| row.get(0))
         .expect("read user_version");
-    assert_eq!(user_version, 34);
+    assert_eq!(user_version, LATEST_SCHEMA_VERSION);
 
     assert!(test_has_column(&conn, "providers", "limit_5h_usd"));
     assert!(test_has_column(&conn, "providers", "limit_daily_usd"));
