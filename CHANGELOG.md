@@ -1,5 +1,42 @@
 # Changelog
 
+## [0.60.11](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.10...aio-coding-hub-v0.60.11) (2026-07-01)
+
+
+### Features
+
+* add Codex bridge provider support for chat/completions and messages-compatible endpoint flows ([cacc253](https://github.com/FingerCaster/aio-coding-hub/commit/cacc253), [e5dd1e4](https://github.com/FingerCaster/aio-coding-hub/commit/e5dd1e4))
+* add concurrent Codex reasoning guard retry fallback with model fallback handling ([547df7a](https://github.com/FingerCaster/aio-coding-hub/commit/547df7a))
+* add date-range filtering for Codex reasoning guard statistics, including session, all-time, and custom windows ([8aed9e1](https://github.com/FingerCaster/aio-coding-hub/commit/8aed9e1))
+* add Codex guard stats scope controls across the merged stats UI and query flow ([8ca244d](https://github.com/FingerCaster/aio-coding-hub/commit/8ca244d))
+
+
+### Bug Fixes
+
+* classify fake-200 quota/error bodies before bridge response translation so provider failover keeps `GW_FAKE_200` semantics ([401099a](https://github.com/FingerCaster/aio-coding-hub/commit/401099a))
+* handle empty Codex response streams without breaking request logging or stream completion ([6703616](https://github.com/FingerCaster/aio-coding-hub/commit/6703616))
+* add Codex provider sync support and harden backup restore rollback behavior ([e195b7b](https://github.com/FingerCaster/aio-coding-hub/commit/e195b7b))
+* clarify Codex provider sync process-check errors and stabilize the related bindings/tests ([6d31227](https://github.com/FingerCaster/aio-coding-hub/commit/6d31227), [070e60e](https://github.com/FingerCaster/aio-coding-hub/commit/070e60e))
+* satisfy strict Clippy checks for Codex guard retry internals after the branch merges ([0466003](https://github.com/FingerCaster/aio-coding-hub/commit/0466003))
+
+
+### Tests
+
+* update Codex stats query expectations for the merged date-range stats API ([3cacc8f](https://github.com/FingerCaster/aio-coding-hub/commit/3cacc8f))
+* refresh generated Tauri bindings after the merged gateway and provider-sync changes ([478d729](https://github.com/FingerCaster/aio-coding-hub/commit/478d729))
+* run and restore the full local verification matrix, including unit shards, Tauri tests, e2e, build, plugin SDK, create-aio-plugin, and WASM SDK checks ([9ba0191](https://github.com/FingerCaster/aio-coding-hub/commit/9ba0191))
+
+
+### Build System
+
+* skip stale release-PR changelog checks during publish-triggered release workflow runs ([ed21da1](https://github.com/FingerCaster/aio-coding-hub/commit/ed21da1))
+* fix repository-wide Prettier checks by ignoring OMX runtime state and WiX XML fragments, then formatting the tracked source/config files Prettier owns ([9ba0191](https://github.com/FingerCaster/aio-coding-hub/commit/9ba0191))
+
+
+### Documentation
+
+* add fork disclaimer to the README so users know this fork owns the current update/release channel ([0beb2bb](https://github.com/FingerCaster/aio-coding-hub/commit/0beb2bb))
+
 ## [0.60.10](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.9...aio-coding-hub-v0.60.10) (2026-06-30)
 
 
