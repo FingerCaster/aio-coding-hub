@@ -3,6 +3,7 @@
 //! Sends a minimal API request to verify that a provider's base URL + credentials
 //! are reachable and functional. Supports all CLI types (claude, codex, gemini).
 
+use crate::providers::{is_supported_bridge_type, CX2CC_BRIDGE_TYPE};
 use crate::shared::error::AppResult;
 use crate::{blocking, db};
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -35,7 +36,6 @@ struct LoadedProvider {
     api_key_plaintext: String,
     availability_test_model: Option<String>,
     auth_mode: String,
-    source_provider_id: Option<i64>,
     bridge_type: Option<String>,
 }
 
@@ -123,12 +123,11 @@ async fn load_provider_for_test(db: db::Db, provider_id: i64) -> AppResult<Loade
             String,
             Option<String>,
             String,
-            Option<i64>,
             Option<String>,
         )> = conn
             .query_row(
                 r#"
-SELECT id, cli_key, name, base_url, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, source_provider_id, bridge_type
+SELECT id, cli_key, name, base_url, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, bridge_type
 FROM providers
 WHERE id = ?1
 "#,
@@ -144,14 +143,13 @@ WHERE id = ?1
                         row.get(6)?,
                         row.get(7)?,
                         row.get(8)?,
-                        row.get(9)?,
                     ))
                 },
             )
             .optional()
             .map_err(|e| format!("DB_ERROR: {e}"))?;
 
-        let Some((id, cli_key, name, base_url_fallback, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, source_provider_id, bridge_type)) = row else {
+        let Some((id, cli_key, name, base_url_fallback, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, bridge_type)) = row else {
             return Err("DB_NOT_FOUND: provider not found".into());
         };
 
@@ -178,7 +176,6 @@ WHERE id = ?1
             api_key_plaintext,
             availability_test_model: normalize_probe_model(availability_test_model.as_deref()),
             auth_mode,
-            source_provider_id,
             bridge_type,
         })
     })
@@ -305,9 +302,14 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
         });
     }
 
-    let is_cx2cc =
-        provider.source_provider_id.is_some() || provider.bridge_type.as_deref() == Some("cx2cc");
-    if is_cx2cc {
+    if let Some(bridge_type) = provider.bridge_type.as_deref() {
+        let bridge_label = if bridge_type == CX2CC_BRIDGE_TYPE {
+            "CX2CC"
+        } else if is_supported_bridge_type(bridge_type) {
+            "转译桥接"
+        } else {
+            "未知桥接"
+        };
         return Ok(ProviderAvailabilityResult {
             ok: false,
             provider_id: provider.id,
@@ -315,7 +317,7 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
             base_url: provider.base_urls.first().cloned().unwrap_or_default(),
             status: None,
             latency_ms: 0,
-            error: Some("CX2CC 桥接供应商需通过其源供应商测试可用性".into()),
+            error: Some(format!("{bridge_label}供应商需通过其源供应商测试可用性")),
             response_preview: None,
         });
     }

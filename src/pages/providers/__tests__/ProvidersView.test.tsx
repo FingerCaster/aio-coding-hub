@@ -356,6 +356,7 @@ describe("pages/providers/ProvidersView", () => {
             cost_multiplier: 1,
             claude_models: { main_model: "claude-sonnet-4-5" },
             source_provider_id: 7,
+            bridge_type: "cx2cc",
           },
         ],
         isFetching: false,

@@ -106,6 +106,9 @@ where
     // --- Build headers + inject auth ---
     let mut headers = input.base_headers.clone();
     ensure_cli_required_headers(&input.cli_key, &mut headers);
+    if let Some((_, source_cli_key)) = prepared.bridge_source.as_ref() {
+        ensure_cli_required_headers(source_cli_key, &mut headers);
+    }
     codex_session_id_completion::inject_session_headers_if_needed(
         &mut headers,
         prepared.cx2cc_codex_session_id.as_deref(),
@@ -357,7 +360,7 @@ fn build_attempt_ctx<'a>(
     retry_index: u32,
     attempt_started_ms: u128,
     circuit_before: &'a crate::circuit_breaker::CircuitSnapshot,
-    prepared: &PreparedProvider,
+    prepared: &'a PreparedProvider,
 ) -> AttemptCtx<'a> {
     AttemptCtx {
         attempt_index,
@@ -367,6 +370,7 @@ fn build_attempt_ctx<'a>(
         circuit_before,
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
+        active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     }
 }

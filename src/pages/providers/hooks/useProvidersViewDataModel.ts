@@ -175,6 +175,17 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     () => codexProvidersQuery.data ?? [],
     [codexProvidersQuery.data]
   );
+  const claudeProvidersForBridgeQuery = useProvidersListQuery("claude", {
+    enabled: activeCli === "codex",
+  });
+  const claudeProvidersForBridge = useMemo<ProviderSummary[]>(
+    () => claudeProvidersForBridgeQuery.data ?? [],
+    [claudeProvidersForBridgeQuery.data]
+  );
+  const bridgeSourceProviders = useMemo<ProviderSummary[]>(
+    () => (activeCli === "codex" ? [...providers, ...claudeProvidersForBridge] : codexProviders),
+    [activeCli, claudeProvidersForBridge, codexProviders, providers]
+  );
   const providersLoading = providersQuery.isFetching;
   const defaultRouteQuery = useDefaultRouteProvidersQuery(activeCli);
   const sortModesQuery = useSortModesListQuery();
@@ -413,6 +424,8 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     const refreshes: Array<Promise<ProviderRefreshResult>> = [providersQuery.refetch()];
     if (cliKey === "claude") {
       refreshes.push(codexProvidersQuery.refetch());
+    } else if (cliKey === "codex") {
+      refreshes.push(claudeProvidersForBridgeQuery.refetch());
     }
 
     try {
@@ -426,7 +439,13 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     } finally {
       finishProvidersRefresh(cliKey, refreshToken);
     }
-  }, [beginProvidersRefresh, codexProvidersQuery, finishProvidersRefresh, providersQuery]);
+  }, [
+    beginProvidersRefresh,
+    claudeProvidersForBridgeQuery,
+    codexProvidersQuery,
+    finishProvidersRefresh,
+    providersQuery,
+  ]);
 
   useEffect(() => {
     setSelectedTags(new Set());
@@ -1096,6 +1115,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   return {
     providers,
     codexProviders,
+    bridgeSourceProviders,
     providersLoading,
     providersRefreshing: Boolean(providersRefreshingByCli[activeCli]),
     defaultRouteRows,

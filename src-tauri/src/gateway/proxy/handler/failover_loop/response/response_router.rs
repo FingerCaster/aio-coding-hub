@@ -65,6 +65,7 @@ where
         circuit_before: &circuit_before,
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
+        active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     };
     let provider_ctx = ProviderCtx {
@@ -168,6 +169,7 @@ where
         circuit_before: &circuit_before,
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
+        active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     };
     let provider_ctx = ProviderCtx {
@@ -260,8 +262,8 @@ async fn try_oauth_reactive_refresh<R: tauri::Runtime>(
                 .iter()
                 .find(|p| p.id == prepared.provider_id)
                 .map(|p| (p, input.cli_key.as_str()))
-        } else if prepared.cx2cc_active {
-            prepared.cx2cc_source.as_ref().and_then(|(src, src_key)| {
+        } else if prepared.active_bridge_type.is_some() {
+            prepared.bridge_source.as_ref().and_then(|(src, src_key)| {
                 if src.auth_mode == "oauth" {
                     Some((src, src_key.as_str()))
                 } else {
@@ -278,6 +280,7 @@ async fn try_oauth_reactive_refresh<R: tauri::Runtime>(
         provider_id = prepared.provider_id,
         target_provider_id = target_provider.id,
         cx2cc_active = prepared.cx2cc_active,
+        active_bridge_type = ?prepared.active_bridge_type,
         cli_key = %target_cli_key,
         "oauth 401 detected, attempting reactive token refresh"
     );
@@ -288,6 +291,7 @@ async fn try_oauth_reactive_refresh<R: tauri::Runtime>(
                 provider_id = prepared.provider_id,
                 target_provider_id = target_provider.id,
                 cx2cc_active = prepared.cx2cc_active,
+                active_bridge_type = ?prepared.active_bridge_type,
                 cli_key = %target_cli_key,
                 "oauth 401 reactive refresh succeeded, retrying"
             );
@@ -298,6 +302,7 @@ async fn try_oauth_reactive_refresh<R: tauri::Runtime>(
                 provider_id = prepared.provider_id,
                 target_provider_id = target_provider.id,
                 cx2cc_active = prepared.cx2cc_active,
+                active_bridge_type = ?prepared.active_bridge_type,
                 cli_key = %target_cli_key,
                 "oauth reactive refresh failed: {}",
                 err

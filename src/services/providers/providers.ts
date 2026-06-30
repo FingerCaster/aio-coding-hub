@@ -612,7 +612,9 @@ export async function providerTestAvailability(
 // ---------------------------------------------------------------------------
 
 export interface ProviderTypeInfo {
-  /** Whether this is a CX2CC bridge (has source_provider_id or bridge_type is cx2cc) */
+  /** Whether this is any bridge provider. */
+  isBridge: boolean;
+  /** Whether this is a CX2CC bridge. */
   isCx2cc: boolean;
   /** Whether this is a CX2CC gateway (bridge_type=cx2cc but no source_provider_id) */
   isCx2ccGateway: boolean;
@@ -629,15 +631,22 @@ export function getProviderTypeInfo(
     | undefined
 ): ProviderTypeInfo {
   if (!provider) {
-    return { isCx2cc: false, isCx2ccGateway: false, isOAuth: false, effectiveAuthMode: "api_key" };
+    return {
+      isBridge: false,
+      isCx2cc: false,
+      isCx2ccGateway: false,
+      isOAuth: false,
+      effectiveAuthMode: "api_key",
+    };
   }
-  const isCx2cc = provider.source_provider_id != null || provider.bridge_type === "cx2cc";
+  const isBridge = provider.bridge_type != null;
+  const isCx2cc = provider.bridge_type === "cx2cc";
   const isCx2ccGateway = provider.bridge_type === "cx2cc" && provider.source_provider_id == null;
   const isOAuth = provider.auth_mode === "oauth";
-  const effectiveAuthMode: ProviderTypeInfo["effectiveAuthMode"] = isCx2cc
+  const effectiveAuthMode: ProviderTypeInfo["effectiveAuthMode"] = isBridge
     ? "cx2cc"
     : isOAuth
       ? "oauth"
       : "api_key";
-  return { isCx2cc, isCx2ccGateway, isOAuth, effectiveAuthMode };
+  return { isBridge, isCx2cc, isCx2ccGateway, isOAuth, effectiveAuthMode };
 }

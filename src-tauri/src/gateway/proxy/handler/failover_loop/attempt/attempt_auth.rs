@@ -33,12 +33,12 @@ pub(super) fn inject_auth<R: tauri::Runtime>(
     // Always clear all auth headers (fail-closed).
     clear_all_auth_headers(headers);
 
-    let upstream_cli_key = if prepared.cx2cc_active {
+    let upstream_cli_key = if prepared.active_bridge_type.is_some() {
         prepared
-            .cx2cc_source
+            .bridge_source
             .as_ref()
             .map(|(_, source_cli_key)| source_cli_key.as_str())
-            .unwrap_or("codex")
+            .unwrap_or(input.cli_key.as_str())
     } else {
         input.cli_key.as_str()
     };
@@ -153,10 +153,14 @@ fn inject_standard_auth<R: tauri::Runtime>(
     retry_index: u32,
     headers: &mut HeaderMap,
 ) {
-    let auth_cli_key = if prepared.cx2cc_active {
-        "codex"
+    let auth_cli_key = if prepared.active_bridge_type.is_some() {
+        prepared
+            .bridge_source
+            .as_ref()
+            .map(|(_, source_cli_key)| source_cli_key.as_str())
+            .unwrap_or(input.cli_key.as_str())
     } else {
-        &input.cli_key
+        input.cli_key.as_str()
     };
     inject_provider_auth(auth_cli_key, prepared.effective_credential.trim(), headers);
 

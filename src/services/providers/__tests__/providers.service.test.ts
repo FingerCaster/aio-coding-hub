@@ -24,6 +24,7 @@ import {
   providerUpsert,
   validateProviderCliKey,
   validateProviderId,
+  getProviderTypeInfo,
 } from "../providers";
 import { commands } from "../../../generated/bindings";
 import { logToConsole } from "../../consoleLog";
@@ -105,6 +106,33 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
 }
 
 describe("services/providers/providers", () => {
+  it("does not classify source_provider_id alone as cx2cc", () => {
+    const info = getProviderTypeInfo(
+      createProviderSummary({
+        source_provider_id: 7,
+        bridge_type: null,
+      })
+    );
+
+    expect(info.isBridge).toBe(false);
+    expect(info.isCx2cc).toBe(false);
+    expect(info.effectiveAuthMode).toBe("api_key");
+  });
+
+  it("classifies codex bridge types as bridge edit mode", () => {
+    const info = getProviderTypeInfo(
+      createProviderSummary({
+        cli_key: "codex",
+        source_provider_id: 7,
+        bridge_type: "codex_to_openai_chat",
+      })
+    );
+
+    expect(info.isBridge).toBe(true);
+    expect(info.isCx2cc).toBe(false);
+    expect(info.effectiveAuthMode).toBe("cx2cc");
+  });
+
   it("rethrows and logs when invoke fails", async () => {
     vi.mocked(commands.providersList).mockRejectedValueOnce(new Error("providers boom"));
 

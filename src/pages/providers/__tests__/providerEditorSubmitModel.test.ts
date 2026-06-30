@@ -12,6 +12,7 @@ function makeContext(
     cliKey: "claude",
     editingProviderId: null,
     authMode: "api_key",
+    codexBridgeTarget: "openai_chat",
     baseUrlMode: "order",
     baseUrlRows: [{ id: "1", url: "https://example.com/v1", ping: { status: "idle" } }],
     tags: [],
@@ -112,5 +113,73 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     if (!result.ok) return;
 
     expect(result.value.payload.availabilityTestModel).toBe("gpt-5.4");
+  });
+
+  it("builds codex chat-completions bridge payload", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        cliKey: "codex",
+        authMode: "cx2cc",
+        codexBridgeTarget: "openai_chat",
+        sourceProviderId: 7,
+        formValues: {
+          ...DEFAULT_FORM_VALUES,
+          name: "Codex Chat Bridge",
+          api_key: "",
+        },
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.payload.bridgeType).toBe("codex_to_openai_chat");
+    expect(result.value.payload.sourceProviderId).toBe(7);
+    expect(result.value.payload.baseUrls).toEqual([]);
+    expect(result.value.payload.apiKey).toBeNull();
+  });
+
+  it("builds codex anthropic messages bridge payload", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        cliKey: "codex",
+        authMode: "cx2cc",
+        codexBridgeTarget: "anthropic_messages",
+        sourceProviderId: 8,
+        formValues: {
+          ...DEFAULT_FORM_VALUES,
+          name: "Codex Messages Bridge",
+          api_key: "",
+        },
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.payload.bridgeType).toBe("codex_to_anthropic_messages");
+    expect(result.value.payload.sourceProviderId).toBe(8);
+  });
+
+  it("requires source provider for codex bridge payloads", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        cliKey: "codex",
+        authMode: "cx2cc",
+        formValues: {
+          ...DEFAULT_FORM_VALUES,
+          name: "Codex Bridge",
+          api_key: "",
+        },
+      })
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "message",
+        message: "请选择上游来源",
+      },
+    });
   });
 });

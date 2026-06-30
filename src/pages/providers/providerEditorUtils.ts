@@ -29,6 +29,8 @@ export const DEFAULT_FORM_VALUES: ProviderEditorDialogFormInput = {
 
 export const CX2CC_GLOBAL_SOURCE_VALUE = "__codex_gateway__";
 export const CX2CC_PROXY_TOKEN = "aio-coding-hub";
+export const CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE = "codex_to_openai_chat";
+export const CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE = "codex_to_anthropic_messages";
 
 export function cliNameFromKey(cliKey: CliKey) {
   return cliLongLabel(cliKey);
@@ -127,4 +129,13 @@ export function deriveCx2ccSourceValue(
   if (source.source_provider_id != null) return String(source.source_provider_id);
   if (source.bridge_type === "cx2cc") return CX2CC_GLOBAL_SOURCE_VALUE;
   return "";
+}
+
+export function deriveCodexBridgeTarget(
+  provider: Pick<ProviderSummary, "bridge_type"> | null | undefined
+): "openai_chat" | "anthropic_messages" {
+  if (provider?.bridge_type === CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE) {
+    return "anthropic_messages";
+  }
+  return "openai_chat";
 }

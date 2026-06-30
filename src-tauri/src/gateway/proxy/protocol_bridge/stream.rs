@@ -80,7 +80,21 @@ where
         requested_model: Option<String>,
         cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     ) -> Self {
-        if !active {
+        Self::for_bridge_type(
+            upstream,
+            active.then_some("cx2cc"),
+            requested_model,
+            cx2cc_settings,
+        )
+    }
+
+    pub fn for_bridge_type(
+        upstream: S,
+        bridge_type: Option<&str>,
+        requested_model: Option<String>,
+        cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
+    ) -> Self {
+        let Some(bridge_type) = bridge_type else {
             let dummy_ctx = BridgeContext {
                 claude_models: crate::domain::providers::ClaudeModels::default(),
                 cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
@@ -90,22 +104,26 @@ where
                 is_chatgpt_backend: false,
             };
             return Self::new(upstream, false, None, dummy_ctx);
-        }
+        };
 
-        let bridge = match super::registry::get_bridge("cx2cc") {
+        let bridge = match super::registry::get_bridge(bridge_type) {
             Some(b) => b,
             None => {
-                tracing::error!("cx2cc bridge not found in registry; falling back to passthrough");
-                let dummy_ctx = BridgeContext {
+                tracing::error!(
+                    bridge_type,
+                    "bridge not found in registry; failing stream closed"
+                );
+                let ctx = BridgeContext {
                     claude_models: crate::domain::providers::ClaudeModels::default(),
-                    cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(
-                    ),
-                    requested_model: None,
+                    cx2cc_settings,
+                    requested_model,
                     mapped_model: None,
-                    stream_requested: false,
+                    stream_requested: true,
                     is_chatgpt_backend: false,
                 };
-                return Self::new(upstream, false, None, dummy_ctx);
+                let mut stream = Self::new(upstream, true, None, ctx);
+                stream.terminate_registry_miss(bridge_type);
+                return stream;
             }
         };
         let translator = StreamTranslatorOwned {
@@ -153,6 +171,42 @@ where
         self.line_buf.clear();
         self.buffer
             .push_back(Bytes::from_static(BRIDGE_SSE_FRAME_TOO_LARGE));
+        self.terminated = true;
+    }
+
+    fn terminate_registry_miss(&mut self, bridge_type: &str) {
+        let payload = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": crate::gateway::proxy::GatewayErrorCode::BridgeUnsupportedFeature.as_str(),
+                "message": format!("bridge is not registered: {bridge_type}")
+            }
+        });
+        let data = serde_json::to_string(&payload).unwrap_or_else(|_| {
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bridge is not registered\"}}".to_string()
+        });
+        self.line_buf.clear();
+        self.buffer
+            .push_back(Bytes::from(format!("event: error\ndata: {data}\n\n")));
+        self.terminated = true;
+    }
+
+    fn terminate_translation_error(&mut self, err: BridgeError) {
+        let payload = serde_json::json!({
+            "type": "error",
+            "error": {
+                "type": "invalid_request_error",
+                "code": crate::gateway::proxy::GatewayErrorCode::BridgeUnsupportedFeature.as_str(),
+                "message": format!("bridge stream translation failed: {err}")
+            }
+        });
+        let data = serde_json::to_string(&payload).unwrap_or_else(|_| {
+            "{\"type\":\"error\",\"error\":{\"type\":\"invalid_request_error\",\"message\":\"bridge stream translation failed\"}}".to_string()
+        });
+        self.line_buf.clear();
+        self.buffer
+            .push_back(Bytes::from(format!("event: error\ndata: {data}\n\n")));
         self.terminated = true;
     }
 
@@ -208,6 +262,8 @@ where
                     }
                     Err(e) => {
                         tracing::warn!("bridge stream translation error: {e}");
+                        self.terminate_translation_error(e);
+                        return;
                     }
                 }
             }
@@ -523,5 +579,57 @@ mod tests {
             Pin::new(&mut stream).poll_next(&mut cx),
             Poll::Ready(None)
         ));
+    }
+
+    #[test]
+    fn bridge_stream_emits_error_instead_of_passthrough_for_unknown_bridge_type() {
+        let upstream_frame = Bytes::from_static(b"data: should-not-pass-through\n\n");
+        let mut stream = BridgeStream::for_bridge_type(
+            MockStream::new(vec![Ok(upstream_frame)]),
+            Some("missing_bridge"),
+            None,
+            crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
+        );
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let first = Pin::new(&mut stream).poll_next(&mut cx);
+        let Poll::Ready(Some(Ok(frame))) = first else {
+            panic!("expected bridge registry error frame, got {first:?}");
+        };
+        let text = std::str::from_utf8(frame.as_ref()).expect("utf-8 error frame");
+        assert!(text.contains("event: error"));
+        assert!(text.contains("GW_BRIDGE_UNSUPPORTED_FEATURE"));
+        assert!(text.contains("missing_bridge"));
+        assert!(!text.contains("should-not-pass-through"));
+
+        assert!(matches!(
+            Pin::new(&mut stream).poll_next(&mut cx),
+            Poll::Ready(None)
+        ));
+    }
+
+    #[test]
+    fn bridge_stream_translation_error_uses_bridge_error_code() {
+        let raw = Bytes::from_static(
+            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n",
+        );
+        let mut stream = BridgeStream::for_bridge_type(
+            MockStream::new(vec![Ok(raw)]),
+            Some("codex_to_openai_chat"),
+            None,
+            crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
+        );
+        let waker = std::task::Waker::noop();
+        let mut cx = Context::from_waker(waker);
+
+        let first = Pin::new(&mut stream).poll_next(&mut cx);
+        let Poll::Ready(Some(Ok(frame))) = first else {
+            panic!("expected bridge translation error frame, got {first:?}");
+        };
+        let text = std::str::from_utf8(frame.as_ref()).expect("utf-8 error frame");
+        assert!(text.contains("event: error"));
+        assert!(text.contains("GW_BRIDGE_UNSUPPORTED_FEATURE"));
+        assert!(text.contains("tool_calls"));
     }
 }

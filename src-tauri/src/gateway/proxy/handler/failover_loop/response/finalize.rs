@@ -286,3 +286,100 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
     abort_guard.disarm();
     apply_gateway_error_hook(&state.db, state.plugin_pipeline.clone(), trace_id, resp).await
 }
+
+pub(super) struct TerminalBridgeErrorInput<'a, R: tauri::Runtime = tauri::Wry> {
+    pub(super) state: &'a GatewayAppState<R>,
+    pub(super) abort_guard: &'a mut RequestAbortGuard<R>,
+    pub(super) observe: bool,
+    pub(super) attempts: Vec<FailoverAttempt>,
+    pub(super) cli_key: String,
+    pub(super) method_hint: String,
+    pub(super) forwarded_path: String,
+    pub(super) query: Option<String>,
+    pub(super) trace_id: String,
+    pub(super) started: Instant,
+    pub(super) created_at_ms: i64,
+    pub(super) created_at: i64,
+    pub(super) session_id: Option<String>,
+    pub(super) requested_model: Option<String>,
+    pub(super) special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(super) verbose_provider_error: bool,
+    pub(super) error_category: &'static str,
+    pub(super) error_code: &'static str,
+    pub(super) reason: String,
+}
+
+pub(super) async fn terminal_bridge_error<R: tauri::Runtime>(
+    input: TerminalBridgeErrorInput<'_, R>,
+) -> Response {
+    let TerminalBridgeErrorInput {
+        state,
+        abort_guard,
+        observe,
+        attempts,
+        cli_key,
+        method_hint,
+        forwarded_path,
+        query,
+        trace_id,
+        started,
+        created_at_ms,
+        created_at,
+        session_id,
+        requested_model,
+        special_settings,
+        verbose_provider_error,
+        error_category,
+        error_code,
+        reason,
+    } = input;
+
+    tracing::warn!(
+        trace_id = %trace_id,
+        error_code,
+        cli_key = %cli_key,
+        "bridge request translation failed"
+    );
+
+    let resp = error_response(
+        StatusCode::BAD_REQUEST,
+        trace_id.clone(),
+        error_code,
+        reason.clone(),
+        if verbose_provider_error {
+            attempts.clone()
+        } else {
+            vec![]
+        },
+    );
+
+    let duration_ms = started.elapsed().as_millis();
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs::from_context(RequestEndContextArgs {
+            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            trace_id: trace_id.as_str(),
+            cli_key: cli_key.as_str(),
+            method: method_hint.as_str(),
+            path: forwarded_path.as_str(),
+            observe,
+            query: query.as_deref(),
+            excluded_from_stats: false,
+            duration_ms,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(&special_settings),
+            session_id,
+            requested_model,
+            created_at_ms,
+            created_at,
+        })
+        .with_completion(RequestCompletion::failure(
+            StatusCode::BAD_REQUEST.as_u16(),
+            Some(error_category),
+            error_code,
+        )),
+    )
+    .await;
+
+    abort_guard.disarm();
+    apply_gateway_error_hook(&state.db, state.plugin_pipeline.clone(), trace_id, resp).await
+}

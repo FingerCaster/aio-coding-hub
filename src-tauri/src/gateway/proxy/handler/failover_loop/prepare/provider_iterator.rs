@@ -31,6 +31,8 @@ pub(super) struct PreparedProvider {
     pub(super) use_codex_chatgpt_backend: bool,
     pub(super) codex_chatgpt_account_id: Option<String>,
     pub(super) cx2cc_active: bool,
+    pub(super) active_bridge_type: Option<String>,
+    pub(super) bridge_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
     pub(super) circuit_snapshot: crate::circuit_breaker::CircuitSnapshot,
@@ -64,6 +66,7 @@ impl IterationCounters {
 pub(super) enum PreparationOutcome {
     Ready(Box<PreparedProvider>),
     Skipped,
+    Terminal(SkipReason),
 }
 
 /// Structured skip reason used by CX2CC preparation and other skip paths.
@@ -110,9 +113,11 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
             None => return PreparationOutcome::Skipped,
         };
 
+    let bridge_type = provider.bridge_type.as_deref();
     let is_cx2cc_bridge = provider.is_cx2cc_bridge();
+    let is_non_cx2cc_bridge = bridge_type.is_some() && !is_cx2cc_bridge;
 
-    let mut effective_credential = if is_cx2cc_bridge {
+    let mut effective_credential = if is_cx2cc_bridge || is_non_cx2cc_bridge {
         String::new()
     } else {
         match resolve_effective_credential(&input.state, &input.cli_key, provider).await {
@@ -224,6 +229,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
 
     // --- CX2CC translation ---
     let mut cx2cc_active = false;
+    let mut active_bridge_type: Option<String> = None;
+    let mut bridge_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_codex_session_id: Option<String> = None;
     if is_cx2cc_bridge {
@@ -243,7 +250,9 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
             cx2cc_preparation::Cx2ccOutcome::Ready(boxed) => {
                 let result = *boxed;
                 cx2cc_active = result.cx2cc_active;
+                active_bridge_type = Some(crate::providers::CX2CC_BRIDGE_TYPE.to_string());
                 cx2cc_source = result.cx2cc_source;
+                bridge_source = cx2cc_source.clone();
                 cx2cc_codex_session_id = result.cx2cc_codex_session_id;
                 effective_credential = result.effective_credential;
                 provider_base_url_base = result.provider_base_url_base;
@@ -264,6 +273,45 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
                     reason,
                 );
                 return PreparationOutcome::Skipped;
+            }
+        }
+    }
+    if let Some(bridge_type) = bridge_type.filter(|_| is_non_cx2cc_bridge) {
+        let outcome = bridge_preparation::prepare(bridge_preparation::BridgePreparationInput {
+            input,
+            provider_id,
+            provider_name_base: &provider_name_base,
+            bridge_type,
+            source_id: provider.source_provider_id,
+            upstream_body_bytes,
+        })
+        .await;
+        match outcome {
+            bridge_preparation::BridgePreparationOutcome::Ready(boxed) => {
+                let result = *boxed;
+                active_bridge_type = Some(result.active_bridge_type);
+                bridge_source = result.bridge_source;
+                effective_credential = result.effective_credential;
+                provider_base_url_base = result.provider_base_url_base;
+                upstream_forwarded_path = result.upstream_forwarded_path;
+                upstream_query = result.upstream_query;
+                upstream_body_bytes = result.upstream_body_bytes;
+                strip_request_content_encoding = result.strip_request_content_encoding;
+            }
+            bridge_preparation::BridgePreparationOutcome::Terminal(reason) => {
+                provider_checks::skip_with_reason(
+                    attempts,
+                    provider_id,
+                    &provider_name_base,
+                    &provider_base_url_display,
+                    input.started.elapsed().as_millis(),
+                    SkipReason {
+                        error_category: reason.error_category,
+                        error_code: reason.error_code,
+                        reason: reason.reason.clone(),
+                    },
+                );
+                return PreparationOutcome::Terminal(reason);
             }
         }
     }
@@ -350,6 +398,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         use_codex_chatgpt_backend,
         codex_chatgpt_account_id,
         cx2cc_active,
+        active_bridge_type,
+        bridge_source,
         cx2cc_source,
         cx2cc_codex_session_id,
         circuit_snapshot,

@@ -6,6 +6,8 @@ use std::collections::HashSet;
 pub(super) const DEFAULT_PRIORITY: i64 = 100;
 pub(super) const MAX_MODEL_NAME_LEN: usize = 200;
 pub(crate) const CX2CC_BRIDGE_TYPE: &str = "cx2cc";
+pub(crate) const CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE: &str = "codex_to_openai_chat";
+pub(crate) const CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE: &str = "codex_to_anthropic_messages";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
@@ -47,8 +49,19 @@ impl ProviderAuthMode {
     }
 }
 
-pub(crate) fn is_cx2cc_bridge(source_provider_id: Option<i64>, bridge_type: Option<&str>) -> bool {
-    source_provider_id.is_some() || bridge_type == Some(CX2CC_BRIDGE_TYPE)
+pub(crate) fn is_cx2cc_bridge(bridge_type: Option<&str>) -> bool {
+    bridge_type == Some(CX2CC_BRIDGE_TYPE)
+}
+
+pub(crate) fn is_codex_bridge_type(bridge_type: &str) -> bool {
+    matches!(
+        bridge_type,
+        CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE | CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
+    )
+}
+
+pub(crate) fn is_supported_bridge_type(bridge_type: &str) -> bool {
+    bridge_type == CX2CC_BRIDGE_TYPE || is_codex_bridge_type(bridge_type)
 }
 
 fn take_first_chars(value: &str, max_chars: usize) -> String {
@@ -278,7 +291,7 @@ pub(crate) struct ClaudeTerminalLaunchContext {
 
 impl ProviderForGateway {
     pub(crate) fn is_cx2cc_bridge(&self) -> bool {
-        is_cx2cc_bridge(self.source_provider_id, self.bridge_type.as_deref())
+        is_cx2cc_bridge(self.bridge_type.as_deref())
     }
 
     pub(crate) fn get_effective_claude_model(

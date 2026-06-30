@@ -11,8 +11,9 @@ pub use types::{
 
 #[allow(unused_imports)]
 pub(crate) use types::{
-    ClaudeTerminalLaunchContext, GatewayProvidersSelection, ProviderForGateway,
-    ProviderOAuthDetails, ProviderRouteRow,
+    is_supported_bridge_type, ClaudeTerminalLaunchContext, GatewayProvidersSelection,
+    ProviderForGateway, ProviderOAuthDetails, ProviderRouteRow,
+    CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
 };
 
 pub use queries::{

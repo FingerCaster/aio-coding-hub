@@ -326,6 +326,7 @@ pub(super) struct AttemptCtx<'a> {
     pub(super) circuit_before: &'a circuit_breaker::CircuitSnapshot,
     pub(super) gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
     pub(super) cx2cc_active: bool,
+    pub(super) active_bridge_type: Option<&'a str>,
     pub(super) anthropic_stream_requested: bool,
 }
 

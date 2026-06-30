@@ -52,8 +52,11 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
         mut use_codex_chatgpt_backend,
         mut codex_chatgpt_account_id,
     ) = if let Some(source_id) = args.source_id {
-        let source_result =
-            crate::providers::get_source_provider_for_gateway(&args.input.state.db, source_id);
+        let source_result = crate::providers::get_source_provider_for_gateway(
+            &args.input.state.db,
+            source_id,
+            crate::providers::CX2CC_BRIDGE_TYPE,
+        );
 
         let (source, source_cli_key) = match source_result {
             Ok(pair) => pair,

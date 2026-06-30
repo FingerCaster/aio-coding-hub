@@ -704,6 +704,116 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
   });
 
+  it("filters codex bridge sources by selected upstream endpoint and saves target bridge type", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 21,
+        cli_key: "codex",
+        name: "Codex Anthropic Bridge",
+        base_urls: [],
+        cost_multiplier: 1.6,
+        source_provider_id: 8,
+        bridge_type: "codex_to_anthropic_messages",
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+        bridgeSourceProviders={[
+          makeProvider({
+            id: 7,
+            cli_key: "codex",
+            name: "Codex Chat Source",
+            cost_multiplier: 1.3,
+          }),
+          makeProvider({
+            id: 8,
+            cli_key: "claude",
+            name: "Claude Messages Source",
+            cost_multiplier: 1.6,
+          }),
+        ]}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
+    fireEvent.change(dialog.getByLabelText("名称"), {
+      target: { value: "Codex Anthropic Bridge" },
+    });
+
+    const sourceSelect = dialog.getByLabelText("上游来源");
+    expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
+    expect(within(sourceSelect).queryByText("Claude Messages Source")).not.toBeInTheDocument();
+
+    fireEvent.change(sourceSelect, { target: { value: "7" } });
+    expect(sourceSelect).toHaveValue("7");
+
+    fireEvent.click(dialog.getByRole("tab", { name: "Anthropic Messages" }));
+    await waitFor(() => expect(sourceSelect).toHaveValue(""));
+    expect(within(sourceSelect).queryByText("Codex Chat Source")).not.toBeInTheDocument();
+    expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
+
+    fireEvent.change(sourceSelect, { target: { value: "8" } });
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cliKey: "codex",
+          name: "Codex Anthropic Bridge",
+          sourceProviderId: 8,
+          bridgeType: "codex_to_anthropic_messages",
+          costMultiplier: 1.6,
+        })
+      )
+    );
+  });
+
+  it("reloads existing codex anthropic bridge endpoint in edit mode", async () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+        provider={makeProvider({
+          id: 21,
+          cli_key: "codex",
+          name: "Codex Anthropic Bridge",
+          base_urls: [],
+          source_provider_id: 8,
+          bridge_type: "codex_to_anthropic_messages",
+        })}
+        bridgeSourceProviders={[
+          makeProvider({
+            id: 7,
+            cli_key: "codex",
+            name: "Codex Chat Source",
+          }),
+          makeProvider({
+            id: 8,
+            cli_key: "claude",
+            name: "Claude Messages Source",
+          }),
+        ]}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("tab", { name: "转译" })).toHaveAttribute("aria-selected", "true");
+    expect(dialog.getByRole("tab", { name: "Anthropic Messages" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(dialog.getByLabelText("上游来源")).toHaveValue("8");
+  });
+
   it("supports using the whole codex gateway as cx2cc source", async () => {
     vi.mocked(providerUpsert).mockResolvedValue(
       makeProvider({

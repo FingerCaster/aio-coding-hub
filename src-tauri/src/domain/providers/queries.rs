@@ -247,7 +247,7 @@ WHERE id = ?1
         api_key_plaintext,
         auth_mode,
         oauth_access_token,
-        source_provider_id,
+        _source_provider_id,
         bridge_type,
     )) = row
     else {
@@ -258,7 +258,7 @@ WHERE id = ?1
         return Err(format!("SEC_INVALID_INPUT: provider_id={provider_id} is not claude").into());
     }
 
-    let is_cx2cc = is_cx2cc_bridge(source_provider_id, bridge_type.as_deref());
+    let is_cx2cc = is_cx2cc_bridge(bridge_type.as_deref());
 
     // For OAuth mode or cx2cc providers, base_url may legitimately be empty
     // (the gateway handles routing via source provider or local Codex gateway).
@@ -679,11 +679,25 @@ pub(crate) fn list_enabled_for_gateway_in_mode(
 }
 
 /// Resolve a source provider by ID for CX2CC chaining.
+fn source_cli_key_for_bridge_type(bridge_type: &str) -> Option<&'static str> {
+    match bridge_type {
+        CX2CC_BRIDGE_TYPE | CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE => Some("codex"),
+        CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE => Some("claude"),
+        _ => None,
+    }
+}
+
 pub(crate) fn get_source_provider_for_gateway(
     db: &db::Db,
     source_provider_id: i64,
+    bridge_type: &str,
 ) -> crate::shared::error::AppResult<(ProviderForGateway, String)> {
     let conn = db.open_connection()?;
+    let expected_cli_key = source_cli_key_for_bridge_type(bridge_type).ok_or_else(|| {
+        crate::shared::error::AppError::from(format!(
+            "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
+        ))
+    })?;
     let cli_key_owned = conn
         .query_row(
             "SELECT cli_key FROM providers WHERE id = ?1",
@@ -722,9 +736,9 @@ SELECT
   stream_idle_timeout_seconds,
   upstream_retry_policy_json
 FROM providers
-WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND cli_key = 'codex'
+WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL AND cli_key = ?2
 "#,
-            params![source_provider_id],
+            params![source_provider_id, expected_cli_key],
             |row| map_gateway_provider_row(row, &cli_key_owned),
         )
         .optional()
@@ -790,19 +804,24 @@ pub fn upsert(
     let is_oauth = requested_auth_mode == ProviderAuthMode::Oauth;
 
     if let Some(ref bt) = bridge_type {
-        if bt != CX2CC_BRIDGE_TYPE {
+        if !is_supported_bridge_type(bt) {
             return Err(format!("SEC_INVALID_INPUT: unsupported bridge_type: {bt}").into());
         }
     }
 
-    let is_cx2cc = is_cx2cc_bridge(source_provider_id, bridge_type.as_deref());
-    let bridge_type = if is_cx2cc {
-        Some(CX2CC_BRIDGE_TYPE.to_string())
-    } else {
-        None
-    };
+    if source_provider_id.is_some() && bridge_type.is_none() {
+        return Err(
+            "SEC_INVALID_INPUT: bridge_type is required when source_provider_id is set"
+                .to_string()
+                .into(),
+        );
+    }
 
-    // Validate source_provider_id constraints for CX2CC bridging.
+    let is_cx2cc = is_cx2cc_bridge(bridge_type.as_deref());
+    let is_codex_bridge = bridge_type.as_deref().is_some_and(is_codex_bridge_type);
+    let is_bridge_provider = is_cx2cc || is_codex_bridge;
+
+    // Validate source_provider_id constraints for bridge providers.
     if let Some(source_id) = source_provider_id {
         if let Some(pid) = provider_id {
             if pid == source_id {
@@ -814,11 +833,11 @@ pub fn upsert(
             }
         }
         let source_conn = db.open_connection()?;
-        let source_row: Option<(String, i64, Option<i64>)> = source_conn
+        let source_row: Option<(String, i64, Option<i64>, Option<String>)> = source_conn
             .query_row(
-                "SELECT cli_key, enabled, source_provider_id FROM providers WHERE id = ?1",
+                "SELECT cli_key, enabled, source_provider_id, bridge_type FROM providers WHERE id = ?1",
                 params![source_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(|e| db_err!("failed to validate source provider: {e}"))?;
@@ -831,20 +850,30 @@ pub fn upsert(
                         .into(),
                 );
             }
-            Some((ref src_cli, enabled, nested_source)) => {
-                if src_cli != "codex" {
+            Some((ref src_cli, enabled, nested_source, nested_bridge_type)) => {
+                let Some(ref bridge_type) = bridge_type else {
                     return Err(
-                        "SEC_INVALID_INPUT: source provider must belong to codex CLI"
+                        "SEC_INVALID_INPUT: bridge_type is required when source_provider_id is set"
                             .to_string()
                             .into(),
                     );
+                };
+                let expected_source_cli =
+                    source_cli_key_for_bridge_type(bridge_type).ok_or_else(|| {
+                        format!("SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}")
+                    })?;
+                if src_cli != expected_source_cli {
+                    return Err(format!(
+                        "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
+                    )
+                    .into());
                 }
                 if enabled == 0 {
                     return Err("SEC_INVALID_INPUT: source provider must be enabled"
                         .to_string()
                         .into());
                 }
-                if nested_source.is_some() {
+                if nested_source.is_some() || nested_bridge_type.is_some() {
                     return Err(
                         "SEC_INVALID_INPUT: source provider cannot itself be a bridge provider"
                             .to_string()
@@ -862,9 +891,23 @@ pub fn upsert(
                 .into(),
         );
     }
+    if is_codex_bridge && cli_key != "codex" {
+        return Err(
+            "SEC_INVALID_INPUT: codex bridge is only supported for codex"
+                .to_string()
+                .into(),
+        );
+    }
+    if is_codex_bridge && source_provider_id.is_none() {
+        return Err(
+            "SEC_INVALID_INPUT: codex bridge requires source_provider_id"
+                .to_string()
+                .into(),
+        );
+    }
 
-    let base_urls = if is_oauth || is_cx2cc {
-        // OAuth and CX2CC providers don't need base URLs; storing an empty list
+    let base_urls = if is_oauth || is_bridge_provider {
+        // OAuth and bridge providers don't need base URLs; storing an empty list
         // keeps stale or malicious transport values out of gateway selection.
         Vec::new()
     } else {
@@ -904,11 +947,12 @@ pub fn upsert(
     match provider_id {
         None => {
             let priority = priority.unwrap_or(DEFAULT_PRIORITY);
-            let api_key = match is_oauth || is_cx2cc {
-                true => api_key.unwrap_or(""),
-                false => {
-                    api_key.ok_or_else(|| "SEC_INVALID_INPUT: api_key is required".to_string())?
-                }
+            let api_key = if is_bridge_provider {
+                ""
+            } else if is_oauth {
+                api_key.unwrap_or("")
+            } else {
+                api_key.ok_or_else(|| "SEC_INVALID_INPUT: api_key is required".to_string())?
             };
             let sort_order = next_sort_order(&conn, cli_key)?;
 
@@ -1077,8 +1121,12 @@ INSERT INTO providers(
                 .unwrap_or(existing_auth_mode_raw.as_str());
             let next_is_oauth = next_auth_mode == ProviderAuthMode::Oauth.as_str();
 
-            let next_api_key = api_key.unwrap_or(existing_api_key.as_str());
-            if !next_is_oauth && !is_cx2cc && next_api_key.trim().is_empty() {
+            let next_api_key = if next_is_oauth || is_bridge_provider {
+                ""
+            } else {
+                api_key.unwrap_or(existing_api_key.as_str())
+            };
+            if !next_is_oauth && !is_bridge_provider && next_api_key.trim().is_empty() {
                 return Err("SEC_INVALID_INPUT: api_key is required".to_string().into());
             }
             let next_priority = priority.unwrap_or(existing_priority);
