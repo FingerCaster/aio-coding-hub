@@ -1028,9 +1028,7 @@ INSERT INTO plugin_market_sources(
             .find(&format!("pub(crate) async fn {function_name}"))
             .unwrap_or_else(|| panic!("missing {function_name}"));
         let rest = &source[start..];
-        let next = rest
-            .find("\n#[tauri::command]")
-            .unwrap_or_else(|| rest.len());
+        let next = rest.find("\n#[tauri::command]").unwrap_or(rest.len());
         &rest[..next]
     }
 }

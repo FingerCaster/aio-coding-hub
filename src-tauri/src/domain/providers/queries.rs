@@ -239,6 +239,7 @@ ON CONFLICT(provider_id, plugin_id, namespace) DO UPDATE SET
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn insert_provider(
     tx: &Transaction<'_>,
     cli_key: &str,
@@ -273,7 +274,7 @@ fn insert_provider(
         true => api_key.unwrap_or(""),
         false => api_key.ok_or_else(|| "SEC_INVALID_INPUT: api_key is required".to_string())?,
     };
-    let sort_order = next_sort_order(&tx, cli_key)?;
+    let sort_order = next_sort_order(tx, cli_key)?;
 
     let claude_models = if cli_key == "claude" {
         claude_models.unwrap_or_default().normalized()

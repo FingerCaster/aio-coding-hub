@@ -733,7 +733,7 @@ fn validate_extension_host_manifest(
     if manifest
         .main
         .as_deref()
-        .map_or(true, |main| main.trim().is_empty())
+        .is_none_or(|main| main.trim().is_empty())
     {
         return Err(PluginValidationError::new(
             "PLUGIN_MISSING_MAIN",
@@ -1072,16 +1072,14 @@ fn is_namespaced_contribution_id(plugin_id: &str, value: &str) -> bool {
 }
 
 fn is_valid_contribution_id(value: &str) -> bool {
-    value
-        .split(|ch| matches!(ch, '.' | '/' | ':'))
-        .all(|segment| {
-            let mut chars = segment.chars();
-            let Some(first) = chars.next() else {
-                return false;
-            };
-            (first.is_ascii_lowercase() || first.is_ascii_digit())
-                && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-        })
+    value.split(['.', '/', ':']).all(|segment| {
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_lowercase() || first.is_ascii_digit())
+            && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    })
 }
 
 fn validate_hook(hook: &PluginHook) -> Result<(), PluginValidationError> {

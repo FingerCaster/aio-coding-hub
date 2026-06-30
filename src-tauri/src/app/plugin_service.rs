@@ -18,7 +18,7 @@ use crate::shared::error::{AppError, AppResult};
 use crate::shared::time::now_unix_millis;
 use rusqlite::OptionalExtension;
 use std::cmp::Ordering;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::{btree_map::Entry, BTreeMap, BTreeSet};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 
@@ -1493,16 +1493,16 @@ fn insert_contribution_signature(
     key: String,
     signature: ContributionSignature,
 ) {
-    if !out.contains_key(&key) {
-        out.insert(key, signature);
+    if let Entry::Vacant(entry) = out.entry(key.clone()) {
+        entry.insert(signature);
         return;
     }
 
     let mut index = 2;
     loop {
         let candidate = format!("{key}#{index}");
-        if !out.contains_key(&candidate) {
-            out.insert(candidate, signature);
+        if let Entry::Vacant(entry) = out.entry(candidate) {
+            entry.insert(signature);
             return;
         }
         index += 1;

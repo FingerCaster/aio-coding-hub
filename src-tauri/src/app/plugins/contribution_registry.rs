@@ -258,16 +258,14 @@ fn ensure_protocol_bridge_type(plugin_id: &str, bridge_type: &str) -> AppResult<
 }
 
 fn is_valid_protocol_bridge_type(value: &str) -> bool {
-    value
-        .split(|ch| matches!(ch, '.' | '/' | ':'))
-        .all(|segment| {
-            let mut chars = segment.chars();
-            let Some(first) = chars.next() else {
-                return false;
-            };
-            (first.is_ascii_lowercase() || first.is_ascii_digit())
-                && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
-        })
+    value.split(['.', '/', ':']).all(|segment| {
+        let mut chars = segment.chars();
+        let Some(first) = chars.next() else {
+            return false;
+        };
+        (first.is_ascii_lowercase() || first.is_ascii_digit())
+            && chars.all(|ch| ch.is_ascii_lowercase() || ch.is_ascii_digit() || ch == '-')
+    })
 }
 
 fn is_protocol_bridge_namespaced(plugin_id: &str, value: &str) -> bool {
