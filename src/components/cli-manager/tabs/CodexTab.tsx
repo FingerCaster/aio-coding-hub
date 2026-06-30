@@ -1350,6 +1350,22 @@ export function CliManagerCodexTab({
     });
   }, [codexReasoningGuardStats?.by_model]);
 
+  const codexReasoningGuardModelEffortStats = useMemo(() => {
+    return [...(codexReasoningGuardStats?.by_model_and_effort ?? [])].sort((left, right) => {
+      if (left.hit_request_count !== right.hit_request_count) {
+        return right.hit_request_count - left.hit_request_count;
+      }
+      if (left.total_request_count !== right.total_request_count) {
+        return right.total_request_count - left.total_request_count;
+      }
+      const modelOrder = left.requested_model.localeCompare(right.requested_model);
+      if (modelOrder !== 0) {
+        return modelOrder;
+      }
+      return left.reasoning_effort.localeCompare(right.reasoning_effort);
+    });
+  }, [codexReasoningGuardStats?.by_model_and_effort]);
+
   const codexReasoningGuardTopHitModel = useMemo(() => {
     return codexReasoningGuardModelStats.find((row) => row.hit_request_count > 0) ?? null;
   }, [codexReasoningGuardModelStats]);
@@ -2516,29 +2532,27 @@ export function CliManagerCodexTab({
                         还没有可展示的 Codex 请求统计。
                       </div>
                     ) : (
-                      <div className="overflow-x-auto rounded-lg border border-border/70">
-                        <table className="min-w-full divide-y divide-border text-sm">
-                          <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
-                            <tr>
-                              <th className="px-3 py-2 font-medium">模型</th>
-                              <th className="px-3 py-2 font-medium">命中请求</th>
-                              <th className="px-3 py-2 font-medium">正常请求</th>
-                              <th className="px-3 py-2 font-medium">命中率</th>
-                              <th className="px-3 py-2 font-medium">命中次数</th>
-                              <th className="px-3 py-2 font-medium">当前规则</th>
-                              <th className="px-3 py-2 font-medium">规则来源</th>
-                            </tr>
-                          </thead>
-                          <tbody className="divide-y divide-border bg-background/80">
-                            {codexReasoningGuardModelStats.map((row) => {
-                              const ruleInfo = resolveCodexReasoningGuardRuleForModel(
-                                appSettings,
-                                row.requested_model
-                              );
-                              return (
-                                <tr key={row.requested_model}>
+                      <div className="space-y-4">
+                        <div className="overflow-x-auto rounded-lg border border-border/70">
+                          <table className="min-w-full divide-y divide-border text-sm">
+                            <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">模型</th>
+                                <th className="px-3 py-2 font-medium">思考等级</th>
+                                <th className="px-3 py-2 font-medium">命中请求</th>
+                                <th className="px-3 py-2 font-medium">正常请求</th>
+                                <th className="px-3 py-2 font-medium">命中率</th>
+                                <th className="px-3 py-2 font-medium">命中次数</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border bg-background/80">
+                              {codexReasoningGuardModelEffortStats.map((row) => (
+                                <tr key={`${row.requested_model}:${row.reasoning_effort}`}>
                                   <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
                                     {row.requested_model}
+                                  </td>
+                                  <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                    {row.reasoning_effort}
                                   </td>
                                   <td className="px-3 py-2">{row.hit_request_count}</td>
                                   <td className="px-3 py-2">{row.normal_request_count}</td>
@@ -2546,17 +2560,54 @@ export function CliManagerCodexTab({
                                     {formatCodexReasoningGuardHitRate(row.hit_rate)}
                                   </td>
                                   <td className="px-3 py-2">{row.hit_attempt_count}</td>
-                                  <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
-                                    {ruleInfo.label}
-                                  </td>
-                                  <td className="px-3 py-2 text-muted-foreground">
-                                    {ruleInfo.sourceLabel}
-                                  </td>
                                 </tr>
-                              );
-                            })}
-                          </tbody>
-                        </table>
+                              ))}
+                            </tbody>
+                          </table>
+                        </div>
+
+                        <div className="overflow-x-auto rounded-lg border border-border/70">
+                          <table className="min-w-full divide-y divide-border text-sm">
+                            <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                              <tr>
+                                <th className="px-3 py-2 font-medium">模型汇总</th>
+                                <th className="px-3 py-2 font-medium">命中请求</th>
+                                <th className="px-3 py-2 font-medium">正常请求</th>
+                                <th className="px-3 py-2 font-medium">命中率</th>
+                                <th className="px-3 py-2 font-medium">命中次数</th>
+                                <th className="px-3 py-2 font-medium">当前规则</th>
+                                <th className="px-3 py-2 font-medium">规则来源</th>
+                              </tr>
+                            </thead>
+                            <tbody className="divide-y divide-border bg-background/80">
+                              {codexReasoningGuardModelStats.map((row) => {
+                                const ruleInfo = resolveCodexReasoningGuardRuleForModel(
+                                  appSettings,
+                                  row.requested_model
+                                );
+                                return (
+                                  <tr key={row.requested_model}>
+                                    <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                      {row.requested_model}
+                                    </td>
+                                    <td className="px-3 py-2">{row.hit_request_count}</td>
+                                    <td className="px-3 py-2">{row.normal_request_count}</td>
+                                    <td className="px-3 py-2">
+                                      {formatCodexReasoningGuardHitRate(row.hit_rate)}
+                                    </td>
+                                    <td className="px-3 py-2">{row.hit_attempt_count}</td>
+                                    <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                      {ruleInfo.label}
+                                    </td>
+                                    <td className="px-3 py-2 text-muted-foreground">
+                                      {ruleInfo.sourceLabel}
+                                    </td>
+                                  </tr>
+                                );
+                              })}
+                            </tbody>
+                          </table>
+                        </div>
                       </div>
                     )}
                   </div>

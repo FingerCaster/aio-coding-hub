@@ -13,8 +13,9 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 mod types;
 pub use types::{
-    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogInsert,
-    RequestLogRouteHop, RequestLogSummary, SessionStatsAggregate,
+    CodexReasoningGuardModelEffortStat, CodexReasoningGuardModelStat, CodexReasoningGuardStats,
+    RequestLogDetail, RequestLogInsert, RequestLogRouteHop, RequestLogSummary,
+    SessionStatsAggregate,
 };
 
 mod costing;

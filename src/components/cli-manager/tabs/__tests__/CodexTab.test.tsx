@@ -112,6 +112,17 @@ function createReasoningGuardStats(overrides: Partial<any> = {}) {
         hit_rate: 0.2,
       },
     ],
+    by_model_and_effort: [
+      {
+        requested_model: "gpt-5-codex",
+        reasoning_effort: "high",
+        total_request_count: 20,
+        hit_request_count: 4,
+        normal_request_count: 16,
+        hit_attempt_count: 9,
+        hit_rate: 0.2,
+      },
+    ],
     ...overrides,
   };
 }

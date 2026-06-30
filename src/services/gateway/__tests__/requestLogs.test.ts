@@ -145,6 +145,7 @@ describe("services/gateway/requestLogs", () => {
         total_request_count: 12,
         hit_rate: 0.25,
         by_model: [],
+        by_model_and_effort: [],
       },
     });
 
@@ -339,6 +340,17 @@ describe("services/gateway/requestLogs", () => {
             hit_rate: 0.5,
           },
         ],
+        by_model_and_effort: [
+          {
+            requested_model: "gpt-5-codex",
+            reasoning_effort: "high",
+            total_request_count: 20,
+            hit_request_count: 10,
+            normal_request_count: 10,
+            hit_attempt_count: 17,
+            hit_rate: 0.5,
+          },
+        ],
       },
     });
 
@@ -370,6 +382,17 @@ describe("services/gateway/requestLogs", () => {
       by_model: [
         {
           requested_model: "gpt-5-codex",
+          total_request_count: 20,
+          hit_request_count: 10,
+          normal_request_count: 10,
+          hit_attempt_count: 17,
+          hit_rate: 0.5,
+        },
+      ],
+      by_model_and_effort: [
+        {
+          requested_model: "gpt-5-codex",
+          reasoning_effort: "high",
           total_request_count: 20,
           hit_request_count: 10,
           normal_request_count: 10,
