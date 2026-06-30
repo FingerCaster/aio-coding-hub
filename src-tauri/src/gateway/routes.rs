@@ -4144,7 +4144,7 @@ mod tests {
             Some("gpt-route-unknown-length-json-fake-200")
         );
         assert_eq!(detail.final_provider_id, provider_id);
-        assert!(detail.ttfb_ms.is_some());
+        assert!(detail.ttfb_ms.is_none());
 
         let attempts: Value = serde_json::from_str(&detail.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");

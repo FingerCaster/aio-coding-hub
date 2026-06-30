@@ -506,7 +506,7 @@ fn invalid_retry_policy_override_json_disables_override_instead_of_inheriting() 
         assert!(!override_policy.enabled);
     }
 
-    reorder(&db, "claude", vec![saved.id]).expect("route provider");
+    default_route_set_order(&db, "claude", vec![saved.id]).expect("route provider");
     let gateway_provider =
         list_enabled_for_gateway_using_active_mode(&db, "claude").expect("list gateway providers");
     let override_policy = gateway_provider.providers[0]
