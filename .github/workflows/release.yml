@@ -58,7 +58,7 @@ jobs:
           config-file: release-please-config.json
           manifest-file: .release-please-manifest.json
           target-branch: main
-          skip-github-pull-request: "${{ github.event_name == 'push' && startsWith(github.event.head_commit.message, 'chore(main): release aio-coding-hub ') }}"
+          skip-github-pull-request: "${{ github.event_name == 'push' && contains(github.event.head_commit.message, 'chore(main): release aio-coding-hub ') }}"
           token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
 
       - id: manual_release
@@ -117,7 +117,7 @@ jobs:
           echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
 
       - name: Check release PR changelog range
-        if: steps.release.outputs.prs_created == 'true'
+        if: steps.release.outputs.prs_created == 'true' && steps.release.outputs.release_created != 'true'
         env:
           RELEASE_PLEASE_PRS: ${{ steps.release.outputs.prs }}
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
