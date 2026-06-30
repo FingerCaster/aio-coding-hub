@@ -50,6 +50,7 @@ fn settings_migrates_legacy_update_releases_url_to_fork() {
 
     let mut settings =
         aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read defaults");
+    let current_schema_version = settings["schema_version"].clone();
     settings["schema_version"] = serde_json::json!(35);
     settings["update_releases_url"] =
         serde_json::json!("https://github.com/dyndynjyxa/aio-coding-hub/releases");
@@ -67,7 +68,7 @@ fn settings_migrates_legacy_update_releases_url_to_fork() {
     let migrated =
         aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read migrated");
 
-    assert_eq!(migrated["schema_version"], serde_json::json!(36));
+    assert_eq!(migrated["schema_version"], current_schema_version);
     assert_eq!(
         migrated["update_releases_url"],
         serde_json::json!("https://github.com/FingerCaster/aio-coding-hub/releases")
