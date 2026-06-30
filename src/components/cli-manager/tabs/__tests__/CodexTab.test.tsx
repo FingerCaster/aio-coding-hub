@@ -137,11 +137,14 @@ describe("components/cli-manager/tabs/CodexTab", () => {
   } as const;
 
   const mockReasoningGuardStatsQuery = vi.mocked(useCliManagerCodexReasoningGuardStatsQuery);
+  let reasoningGuardStatsRefetch: ReturnType<typeof vi.fn>;
 
   beforeEach(() => {
+    reasoningGuardStatsRefetch = vi.fn();
     mockReasoningGuardStatsQuery.mockReturnValue({
       data: createReasoningGuardStats(),
       isFetching: false,
+      refetch: reasoningGuardStatsRefetch,
     } as any);
   });
 
@@ -387,15 +390,6 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           toml: 'approval_policy = "on-request"\\n',
         }}
         appSettings={createAppSettings({ codex_reasoning_guard_enabled: false })}
-        codexReasoningGuardSessionStats={createReasoningGuardStats()}
-        codexReasoningGuardAllStats={createReasoningGuardStats({
-          hit_request_count: 12,
-          hit_attempt_count: 18,
-          normal_request_count: 68,
-          total_request_count: 80,
-          hit_rate: 0.15,
-        })}
-        appSessionStartedAtMs={1_770_000_000_000}
         refreshCodex={vi.fn()}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}
@@ -405,22 +399,17 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     );
 
     expect(screen.getByText("命中请求数")).toBeInTheDocument();
-    expect(screen.getByLabelText("降智拦截统计开始日期")).toBeInTheDocument();
-    expect(screen.getByLabelText("降智拦截统计结束日期")).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "本次应用打开后" })[0]).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "全部统计" })[0]).toBeInTheDocument();
-    expect(screen.getAllByRole("button", { name: "自定义日期" })[0]).toBeInTheDocument();
+    expect(screen.getByText("时间范围:")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "本次应用打开后" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "全部统计" })).not.toBeInTheDocument();
     expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByText("9")).toBeInTheDocument();
     expect(screen.getByText("12.5%")).toBeInTheDocument();
 
-    fireEvent.click(screen.getAllByRole("button", { name: "全部统计" })[0]);
-    expect(screen.getByText("12")).toBeInTheDocument();
-    expect(screen.getByText("18")).toBeInTheDocument();
-    expect(screen.getByText("15.0%")).toBeInTheDocument();
-
-    fireEvent.click(screen.getAllByRole("button", { name: "本次应用打开后" })[0]);
-    expect(screen.getByText("4")).toBeInTheDocument();
+    fireEvent.click(
+      within(screen.getByLabelText("降智拦截统计时间范围")).getByRole("button", { name: "刷新" })
+    );
+    expect(reasoningGuardStatsRefetch).toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("switch", { name: "切换 Codex 降智拦截" }));
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
@@ -443,15 +432,6 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           toml: 'approval_policy = "on-request"\\n',
         }}
         appSettings={createAppSettings({ codex_reasoning_guard_enabled: true })}
-        codexReasoningGuardSessionStats={createReasoningGuardStats()}
-        codexReasoningGuardAllStats={createReasoningGuardStats({
-          hit_request_count: 12,
-          hit_attempt_count: 18,
-          normal_request_count: 68,
-          total_request_count: 80,
-          hit_rate: 0.15,
-        })}
-        appSessionStartedAtMs={1_770_000_000_000}
         refreshCodex={vi.fn()}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}
@@ -486,6 +466,12 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /当天/ }));
+    expect(screen.getByRole("button", { name: "今天" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "昨天" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "近24小时" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "近7天" })).toBeInTheDocument();
+
     fireEvent.change(screen.getByLabelText("降智拦截统计开始日期"), {
       target: { value: "2026-06-28" },
     });
@@ -501,7 +487,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       },
       { enabled: true }
     );
-    expect(screen.getByText("已应用：2026-06-28 至 2026-06-30")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /2026-06-28 至 2026-06-30/ })).toBeInTheDocument();
   });
 
   it("saves Codex reasoning guard rules from detail dialog", () => {

@@ -97,6 +97,7 @@ where
         let Some(bridge_type) = bridge_type else {
             let dummy_ctx = BridgeContext {
                 claude_models: crate::domain::providers::ClaudeModels::default(),
+                model_mapping: Default::default(),
                 cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
                 requested_model: None,
                 mapped_model: None,
@@ -115,6 +116,7 @@ where
                 );
                 let ctx = BridgeContext {
                     claude_models: crate::domain::providers::ClaudeModels::default(),
+                    model_mapping: Default::default(),
                     cx2cc_settings,
                     requested_model,
                     mapped_model: None,
@@ -133,6 +135,7 @@ where
         };
         let ctx = BridgeContext {
             claude_models: crate::domain::providers::ClaudeModels::default(),
+            model_mapping: Default::default(),
             cx2cc_settings,
             requested_model,
             mapped_model: None,

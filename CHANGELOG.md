@@ -1,5 +1,31 @@
 # Changelog
 
+## [0.60.12](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.11...aio-coding-hub-v0.60.12) (2026-07-01)
+
+
+### Features
+
+* add Codex bridge model mapping so translated Codex requests can target non-Codex upstream models, including exact mappings such as `gpt-5.5` to `deepseek-chat` plus a default fallback such as `deepseek-reasoner`
+* persist Codex bridge model mapping through provider CRUD, provider duplication, generated bindings, MSW mocks, and gateway bridge preparation
+* apply provider model mapping during Codex-to-OpenAI Chat Completions and Codex-to-Anthropic Messages translation instead of preserving the original Codex model unconditionally
+* split Codex reasoning guard statistics by model and reasoning effort after merging `b4ceeea5`
+* replace the Codex reasoning guard stats scope buttons with a single date-range selector that defaults to today and supports 今天, 昨天, 近24小时, 近7天, 近14天, 近30天, 本月, 上月, custom start/end dates, 应用, and 刷新
+
+
+### Bug Fixes
+
+* reset provider runtime state when Codex bridge model mapping changes so active proxy behavior picks up the new upstream model routing
+* keep legacy flat provider `model_mapping_json` imports readable while writing the new structured mapping shape
+* remove the obsolete “本次应用打开后统计” and “全部统计” Codex reasoning guard stats paths from the page data model and tests
+* regenerate Tauri bindings for the new `ModelMapping` provider fields
+
+
+### Tests
+
+* add Codex bridge e2e coverage for exact and default model mapping behavior
+* update provider editor, provider service, MSW, page model, and Codex tab tests for model mapping and date-only reasoning guard stats
+* run full local verification: front-end unit shards, Tauri tests, lint, typecheck, formatting, generated bindings, cargo check, and clippy
+
 ## [0.60.11](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.10...aio-coding-hub-v0.60.11) (2026-07-01)
 
 

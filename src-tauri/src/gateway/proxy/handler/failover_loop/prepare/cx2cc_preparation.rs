@@ -191,6 +191,7 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
             .find(|p| p.id == args.provider_id)
             .map(|p| p.claude_models.clone())
             .unwrap_or_default(),
+        model_mapping: Default::default(),
         cx2cc_settings: args.input.cx2cc_settings.clone(),
         requested_model: Some(requested_model.to_string()),
         mapped_model: None,

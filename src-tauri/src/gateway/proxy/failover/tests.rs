@@ -23,6 +23,7 @@ fn provider_for_base_url_test(
         base_url_mode: providers::ProviderBaseUrlMode::Order,
         api_key_plaintext: "sk-test".to_string(),
         claude_models: providers::ClaudeModels::default(),
+        model_mapping: providers::ModelMapping::default(),
         limit_5h_usd: None,
         limit_daily_usd: None,
         daily_reset_mode: providers::DailyResetMode::Fixed,

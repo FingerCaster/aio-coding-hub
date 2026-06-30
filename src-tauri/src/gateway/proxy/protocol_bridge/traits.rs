@@ -97,6 +97,8 @@ pub(crate) trait ModelMapper: Send + Sync {
 pub(crate) struct BridgeContext {
     /// Provider-level model mapping configuration.
     pub claude_models: crate::domain::providers::ClaudeModels,
+    /// Generic provider-level model mapping configuration.
+    pub model_mapping: crate::domain::providers::ModelMapping,
     /// CX2CC runtime settings for request/response translation.
     pub cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     /// Original model name from the client request (before mapping).

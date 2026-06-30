@@ -17,6 +17,7 @@ function makeContext(
     baseUrlRows: [{ id: "1", url: "https://example.com/v1", ping: { status: "idle" } }],
     tags: [],
     claudeModels: {},
+    modelMapping: { default_model: null, exact: {} },
     testModel: "",
     streamIdleTimeoutSeconds: "",
     upstreamRetryPolicyOverrideEnabled: false,
@@ -137,6 +138,38 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     expect(result.value.payload.sourceProviderId).toBe(7);
     expect(result.value.payload.baseUrls).toEqual([]);
     expect(result.value.payload.apiKey).toBeNull();
+  });
+
+  it("builds codex bridge model mapping payload", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        cliKey: "codex",
+        authMode: "cx2cc",
+        sourceProviderId: 7,
+        modelMapping: {
+          default_model: " deepseek-reasoner ",
+          exact: {
+            " gpt-5.5 ": " deepseek-chat ",
+            "": "",
+          },
+        },
+        formValues: {
+          ...DEFAULT_FORM_VALUES,
+          name: "Codex DeepSeek Bridge",
+          api_key: "",
+        },
+      })
+    );
+
+    expect(result.ok).toBe(true);
+    if (!result.ok) return;
+
+    expect(result.value.payload.modelMapping).toEqual({
+      default_model: "deepseek-reasoner",
+      exact: {
+        "gpt-5.5": "deepseek-chat",
+      },
+    });
   });
 
   it("builds codex anthropic messages bridge payload", () => {

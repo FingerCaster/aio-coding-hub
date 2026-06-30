@@ -294,6 +294,7 @@ mod tests {
             base_url_mode: crate::providers::ProviderBaseUrlMode::Order,
             api_key_plaintext: String::new(),
             claude_models: crate::providers::ClaudeModels::default(),
+            model_mapping: Default::default(),
             limit_5h_usd: None,
             limit_daily_usd: None,
             daily_reset_mode: crate::providers::DailyResetMode::Fixed,

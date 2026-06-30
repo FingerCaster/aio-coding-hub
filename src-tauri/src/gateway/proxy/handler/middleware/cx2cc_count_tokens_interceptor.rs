@@ -100,6 +100,7 @@ mod tests {
             base_url_mode: providers::ProviderBaseUrlMode::Order,
             api_key_plaintext: String::new(),
             claude_models: providers::ClaudeModels::default(),
+            model_mapping: providers::ModelMapping::default(),
             limit_5h_usd: None,
             limit_daily_usd: None,
             daily_reset_mode: providers::DailyResetMode::Fixed,

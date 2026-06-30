@@ -5,8 +5,8 @@ mod types;
 mod validation;
 
 pub use types::{
-    ClaudeModels, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode, ProviderSummary,
-    ProviderUpsertParams,
+    ClaudeModels, DailyResetMode, ModelMapping, ProviderAuthMode, ProviderBaseUrlMode,
+    ProviderSummary, ProviderUpsertParams,
 };
 
 #[allow(unused_imports)]
@@ -30,7 +30,9 @@ pub(crate) use queries::{
 };
 
 #[cfg(test)]
-use types::{claude_models_from_json, normalize_model_slot, MAX_MODEL_NAME_LEN};
+use types::{
+    claude_models_from_json, model_mapping_from_json, normalize_model_slot, MAX_MODEL_NAME_LEN,
+};
 #[cfg(test)]
 use validation::{
     base_urls_from_row, normalize_base_urls, normalize_reset_time_hms_lossy,

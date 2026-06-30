@@ -2,7 +2,12 @@
 
 import { http, HttpResponse } from "msw";
 import { TAURI_ENDPOINT } from "../tauriEndpoint";
-import type { CliKey, ClaudeModels, ProviderSummary } from "../../services/providers/providers";
+import type {
+  CliKey,
+  ClaudeModels,
+  ModelMapping,
+  ProviderSummary,
+} from "../../services/providers/providers";
 import {
   buildCliProxySetEnabledResult,
   getAppAboutState,
@@ -221,6 +226,10 @@ export const handlers = [
         input.claudeModels && typeof input.claudeModels === "object"
           ? (input.claudeModels as ClaudeModels)
           : {},
+      model_mapping:
+        input.modelMapping && typeof input.modelMapping === "object"
+          ? (input.modelMapping as ModelMapping)
+          : (existing?.model_mapping ?? { default_model: null, exact: {} }),
       enabled: Boolean(input.enabled),
       priority: typeof input.priority === "number" ? input.priority : (existing?.priority ?? 100),
       cost_multiplier:

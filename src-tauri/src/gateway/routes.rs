@@ -649,6 +649,7 @@ mod tests {
                 cost_multiplier: 1.0,
                 priority: Some(priority),
                 claude_models: None,
+                model_mapping: None,
                 availability_test_model: None,
                 limit_5h_usd: None,
                 limit_daily_usd: None,
@@ -724,6 +725,7 @@ mod tests {
                 cost_multiplier: 1.0,
                 priority: Some(priority),
                 claude_models: None,
+                model_mapping: None,
                 availability_test_model: None,
                 limit_5h_usd: None,
                 limit_daily_usd: None,
@@ -777,6 +779,7 @@ mod tests {
                 cost_multiplier: 1.0,
                 priority: Some(priority),
                 claude_models: None,
+                model_mapping: None,
                 availability_test_model: None,
                 limit_5h_usd: None,
                 limit_daily_usd: None,
@@ -4968,7 +4971,7 @@ mod tests {
     async fn codex_responses_sse_fake_200_oauth_quota_skips_circuit_failure() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
-        let _env = isolate_app_env(home.path());
+        let mut _env = isolate_app_env(home.path());
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
 
@@ -4992,6 +4995,10 @@ mod tests {
             "data: {\"type\":\"response.error\",\"error\":{\"message\":\"quota exhausted\",\"type\":\"insufficient_quota\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"total_tokens\":11}}\n\n"
         );
         let (fake_200_base_url, fake_200_task) = spawn_sse_upstream(fake_200_body).await;
+        _env.set_var(
+            "AIO_CODING_HUB_TEST_CODEX_OAUTH_BASE_URL",
+            fake_200_base_url.clone(),
+        );
         let provider_id = insert_codex_oauth_provider_with_base_urls(
             &db,
             "Responses OAuth Quota Stub",
@@ -5037,11 +5044,21 @@ mod tests {
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
         assert_eq!(attempts.len(), 1);
+        let attempt = &attempts[0];
         assert_eq!(
-            attempts[0].get("provider_id").and_then(Value::as_i64),
+            attempt.get("provider_id").and_then(Value::as_i64),
             Some(provider_id)
         );
-        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 1);
+        assert_eq!(
+            attempt.get("error_code").and_then(Value::as_str),
+            Some("GW_FAKE_200")
+        );
+        assert_eq!(
+            attempt.get("decision").and_then(Value::as_str),
+            Some("switch")
+        );
+        assert_eq!(attempt.get("circuit_failure_count"), Some(&Value::Null));
+        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 0);
         assert_eq!(session.get_bound_provider("codex", session_id, 0), None);
 
         fake_200_task.abort();

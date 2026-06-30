@@ -14,7 +14,7 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::fs;
 #[cfg(test)]
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
 pub(crate) const MAX_RULE_REGEX_PATTERN_BYTES: usize = 4 * 1024;
@@ -23,6 +23,10 @@ const MAX_RULES_PER_RUNTIME: usize = 256;
 
 #[cfg(test)]
 static RULE_RUNTIME_TEST_DELAY_MS: AtomicU64 = AtomicU64::new(0);
+#[cfg(test)]
+static RULE_RUNTIME_TEST_ACTIVE_EXECUTIONS: AtomicUsize = AtomicUsize::new(0);
+#[cfg(test)]
+static RULE_RUNTIME_TEST_MAX_ACTIVE_EXECUTIONS: AtomicUsize = AtomicUsize::new(0);
 #[cfg(test)]
 thread_local! {
     static RULE_RUNTIME_TEST_JSON_PARSE_COUNT: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
@@ -104,7 +108,10 @@ impl RuleRuntime {
     ) -> Result<GatewayHookResult, RuleRuntimeError> {
         #[cfg(test)]
         if let delay @ 1.. = RULE_RUNTIME_TEST_DELAY_MS.load(Ordering::SeqCst) {
+            let active = RULE_RUNTIME_TEST_ACTIVE_EXECUTIONS.fetch_add(1, Ordering::SeqCst) + 1;
+            RULE_RUNTIME_TEST_MAX_ACTIVE_EXECUTIONS.fetch_max(active, Ordering::SeqCst);
             std::thread::sleep(std::time::Duration::from_millis(delay));
+            RULE_RUNTIME_TEST_ACTIVE_EXECUTIONS.fetch_sub(1, Ordering::SeqCst);
         }
 
         let mut result = GatewayHookResult::continue_unchanged();
@@ -2491,8 +2498,9 @@ mod tests {
             .execute_declarative_rules_plugin(&plugin, (*context).clone())
             .expect("warm cache");
 
+        RULE_RUNTIME_TEST_ACTIVE_EXECUTIONS.store(0, Ordering::SeqCst);
+        RULE_RUNTIME_TEST_MAX_ACTIVE_EXECUTIONS.store(0, Ordering::SeqCst);
         RULE_RUNTIME_TEST_DELAY_MS.store(120, Ordering::SeqCst);
-        let start = std::time::Instant::now();
         let first_executor = Arc::clone(&executor);
         let first_plugin = Arc::clone(&plugin);
         let first_context = Arc::clone(&context);
@@ -2514,9 +2522,8 @@ mod tests {
         second.expect("second join").expect("second execution");
         RULE_RUNTIME_TEST_DELAY_MS.store(0, Ordering::SeqCst);
         assert!(
-            start.elapsed() < std::time::Duration::from_millis(180),
-            "runtime executions appear serialized by cache lock: {:?}",
-            start.elapsed()
+            RULE_RUNTIME_TEST_MAX_ACTIVE_EXECUTIONS.load(Ordering::SeqCst) >= 2,
+            "runtime executions appear serialized by cache lock"
         );
     }
 }

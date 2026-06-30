@@ -5,6 +5,7 @@ import { logToConsole } from "../../services/consoleLog";
 import {
   type ProviderOAuthStatusResult,
   type ClaudeModels,
+  type ModelMapping,
   type ProviderSummary,
   type UpstreamRetryPolicy,
 } from "../../services/providers/providers";
@@ -54,6 +55,7 @@ export type EffectDeps = {
   setBaseUrlRows: (v: BaseUrlRow[]) => void;
   setPingingAll: (v: boolean) => void;
   setClaudeModels: (v: ClaudeModels) => void;
+  setModelMapping: (v: ModelMapping) => void;
   setTestModel: (v: string) => void;
   setTags: React.Dispatch<React.SetStateAction<string[]>>;
   setTagInput: (v: string) => void;
@@ -104,6 +106,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,
+    setModelMapping,
     setTestModel,
     setTags,
     setTagInput,
@@ -150,6 +153,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
       setBaseUrlRows(buildBaseUrlRows(createInitialValues, newBaseUrlRow));
       setPingingAll(false);
       setClaudeModels(createInitialValues?.claude_models ?? {});
+      setModelMapping(createInitialValues?.model_mapping ?? { default_model: null, exact: {} });
       setTestModel(createInitialValues?.availability_test_model ?? "");
       setTags(createInitialValues?.tags ?? []);
       setTagInput("");
@@ -192,6 +196,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setBaseUrlRows(snapshot.base_urls.map((url) => newBaseUrlRow(url)));
     setPingingAll(false);
     setClaudeModels(snapshot.claude_models ?? {});
+    setModelMapping(snapshot.model_mapping ?? { default_model: null, exact: {} });
     setTestModel(snapshot.availability_test_model ?? "");
     setTags(snapshot.tags ?? []);
     setTagInput("");
@@ -239,6 +244,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setBaseUrlRows,
     setCodexBridgeTarget,
     setClaudeModels,
+    setModelMapping,
     setTestModel,
     setCx2ccSourceValue,
     setOauthLoading,

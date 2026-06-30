@@ -12,6 +12,7 @@ mod tests {
     fn cx2cc_ctx() -> BridgeContext {
         BridgeContext {
             claude_models: crate::domain::providers::ClaudeModels::default(),
+            model_mapping: Default::default(),
             cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
             requested_model: Some("claude-sonnet-4-20250514".into()),
             mapped_model: None,
@@ -672,6 +673,43 @@ mod tests {
 
         let translated = bridge.translate_request(req, &ctx).unwrap();
         assert_eq!(translated.body["model"], "gpt-5.4");
+    }
+
+    #[test]
+    fn e2e_codex_bridge_model_mapping_exact_and_default() {
+        use crate::domain::providers::ModelMapping;
+        use std::collections::BTreeMap;
+
+        let bridge = get_bridge("codex_to_openai_chat").unwrap();
+        let ctx = BridgeContext {
+            model_mapping: ModelMapping {
+                default_model: Some("deepseek-reasoner".to_string()),
+                exact: BTreeMap::from([("gpt-5.5".to_string(), "deepseek-chat".to_string())]),
+            },
+            ..cx2cc_ctx()
+        };
+
+        let exact = bridge
+            .translate_request(
+                json!({
+                    "model": "gpt-5.5",
+                    "input": "Hi"
+                }),
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(exact.body["model"], "deepseek-chat");
+
+        let fallback = bridge
+            .translate_request(
+                json!({
+                    "model": "gpt-5.4",
+                    "input": "Hi"
+                }),
+                &ctx,
+            )
+            .unwrap();
+        assert_eq!(fallback.body["model"], "deepseek-reasoner");
     }
 
     // ── BridgeStream integration ────────────────────────────────────────

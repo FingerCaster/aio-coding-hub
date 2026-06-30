@@ -183,6 +183,16 @@ pub(super) fn resolve_primary_provider_base_url(
             ));
         }
 
+        #[cfg(test)]
+        if adapter.provider_type() == "codex_oauth" {
+            if let Ok(base_url) = std::env::var("AIO_CODING_HUB_TEST_CODEX_OAUTH_BASE_URL") {
+                let base_url = base_url.trim();
+                if !base_url.is_empty() {
+                    return Ok(base_url.to_string());
+                }
+            }
+        }
+
         return Ok(adapter.default_base_url().to_string());
     }
 

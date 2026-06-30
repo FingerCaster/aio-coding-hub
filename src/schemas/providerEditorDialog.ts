@@ -154,3 +154,33 @@ export function validateProviderClaudeModels(input: {
 
   return null;
 }
+
+export function validateProviderModelMapping(input: {
+  default_model?: string | null;
+  exact?: Record<string, string | undefined> | null;
+}) {
+  const defaultModel = (input.default_model ?? "").trim();
+  if (defaultModel.length > MAX_MODEL_NAME_LEN) {
+    return `默认上游模型过长（最多 ${MAX_MODEL_NAME_LEN} 字符）`;
+  }
+
+  const seen = new Set<string>();
+  for (const [source, target] of Object.entries(input.exact ?? {})) {
+    const sourceModel = source.trim();
+    const targetModel = (target ?? "").trim();
+    if (!sourceModel && !targetModel) continue;
+    if (!sourceModel || !targetModel) {
+      return "模型映射需要同时填写 Codex 模型和上游模型";
+    }
+    if (sourceModel.length > MAX_MODEL_NAME_LEN || targetModel.length > MAX_MODEL_NAME_LEN) {
+      return `模型映射名称过长（最多 ${MAX_MODEL_NAME_LEN} 字符）`;
+    }
+    const sourceKey = sourceModel.toLowerCase();
+    if (seen.has(sourceKey)) {
+      return `Codex 模型重复：${sourceModel}`;
+    }
+    seen.add(sourceKey);
+  }
+
+  return null;
+}

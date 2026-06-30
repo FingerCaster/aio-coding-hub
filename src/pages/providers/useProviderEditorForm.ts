@@ -3,6 +3,7 @@ import { useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import type {
   ClaudeModels,
+  ModelMapping,
   ProviderOAuthDeviceCodeStartResult,
   ProviderSummary,
   UpstreamRetryPolicy,
@@ -67,6 +68,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const [baseUrlRows, setBaseUrlRows] = useState<BaseUrlRow[]>(() => [newBaseUrlRow()]);
   const [pingingAll, setPingingAll] = useState(false);
   const [claudeModels, setClaudeModels] = useState<ClaudeModels>({});
+  const [modelMapping, setModelMapping] = useState<ModelMapping>({
+    default_model: null,
+    exact: {},
+  });
   const [testModel, setTestModel] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
@@ -239,6 +244,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,
+    setModelMapping,
     setTestModel,
     setTags,
     setTagInput,
@@ -281,6 +287,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       baseUrlRows,
       tags,
       claudeModels,
+      modelMapping,
       testModel,
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
@@ -301,6 +308,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       baseUrlRows,
       tags,
       claudeModels,
+      modelMapping,
       testModel,
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
@@ -462,6 +470,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     newBaseUrlRow,
     claudeModels,
     setClaudeModels,
+    modelMapping,
+    setModelMapping,
     testModel,
     setTestModel,
     claudeModelCount,

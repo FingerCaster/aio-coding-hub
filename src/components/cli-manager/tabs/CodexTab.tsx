@@ -54,7 +54,6 @@ import {
 import { isWindowsRuntime } from "../../../utils/platform";
 import { cn } from "../../../utils/cn";
 import { useCliManagerCodexReasoningGuardStatsQuery } from "../../../query/cliManager";
-import type { CodexReasoningGuardStats } from "../../../services/gateway/requestLogs";
 import { CliVersionBadge } from "../CliVersionBadge";
 import { Button } from "../../../ui/Button";
 import { Card } from "../../../ui/Card";
@@ -64,10 +63,13 @@ import { Select } from "../../../ui/Select";
 import { Switch } from "../../../ui/Switch";
 import { RadioGroup } from "../../../ui/RadioGroup";
 import { Textarea } from "../../../ui/Textarea";
+import { Popover } from "../../../ui/Popover";
 import {
   AlertTriangle,
   BarChart3,
+  Calendar,
   CheckCircle2,
+  ChevronDown,
   ExternalLink,
   FileJson,
   FolderOpen,
@@ -89,7 +91,15 @@ const GPT_54_AUTO_COMPACT_TOKEN_LIMIT = 900_000;
 const FAST_SERVICE_TIER = "fast";
 type PersistConfigLocationResult = "saved" | "validation_failed" | "persist_failed";
 type CodexReasoningGuardDetailsTab = "rules" | "stats";
-type CodexReasoningGuardStatsWindow = "session" | "all" | "custom";
+type CodexReasoningGuardStatsPreset =
+  | "today"
+  | "yesterday"
+  | "last24h"
+  | "last7"
+  | "last14"
+  | "last30"
+  | "thisMonth"
+  | "lastMonth";
 type CodexReasoningGuardModelRuleDraft = {
   requestedModel: string;
   compareMode: CodexReasoningGuardCompareMode;
@@ -179,6 +189,69 @@ function formatCodexReasoningGuardStatsDateRangeLabel(
     return `${dateRange.startDate} 当天`;
   }
   return `${dateRange.startDate} 至 ${dateRange.endDate}`;
+}
+
+function addLocalDays(date: Date, days: number) {
+  const next = new Date(date);
+  next.setDate(next.getDate() + days);
+  return next;
+}
+
+function startOfLocalMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth(), 1);
+}
+
+function endOfLocalMonth(date: Date) {
+  return new Date(date.getFullYear(), date.getMonth() + 1, 0);
+}
+
+function buildCodexReasoningGuardStatsPresetRange(
+  preset: CodexReasoningGuardStatsPreset,
+  now = new Date()
+): CodexReasoningGuardStatsDateRange {
+  switch (preset) {
+    case "yesterday": {
+      const yesterday = formatLocalDateInputValue(addLocalDays(now, -1));
+      return { startDate: yesterday, endDate: yesterday };
+    }
+    case "last24h":
+      return {
+        startDate: formatLocalDateInputValue(addLocalDays(now, -1)),
+        endDate: formatLocalDateInputValue(now),
+      };
+    case "last7":
+      return {
+        startDate: formatLocalDateInputValue(addLocalDays(now, -6)),
+        endDate: formatLocalDateInputValue(now),
+      };
+    case "last14":
+      return {
+        startDate: formatLocalDateInputValue(addLocalDays(now, -13)),
+        endDate: formatLocalDateInputValue(now),
+      };
+    case "last30":
+      return {
+        startDate: formatLocalDateInputValue(addLocalDays(now, -29)),
+        endDate: formatLocalDateInputValue(now),
+      };
+    case "thisMonth":
+      return {
+        startDate: formatLocalDateInputValue(startOfLocalMonth(now)),
+        endDate: formatLocalDateInputValue(now),
+      };
+    case "lastMonth": {
+      const lastMonth = new Date(now.getFullYear(), now.getMonth() - 1, 1);
+      return {
+        startDate: formatLocalDateInputValue(startOfLocalMonth(lastMonth)),
+        endDate: formatLocalDateInputValue(endOfLocalMonth(lastMonth)),
+      };
+    }
+    case "today":
+    default: {
+      const today = formatLocalDateInputValue(now);
+      return { startDate: today, endDate: today };
+    }
+  }
 }
 
 function codexReasoningGuardCompareModeHelperText(compareMode: CodexReasoningGuardCompareMode) {
@@ -305,11 +378,6 @@ export type CliManagerCodexTabProps = {
   codexInfo: SimpleCliInfo | null;
   codexConfig: CodexConfigState | null;
   codexConfigToml: CodexConfigTomlState | null;
-  codexReasoningGuardSessionStats?: CodexReasoningGuardStats | null;
-  codexReasoningGuardSessionStatsLoading?: boolean;
-  codexReasoningGuardAllStats?: CodexReasoningGuardStats | null;
-  codexReasoningGuardAllStatsLoading?: boolean;
-  appSessionStartedAtMs?: number | null;
   appSettings?: AppSettings | null;
   commonSettingsSaving?: boolean;
   codexHomeSettingsSaving?: boolean;
@@ -376,6 +444,122 @@ function SettingItem({
   );
 }
 
+function CodexReasoningGuardStatsRangeControls({
+  label,
+  startDate,
+  endDate,
+  appliedLabel,
+  error,
+  popoverOpen,
+  fetching,
+  onPopoverOpenChange,
+  onStartDateChange,
+  onEndDateChange,
+  onPreset,
+  onApply,
+  onRefresh,
+}: {
+  label?: string;
+  startDate: string;
+  endDate: string;
+  appliedLabel: string;
+  error: string | null;
+  popoverOpen: boolean;
+  fetching: boolean;
+  onPopoverOpenChange: (open: boolean) => void;
+  onStartDateChange: (value: string) => void;
+  onEndDateChange: (value: string) => void;
+  onPreset: (preset: CodexReasoningGuardStatsPreset) => void;
+  onApply: () => void;
+  onRefresh: () => void;
+}) {
+  const presets: Array<[CodexReasoningGuardStatsPreset, string]> = [
+    ["today", "今天"],
+    ["yesterday", "昨天"],
+    ["last24h", "近24小时"],
+    ["last7", "近7天"],
+    ["last14", "近14天"],
+    ["last30", "近30天"],
+    ["thisMonth", "本月"],
+    ["lastMonth", "上月"],
+  ];
+
+  return (
+    <div className="flex flex-wrap items-center gap-2" aria-label="降智拦截统计时间范围">
+      {label ? (
+        <span className="text-sm font-medium text-secondary-foreground">{label}</span>
+      ) : null}
+      <Popover
+        open={popoverOpen}
+        onOpenChange={onPopoverOpenChange}
+        align="start"
+        placement="bottom"
+        className="rounded-lg"
+        contentClassName="w-[min(30rem,calc(100vw-2rem))] border-border bg-card p-0"
+        trigger={
+          <span className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-muted data-[state=open]:border-accent">
+            <Calendar className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+            {appliedLabel}
+            <ChevronDown className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+          </span>
+        }
+      >
+        <div className="overflow-hidden rounded-lg">
+          <div className="grid grid-cols-2 gap-1 p-3">
+            {presets.map(([preset, presetLabel]) => (
+              <button
+                key={preset}
+                type="button"
+                className="rounded-md px-3 py-2 text-sm text-muted-foreground transition-colors hover:bg-muted hover:text-foreground"
+                onClick={() => onPreset(preset)}
+              >
+                {presetLabel}
+              </button>
+            ))}
+          </div>
+          <div className="border-t border-border p-3">
+            <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_1.5rem_minmax(0,1fr)] sm:items-end">
+              <label className="text-xs font-medium text-muted-foreground">
+                <span className="mb-1 block">开始日期</span>
+                <Input
+                  aria-label="降智拦截统计开始日期"
+                  type="date"
+                  value={startDate}
+                  onChange={(e) => onStartDateChange(e.currentTarget.value)}
+                  className="text-sm"
+                />
+              </label>
+              <div className="hidden pb-2 text-center text-muted-foreground sm:block">→</div>
+              <label className="text-xs font-medium text-muted-foreground">
+                <span className="mb-1 block">结束日期</span>
+                <Input
+                  aria-label="降智拦截统计结束日期"
+                  type="date"
+                  value={endDate}
+                  onChange={(e) => onEndDateChange(e.currentTarget.value)}
+                  className="text-sm"
+                />
+              </label>
+            </div>
+            {error ? (
+              <div className="mt-2 text-xs text-rose-600 dark:text-rose-400">{error}</div>
+            ) : null}
+            <div className="mt-3 flex justify-end">
+              <Button size="sm" onClick={onApply}>
+                应用
+              </Button>
+            </div>
+          </div>
+        </div>
+      </Popover>
+      <Button variant="secondary" size="sm" className="h-10 gap-2" onClick={onRefresh}>
+        <RefreshCw className={cn("h-3.5 w-3.5", fetching && "animate-spin")} aria-hidden="true" />
+        刷新
+      </Button>
+    </div>
+  );
+}
+
 function boolOrDefault(value: boolean | null, fallback: boolean) {
   return value ?? fallback;
 }
@@ -395,11 +579,6 @@ export function CliManagerCodexTab({
   codexInfo,
   codexConfig,
   codexConfigToml,
-  codexReasoningGuardSessionStats,
-  codexReasoningGuardSessionStatsLoading = false,
-  codexReasoningGuardAllStats,
-  codexReasoningGuardAllStatsLoading = false,
-  appSessionStartedAtMs = null,
   appSettings,
   commonSettingsSaving = false,
   codexHomeSettingsSaving = false,
@@ -480,8 +659,8 @@ export function CliManagerCodexTab({
   const [codexReasoningGuardStatsRangeError, setCodexReasoningGuardStatsRangeError] = useState<
     string | null
   >(null);
-  const [codexReasoningGuardStatsWindow, setCodexReasoningGuardStatsWindow] =
-    useState<CodexReasoningGuardStatsWindow>("session");
+  const [codexReasoningGuardStatsRangePopoverOpen, setCodexReasoningGuardStatsRangePopoverOpen] =
+    useState(false);
   const [codexReasoningGuardModelRuleDrafts, setCodexReasoningGuardModelRuleDrafts] = useState<
     CodexReasoningGuardModelRuleDraft[]
   >([]);
@@ -673,34 +852,8 @@ export function CliManagerCodexTab({
     codexReasoningGuardAppliedDateRange.startDate === codexReasoningGuardAppliedDateRange.endDate
       ? "只统计当天产生的 Codex 请求，方便快速判断今日的降智拦截情况。"
       : "按自然日统计所选日期范围内的 Codex 请求，包含结束日期当天。";
-  const codexReasoningGuardStats =
-    codexReasoningGuardStatsWindow === "session"
-      ? codexReasoningGuardSessionStats
-      : codexReasoningGuardStatsWindow === "all"
-        ? codexReasoningGuardAllStats
-        : (codexReasoningGuardStatsQuery.data ?? null);
-  const codexReasoningGuardStatsLoading =
-    codexReasoningGuardStatsWindow === "session"
-      ? codexReasoningGuardSessionStatsLoading
-      : codexReasoningGuardStatsWindow === "all"
-        ? codexReasoningGuardAllStatsLoading
-        : codexReasoningGuardStatsQuery.isFetching;
-  const codexReasoningGuardStatsWindowLabel =
-    codexReasoningGuardStatsWindow === "session"
-      ? "本次应用打开后"
-      : codexReasoningGuardStatsWindow === "all"
-        ? "全部统计"
-        : codexReasoningGuardStatsRangeLabel;
-  const codexReasoningGuardStatsWindowDescription =
-    codexReasoningGuardStatsWindow === "session"
-      ? "只统计当前应用打开以后产生的 Codex 请求，方便先判断这次使用过程里的降智拦截。"
-      : codexReasoningGuardStatsWindow === "all"
-        ? "统计所有历史 Codex 请求，适合看长期趋势、模型差异和整体拦截比例。"
-        : codexReasoningGuardStatsRangeDescription;
-  const appSessionStartedAtLabel =
-    appSessionStartedAtMs && Number.isFinite(appSessionStartedAtMs)
-      ? new Date(appSessionStartedAtMs).toLocaleString("zh-CN", { hour12: false })
-      : null;
+  const codexReasoningGuardStats = codexReasoningGuardStatsQuery.data ?? null;
+  const codexReasoningGuardStatsLoading = codexReasoningGuardStatsQuery.isFetching;
 
   async function refreshCodexStatus() {
     try {
@@ -1179,7 +1332,50 @@ export function CliManagerCodexTab({
       startDate: codexReasoningGuardStartDate,
       endDate: codexReasoningGuardEndDate,
     });
-    setCodexReasoningGuardStatsWindow("custom");
+    setCodexReasoningGuardStatsRangePopoverOpen(false);
+  }
+
+  function applyCodexReasoningGuardStatsPreset(preset: CodexReasoningGuardStatsPreset) {
+    const nextRange = buildCodexReasoningGuardStatsPresetRange(preset);
+    setCodexReasoningGuardStartDate(nextRange.startDate);
+    setCodexReasoningGuardEndDate(nextRange.endDate);
+    setCodexReasoningGuardAppliedDateRange(nextRange);
+    setCodexReasoningGuardStatsRangeError(null);
+    setCodexReasoningGuardStatsRangePopoverOpen(false);
+  }
+
+  function updateCodexReasoningGuardStatsStartDate(value: string) {
+    setCodexReasoningGuardStartDate(value);
+    if (codexReasoningGuardStatsRangeError) {
+      setCodexReasoningGuardStatsRangeError(null);
+    }
+  }
+
+  function updateCodexReasoningGuardStatsEndDate(value: string) {
+    setCodexReasoningGuardEndDate(value);
+    if (codexReasoningGuardStatsRangeError) {
+      setCodexReasoningGuardStatsRangeError(null);
+    }
+  }
+
+  function renderCodexReasoningGuardStatsRangeControls(label = "时间范围:") {
+    return (
+      <CodexReasoningGuardStatsRangeControls
+        label={label}
+        startDate={codexReasoningGuardStartDate}
+        endDate={codexReasoningGuardEndDate}
+        appliedLabel={codexReasoningGuardStatsRangeLabel}
+        error={codexReasoningGuardStatsRangeError}
+        popoverOpen={codexReasoningGuardStatsRangePopoverOpen}
+        fetching={codexReasoningGuardStatsQuery.isFetching}
+        onPopoverOpenChange={setCodexReasoningGuardStatsRangePopoverOpen}
+        onStartDateChange={updateCodexReasoningGuardStatsStartDate}
+        onEndDateChange={updateCodexReasoningGuardStatsEndDate}
+        onPreset={applyCodexReasoningGuardStatsPreset}
+        onApply={applyCodexReasoningGuardStatsDateRange}
+        onRefresh={() => void codexReasoningGuardStatsQuery.refetch()}
+      />
+    );
   }
 
   async function saveCodexReasoningGuardRules() {
@@ -1739,54 +1935,12 @@ export function CliManagerCodexTab({
                         时，不把结果直接回给 Codex，而是在当前 provider 上继续重试，并且不计入熔断。
                       </div>
                       <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
-                        当前统计：{codexReasoningGuardStatsWindowDescription}
-                        {codexReasoningGuardStatsWindow === "session" && appSessionStartedAtLabel
-                          ? ` 会话开始：${appSessionStartedAtLabel}`
-                          : ""}
+                        当前统计：{codexReasoningGuardStatsRangeLabel}，
+                        {codexReasoningGuardStatsRangeDescription}
                       </div>
                     </div>
                     <div className="flex flex-wrap items-center gap-2 self-start">
-                      <div
-                        className="inline-flex rounded-lg border border-border bg-secondary/40 p-1"
-                        aria-label="降智拦截统计范围"
-                      >
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                            codexReasoningGuardStatsWindow === "session"
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                          onClick={() => setCodexReasoningGuardStatsWindow("session")}
-                        >
-                          本次应用打开后
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                            codexReasoningGuardStatsWindow === "all"
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                          onClick={() => setCodexReasoningGuardStatsWindow("all")}
-                        >
-                          全部统计
-                        </button>
-                        <button
-                          type="button"
-                          className={cn(
-                            "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                            codexReasoningGuardStatsWindow === "custom"
-                              ? "bg-background text-foreground shadow-sm"
-                              : "text-muted-foreground hover:text-foreground"
-                          )}
-                          onClick={() => setCodexReasoningGuardStatsWindow("custom")}
-                        >
-                          自定义日期
-                        </button>
-                      </div>
+                      {renderCodexReasoningGuardStatsRangeControls()}
                       <Button
                         variant="secondary"
                         size="sm"
@@ -1811,60 +1965,6 @@ export function CliManagerCodexTab({
                         disabled={reasoningGuardControlsDisabled}
                       />
                     </div>
-                  </div>
-
-                  <div className="rounded-lg border border-border/70 bg-secondary/50 p-3">
-                    <div className="flex flex-col gap-3 lg:flex-row lg:items-end lg:justify-between">
-                      <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(0,1fr)] lg:max-w-xl lg:flex-1">
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="mb-1 block">开始日期</span>
-                          <Input
-                            aria-label="降智拦截统计开始日期"
-                            type="date"
-                            value={codexReasoningGuardStartDate}
-                            onChange={(e) => {
-                              setCodexReasoningGuardStartDate(e.currentTarget.value);
-                              if (codexReasoningGuardStatsRangeError) {
-                                setCodexReasoningGuardStatsRangeError(null);
-                              }
-                            }}
-                            className="text-xs"
-                          />
-                        </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="mb-1 block">结束日期</span>
-                          <Input
-                            aria-label="降智拦截统计结束日期"
-                            type="date"
-                            value={codexReasoningGuardEndDate}
-                            onChange={(e) => {
-                              setCodexReasoningGuardEndDate(e.currentTarget.value);
-                              if (codexReasoningGuardStatsRangeError) {
-                                setCodexReasoningGuardStatsRangeError(null);
-                              }
-                            }}
-                            className="text-xs"
-                          />
-                        </label>
-                      </div>
-                      <div className="flex flex-wrap items-center gap-2">
-                        <div className="rounded-md bg-background/70 px-2.5 py-1 text-[11px] text-muted-foreground">
-                          已应用：{codexReasoningGuardStatsRangeLabel}
-                        </div>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          onClick={applyCodexReasoningGuardStatsDateRange}
-                        >
-                          应用
-                        </Button>
-                      </div>
-                    </div>
-                    {codexReasoningGuardStatsRangeError ? (
-                      <div className="mt-2 text-[11px] text-rose-600 dark:text-rose-400">
-                        {codexReasoningGuardStatsRangeError}
-                      </div>
-                    ) : null}
                   </div>
 
                   <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
@@ -2051,54 +2151,11 @@ export function CliManagerCodexTab({
                 <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-secondary/60 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
                   <div>
                     <span className="font-medium text-secondary-foreground">
-                      {codexReasoningGuardStatsWindowLabel}
+                      {codexReasoningGuardStatsRangeLabel}
                     </span>
-                    <span className="ml-2">{codexReasoningGuardStatsWindowDescription}</span>
-                    {codexReasoningGuardStatsWindow === "session" && appSessionStartedAtLabel ? (
-                      <span className="ml-2">会话开始：{appSessionStartedAtLabel}</span>
-                    ) : null}
+                    <span className="ml-2">{codexReasoningGuardStatsRangeDescription}</span>
                   </div>
-                  <div
-                    className="inline-flex shrink-0 rounded-lg border border-border bg-secondary/40 p-1"
-                    aria-label="降智拦截统计范围"
-                  >
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                        codexReasoningGuardStatsWindow === "session"
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
-                      onClick={() => setCodexReasoningGuardStatsWindow("session")}
-                    >
-                      本次应用打开后
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                        codexReasoningGuardStatsWindow === "all"
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
-                      onClick={() => setCodexReasoningGuardStatsWindow("all")}
-                    >
-                      全部统计
-                    </button>
-                    <button
-                      type="button"
-                      className={cn(
-                        "rounded-md px-3 py-1.5 text-xs font-medium transition-colors",
-                        codexReasoningGuardStatsWindow === "custom"
-                          ? "bg-background text-foreground shadow-sm"
-                          : "text-muted-foreground hover:text-foreground"
-                      )}
-                      onClick={() => setCodexReasoningGuardStatsWindow("custom")}
-                    >
-                      自定义日期
-                    </button>
-                  </div>
+                  <div className="shrink-0">{renderCodexReasoningGuardStatsRangeControls("")}</div>
                 </div>
 
                 {codexReasoningGuardDetailsTab === "rules" ? (

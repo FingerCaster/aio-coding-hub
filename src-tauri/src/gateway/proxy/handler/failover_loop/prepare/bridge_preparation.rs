@@ -116,6 +116,13 @@ pub(super) async fn prepare<R: tauri::Runtime>(
             .find(|p| p.id == args.provider_id)
             .map(|p| p.claude_models.clone())
             .unwrap_or_default(),
+        model_mapping: args
+            .input
+            .providers
+            .iter()
+            .find(|p| p.id == args.provider_id)
+            .map(|p| p.model_mapping.clone())
+            .unwrap_or_default(),
         cx2cc_settings: args.input.cx2cc_settings.clone(),
         requested_model: Some(requested_model.to_string()),
         mapped_model: None,

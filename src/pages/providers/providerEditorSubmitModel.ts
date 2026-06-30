@@ -1,6 +1,7 @@
 import {
   createProviderEditorDialogSchema,
   validateProviderClaudeModels,
+  validateProviderModelMapping,
 } from "../../schemas/providerEditorDialog";
 import type {
   ProviderEditorPayloadBuildError,
@@ -129,6 +130,19 @@ export function buildProviderEditorUpsertInput(
     }
   }
 
+  if (ctx.cliKey === "codex" && ctx.authMode === "cx2cc") {
+    const modelMappingError = validateProviderModelMapping(ctx.modelMapping);
+    if (modelMappingError) {
+      return {
+        ok: false,
+        error: {
+          kind: "message",
+          message: modelMappingError,
+        },
+      };
+    }
+  }
+
   const effectiveCostMultiplier =
     ctx.authMode === "cx2cc" && ctx.cliKey === "claude" && ctx.isCodexGatewaySource
       ? 0
@@ -172,6 +186,9 @@ export function buildProviderEditorUpsertInput(
       ? ctx.upstreamRetryPolicyDraft
       : null,
     ...(ctx.cliKey === "claude" ? { claudeModels: ctx.claudeModels } : {}),
+    ...(ctx.cliKey === "codex" && ctx.authMode === "cx2cc"
+      ? { modelMapping: normalizeProviderModelMapping(ctx.modelMapping) }
+      : {}),
     sourceProviderId:
       ctx.authMode === "cx2cc" && !(ctx.cliKey === "claude" && ctx.isCodexGatewaySource)
         ? ctx.sourceProviderId
@@ -185,5 +202,24 @@ export function buildProviderEditorUpsertInput(
       payload,
       parsedName: parsed.data.name,
     },
+  };
+}
+
+function normalizeProviderModelMapping(input: {
+  default_model?: string | null;
+  exact?: Record<string, string | undefined> | null;
+}) {
+  const exact: Record<string, string> = {};
+  for (const [source, target] of Object.entries(input.exact ?? {})) {
+    const sourceModel = source.trim();
+    const targetModel = (target ?? "").trim();
+    if (!sourceModel || !targetModel) continue;
+    exact[sourceModel] = targetModel;
+  }
+
+  const defaultModel = (input.default_model ?? "").trim();
+  return {
+    default_model: defaultModel || null,
+    exact,
   };
 }

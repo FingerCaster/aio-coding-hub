@@ -16,6 +16,7 @@ pub(crate) struct ProviderUpsertInput {
     pub cost_multiplier: f64,
     pub priority: Option<i64>,
     pub claude_models: Option<providers::ClaudeModels>,
+    pub model_mapping: Option<providers::ModelMapping>,
     pub availability_test_model: Option<String>,
     #[serde(rename = "limit5hUsd", alias = "limit5HUsd")]
     #[specta(rename = "limit5hUsd")]
@@ -105,6 +106,7 @@ fn provider_runtime_reset_decision(
         || submitted_api_key_changed(previous_api_key, submitted_api_key)
         || previous.source_provider_id != next.source_provider_id
         || previous.bridge_type != next.bridge_type
+        || previous.model_mapping != next.model_mapping
         || previous.upstream_retry_policy_override != next.upstream_retry_policy_override;
 
     ProviderRuntimeResetDecision {
@@ -142,6 +144,7 @@ pub(crate) async fn provider_upsert(
         cost_multiplier,
         priority,
         claude_models,
+        model_mapping,
         availability_test_model,
         limit_5h_usd,
         limit_daily_usd,
@@ -191,6 +194,7 @@ pub(crate) async fn provider_upsert(
                 cost_multiplier,
                 priority,
                 claude_models,
+                model_mapping,
                 availability_test_model,
                 limit_5h_usd,
                 limit_daily_usd,
@@ -286,6 +290,7 @@ pub(crate) async fn provider_duplicate(
                 cost_multiplier: source.cost_multiplier,
                 priority: None,
                 claude_models: Some(source.claude_models.clone()),
+                model_mapping: Some(source.model_mapping.clone()),
                 availability_test_model: source.availability_test_model.clone(),
                 limit_5h_usd: source.limit_5h_usd,
                 limit_daily_usd: source.limit_daily_usd,
@@ -536,6 +541,7 @@ mod tests {
             base_urls: vec!["https://api.example.com".to_string()],
             base_url_mode: providers::ProviderBaseUrlMode::Order,
             claude_models: Default::default(),
+            model_mapping: Default::default(),
             availability_test_model: None,
             enabled: true,
             priority: 1,
@@ -622,6 +628,7 @@ mod tests {
             base_urls: vec!["https://api.old.example.com".to_string()],
             base_url_mode: providers::ProviderBaseUrlMode::Order,
             claude_models: Default::default(),
+            model_mapping: Default::default(),
             availability_test_model: None,
             enabled: true,
             priority: 1,

@@ -128,6 +128,34 @@ fn normalize_model_slot_truncates_multibyte_without_panic() {
     assert_eq!(result.chars().count(), MAX_MODEL_NAME_LEN);
 }
 
+// -- ModelMapping JSON compatibility --
+
+#[test]
+fn model_mapping_from_json_reads_legacy_flat_exact_mapping() {
+    let mapping =
+        model_mapping_from_json(r#"{" gpt-5.5 ":" deepseek-chat ","":"ignored","gpt-5.4":""}"#);
+
+    assert_eq!(mapping.default_model, None);
+    assert_eq!(mapping.exact.len(), 1);
+    assert_eq!(
+        mapping.exact.get("gpt-5.5"),
+        Some(&"deepseek-chat".to_string())
+    );
+}
+
+#[test]
+fn model_mapping_from_json_reads_structured_mapping() {
+    let mapping = model_mapping_from_json(
+        r#"{"default_model":" deepseek-reasoner ","exact":{" gpt-5.5 ":" deepseek-chat "}}"#,
+    );
+
+    assert_eq!(mapping.default_model.as_deref(), Some("deepseek-reasoner"));
+    assert_eq!(
+        mapping.exact.get("gpt-5.5"),
+        Some(&"deepseek-chat".to_string())
+    );
+}
+
 // -- DailyResetMode::parse --
 
 #[test]
@@ -425,6 +453,7 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         cost_multiplier: 1.0,
         priority: Some(100),
         claude_models: None,
+        model_mapping: None,
         availability_test_model: None,
         limit_5h_usd: None,
         limit_daily_usd: None,
@@ -691,6 +720,7 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            model_mapping: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         },

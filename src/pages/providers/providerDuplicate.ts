@@ -1,5 +1,6 @@
 import type {
   ClaudeModels,
+  ModelMapping,
   ProviderSummary,
   UpstreamRetryPolicy,
 } from "../../services/providers/providers";
@@ -13,6 +14,7 @@ export type ProviderEditorInitialValues = {
   base_urls: string[];
   base_url_mode: "order" | "ping";
   claude_models: ClaudeModels;
+  model_mapping: ModelMapping;
   availability_test_model: string;
   enabled: boolean;
   cost_multiplier: number;
@@ -70,6 +72,10 @@ export function buildDuplicatedProviderInitialValues(
     base_urls: [...provider.base_urls],
     base_url_mode: provider.base_url_mode,
     claude_models: { ...(provider.claude_models ?? {}) } as ClaudeModels,
+    model_mapping: {
+      default_model: provider.model_mapping?.default_model ?? null,
+      exact: { ...(provider.model_mapping?.exact ?? {}) },
+    },
     availability_test_model: provider.availability_test_model ?? "",
     enabled: provider.enabled,
     cost_multiplier: provider.cost_multiplier,

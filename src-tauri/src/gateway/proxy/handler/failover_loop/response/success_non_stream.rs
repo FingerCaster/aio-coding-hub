@@ -335,6 +335,7 @@ fn translate_bridge_non_stream_body(
         .ok_or_else(|| format!("bridge not registered: {bridge_type}"))?;
     let bridge_ctx = protocol_bridge::BridgeContext {
         claude_models: crate::domain::providers::ClaudeModels::default(),
+        model_mapping: Default::default(),
         cx2cc_settings: cx2cc_settings.clone(),
         requested_model: requested_model.filter(|m| !m.is_empty()).map(String::from),
         mapped_model: None,

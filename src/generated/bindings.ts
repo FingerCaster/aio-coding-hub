@@ -2723,6 +2723,10 @@ export type McpServerUpsertInput = {
   headers?: McpSecretPatchInput;
 };
 export type McpServersListInput = { workspaceId: number };
+export type ModelMapping = {
+  default_model?: string | null;
+  exact: Partial<{ [key in string]: string }>;
+};
 export type ModelPriceAliasMatchTypeV1 = "exact" | "prefix" | "wildcard";
 export type ModelPriceAliasRuleV1 = {
   cli_key: string;
@@ -2979,6 +2983,7 @@ export type ProviderSummary = {
   base_urls: string[];
   base_url_mode: ProviderBaseUrlMode;
   claude_models: ClaudeModels;
+  model_mapping: ModelMapping;
   availability_test_model: string | null;
   enabled: boolean;
   priority: number;
@@ -3017,6 +3022,7 @@ export type ProviderUpsertInput = {
   costMultiplier: number;
   priority: number | null;
   claudeModels: ClaudeModels | null;
+  modelMapping: ModelMapping | null;
   availabilityTestModel: string | null;
   limit5hUsd: number | null;
   limitDailyUsd: number | null;

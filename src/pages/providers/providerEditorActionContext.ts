@@ -1,6 +1,7 @@
 import type {
   ClaudeModels,
   CliKey,
+  ModelMapping,
   ProviderOAuthDeviceCodeStartResult,
   ProviderOAuthStatusResult,
   ProviderUpsertInput,
@@ -55,6 +56,7 @@ export type FormActionContext = {
   baseUrlRows: BaseUrlRow[];
   tags: string[];
   claudeModels: ClaudeModels;
+  modelMapping: ModelMapping;
   testModel: string;
   streamIdleTimeoutSeconds: string;
   upstreamRetryPolicyOverrideEnabled: boolean;
@@ -81,6 +83,7 @@ export type ProviderEditorPayloadContext = {
   baseUrlRows: BaseUrlRow[];
   tags: string[];
   claudeModels: ClaudeModels;
+  modelMapping: ModelMapping;
   testModel: string;
   streamIdleTimeoutSeconds: string;
   upstreamRetryPolicyOverrideEnabled: boolean;

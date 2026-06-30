@@ -1,7 +1,8 @@
 //! Types for provider configuration and gateway selection.
 
 use serde::{Deserialize, Serialize};
-use std::collections::HashSet;
+use serde_json::Value;
+use std::collections::{BTreeMap, HashSet};
 
 pub(super) const DEFAULT_PRIORITY: i64 = 100;
 pub(super) const MAX_MODEL_NAME_LEN: usize = 200;
@@ -84,6 +85,7 @@ pub struct ProviderUpsertParams {
     pub cost_multiplier: f64,
     pub priority: Option<i64>,
     pub claude_models: Option<ClaudeModels>,
+    pub model_mapping: Option<ModelMapping>,
     pub availability_test_model: Option<String>,
     pub limit_5h_usd: Option<f64>,
     pub limit_daily_usd: Option<f64>,
@@ -188,6 +190,45 @@ impl ClaudeModels {
     }
 }
 
+#[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
+pub struct ModelMapping {
+    #[serde(default)]
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub default_model: Option<String>,
+    #[serde(default)]
+    #[serde(skip_serializing_if = "BTreeMap::is_empty")]
+    pub exact: BTreeMap<String, String>,
+}
+
+impl ModelMapping {
+    pub(super) fn normalized(self) -> Self {
+        let exact = self
+            .exact
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let key = normalize_model_slot(Some(key))?;
+                let value = normalize_model_slot(Some(value))?;
+                Some((key, value))
+            })
+            .collect();
+
+        Self {
+            default_model: normalize_model_slot(self.default_model),
+            exact,
+        }
+    }
+
+    pub(crate) fn map_model(&self, original_model: &str) -> String {
+        if let Some(mapped) = self.exact.get(original_model) {
+            return mapped.clone();
+        }
+        if let Some(mapped) = self.default_model.as_deref() {
+            return mapped.to_string();
+        }
+        original_model.to_string()
+    }
+}
+
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub enum ProviderBaseUrlMode {
@@ -220,6 +261,7 @@ pub struct ProviderSummary {
     pub base_urls: Vec<String>,
     pub base_url_mode: ProviderBaseUrlMode,
     pub claude_models: ClaudeModels,
+    pub model_mapping: ModelMapping,
     pub availability_test_model: Option<String>,
     pub enabled: bool,
     pub priority: i64,
@@ -260,6 +302,7 @@ pub(crate) struct ProviderForGateway {
     pub base_url_mode: ProviderBaseUrlMode,
     pub api_key_plaintext: String,
     pub claude_models: ClaudeModels,
+    pub model_mapping: ModelMapping,
     pub limit_5h_usd: Option<f64>,
     pub limit_daily_usd: Option<f64>,
     pub daily_reset_mode: DailyResetMode,
@@ -310,6 +353,7 @@ pub(super) struct DecodedProviderRow {
     pub base_urls: Vec<String>,
     pub base_url_mode: ProviderBaseUrlMode,
     pub claude_models: ClaudeModels,
+    pub model_mapping: ModelMapping,
     pub availability_test_model: Option<String>,
     pub limit_5h_usd: Option<f64>,
     pub limit_daily_usd: Option<f64>,
@@ -347,6 +391,30 @@ pub(super) fn claude_models_from_json(raw: &str) -> ClaudeModels {
         .ok()
         .unwrap_or_default()
         .normalized()
+}
+
+pub(super) fn model_mapping_from_json(raw: &str) -> ModelMapping {
+    let parsed = match serde_json::from_str::<Value>(raw) {
+        Ok(parsed) => parsed,
+        Err(_) => return ModelMapping::default(),
+    };
+
+    if parsed
+        .as_object()
+        .is_some_and(|object| object.contains_key("default_model") || object.contains_key("exact"))
+    {
+        return serde_json::from_value::<ModelMapping>(parsed)
+            .ok()
+            .unwrap_or_default()
+            .normalized();
+    }
+
+    let legacy_exact: BTreeMap<String, String> = serde_json::from_value(parsed).unwrap_or_default();
+    ModelMapping {
+        default_model: None,
+        exact: legacy_exact,
+    }
+    .normalized()
 }
 
 pub(super) fn tags_from_json(raw: &str) -> Vec<String> {

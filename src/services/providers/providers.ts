@@ -2,6 +2,7 @@ import {
   commands,
   type ClaudeModels as GeneratedClaudeModels,
   type DailyResetMode as GeneratedDailyResetMode,
+  type ModelMapping as GeneratedModelMapping,
   type ProviderAuthMode as GeneratedProviderAuthMode,
   type ProviderAvailabilityResult,
   type ProviderBaseUrlMode as GeneratedProviderBaseUrlMode,
@@ -51,6 +52,7 @@ export type CliKey = "claude" | "codex" | "gemini";
 
 export type ClaudeModels = GeneratedClaudeModels;
 export type DailyResetMode = GeneratedDailyResetMode;
+export type ModelMapping = GeneratedModelMapping;
 export type ProviderAuthMode = GeneratedProviderAuthMode;
 export type ProviderBaseUrlMode = GeneratedProviderBaseUrlMode;
 
@@ -91,6 +93,7 @@ type ProviderUpsertFieldMap = {
   costMultiplier: "costMultiplier";
   priority: "priority";
   claudeModels: "claudeModels";
+  modelMapping: "modelMapping";
   availabilityTestModel: "availabilityTestModel";
   limit5hUsd: "limit5hUsd";
   limitDailyUsd: "limitDailyUsd";
@@ -184,6 +187,7 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
     costMultiplier: input.costMultiplier,
     priority: input.priority ?? null,
     claudeModels: input.claudeModels ?? null,
+    modelMapping: input.modelMapping ?? null,
     availabilityTestModel: input.availabilityTestModel ?? null,
     limit5hUsd: input.limit5hUsd ?? null,
     limitDailyUsd: input.limitDailyUsd ?? null,

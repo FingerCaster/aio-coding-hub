@@ -124,6 +124,7 @@ mod tests {
     fn default_ctx() -> BridgeContext {
         BridgeContext {
             claude_models: ClaudeModels::default(),
+            model_mapping: Default::default(),
             cx2cc_settings: Cx2ccSettings::default(),
             requested_model: None,
             mapped_model: None,

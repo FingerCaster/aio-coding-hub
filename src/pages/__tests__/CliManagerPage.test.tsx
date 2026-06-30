@@ -10,7 +10,6 @@ import { createTestAppSettings } from "../../test/fixtures/settings";
 import { createTestQueryClient } from "../../test/utils/reactQuery";
 import { CliManagerPage } from "../CliManagerPage";
 import { logToConsole } from "../../services/consoleLog";
-import * as appSession from "../../app/appSession";
 import {
   useSettingsCircuitBreakerNoticeSetMutation,
   useSettingsCodexSessionIdCompletionSetMutation,
@@ -1118,9 +1117,7 @@ describe("pages/CliManagerPage", () => {
     expect(toast).not.toHaveBeenCalledWith("Codex 目录已切换");
   });
 
-  it("passes session-scoped and all-time Codex reasoning guard stats into the codex tab", async () => {
-    vi.spyOn(appSession, "useAppSessionStartedAtMs").mockReturnValue(1_770_000_000_000);
-
+  it("does not prefetch removed Codex reasoning guard session or all-time stats in the page model", async () => {
     vi.mocked(useSettingsQuery).mockReturnValue({
       data: createAppSettings(),
       isLoading: false,
@@ -1186,47 +1183,11 @@ describe("pages/CliManagerPage", () => {
       refetch: vi.fn(),
     } as any);
 
-    vi.mocked(useCliManagerCodexReasoningGuardStatsQuery)
-      .mockReturnValueOnce({
-        data: {
-          hit_request_count: 1,
-          hit_attempt_count: 2,
-          normal_request_count: 3,
-          total_request_count: 4,
-          hit_rate: 0.25,
-          by_model: [],
-          by_model_and_effort: [],
-        },
-        isFetching: false,
-        refetch: vi.fn(),
-      } as any)
-      .mockReturnValueOnce({
-        data: {
-          hit_request_count: 5,
-          hit_attempt_count: 6,
-          normal_request_count: 7,
-          total_request_count: 12,
-          hit_rate: 0.416,
-          by_model: [],
-          by_model_and_effort: [],
-        },
-        isFetching: true,
-        refetch: vi.fn(),
-      } as any);
-
     renderWithProviders(<CliManagerPage />);
 
     fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
     await screen.findByText("codex-tab");
 
-    expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(
-      { startCreatedAtMs: 1_770_000_000_000, endCreatedAtMs: null },
-      {
-        enabled: true,
-      }
-    );
-    expect(useCliManagerCodexReasoningGuardStatsQuery).toHaveBeenCalledWith(null, {
-      enabled: true,
-    });
+    expect(useCliManagerCodexReasoningGuardStatsQuery).not.toHaveBeenCalled();
   });
 });

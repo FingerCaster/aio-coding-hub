@@ -78,7 +78,7 @@ fn codex_to_openai_chat_factory() -> Bridge {
         bridge_type: CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
         inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
         outbound: Box::new(super::outbound::openai_chat::OpenAIChatCompletionsOutbound),
-        model_mapper: Box::new(IdentityModelMapper),
+        model_mapper: Box::new(ProviderModelMapper),
     }
 }
 
@@ -87,14 +87,14 @@ fn codex_to_anthropic_messages_factory() -> Bridge {
         bridge_type: CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
         inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
         outbound: Box::new(super::outbound::anthropic_messages::AnthropicMessagesOutbound),
-        model_mapper: Box::new(IdentityModelMapper),
+        model_mapper: Box::new(ProviderModelMapper),
     }
 }
 
-struct IdentityModelMapper;
+struct ProviderModelMapper;
 
-impl super::traits::ModelMapper for IdentityModelMapper {
-    fn map(&self, source_model: &str, _ctx: &super::traits::BridgeContext) -> String {
-        source_model.to_string()
+impl super::traits::ModelMapper for ProviderModelMapper {
+    fn map(&self, source_model: &str, ctx: &super::traits::BridgeContext) -> String {
+        ctx.model_mapping.map_model(source_model)
     }
 }
