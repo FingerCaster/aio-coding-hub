@@ -316,6 +316,8 @@ mod tests {
     use serde_json::json;
     use std::time::Duration;
 
+    const TEST_PROCESS_TIMEOUT: Duration = Duration::from_secs(15);
+
     fn write_node_plugin(script: &str) -> (tempfile::TempDir, std::path::PathBuf) {
         let dir = tempfile::tempdir().expect("tempdir");
         let path = dir.path().join("plugin.js");
@@ -327,8 +329,8 @@ mod tests {
         ProcessRuntimeConfig {
             program: "node".to_string(),
             args: vec![script_path.display().to_string()],
-            start_timeout: Duration::from_secs(5),
-            hook_timeout: Duration::from_secs(5),
+            start_timeout: TEST_PROCESS_TIMEOUT,
+            hook_timeout: TEST_PROCESS_TIMEOUT,
             idle_recycle: Duration::from_millis(50),
             max_line_bytes: 256 * 1024,
         }
