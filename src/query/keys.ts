@@ -240,8 +240,43 @@ export const pluginKeys = {
   all: pluginsAllKey,
   list: () => [...pluginsAllKey, "list"] as const,
   detail: (pluginId: string | null) => [...pluginsAllKey, "detail", pluginId] as const,
+  installPreview: (filePath: string | null) =>
+    [...pluginsAllKey, "installPreview", filePath] as const,
+  updatePreview: (filePath: string | null) =>
+    [...pluginsAllKey, "updatePreview", filePath] as const,
   auditLogs: (pluginId: string | null, limit: number | null) =>
     [...pluginsAllKey, "auditLogs", pluginId, limit] as const,
+  runtimeReports: (
+    pluginId: string | null,
+    hookName: string | null,
+    traceId: string | null,
+    limit: number | null
+  ) => [...pluginsAllKey, "runtimeReports", pluginId, hookName, traceId, limit] as const,
+  extensionRuntimeReportsRoot: () => [...pluginsAllKey, "extensionRuntimeReports"] as const,
+  extensionRuntimeReports: (
+    pluginId: string | null,
+    contributionType: string | null,
+    contributionId: string | null,
+    traceId: string | null,
+    limit: number | null
+  ) =>
+    [
+      ...pluginsAllKey,
+      "extensionRuntimeReports",
+      pluginId,
+      contributionType,
+      contributionId,
+      traceId,
+      limit,
+    ] as const,
+  replayFixture: (traceId: string | null, hookName: string | null, pluginId: string | null) =>
+    [...pluginsAllKey, "replayFixture", traceId, hookName, pluginId] as const,
+};
+
+const pluginContributionsAllKey = ["pluginContributions"] as const;
+export const pluginContributionKeys = {
+  all: pluginContributionsAllKey,
+  active: () => [...pluginContributionsAllKey, "active"] as const,
 };
 
 const settingsAllKey = ["settings"] as const;

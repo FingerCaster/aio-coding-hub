@@ -123,6 +123,7 @@ where
 mod tests {
     use super::build_router;
     use crate::app::plugins::{official, runtime_executor::RuntimeGatewayPluginExecutor};
+    use crate::domain::plugin_contributions::PluginContributes;
     use crate::domain::plugins::{
         PluginDetail, PluginHook, PluginHostCompatibility, PluginInstallSource, PluginManifest,
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
@@ -142,9 +143,10 @@ mod tests {
     use flate2::write::GzEncoder;
     use flate2::Compression;
     use serde_json::Value;
-    use std::collections::HashMap;
+    use std::collections::{BTreeMap, HashMap};
     use std::ffi::OsString;
     use std::io::Write;
+    use std::path::Path;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -626,6 +628,7 @@ mod tests {
                 source_provider_id: None,
                 bridge_type: None,
                 stream_idle_timeout_seconds: None,
+                extension_values: None,
             },
         )
         .expect("insert provider")
@@ -685,6 +688,7 @@ mod tests {
                 source_provider_id: None,
                 bridge_type: None,
                 stream_idle_timeout_seconds: None,
+                extension_values: None,
             },
         )
         .expect("insert oauth provider")
@@ -720,6 +724,7 @@ mod tests {
                 source_provider_id: Some(source_provider_id),
                 bridge_type: Some("cx2cc".to_string()),
                 stream_idle_timeout_seconds: None,
+                extension_values: None,
             },
         )
         .expect("insert cx2cc bridge provider")
@@ -800,7 +805,7 @@ mod tests {
                 name: "Request Rewrite".to_string(),
                 current_version: Some("1.0.0".to_string()),
                 status: PluginStatus::Enabled,
-                runtime: "declarativeRules".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -812,20 +817,28 @@ mod tests {
                 name: "Request Rewrite".to_string(),
                 version: "1.0.0".to_string(),
                 api_version: "1.0.0".to_string(),
-                runtime: PluginRuntime::DeclarativeRules {
-                    rules: vec!["rules/main.json".to_string()],
+                runtime: PluginRuntime::ExtensionHost {
+                    language: "typescript".to_string(),
                 },
-                hooks: vec![PluginHook {
-                    name: GatewayPluginHookName::RequestAfterBodyRead
-                        .as_str()
-                        .to_string(),
-                    priority: 10,
-                    failure_policy: Some("fail-open".to_string()),
-                }],
-                permissions: vec![
-                    "request.body.read".to_string(),
-                    "request.body.write".to_string(),
-                ],
+                hooks: vec![],
+                permissions: vec![],
+                main: Some("dist/index.js".to_string()),
+                activation_events: vec![],
+                contributes: Some(PluginContributes {
+                    providers: vec![],
+                    protocols: vec![],
+                    protocol_bridges: vec![],
+                    commands: vec![],
+                    gateway_hooks: vec![PluginHook {
+                        name: GatewayPluginHookName::RequestAfterBodyRead
+                            .as_str()
+                            .to_string(),
+                        priority: 10,
+                        failure_policy: Some("fail-open".to_string()),
+                    }],
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),
@@ -853,12 +866,24 @@ mod tests {
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         }
     }
 
     fn fail_closed(mut plugin: PluginDetail) -> PluginDetail {
-        plugin.manifest.hooks[0].failure_policy = Some("fail-closed".to_string());
+        gateway_hook_mut(&mut plugin).failure_policy = Some("fail-closed".to_string());
         plugin
+    }
+
+    fn gateway_hook_mut(plugin: &mut PluginDetail) -> &mut PluginHook {
+        plugin
+            .manifest
+            .contributes
+            .as_mut()
+            .expect("extension host gateway hook contributions")
+            .gateway_hooks
+            .first_mut()
+            .expect("gateway hook")
     }
 
     fn before_send_header_plugin() -> PluginDetail {
@@ -867,14 +892,13 @@ mod tests {
         plugin.summary.name = "Before Send".to_string();
         plugin.manifest.id = "test.before-send".to_string();
         plugin.manifest.name = "Before Send".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::RequestBeforeSend
+        gateway_hook_mut(&mut plugin).name = GatewayPluginHookName::RequestBeforeSend
             .as_str()
             .to_string();
-        plugin.manifest.permissions = vec![
+        plugin.granted_permissions = vec![
             "request.meta.read".to_string(),
             "request.header.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -884,12 +908,12 @@ mod tests {
         plugin.summary.name = "Response After".to_string();
         plugin.manifest.id = "test.response-after".to_string();
         plugin.manifest.name = "Response After".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::ResponseAfter.as_str().to_string();
-        plugin.manifest.permissions = vec![
+        gateway_hook_mut(&mut plugin).name =
+            GatewayPluginHookName::ResponseAfter.as_str().to_string();
+        plugin.granted_permissions = vec![
             "response.body.read".to_string(),
             "response.body.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -899,10 +923,10 @@ mod tests {
         plugin.summary.name = "Stream Chunk".to_string();
         plugin.manifest.id = "test.stream-chunk".to_string();
         plugin.manifest.name = "Stream Chunk".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::ResponseChunk.as_str().to_string();
-        plugin.manifest.permissions =
+        gateway_hook_mut(&mut plugin).name =
+            GatewayPluginHookName::ResponseChunk.as_str().to_string();
+        plugin.granted_permissions =
             vec!["stream.inspect".to_string(), "stream.modify".to_string()];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -912,17 +936,15 @@ mod tests {
         plugin.summary.name = "Log Redaction".to_string();
         plugin.manifest.id = "test.log-redaction".to_string();
         plugin.manifest.name = "Log Redaction".to_string();
-        plugin.manifest.hooks[0].name =
+        gateway_hook_mut(&mut plugin).name =
             GatewayPluginHookName::LogBeforePersist.as_str().to_string();
-        plugin.manifest.permissions = vec!["log.redact".to_string()];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
+        plugin.granted_permissions = vec!["log.redact".to_string()];
         plugin
     }
 
     fn official_privacy_filter_for_tests() -> PluginDetail {
         let fixture = official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = fixture.manifest.permissions.clone();
         PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -930,7 +952,7 @@ mod tests {
                 name: fixture.manifest.name.clone(),
                 current_version: Some(fixture.manifest.version.clone()),
                 status: PluginStatus::Enabled,
-                runtime: "native:privacyFilter".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -941,10 +963,11 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions,
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         }
     }
 
@@ -954,13 +977,12 @@ mod tests {
         plugin.summary.name = "Gateway Error".to_string();
         plugin.manifest.id = "test.gateway-error".to_string();
         plugin.manifest.name = "Gateway Error".to_string();
-        plugin.manifest.hooks[0].name = GatewayPluginHookName::Error.as_str().to_string();
-        plugin.manifest.permissions = vec![
+        gateway_hook_mut(&mut plugin).name = GatewayPluginHookName::Error.as_str().to_string();
+        plugin.granted_permissions = vec![
             "response.body.read".to_string(),
             "response.body.write".to_string(),
             "response.header.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         plugin
     }
 
@@ -1002,6 +1024,53 @@ mod tests {
             &plugin.pending_permissions,
         )
         .expect("save plugin detail permissions");
+        repository::save_plugin_config(
+            db,
+            &plugin.summary.plugin_id,
+            plugin.manifest.config_version.unwrap_or(1),
+            &plugin.config,
+            &[],
+        )
+        .expect("save plugin detail config");
+    }
+
+    fn persist_and_reload_plugin_detail(db: &db::Db, plugin: &PluginDetail) -> PluginDetail {
+        persist_plugin_detail(db, plugin);
+        repository::get_plugin(db, &plugin.summary.plugin_id).expect("reload plugin detail")
+    }
+
+    fn write_extension_host_test_entry(
+        source_root: Option<&Path>,
+        root: &Path,
+        manifest: &PluginManifest,
+        source: &str,
+    ) {
+        let main = manifest
+            .main
+            .as_deref()
+            .expect("extension host test manifest main");
+        let entry_path = root.join(main);
+        std::fs::create_dir_all(
+            entry_path
+                .parent()
+                .expect("extension host test entry parent"),
+        )
+        .expect("create extension host test entry parent");
+        std::fs::write(
+            root.join("plugin.json"),
+            serde_json::to_vec_pretty(manifest).expect("serialize extension host test manifest"),
+        )
+        .expect("write extension host test manifest");
+        std::fs::write(entry_path, source).expect("write extension host test entry");
+        if let Some(source_root) = source_root {
+            let source_rules = source_root.join("rules/gitleaks.toml");
+            if source_rules.exists() {
+                let target_rules = root.join("rules/gitleaks.toml");
+                std::fs::create_dir_all(target_rules.parent().expect("rules parent"))
+                    .expect("create rules dir");
+                std::fs::copy(source_rules, target_rules).expect("copy privacy rules");
+            }
+        }
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -1202,7 +1271,6 @@ mod tests {
             .expect("init test db");
         let fixture = official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = fixture.manifest.permissions.clone();
         let plugin = PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -1210,7 +1278,7 @@ mod tests {
                 name: fixture.manifest.name.clone(),
                 current_version: Some(fixture.manifest.version.clone()),
                 status: PluginStatus::Enabled,
-                runtime: "native:privacyFilter".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -1221,10 +1289,11 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions.clone(),
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         };
         repository::insert_plugin(
             &db,
@@ -1236,8 +1305,18 @@ mod tests {
             },
         )
         .expect("insert official privacy filter");
-        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &permissions, &[])
+        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &[], &[])
             .expect("grant official privacy filter permissions");
+        repository::save_plugin_config(
+            &db,
+            &plugin.summary.plugin_id,
+            plugin.manifest.config_version.unwrap_or(1),
+            &plugin.config,
+            &[],
+        )
+        .expect("save official privacy filter config");
+        let plugin = repository::get_plugin(&db, &plugin.summary.plugin_id)
+            .expect("reload official privacy filter");
 
         let (upstream_base_url, captured_rx, upstream_task) =
             spawn_capturing_raw_upstream(r#"{"id":"stub-ok","object":"response","output":[]}"#)
@@ -1245,7 +1324,7 @@ mod tests {
         let provider_id = insert_codex_provider(&db, upstream_base_url);
         let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
             vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
+            Arc::new(RuntimeGatewayPluginExecutor::with_db(db.clone())),
             GatewayPluginPipelineConfig::default(),
         );
 
@@ -1323,7 +1402,6 @@ mod tests {
         .expect("init test db");
         let fixture = official::official_plugin("official.privacy-filter")
             .expect("official privacy filter fixture");
-        let permissions = fixture.manifest.permissions.clone();
         let plugin = PluginDetail {
             summary: PluginSummary {
                 id: 1,
@@ -1331,7 +1409,7 @@ mod tests {
                 name: fixture.manifest.name.clone(),
                 current_version: Some(fixture.manifest.version.clone()),
                 status: PluginStatus::Enabled,
-                runtime: "native:privacyFilter".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -1342,10 +1420,11 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions.clone(),
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         };
         repository::insert_plugin(
             &db,
@@ -1357,8 +1436,18 @@ mod tests {
             },
         )
         .expect("insert official privacy filter");
-        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &permissions, &[])
+        repository::save_plugin_permissions(&db, &plugin.summary.plugin_id, &[], &[])
             .expect("grant official privacy filter permissions");
+        repository::save_plugin_config(
+            &db,
+            &plugin.summary.plugin_id,
+            plugin.manifest.config_version.unwrap_or(1),
+            &plugin.config,
+            &[],
+        )
+        .expect("save official privacy filter config");
+        let plugin = repository::get_plugin(&db, &plugin.summary.plugin_id)
+            .expect("reload official privacy filter");
 
         let (upstream_base_url, captured_rx, upstream_task) =
             spawn_capturing_raw_upstream(r#"{"id":"stub-ok","object":"response","output":[]}"#)
@@ -1366,7 +1455,7 @@ mod tests {
         let provider_id = insert_codex_provider(&db, upstream_base_url);
         let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
             vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
+            Arc::new(RuntimeGatewayPluginExecutor::with_db(db.clone())),
             GatewayPluginPipelineConfig::default(),
         );
 
@@ -1501,9 +1590,41 @@ mod tests {
         let mut plugin = official_privacy_filter_for_tests();
         plugin
             .manifest
-            .hooks
+            .contributes
+            .as_mut()
+            .expect("official privacy filter gateway contributions")
+            .gateway_hooks
             .retain(|hook| hook.name != "gateway.request.afterBodyRead");
-        persist_plugin_detail(&db, &plugin);
+        let plugin_root = tempfile::tempdir().expect("plugin root");
+        let source_root = plugin.installed_dir.as_deref().map(Path::new);
+        write_extension_host_test_entry(
+            source_root,
+            plugin_root.path(),
+            &plugin.manifest,
+            r#"
+function handleRequestHook(api, payload) {
+  const body =
+    payload && payload.context && payload.context.request
+      ? payload.context.request.body
+      : undefined;
+  if (typeof body !== "string" || body.length === 0) {
+    return { action: "pass" };
+  }
+  const result = api.privacy.redactRequestBody(body, {});
+  return result && result.hit
+    ? { action: "replace", requestBody: result.redacted }
+    : { action: "pass" };
+}
+
+module.exports.activate = function activate(api) {
+  api.gateway.registerHook("gateway.request.beforeSend", function onBeforeSend(payload) {
+    return handleRequestHook(api, payload);
+  });
+};
+"#,
+        );
+        plugin.installed_dir = Some(plugin_root.path().to_string_lossy().to_string());
+        let plugin = persist_and_reload_plugin_detail(&db, &plugin);
 
         let (upstream_base_url, captured_rx, upstream_task) =
             spawn_capturing_raw_upstream(r#"{"id":"stub-ok","object":"response","output":[]}"#)
@@ -1511,7 +1632,7 @@ mod tests {
         let provider_id = insert_codex_provider(&db, upstream_base_url);
         let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
             vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
+            Arc::new(RuntimeGatewayPluginExecutor::with_db(db.clone())),
             GatewayPluginPipelineConfig::default(),
         );
 
@@ -1580,11 +1701,10 @@ mod tests {
         let db = db::init_for_tests(&db_dir.path().join("privacy-filter-retry.sqlite"))
             .expect("init test db");
         let mut plugin = before_send_header_plugin();
-        plugin.manifest.permissions = vec![
+        plugin.granted_permissions = vec![
             "request.body.read".to_string(),
             "request.body.write".to_string(),
         ];
-        plugin.granted_permissions = plugin.manifest.permissions.clone();
         persist_plugin_detail(&db, &plugin);
 
         let (upstream_base_url, mut captured_rx, upstream_task) =

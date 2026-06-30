@@ -88,6 +88,27 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.hasPending).toBe(true);
   });
 
+  it("classifies pending logs as active or idle from last_activity_ms", () => {
+    const nowMs = 1_700_000_900_000;
+    const active = buildRequestActivityProjection({
+      requestLogs: [log({ trace_id: "active", last_activity_ms: nowMs - 60_000 } as any)],
+      traces: [],
+      nowMs,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+    expect(active.requestRows[0]?.activityState).toBe("in_progress_active");
+
+    const idle = buildRequestActivityProjection({
+      requestLogs: [log({ trace_id: "idle", last_activity_ms: nowMs - 11 * 60_000 } as any)],
+      traces: [],
+      nowMs,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+    expect(idle.requestRows[0]?.activityState).toBe("in_progress_idle");
+  });
+
   it("renders a pending log with a visible trace as one realtime card and no duplicate row", () => {
     const projection = buildRequestActivityProjection({
       requestLogs: [log({ trace_id: "live-pending" })],

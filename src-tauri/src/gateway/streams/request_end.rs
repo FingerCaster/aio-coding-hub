@@ -13,6 +13,7 @@ pub(super) struct StreamRequestCompletion {
     pub(super) requested_model: Option<String>,
     pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) usage: Option<crate::usage::UsageExtract>,
+    pub(super) terminal_signal: Option<&'static str>,
 }
 
 impl StreamRequestCompletion {
@@ -28,6 +29,7 @@ impl StreamRequestCompletion {
             requested_model,
             usage_metrics,
             usage,
+            terminal_signal: Some("completed"),
         }
     }
 
@@ -44,6 +46,7 @@ impl StreamRequestCompletion {
             requested_model,
             usage_metrics,
             usage,
+            terminal_signal: Some("error"),
         }
     }
 
@@ -58,6 +61,11 @@ impl StreamRequestCompletion {
             Some(code) => Self::failure(code, ttfb_ms, requested_model, usage_metrics, usage),
             None => Self::success(ttfb_ms, requested_model, usage_metrics, usage),
         }
+    }
+
+    pub(super) fn with_terminal_signal(mut self, terminal_signal: Option<&'static str>) -> Self {
+        self.terminal_signal = terminal_signal;
+        self
     }
 }
 
@@ -108,6 +116,28 @@ fn ensure_stream_client_abort_setting<R: tauri::Runtime>(
     );
 }
 
+fn status_for_stream_request_log(status: u16, error_code: Option<&'static str>) -> u16 {
+    match error_code {
+        Some(code)
+            if code == GatewayErrorCode::StreamError.as_str()
+                || code == GatewayErrorCode::Fake200.as_str() =>
+        {
+            if (200..400).contains(&status) {
+                502
+            } else {
+                status
+            }
+        }
+        Some(code)
+            if code == GatewayErrorCode::StreamAborted.as_str()
+                || code == GatewayErrorCode::RequestAborted.as_str() =>
+        {
+            499
+        }
+        _ => status,
+    }
+}
+
 pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
     ctx: &StreamFinalizeCtx<R>,
     completion: StreamRequestCompletion,
@@ -144,6 +174,17 @@ pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
         (ctx.attempts.clone(), ctx.attempts_json.clone())
     };
 
+    let (last_activity_ms, activity_details_json) = ctx
+        .activity
+        .lock()
+        .map(|activity| {
+            (
+                Some(activity.last_activity_ms()),
+                activity.details_json(completion.terminal_signal),
+            )
+        })
+        .unwrap_or((None, None));
+
     let (log_args, attempts) = RequestLogEnqueueArgs::from_stream_request_end_parts(
         ctx.trace_id.clone(),
         ctx.cli_key.clone(),
@@ -153,7 +194,7 @@ pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
         ctx.query.clone(),
         ctx.excluded_from_stats,
         response_fixer::special_settings_json(&ctx.special_settings),
-        ctx.status,
+        status_for_stream_request_log(ctx.status, completion.error_code),
         completion.error_code,
         duration_ms,
         completion.ttfb_ms,
@@ -161,6 +202,8 @@ pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
         attempts_json,
         completion.requested_model,
         ctx.created_at_ms,
+        last_activity_ms,
+        activity_details_json,
         ctx.created_at,
         completion.usage,
     );
@@ -184,7 +227,7 @@ pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
 
 #[cfg(test)]
 mod tests {
-    use super::StreamRequestCompletion;
+    use super::{status_for_stream_request_log, StreamRequestCompletion};
     use crate::gateway::proxy::GatewayErrorCode;
 
     #[test]
@@ -216,5 +259,21 @@ mod tests {
         assert_eq!(completion.requested_model.as_deref(), Some("gpt-5"));
         assert!(completion.usage_metrics.is_some());
         assert!(completion.usage.is_none());
+    }
+
+    #[test]
+    fn stream_error_status_for_log_maps_http_200_to_502() {
+        assert_eq!(
+            status_for_stream_request_log(200, Some(GatewayErrorCode::StreamError.as_str())),
+            502
+        );
+        assert_eq!(
+            status_for_stream_request_log(200, Some(GatewayErrorCode::Fake200.as_str())),
+            502
+        );
+        assert_eq!(
+            status_for_stream_request_log(499, Some(GatewayErrorCode::StreamAborted.as_str())),
+            499
+        );
     }
 }

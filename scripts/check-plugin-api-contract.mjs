@@ -59,84 +59,404 @@ function requireRegex(path, text, regex, label) {
   }
 }
 
-function runtimeTokens(contract) {
-  return [...contract.communityRuntimes, ...contract.policyGatedRuntimes];
+function escapeRegex(value) {
+  return value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 }
 
-function officialRuntimeTokens(contract) {
-  return contract.officialRuntimes.flatMap((runtime) => runtime.split(":"));
+function functionBody(text, functionName) {
+  const signature = new RegExp(`function\\s+${escapeRegex(functionName)}\\s*\\(`).exec(text);
+  if (!signature) return null;
+  const openBrace = text.indexOf("{", signature.index);
+  if (openBrace === -1) return null;
+
+  let depth = 0;
+  for (let index = openBrace; index < text.length; index += 1) {
+    const char = text[index];
+    if (char === "{") depth += 1;
+    if (char === "}") {
+      depth -= 1;
+      if (depth === 0) {
+        return text.slice(openBrace + 1, index);
+      }
+    }
+  }
+  return null;
 }
 
-function snakeCase(value) {
-  return value.replace(/[A-Z]/g, (match) => `_${match.toLowerCase()}`);
+function requireObject(path, value) {
+  if (value == null || typeof value !== "object" || Array.isArray(value)) {
+    failures.push(`${path} must be an object`);
+    return null;
+  }
+  return value;
+}
+
+function requireArray(path, value) {
+  if (!Array.isArray(value)) {
+    failures.push(`${path} must be an array`);
+    return [];
+  }
+  return value;
+}
+
+function requireUniqueArray(path, values) {
+  const seen = new Set();
+  for (const value of values) {
+    if (seen.has(value)) {
+      failures.push(`${path} contains duplicate ${value}`);
+    }
+    seen.add(value);
+  }
+}
+
+function requireArrayEquals(path, values, expected) {
+  const array = requireArray(path, values);
+  if (array.length !== expected.length || array.some((value, index) => value !== expected[index])) {
+    failures.push(`${path} must equal [${expected.join(", ")}]`);
+  }
+  return array;
+}
+
+function requireOneOf(path, value, allowed) {
+  if (!allowed.includes(value)) {
+    failures.push(`${path} must be one of ${allowed.join(", ")}`);
+  }
 }
 
 const contractPath = "docs/plugins/plugin-api-v1-contract.json";
 const contract = readJson(contractPath);
 
 if (contract) {
+  const runtimes = requireObject(`${contractPath}.runtimes`, contract.runtimes) ?? {};
+  for (const legacyRuntime of ["wasm", "process", "native"]) {
+    if (Object.prototype.hasOwnProperty.call(runtimes, legacyRuntime)) {
+      failures.push(`${contractPath}.runtimes must not expose ${legacyRuntime}`);
+    }
+  }
+  const extensionHostRuntime = requireObject(
+    `${contractPath}.runtimes.extensionHost`,
+    runtimes.extensionHost
+  );
+  if (extensionHostRuntime) {
+    if (extensionHostRuntime.language !== "typescript") {
+      failures.push(`${contractPath}.runtimes.extensionHost.language must be typescript`);
+    }
+    if (extensionHostRuntime.requiresMain !== true) {
+      failures.push(`${contractPath}.runtimes.extensionHost.requiresMain must be true`);
+    }
+    requireIncludes(
+      `${contractPath}.runtimes.extensionHost`,
+      JSON.stringify(extensionHostRuntime),
+      ["mainOutput", "allowedMainExtensions", "lifecycle", "hookTimeoutMs", "dispose"],
+      "Extension Host runtime lifecycle"
+    );
+  }
+  const extensionHostContract = requireObject(
+    `${contractPath}.extensionHostContract`,
+    contract.extensionHostContract
+  );
+  if (extensionHostContract) {
+    if (extensionHostContract.runtime !== "extensionHost") {
+      failures.push(`${contractPath}.extensionHostContract.runtime must be extensionHost`);
+    }
+    if (extensionHostContract.language !== "typescript") {
+      failures.push(`${contractPath}.extensionHostContract.language must be typescript`);
+    }
+    if (extensionHostContract.requiresMain !== true) {
+      failures.push(`${contractPath}.extensionHostContract.requiresMain must be true`);
+    }
+    requireIncludes(
+      `${contractPath}.extensionHostContract`,
+      JSON.stringify(extensionHostContract),
+      [
+        "entryField",
+        "mainOutput",
+        "supportedSourceLanguages",
+        "api.gateway.registerHook",
+        "api.privacy.redactRequestBody",
+      ],
+      "Extension Host contract fields"
+    );
+  }
+  requireArrayEquals(`${contractPath}.communityRuntimes`, contract.communityRuntimes, [
+    "extensionHost",
+  ]);
+  const unsupportedLegacyRuntimes = requireArray(
+    `${contractPath}.unsupportedLegacyRuntimes`,
+    contract.unsupportedLegacyRuntimes
+  );
+  for (const legacyRuntime of ["wasm", "process", "native"]) {
+    if (!unsupportedLegacyRuntimes.includes(legacyRuntime)) {
+      failures.push(`${contractPath}.unsupportedLegacyRuntimes must include ${legacyRuntime}`);
+    }
+  }
+  if (contract.policyGatedRuntimes !== undefined) {
+    failures.push(`${contractPath}.policyGatedRuntimes must not expose public community runtimes`);
+  }
+  const capabilities = requireArray(`${contractPath}.capabilities`, contract.capabilities);
+  for (const capability of [
+    "gateway.hooks",
+    "protocol.bridge",
+    "commands.execute",
+    "provider.extensionValues",
+    "privacy.redact",
+  ]) {
+    if (!capabilities.includes(capability)) {
+      failures.push(`${contractPath}.capabilities must include ${capability}`);
+    }
+  }
+  const contributionPoints = requireArray(
+    `${contractPath}.contributionPoints`,
+    contract.contributionPoints
+  );
+  for (const contribution of ["gatewayHooks", "protocolBridges", "commands"]) {
+    if (!contributionPoints.includes(contribution)) {
+      failures.push(`${contractPath}.contributionPoints must include ${contribution}`);
+    }
+  }
+  const capabilityDependencies =
+    requireObject(`${contractPath}.capabilityDependencies`, contract.capabilityDependencies) ?? {};
+  const expectedCapabilityDependencies = {
+    commands: ["commands.execute"],
+    providers: ["provider.extensionValues"],
+    "ui.providers.editor.sections": ["provider.extensionValues"],
+    "ui.providers.editor.fields": ["provider.extensionValues"],
+    "ui.buttonCommandFields": ["commands.execute"],
+    gatewayHooks: ["gateway.hooks"],
+    protocolBridges: ["protocol.bridge"],
+  };
+  for (const key of Object.keys(capabilityDependencies)) {
+    if (!Object.prototype.hasOwnProperty.call(expectedCapabilityDependencies, key)) {
+      failures.push(`${contractPath}.capabilityDependencies must not include ${key}`);
+    }
+  }
+  for (const [contribution, requiredCapabilities] of Object.entries(
+    expectedCapabilityDependencies
+  )) {
+    requireArrayEquals(
+      `${contractPath}.capabilityDependencies.${contribution}`,
+      capabilityDependencies[contribution],
+      requiredCapabilities
+    );
+  }
+  const protocolBridgeContribution = requireObject(
+    `${contractPath}.protocolBridgeContribution`,
+    contract.protocolBridgeContribution
+  );
+  if (protocolBridgeContribution) {
+    if (protocolBridgeContribution.status !== "mvp-skeleton") {
+      failures.push(`${contractPath}.protocolBridgeContribution.status must be mvp-skeleton`);
+    }
+    if (
+      typeof protocolBridgeContribution.executionBoundary !== "string" ||
+      !protocolBridgeContribution.executionBoundary.includes("future host integration")
+    ) {
+      failures.push(
+        `${contractPath}.protocolBridgeContribution.executionBoundary must describe future host integration`
+      );
+    }
+  }
+
+  const matrix = requireObject(`${contractPath}.hookMatrix`, contract.hookMatrix) ?? {};
+  for (const hook of contract.activeHooks ?? []) {
+    const entry = requireObject(`hookMatrix.${hook}`, matrix[hook]);
+    if (!entry) continue;
+    requireOneOf(`hookMatrix.${hook}.kind`, entry.kind, ["request", "response", "stream", "log"]);
+    requireOneOf(`hookMatrix.${hook}.status`, entry.status, ["active", "reserved"]);
+    if (entry.status !== "active") {
+      failures.push(`hookMatrix.${hook}.status must be active`);
+    }
+    const readPermissions = requireArray(
+      `hookMatrix.${hook}.readPermissions`,
+      entry.readPermissions
+    );
+    const writePermissions = requireArray(
+      `hookMatrix.${hook}.writePermissions`,
+      entry.writePermissions
+    );
+    requireUniqueArray(`hookMatrix.${hook}.readPermissions`, readPermissions);
+    requireUniqueArray(`hookMatrix.${hook}.writePermissions`, writePermissions);
+    const permissionDependencies =
+      requireObject(`hookMatrix.${hook}.permissionDependencies`, entry.permissionDependencies) ??
+      {};
+    for (const [permission, requires] of Object.entries(permissionDependencies)) {
+      if (!writePermissions.includes(permission)) {
+        failures.push(
+          `hookMatrix.${hook}.permissionDependencies.${permission} must be a write permission`
+        );
+      }
+      const requiredPermissions = requireArray(
+        `hookMatrix.${hook}.permissionDependencies.${permission}`,
+        requires
+      );
+      for (const requiredPermission of requiredPermissions) {
+        if (!readPermissions.includes(requiredPermission)) {
+          failures.push(
+            `hookMatrix.${hook}.permissionDependencies.${permission} requires unknown read permission ${requiredPermission}`
+          );
+        }
+      }
+    }
+    const mutationFields = requireArray(`hookMatrix.${hook}.mutationFields`, entry.mutationFields);
+    const contextFields = requireArray(`hookMatrix.${hook}.contextFields`, entry.contextFields);
+    requireUniqueArray(`hookMatrix.${hook}.mutationFields`, mutationFields);
+    requireUniqueArray(`hookMatrix.${hook}.contextFields`, contextFields);
+    if (entry.defaultFailurePolicy !== contract.defaultFailurePolicy) {
+      failures.push(`hookMatrix.${hook}.defaultFailurePolicy must equal defaultFailurePolicy`);
+    }
+    if (entry.timeoutMs !== contract.defaultHookTimeoutMs) {
+      failures.push(`hookMatrix.${hook}.timeoutMs must equal defaultHookTimeoutMs`);
+    }
+    requireOneOf(`hookMatrix.${hook}.reservedHeaderPolicy`, entry.reservedHeaderPolicy, [
+      "block-gateway-owned",
+    ]);
+  }
+
   const sdk = readText("packages/plugin-sdk/src/index.ts");
-  requireIncludes("packages/plugin-sdk/src/index.ts", sdk, contract.activeHooks, "active hook");
-  requireIncludes("packages/plugin-sdk/src/index.ts", sdk, contract.reservedHooks, "reserved hook");
   requireIncludes(
     "packages/plugin-sdk/src/index.ts",
     sdk,
-    contract.activePermissions,
-    "active permission"
+    [
+      "export type ExtensionRuntime",
+      'kind: "extensionHost"',
+      "export type PluginRuntime = ExtensionRuntime",
+      "export type PluginCapability",
+      '"gateway.hooks"',
+      '"privacy.redact"',
+      '"protocol.bridge"',
+      "export type GatewayHookContribution",
+      "export type ProtocolBridgeContribution",
+      "export type PrivacyApi",
+      "gatewayHooks?: GatewayHookContribution[]",
+      "protocolBridges?: ProtocolBridgeContribution[]",
+      "validateCapabilityDependencies",
+    ],
+    "Extension Host SDK contract"
   );
-  requireIncludes(
-    "packages/plugin-sdk/src/index.ts",
-    sdk,
-    contract.reservedPermissions,
-    "reserved permission"
-  );
-  requireIncludes("packages/plugin-sdk/src/index.ts", sdk, runtimeTokens(contract), "runtime");
-  requireIncludes(
-    "packages/plugin-sdk/src/index.ts",
-    sdk,
-    contract.activeMutationFields ?? [],
-    "active mutation field"
-  );
+  const capabilityDependencyBody = functionBody(sdk, "validateCapabilityDependencies");
+  if (capabilityDependencyBody == null) {
+    failures.push(
+      "packages/plugin-sdk/src/index.ts is missing validateCapabilityDependencies body"
+    );
+  } else {
+    requireIncludes(
+      "packages/plugin-sdk/src/index.ts",
+      capabilityDependencyBody,
+      [
+        "requireCapability",
+        '"commands.execute"',
+        "commands contribution",
+        '"provider.extensionValues"',
+        "provider contribution",
+        '"providers.editor.sections"',
+        "providers.editor.sections UI contribution",
+        '"providers.editor.fields"',
+        "providers.editor.fields UI contribution",
+        "uiHasButtonCommand",
+        "UI command field",
+        '"gateway.hooks"',
+        "gatewayHooks contribution",
+        '"protocol.bridge"',
+        "protocolBridges contribution",
+      ],
+      "capability dependency validation"
+    );
+  }
 
   const scaffold = readText("packages/create-aio-plugin/src/scaffold.ts");
   requireIncludes(
     "packages/create-aio-plugin/src/scaffold.ts",
     scaffold,
-    contract.communityRuntimes,
-    "community runtime"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/scaffold.ts",
-    scaffold,
-    contract.policyGatedRuntimes,
-    "policy-gated runtime"
-  );
-  requireIncludes(
-    "packages/create-aio-plugin/src/scaffold.ts",
-    scaffold,
-    ["gateway.request.afterBodyRead", "request.body.read", "request.body.write"],
-    "default scaffold contract token"
+    [
+      'main: "dist/extension.js"',
+      'runtime: { kind: "extensionHost", language: "typescript" }',
+      'hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" }',
+      'capabilities: ["gateway.hooks"]',
+      "contributes",
+      "gatewayHooks:",
+      "api.gateway.registerHook",
+      'capabilities = ["commands.execute"]',
+    ],
+    "Extension Host scaffold package shape"
   );
 
-  const rust = readText("src-tauri/src/domain/plugins.rs");
-  requireIncludes("src-tauri/src/domain/plugins.rs", rust, contract.activeHooks, "active hook");
-  requireIncludes("src-tauri/src/domain/plugins.rs", rust, contract.reservedHooks, "reserved hook");
+  const devtools = readText("packages/create-aio-plugin/src/devtools.ts");
   requireIncludes(
-    "src-tauri/src/domain/plugins.rs",
-    rust,
+    "packages/create-aio-plugin/src/devtools.ts",
+    devtools,
+    [
+      "doctorPluginFiles",
+      "validatePluginFilesStrict",
+      "packPluginBytes",
+      "publishCheckPluginBytes",
+      "normalizeExtensionMainPath",
+      "storedZipEntryNames",
+      "dist/extension.js",
+      "gateway.hooks",
+      "contributes.gatewayHooks",
+      "PLUGIN_INVALID_MAIN",
+      "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME",
+      "PLUGIN_REPLAY_UNSUPPORTED",
+    ],
+    "Extension Host developer tool package shape"
+  );
+  requireNotIncludes(
+    "packages/create-aio-plugin/src/devtools.ts",
+    devtools,
+    ["contextPatch"],
+    "legacy mutation field"
+  );
+
+  const rustContract = readText("src-tauri/src/gateway/plugins/contract.rs");
+  requireIncludes(
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
+    contract.activeHooks,
+    "active hook"
+  );
+  requireIncludes(
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
+    contract.reservedHooks,
+    "reserved hook"
+  );
+  requireIncludes(
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
     contract.activePermissions,
     "active permission"
   );
   requireIncludes(
-    "src-tauri/src/domain/plugins.rs",
-    rust,
+    "src-tauri/src/gateway/plugins/contract.rs",
+    rustContract,
     contract.reservedPermissions,
     "reserved permission"
+  );
+
+  const rust = readText("src-tauri/src/domain/plugins.rs");
+  requireIncludes(
+    "src-tauri/src/domain/plugins.rs",
+    rust,
+    [...contract.activePermissions, ...contract.reservedPermissions],
+    "permission risk"
+  );
+  requireIncludes(
+    "src-tauri/src/domain/plugins.rs",
+    rust,
+    [
+      "crate::gateway::plugins::contract::is_active_hook",
+      "crate::gateway::plugins::contract::is_reserved_hook",
+      "crate::gateway::plugins::contract::hook_contract",
+      "providers.editor.sections",
+      "providers.editor.fields",
+      "UI command field",
+    ],
+    "contract metadata call-through"
   );
   requireIncludesCaseInsensitive(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    [...runtimeTokens(contract), ...officialRuntimeTokens(contract)],
+    ["extensionHost"],
     "runtime"
   );
   requireIncludes(
@@ -148,7 +468,12 @@ if (contract) {
 
   const manifestSpec = readText("docs/plugin-manifest-v1.md");
   requireIncludes("docs/plugin-manifest-v1.md", manifestSpec, contract.activeHooks, "active hook");
-  requireIncludes("docs/plugin-manifest-v1.md", manifestSpec, contract.reservedHooks, "reserved hook");
+  requireIncludes(
+    "docs/plugin-manifest-v1.md",
+    manifestSpec,
+    contract.reservedHooks,
+    "reserved hook"
+  );
   requireIncludes(
     "docs/plugin-manifest-v1.md",
     manifestSpec,
@@ -161,6 +486,21 @@ if (contract) {
     contract.reservedPermissions,
     "reserved permission"
   );
+  for (const hook of contract.activeHooks ?? []) {
+    const entry = matrix?.[hook];
+    if (!entry) continue;
+    const timeoutToken = `${entry.timeoutMs} ms`;
+    const hookRow = manifestSpec.split("\n").find((line) => line.includes(`| \`${hook}\``));
+    if (!hookRow) {
+      failures.push(`docs/plugin-manifest-v1.md is missing hook table row for ${hook}`);
+      continue;
+    }
+    if (!hookRow.includes(timeoutToken)) {
+      failures.push(
+        `docs/plugin-manifest-v1.md hook ${hook} row must include timeout ${timeoutToken}`
+      );
+    }
+  }
 
   const hooksDocPath = "docs/plugins/reference/hooks.md";
   const hooksDoc = readText(hooksDocPath);
@@ -181,19 +521,6 @@ if (contract) {
     contract.reservedPermissions,
     "reserved permission"
   );
-
-  const manifestGuidePath = "docs/plugins/reference/manifest.md";
-  const manifestGuide = readText(manifestGuidePath);
-  requireIncludes(
-    manifestGuidePath,
-    manifestGuide,
-    [...runtimeTokens(contract), ...officialRuntimeTokens(contract)],
-    "runtime"
-  );
-
-  const wasmGuidePath = "docs/plugins/runtime/wasm.md";
-  const wasmGuide = readText(wasmGuidePath);
-  requireIncludes(wasmGuidePath, wasmGuide, ["wasm", "PLUGIN_RUNTIME_DISABLED"], "WASM policy token");
 
   requireRegex(
     "packages/plugin-sdk/src/index.ts",
@@ -216,35 +543,26 @@ if (contract) {
   requireRegex(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    /pub fn is_reserved_gateway_hook\(hook: &str\)([\s\S]*?)pub fn is_reserved_permission/,
+    /pub fn is_reserved_gateway_hook\(hook: &str\)([\s\S]*?)\}/,
     "reserved hook validation helper"
   );
   requireIncludes(
     "src-tauri/src/domain/plugins.rs",
     rust,
-    ["PLUGIN_RESERVED_HOOK", "PLUGIN_RESERVED_PERMISSION"],
+    ["PLUGIN_RESERVED_HOOK"],
     "reserved validation error"
   );
-  requireNotIncludes("packages/plugin-sdk/src/index.ts", sdk, ["contextPatch"], "legacy mutation field");
+  requireNotIncludes(
+    "packages/plugin-sdk/src/index.ts",
+    sdk,
+    ["contextPatch"],
+    "legacy mutation field"
+  );
   requireNotIncludes(
     "packages/create-aio-plugin/src/scaffold.ts",
     scaffold,
     ["contextPatch"],
     "legacy mutation field"
-  );
-
-  const wasmSdk = readText("packages/plugin-wasm-sdk/src/lib.rs");
-  requireIncludes(
-    "packages/plugin-wasm-sdk/src/lib.rs",
-    wasmSdk,
-    (contract.activeMutationFields ?? []).map(snakeCase),
-    "active mutation field"
-  );
-  requireIncludes(
-    "packages/plugin-wasm-sdk/src/lib.rs",
-    wasmSdk,
-    ['#[serde(rename_all = "camelCase")]'],
-    "camelCase serde ABI"
   );
 }
 

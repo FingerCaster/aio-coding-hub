@@ -3,6 +3,7 @@ import type {
   CliKey,
   ProviderOAuthDeviceCodeStartResult,
   ProviderOAuthStatusResult,
+  ProviderExtensionValuesInput,
   ProviderUpsertInput,
   ProviderSummary,
 } from "../../services/providers/providers";
@@ -81,6 +82,7 @@ export type ProviderEditorPayloadContext = {
   sourceProviderId: number | null;
   selectedCx2ccSourceProvider: ProviderSummary | null;
   formValues: ProviderEditorDialogFormInput;
+  extensionValues?: ProviderExtensionValuesInput[] | null;
 };
 
 export type ProviderEditorPayloadBuildError =

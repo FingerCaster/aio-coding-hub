@@ -16,6 +16,8 @@ import type {
 import {
   isPersistedRequestLogInProgress,
   requestLogCreatedAtMs,
+  requestLogLastActivityMs,
+  type RequestLogActivityState,
 } from "../../services/gateway/requestLogState";
 import {
   buildRequestActivityProjection,
@@ -98,6 +100,7 @@ type RequestLogCardProps = {
   compactMode: boolean;
   log: RequestLogSummary;
   liveTrace?: TraceSession;
+  activityState: RequestLogActivityState;
   nowMs: number;
   isSelected: boolean;
   sessionFolder?: CliSessionsFolderLookupEntry | null;
@@ -110,6 +113,7 @@ const RequestLogCard = memo(function RequestLogCard({
   compactMode,
   log,
   liveTrace,
+  activityState,
   nowMs,
   isSelected,
   sessionFolder,
@@ -137,6 +141,11 @@ const RequestLogCard = memo(function RequestLogCard({
     inProgress: isInProgress,
     hasFailover: log.has_failover,
   });
+  const idleMinutes =
+    isInProgress && activityState === "in_progress_idle"
+      ? Math.max(1, Math.floor(Math.max(0, nowMs - requestLogLastActivityMs(log)) / 60_000))
+      : null;
+  const inProgressActivityText = idleMinutes != null ? `进行中 · 已静默 ${idleMinutes} 分钟` : null;
 
   const providerText =
     (isInProgress && liveProvider ? liveProvider.providerName : null) ??
@@ -458,6 +467,11 @@ const RequestLogCard = memo(function RequestLogCard({
                   <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
                     {formatDurationMs(displayDurationMs)}
                   </span>
+                  {inProgressActivityText && (
+                    <span className="truncate text-[11px] font-medium text-amber-600 dark:text-amber-300">
+                      {inProgressActivityText}
+                    </span>
+                  )}
                 </div>
                 <div
                   className="flex items-center gap-1 h-4"
@@ -768,6 +782,7 @@ const RequestLogsList = memo(function RequestLogsList({
             key={log.id}
             log={log}
             liveTrace={trace ?? undefined}
+            activityState={row.activityState}
             nowMs={liveNow}
             isSelected={selectedLogId === log.id}
             sessionFolder={sessionFolder}
@@ -840,6 +855,7 @@ const RequestLogsList = memo(function RequestLogsList({
                     compactMode={compactMode}
                     log={vLog}
                     liveTrace={vTrace ?? undefined}
+                    activityState={vRow.activityState}
                     nowMs={vNow}
                     isSelected={selectedLogId === vLog.id}
                     sessionFolder={sessionFolder}

@@ -5,8 +5,8 @@ mod types;
 mod validation;
 
 pub use types::{
-    ClaudeModels, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode, ProviderSummary,
-    ProviderUpsertParams,
+    ClaudeModels, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode,
+    ProviderExtensionValuesInput, ProviderSummary, ProviderUpsertParams,
 };
 
 #[allow(unused_imports)]
@@ -16,8 +16,8 @@ pub(crate) use types::{
 };
 
 pub use queries::{
-    default_route_list, default_route_set_order, delete, get_api_key_plaintext, list_by_cli,
-    names_by_id, reorder, upsert,
+    default_route_list, default_route_set_order, delete, duplicate, get_api_key_plaintext,
+    list_by_cli, names_by_id, reorder, upsert,
 };
 
 pub(crate) use queries::{

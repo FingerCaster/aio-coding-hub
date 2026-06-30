@@ -129,10 +129,11 @@ where
                 };
                 match pipeline.run_stream_hook(input).await {
                     Ok(output) => {
-                        crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+                        crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                             &db,
                             &trace_id,
                             output.audit_events.clone(),
+                            output.execution_reports.clone(),
                         );
                         if let Some(blocked) = output.blocked {
                             tracing::warn!(
@@ -173,6 +174,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::plugin_contributions::PluginContributes;
     use crate::domain::plugins::{
         PluginDetail, PluginHook, PluginHostCompatibility, PluginInstallSource, PluginManifest,
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
@@ -181,6 +183,7 @@ mod tests {
     use crate::gateway::plugins::pipeline::{
         GatewayPluginPipeline, GatewayPluginPipelineConfig, InMemoryGatewayPluginExecutor,
     };
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     struct EmptyStream;
@@ -201,7 +204,7 @@ mod tests {
                 name: plugin_id.to_string(),
                 current_version: Some("1.0.0".to_string()),
                 status: PluginStatus::Enabled,
-                runtime: "declarativeRules".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -213,15 +216,26 @@ mod tests {
                 name: plugin_id.to_string(),
                 version: "1.0.0".to_string(),
                 api_version: "1.0.0".to_string(),
-                runtime: PluginRuntime::DeclarativeRules {
-                    rules: vec!["rules/main.json".to_string()],
+                runtime: PluginRuntime::ExtensionHost {
+                    language: "typescript".to_string(),
                 },
-                hooks: vec![PluginHook {
-                    name: hook_name.as_str().to_string(),
-                    priority: 0,
-                    failure_policy: Some("fail-open".to_string()),
-                }],
+                hooks: vec![],
                 permissions: vec![],
+                main: Some("dist/index.js".to_string()),
+                activation_events: vec![],
+                contributes: Some(PluginContributes {
+                    providers: vec![],
+                    protocols: vec![],
+                    protocol_bridges: vec![],
+                    commands: vec![],
+                    gateway_hooks: vec![PluginHook {
+                        name: hook_name.as_str().to_string(),
+                        priority: 0,
+                        failure_policy: Some("fail-open".to_string()),
+                    }],
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),
@@ -246,6 +260,7 @@ mod tests {
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         }
     }
 

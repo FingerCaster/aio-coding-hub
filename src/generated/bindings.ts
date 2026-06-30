@@ -1428,6 +1428,55 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async pluginActiveContributions(): Promise<Result<ActiveContributionSnapshot, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_active_contributions") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginExecuteCommand(input: PluginExecuteCommandInput): Promise<Result<JsonValue, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_execute_command", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginPreviewFromFile(
+    input: PluginPreviewFromFileInput
+  ): Promise<Result<PluginInstallPreview, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_preview_from_file", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginPreviewUpdateFromFile(
+    input: PluginPreviewUpdateFromFileInput
+  ): Promise<Result<PluginUpdateDiff, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("plugin_preview_update_from_file", { input }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginPreviewRemoteUpdate(
+    input: PluginInstallRemoteInput
+  ): Promise<Result<PluginUpdateDiff, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_preview_remote_update", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async pluginInstallFromFile(
     input: PluginInstallFromFileInput
   ): Promise<Result<PluginDetail, string>> {
@@ -1471,6 +1520,14 @@ export const commands = {
   ): Promise<Result<PluginDetail, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("plugin_install_remote", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginUpdateRemote(input: PluginInstallRemoteInput): Promise<Result<PluginDetail, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_update_remote", { input }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -1549,6 +1606,39 @@ export const commands = {
   ): Promise<Result<PluginAuditLog[], string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("plugin_list_audit_logs", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginListRuntimeReports(
+    input: PluginListRuntimeReportsInput
+  ): Promise<Result<PluginHookExecutionReport[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_list_runtime_reports", { input }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginListExtensionRuntimeReports(
+    input: PluginListExtensionRuntimeReportsInput
+  ): Promise<Result<PluginExtensionExecutionReport[], string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("plugin_list_extension_runtime_reports", { input }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async pluginExportReplayFixture(
+    input: PluginExportReplayFixtureInput
+  ): Promise<Result<PluginReplayFixture, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("plugin_export_replay_fixture", { input }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -1982,6 +2072,55 @@ export const commands = {
 
 /** user-defined types **/
 
+export type ActiveCommandContribution = {
+  pluginId: string;
+  command: string;
+  title: string;
+  category: string | null;
+};
+export type ActiveContributionSnapshot = {
+  ui: ActiveUiContribution[];
+  providers: ActiveProviderContribution[];
+  protocols: ActiveProtocolContribution[];
+  protocolBridges: ActiveProtocolBridgeContribution[];
+  commands: ActiveCommandContribution[];
+  gatewayHooks: ActiveGatewayHookContribution[];
+};
+export type ActiveGatewayHookContribution = {
+  pluginId: string;
+  name: string;
+  priority: number;
+  failurePolicy: string | null;
+};
+export type ActiveProtocolBridgeContribution = {
+  pluginId: string;
+  contributionId: string;
+  bridgeType: string;
+  inboundProtocol: string;
+  outboundProtocol: string;
+  supportsStreaming: boolean | null;
+};
+export type ActiveProtocolContribution = {
+  pluginId: string;
+  protocolId: string;
+  direction: ProtocolDirection;
+};
+export type ActiveProviderContribution = {
+  pluginId: string;
+  providerType: string;
+  displayName: string;
+  targetCliKeys: TargetCliKey[];
+  extensionNamespace: string;
+};
+export type ActiveUiContribution = {
+  pluginId: string;
+  contributionId: string;
+  providerExtensionNamespace: string | null;
+  slotId: string;
+  title: string | null;
+  order: number;
+  schema: JsonValue;
+};
 export type AppAboutInfo = {
   os: string;
   arch: string;
@@ -2330,6 +2469,7 @@ export type CodexConfigTomlValidationResult = {
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
 export type CodexSessionIdCompletionUpdate = { enableCodexSessionIdCompletion: boolean };
+export type CommandContribution = { command: string; title: string; category?: string | null };
 export type ConfigImportResult = {
   providers_imported: number;
   sort_modes_imported: number;
@@ -2561,6 +2701,40 @@ export type GeminiConfigState = {
   securityAuthSelectedType: string | null;
 };
 export type HomeUsagePeriod = "last7" | "last15" | "last30" | "month";
+export type HostRenderedBadgeTone = "neutral" | "success" | "warning" | "danger";
+export type HostRenderedField =
+  | {
+      type: "text";
+      key: string;
+      label: string;
+      placeholder?: string | null;
+      required?: boolean | null;
+    }
+  | {
+      type: "password";
+      key: string;
+      label: string;
+      placeholder?: string | null;
+      required?: boolean | null;
+    }
+  | {
+      type: "number";
+      key: string;
+      label: string;
+      min?: number | null;
+      max?: number | null;
+      step?: number | null;
+    }
+  | { type: "boolean"; key: string; label: string }
+  | { type: "select"; key: string; label: string; options: HostRenderedSelectOption[] }
+  | { type: "textarea"; key: string; label: string; rows?: number | null }
+  | { type: "info"; key: string; label: string; value: string }
+  | { type: "button"; key: string; label: string; command: string };
+export type HostRenderedSchema =
+  | { type: "section"; fields: HostRenderedField[] }
+  | { type: "panel"; fields: HostRenderedField[] }
+  | { type: "badge"; label: string; tone?: HostRenderedBadgeTone | null };
+export type HostRenderedSelectOption = { value: string; label: string };
 export type InstalledSkillSummary = {
   id: number;
   skill_key: string;
@@ -2685,6 +2859,41 @@ export type PluginAuditLog = {
   details: JsonValue;
   created_at: number;
 };
+export type PluginCommandImpact = { command: string; title: string; category: string | null };
+export type PluginCompatibilitySummary = {
+  compatible: boolean;
+  hostVersion: string;
+  appRange: string;
+  pluginApiRange: string;
+  platforms: string[];
+  blockingReasons: PluginLifecycleNotice[];
+};
+export type PluginContributes = {
+  providers?: ProviderContribution[];
+  protocols?: ProtocolContribution[];
+  protocolBridges?: ProtocolBridgeContribution[];
+  commands?: CommandContribution[];
+  gatewayHooks?: PluginHook[];
+  ui?: Partial<{ [key in string]: UiContribution[] }>;
+};
+export type PluginContributionChange = {
+  kind: string;
+  name: string;
+  label: string | null;
+  change: string;
+  before: string | null;
+  after: string | null;
+};
+export type PluginContributionImpact = {
+  providers: PluginContributionImpactItem[];
+  protocols: PluginContributionImpactItem[];
+  protocolBridges: PluginContributionImpactItem[];
+  uiSlots: PluginUiSlotImpact[];
+  commands: PluginCommandImpact[];
+  gateway: PluginContributionImpactItem[];
+  capabilities: string[];
+};
+export type PluginContributionImpactItem = { id: string; label: string | null };
 export type PluginDetail = {
   summary: PluginSummary;
   manifest: PluginManifest;
@@ -2695,30 +2904,127 @@ export type PluginDetail = {
   pending_permissions: string[];
   audit_logs: PluginAuditLog[];
   runtime_failures: PluginRuntimeFailure[];
+  rollback_versions: string[];
+};
+export type PluginExecuteCommandInput = { command: string; args: JsonValue };
+export type PluginExportReplayFixtureInput = {
+  traceId: string;
+  hookName: string;
+  pluginId: string | null;
+};
+export type PluginExtensionExecutionReport = {
+  id: number;
+  pluginId: string;
+  contributionType: string;
+  contributionId: string;
+  commandOrHook: string | null;
+  traceId: string | null;
+  status: string;
+  startedAtMs: number;
+  durationMs: number;
+  failureKind: string | null;
+  errorCode: string | null;
+  inputBudget: JsonValue;
+  outputBudget: JsonValue;
+  mutationSummary: JsonValue;
+  replayable: boolean;
+  createdAt: number;
 };
 export type PluginGetInput = { pluginId: string };
 export type PluginGrantPermissionsInput = { pluginId: string; permissions: string[] };
 export type PluginHook = { name: string; priority?: number; failurePolicy?: string | null };
+export type PluginHookExecutionReport = {
+  id: number;
+  plugin_id: string;
+  trace_id: string | null;
+  hook_name: string;
+  runtime_kind: string;
+  status: string;
+  started_at_ms: number;
+  duration_ms: number;
+  failure_kind: string | null;
+  error_code: string | null;
+  failure_policy: string | null;
+  circuit_state: string | null;
+  context_budget: JsonValue;
+  output_budget: JsonValue;
+  mutation_summary: JsonValue;
+  replayable: boolean;
+  replay_export_reason: string | null;
+  created_at: number;
+};
+export type PluginHookLifecycleSummary = {
+  name: string;
+  priority: number;
+  failurePolicy: string | null;
+};
 export type PluginHostCompatibility = { app: string; pluginApi: string; platforms?: string[] };
 export type PluginInstallFromFileInput = { filePath: string };
+export type PluginInstallPreview = {
+  pluginId: string;
+  name: string;
+  version: string;
+  source: PluginInstallSource;
+  description: string | null;
+  author: JsonValue | null;
+  homepage: string | null;
+  repository: JsonValue | null;
+  license: string | null;
+  category: string | null;
+  runtime: PluginRuntimeLifecycleSummary;
+  hooks: PluginHookLifecycleSummary[];
+  permissions: PluginPermissionLifecycleSummary[];
+  contributionImpact: PluginContributionImpact;
+  compatibility: PluginCompatibilitySummary;
+  trust: PluginTrustSummary;
+  existingStatus: PluginStatus | null;
+  existingVersion: string | null;
+  blockingReasons: PluginLifecycleNotice[];
+  warnings: PluginLifecycleNotice[];
+};
 export type PluginInstallRemoteInput = {
   pluginId: string;
   downloadUrl: string;
   checksum: string;
   signature: string | null;
   publicKey: string | null;
+  marketSourceUrl: string | null;
   source: string | null;
 };
 export type PluginInstallSource = "local" | "market" | "github_release" | "offline" | "official";
+export type PluginLifecycleChange = {
+  name: string;
+  change: string;
+  before: string | null;
+  after: string | null;
+};
+export type PluginLifecycleNotice = { severity: string; code: string; message: string };
 export type PluginListAuditLogsInput = { pluginId: string | null; limit: number | null };
+export type PluginListExtensionRuntimeReportsInput = {
+  pluginId: string | null;
+  contributionType: string | null;
+  contributionId: string | null;
+  traceId: string | null;
+  limit: number | null;
+};
+export type PluginListRuntimeReportsInput = {
+  pluginId: string | null;
+  hookName: string | null;
+  traceId: string | null;
+  limit: number | null;
+};
 export type PluginManifest = {
   id: string;
   name: string;
   version: string;
   apiVersion: string;
   runtime: PluginRuntime;
-  hooks: PluginHook[];
-  permissions: string[];
+  hooks?: PluginHook[];
+  permissions?: string[];
+  main?: string | null;
+  activationEvents?: string[];
+  contributes?: PluginContributes | null;
+  capabilities?: string[];
   hostCompatibility: PluginHostCompatibility;
   entry?: string | null;
   configSchema?: JsonValue | null;
@@ -2742,6 +3048,7 @@ export type PluginMarketListing = {
   name: string;
   latestVersion: string | null;
   downloadUrl: string | null;
+  marketSourceUrl: string | null;
   checksum: string | null;
   signature: string | null;
   riskLabels: string[];
@@ -2750,13 +3057,82 @@ export type PluginMarketListing = {
   updateAvailable: boolean;
   installBlockReason: string | null;
 };
+export type PluginPermissionLifecycleChange = {
+  permission: string;
+  risk: PluginPermissionRisk;
+  change: string;
+};
+export type PluginPermissionLifecycleSummary = {
+  permission: string;
+  risk: PluginPermissionRisk;
+  granted: boolean;
+  pending: boolean;
+};
 export type PluginPermissionRisk = "low" | "medium" | "high" | "critical";
+export type PluginPreviewFromFileInput = { filePath: string };
+export type PluginPreviewUpdateFromFileInput = { filePath: string };
+export type PluginReplayFixture = {
+  schemaVersion: number;
+  traceId: string;
+  source: PluginReplayFixtureSource;
+  hookName: string;
+  pluginId: string | null;
+  request: PluginReplayFixtureRequest;
+  response: PluginReplayFixtureResponse;
+  log: PluginReplayFixtureLog;
+  attempts: PluginReplayFixtureAttempt[];
+  runtimeReports: PluginHookExecutionReport[];
+  notes: string[];
+};
+export type PluginReplayFixtureAttempt = {
+  id: number;
+  traceId: string;
+  cliKey: string;
+  attemptIndex: number;
+  providerId: number;
+  providerName: string;
+  baseUrl: string;
+  outcome: string;
+  status: number | null;
+  attemptStartedMs: number;
+  attemptDurationMs: number;
+  createdAt: number;
+};
+export type PluginReplayFixtureLog = { body: JsonValue | null; meta: JsonValue };
+export type PluginReplayFixtureRequest = {
+  cliKey: string;
+  sessionId: string | null;
+  method: string | null;
+  path: string | null;
+  query: string | null;
+  provider: string | null;
+  providerSource: string | null;
+  model: string | null;
+  headers: JsonValue | null;
+  body: JsonValue | null;
+  normalizedMessages: JsonValue[];
+  meta: JsonValue;
+};
+export type PluginReplayFixtureResponse = {
+  status: number | null;
+  errorCode: string | null;
+  headers: JsonValue | null;
+  body: JsonValue | null;
+  chunks: JsonValue[];
+  meta: JsonValue;
+};
+export type PluginReplayFixtureSource = {
+  appVersion: string;
+  traceId: string;
+  exportedAtMs: number;
+  requestLogId: number;
+  createdAtMs: number;
+};
 export type PluginRevokePermissionInput = { pluginId: string; permission: string };
 export type PluginRollbackInput = { pluginId: string; version: string };
 export type PluginRuntime =
-  | { kind: "declarativeRules"; rules: string[] }
-  | { kind: "native"; engine: string }
-  | { kind: "wasm"; abiVersion: string; memoryLimitBytes?: number | null };
+  | { kind: "extensionHost"; language: string }
+  | { kind: "native"; engine: string };
 export type PluginRuntimeFailure = {
   id: number;
   plugin_id: string;
@@ -2765,6 +3141,12 @@ export type PluginRuntimeFailure = {
   message: string;
   trace_id: string | null;
   created_at: number;
+};
+export type PluginRuntimeLifecycleSummary = {
+  kind: string;
+  label: string;
+  supported: boolean;
+  blockingReasons: PluginLifecycleNotice[];
 };
 export type PluginSaveConfigInput = { pluginId: string; config: JsonValue };
 export type PluginStatus =
@@ -2789,6 +3171,31 @@ export type PluginSummary = {
   created_at: number;
   updated_at: number;
 };
+export type PluginTrustSummary = {
+  checksum: string;
+  expectedChecksum: string | null;
+  checksumVerified: boolean;
+  signatureVerified: boolean;
+  unsigned: boolean;
+  developerMode: boolean;
+};
+export type PluginUiSlotImpact = { slotId: string; contributionId: string; title: string | null };
+export type PluginUpdateDiff = {
+  pluginId: string;
+  fromVersion: string;
+  toVersion: string;
+  versionDirection: string;
+  runtimeChange: PluginLifecycleChange | null;
+  hookChanges: PluginLifecycleChange[];
+  permissionChanges: PluginPermissionLifecycleChange[];
+  contributionChanges: PluginContributionChange[];
+  configVersionChange: string | null;
+  compatibility: PluginCompatibilitySummary;
+  trust: PluginTrustSummary;
+  rollbackAvailable: boolean;
+  blockingReasons: PluginLifecycleNotice[];
+  warnings: PluginLifecycleNotice[];
+};
 export type PromptListSummary = {
   id: number;
   workspace_id: number;
@@ -2810,6 +3217,14 @@ export type PromptSummary = {
   created_at: number;
   updated_at: number;
 };
+export type ProtocolBridgeContribution = {
+  bridgeType: string;
+  inboundProtocol: string;
+  outboundProtocol: string;
+  supportsStreaming?: boolean | null;
+};
+export type ProtocolContribution = { protocolId: string; direction: ProtocolDirection };
+export type ProtocolDirection = "inbound" | "outbound" | "both";
 export type ProviderAuthMode = "api_key" | "oauth";
 export type ProviderAvailabilityResult = {
   ok: boolean;
@@ -2822,6 +3237,23 @@ export type ProviderAvailabilityResult = {
   response_preview: string | null;
 };
 export type ProviderBaseUrlMode = "order" | "ping";
+export type ProviderContribution = {
+  providerType: string;
+  displayName: string;
+  targetCliKeys: TargetCliKey[];
+  extensionNamespace: string;
+};
+export type ProviderExtensionValues = {
+  pluginId: string;
+  namespace: string;
+  values: JsonValue;
+  updatedAt: number;
+};
+export type ProviderExtensionValuesInput = {
+  pluginId: string;
+  namespace: string;
+  values: JsonValue;
+};
 export type ProviderLimitUsageRow = {
   cli_key: string;
   provider_id: number;
@@ -2927,6 +3359,7 @@ export type ProviderSummary = {
   source_provider_id: number | null;
   bridge_type: string | null;
   stream_idle_timeout_seconds: number | null;
+  extension_values: ProviderExtensionValues[];
   api_key_configured: boolean;
 };
 export type ProviderUpsertInput = {
@@ -2953,6 +3386,7 @@ export type ProviderUpsertInput = {
   sourceProviderId: number | null;
   bridgeType: string | null;
   streamIdleTimeoutSeconds: number | null;
+  extensionValues: ProviderExtensionValuesInput[] | null;
 };
 export type RequestAttemptLog = {
   id: number;
@@ -3001,6 +3435,8 @@ export type RequestLogDetail = {
   error_details_json: string | null;
   cost_multiplier: number;
   created_at_ms: number;
+  last_activity_ms: number | null;
+  activity_details_json: string | null;
   created_at: number;
 };
 export type RequestLogRouteHop = {
@@ -3053,6 +3489,8 @@ export type RequestLogSummary = {
   error_details_json: string | null;
   cost_multiplier: number;
   created_at_ms: number;
+  last_activity_ms: number | null;
+  activity_details_json: string | null;
   created_at: number;
 };
 export type RiskyIpcConfirm = { confirm: IpcConfirm };
@@ -3227,6 +3665,14 @@ export type SkillsPaths = { ssot_dir: string; repos_dir: string; cli_dir: string
 export type SortModeActiveRow = { cli_key: string; mode_id: number | null; updated_at: number };
 export type SortModeProviderRow = { provider_id: number; enabled: boolean };
 export type SortModeSummary = { id: number; name: string; created_at: number; updated_at: number };
+export type TargetCliKey = "claude" | "codex" | "gemini";
+export type UiContribution = {
+  id: string;
+  title?: string | null;
+  order?: number | null;
+  schema: HostRenderedSchema;
+  when?: string | null;
+};
 export type UsageDayDetailParams = {
   day: string;
   cliKey: string | null;

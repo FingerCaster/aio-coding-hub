@@ -29,9 +29,6 @@ pub struct PluginManifest {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "camelCase")]
 pub enum PluginRuntime {
-    DeclarativeRules {
-        rules: Vec<String>,
-    },
     Wasm {
         #[serde(rename = "abiVersion")]
         abi_version: String,

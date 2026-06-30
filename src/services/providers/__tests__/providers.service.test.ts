@@ -96,6 +96,7 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
     source_provider_id: null,
     bridge_type: null,
     stream_idle_timeout_seconds: null,
+    extension_values: [],
     api_key_configured: false,
     ...overrides,
   };
@@ -122,7 +123,8 @@ describe("services/providers/providers", () => {
     await expect(providersList("claude")).rejects.toThrow("IPC_NULL_RESULT: providers_list");
   });
 
-  it("builds provider_upsert args as before", async () => {
+  it("builds provider_upsert args without extension values as null", async () => {
+    vi.mocked(commands.providerUpsert).mockClear();
     vi.mocked(commands.providerUpsert).mockResolvedValueOnce({
       status: "ok",
       data: createProviderSummary(),
@@ -156,6 +158,98 @@ describe("services/providers/providers", () => {
         baseUrlMode: "order",
         limit5hUsd: null,
         dailyResetMode: "fixed",
+        extensionValues: null,
+      })
+    );
+  });
+
+  it("passes explicit empty provider extension values in upsert payload", async () => {
+    vi.mocked(commands.providerUpsert).mockClear();
+    vi.mocked(commands.providerUpsert).mockResolvedValueOnce({
+      status: "ok",
+      data: createProviderSummary(),
+    });
+
+    await providerUpsert({
+      providerId: null,
+      cliKey: "claude",
+      name: "P1",
+      baseUrls: ["https://example.com"],
+      baseUrlMode: "order",
+      apiKey: null,
+      enabled: true,
+      costMultiplier: 1,
+      priority: null,
+      claudeModels: null,
+      limit5hUsd: null,
+      limitDailyUsd: null,
+      dailyResetMode: "fixed",
+      dailyResetTime: "00:00:00",
+      limitWeeklyUsd: null,
+      limitMonthlyUsd: null,
+      limitTotalUsd: null,
+      extensionValues: [],
+    });
+
+    expect(commands.providerUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extensionValues: [],
+      })
+    );
+  });
+
+  it("passes provider extension values in upsert payload", async () => {
+    vi.mocked(commands.providerUpsert).mockClear();
+    vi.mocked(commands.providerUpsert).mockResolvedValueOnce({
+      status: "ok",
+      data: createProviderSummary({
+        extension_values: [
+          {
+            pluginId: "plugin.alpha",
+            namespace: "routing",
+            values: { mode: "sticky" },
+            updatedAt: 1,
+          },
+        ],
+      }),
+    });
+
+    await providerUpsert({
+      providerId: null,
+      cliKey: "claude",
+      name: "P1",
+      baseUrls: ["https://example.com"],
+      baseUrlMode: "order",
+      apiKey: null,
+      enabled: true,
+      costMultiplier: 1,
+      priority: null,
+      claudeModels: null,
+      limit5hUsd: null,
+      limitDailyUsd: null,
+      dailyResetMode: "fixed",
+      dailyResetTime: "00:00:00",
+      limitWeeklyUsd: null,
+      limitMonthlyUsd: null,
+      limitTotalUsd: null,
+      extensionValues: [
+        {
+          pluginId: "plugin.alpha",
+          namespace: "routing",
+          values: { mode: "sticky" },
+        },
+      ],
+    });
+
+    expect(commands.providerUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        extensionValues: [
+          {
+            pluginId: "plugin.alpha",
+            namespace: "routing",
+            values: { mode: "sticky" },
+          },
+        ],
       })
     );
   });

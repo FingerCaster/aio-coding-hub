@@ -34,6 +34,7 @@ fn insert_provider(db: &crate::db::Db, name: &str, enabled: bool) -> providers::
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: None,
         },
     )
     .expect("insert provider");
@@ -304,7 +305,7 @@ fn default_mode_switches_to_enabled_provider_after_bound_provider_disabled_and_c
 }
 
 #[test]
-fn sort_mode_ignores_global_provider_enabled_but_open_circuit_prevents_session_reuse() {
+fn sort_mode_ignores_global_provider_enabled_but_open_circuit_falls_back() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.db");
     let db = crate::db::init_for_tests(&db_path).expect("init db");
@@ -335,7 +336,7 @@ fn sort_mode_ignores_global_provider_enabled_but_open_circuit_prevents_session_r
         Some(&[p1.id, p2.id]),
     );
 
-    assert_eq!(ids(&enabled), vec![p1.id, p2.id]);
+    assert_eq!(ids(&enabled), vec![p2.id]);
     assert_eq!(selected, None);
     assert_eq!(
         session.get_bound_provider("claude", "sess_1", now),
@@ -343,4 +344,38 @@ fn sort_mode_ignores_global_provider_enabled_but_open_circuit_prevents_session_r
     );
     assert!(!circuit.should_allow(p1.id, now).allow);
     assert!(circuit.should_allow(p2.id, now).allow);
+}
+
+#[test]
+fn acceptance_session_bound_provider_falls_back_when_bound_provider_circuit_is_open() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("test.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let p1 = insert_provider(&db, "P1", true);
+    let p2 = insert_provider(&db, "P2", true);
+    let id1 = p1.id;
+    let id2 = p2.id;
+
+    let session = session_manager::SessionManager::new();
+    let now = 1000;
+    session.bind_success("claude", "sess_1", id1, None, now);
+    let circuit = open_circuit_for_provider(id1, now);
+
+    let mut enabled =
+        providers::list_enabled_for_gateway_in_mode(&db, "claude", None).expect("list enabled");
+    let selected = resolve_session_bound_provider_id(
+        &session,
+        &circuit,
+        "claude",
+        Some("sess_1"),
+        now,
+        true,
+        None,
+        &mut enabled,
+        Some(&[id1, id2]),
+    );
+
+    assert_eq!(selected, None);
+    assert_eq!(ids(&enabled), vec![id2]);
 }

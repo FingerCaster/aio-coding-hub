@@ -29,6 +29,8 @@ pub struct RequestLogInsert {
     pub provider_chain_json: Option<String>,
     pub error_details_json: Option<String>,
     pub created_at_ms: i64,
+    pub last_activity_ms: Option<i64>,
+    pub activity_details_json: Option<String>,
     pub created_at: i64,
 }
 
@@ -92,6 +94,8 @@ pub struct RequestLogSummary {
     pub error_details_json: Option<String>,
     pub cost_multiplier: f64,
     pub created_at_ms: i64,
+    pub last_activity_ms: Option<i64>,
+    pub activity_details_json: Option<String>,
     pub created_at: i64,
 }
 
@@ -129,6 +133,8 @@ pub struct RequestLogDetail {
     pub error_details_json: Option<String>,
     pub cost_multiplier: f64,
     pub created_at_ms: i64,
+    pub last_activity_ms: Option<i64>,
+    pub activity_details_json: Option<String>,
     pub created_at: i64,
 }
 

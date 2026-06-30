@@ -2,6 +2,7 @@
 
 use super::{MiddlewareAction, ProxyContext};
 use crate::gateway::events::emit_gateway_debug_log_lazy;
+use crate::gateway::proxy::provider_adapters;
 use crate::providers;
 use axum::http::{header, HeaderValue, StatusCode};
 use axum::response::{IntoResponse, Response};
@@ -40,10 +41,12 @@ pub(in crate::gateway::proxy::handler) fn should_intercept_cx2cc_count_tokens(
     is_claude_count_tokens: bool,
     providers: &[providers::ProviderForGateway],
 ) -> bool {
-    is_claude_count_tokens
-        && providers
-            .first()
-            .is_some_and(providers::ProviderForGateway::is_cx2cc_bridge)
+    providers.first().is_some_and(|provider| {
+        provider_adapters::cx2cc::is_count_tokens_intercept_supported(
+            is_claude_count_tokens,
+            provider_adapters::cx2cc::capabilities_for_provider(provider),
+        )
+    })
 }
 
 pub(in crate::gateway::proxy::handler) fn build_cx2cc_count_tokens_response_body(
@@ -91,6 +94,7 @@ fn build_cx2cc_count_tokens_response(body: serde_json::Value, trace_id: &str) ->
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::gateway::proxy::provider_adapters::{self, ProviderCapabilities};
 
     fn provider(id: i64) -> providers::ProviderForGateway {
         providers::ProviderForGateway {
@@ -112,6 +116,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
         }
     }
 
@@ -121,6 +126,25 @@ mod tests {
             bridge_type: Some("cx2cc".to_string()),
             ..provider(id)
         }
+    }
+
+    #[test]
+    fn cx2cc_count_tokens_uses_adapter_capability() {
+        assert!(
+            provider_adapters::cx2cc::is_count_tokens_intercept_supported(
+                true,
+                provider_adapters::cx2cc::capabilities_for_provider(&cx2cc_provider(1))
+            )
+        );
+        assert!(
+            provider_adapters::cx2cc::is_count_tokens_intercept_supported(
+                true,
+                ProviderCapabilities {
+                    cx2cc_bridge: true,
+                    ..Default::default()
+                }
+            )
+        );
     }
 
     #[test]

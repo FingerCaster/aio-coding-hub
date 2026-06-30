@@ -73,6 +73,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     api_key_configured: partial.api_key_configured ?? false,
     ...partial,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    extension_values: partial.extension_values ?? [],
   };
 }
 
@@ -85,7 +86,6 @@ function renderCard(
     provider,
     circuit: null,
     circuitResetting: false,
-    onToggleEnabled: vi.fn(),
     onResetCircuit: vi.fn(),
     onEdit: vi.fn(),
     onDelete: vi.fn(),
@@ -113,6 +113,30 @@ describe("pages/providers/SortableProviderCard", () => {
     fireEvent.pointerDown(dragHandle);
 
     expect(sortablePointerDownMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders trailing route action in an independent card-edge region", () => {
+    renderCard(
+      {},
+      {
+        trailing: <button type="button">加入</button>,
+      }
+    );
+
+    const trailingAction = screen.getByRole("button", { name: "加入" });
+    const edgeRegion = trailingAction.closest('[data-provider-card-edge-action="true"]');
+    expect(edgeRegion).not.toBeNull();
+    expect(edgeRegion).toHaveClass("w-16");
+    expect(trailingAction).toHaveClass("w-full");
+    expect(trailingAction.closest('[data-provider-card-management-actions="true"]')).toBeNull();
+    expect(trailingAction.closest('[data-provider-card-secondary-actions="true"]')).toBeNull();
+  });
+
+  it("does not render the provider enabled switch on the resource-pool card", () => {
+    renderCard({ enabled: false });
+
+    expect(screen.queryByRole("switch")).not.toBeInTheDocument();
+    expect(screen.queryByText("已关闭")).not.toBeInTheDocument();
   });
 
   it("renders OAuth badge with email", () => {

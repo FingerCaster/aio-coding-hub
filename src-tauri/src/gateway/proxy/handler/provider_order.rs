@@ -92,6 +92,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
         }
     }
 
@@ -103,6 +104,15 @@ mod tests {
     fn reorder_by_bound_order_preserves_unspecified_tail() {
         let mut providers = vec![provider(1), provider(2), provider(3), provider(4)];
         reorder_providers_by_bound_order(&mut providers, &[3, 1]);
+        assert_eq!(ids(&providers), vec![3, 1, 2, 4]);
+    }
+
+    #[test]
+    fn acceptance_bound_order_ignores_unknown_and_duplicate_provider_ids() {
+        let mut providers = vec![provider(1), provider(2), provider(3), provider(4)];
+
+        reorder_providers_by_bound_order(&mut providers, &[3, 99, 3, 1]);
+
         assert_eq!(ids(&providers), vec![3, 1, 2, 4]);
     }
 

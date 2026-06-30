@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestAttemptLog, RequestLogDetail } from "../../../services/gateway/requestLogs";
 import { createRequestLogDetail } from "../../../services/gateway/requestLogFixtures";
 import type { TraceSession } from "../../../services/gateway/traceStore";
+import { logToConsole } from "../../../services/consoleLog";
+import { usePluginActiveContributionsQuery } from "../../../query/plugins";
 import { RequestLogDetailDialog } from "../RequestLogDetailDialog";
 
 const requestLogQueryState = vi.hoisted(() => ({
@@ -57,6 +59,16 @@ vi.mock("../../../services/gateway/traceStore", () => ({
   useTraceStore: () => ({
     traces: traceStoreState.traces,
   }),
+}));
+
+vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
+
+vi.mock("../../../query/plugins", () => ({
+  usePluginActiveContributionsQuery: vi.fn(() => ({
+    data: { ui: [] },
+    isLoading: false,
+    error: null,
+  })),
 }));
 
 function createSelectedLog(overrides: Partial<RequestLogDetail> = {}): RequestLogDetail {
@@ -134,6 +146,12 @@ describe("home/RequestLogDetailDialog", () => {
     setTraceStoreState();
     gatewayEventState.requestSignalHandler = null;
     gatewayEventState.unsubscribe = () => undefined;
+    vi.mocked(usePluginActiveContributionsQuery).mockReturnValue({
+      data: { ui: [] },
+      isLoading: false,
+      error: null,
+    } as any);
+    vi.mocked(logToConsole).mockReset();
     vi.useRealTimers();
   });
 
@@ -753,6 +771,61 @@ describe("home/RequestLogDetailDialog", () => {
     // Switch back to summary
     switchToTab("概览");
     expect(screen.getByText("关键指标")).toBeInTheDocument();
+  });
+
+  it("renders log detail contribution tabs after built-in tabs and sends command context", () => {
+    vi.mocked(usePluginActiveContributionsQuery).mockReturnValue({
+      data: {
+        ui: [
+          {
+            pluginId: "acme.debug",
+            contributionId: "trace-tools",
+            slotId: "logs.detail.tabs",
+            title: "调试工具",
+            order: 1,
+            schema: {
+              type: "panel",
+              fields: [
+                {
+                  type: "button",
+                  key: "export",
+                  label: "导出 Trace",
+                  command: "debug.exportTrace",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as any);
+    setRequestLogQueryState({ selectedLog: createSelectedLog({ id: 77, trace_id: "trace-77" }) });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={77} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "概览",
+      "决策链",
+      "原始数据",
+      "调试工具",
+    ]);
+
+    switchToTab("调试工具");
+    fireEvent.click(screen.getByRole("button", { name: "导出 Trace" }));
+
+    expect(logToConsole).toHaveBeenCalledWith(
+      "info",
+      "插件日志详情命令",
+      expect.objectContaining({
+        command: "debug.exportTrace",
+        traceId: "trace-77",
+        logId: 77,
+        pluginId: "acme.debug",
+        contributionId: "trace-tools",
+      })
+    );
   });
 
   it("shows raw error_details_json on raw tab when available", () => {

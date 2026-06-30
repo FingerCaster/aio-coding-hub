@@ -15,6 +15,8 @@ use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayResponseHoo
 use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
 use std::sync::Arc;
 
+const MAX_PLUGIN_ERROR_BODY_BYTES: usize = 256 * 1024;
+
 #[derive(Debug, Serialize)]
 struct GatewayErrorResponse {
     trace_id: String,
@@ -144,7 +146,7 @@ pub(super) async fn apply_gateway_error_hook(
 ) -> Response {
     let status = response.status();
     let mut headers = response.headers().clone();
-    let body = match to_bytes(response.into_body(), usize::MAX).await {
+    let body = match to_bytes(response.into_body(), MAX_PLUGIN_ERROR_BODY_BYTES).await {
         Ok(body) => body,
         Err(err) => {
             tracing::warn!(
@@ -156,7 +158,8 @@ pub(super) async fn apply_gateway_error_hook(
                 StatusCode::INTERNAL_SERVER_ERROR,
                 trace_id,
                 GatewayErrorCode::ResponseBuildError.as_str(),
-                "failed to read gateway error response body".to_string(),
+                "failed to read gateway error response body within plugin error body limit"
+                    .to_string(),
                 vec![],
             );
         }
@@ -172,10 +175,11 @@ pub(super) async fn apply_gateway_error_hook(
 
     let output = match pipeline.run_response_hook(input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 db,
                 &trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             output
         }

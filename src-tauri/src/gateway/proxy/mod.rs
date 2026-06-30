@@ -17,6 +17,7 @@ mod http_util;
 mod logging;
 mod model_rewrite;
 pub(in crate::gateway) mod protocol_bridge;
+pub(crate) mod provider_adapters;
 pub(in crate::gateway) mod provider_router;
 mod request_body;
 mod request_context;
@@ -149,6 +150,8 @@ pub(super) struct RequestLogEnqueueArgs {
     pub(super) attempts_json: String,
     pub(super) requested_model: Option<String>,
     pub(super) created_at_ms: i64,
+    pub(super) last_activity_ms: Option<i64>,
+    pub(super) activity_details_json: Option<String>,
     pub(super) created_at: i64,
     pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) usage: Option<crate::usage::UsageExtract>,

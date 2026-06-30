@@ -66,6 +66,7 @@ function makeProvider(
     source_provider_id: partial.source_provider_id ?? null,
     bridge_type: partial.bridge_type ?? null,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    extension_values: partial.extension_values ?? [],
     api_key_configured: partial.api_key_configured ?? false,
   };
 }
@@ -109,6 +110,8 @@ function makeRequestLog(
     error_details_json: partial.error_details_json ?? null,
     cost_multiplier: partial.cost_multiplier ?? 1,
     created_at_ms: partial.created_at_ms ?? (partial.created_at ?? 0) * 1000,
+    last_activity_ms: partial.last_activity_ms ?? null,
+    activity_details_json: partial.activity_details_json ?? null,
     created_at: partial.created_at ?? 0,
   };
 }

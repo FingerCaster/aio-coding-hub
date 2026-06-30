@@ -24,6 +24,10 @@ import {
 import { RequestLogDetailSummaryTab } from "./RequestLogDetailSummaryTab";
 import { RequestLogDetailChainTab } from "./RequestLogDetailChainTab";
 import { RequestLogDetailRawTab } from "./RequestLogDetailRawTab";
+import { useContributionsForSlot } from "../../plugins/contributions/useActiveContributions";
+import { HostRenderedContribution } from "../../plugins/contributions/HostRenderedContribution";
+import type { ContributionCommandHandler } from "../../plugins/contributions/types";
+import { logToConsole } from "../../services/consoleLog";
 
 export type RequestLogDetailDialogProps = {
   selectedLogId: number | null;
@@ -38,11 +42,16 @@ const DETAIL_TABS: Array<{ key: DetailTab; label: string }> = [
   { key: "raw", label: "原始数据" },
 ];
 
+function pluginDetailTabKey(pluginId: string, contributionId: string) {
+  return `plugin:${pluginId}:${contributionId}`;
+}
+
 export function RequestLogDetailDialog({
   selectedLogId,
   onSelectLogId,
 }: RequestLogDetailDialogProps) {
-  const [activeTab, setActiveTab] = useState<DetailTab>("summary");
+  const [activeTab, setActiveTab] = useState<string>("summary");
+  const { contributions: logDetailTabContributions } = useContributionsForSlot("logs.detail.tabs");
   const { traces } = useTraceStore();
   const selectedLogQuery = useRequestLogDetailQuery(selectedLogId);
   const queriedSelectedLog = selectedLogQuery.data ?? null;
@@ -114,6 +123,35 @@ export function RequestLogDetailDialog({
       selectedLog.ttfb_ms != null ||
       (isInProgress && liveTrace != null));
 
+  const detailTabs = [
+    ...DETAIL_TABS,
+    ...logDetailTabContributions.map((contribution) => ({
+      key: pluginDetailTabKey(contribution.pluginId, contribution.contributionId),
+      label: contribution.title ?? contribution.contributionId,
+    })),
+  ];
+  const activeLogDetailContribution =
+    typeof activeTab === "string"
+      ? (logDetailTabContributions.find(
+          (contribution) =>
+            pluginDetailTabKey(contribution.pluginId, contribution.contributionId) === activeTab
+        ) ?? null)
+      : null;
+  const handleContributionCommand = useCallback<ContributionCommandHandler>(
+    (command, context) => {
+      if (!selectedLog) return;
+      logToConsole("info", "插件日志详情命令", {
+        command,
+        traceId: selectedLog.trace_id,
+        logId: selectedLog.id,
+        pluginId: context.pluginId,
+        contributionId: context.contributionId,
+        cliKey: selectedLog.cli_key,
+      });
+    },
+    [selectedLog]
+  );
+
   return (
     <Dialog
       open={selectedLogId != null}
@@ -134,11 +172,11 @@ export function RequestLogDetailDialog({
         </div>
       ) : (
         <div className="space-y-3">
-          <TabList<DetailTab>
+          <TabList<string>
             ariaLabel="日志详情"
-            items={DETAIL_TABS}
+            items={detailTabs}
             value={activeTab}
-            onChange={setActiveTab}
+            onChange={(next) => setActiveTab(next as DetailTab)}
           />
 
           {activeTab === "summary" && (
@@ -164,6 +202,13 @@ export function RequestLogDetailDialog({
           )}
 
           {activeTab === "raw" && <RequestLogDetailRawTab selectedLog={selectedLog} />}
+
+          {activeLogDetailContribution ? (
+            <HostRenderedContribution
+              contribution={activeLogDetailContribution}
+              onCommand={handleContributionCommand}
+            />
+          ) : null}
         </div>
       )}
     </Dialog>

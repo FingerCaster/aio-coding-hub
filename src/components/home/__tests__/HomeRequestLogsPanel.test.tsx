@@ -704,6 +704,47 @@ describe("components/home/HomeRequestLogsPanel", () => {
     );
   });
 
+  it("shows idle duration for silent in-progress request logs", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
+
+    const requestLogs = makeRequestLogs([
+      {
+        id: 91,
+        trace_id: "t-idle-pending",
+        cli_key: "claude",
+        method: "POST",
+        path: "/v1/messages",
+        requested_model: "idle-model",
+        status: null,
+        error_code: null,
+        duration_ms: 0,
+        last_activity_ms: Date.now() - 12 * 60 * 1000,
+        created_at_ms: Date.now() - 20 * 60 * 1000,
+        created_at: Math.floor((Date.now() - 20 * 60 * 1000) / 1000),
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          showCustomTooltip={true}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={requestLogs}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText("进行中 · 已静默 12 分钟")).toBeInTheDocument();
+  });
+
   it("uses live trace data to show current provider and elapsed duration for in-progress logs", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));

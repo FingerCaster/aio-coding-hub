@@ -78,6 +78,40 @@ describe("components/UpdateDialog", () => {
     expect(screen.getByText("新增功能")).toBeInTheDocument();
   });
 
+  it("opens changelog links externally without allowing webview navigation", async () => {
+    vi.mocked(useUpdateMeta).mockReturnValue({
+      about: { run_mode: "desktop", app_version: "0.0.0" },
+      updateCandidate: {
+        rid: 1,
+        version: "1.2.0",
+        currentVersion: "1.1.0",
+        date: "2026-04-12T11:00:00Z",
+        body: "## 1.2.0\n\n* [新增功能](https://example.com/commit/abc)",
+      },
+      checkingUpdate: false,
+      dialogOpen: true,
+      installingUpdate: false,
+      installError: null,
+      installTotalBytes: null,
+      installDownloadedBytes: 0,
+    } as any);
+    vi.mocked(tauriOpenUrl).mockResolvedValue(undefined as never);
+    const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null);
+
+    render(<UpdateDialog />);
+
+    const link = screen.getByText("新增功能").closest("a");
+    expect(link).not.toBeNull();
+
+    const defaultAllowed = fireEvent.click(link!);
+
+    expect(defaultAllowed).toBe(false);
+    await waitFor(() => {
+      expect(tauriOpenUrl).toHaveBeenCalledWith("https://example.com/commit/abc");
+    });
+    expect(windowOpen).not.toHaveBeenCalled();
+  });
+
   it("renders publish date, installing progress, and install error state", () => {
     vi.mocked(useUpdateMeta).mockReturnValue({
       about: { run_mode: "desktop", app_version: "0.0.0" },

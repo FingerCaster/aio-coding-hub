@@ -86,6 +86,11 @@ fn ensure_webview2_or_exit() {
 }
 
 fn main() {
+    if std::env::args().any(|arg| arg == "--extension-host-worker") {
+        aio_coding_hub_lib::run_extension_host_worker();
+        return;
+    }
+
     #[cfg(windows)]
     ensure_webview2_or_exit();
 

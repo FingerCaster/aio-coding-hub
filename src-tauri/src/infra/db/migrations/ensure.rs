@@ -25,6 +25,7 @@ pub(super) fn apply_ensure_patches(conn: &mut Connection) -> crate::shared::erro
     ensure_provider_stream_idle_timeout(conn)?;
     ensure_skills_update_columns(conn)?;
     ensure_plugin_tables(conn)?;
+    ensure_provider_extension_values_table(conn)?;
     Ok(())
 }
 
@@ -997,6 +998,20 @@ fn ensure_request_logs_extended_columns(conn: &mut Connection) -> Result<(), Str
             .map_err(|e| format!("failed to ensure request_logs.error_details_json: {e}"))?;
     }
 
+    if !column_exists(conn, "request_logs", "last_activity_ms")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN last_activity_ms INTEGER;")
+            .map_err(|e| format!("failed to ensure request_logs.last_activity_ms: {e}"))?;
+        conn.execute_batch(
+            "UPDATE request_logs SET last_activity_ms = created_at_ms WHERE last_activity_ms IS NULL;",
+        )
+        .map_err(|e| format!("failed to backfill request_logs.last_activity_ms: {e}"))?;
+    }
+
+    if !column_exists(conn, "request_logs", "activity_details_json")? {
+        conn.execute_batch("ALTER TABLE request_logs ADD COLUMN activity_details_json TEXT;")
+            .map_err(|e| format!("failed to ensure request_logs.activity_details_json: {e}"))?;
+    }
+
     Ok(())
 }
 
@@ -1105,12 +1120,67 @@ CREATE TABLE IF NOT EXISTS plugin_runtime_failures (
 
 CREATE INDEX IF NOT EXISTS idx_plugin_runtime_failures_plugin_created_at
   ON plugin_runtime_failures(plugin_id, created_at);
+
+CREATE TABLE IF NOT EXISTS plugin_hook_execution_reports (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  plugin_id TEXT NOT NULL,
+  trace_id TEXT,
+  hook_name TEXT NOT NULL,
+  runtime_kind TEXT NOT NULL,
+  status TEXT NOT NULL,
+  started_at_ms INTEGER NOT NULL,
+  duration_ms INTEGER NOT NULL,
+  failure_kind TEXT,
+  error_code TEXT,
+  failure_policy TEXT,
+  circuit_state TEXT,
+  context_budget_json TEXT NOT NULL DEFAULT '{}',
+  output_budget_json TEXT NOT NULL DEFAULT '{}',
+  mutation_summary_json TEXT NOT NULL DEFAULT '{}',
+  replayable INTEGER NOT NULL DEFAULT 0,
+  replay_export_reason TEXT,
+  created_at INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_created_at
+  ON plugin_hook_execution_reports(plugin_id, created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_created_at
+  ON plugin_hook_execution_reports(created_at);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_trace_id
+  ON plugin_hook_execution_reports(trace_id);
+CREATE INDEX IF NOT EXISTS idx_plugin_hook_execution_reports_plugin_hook_created_at
+  ON plugin_hook_execution_reports(plugin_id, hook_name, created_at);
 "#,
     )
     .map_err(|e| format!("failed to ensure plugin tables: {e}"))?;
 
     tx.commit()
         .map_err(|e| format!("failed to commit plugin table ensure patch: {e}"))?;
+
+    Ok(())
+}
+
+fn ensure_provider_extension_values_table(
+    conn: &mut Connection,
+) -> crate::shared::error::AppResult<()> {
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS provider_extension_values (
+  provider_id INTEGER NOT NULL,
+  plugin_id TEXT NOT NULL,
+  namespace TEXT NOT NULL,
+  values_json TEXT NOT NULL DEFAULT '{}',
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, plugin_id, namespace),
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE,
+  FOREIGN KEY(plugin_id) REFERENCES plugins(plugin_id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_extension_values_plugin_namespace
+  ON provider_extension_values(plugin_id, namespace);
+"#,
+    )
+    .map_err(|e| format!("failed to ensure provider extension values table: {e}"))?;
 
     Ok(())
 }

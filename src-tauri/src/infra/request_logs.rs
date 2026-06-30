@@ -390,6 +390,38 @@ pub fn spawn_write_through<R: tauri::Runtime>(
     true
 }
 
+pub(crate) fn touch_activity(
+    db: &db::Db,
+    trace_id: &str,
+    cli_key: &str,
+    last_activity_ms: i64,
+    details: Option<String>,
+) -> AppResult<usize> {
+    validate_cli_key(cli_key).map_err(crate::shared::error::AppError::from)?;
+    let last_activity_ms = last_activity_ms.max(0);
+    let conn = db.open_connection()?;
+    conn.execute(
+        r#"
+UPDATE request_logs
+SET
+  last_activity_ms = CASE
+    WHEN last_activity_ms IS NULL OR ?3 > last_activity_ms THEN ?3
+    ELSE last_activity_ms
+  END,
+  activity_details_json = CASE
+    WHEN last_activity_ms IS NULL OR ?3 >= last_activity_ms THEN COALESCE(?4, activity_details_json)
+    ELSE activity_details_json
+  END
+WHERE trace_id = ?1
+  AND cli_key = ?2
+  AND status IS NULL
+  AND error_code IS NULL
+"#,
+        params![trace_id, cli_key, last_activity_ms, details],
+    )
+    .map_err(|e| db_err!("failed to touch request log activity: {e}"))
+}
+
 pub(crate) fn reconcile_unresolved_pending(
     db: &db::Db,
     reason: RequestLogReconcileReason,
@@ -543,11 +575,13 @@ fn insert_batch_once(
 		  cost_usd_femto,
 		  cost_multiplier,
 		  created_at_ms,
+		  last_activity_ms,
+		  activity_details_json,
 		  created_at,
 		  final_provider_id,
 		  provider_chain_json,
 		  error_details_json
-		) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
+		) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
 		ON CONFLICT(trace_id) DO UPDATE SET
 		  method = excluded.method,
 		  path = excluded.path,
@@ -575,6 +609,12 @@ fn insert_batch_once(
 		    WHEN request_logs.created_at_ms = 0 THEN excluded.created_at_ms
 		    ELSE request_logs.created_at_ms
 		  END,
+		  last_activity_ms = CASE
+		    WHEN request_logs.last_activity_ms IS NULL THEN excluded.last_activity_ms
+		    WHEN excluded.last_activity_ms > request_logs.last_activity_ms THEN excluded.last_activity_ms
+		    ELSE request_logs.last_activity_ms
+		  END,
+		  activity_details_json = COALESCE(request_logs.activity_details_json, excluded.activity_details_json),
 		  created_at = CASE WHEN request_logs.created_at = 0 THEN excluded.created_at ELSE request_logs.created_at END,
 		  final_provider_id = excluded.final_provider_id,
 		  provider_chain_json = excluded.provider_chain_json,
@@ -706,6 +746,8 @@ fn insert_batch_once(
                 cost_usd_femto,
                 cost_multiplier,
                 item.created_at_ms,
+                item.last_activity_ms.unwrap_or(item.created_at_ms),
+                item.activity_details_json,
                 item.created_at,
                 final_provider_id_db,
                 item.provider_chain_json,
@@ -811,10 +853,10 @@ GROUP BY cli_key, session_id
 #[cfg(test)]
 mod tests {
     use super::{
-        parse_cx2cc_cost_basis, reconcile_unresolved_pending, try_acquire_write_through_permit,
-        writer_loop, InsertBatchCache, RequestLogInsert, RequestLogReconcileReason,
-        COST_MULTIPLIER_CACHE_MAX_ENTRIES, EFFECTIVE_COST_MULTIPLIER_SQL,
-        MODEL_PRICE_CACHE_MAX_ENTRIES, WRITE_BATCH_MAX,
+        insert_batch_once, parse_cx2cc_cost_basis, reconcile_unresolved_pending, touch_activity,
+        try_acquire_write_through_permit, writer_loop, InsertBatchCache, RequestLogInsert,
+        RequestLogReconcileReason, COST_MULTIPLIER_CACHE_MAX_ENTRIES,
+        EFFECTIVE_COST_MULTIPLIER_SQL, MODEL_PRICE_CACHE_MAX_ENTRIES, WRITE_BATCH_MAX,
     };
     use rusqlite::{params, Connection};
     use std::sync::Arc;
@@ -848,6 +890,8 @@ mod tests {
             provider_chain_json: None,
             error_details_json: None,
             created_at_ms: 1_770_000_000_000,
+            last_activity_ms: None,
+            activity_details_json: None,
             created_at: 1_770_000_000,
         }
     }
@@ -975,6 +1019,133 @@ WHERE trace_id = ?1
         drop(first);
         assert!(try_acquire_write_through_permit(limiter).is_some());
         drop(second);
+    }
+
+    #[test]
+    fn request_log_insert_initializes_last_activity_from_created_at() {
+        let (app, db, _dir) = init_test_db();
+        let app_handle = app.handle().clone();
+        let mut cache = InsertBatchCache::default();
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[RequestLogInsert {
+                status: None,
+                error_code: None,
+                ..request_log_insert("trace-activity-init")
+            }],
+            &mut cache,
+        )
+        .expect("insert placeholder");
+
+        let conn = db.open_connection().expect("open connection");
+        let value: i64 = conn
+            .query_row(
+                "SELECT last_activity_ms FROM request_logs WHERE trace_id = ?1",
+                ["trace-activity-init"],
+                |row| row.get(0),
+            )
+            .expect("read last activity");
+        assert_eq!(value, 1_770_000_000_000);
+    }
+
+    #[test]
+    fn touch_activity_only_updates_pending_rows_and_never_moves_backwards() {
+        let (app, db, _dir) = init_test_db();
+        let app_handle = app.handle().clone();
+        let mut cache = InsertBatchCache::default();
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[RequestLogInsert {
+                status: None,
+                error_code: None,
+                ..request_log_insert("trace-touch")
+            }],
+            &mut cache,
+        )
+        .expect("insert pending");
+
+        touch_activity(
+            &db,
+            "trace-touch",
+            "claude",
+            1_770_000_030_000,
+            Some(r#"{"chunk_count":1}"#.to_string()),
+        )
+        .expect("touch newer");
+        touch_activity(
+            &db,
+            "trace-touch",
+            "claude",
+            1_770_000_010_000,
+            Some(r#"{"chunk_count":0}"#.to_string()),
+        )
+        .expect("older touch ignored");
+
+        let conn = db.open_connection().expect("open connection");
+        let row: (i64, Option<String>) = conn
+            .query_row(
+                "SELECT last_activity_ms, activity_details_json FROM request_logs WHERE trace_id = ?1",
+                ["trace-touch"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read activity");
+        assert_eq!(row.0, 1_770_000_030_000);
+        assert_eq!(row.1.as_deref(), Some(r#"{"chunk_count":1}"#));
+        drop(conn);
+
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[request_log_insert("trace-touch")],
+            &mut cache,
+        )
+        .expect("finalize");
+        let changed = touch_activity(&db, "trace-touch", "claude", 1_770_000_060_000, None)
+            .expect("touch completed row");
+        assert_eq!(changed, 0);
+    }
+
+    #[test]
+    fn request_log_finalize_preserves_newer_last_activity_from_insert_payload() {
+        let (app, db, _dir) = init_test_db();
+        let app_handle = app.handle().clone();
+        let mut cache = InsertBatchCache::default();
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[RequestLogInsert {
+                status: None,
+                error_code: None,
+                ..request_log_insert("trace-final-activity")
+            }],
+            &mut cache,
+        )
+        .expect("insert pending");
+
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[RequestLogInsert {
+                last_activity_ms: Some(1_770_000_090_000),
+                activity_details_json: Some(r#"{"terminal_signal":"completed"}"#.to_string()),
+                ..request_log_insert("trace-final-activity")
+            }],
+            &mut cache,
+        )
+        .expect("finalize");
+
+        let conn = db.open_connection().expect("open connection");
+        let row: (i64, Option<String>) = conn
+            .query_row(
+                "SELECT last_activity_ms, activity_details_json FROM request_logs WHERE trace_id = ?1",
+                ["trace-final-activity"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .expect("read activity");
+        assert_eq!(row.0, 1_770_000_090_000);
+        assert_eq!(row.1.as_deref(), Some(r#"{"terminal_signal":"completed"}"#));
     }
 
     #[test]

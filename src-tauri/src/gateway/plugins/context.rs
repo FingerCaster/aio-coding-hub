@@ -5,6 +5,32 @@ use axum::http::{HeaderMap, Method};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
 
+pub(crate) const DEFAULT_PLUGIN_CONTEXT_STREAM_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_PLUGIN_CONTEXT_LOG_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_PLUGIN_NORMALIZED_MESSAGE_LIMIT: usize = 64;
+pub(crate) const DEFAULT_PLUGIN_NORMALIZED_MESSAGE_TEXT_BYTES: usize = 8 * 1024;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) struct GatewayPluginContextBudget {
+    pub(crate) body_bytes: usize,
+    pub(crate) stream_bytes: usize,
+    pub(crate) log_bytes: usize,
+    pub(crate) normalized_messages: usize,
+    pub(crate) normalized_message_text_bytes: usize,
+}
+
+impl Default for GatewayPluginContextBudget {
+    fn default() -> Self {
+        Self {
+            body_bytes: crate::gateway::util::max_request_body_bytes(),
+            stream_bytes: DEFAULT_PLUGIN_CONTEXT_STREAM_BYTES,
+            log_bytes: DEFAULT_PLUGIN_CONTEXT_LOG_BYTES,
+            normalized_messages: DEFAULT_PLUGIN_NORMALIZED_MESSAGE_LIMIT,
+            normalized_message_text_bytes: DEFAULT_PLUGIN_NORMALIZED_MESSAGE_TEXT_BYTES,
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub(crate) enum GatewayPluginHookName {
     RequestReceived,
@@ -30,6 +56,24 @@ impl GatewayPluginHookName {
             Self::ResponseAfter => "gateway.response.after",
             Self::Error => "gateway.error",
             Self::LogBeforePersist => "log.beforePersist",
+        }
+    }
+
+    #[allow(dead_code)]
+    pub(crate) fn from_str(raw: &str) -> Option<Self> {
+        match raw {
+            "gateway.request.received" => Some(Self::RequestReceived),
+            "gateway.request.afterBodyRead" => Some(Self::RequestAfterBodyRead),
+            "gateway.request.beforeProviderResolution" => {
+                Some(Self::RequestBeforeProviderResolution)
+            }
+            "gateway.request.beforeSend" => Some(Self::RequestBeforeSend),
+            "gateway.response.headers" => Some(Self::ResponseHeaders),
+            "gateway.response.chunk" => Some(Self::ResponseChunk),
+            "gateway.response.after" => Some(Self::ResponseAfter),
+            "gateway.error" => Some(Self::Error),
+            "log.beforePersist" => Some(Self::LogBeforePersist),
+            _ => None,
         }
     }
 
@@ -65,7 +109,16 @@ pub(crate) struct GatewayRequestHookInput {
 }
 
 impl GatewayRequestHookInput {
+    #[allow(dead_code)]
     pub(crate) fn visible_context(&self, permissions: &[String]) -> GatewayVisibleHookContext {
+        self.visible_context_with_budget(permissions, GatewayPluginContextBudget::default())
+    }
+
+    pub(crate) fn visible_context_with_budget(
+        &self,
+        permissions: &[String],
+        budget: GatewayPluginContextBudget,
+    ) -> GatewayVisibleHookContext {
         let mut ctx = GatewayVisibleHookContext::new(self.hook_name, self.trace_id.clone());
 
         if has_permission(permissions, "request.meta.read") {
@@ -84,9 +137,16 @@ impl GatewayRequestHookInput {
             ));
         }
         if has_permission(permissions, "request.body.read") {
-            let body = bytes_to_visible_string(&self.body);
-            ctx.request.normalized_messages = normalized_messages_from_body(&body);
+            let (body, body_truncated) = visible_string_with_limit(&self.body, budget.body_bytes);
+            let (messages, messages_truncated) = normalized_messages_from_body_with_budget(
+                &body,
+                budget.normalized_messages,
+                budget.normalized_message_text_bytes,
+            );
+            ctx.request.normalized_messages = messages;
+            ctx.request.normalized_messages_truncated = messages_truncated || body_truncated;
             ctx.request.body = Some(body);
+            ctx.request.body_truncated = body_truncated;
         }
 
         ctx
@@ -103,7 +163,16 @@ pub(crate) struct GatewayResponseHookInput {
 }
 
 impl GatewayResponseHookInput {
+    #[allow(dead_code)]
     pub(crate) fn visible_context(&self, permissions: &[String]) -> GatewayVisibleHookContext {
+        self.visible_context_with_budget(permissions, GatewayPluginContextBudget::default())
+    }
+
+    pub(crate) fn visible_context_with_budget(
+        &self,
+        permissions: &[String],
+        budget: GatewayPluginContextBudget,
+    ) -> GatewayVisibleHookContext {
         let mut ctx = GatewayVisibleHookContext::new(self.hook_name, self.trace_id.clone());
         if has_permission(permissions, "response.header.read")
             || has_permission(permissions, "response.body.read")
@@ -114,7 +183,9 @@ impl GatewayResponseHookInput {
             ctx.response.headers = Some(headers_to_json_map(&self.headers, true));
         }
         if has_permission(permissions, "response.body.read") {
-            ctx.response.body = Some(bytes_to_visible_string(&self.body));
+            let (body, body_truncated) = visible_string_with_limit(&self.body, budget.body_bytes);
+            ctx.response.body = Some(body);
+            ctx.response.body_truncated = body_truncated;
         }
         ctx
     }
@@ -128,14 +199,26 @@ pub(crate) struct GatewayStreamHookInput {
 }
 
 impl GatewayStreamHookInput {
+    #[allow(dead_code)]
     pub(crate) fn visible_context(&self, permissions: &[String]) -> GatewayVisibleHookContext {
+        self.visible_context_with_budget(permissions, GatewayPluginContextBudget::default())
+    }
+
+    pub(crate) fn visible_context_with_budget(
+        &self,
+        permissions: &[String],
+        budget: GatewayPluginContextBudget,
+    ) -> GatewayVisibleHookContext {
         let mut ctx = GatewayVisibleHookContext::new(
             GatewayPluginHookName::ResponseChunk,
             self.trace_id.clone(),
         );
         if has_permission(permissions, "stream.inspect") {
             ctx.stream.sequence = Some(self.sequence);
-            ctx.stream.chunk = Some(bytes_to_visible_string(&self.chunk));
+            let (chunk, chunk_truncated) =
+                visible_string_with_limit(&self.chunk, budget.stream_bytes);
+            ctx.stream.chunk = Some(chunk);
+            ctx.stream.chunk_truncated = chunk_truncated;
         }
         ctx
     }
@@ -148,13 +231,24 @@ pub(crate) struct GatewayLogHookInput {
 }
 
 impl GatewayLogHookInput {
+    #[allow(dead_code)]
     pub(crate) fn visible_context(&self, permissions: &[String]) -> GatewayVisibleHookContext {
+        self.visible_context_with_budget(permissions, GatewayPluginContextBudget::default())
+    }
+
+    pub(crate) fn visible_context_with_budget(
+        &self,
+        permissions: &[String],
+        budget: GatewayPluginContextBudget,
+    ) -> GatewayVisibleHookContext {
         let mut ctx = GatewayVisibleHookContext::new(
             GatewayPluginHookName::LogBeforePersist,
             self.trace_id.clone(),
         );
         if has_permission(permissions, "log.redact") {
-            ctx.log.message = Some(self.message.clone());
+            let (message, message_truncated) = text_with_limit(&self.message, budget.log_bytes);
+            ctx.log.message = Some(message);
+            ctx.log.message_truncated = message_truncated;
         }
         ctx
     }
@@ -199,7 +293,9 @@ pub(crate) struct GatewayVisibleRequestContext {
     pub(crate) query: Option<String>,
     pub(crate) headers: Option<serde_json::Map<String, serde_json::Value>>,
     pub(crate) body: Option<String>,
+    pub(crate) body_truncated: bool,
     pub(crate) normalized_messages: Vec<GatewayNormalizedMessage>,
+    pub(crate) normalized_messages_truncated: bool,
     pub(crate) requested_model: Option<String>,
 }
 
@@ -208,17 +304,20 @@ pub(crate) struct GatewayVisibleResponseContext {
     pub(crate) status: Option<u16>,
     pub(crate) headers: Option<serde_json::Map<String, serde_json::Value>>,
     pub(crate) body: Option<String>,
+    pub(crate) body_truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GatewayVisibleStreamContext {
     pub(crate) sequence: Option<u64>,
     pub(crate) chunk: Option<String>,
+    pub(crate) chunk_truncated: bool,
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GatewayVisibleLogContext {
     pub(crate) message: Option<String>,
+    pub(crate) message_truncated: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -260,49 +359,117 @@ fn bytes_to_visible_string(bytes: &Bytes) -> String {
     String::from_utf8_lossy(bytes.as_ref()).into_owned()
 }
 
-fn normalized_messages_from_body(body: &str) -> Vec<GatewayNormalizedMessage> {
+fn visible_string_with_limit(bytes: &Bytes, limit: usize) -> (String, bool) {
+    if bytes.len() <= limit {
+        return (bytes_to_visible_string(bytes), false);
+    }
+    let capped = &bytes.as_ref()[..limit];
+    let boundary = std::str::from_utf8(capped)
+        .map(|_| limit)
+        .unwrap_or_else(|err| err.valid_up_to());
+    (
+        String::from_utf8_lossy(&bytes.as_ref()[..boundary]).into_owned(),
+        true,
+    )
+}
+
+fn text_with_limit(text: &str, limit: usize) -> (String, bool) {
+    if text.len() <= limit {
+        return (text.to_string(), false);
+    }
+    let boundary = (0..=limit)
+        .rev()
+        .find(|index| text.is_char_boundary(*index))
+        .unwrap_or(0);
+    (text[..boundary].to_string(), true)
+}
+
+fn normalized_messages_from_body_with_budget(
+    body: &str,
+    message_limit: usize,
+    text_limit: usize,
+) -> (Vec<GatewayNormalizedMessage>, bool) {
     let Ok(root) = serde_json::from_str::<serde_json::Value>(body) else {
-        return Vec::new();
+        return (Vec::new(), false);
     };
     let mut out = Vec::new();
+    let mut truncated = false;
 
     if let Some(messages) = root.get("messages").and_then(serde_json::Value::as_array) {
         for message in messages {
-            collect_message_content(message, "messages.content", &mut out);
+            collect_message_content(
+                message,
+                "messages.content",
+                &mut out,
+                message_limit,
+                text_limit,
+                &mut truncated,
+            );
         }
     }
 
     if let Some(input) = root.get("input") {
         match input {
-            serde_json::Value::String(text) => {
-                push_normalized_message(&mut out, "user", text, "openai.responses.input")
-            }
+            serde_json::Value::String(text) => push_normalized_message(
+                &mut out,
+                "user",
+                text,
+                "openai.responses.input",
+                message_limit,
+                text_limit,
+                &mut truncated,
+            ),
             serde_json::Value::Array(items) => {
                 for item in items {
-                    collect_responses_input_item(item, &mut out);
+                    collect_responses_input_item(
+                        item,
+                        &mut out,
+                        message_limit,
+                        text_limit,
+                        &mut truncated,
+                    );
                 }
             }
             _ => {}
         }
     }
 
-    out
+    (out, truncated)
 }
 
 fn collect_message_content(
     message: &serde_json::Value,
     source_prefix: &'static str,
     out: &mut Vec<GatewayNormalizedMessage>,
+    message_limit: usize,
+    text_limit: usize,
+    truncated: &mut bool,
 ) {
     let role = message_role(message, "user");
     match message.get("content") {
         Some(serde_json::Value::String(text)) => {
-            push_normalized_message(out, &role, text, source_prefix);
+            push_normalized_message(
+                out,
+                &role,
+                text,
+                source_prefix,
+                message_limit,
+                text_limit,
+                truncated,
+            );
         }
         Some(serde_json::Value::Array(parts)) => {
             for part in parts {
                 if let Some(text) = part.get("text").and_then(serde_json::Value::as_str) {
-                    push_normalized_message(out, &role, text, "messages.content.text");
+                    push_normalized_message(
+                        out,
+                        &role,
+                        text,
+                        "messages.content.text",
+                        message_limit,
+                        text_limit,
+                        truncated,
+                    );
                 }
             }
         }
@@ -310,11 +477,25 @@ fn collect_message_content(
     }
 }
 
-fn collect_responses_input_item(item: &serde_json::Value, out: &mut Vec<GatewayNormalizedMessage>) {
+fn collect_responses_input_item(
+    item: &serde_json::Value,
+    out: &mut Vec<GatewayNormalizedMessage>,
+    message_limit: usize,
+    text_limit: usize,
+    truncated: &mut bool,
+) {
     let role = message_role(item, "user");
     match item.get("content") {
         Some(serde_json::Value::String(text)) => {
-            push_normalized_message(out, &role, text, "openai.responses.content");
+            push_normalized_message(
+                out,
+                &role,
+                text,
+                "openai.responses.content",
+                message_limit,
+                text_limit,
+                truncated,
+            );
         }
         Some(serde_json::Value::Array(parts)) => {
             for part in parts {
@@ -330,7 +511,15 @@ fn collect_responses_input_item(item: &serde_json::Value, out: &mut Vec<GatewayN
                 } else {
                     "openai.responses.content.text"
                 };
-                push_normalized_message(out, &role, text, source);
+                push_normalized_message(
+                    out,
+                    &role,
+                    text,
+                    source,
+                    message_limit,
+                    text_limit,
+                    truncated,
+                );
             }
         }
         _ => {}
@@ -351,13 +540,22 @@ fn push_normalized_message(
     role: &str,
     text: &str,
     source: &'static str,
+    message_limit: usize,
+    text_limit: usize,
+    truncated: &mut bool,
 ) {
     if text.is_empty() {
         return;
     }
+    if out.len() >= message_limit {
+        *truncated = true;
+        return;
+    }
+    let (text, text_truncated) = text_with_limit(text, text_limit);
+    *truncated |= text_truncated;
     out.push(GatewayNormalizedMessage {
         role: role.to_string(),
-        text: text.to_string(),
+        text,
         source: source.to_string(),
     });
 }
@@ -398,6 +596,26 @@ mod tests {
     use super::*;
     use axum::body::Bytes;
     use axum::http::{HeaderMap, HeaderValue, Method};
+
+    #[test]
+    fn hook_name_from_str_maps_all_known_hook_names() {
+        let hooks = [
+            GatewayPluginHookName::RequestReceived,
+            GatewayPluginHookName::RequestAfterBodyRead,
+            GatewayPluginHookName::RequestBeforeProviderResolution,
+            GatewayPluginHookName::RequestBeforeSend,
+            GatewayPluginHookName::ResponseHeaders,
+            GatewayPluginHookName::ResponseChunk,
+            GatewayPluginHookName::ResponseAfter,
+            GatewayPluginHookName::Error,
+            GatewayPluginHookName::LogBeforePersist,
+        ];
+
+        for hook in hooks {
+            assert_eq!(GatewayPluginHookName::from_str(hook.as_str()), Some(hook));
+        }
+        assert_eq!(GatewayPluginHookName::from_str("gateway.unknown"), None);
+    }
 
     fn headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
@@ -452,6 +670,172 @@ mod tests {
                 .and_then(|v| v.as_str()),
             Some("Bearer secret")
         );
+    }
+
+    #[test]
+    fn gateway_plugin_context_truncates_request_body_and_normalized_messages_by_budget() {
+        let body = format!(
+            "{{\"messages\":[{}]}}",
+            (0..5)
+                .map(|index| format!(
+                    "{{\"role\":\"user\",\"content\":\"message-{index}-{}\"}}",
+                    "x".repeat(64)
+                ))
+                .collect::<Vec<_>>()
+                .join(",")
+        );
+        let input = GatewayRequestHookInput {
+            hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+            trace_id: "trace-budget".to_string(),
+            cli_key: "codex".to_string(),
+            method: Method::POST,
+            path: "/v1/messages".to_string(),
+            query: None,
+            headers: HeaderMap::new(),
+            body: Bytes::from(body),
+            requested_model: None,
+        };
+        let budget = GatewayPluginContextBudget {
+            body_bytes: 48,
+            normalized_messages: 2,
+            normalized_message_text_bytes: 16,
+            ..GatewayPluginContextBudget::default()
+        };
+
+        let visible = input.visible_context_with_budget(&["request.body.read".to_string()], budget);
+
+        assert!(visible.request.body.as_deref().unwrap().len() <= 48 + 64);
+        assert!(visible.request.body_truncated);
+        assert!(visible.request.normalized_messages.len() <= 2);
+        assert!(visible
+            .request
+            .normalized_messages
+            .iter()
+            .all(|message| message.text.len() <= 16 + 32));
+    }
+
+    #[test]
+    fn gateway_plugin_context_truncates_stream_and_log_by_budget() {
+        let stream = GatewayStreamHookInput {
+            trace_id: "trace-stream-budget".to_string(),
+            chunk: Bytes::from("s".repeat(128)),
+            sequence: 1,
+        };
+        let log = GatewayLogHookInput {
+            trace_id: "trace-log-budget".to_string(),
+            message: "l".repeat(128),
+        };
+        let budget = GatewayPluginContextBudget {
+            stream_bytes: 16,
+            log_bytes: 24,
+            ..GatewayPluginContextBudget::default()
+        };
+
+        let visible_stream =
+            stream.visible_context_with_budget(&["stream.inspect".to_string()], budget);
+        let visible_log = log.visible_context_with_budget(&["log.redact".to_string()], budget);
+
+        assert!(visible_stream.stream.chunk.as_deref().unwrap().len() <= 80);
+        assert!(visible_stream.stream.chunk_truncated);
+        assert!(visible_log.log.message.as_deref().unwrap().len() <= 88);
+        assert!(visible_log.log.message_truncated);
+    }
+
+    #[test]
+    fn gateway_plugin_context_truncates_response_body_by_budget() {
+        let response = GatewayResponseHookInput {
+            hook_name: GatewayPluginHookName::ResponseAfter,
+            trace_id: "trace-response-budget".to_string(),
+            status: 200,
+            headers: HeaderMap::new(),
+            body: Bytes::from_static(b"abcdefghij"),
+        };
+        let budget = GatewayPluginContextBudget {
+            body_bytes: 4,
+            ..GatewayPluginContextBudget::default()
+        };
+
+        let visible =
+            response.visible_context_with_budget(&["response.body.read".to_string()], budget);
+
+        assert_eq!(visible.response.status, Some(200));
+        assert_eq!(visible.response.body.as_deref(), Some("abcd"));
+        assert!(visible.response.body_truncated);
+    }
+
+    #[test]
+    fn gateway_plugin_context_truncates_multibyte_text_without_replacement_characters() {
+        let body = "你好🙂abc";
+        let normalized_body = "{\"messages\":[{\"role\":\"user\",\"content\":\"你好🙂abc\"}]}";
+        let input = GatewayRequestHookInput {
+            hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+            trace_id: "trace-multibyte-budget".to_string(),
+            cli_key: "codex".to_string(),
+            method: Method::POST,
+            path: "/v1/messages".to_string(),
+            query: None,
+            headers: HeaderMap::new(),
+            body: Bytes::from(body),
+            requested_model: None,
+        };
+        let normalized_input = GatewayRequestHookInput {
+            body: Bytes::from(normalized_body),
+            ..input.clone()
+        };
+        let stream = GatewayStreamHookInput {
+            trace_id: "trace-stream-multibyte-budget".to_string(),
+            chunk: Bytes::from("你好🙂abc"),
+            sequence: 1,
+        };
+        let log = GatewayLogHookInput {
+            trace_id: "trace-log-multibyte-budget".to_string(),
+            message: "你好🙂abc".to_string(),
+        };
+        let budget = GatewayPluginContextBudget {
+            body_bytes: 11,
+            stream_bytes: 5,
+            log_bytes: 5,
+            normalized_messages: 1,
+            normalized_message_text_bytes: 8,
+        };
+
+        let visible_request =
+            input.visible_context_with_budget(&["request.body.read".to_string()], budget);
+        let visible_normalized_request = normalized_input.visible_context_with_budget(
+            &["request.body.read".to_string()],
+            GatewayPluginContextBudget {
+                body_bytes: normalized_body.len(),
+                ..budget
+            },
+        );
+        let visible_stream =
+            stream.visible_context_with_budget(&["stream.inspect".to_string()], budget);
+        let visible_log = log.visible_context_with_budget(&["log.redact".to_string()], budget);
+
+        let request_body = visible_request.request.body.as_deref().unwrap();
+        let stream_chunk = visible_stream.stream.chunk.as_deref().unwrap();
+        let log_message = visible_log.log.message.as_deref().unwrap();
+        assert!(visible_request.request.body_truncated);
+        assert!(visible_stream.stream.chunk_truncated);
+        assert!(visible_log.log.message_truncated);
+        assert!(!request_body.contains('\u{FFFD}'));
+        assert!(!stream_chunk.contains('\u{FFFD}'));
+        assert!(!log_message.contains('\u{FFFD}'));
+        assert!(request_body.len() <= 11);
+        assert!(stream_chunk.len() <= 5);
+        assert!(log_message.len() <= 5);
+        let normalized_message = visible_normalized_request
+            .request
+            .normalized_messages
+            .first()
+            .unwrap();
+        assert!(
+            visible_normalized_request
+                .request
+                .normalized_messages_truncated
+        );
+        assert!(!normalized_message.text.contains('\u{FFFD}'));
+        assert!(normalized_message.text.len() <= 8);
     }
 
     #[test]

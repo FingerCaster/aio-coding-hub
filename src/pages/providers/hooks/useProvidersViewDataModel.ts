@@ -940,6 +940,18 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     }
   }
 
+  async function setRouteProviderEnabled(providerId: number, enabled: boolean) {
+    const selection = routeDraftSelectionRef.current;
+    if (selection.kind === "mode") {
+      await setModeProviderEnabled(providerId, enabled);
+      return;
+    }
+
+    const provider = providersRef.current.find((row) => row.id === providerId);
+    if (!provider || provider.enabled === enabled) return;
+    await toggleProviderEnabled(provider);
+  }
+
   function addProviderToCurrentRoute(providerId: number) {
     if (routeProviderIdSet.has(providerId)) return;
     const nextRows =
@@ -1134,7 +1146,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     selectRouteDraft,
     addProviderToCurrentRoute,
     removeProviderFromCurrentRoute,
-    setModeProviderEnabled,
+    setRouteProviderEnabled,
     handleRouteDragEnd,
     createSortMode,
     renameSortMode,
@@ -1154,7 +1166,6 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     refreshProviders,
     resetCircuitAll,
     openCreateDialog,
-    toggleProviderEnabled,
     resetCircuit,
     copyTerminalLaunchCommand,
     duplicateProvider,

@@ -73,6 +73,8 @@ fn build_in_progress_request_log_args<R: tauri::Runtime>(
         attempts_json: "[]".to_string(),
         requested_model: ctx.requested_model.as_deref().map(str::to_string),
         created_at_ms: ctx.created_at_ms,
+        last_activity_ms: None,
+        activity_details_json: None,
         created_at: ctx.created_at,
         usage_metrics: None,
         usage: None,
@@ -304,6 +306,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
         }
     }
 

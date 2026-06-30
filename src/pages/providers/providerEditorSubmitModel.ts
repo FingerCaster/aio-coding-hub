@@ -136,6 +136,7 @@ export function buildProviderEditorUpsertInput(
     sourceProviderId:
       ctx.authMode === "cx2cc" && !ctx.isCodexGatewaySource ? ctx.sourceProviderId : null,
     bridgeType: ctx.authMode === "cx2cc" ? "cx2cc" : null,
+    extensionValues: ctx.extensionValues ?? null,
   };
 
   return {

@@ -24,6 +24,7 @@ import { CliPriorityOrderEditor } from "./CliPriorityOrderEditor";
 import { HomeOverviewTabOrderEditor } from "./HomeOverviewTabOrderEditor";
 import type { NoticePermissionStatus } from "./useSystemNotification";
 import type { CliKey } from "../../services/providers/providers";
+import { ContributionSlot } from "../../plugins/contributions/ContributionSlot";
 
 type PersistKey = "preferred_port" | "log_retention_days";
 type BooleanPersistKey =
@@ -267,6 +268,8 @@ export function SettingsMainColumn({
           </SettingsRow>
         </div>
       </Card>
+
+      <ContributionSlot slotId="settings.sections" />
 
       {/* 参数配置 */}
       <Card>

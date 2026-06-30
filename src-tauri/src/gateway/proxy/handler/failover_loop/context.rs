@@ -259,6 +259,13 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         auth_mode: provider_ctx.auth_mode.clone(),
         fake_200_detected: false,
         fake_200_quota_exhausted: false,
+        activity: Arc::new(Mutex::new(
+            crate::gateway::streams::StreamActivityTracker::new(
+                &ctx.trace_id,
+                &ctx.cli_key,
+                ctx.created_at_ms,
+            ),
+        )),
     }
 }
 

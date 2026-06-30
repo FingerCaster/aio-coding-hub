@@ -2,7 +2,7 @@
 
 ## 1. Purpose
 
-The plugin system lets aio coding hub support community extensions for gateway request processing, gateway response inspection, log redaction, local configuration, and GUI management. The first production version focuses on low-risk declarative plugins and stable host contracts before any third-party code runtime is enabled.
+The plugin system lets aio coding hub support community extensions for gateway request processing, gateway response inspection, log redaction, local configuration, and GUI management. The current public plugin direction is Extension Host-only: community plugins run through a host-managed Extension Host process, while the host owns rendering, lifecycle, permissions, diagnostics, and gateway mutation boundaries.
 
 The priority scenarios are:
 
@@ -12,7 +12,7 @@ The priority scenarios are:
 
 ## 2. Non-Goals
 
-- 短期不执行任意 JavaScript/TypeScript.
+- 短期不执行任意 JavaScript/TypeScript；当前只允许宿主管理的 Extension Host bundle 通过声明的 Host API 运行。
 - Node.js and Deno are not default plugin runtimes.
 - Third-party native dynamic libraries are not loaded into the Rust main process.
 - 第三方代码不得直接进入主进程或 WebView.
@@ -87,47 +87,31 @@ Active request and response hooks execute through a timeout-bounded pipeline wit
 
 ## 5. Runtime Roadmap
 
-### Short Term: Declarative Rules
+### Public Community Runtime: Extension Host
 
-The first runtime executes no community code. Plugins declare rules in JSON:
+The public community runtime is a host-managed Extension Host. Plugins declare contributions in `plugin.json`, bundle their entry as `dist/extension.js`, and register handlers through host APIs such as:
 
-- JSON path selection.
-- Regex detection with bounded input and timeout protection.
-- Replace, warn, block, and append-message actions.
-- Configuration schema and permission declarations.
+- `api.commands.registerCommand`
+- `api.gateway.registerHook`
+- provider extension value APIs
+- future protocol bridge APIs
 
-This runtime is enough for community prompt helpers, response safety checks, and log redactors that can be expressed as bounded JSON path and regex rules.
+The host decides when handlers run, what permission-trimmed context they receive, which mutations are accepted, when warm instances are reused, and when instances are disposed.
 
-### Medium Term: WASM
+### Unsupported Legacy Runtime Ideas
 
-WASM plugins run in a sandboxed runtime, initially Wasmtime. WASM execution must:
-
-- Disable default filesystem access.
-- Disable default network access.
-- Enforce memory limits.
-- Enforce execution timeouts.
-- Access host capabilities only through imported functions that check granted permissions.
-- Use a versioned ABI for hook input, hook output, errors, logs, and config reads.
-
-### Long Term: Managed Process Runtime
-
-An independent process runtime may be used for a proof of concept, but only as a host-managed worker:
-
-- JSON-RPC over stdio.
-- Every request carries a `trace_id`.
-- Startup timeout, hook timeout, crash limits, and idle recycle are mandatory.
-- The worker must not become a daemon, login item, scheduled task, or detached background service.
-- The PoC does not mean marketplace plugins can use background tasks by default.
+Earlier drafts considered alternate WASM and arbitrary process runtimes. They are not public community runtimes in the current contract. Old local packages using those shapes are treated as unsupported pre-release legacy packages and should migrate to Extension Host gateway hooks.
 
 ## 6. Security Principles
 
-- Least privilege: plugins see only context allowed by their granted permissions and hook type.
-- Sensitive headers such as `Authorization` and `Cookie` are hidden unless `request.header.readSensitive` is explicitly granted.
-- Request and response bodies are hidden unless body-read permissions are granted.
-- Write actions are rejected unless matching write permissions are granted.
-- High-risk permissions require second confirmation.
-- Upgrades that add permissions require renewed authorization.
-- Audit logs record install, enable, disable, config changes, permission changes, hook errors, hook timeouts, blocks, and high-risk mutations.
+- Least privilege: public manifests use `capabilities`; Extension Host public manifest 不支持 top-level `permissions`.
+- The host trims hook context by capability, hook contract, runtime policy, and context budget before invoking plugin code.
+- Sensitive headers such as `Authorization` and `Cookie` are visible only when the hook contract, context budget, and host policy allow that field for the installed capability set.
+- Request and response body visibility is decided by the hook contract, context budget, and host policy. Internal context labels such as `request.body.read` or `request.header.readSensitive` describe host-side exposure decisions, not public top-level manifest permissions.
+- Plugin mutation proposals are host-mediated. The host validates each proposed header/body/status/log mutation against the hook contract and runtime policy, then accepts, trims, or rejects it.
+- High-risk capabilities require second confirmation.
+- Upgrades that add capabilities require renewed authorization.
+- Audit logs record install, enable, disable, config changes, capability changes, hook errors, hook timeouts, blocks, and high-risk mutations.
 - Audit logs must not store sensitive raw values.
 - Consecutive failures can quarantine a plugin.
 - Safety-class plugins may use fail-closed behavior. Decorative plugins default to fail-open.

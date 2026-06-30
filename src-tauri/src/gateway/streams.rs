@@ -1,7 +1,7 @@
 //! Usage: Gateway stream adapters (gunzip, relays, usage/timing tees).
 
 mod types;
-pub(super) use types::StreamFinalizeCtx;
+pub(super) use types::{StreamActivityTracker, StreamFinalizeCtx};
 
 mod finalize;
 mod request_end;

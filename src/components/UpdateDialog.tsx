@@ -6,6 +6,7 @@ import {
   quotePlugin,
   thematicBreakPlugin,
 } from "@mdxeditor/editor";
+import type { MouseEvent } from "react";
 import { toast } from "sonner";
 import { AIO_RELEASES_URL } from "../constants/urls";
 import { logToConsole } from "../services/consoleLog";
@@ -39,11 +40,32 @@ export function UpdateDialog() {
       await openDesktopUrl(AIO_RELEASES_URL);
     } catch (err) {
       logToConsole("error", "打开 Releases 失败", { error: String(err), url: AIO_RELEASES_URL });
-      try {
-        window.open(AIO_RELEASES_URL, "_blank", "noopener,noreferrer");
-      } catch {}
       toast("打开下载页失败：请查看控制台日志");
     }
+  }
+
+  async function openChangelogLink(url: string) {
+    try {
+      await openDesktopUrl(url);
+    } catch (err) {
+      logToConsole("error", "打开更新日志链接失败", { error: String(err), url });
+      toast("打开链接失败：请查看控制台日志");
+    }
+  }
+
+  function handleChangelogClick(event: MouseEvent<HTMLDivElement>) {
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+
+    const anchor = target.closest("a[href]");
+    if (!anchor) return;
+
+    const href = anchor.getAttribute("href");
+    if (!href) return;
+
+    event.preventDefault();
+    event.stopPropagation();
+    void openChangelogLink(href);
   }
 
   async function installUpdate() {
@@ -121,7 +143,10 @@ export function UpdateDialog() {
         {updateCandidate?.body ? (
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">更新日志</span>
-            <div className="max-h-60 overflow-y-auto rounded-lg border border-border bg-white dark:bg-secondary text-sm text-secondary-foreground">
+            <div
+              className="max-h-60 overflow-y-auto rounded-lg border border-border bg-white dark:bg-secondary text-sm text-secondary-foreground"
+              onClick={handleChangelogClick}
+            >
               <MDXEditor
                 markdown={updateCandidate.body}
                 readOnly

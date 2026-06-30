@@ -205,6 +205,13 @@ describe("components/home/HomeLogShared", () => {
       isError: true,
     });
     expect(
+      computeStatusBadge({ status: 200, errorCode: GatewayErrorCodes.STREAM_ERROR })
+    ).toMatchObject({
+      text: "200 失败",
+      semanticText: "请求失败",
+      isError: true,
+    });
+    expect(
       computeStatusBadge({ status: 499, errorCode: GatewayErrorCodes.REQUEST_ABORTED })
     ).toMatchObject({
       text: "499 已中断",

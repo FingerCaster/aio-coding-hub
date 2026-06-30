@@ -6,6 +6,7 @@ import { useTheme } from "../../../hooks/useTheme";
 import { gatewayKeys } from "../../../query/keys";
 import { logToConsole } from "../../../services/consoleLog";
 import { gatewayStart, gatewayStop } from "../../../services/gateway/gateway";
+import { usePluginActiveContributionsQuery } from "../../../query/plugins";
 import { createTestQueryClient } from "../../../test/utils/reactQuery";
 import { SettingsMainColumn } from "../SettingsMainColumn";
 import type { ComponentProps } from "react";
@@ -50,6 +51,17 @@ vi.mock("@dnd-kit/utilities", () => ({
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
 vi.mock("../../../hooks/useTheme", () => ({ useTheme: vi.fn() }));
+vi.mock("../../../query/plugins", () => ({
+  usePluginActiveContributionsQuery: vi.fn(() => ({
+    data: { ui: [] },
+    isLoading: false,
+    error: null,
+  })),
+  usePluginExecuteCommandMutation: vi.fn(() => ({
+    mutateAsync: vi.fn().mockResolvedValue(null),
+    isPending: false,
+  })),
+}));
 vi.mock("../../../services/gateway/gateway", async () => {
   const actual = await vi.importActual<typeof import("../../../services/gateway/gateway")>(
     "../../../services/gateway/gateway"
@@ -112,6 +124,11 @@ describe("pages/settings/SettingsMainColumn", () => {
     window.localStorage.clear();
     latestOnDragEnds = [];
     sortableIsDragging = false;
+    vi.mocked(usePluginActiveContributionsQuery).mockReturnValue({
+      data: { ui: [] },
+      isLoading: false,
+      error: null,
+    } as any);
   });
 
   it("switches theme from settings", () => {
@@ -221,6 +238,42 @@ describe("pages/settings/SettingsMainColumn", () => {
     fireEvent.click(within(row as HTMLElement).getByRole("switch"));
     expect(setShowHomeUsage).toHaveBeenCalledWith(false);
     expect(requestPersist).toHaveBeenCalledWith({ show_home_usage: false });
+  });
+
+  it("renders settings section contributions below core settings", () => {
+    vi.mocked(useTheme).mockReturnValue({
+      theme: "system",
+      resolvedTheme: "light",
+      setTheme: vi.fn(),
+    } as any);
+    vi.mocked(usePluginActiveContributionsQuery).mockReturnValue({
+      data: {
+        ui: [
+          {
+            pluginId: "acme.settings",
+            contributionId: "settings-panel",
+            slotId: "settings.sections",
+            title: "插件设置",
+            order: 5,
+            schema: {
+              type: "section",
+              fields: [{ type: "info", key: "status", label: "插件状态", value: "已启用" }],
+            },
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as any);
+
+    renderSettingsMainColumn();
+
+    expect(screen.getByText("插件设置")).toBeInTheDocument();
+    expect(screen.getByText("插件状态")).toBeInTheDocument();
+    expect(screen.getByText("已启用")).toBeInTheDocument();
+    expect(screen.getByText("插件设置").compareDocumentPosition(screen.getByText("参数配置"))).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
   });
 
   it("persists homepage usage period setting", () => {

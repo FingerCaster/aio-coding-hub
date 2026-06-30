@@ -336,8 +336,11 @@ export function computeStatusBadge(input: {
 
   const isClientAbort = !!(input.errorCode && CLIENT_ABORT_ERROR_CODES.has(input.errorCode));
   const hasFailover = !!input.hasFailover;
-  const isSuccessStatus = input.status != null && input.status >= 200 && input.status < 400;
-  const isError = input.status != null ? input.status >= 400 : input.errorCode != null;
+  const hasTerminalErrorCode = !!input.errorCode && !isClientAbort;
+  const isSuccessStatus =
+    !hasTerminalErrorCode && input.status != null && input.status >= 200 && input.status < 400;
+  const isError =
+    hasTerminalErrorCode || (input.status != null ? input.status >= 400 : input.errorCode != null);
 
   let text = STATUS_TEXT_UNKNOWN;
   let semanticText = STATUS_TEXT_UNKNOWN;

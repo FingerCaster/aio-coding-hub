@@ -218,7 +218,7 @@ function officialPrivacyFilterDetail(): PluginDetail {
     name: "Privacy Filter",
     current_version: "1.0.0",
     status: "disabled",
-    runtime: "native:privacyFilter",
+    runtime: "extensionHost",
     permission_risk: "high",
     update_available: false,
     last_error: null,
@@ -233,12 +233,21 @@ function officialPrivacyFilterDetail(): PluginDetail {
       name: "Privacy Filter",
       version: "1.0.0",
       apiVersion: "1.0.0",
-      runtime: { kind: "native", engine: "privacyFilter" },
-      hooks: [
-        { name: "gateway.request.afterBodyRead", priority: 10, failurePolicy: "fail-open" },
-        { name: "log.beforePersist", priority: 10, failurePolicy: "fail-open" },
+      runtime: { kind: "extensionHost", language: "typescript" },
+      main: "dist/extension.js",
+      activationEvents: [
+        "onGatewayHook:gateway.request.afterBodyRead",
+        "onGatewayHook:gateway.request.beforeSend",
+        "onGatewayHook:log.beforePersist",
       ],
-      permissions: ["request.body.read", "request.body.write", "log.redact"],
+      capabilities: ["gateway.hooks", "privacy.redact"],
+      contributes: {
+        gatewayHooks: [
+          { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
+          { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
+          { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+        ],
+      },
       hostCompatibility: {
         app: ">=0.56.0 <1.0.0",
         pluginApi: "^1.0.0",
@@ -412,6 +421,7 @@ function officialPrivacyFilterDetail(): PluginDetail {
       },
     ],
     runtime_failures: [],
+    rollback_versions: [],
   };
 }
 

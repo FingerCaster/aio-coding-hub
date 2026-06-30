@@ -1,7 +1,95 @@
 {
   "apiVersion": "1.0.0",
+  "manifestVersion": "1.0.0",
   "defaultHookTimeoutMs": 150,
   "defaultFailurePolicy": "fail-open",
+  "runtimes": {
+    "extensionHost": {
+      "language": "typescript",
+      "requiresMain": true,
+      "mainOutput": "bundled JavaScript or CommonJS file",
+      "allowedMainExtensions": [".js", ".cjs"],
+      "lifecycle": {
+        "activation": "host-managed worker activation from manifest main",
+        "hookTimeoutMs": 150,
+        "failurePolicy": "fail-open by default",
+        "dispose": "host disposes worker state when plugin snapshot changes, disables, updates, or uninstalls"
+      },
+      "status": "contract"
+    }
+  },
+  "activationEvents": [
+    "onStartup",
+    "onCommand:<command>",
+    "onProviderEditor:<providerType>",
+    "onProtocolBridge:<bridgeType>",
+    "onGatewayHook:<hookName>"
+  ],
+  "capabilities": [
+    "commands.execute",
+    "storage.plugin",
+    "diagnostics.read",
+    "privacy.redact",
+    "provider.extensionValues",
+    "provider.requestPreparation",
+    "provider.modelDiscovery",
+    "provider.healthCheck",
+    "protocol.bridge",
+    "gateway.hooks"
+  ],
+  "uiContributionSlots": [
+    "app.sidebar.items",
+    "home.overview.cards",
+    "providers.editor.sections",
+    "providers.editor.fields",
+    "providers.card.badges",
+    "providers.card.actions",
+    "settings.sections",
+    "logs.detail.tabs",
+    "logs.detail.actions",
+    "usage.panels",
+    "plugins.detail.panels"
+  ],
+  "contributionPoints": [
+    "providers",
+    "protocols",
+    "protocolBridges",
+    "commands",
+    "gatewayHooks",
+    "ui"
+  ],
+  "capabilityDependencies": {
+    "commands": ["commands.execute"],
+    "providers": ["provider.extensionValues"],
+    "ui.providers.editor.sections": ["provider.extensionValues"],
+    "ui.providers.editor.fields": ["provider.extensionValues"],
+    "ui.buttonCommandFields": ["commands.execute"],
+    "gatewayHooks": ["gateway.hooks"],
+    "protocolBridges": ["protocol.bridge"]
+  },
+  "providerContribution": {
+    "requiredFields": ["providerType", "displayName", "targetCliKeys", "extensionNamespace"],
+    "targetCliKeys": ["claude", "codex", "gemini"]
+  },
+  "protocolContribution": {
+    "requiredFields": ["protocolId", "direction"],
+    "directions": ["inbound", "outbound", "both"]
+  },
+  "protocolBridgeContribution": {
+    "requiredFields": ["bridgeType", "inboundProtocol", "outboundProtocol"],
+    "optionalFields": ["supportsStreaming"],
+    "status": "mvp-skeleton",
+    "executionBoundary": "manifest declaration, capability dependency, and install preview only; full protocol bridge execution is future host integration"
+  },
+  "commandContribution": {
+    "requiredFields": ["command", "title"],
+    "optionalFields": ["category"]
+  },
+  "hostRenderedSchema": {
+    "schemaTypes": ["section", "panel", "badge"],
+    "fieldTypes": ["text", "password", "number", "boolean", "select", "textarea", "info", "button"],
+    "badgeTones": ["neutral", "success", "warning", "danger"]
+  },
   "activeHooks": [
     "gateway.request.afterBodyRead",
     "gateway.request.beforeSend",
@@ -15,13 +103,7 @@
     "gateway.request.beforeProviderResolution",
     "gateway.response.headers"
   ],
-  "activeMutationFields": [
-    "requestBody",
-    "responseBody",
-    "streamChunk",
-    "logMessage",
-    "headers"
-  ],
+  "activeMutationFields": ["requestBody", "responseBody", "streamChunk", "logMessage", "headers"],
   "configSchemaTypes": ["object", "array", "string", "password", "number", "integer", "boolean"],
   "activePermissions": [
     "request.meta.read",
@@ -48,6 +130,11 @@
   "hookMatrix": {
     "gateway.request.afterBodyRead": {
       "phase": "after request body read and before upstream provider send",
+      "kind": "request",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": [
         "request.meta.read",
         "request.header.read",
@@ -55,6 +142,9 @@
         "request.body.read"
       ],
       "writePermissions": ["request.header.write", "request.body.write"],
+      "permissionDependencies": {
+        "request.body.write": ["request.body.read"]
+      },
       "mutationFields": ["headers", "requestBody"],
       "contextFields": [
         "traceId",
@@ -70,6 +160,11 @@
     },
     "gateway.request.beforeSend": {
       "phase": "after provider resolution and before upstream provider send",
+      "kind": "request",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": [
         "request.meta.read",
         "request.header.read",
@@ -77,6 +172,7 @@
         "request.body.read"
       ],
       "writePermissions": ["request.header.write", "request.body.write"],
+      "permissionDependencies": {},
       "mutationFields": ["headers", "requestBody"],
       "contextFields": [
         "traceId",
@@ -92,44 +188,79 @@
     },
     "gateway.response.chunk": {
       "phase": "for each bounded streaming response chunk",
+      "kind": "stream",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["stream.inspect"],
       "writePermissions": ["stream.modify"],
+      "permissionDependencies": {
+        "stream.modify": ["stream.inspect"]
+      },
       "mutationFields": ["streamChunk"],
       "contextFields": ["traceId", "stream.sequence", "stream.chunk"]
     },
     "gateway.response.after": {
       "phase": "after a complete non-streaming upstream response body is available",
+      "kind": "response",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
+      "permissionDependencies": {
+        "response.body.write": ["response.body.read"]
+      },
       "mutationFields": ["headers", "responseBody"],
-      "contextFields": [
-        "traceId",
-        "response.status",
-        "response.headers",
-        "response.body"
-      ]
+      "contextFields": ["traceId", "response.status", "response.headers", "response.body"]
     },
     "gateway.error": {
       "phase": "after gateway error response materialization and before it is sent",
+      "kind": "response",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
+      "permissionDependencies": {},
       "mutationFields": ["headers", "responseBody"],
-      "contextFields": [
-        "traceId",
-        "response.status",
-        "response.headers",
-        "response.body"
-      ]
+      "contextFields": ["traceId", "response.status", "response.headers", "response.body"]
     },
     "log.beforePersist": {
       "phase": "before gateway request log persistence",
+      "kind": "log",
+      "status": "active",
+      "defaultFailurePolicy": "fail-open",
+      "timeoutMs": 150,
+      "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["log.redact"],
       "writePermissions": ["log.redact"],
+      "permissionDependencies": {},
       "mutationFields": ["logMessage"],
       "contextFields": ["traceId", "log.message"]
     }
   },
-  "communityRuntimes": ["declarativeRules"],
-  "policyGatedRuntimes": ["wasm"],
-  "officialRuntimes": ["native:privacyFilter"]
+  "extensionHostContract": {
+    "runtime": "extensionHost",
+    "language": "typescript",
+    "requiresMain": true,
+    "entryField": "main",
+    "mainOutput": "dist/extension.js",
+    "supportedSourceLanguages": ["typescript", "javascript"],
+    "bundleOutputLanguages": ["javascript", "commonjs"],
+    "lifecycle": {
+      "activate": "module exports activate(api)",
+      "gatewayRegistration": "api.gateway.registerHook",
+      "privacyRedaction": "api.privacy.redactText and api.privacy.redactRequestBody when privacy.redact is declared",
+      "defaultHookTimeoutMs": 150,
+      "defaultFailurePolicy": "fail-open",
+      "dispose": "host-managed"
+    },
+    "status": "mainline-contract"
+  },
+  "communityRuntimes": ["extensionHost"],
+  "unsupportedLegacyRuntimes": ["wasm", "process", "native"]
 }

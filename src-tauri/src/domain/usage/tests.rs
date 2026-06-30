@@ -98,6 +98,15 @@ fn parse_sse_done_marker_marks_completion_seen() {
 }
 
 #[test]
+fn parse_claude_message_stop_type_marks_completion_seen() {
+    let sse = b"data: {\"type\":\"message_stop\"}\n\n";
+    let mut tracker = SseUsageTracker::new("claude");
+    tracker.ingest_chunk(sse);
+    tracker.finalize();
+    assert!(tracker.completion_seen());
+}
+
+#[test]
 fn parse_codex_response_completed_marks_completion_seen() {
     let sse = b"data: {\"type\":\"response.completed\",\"response\":{\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n";
     let mut tracker = SseUsageTracker::new("codex");
@@ -107,6 +116,24 @@ fn parse_codex_response_completed_marks_completion_seen() {
     assert_eq!(extract.metrics.input_tokens, Some(1));
     assert_eq!(extract.metrics.output_tokens, Some(2));
     assert_eq!(extract.metrics.total_tokens, Some(3));
+}
+
+#[test]
+fn parse_openai_chat_finish_reason_marks_completion_seen() {
+    let sse = b"data: {\"choices\":[{\"finish_reason\":\"stop\"}]}\n\n";
+    let mut tracker = SseUsageTracker::new("codex");
+    tracker.ingest_chunk(sse);
+    tracker.finalize();
+    assert!(tracker.completion_seen());
+}
+
+#[test]
+fn parse_gemini_finish_reason_marks_completion_seen() {
+    let sse = b"data: {\"candidates\":[{\"finishReason\":\"STOP\"}]}\n\n";
+    let mut tracker = SseUsageTracker::new("gemini");
+    tracker.ingest_chunk(sse);
+    tracker.finalize();
+    assert!(tracker.completion_seen());
 }
 
 #[test]

@@ -1,4 +1,9 @@
-import { isPersistedRequestLogInProgress, requestLogCreatedAtMs } from "./requestLogState";
+import {
+  isPersistedRequestLogInProgress,
+  requestLogActivityState,
+  requestLogCreatedAtMs,
+  type RequestLogActivityState,
+} from "./requestLogState";
 import type { RequestLogSummary } from "./requestLogs";
 import { resolveClaudeModelMappingFromSpecialSettings } from "./requestLogSpecialSettings";
 import type { TraceSession } from "./traceStore";
@@ -15,6 +20,7 @@ export type ProjectedRealtimeCard = {
 export type ProjectedRequestLogRow = {
   log: RequestLogSummary;
   liveTrace: TraceSession | null;
+  activityState: RequestLogActivityState;
 };
 
 export type RequestActivityProjection = {
@@ -160,6 +166,7 @@ export function buildRequestActivityProjection({
       return {
         log,
         liveTrace: traceId ? (mergedTraceMap.get(traceId) ?? null) : null,
+        activityState: requestLogActivityState(log, nowMs),
       };
     });
 

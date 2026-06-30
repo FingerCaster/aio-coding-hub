@@ -437,7 +437,7 @@ describe("pages/providers/ProvidersView", () => {
     } as any);
 
     const toggleMutation = { isPending: false, mutateAsync: vi.fn() };
-    toggleMutation.mutateAsync.mockResolvedValue({ ...providers[1], enabled: true });
+    toggleMutation.mutateAsync.mockResolvedValue({ ...providers[0], enabled: false });
     vi.mocked(useProviderSetEnabledMutation).mockReturnValue(toggleMutation as any);
 
     const deleteMutation = { isPending: false, mutateAsync: vi.fn() };
@@ -475,10 +475,10 @@ describe("pages/providers/ProvidersView", () => {
     expect(orderPanel.getByText("P3")).toBeInTheDocument();
     expect(orderPanel.queryByText("P2")).not.toBeInTheDocument();
 
-    // Toggle provider 2 to enabled.
-    fireEvent.click(screen.getAllByRole("switch")[1]!);
+    // Toggle provider 1 from the Default route order switch.
+    fireEvent.click(orderPanel.getByRole("switch", { name: "P1 在调用顺序中启用" }));
     await waitFor(() =>
-      expect(toggleMutation.mutateAsync).toHaveBeenCalledWith({ providerId: 2, enabled: true })
+      expect(toggleMutation.mutateAsync).toHaveBeenCalledWith({ providerId: 1, enabled: false })
     );
 
     // Reset circuit for provider 1 (OPEN).
@@ -1191,7 +1191,8 @@ describe("pages/providers/ProvidersView", () => {
     expect(orderPanel.queryByLabelText("第 2 位")).not.toBeInTheDocument();
     expect(orderPanel.getByText("1/2")).toBeInTheDocument();
 
-    const p1Switch = orderPanel.getByRole("switch", { name: "P1 在模板中启用" });
+    expect(orderPanel.queryByText("关闭")).not.toBeInTheDocument();
+    const p1Switch = orderPanel.getByRole("switch", { name: "P1 在调用顺序中启用" });
     expect(p1Switch).not.toBeChecked();
     fireEvent.click(p1Switch);
 
@@ -1795,6 +1796,10 @@ describe("pages/providers/ProvidersView", () => {
     const toggleMutation = { mutateAsync: vi.fn() };
     toggleMutation.mutateAsync.mockResolvedValueOnce(null).mockRejectedValueOnce(new Error("boom"));
     vi.mocked(useProviderSetEnabledMutation).mockReturnValue(toggleMutation as any);
+    vi.mocked(useDefaultRouteProvidersQuery).mockReturnValue({
+      data: [{ provider_id: 2 }],
+      isFetching: false,
+    } as any);
 
     const resetProviderMutation = { mutateAsync: vi.fn() };
     resetProviderMutation.mutateAsync
@@ -1822,10 +1827,11 @@ describe("pages/providers/ProvidersView", () => {
     renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={vi.fn()} />);
 
     // toggle enabled: null branch, then error branch after the per-provider gate releases
-    fireEvent.click(screen.getAllByRole("switch")[1]!);
+    const orderPanel = within(screen.getByRole("complementary", { name: "供应商调用顺序" }));
+    fireEvent.click(orderPanel.getByRole("switch", { name: "P2 在调用顺序中启用" }));
     await waitFor(() => expect(toggleMutation.mutateAsync).toHaveBeenCalledTimes(1));
     await Promise.resolve();
-    fireEvent.click(screen.getAllByRole("switch")[1]!);
+    fireEvent.click(orderPanel.getByRole("switch", { name: "P2 在调用顺序中启用" }));
     await waitFor(() => expect(toggleMutation.mutateAsync).toHaveBeenCalledTimes(2));
     await waitFor(() => expect(toast).toHaveBeenCalledWith("更新失败：Error: boom"));
 
