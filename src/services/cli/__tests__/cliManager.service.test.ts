@@ -1,7 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { commands } from "../../../generated/bindings";
 import { logToConsole } from "../../consoleLog";
-import { invokeTauriOrNull } from "../../tauriInvoke";
 import {
   type ClaudeEnvState,
   type ClaudeHooksState,
@@ -38,6 +37,7 @@ vi.mock("../../../generated/bindings", async () => {
       cliManagerCodexConfigTomlGet: vi.fn(),
       cliManagerCodexConfigTomlValidate: vi.fn(),
       cliManagerCodexConfigTomlSet: vi.fn(),
+      cliManagerCodexProviderSync: vi.fn(),
       cliManagerClaudeEnvSet: vi.fn(),
       cliManagerClaudeHooksGet: vi.fn(),
       cliManagerClaudeHooksSet: vi.fn(),
@@ -52,14 +52,6 @@ vi.mock("../../consoleLog", async () => {
   return {
     ...actual,
     logToConsole: vi.fn(),
-  };
-});
-
-vi.mock("../../tauriInvoke", async () => {
-  const actual = await vi.importActual<typeof import("../../tauriInvoke")>("../../tauriInvoke");
-  return {
-    ...actual,
-    invokeTauriOrNull: vi.fn(),
   };
 });
 
@@ -254,17 +246,20 @@ describe("services/cli/cliManager", () => {
       status: "ok",
       data: makeClaudeSettingsState(),
     });
-    vi.mocked(invokeTauriOrNull).mockResolvedValueOnce({
+    vi.mocked(commands.cliManagerCodexProviderSync).mockResolvedValue({
       status: "ok",
-      target_provider: "aio",
-      trigger: "manual",
-      backup_dir: null,
-      changed_session_files: [],
-      sqlite_provider_rows_updated: 0,
-      sqlite_user_event_rows_updated: 0,
-      sqlite_cwd_rows_updated: 0,
-      updated_workspace_roots: [],
-      warning: null,
+      data: {
+        status: "ok",
+        target_provider: "aio",
+        trigger: "manual",
+        backup_dir: null,
+        changed_session_files: [],
+        sqlite_provider_rows_updated: 0,
+        sqlite_user_event_rows_updated: 0,
+        sqlite_cwd_rows_updated: 0,
+        updated_workspace_roots: [],
+        warning: null,
+      },
     });
 
     await cliManagerCodexInfoGet();
@@ -311,8 +306,6 @@ describe("services/cli/cliManager", () => {
     );
 
     await cliManagerCodexProviderSync();
-    expect(invokeTauriOrNull).toHaveBeenCalledWith("cli_manager_codex_provider_sync", undefined, {
-      timeoutMs: 0,
-    });
+    expect(commands.cliManagerCodexProviderSync).toHaveBeenCalledWith();
   });
 });

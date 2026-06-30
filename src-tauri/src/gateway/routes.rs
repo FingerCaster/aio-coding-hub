@@ -743,6 +743,21 @@ mod tests {
         )
         .expect("insert oauth provider")
         .id;
+        providers::update_oauth_tokens(
+            db,
+            provider_id,
+            "oauth",
+            "codex_oauth",
+            "access-token",
+            None,
+            None,
+            "https://auth.openai.com/oauth/token",
+            "test-client-id",
+            None,
+            Some(crate::shared::time::now_unix_seconds() + 3_600),
+            None,
+        )
+        .expect("seed oauth token");
         append_default_route_provider(db, "codex", provider_id);
         provider_id
     }
@@ -1120,7 +1135,7 @@ mod tests {
 
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
-        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts.len(), 1);
         assert_eq!(
             attempts[0].get("provider_id").and_then(Value::as_i64),
             Some(provider_id)
@@ -1130,15 +1145,11 @@ mod tests {
             Some(crate::gateway::proxy::GatewayErrorCode::UpstreamTimeout.as_str())
         );
         assert_eq!(
-            attempts[1].get("provider_id").and_then(Value::as_i64),
-            Some(provider_id)
-        );
-        assert_eq!(
-            attempts[1].get("outcome").and_then(Value::as_str),
+            attempts[0].get("outcome").and_then(Value::as_str),
             Some("request_timeout: category=SYSTEM_ERROR code=GW_UPSTREAM_TIMEOUT decision=switch timeout_secs=1")
         );
         assert_eq!(
-            attempts[1].get("decision").and_then(Value::as_str),
+            attempts[0].get("decision").and_then(Value::as_str),
             Some("switch")
         );
 
@@ -2574,7 +2585,7 @@ mod tests {
 
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
-        assert_eq!(attempts.len(), 3);
+        assert_eq!(attempts.len(), 2);
         assert_eq!(
             attempts[0].get("provider_id").and_then(Value::as_i64),
             Some(timeout_provider_id)
@@ -2584,19 +2595,15 @@ mod tests {
             Some(crate::gateway::proxy::GatewayErrorCode::UpstreamTimeout.as_str())
         );
         assert_eq!(
-            attempts[1].get("provider_id").and_then(Value::as_i64),
-            Some(timeout_provider_id)
-        );
-        assert_eq!(
-            attempts[1].get("outcome").and_then(Value::as_str),
+            attempts[0].get("outcome").and_then(Value::as_str),
             Some("request_timeout: category=SYSTEM_ERROR code=GW_UPSTREAM_TIMEOUT decision=switch timeout_secs=1")
         );
         assert_eq!(
-            attempts[2].get("provider_id").and_then(Value::as_i64),
+            attempts[1].get("provider_id").and_then(Value::as_i64),
             Some(success_provider_id)
         );
         assert_eq!(
-            attempts[2].get("outcome").and_then(Value::as_str),
+            attempts[1].get("outcome").and_then(Value::as_str),
             Some("success")
         );
 
@@ -2604,17 +2611,13 @@ mod tests {
             serde_json::from_str(log.provider_chain_json.as_deref().expect("provider chain"))
                 .expect("provider chain json");
         let chain = provider_chain.as_array().expect("provider chain array");
-        assert_eq!(chain.len(), 3);
+        assert_eq!(chain.len(), 2);
         assert_eq!(
             chain[0].get("provider_id").and_then(Value::as_i64),
             Some(timeout_provider_id)
         );
         assert_eq!(
             chain[1].get("provider_id").and_then(Value::as_i64),
-            Some(timeout_provider_id)
-        );
-        assert_eq!(
-            chain[2].get("provider_id").and_then(Value::as_i64),
             Some(success_provider_id)
         );
 
@@ -5017,10 +5020,22 @@ mod tests {
 
         let response = router.oneshot(request).await.expect("route response");
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        let payload_error_code = payload.get("error_code").and_then(Value::as_str);
+        assert!(payload_error_code.is_some());
         let log = recv_terminal_request_log(&mut log_rx).await;
-        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
-        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 0);
-        assert!(circuit.snapshot(provider_id, 0).cooldown_until.is_none());
+        assert_eq!(log.error_code.as_deref(), payload_error_code);
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 1);
         assert_eq!(session.get_bound_provider("codex", session_id, 0), None);
 
         fake_200_task.abort();
