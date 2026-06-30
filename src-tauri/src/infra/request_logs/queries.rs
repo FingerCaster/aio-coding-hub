@@ -8,13 +8,14 @@ use std::collections::HashMap;
 
 use super::costing::cost_usd_from_femto;
 use super::{
-    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogRouteHop,
-    RequestLogSummary,
+    CodexReasoningGuardModelEffortStat, CodexReasoningGuardModelStat, CodexReasoningGuardStats,
+    RequestLogDetail, RequestLogRouteHop, RequestLogSummary,
 };
 
 const CLAUDE_VISIBLE_LOG_PATH: &str = "/v1/messages";
 const CLAUDE_VISIBLE_LOG_CONDITION: &str = "(cli_key != 'claude' OR path = '/v1/messages')";
 const UNKNOWN_CODEX_REQUESTED_MODEL_LABEL: &str = "未识别模型";
+const UNKNOWN_CODEX_REASONING_EFFORT_LABEL: &str = "unknown";
 
 /// Common SELECT fields for request_logs queries (summary view).
 const REQUEST_LOG_SUMMARY_FIELDS: &str = "
@@ -784,6 +785,157 @@ ORDER BY
         });
     }
 
+    let by_model_and_effort_sql = format!(
+        r#"
+WITH codex_requests AS (
+  SELECT
+    id,
+    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown_model}') AS requested_model,
+    COALESCE(
+      (
+        SELECT
+          CASE LOWER(TRIM(COALESCE(
+            json_extract(effort.value, '$.effort'),
+            json_extract(effort.value, '$.rawEffort')
+          )))
+            WHEN 'none' THEN 'none'
+            WHEN 'minimal' THEN 'minimal'
+            WHEN 'low' THEN 'low'
+            WHEN 'medium' THEN 'medium'
+            WHEN 'high' THEN 'high'
+            WHEN 'xhigh' THEN 'xhigh'
+            ELSE NULL
+          END
+        FROM json_each(request_logs.special_settings_json) AS effort
+        WHERE json_extract(effort.value, '$.type') = 'codex_reasoning_effort'
+          AND (
+            json_extract(effort.value, '$.effort') IS NOT NULL
+            OR json_extract(effort.value, '$.rawEffort') IS NOT NULL
+          )
+        ORDER BY CAST(effort.key AS INTEGER) DESC
+        LIMIT 1
+      ),
+      CASE COALESCE(NULLIF(TRIM(requested_model), ''), '')
+        WHEN 'gpt-5.5' THEN 'medium'
+        WHEN 'gpt-5.5-pro' THEN 'high'
+        WHEN 'gpt-5.4' THEN 'none'
+        WHEN 'gpt-5.4-mini' THEN 'none'
+        WHEN 'gpt-5.4-nano' THEN 'none'
+        WHEN 'gpt-5.4-pro' THEN 'medium'
+        ELSE '{unknown_effort}'
+      END
+    ) AS reasoning_effort
+  FROM request_logs
+  WHERE cli_key = 'codex'{time_filter}
+),
+guard_hit_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    codex_requests.requested_model AS requested_model,
+    codex_requests.reasoning_effort AS reasoning_effort
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+),
+guard_hit_requests AS (
+  SELECT request_id, requested_model, reasoning_effort, COUNT(1) AS hit_attempt_count
+  FROM guard_hit_attempts
+  GROUP BY request_id, requested_model, reasoning_effort
+),
+totals_by_model_effort AS (
+  SELECT requested_model, reasoning_effort, COUNT(*) AS total_request_count
+  FROM codex_requests
+  GROUP BY requested_model, reasoning_effort
+),
+hits_by_model_effort AS (
+  SELECT
+    requested_model,
+    reasoning_effort,
+    COUNT(*) AS hit_request_count,
+    COALESCE(SUM(hit_attempt_count), 0) AS hit_attempt_count
+  FROM guard_hit_requests
+  GROUP BY requested_model, reasoning_effort
+)
+SELECT
+  totals_by_model_effort.requested_model AS requested_model,
+  totals_by_model_effort.reasoning_effort AS reasoning_effort,
+  totals_by_model_effort.total_request_count AS total_request_count,
+  COALESCE(hits_by_model_effort.hit_request_count, 0) AS hit_request_count,
+  totals_by_model_effort.total_request_count - COALESCE(hits_by_model_effort.hit_request_count, 0) AS normal_request_count,
+  COALESCE(hits_by_model_effort.hit_attempt_count, 0) AS hit_attempt_count
+FROM totals_by_model_effort
+LEFT JOIN hits_by_model_effort
+  ON hits_by_model_effort.requested_model = totals_by_model_effort.requested_model
+  AND hits_by_model_effort.reasoning_effort = totals_by_model_effort.reasoning_effort
+ORDER BY
+  COALESCE(hits_by_model_effort.hit_request_count, 0) DESC,
+  totals_by_model_effort.total_request_count DESC,
+  totals_by_model_effort.requested_model ASC,
+  totals_by_model_effort.reasoning_effort ASC
+"#,
+        unknown_model = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL,
+        unknown_effort = UNKNOWN_CODEX_REASONING_EFFORT_LABEL,
+        time_filter = time_filter
+    );
+
+    let mut stmt = conn.prepare(&by_model_and_effort_sql).map_err(|e| {
+        db_err!("failed to prepare codex reasoning guard model effort stats query: {e}")
+    })?;
+    let mut rows = stmt
+        .query(params_from_iter(range_params.iter().flatten().copied()))
+        .map_err(|e| {
+            db_err!("failed to run codex reasoning guard model effort stats query: {e}")
+        })?;
+
+    let mut by_model_and_effort = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| db_err!("failed to read codex reasoning guard model effort stats row: {e}"))?
+    {
+        let total_model_effort_requests = row
+            .get::<_, i64>("total_request_count")
+            .map_err(|e| {
+                db_err!("invalid codex reasoning guard model effort total_request_count: {e}")
+            })?
+            .max(0);
+        let hit_model_effort_requests = row
+            .get::<_, i64>("hit_request_count")
+            .map_err(|e| {
+                db_err!("invalid codex reasoning guard model effort hit_request_count: {e}")
+            })?
+            .max(0);
+        let hit_rate = if total_model_effort_requests > 0 {
+            hit_model_effort_requests as f64 / total_model_effort_requests as f64
+        } else {
+            0.0
+        };
+
+        by_model_and_effort.push(CodexReasoningGuardModelEffortStat {
+            requested_model: row.get("requested_model").map_err(|e| {
+                db_err!("invalid codex reasoning guard model effort requested_model: {e}")
+            })?,
+            reasoning_effort: row.get("reasoning_effort").map_err(|e| {
+                db_err!("invalid codex reasoning guard model effort reasoning_effort: {e}")
+            })?,
+            total_request_count: total_model_effort_requests,
+            hit_request_count: hit_model_effort_requests,
+            normal_request_count: row
+                .get::<_, i64>("normal_request_count")
+                .map_err(|e| {
+                    db_err!("invalid codex reasoning guard model effort normal_request_count: {e}")
+                })?
+                .max(0),
+            hit_attempt_count: row
+                .get::<_, i64>("hit_attempt_count")
+                .map_err(|e| {
+                    db_err!("invalid codex reasoning guard model effort hit_attempt_count: {e}")
+                })?
+                .max(0),
+            hit_rate,
+        });
+    }
+
     let normal_request_count = (total_request_count - hit_request_count).max(0);
     let hit_rate = if total_request_count > 0 {
         hit_request_count as f64 / total_request_count as f64
@@ -798,6 +950,7 @@ ORDER BY
         total_request_count,
         hit_rate,
         by_model,
+        by_model_and_effort,
     })
 }
 
@@ -1146,7 +1299,9 @@ INSERT INTO request_logs (
             1,
             "trace-codex-hit-a",
             Some("gpt-5-codex"),
-            Some(r#"[{"type":"codex_reasoning_guard"},{"type":"codex_reasoning_guard"}]"#),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard"},{"type":"codex_reasoning_guard"}]"#,
+            ),
         );
         seed_codex_request_log_with_special_settings(
             &conn,
@@ -1163,16 +1318,23 @@ INSERT INTO request_logs (
             Some(r#"[{"type":"codex_reasoning_guard"}]"#),
         );
         seed_codex_request_log_with_special_settings(&conn, 4, "trace-codex-unknown", None, None);
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            5,
+            "trace-codex-default-effort",
+            Some("gpt-5.4-mini"),
+            None,
+        );
         drop(conn);
 
         let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
         assert_eq!(stats.hit_request_count, 2);
         assert_eq!(stats.hit_attempt_count, 3);
-        assert_eq!(stats.normal_request_count, 2);
-        assert_eq!(stats.total_request_count, 4);
-        assert!((stats.hit_rate - 0.5).abs() < f64::EPSILON);
+        assert_eq!(stats.normal_request_count, 3);
+        assert_eq!(stats.total_request_count, 5);
+        assert!((stats.hit_rate - 0.4).abs() < f64::EPSILON);
 
-        assert_eq!(stats.by_model.len(), 3);
+        assert_eq!(stats.by_model.len(), 4);
         assert_eq!(stats.by_model[0].requested_model, "gpt-5-codex");
         assert_eq!(stats.by_model[0].total_request_count, 2);
         assert_eq!(stats.by_model[0].hit_request_count, 1);
@@ -1187,15 +1349,49 @@ INSERT INTO request_logs (
         assert_eq!(stats.by_model[1].hit_attempt_count, 1);
         assert!((stats.by_model[1].hit_rate - 1.0).abs() < f64::EPSILON);
 
-        assert_eq!(
-            stats.by_model[2].requested_model,
-            super::UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
-        );
+        assert_eq!(stats.by_model[2].requested_model, "gpt-5.4-mini");
         assert_eq!(stats.by_model[2].total_request_count, 1);
         assert_eq!(stats.by_model[2].hit_request_count, 0);
         assert_eq!(stats.by_model[2].normal_request_count, 1);
         assert_eq!(stats.by_model[2].hit_attempt_count, 0);
         assert!((stats.by_model[2].hit_rate - 0.0).abs() < f64::EPSILON);
+
+        assert_eq!(
+            stats.by_model[3].requested_model,
+            super::UNKNOWN_CODEX_REQUESTED_MODEL_LABEL
+        );
+        assert_eq!(stats.by_model[3].total_request_count, 1);
+        assert_eq!(stats.by_model[3].hit_request_count, 0);
+        assert_eq!(stats.by_model[3].normal_request_count, 1);
+        assert_eq!(stats.by_model[3].hit_attempt_count, 0);
+        assert!((stats.by_model[3].hit_rate - 0.0).abs() < f64::EPSILON);
+
+        assert_eq!(stats.by_model_and_effort.len(), 5);
+        let codex_high = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "high")
+            .expect("gpt-5-codex high stat");
+        assert_eq!(codex_high.total_request_count, 1);
+        assert_eq!(codex_high.hit_request_count, 1);
+        assert_eq!(codex_high.hit_attempt_count, 2);
+        assert!((codex_high.hit_rate - 1.0).abs() < f64::EPSILON);
+
+        let mini_unknown = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| {
+                row.requested_model == "gpt-5-mini-codex" && row.reasoning_effort == "unknown"
+            })
+            .expect("gpt-5-mini-codex unknown stat");
+        assert_eq!(mini_unknown.hit_request_count, 1);
+
+        let mini_default_none = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5.4-mini" && row.reasoning_effort == "none")
+            .expect("gpt-5.4-mini none stat");
+        assert_eq!(mini_default_none.normal_request_count, 1);
     }
 
     #[test]

@@ -155,6 +155,17 @@ pub struct CodexReasoningGuardModelStat {
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]
+pub struct CodexReasoningGuardModelEffortStat {
+    pub requested_model: String,
+    pub reasoning_effort: String,
+    pub total_request_count: i64,
+    pub hit_request_count: i64,
+    pub normal_request_count: i64,
+    pub hit_attempt_count: i64,
+    pub hit_rate: f64,
+}
+
+#[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct CodexReasoningGuardStats {
     pub hit_request_count: i64,
     pub hit_attempt_count: i64,
@@ -162,4 +173,5 @@ pub struct CodexReasoningGuardStats {
     pub total_request_count: i64,
     pub hit_rate: f64,
     pub by_model: Vec<CodexReasoningGuardModelStat>,
+    pub by_model_and_effort: Vec<CodexReasoningGuardModelEffortStat>,
 }

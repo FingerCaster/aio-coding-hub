@@ -2371,6 +2371,15 @@ export type CodexReasoningGuardExhaustedAction =
   | "return_error"
   | "switch_provider"
   | "switch_model";
+export type CodexReasoningGuardModelEffortStat = {
+  requested_model: string;
+  reasoning_effort: string;
+  total_request_count: number;
+  hit_request_count: number;
+  normal_request_count: number;
+  hit_attempt_count: number;
+  hit_rate: number;
+};
 export type CodexReasoningGuardModelRule = {
   requested_model: string;
   compare_mode?: CodexReasoningGuardCompareMode;
@@ -2392,6 +2401,7 @@ export type CodexReasoningGuardStats = {
   total_request_count: number;
   hit_rate: number;
   by_model: CodexReasoningGuardModelStat[];
+  by_model_and_effort: CodexReasoningGuardModelEffortStat[];
 };
 export type CodexSessionIdCompletionUpdate = { enableCodexSessionIdCompletion: boolean };
 export type ConfigImportResult = {

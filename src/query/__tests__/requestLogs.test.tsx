@@ -371,6 +371,7 @@ describe("query/requestLogs", () => {
       total_request_count: 20,
       hit_rate: 0.25,
       by_model: [],
+      by_model_and_effort: [],
     });
 
     const client = createTestQueryClient();
@@ -395,6 +396,7 @@ describe("query/requestLogs", () => {
         total_request_count: 20,
         hit_rate: 0.25,
         by_model: [],
+        by_model_and_effort: [],
       });
     });
 
@@ -419,6 +421,7 @@ describe("query/requestLogs", () => {
       total_request_count: 20,
       hit_rate: 0.25,
       by_model: [],
+      by_model_and_effort: [],
     });
 
     const client = createTestQueryClient();
@@ -443,6 +446,7 @@ describe("query/requestLogs", () => {
         total_request_count: 20,
         hit_rate: 0.25,
         by_model: [],
+        by_model_and_effort: [],
       });
     });
 
