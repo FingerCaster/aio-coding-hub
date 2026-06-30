@@ -21,6 +21,7 @@ export const GatewayErrorCodes = {
   INTERNAL_ERROR: "GW_INTERNAL_ERROR",
   BODY_TOO_LARGE: "GW_BODY_TOO_LARGE",
   LARGE_BODY_MISSING_MODEL: "GW_LARGE_BODY_MISSING_MODEL",
+  BRIDGE_UNSUPPORTED_FEATURE: "GW_BRIDGE_UNSUPPORTED_FEATURE",
   INVALID_CLI_KEY: "GW_INVALID_CLI_KEY",
   INVALID_BASE_URL: "GW_INVALID_BASE_URL",
   PORT_IN_USE: "GW_PORT_IN_USE",
@@ -64,6 +65,7 @@ export const GatewayErrorShortLabels = {
   [GatewayErrorCodes.INTERNAL_ERROR]: "内部错误",
   [GatewayErrorCodes.BODY_TOO_LARGE]: "请求过大",
   [GatewayErrorCodes.LARGE_BODY_MISSING_MODEL]: "缺少 model",
+  [GatewayErrorCodes.BRIDGE_UNSUPPORTED_FEATURE]: "转译不支持",
   [GatewayErrorCodes.INVALID_CLI_KEY]: "无效CLI",
   [GatewayErrorCodes.INVALID_BASE_URL]: "无效URL",
   [GatewayErrorCodes.PORT_IN_USE]: "端口占用",
@@ -162,6 +164,11 @@ export const GatewayErrorDescriptions = {
     desc: "大请求体缺少 model 字段",
     suggestion:
       "请求体超过了诊断阈值且未声明 model。常见原因：上游客户端或中间代理截断了 body、以非 JSON 方式发送、或漏掉了 model 字段。请检查请求体完整性与格式。",
+  },
+  GW_BRIDGE_UNSUPPORTED_FEATURE: {
+    desc: "桥接协议不支持或无法转译该请求",
+    suggestion:
+      "当前转译目标不支持该请求或响应中的某些协议特性。请移除不支持的字段，或选择原生支持该协议的 Provider。",
   },
   GW_INVALID_CLI_KEY: {
     desc: "无效的 CLI Key",

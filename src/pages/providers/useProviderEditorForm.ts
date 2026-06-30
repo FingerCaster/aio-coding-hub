@@ -29,6 +29,7 @@ import {
   DEFAULT_FORM_VALUES,
   CX2CC_GLOBAL_SOURCE_VALUE,
   deriveAuthMode,
+  deriveCodexBridgeTarget,
   deriveCx2ccSourceValue,
   cliNameFromKey,
 } from "./providerEditorUtils";
@@ -46,7 +47,8 @@ import { logToConsole } from "../../services/consoleLog";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../services/gateway/upstreamRetryPolicy";
 
 export function useProviderEditorForm(props: ProviderEditorDialogProps) {
-  const { open, onOpenChange, onSaved, codexProviders = [] } = props;
+  const { open, onOpenChange, onSaved, codexProviders = [], bridgeSourceProviders } = props;
+  const codexBridgeSourceProviders = bridgeSourceProviders ?? codexProviders;
 
   const mode = props.mode;
   const cliKey = mode === "create" ? props.cliKey : props.provider.cli_key;
@@ -82,6 +84,9 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   );
   const [cx2ccSourceValue, setCx2ccSourceValue] = useState<string>(
     deriveCx2ccSourceValue(editProvider)
+  );
+  const [codexBridgeTarget, setCodexBridgeTarget] = useState<"openai_chat" | "anthropic_messages">(
+    deriveCodexBridgeTarget(editProvider)
   );
   const [oauthStatus, setOauthStatus] = useState<OAuthStatusValue>(null);
   const [oauthLoading, setOauthLoading] = useState(false);
@@ -130,7 +135,9 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       ? Number(cx2ccSourceValue)
       : null;
   const selectedCx2ccSourceProvider = sourceProviderId
-    ? (codexProviders.find((provider) => provider.id === sourceProviderId) ?? null)
+    ? (codexBridgeSourceProviders.find((provider) => provider.id === sourceProviderId) ??
+        codexProviders.find((provider) => provider.id === sourceProviderId)) ||
+      null
     : null;
   const codexGatewayBaseUrl = codexGatewayBaseOrigin
     ? `${codexGatewayBaseOrigin.replace(/\/$/, "")}/v1`
@@ -217,6 +224,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     editingProviderId,
     createInitialValues,
     authMode,
+    codexBridgeTarget,
     costMultiplierValue,
     isCodexGatewaySource,
     selectedCx2ccSourceProvider,
@@ -239,6 +247,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setUpstreamRetryPolicyDraft,
     setAuthMode,
     setCx2ccSourceValue,
+    setCodexBridgeTarget,
     setOauthStatus,
     setOauthLoading,
     setCx2ccFallbackModels,
@@ -259,7 +268,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
         }).length
       : 0;
   const supportsOAuth = cliKey === "codex" || cliKey === "gemini";
-  const supportsCx2cc = cliKey === "claude";
+  const supportsCx2cc = cliKey === "claude" || cliKey === "codex";
 
   const buildPayloadContext = useCallback(
     (): ProviderEditorPayloadContext => ({
@@ -267,6 +276,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       cliKey,
       editingProviderId,
       authMode,
+      codexBridgeTarget,
       baseUrlMode,
       baseUrlRows,
       tags,
@@ -286,6 +296,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       cliKey,
       editingProviderId,
       authMode,
+      codexBridgeTarget,
       baseUrlMode,
       baseUrlRows,
       tags,
@@ -413,6 +424,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   return {
     mode,
     cliKey,
+    editingProviderId,
     open,
     onOpenChange: requestOpenChange,
     saving,
@@ -466,11 +478,14 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     oauthDeviceError,
     cx2ccSourceValue,
     setCx2ccSourceValue,
+    codexBridgeTarget,
+    setCodexBridgeTarget,
     isCodexGatewaySource,
     selectedCx2ccSourceProvider,
     codexGatewayBaseUrl,
     cx2ccFallbackModels,
     codexProviders,
+    codexBridgeSourceProviders,
     save: () => runProviderEditorSave(buildSaveContext()),
     copyApiKey: () => copyApiKeyAction(buildCopyApiKeyContext()),
     handleOAuthLogin: () => oauthLoginAction(buildOAuthContext()),

@@ -22,6 +22,7 @@ import {
   areTagsEqual,
   buildFormValues,
   buildBaseUrlRows,
+  deriveCodexBridgeTarget,
   deriveAuthMode,
   deriveCx2ccSourceValue,
 } from "./providerEditorUtils";
@@ -38,6 +39,7 @@ export type EffectDeps = {
   editingProviderId: number | null;
   createInitialValues: ProviderEditorInitialValues | null;
   authMode: "api_key" | "oauth" | "cx2cc";
+  codexBridgeTarget: "openai_chat" | "anthropic_messages";
   costMultiplierValue: string;
   isCodexGatewaySource: boolean;
   selectedCx2ccSourceProvider: ProviderSummary | null;
@@ -60,6 +62,7 @@ export type EffectDeps = {
   setUpstreamRetryPolicyDraft: (v: UpstreamRetryPolicy) => void;
   setAuthMode: (v: "api_key" | "oauth" | "cx2cc") => void;
   setCx2ccSourceValue: (v: string) => void;
+  setCodexBridgeTarget: (v: "openai_chat" | "anthropic_messages") => void;
   setOauthStatus: (v: ProviderOAuthStatusResult | null) => void;
   setOauthLoading: (v: boolean) => void;
   setCx2ccFallbackModels: (
@@ -95,6 +98,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     baseUrlRowSeqRef,
     oauthStatusRequestSeqRef,
     cancelActiveOAuthLoginAttempt,
+    codexBridgeTarget,
     newBaseUrlRow,
     setBaseUrlMode,
     setBaseUrlRows,
@@ -108,6 +112,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setUpstreamRetryPolicyDraft,
     setAuthMode,
     setCx2ccSourceValue,
+    setCodexBridgeTarget,
     setOauthStatus,
     setOauthLoading,
     setCx2ccFallbackModels,
@@ -158,6 +163,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
         )
       );
       setCx2ccSourceValue(deriveCx2ccSourceValue(createInitialValues));
+      setCodexBridgeTarget(deriveCodexBridgeTarget(createInitialValues));
       setAuthMode(
         deriveCx2ccSourceValue(createInitialValues)
           ? "cx2cc"
@@ -180,6 +186,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     const initialAuthMode = deriveAuthMode(snapshot);
     setAuthMode(initialAuthMode);
     setCx2ccSourceValue(deriveCx2ccSourceValue(snapshot));
+    setCodexBridgeTarget(deriveCodexBridgeTarget(snapshot));
     setOauthStatus(null);
     setBaseUrlMode(snapshot.base_url_mode);
     setBaseUrlRows(snapshot.base_urls.map((url) => newBaseUrlRow(url)));
@@ -230,6 +237,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setAuthMode,
     setBaseUrlMode,
     setBaseUrlRows,
+    setCodexBridgeTarget,
     setClaudeModels,
     setTestModel,
     setCx2ccSourceValue,
@@ -260,6 +268,14 @@ export function useProviderEditorEffects(d: EffectDeps) {
       shouldValidate: false,
     });
   }, [authMode, costMultiplierValue, isCodexGatewaySource, selectedCx2ccSourceProvider, setValue]);
+
+  useEffect(() => {
+    if (!open || authMode !== "cx2cc" || cliKey !== "codex") return;
+    if (!selectedCx2ccSourceProvider) return;
+    const expectedCliKey = codexBridgeTarget === "anthropic_messages" ? "claude" : "codex";
+    if (selectedCx2ccSourceProvider.cli_key === expectedCliKey) return;
+    setCx2ccSourceValue("");
+  }, [authMode, cliKey, codexBridgeTarget, open, selectedCx2ccSourceProvider, setCx2ccSourceValue]);
 
   useEffect(() => {
     if (!open || cliKey !== "claude") return;

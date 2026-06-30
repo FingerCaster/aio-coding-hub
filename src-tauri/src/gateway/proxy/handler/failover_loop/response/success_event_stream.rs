@@ -73,6 +73,7 @@ where
         circuit_before,
         gemini_oauth_response_mode,
         cx2cc_active,
+        active_bridge_type,
         anthropic_stream_requested: _,
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
@@ -912,9 +913,9 @@ where
                     GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = protocol_bridge::stream::BridgeStream::for_cx2cc(
+                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
-                    cx2cc_active,
+                    active_bridge_type,
                     common.requested_model.clone(),
                     common.cx2cc_settings.clone(),
                 );
@@ -950,9 +951,9 @@ where
                 let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = protocol_bridge::stream::BridgeStream::for_cx2cc(
+                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
-                    cx2cc_active,
+                    active_bridge_type,
                     common.requested_model.clone(),
                     common.cx2cc_settings.clone(),
                 );
@@ -989,9 +990,9 @@ where
                     GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = protocol_bridge::stream::BridgeStream::for_cx2cc(
+                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
-                    cx2cc_active,
+                    active_bridge_type,
                     common.requested_model.clone(),
                     common.cx2cc_settings.clone(),
                 );
@@ -1022,9 +1023,9 @@ where
                 let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
                 let upstream =
                     gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = protocol_bridge::stream::BridgeStream::for_cx2cc(
+                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                     upstream,
-                    cx2cc_active,
+                    active_bridge_type,
                     common.requested_model.clone(),
                     common.cx2cc_settings.clone(),
                 );

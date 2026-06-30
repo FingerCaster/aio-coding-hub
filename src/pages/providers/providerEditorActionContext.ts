@@ -39,6 +39,7 @@ export type AuthActionContext = {
   oauthDeviceError: string | null;
   setOauthDeviceError: (v: string | null) => void;
   cx2ccSourceValue: string;
+  codexBridgeTarget: "openai_chat" | "anthropic_messages";
   isCodexGatewaySource: boolean;
   sourceProviderId: number | null;
   selectedCx2ccSourceProvider: ProviderSummary | null;
@@ -75,6 +76,7 @@ export type ProviderEditorPayloadContext = {
   cliKey: CliKey;
   editingProviderId: number | null;
   authMode: "api_key" | "oauth" | "cx2cc";
+  codexBridgeTarget: "openai_chat" | "anthropic_messages";
   baseUrlMode: ProviderBaseUrlMode;
   baseUrlRows: BaseUrlRow[];
   tags: string[];

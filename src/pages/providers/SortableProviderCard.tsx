@@ -185,7 +185,7 @@ export const ProviderCard = memo(function ProviderCard({
 
   const circuitState = useMemo(() => getGatewayCircuitDerivedState(circuit), [circuit]);
   const { isUnavailable, unavailableUntil } = circuitState;
-  const { isOAuth, isCx2cc, isCx2ccGateway } = getProviderTypeInfo(provider);
+  const { isOAuth, isBridge, isCx2ccGateway } = getProviderTypeInfo(provider);
   const [apiKeyDetailsVisible, setApiKeyDetailsVisible] = useState(false);
   const [limitsRefreshing, setLimitsRefreshing] = useState(false);
   const [resetConfirmOpen, setResetConfirmOpen] = useState(false);
@@ -207,15 +207,27 @@ export const ProviderCard = memo(function ProviderCard({
     unavailableUntil != null ? Math.max(0, unavailableUntil - nowUnix) : null;
   const unavailableCountdown =
     unavailableRemaining != null ? formatCountdownSeconds(unavailableRemaining) : null;
-  const cx2ccSourceName =
+  const bridgeSourceName =
     sourceProviderName ??
     sourceProvider?.name ??
     (provider.source_provider_id != null
       ? `#${provider.source_provider_id}`
       : "当前 AIO 服务 Codex 网关");
-  const cx2ccRouteLabel = isCx2ccGateway
+  const bridgeRouteLabel = isCx2ccGateway
     ? "跟随当前 Codex 分流"
     : (sourceProvider?.base_urls[0] ?? "跟随网关默认路由");
+  const bridgeBadgeLabel =
+    provider.bridge_type === "codex_to_openai_chat"
+      ? "Chat"
+      : provider.bridge_type === "codex_to_anthropic_messages"
+        ? "Messages"
+        : "CX2CC";
+  const bridgeTitle =
+    provider.bridge_type === "codex_to_openai_chat"
+      ? "Codex → Chat Completions"
+      : provider.bridge_type === "codex_to_anthropic_messages"
+        ? "Codex → Anthropic Messages"
+        : "CX2CC 转译模式";
   const visibleTags = provider.tags ?? [];
   const resetCreditCount =
     isOAuth && provider.cli_key === "codex"
@@ -317,12 +329,12 @@ export const ProviderCard = memo(function ProviderCard({
                     OAuth
                   </button>
                 </>
-              ) : isCx2cc ? (
+              ) : isBridge ? (
                 <span
                   className="inline-flex w-16 shrink-0 items-center justify-center rounded-full px-2 py-0.5 font-mono text-[10px] bg-violet-50 text-violet-700 dark:bg-violet-900/30 dark:text-violet-400"
-                  title="CX2CC 转译模式"
+                  title={bridgeTitle}
                 >
-                  CX2CC
+                  {bridgeBadgeLabel}
                 </span>
               ) : (
                 <>
@@ -342,7 +354,7 @@ export const ProviderCard = memo(function ProviderCard({
                   </span>
                 </>
               )}
-              {isCx2cc && provider.cost_multiplier !== 0 ? (
+              {isBridge && provider.cost_multiplier !== 0 ? (
                 <span
                   className={cn(
                     "shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px]",
@@ -412,19 +424,19 @@ export const ProviderCard = memo(function ProviderCard({
                     </span>
                   ) : null}
                 </>
-              ) : isCx2cc ? (
+              ) : isBridge ? (
                 <>
                   <span
                     className="truncate font-mono text-xs text-violet-500 dark:text-violet-400 cursor-default"
-                    title={`来源: ${cx2ccSourceName}`}
+                    title={`来源: ${bridgeSourceName}`}
                   >
-                    来源: {cx2ccSourceName}
+                    来源: {bridgeSourceName}
                   </span>
                   <span
                     className="truncate font-mono text-xs text-muted-foreground cursor-default"
-                    title={cx2ccRouteLabel}
+                    title={bridgeRouteLabel}
                   >
-                    {cx2ccRouteLabel}
+                    {bridgeRouteLabel}
                   </span>
                 </>
               ) : apiKeyDetailsVisible ? (

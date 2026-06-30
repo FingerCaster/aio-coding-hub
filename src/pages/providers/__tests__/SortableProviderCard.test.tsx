@@ -429,6 +429,7 @@ describe("pages/providers/SortableProviderCard", () => {
   it("renders cx2cc source summary for a concrete codex provider", () => {
     renderCard(
       {
+        bridge_type: "cx2cc",
         source_provider_id: 7,
         cost_multiplier: 1.8,
       },

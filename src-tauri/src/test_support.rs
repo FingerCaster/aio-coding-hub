@@ -47,6 +47,13 @@ pub struct ProviderUpsertJsonInput {
     pub limit_total_usd: Option<f64>,
 }
 
+#[derive(Debug, Clone)]
+pub struct ProviderUpsertBridgeJsonInput {
+    pub base: ProviderUpsertJsonInput,
+    pub source_provider_id: Option<i64>,
+    pub bridge_type: Option<String>,
+}
+
 fn parse_provider_base_url_mode(
     input: &str,
 ) -> crate::shared::error::AppResult<crate::providers::ProviderBaseUrlMode> {
@@ -262,7 +269,27 @@ pub fn provider_upsert_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     input: ProviderUpsertJsonInput,
 ) -> crate::shared::error::AppResult<serde_json::Value> {
+    provider_upsert_bridge_json(
+        app,
+        ProviderUpsertBridgeJsonInput {
+            base: input,
+            source_provider_id: None,
+            bridge_type: None,
+        },
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn provider_upsert_bridge_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    input: ProviderUpsertBridgeJsonInput,
+) -> crate::shared::error::AppResult<serde_json::Value> {
     let db = crate::infra::db::init(app)?;
+    let ProviderUpsertBridgeJsonInput {
+        base,
+        source_provider_id,
+        bridge_type,
+    } = input;
     let ProviderUpsertJsonInput {
         provider_id,
         cli_key,
@@ -281,7 +308,7 @@ pub fn provider_upsert_json<R: tauri::Runtime>(
         limit_weekly_usd,
         limit_monthly_usd,
         limit_total_usd,
-    } = input;
+    } = base;
     let claude_models = match claude_models {
         None => None,
         Some(value) => Some(
@@ -314,8 +341,8 @@ pub fn provider_upsert_json<R: tauri::Runtime>(
             limit_total_usd,
             tags: None,
             note: None,
-            source_provider_id: None,
-            bridge_type: None,
+            source_provider_id,
+            bridge_type,
             stream_idle_timeout_seconds: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,

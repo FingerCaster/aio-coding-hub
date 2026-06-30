@@ -61,6 +61,7 @@ function makeContext(overrides: Partial<SaveActionContext> = {}): SaveActionCont
     onOpenChange: vi.fn(),
     onSaved: vi.fn(),
     authMode: "api_key",
+    codexBridgeTarget: "openai_chat",
     baseUrlMode: "order",
     baseUrlRows: [{ id: "1", url: "https://example.com/v1", ping: { status: "idle" } }],
     tags: [],

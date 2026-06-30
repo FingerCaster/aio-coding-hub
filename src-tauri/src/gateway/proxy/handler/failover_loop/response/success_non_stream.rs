@@ -198,9 +198,9 @@ fn summarize_json_keys(body_bytes: &[u8]) -> String {
 fn should_passthrough_non_stream_success(
     gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
     cx2cc_buffered_event_stream: bool,
-    cx2cc_active: bool,
+    bridge_active: bool,
 ) -> bool {
-    gemini_oauth_response_mode.is_none() && !cx2cc_buffered_event_stream && !cx2cc_active
+    gemini_oauth_response_mode.is_none() && !cx2cc_buffered_event_stream && !bridge_active
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -315,23 +315,23 @@ async fn read_non_stream_body_with_limit(
     }
 }
 
-fn translate_cx2cc_non_stream_body(
-    cx2cc_active: bool,
+fn translate_bridge_non_stream_body(
+    active_bridge_type: Option<&str>,
     anthropic_stream_requested: bool,
     requested_model: Option<&str>,
     cx2cc_settings: &crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     response_headers: &mut HeaderMap,
     body_bytes: Bytes,
 ) -> Result<Bytes, String> {
-    if !cx2cc_active {
+    let Some(bridge_type) = active_bridge_type else {
         return Ok(body_bytes);
-    }
+    };
 
-    let openai_body: serde_json::Value = serde_json::from_slice(body_bytes.as_ref())
-        .map_err(|err| format!("failed to parse cx2cc response JSON: {err}"))?;
+    let upstream_body: serde_json::Value = serde_json::from_slice(body_bytes.as_ref())
+        .map_err(|err| format!("failed to parse bridge response JSON: {err}"))?;
 
-    let bridge = protocol_bridge::get_bridge("cx2cc")
-        .ok_or_else(|| "cx2cc bridge not registered".to_string())?;
+    let bridge = protocol_bridge::get_bridge(bridge_type)
+        .ok_or_else(|| format!("bridge not registered: {bridge_type}"))?;
     let bridge_ctx = protocol_bridge::BridgeContext {
         claude_models: crate::domain::providers::ClaudeModels::default(),
         cx2cc_settings: cx2cc_settings.clone(),
@@ -343,7 +343,7 @@ fn translate_cx2cc_non_stream_body(
 
     if anthropic_stream_requested {
         let sse_body = bridge
-            .translate_response_to_sse(openai_body, &bridge_ctx)
+            .translate_response_to_sse(upstream_body, &bridge_ctx)
             .map_err(|e| e.to_string())?;
         response_headers.remove(header::CONTENT_LENGTH);
         response_headers.remove(header::CONTENT_ENCODING);
@@ -354,11 +354,11 @@ fn translate_cx2cc_non_stream_body(
         return Ok(sse_body);
     }
 
-    let anthropic_body = bridge
-        .translate_response(openai_body, &bridge_ctx)
+    let translated_body = bridge
+        .translate_response(upstream_body, &bridge_ctx)
         .map_err(|e| e.to_string())?;
-    let encoded = serde_json::to_vec(&anthropic_body)
-        .map_err(|err| format!("failed to serialize anthropic response JSON: {err}"))?;
+    let encoded = serde_json::to_vec(&translated_body)
+        .map_err(|err| format!("failed to serialize bridge response JSON: {err}"))?;
     response_headers.remove(header::CONTENT_LENGTH);
     response_headers.insert(
         header::CONTENT_TYPE,
@@ -414,6 +414,7 @@ where
         circuit_before,
         gemini_oauth_response_mode,
         cx2cc_active,
+        active_bridge_type,
         anthropic_stream_requested,
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
@@ -434,7 +435,7 @@ where
     if should_passthrough_non_stream_success(
         gemini_oauth_response_mode,
         cx2cc_buffered_event_stream,
-        cx2cc_active,
+        active_bridge_type.is_some(),
     ) && !should_inspect_codex_reasoning_guard
     {
         let should_gunzip = has_gzip_content_encoding(&response_headers);
@@ -824,9 +825,9 @@ where
         response_headers.remove(header::CONTENT_LENGTH);
     }
 
-    // CX2CC: translate OpenAI Responses API response → Anthropic Messages API.
-    match translate_cx2cc_non_stream_body(
-        cx2cc_active,
+    // Bridge providers translate upstream protocol responses back to client protocol.
+    match translate_bridge_non_stream_body(
+        active_bridge_type,
         anthropic_stream_requested,
         common.requested_model.as_deref(),
         &common.cx2cc_settings,
@@ -835,10 +836,10 @@ where
     ) {
         Ok(translated_body) => {
             body_bytes = translated_body;
-            if cx2cc_active {
+            if active_bridge_type.is_some() {
                 tracing::debug!(
                     anthropic_stream_requested,
-                    "cx2cc: non-stream response translated OpenAI → Anthropic"
+                    "bridge: non-stream response translated"
                 );
                 emit_gateway_log(
                     &state.app,
@@ -862,42 +863,65 @@ where
             }
         }
         Err(err) => {
-            tracing::warn!("cx2cc: response translation failed: {err}");
+            tracing::warn!("bridge: response translation failed: {err}");
             emit_gateway_log(
                 &state.app,
                 "warn",
-                "CX2CC_RESPONSE_TRANSLATE_FAILED",
-                format!("[CX2CC] response translation failed: {err}"),
+                "BRIDGE_RESPONSE_TRANSLATE_FAILED",
+                format!("[Bridge] response translation failed: {err}"),
             );
 
-            let error_code = GatewayErrorCode::InternalError.as_str();
-            let decision = FailoverDecision::SwitchProvider;
-            let outcome = format!(
-                "cx2cc_response_translate_error: category={} code={} decision={} err={err}",
-                ErrorCategory::SystemError.as_str(),
-                error_code,
-                decision.as_str(),
-            );
+            attempts.push(FailoverAttempt {
+                provider_id,
+                provider_name: provider_ctx_owned.provider_name_base.clone(),
+                base_url: provider_ctx_owned.provider_base_url_base.clone(),
+                outcome: format!(
+                    "bridge_response_translate_error: category={} code={} decision=abort err={err}",
+                    ErrorCategory::NonRetryableClientError.as_str(),
+                    GatewayErrorCode::BridgeUnsupportedFeature.as_str()
+                ),
+                status: Some(StatusCode::BAD_REQUEST.as_u16()),
+                provider_index: Some(provider_index),
+                retry_index: Some(retry_index),
+                session_reuse,
+                error_category: Some(ErrorCategory::NonRetryableClientError.as_str()),
+                error_code: Some(GatewayErrorCode::BridgeUnsupportedFeature.as_str()),
+                decision: Some(FailoverDecision::Abort.as_str()),
+                reason: Some(format!("bridge response translation failed: {err}")),
+                selection_method,
+                reason_code: Some(ErrorCategory::NonRetryableClientError.reason_code()),
+                attempt_started_ms: Some(attempt_started_ms),
+                attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+                circuit_state_before: Some(circuit_before.state.as_str()),
+                circuit_state_after: None,
+                circuit_failure_count: Some(circuit_before.failure_count),
+                circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            });
 
-            return record_system_failure_and_decide_no_cooldown(RecordSystemFailureArgs {
-                ctx,
-                provider_ctx,
-                attempt_ctx,
-                loop_state: LoopState {
-                    attempts,
-                    failed_provider_ids,
-                    last_outcome,
-                    circuit_snapshot,
-                    abort_guard,
-                },
-                status: Some(status.as_u16()),
-                error_code,
-                decision,
-                outcome,
-                reason: format!("cx2cc response translation failed: {err}"),
-                record_circuit_failure: true,
+            let verbose_provider_error = ctx.verbose_provider_error;
+            let resp = finalize::terminal_bridge_error(finalize::TerminalBridgeErrorInput {
+                state,
+                abort_guard,
+                observe: common.observe,
+                attempts: std::mem::take(attempts),
+                cli_key: common.cli_key,
+                method_hint: common.method_hint,
+                forwarded_path: common.forwarded_path,
+                query: common.query,
+                trace_id: common.trace_id,
+                started,
+                created_at_ms,
+                created_at,
+                session_id: common.session_id,
+                requested_model: common.requested_model,
+                special_settings: common.special_settings,
+                verbose_provider_error,
+                error_category: ErrorCategory::NonRetryableClientError.as_str(),
+                error_code: GatewayErrorCode::BridgeUnsupportedFeature.as_str(),
+                reason: format!("bridge response translation failed: {err}"),
             })
             .await;
+            return LoopControl::Return(resp);
         }
     }
 
@@ -1377,7 +1401,7 @@ mod tests {
     use super::{
         buffer_cx2cc_event_stream_as_json, classify_cx2cc_success_payload,
         read_non_stream_body_with_limit, should_passthrough_non_stream_success,
-        translate_cx2cc_non_stream_body, Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
+        translate_bridge_non_stream_body, Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
     };
     use crate::domain::usage;
     use axum::body::Bytes;
@@ -1644,8 +1668,8 @@ mod tests {
         );
         headers.insert(header::CONTENT_LENGTH, HeaderValue::from_static("321"));
 
-        let body = translate_cx2cc_non_stream_body(
-            true,
+        let body = translate_bridge_non_stream_body(
+            Some("cx2cc"),
             true,
             None,
             &crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
@@ -1696,8 +1720,8 @@ mod tests {
             HeaderValue::from_static("application/json"),
         );
 
-        let body = translate_cx2cc_non_stream_body(
-            true,
+        let body = translate_bridge_non_stream_body(
+            Some("cx2cc"),
             true,
             Some("claude-sonnet-4-5"),
             &crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
@@ -1741,8 +1765,8 @@ mod tests {
             HeaderValue::from_static("application/json"),
         );
 
-        let body = translate_cx2cc_non_stream_body(
-            true,
+        let body = translate_bridge_non_stream_body(
+            Some("cx2cc"),
             true,
             Some("claude-opus-4-6"),
             &crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),

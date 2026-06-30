@@ -10,6 +10,10 @@ import type {
 import { normalizeBaseUrlRows } from "./baseUrl";
 import { resolveStreamIdleTimeoutSeconds } from "./providerEditorTimeout";
 import { validateUpstreamRetryPolicy } from "../../services/gateway/upstreamRetryPolicy";
+import {
+  CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
+  CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
+} from "./providerEditorUtils";
 
 export function buildProviderEditorUpsertInput(
   ctx: ProviderEditorPayloadContext
@@ -80,12 +84,21 @@ export function buildProviderEditorUpsertInput(
     finalBaseUrls = [];
     finalBaseUrlMode = "order";
 
-    if (!ctx.sourceProviderId && !ctx.isCodexGatewaySource) {
+    if (ctx.cliKey === "claude" && !ctx.sourceProviderId && !ctx.isCodexGatewaySource) {
       return {
         ok: false,
         error: {
           kind: "message",
           message: "请选择源 Codex 来源",
+        },
+      };
+    }
+    if (ctx.cliKey === "codex" && !ctx.sourceProviderId) {
+      return {
+        ok: false,
+        error: {
+          kind: "message",
+          message: "请选择上游来源",
         },
       };
     }
@@ -117,11 +130,19 @@ export function buildProviderEditorUpsertInput(
   }
 
   const effectiveCostMultiplier =
-    ctx.authMode === "cx2cc" && ctx.isCodexGatewaySource
+    ctx.authMode === "cx2cc" && ctx.cliKey === "claude" && ctx.isCodexGatewaySource
       ? 0
       : ctx.authMode === "cx2cc" && ctx.selectedCx2ccSourceProvider
         ? ctx.selectedCx2ccSourceProvider.cost_multiplier
         : parsed.data.cost_multiplier;
+  const bridgeType =
+    ctx.authMode !== "cx2cc"
+      ? null
+      : ctx.cliKey === "codex"
+        ? ctx.codexBridgeTarget === "anthropic_messages"
+          ? CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
+          : CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE
+        : "cx2cc";
 
   const payload = {
     ...(ctx.editingProviderId ? { providerId: ctx.editingProviderId } : {}),
@@ -152,8 +173,10 @@ export function buildProviderEditorUpsertInput(
       : null,
     ...(ctx.cliKey === "claude" ? { claudeModels: ctx.claudeModels } : {}),
     sourceProviderId:
-      ctx.authMode === "cx2cc" && !ctx.isCodexGatewaySource ? ctx.sourceProviderId : null,
-    bridgeType: ctx.authMode === "cx2cc" ? "cx2cc" : null,
+      ctx.authMode === "cx2cc" && !(ctx.cliKey === "claude" && ctx.isCodexGatewaySource)
+        ? ctx.sourceProviderId
+        : null,
+    bridgeType,
   };
 
   return {

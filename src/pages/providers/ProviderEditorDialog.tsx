@@ -14,6 +14,7 @@ import type { ProviderEditorInitialValues } from "./providerDuplicate";
 import { useProviderEditorForm } from "./useProviderEditorForm";
 import { OAuthSection } from "./OAuthSection";
 import { Cx2ccSection } from "./Cx2ccSection";
+import { CodexBridgeSection } from "./CodexBridgeSection";
 import { ApiKeySection } from "./ApiKeySection";
 import { LimitsSection } from "./LimitsSection";
 import { ClaudeModelSection } from "./ClaudeModelSection";
@@ -25,6 +26,7 @@ type ProviderEditorDialogBaseProps = {
   onOpenChange: (open: boolean) => void;
   onSaved: (cliKey: CliKey) => void;
   codexProviders?: ProviderSummary[];
+  bridgeSourceProviders?: ProviderSummary[];
 };
 
 export type ProviderEditorDialogProps =
@@ -54,7 +56,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
     >
       <div className="space-y-4">
         {/* ── Auth mode selector ── */}
-        {f.supportsOAuth ? (
+        {f.supportsOAuth && !f.supportsCx2cc ? (
           <FormField label="认证方式" hint="选择后下方表单会相应变化">
             <TabList<"api_key" | "oauth">
               ariaLabel="认证方式"
@@ -75,8 +77,8 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
               ariaLabel="认证方式"
               items={[
                 { key: "api_key", label: "API 密钥" },
-                { key: "oauth", label: "OAuth" },
-                { key: "cx2cc", label: "CX2CC 转译" },
+                ...(f.supportsOAuth ? [{ key: "oauth" as const, label: "OAuth 登录" }] : []),
+                { key: "cx2cc", label: f.cliKey === "codex" ? "转译" : "CX2CC 转译" },
               ]}
               value={f.authMode as "api_key" | "oauth" | "cx2cc"}
               onChange={(next) => {
@@ -89,8 +91,10 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
 
         {f.authMode === "oauth" ? (
           <OAuthSection form={f} />
-        ) : f.authMode === "cx2cc" ? (
+        ) : f.authMode === "cx2cc" && f.cliKey === "claude" ? (
           <Cx2ccSection form={f} />
+        ) : f.authMode === "cx2cc" && f.cliKey === "codex" ? (
+          <CodexBridgeSection form={f} />
         ) : (
           <ApiKeySection form={f} />
         )}

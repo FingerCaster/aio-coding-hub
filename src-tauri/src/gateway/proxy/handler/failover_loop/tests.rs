@@ -29,6 +29,31 @@ fn skipped_attempt(reason_code: Option<&'static str>) -> FailoverAttempt {
     }
 }
 
+fn terminal_bridge_attempt() -> FailoverAttempt {
+    FailoverAttempt {
+        provider_id: 1,
+        provider_name: "Bridge".to_string(),
+        base_url: String::new(),
+        outcome: "skipped".to_string(),
+        status: None,
+        provider_index: None,
+        retry_index: None,
+        session_reuse: None,
+        error_category: Some("translation"),
+        error_code: Some(GatewayErrorCode::BridgeUnsupportedFeature.as_str()),
+        decision: Some("skip"),
+        reason: Some("bridge translation failed: previous_response_id unsupported".to_string()),
+        selection_method: Some(dc::SELECTION_METHOD_FILTERED),
+        reason_code: None,
+        attempt_started_ms: Some(1),
+        attempt_duration_ms: Some(0),
+        circuit_state_before: None,
+        circuit_state_after: None,
+        circuit_failure_count: None,
+        circuit_failure_threshold: None,
+    }
+}
+
 fn real_attempt() -> FailoverAttempt {
     FailoverAttempt {
         provider_id: 1,
@@ -166,6 +191,17 @@ fn non_gate_skip_attempts_do_not_finalize_as_unavailable() {
     let attempts = vec![skipped_attempt(None)];
 
     assert!(!should_finalize_as_all_providers_unavailable(&attempts));
+}
+
+#[test]
+fn bridge_translation_attempts_do_not_finalize_as_unavailable() {
+    let attempts = vec![terminal_bridge_attempt()];
+
+    assert!(!should_finalize_as_all_providers_unavailable(&attempts));
+    assert_eq!(
+        attempts[0].error_code,
+        Some(GatewayErrorCode::BridgeUnsupportedFeature.as_str())
+    );
 }
 
 #[test]

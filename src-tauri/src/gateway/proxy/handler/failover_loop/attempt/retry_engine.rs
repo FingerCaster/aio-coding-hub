@@ -164,6 +164,7 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
         circuit_before: &prepared.circuit_snapshot,
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
+        active_bridge_type: prepared.active_bridge_type.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     };
     let provider_ctx = ProviderCtx {

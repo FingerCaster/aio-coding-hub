@@ -39,6 +39,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
   const {
     providers,
     codexProviders,
+    bridgeSourceProviders,
     providersLoading,
     providersRefreshing,
     sortModes,
@@ -339,7 +340,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                               ? (sourceProviderNamesById[provider.source_provider_id] ?? null)
                               : provider.bridge_type === "cx2cc"
                                 ? "当前 AIO 服务 Codex 网关"
-                                : undefined
+                                : null
                           }
                           sourceProvider={
                             provider.source_provider_id != null
@@ -539,6 +540,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
           cliKey={createDialogState.cliKey}
           initialValues={createDialogState.initialValues}
           codexProviders={codexProviders}
+          bridgeSourceProviders={bridgeSourceProviders}
           onSaved={(cliKey) => {
             captureProvidersListScrollPosition(cliKey);
           }}
@@ -554,6 +556,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
           }}
           provider={editTarget}
           codexProviders={codexProviders}
+          bridgeSourceProviders={bridgeSourceProviders}
           onSaved={(cliKey) => {
             captureProvidersListScrollPosition(cliKey);
           }}

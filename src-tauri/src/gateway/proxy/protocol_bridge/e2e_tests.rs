@@ -40,6 +40,23 @@ mod tests {
         assert!(types.contains(&"cx2cc"));
     }
 
+    #[test]
+    fn registry_returns_codex_bridge_types() {
+        let types = registry::available_bridge_types();
+        assert!(types.contains(&"codex_to_openai_chat"));
+        assert!(types.contains(&"codex_to_anthropic_messages"));
+        assert_eq!(
+            get_bridge("codex_to_openai_chat").unwrap().bridge_type,
+            "codex_to_openai_chat"
+        );
+        assert_eq!(
+            get_bridge("codex_to_anthropic_messages")
+                .unwrap()
+                .bridge_type,
+            "codex_to_anthropic_messages"
+        );
+    }
+
     // ── Request round-trip ──────────────────────────────────────────────
 
     #[test]
@@ -130,6 +147,86 @@ mod tests {
 
         // "any" → "required"
         assert_eq!(translated.body["tool_choice"], "required");
+    }
+
+    #[test]
+    fn e2e_codex_responses_to_chat_completions_request() {
+        let bridge = get_bridge("codex_to_openai_chat").unwrap();
+        let ctx = cx2cc_ctx();
+
+        let translated = bridge
+            .translate_request(
+                json!({
+                    "model": "gpt-4.1",
+                    "instructions": "Be helpful.",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+                    "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+                    "tool_choice": "auto",
+                    "stream": true
+                }),
+                &ctx,
+            )
+            .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/chat/completions");
+        assert_eq!(translated.body["model"], "gpt-4.1");
+        assert_eq!(translated.body["messages"][0]["role"], "system");
+        assert_eq!(translated.body["messages"][1]["content"], "Hello");
+        assert_eq!(translated.body["tools"][0]["type"], "function");
+        assert_eq!(translated.body["stream"], true);
+    }
+
+    #[test]
+    fn e2e_codex_responses_to_anthropic_messages_request() {
+        let bridge = get_bridge("codex_to_anthropic_messages").unwrap();
+        let ctx = cx2cc_ctx();
+
+        let translated = bridge
+            .translate_request(
+                json!({
+                    "model": "claude-3-5-sonnet",
+                    "instructions": "Be helpful.",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+                    "tools": [{"type": "function", "name": "lookup", "parameters": {"type": "object"}}],
+                    "tool_choice": "required",
+                    "stream": false
+                }),
+                &ctx,
+            )
+            .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/messages");
+        assert_eq!(translated.body["model"], "claude-3-5-sonnet");
+        assert_eq!(translated.body["system"], "Be helpful.");
+        assert_eq!(
+            translated.body["messages"][0]["content"][0]["text"],
+            "Hello"
+        );
+        assert_eq!(
+            translated.body["tools"][0]["input_schema"]["type"],
+            "object"
+        );
+        assert_eq!(translated.body["tool_choice"]["type"], "any");
+    }
+
+    #[test]
+    fn e2e_codex_bridge_rejects_stateful_responses_request() {
+        let bridge = get_bridge("codex_to_openai_chat").unwrap();
+        let ctx = cx2cc_ctx();
+
+        let err = match bridge.translate_request(
+            json!({
+                "model": "gpt-4.1",
+                "previous_response_id": "resp_123",
+                "input": "Hello"
+            }),
+            &ctx,
+        ) {
+            Ok(_) => panic!("stateful Responses request should fail"),
+            Err(err) => err,
+        };
+
+        assert!(err.to_string().contains("previous_response_id"));
     }
 
     #[test]

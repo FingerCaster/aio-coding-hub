@@ -21,6 +21,7 @@ pub(in crate::gateway) fn status_override_for_error_code(error_code: Option<&str
         GatewayErrorCode::InvalidCliKey => Some(400),
         GatewayErrorCode::BodyTooLarge => Some(413),
         GatewayErrorCode::LargeBodyMissingModel => Some(400),
+        GatewayErrorCode::BridgeUnsupportedFeature => Some(400),
         GatewayErrorCode::ResponseBuildError
         | GatewayErrorCode::InternalError
         | GatewayErrorCode::HttpClientInit => Some(500),
@@ -94,6 +95,12 @@ mod tests {
                 GatewayErrorCode::AllProvidersUnavailable.as_str()
             )),
             Some(503)
+        );
+        assert_eq!(
+            status_override_for_error_code(Some(
+                GatewayErrorCode::BridgeUnsupportedFeature.as_str()
+            )),
+            Some(400)
         );
     }
 
