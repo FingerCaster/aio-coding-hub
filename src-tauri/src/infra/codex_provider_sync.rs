@@ -26,6 +26,13 @@ const CODEX_APP_RUNNING_OVERRIDE_TRUE: u8 = 2;
 
 static CODEX_APP_RUNNING_OVERRIDE: AtomicU8 = AtomicU8::new(CODEX_APP_RUNNING_OVERRIDE_NONE);
 
+fn codex_process_check_failed_message(command: &str, detail: impl AsRef<str>) -> String {
+    format!(
+        "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED: unable to verify whether Codex App is closed before syncing provider settings. Process check command `{command}` failed: {}. Please confirm Codex App is fully closed, then retry.",
+        detail.as_ref()
+    )
+}
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
 pub struct CodexProviderSyncResult {
@@ -364,17 +371,15 @@ fn codex_app_is_running() -> AppResult<bool> {
         let output = std::process::Command::new("cmd")
             .args(["/C", "tasklist /FI \"IMAGENAME eq Codex.exe\" /NH"])
             .output()
-            .map_err(|err| {
-                format!(
-                    "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED: failed to query Codex process list: {err}"
-                )
-            })?;
+            .map_err(|err| codex_process_check_failed_message("tasklist", err.to_string()))?;
         if !output.status.success() {
-            return Err(format!(
-                "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED: tasklist exited with status {}",
-                output.status
-            )
-            .into());
+            let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+            let detail = if stderr.is_empty() {
+                format!("exit status {}", output.status)
+            } else {
+                format!("exit status {}; stderr: {}", output.status, stderr)
+            };
+            return Err(codex_process_check_failed_message("tasklist", detail).into());
         }
         let text = String::from_utf8_lossy(&output.stdout).to_ascii_lowercase();
         Ok(text.contains("codex.exe"))
@@ -389,17 +394,15 @@ fn codex_app_is_running_from_ps() -> AppResult<bool> {
     let output = std::process::Command::new("ps")
         .args(["-axo", "comm="])
         .output()
-        .map_err(|err| {
-            format!(
-                "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED: failed to query Codex process list: {err}"
-            )
-        })?;
+        .map_err(|err| codex_process_check_failed_message("ps", err.to_string()))?;
     if !output.status.success() {
-        return Err(format!(
-            "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED: ps exited with status {}",
-            output.status
-        )
-        .into());
+        let stderr = String::from_utf8_lossy(&output.stderr).trim().to_string();
+        let detail = if stderr.is_empty() {
+            format!("exit status {}", output.status)
+        } else {
+            format!("exit status {}; stderr: {}", output.status, stderr)
+        };
+        return Err(codex_process_check_failed_message("ps", detail).into());
     }
 
     let text = String::from_utf8_lossy(&output.stdout);

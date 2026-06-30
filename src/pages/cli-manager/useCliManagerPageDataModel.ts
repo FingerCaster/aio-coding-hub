@@ -582,6 +582,10 @@ export function useCliManagerPageDataModel() {
         toast("Codex App 正在运行，请先关闭 Codex App 后重试");
         return;
       }
+      if (formatted.error_code === "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED") {
+        toast("无法确认 Codex App 是否已完全关闭，请先手动确认已退出后重试；详情见 Console 日志");
+        return;
+      }
       toast(formatted.toast);
     }
   }

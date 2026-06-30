@@ -92,3 +92,22 @@ fn running_app_override_blocks_sync() {
 
     assert!(is_running, "override should force running state");
 }
+
+#[test]
+fn process_check_failed_message_explains_next_step() {
+    let message = codex_process_check_failed_message("tasklist", "exit status 1");
+
+    assert!(
+        message.contains("CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED"),
+        "{message}"
+    );
+    assert!(
+        message.contains("unable to verify whether Codex App is closed"),
+        "{message}"
+    );
+    assert!(message.contains("tasklist"), "{message}");
+    assert!(
+        message.contains("Please confirm Codex App is fully closed, then retry."),
+        "{message}"
+    );
+}

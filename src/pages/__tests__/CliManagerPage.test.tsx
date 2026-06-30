@@ -554,7 +554,12 @@ describe("pages/CliManagerPage", () => {
         updated_workspace_roots: [],
         warning: null,
       })
-      .mockRejectedValueOnce(new Error("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: running"));
+      .mockRejectedValueOnce(new Error("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: running"))
+      .mockRejectedValueOnce(
+        new Error(
+          "CODEX_PROVIDER_SYNC_PROCESS_CHECK_FAILED: unable to verify whether Codex App is closed before syncing provider settings. Process check command `tasklist` failed: exit status 1. Please confirm Codex App is fully closed, then retry."
+        )
+      );
     vi.mocked(useCliManagerCodexProviderSyncMutation).mockReturnValue(
       codexProviderSyncMutation as any
     );
@@ -634,6 +639,12 @@ describe("pages/CliManagerPage", () => {
     fireEvent.click(screen.getByRole("button", { name: "手动 Provider Sync" }));
     await waitFor(() =>
       expect(toast).toHaveBeenCalledWith("Codex App 正在运行，请先关闭 Codex App 后重试")
+    );
+    fireEvent.click(screen.getByRole("button", { name: "手动 Provider Sync" }));
+    await waitFor(() =>
+      expect(toast).toHaveBeenCalledWith(
+        "无法确认 Codex App 是否已完全关闭，请先手动确认已退出后重试；详情见 Console 日志"
+      )
     );
 
     // Gemini tab refresh
