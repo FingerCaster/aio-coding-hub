@@ -315,7 +315,9 @@ function hookAllowsPermission(hookName: GatewayHookName, permission: PluginPermi
     permission === "request.body.read" ||
     permission === "request.body.write"
   ) {
-    return hookName === "gateway.request.afterBodyRead" || hookName === "gateway.request.beforeSend";
+    return (
+      hookName === "gateway.request.afterBodyRead" || hookName === "gateway.request.beforeSend"
+    );
   }
   if (
     permission === "response.header.read" ||

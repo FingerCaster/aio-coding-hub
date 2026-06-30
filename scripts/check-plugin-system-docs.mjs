@@ -135,11 +135,7 @@ const requiredDocs = [
   },
   {
     path: "docs/plugins/examples/privacy-filter.md",
-    phrases: [
-      "official.privacy-filter",
-      "packyme/privacy-filter",
-      "已移除的内置示例",
-    ],
+    phrases: ["official.privacy-filter", "packyme/privacy-filter", "已移除的内置示例"],
   },
   {
     path: "docs/plugins/architecture/audit.md",

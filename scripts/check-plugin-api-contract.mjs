@@ -148,7 +148,12 @@ if (contract) {
 
   const manifestSpec = readText("docs/plugin-manifest-v1.md");
   requireIncludes("docs/plugin-manifest-v1.md", manifestSpec, contract.activeHooks, "active hook");
-  requireIncludes("docs/plugin-manifest-v1.md", manifestSpec, contract.reservedHooks, "reserved hook");
+  requireIncludes(
+    "docs/plugin-manifest-v1.md",
+    manifestSpec,
+    contract.reservedHooks,
+    "reserved hook"
+  );
   requireIncludes(
     "docs/plugin-manifest-v1.md",
     manifestSpec,
@@ -193,7 +198,12 @@ if (contract) {
 
   const wasmGuidePath = "docs/plugins/runtime/wasm.md";
   const wasmGuide = readText(wasmGuidePath);
-  requireIncludes(wasmGuidePath, wasmGuide, ["wasm", "PLUGIN_RUNTIME_DISABLED"], "WASM policy token");
+  requireIncludes(
+    wasmGuidePath,
+    wasmGuide,
+    ["wasm", "PLUGIN_RUNTIME_DISABLED"],
+    "WASM policy token"
+  );
 
   requireRegex(
     "packages/plugin-sdk/src/index.ts",
@@ -225,7 +235,12 @@ if (contract) {
     ["PLUGIN_RESERVED_HOOK", "PLUGIN_RESERVED_PERMISSION"],
     "reserved validation error"
   );
-  requireNotIncludes("packages/plugin-sdk/src/index.ts", sdk, ["contextPatch"], "legacy mutation field");
+  requireNotIncludes(
+    "packages/plugin-sdk/src/index.ts",
+    sdk,
+    ["contextPatch"],
+    "legacy mutation field"
+  );
   requireNotIncludes(
     "packages/create-aio-plugin/src/scaffold.ts",
     scaffold,

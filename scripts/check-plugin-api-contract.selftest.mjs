@@ -44,10 +44,16 @@ writeFileSync(
   join(root, "src-tauri/src/domain/plugins.rs"),
   "gateway.request.afterBodyRead request.body.read declarativeRules"
 );
-writeFileSync(join(root, "docs/plugin-manifest-v1.md"), "gateway.request.afterBodyRead request.body.read");
+writeFileSync(
+  join(root, "docs/plugin-manifest-v1.md"),
+  "gateway.request.afterBodyRead request.body.read"
+);
 writeFileSync(join(root, "docs/plugins/reference/hooks.md"), "gateway.request.afterBodyRead");
 writeFileSync(join(root, "docs/plugins/reference/permissions.md"), "request.body.read");
-writeFileSync(join(root, "docs/plugins/reference/manifest.md"), "declarativeRules wasm native privacyFilter");
+writeFileSync(
+  join(root, "docs/plugins/reference/manifest.md"),
+  "declarativeRules wasm native privacyFilter"
+);
 writeFileSync(join(root, "docs/plugins/runtime/wasm.md"), "wasm PLUGIN_RUNTIME_DISABLED");
 
 const result = spawnSync("node", ["scripts/check-plugin-api-contract.mjs"], {

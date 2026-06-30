@@ -59,12 +59,7 @@ if (!workspace.includes("packages/*")) {
 }
 
 const sdkCargo = readText("packages/plugin-wasm-sdk/Cargo.toml");
-for (const phrase of [
-  'name = "aio-plugin-wasm-sdk"',
-  "serde",
-  "serde_json",
-  "crate-type",
-]) {
+for (const phrase of ['name = "aio-plugin-wasm-sdk"', "serde", "serde_json", "crate-type"]) {
   if (!sdkCargo.includes(phrase)) {
     failures.push(`packages/plugin-wasm-sdk/Cargo.toml: missing "${phrase}"`);
   }

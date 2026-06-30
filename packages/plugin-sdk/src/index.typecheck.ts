@@ -64,13 +64,13 @@ if (
 
 const replaceRequestResult: PluginHookResult = {
   action: "replace",
-  requestBody: "{\"messages\":[]}",
+  requestBody: '{"messages":[]}',
 };
 
 const replaceResponseHeadersResult: PluginHookResult = {
   action: "replace",
   headers: { "x-plugin-redacted": "1" },
-  responseBody: "{\"ok\":true}",
+  responseBody: '{"ok":true}',
 };
 
 if (replaceRequestResult.action !== "replace" || !replaceResponseHeadersResult.headers) {

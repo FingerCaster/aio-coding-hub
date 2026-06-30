@@ -1,5 +1,6 @@
 dist
 node_modules
+.omx
 .serena
 src-tauri/target
 src-tauri/target-*
@@ -16,3 +17,4 @@ src-tauri/Cargo.lock
 coverage
 pnpm-lock.yaml
 *.md
+src-tauri/wix/*.wxs

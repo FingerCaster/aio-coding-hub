@@ -23,12 +23,7 @@ export const Alert = forwardRef<
   React.HTMLAttributes<HTMLDivElement> & VariantProps<typeof alertVariants>
 >(function Alert({ className, variant, ...props }, ref) {
   return (
-    <div
-      ref={ref}
-      role="alert"
-      className={cn(alertVariants({ variant }), className)}
-      {...props}
-    />
+    <div ref={ref} role="alert" className={cn(alertVariants({ variant }), className)} {...props} />
   );
 });
 
@@ -49,11 +44,5 @@ export const AlertDescription = forwardRef<
   HTMLParagraphElement,
   React.HTMLAttributes<HTMLParagraphElement>
 >(function AlertDescription({ className, ...props }, ref) {
-  return (
-    <div
-      ref={ref}
-      className={cn("text-sm [&_p]:leading-relaxed", className)}
-      {...props}
-    />
-  );
+  return <div ref={ref} className={cn("text-sm [&_p]:leading-relaxed", className)} {...props} />;
 });

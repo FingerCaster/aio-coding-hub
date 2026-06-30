@@ -5,10 +5,7 @@ import { cn } from "@/ui/shadcn/utils";
 export const Separator = forwardRef<
   React.ElementRef<typeof SeparatorPrimitive.Root>,
   React.ComponentPropsWithoutRef<typeof SeparatorPrimitive.Root>
->(function Separator(
-  { className, orientation = "horizontal", decorative = true, ...props },
-  ref
-) {
+>(function Separator({ className, orientation = "horizontal", decorative = true, ...props }, ref) {
   return (
     <SeparatorPrimitive.Root
       ref={ref}
