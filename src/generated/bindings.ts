@@ -2371,7 +2371,6 @@ export type CodexReasoningGuardExhaustedAction =
   | "return_error"
   | "switch_provider"
   | "switch_model";
-export type CodexReasoningGuardRetryPolicy = "single" | "concurrent";
 export type CodexReasoningGuardModelRule = {
   requested_model: string;
   compare_mode?: CodexReasoningGuardCompareMode;
@@ -2385,6 +2384,7 @@ export type CodexReasoningGuardModelStat = {
   hit_attempt_count: number;
   hit_rate: number;
 };
+export type CodexReasoningGuardRetryPolicy = "single" | "concurrent";
 export type CodexReasoningGuardStats = {
   hit_request_count: number;
   hit_attempt_count: number;
