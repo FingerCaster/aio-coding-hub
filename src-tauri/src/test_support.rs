@@ -5,11 +5,7 @@ use std::path::PathBuf;
 #[cfg(test)]
 use crate::shared::mutex_ext::MutexExt;
 #[cfg(test)]
-use std::sync::Arc;
-#[cfg(test)]
 use std::sync::{Mutex, MutexGuard, OnceLock};
-#[cfg(test)]
-use tokio::sync::OwnedMutexGuard;
 
 pub fn clear_settings_cache() {
     crate::settings::clear_cache();
@@ -21,16 +17,6 @@ pub fn test_env_lock() -> MutexGuard<'static, ()> {
     TEST_ENV_LOCK
         .get_or_init(|| Mutex::new(()))
         .lock_or_recover()
-}
-
-#[cfg(test)]
-pub async fn test_env_lock_async() -> OwnedMutexGuard<()> {
-    static TEST_ENV_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
-    TEST_ENV_LOCK
-        .get_or_init(|| Arc::new(tokio::sync::Mutex::new(())))
-        .clone()
-        .lock_owned()
-        .await
 }
 
 fn serialize_json(

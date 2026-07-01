@@ -806,9 +806,10 @@ mod tests {
             .contains("DB_NOT_FOUND: source provider not found"));
     }
 
+    #[allow(clippy::await_holding_lock)]
     #[tokio::test(flavor = "current_thread")]
     async fn codex_bridge_availability_uses_oauth_source_credential() {
-        let _env_lock = crate::test_support::test_env_lock_async().await;
+        let _env_lock = crate::test_support::test_env_lock();
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp
             .path()

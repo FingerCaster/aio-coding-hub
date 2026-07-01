@@ -1720,8 +1720,9 @@ where
 mod tests {
     use super::{
         buffer_cx2cc_event_stream_as_json, classify_cx2cc_success_payload,
-        read_non_stream_body_with_limit, should_passthrough_non_stream_success,
-        translate_bridge_non_stream_body, Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
+        read_non_stream_body_with_limit, resolve_requested_model_for_log,
+        should_passthrough_non_stream_success, translate_bridge_non_stream_body,
+        Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
     };
     use crate::domain::usage;
     use axum::body::Bytes;
@@ -1900,6 +1901,29 @@ mod tests {
     fn cx2cc_non_stream_success_never_uses_passthrough_shortcut() {
         assert!(!should_passthrough_non_stream_success(None, false, true));
         assert!(!should_passthrough_non_stream_success(None, true, true));
+    }
+
+    #[test]
+    fn resolve_requested_model_for_log_prefers_reasoning_guard_fallback_model() {
+        let body = br#"{"model":"gpt-5.4-mini","output":[]}"#;
+
+        let requested_model = resolve_requested_model_for_log(
+            Some("gpt-5.5".to_string()),
+            Some("gpt-5.4"),
+            "codex",
+            body,
+        );
+
+        assert_eq!(requested_model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn resolve_requested_model_for_log_falls_back_to_response_payload_model() {
+        let body = br#"{"model":"gpt-5.4-mini","output":[]}"#;
+
+        let requested_model = resolve_requested_model_for_log(None, None, "codex", body);
+
+        assert_eq!(requested_model.as_deref(), Some("gpt-5.4-mini"));
     }
 
     #[test]

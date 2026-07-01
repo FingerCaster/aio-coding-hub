@@ -1403,3 +1403,37 @@ where
 
     unreachable!("expected event-stream response")
 }
+
+#[cfg(test)]
+mod tests {
+    use super::resolve_requested_model_for_log;
+
+    #[test]
+    fn resolve_requested_model_for_log_prefers_reasoning_guard_fallback_model() {
+        let raw = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-mini\",\"status\":\"in_progress\",\"output\":[]}}\n\n"
+        );
+
+        let requested_model = resolve_requested_model_for_log(
+            Some("gpt-5.5".to_string()),
+            Some("gpt-5.4"),
+            "codex",
+            raw.as_bytes(),
+        );
+
+        assert_eq!(requested_model.as_deref(), Some("gpt-5.4"));
+    }
+
+    #[test]
+    fn resolve_requested_model_for_log_falls_back_to_sse_payload_model() {
+        let raw = concat!(
+            "event: response.created\n",
+            "data: {\"response\":{\"id\":\"resp_123\",\"model\":\"gpt-5.4-mini\",\"status\":\"in_progress\",\"output\":[]}}\n\n"
+        );
+
+        let requested_model = resolve_requested_model_for_log(None, None, "codex", raw.as_bytes());
+
+        assert_eq!(requested_model.as_deref(), Some("gpt-5.4-mini"));
+    }
+}
