@@ -126,8 +126,11 @@ jobs:
       - name: Plugin TypeScript SDK typecheck
         run: pnpm plugin-sdk:typecheck
 
+      - name: Plugin TypeScript SDK tests
+        run: pnpm plugin-sdk:test
+
       - name: Plugin scaffolder tests
-        run: pnpm --filter create-aio-plugin test
+        run: pnpm create-aio-plugin:test
 
       - name: Plugin GUI E2E smoke
         run: pnpm test:e2e
