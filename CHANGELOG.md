@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.60.14](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.13...aio-coding-hub-v0.60.14) (2026-07-01)
+
+
+### Bug Fixes
+
+* avoid requiring Codex to be closed when saving non-provider Codex config fields
+* keep the custom Codex reasoning guard hit label inside the guard details dialog
+* call `tasklist` directly when checking for a running Codex process on Windows
+
+
+### Tests
+
+* add regression coverage for non-provider Codex config saves while Codex is running
+* update Codex tab coverage for the guard hit label dialog placement
+
 ## [0.60.13](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.12...aio-coding-hub-v0.60.13) (2026-07-01)
 
 
