@@ -1,5 +1,14 @@
 # Changelog
 
+## [0.60.13](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.12...aio-coding-hub-v0.60.13) (2026-07-01)
+
+
+### Bug Fixes
+
+* clear provider editor lint and clippy warnings ([aa7f3e7](https://github.com/FingerCaster/aio-coding-hub/commit/aa7f3e7d8b875e17acbe64744caae65ef436deb4))
+* customize codex guard labels and log model fallback ([8b6b83f](https://github.com/FingerCaster/aio-coding-hub/commit/8b6b83ff63668388d88ca9a41c555ca925f2ee12))
+* reconcile codex reasoning effort after terminal failover ([a9fc017](https://github.com/FingerCaster/aio-coding-hub/commit/a9fc0179f19a1edff7632816f762b0b952917c09))
+
 ## [0.60.12](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.11...aio-coding-hub-v0.60.12) (2026-07-01)
 
 
