@@ -1,6 +1,9 @@
 import { isPersistedRequestLogInProgress, requestLogCreatedAtMs } from "./requestLogState";
 import type { RequestLogDetail, RequestLogSummary } from "./requestLogs";
-import { resolveClaudeModelMappingFromSpecialSettings } from "./requestLogSpecialSettings";
+import {
+  hasExplicitCodexReasoningEffortSpecialSetting,
+  resolveClaudeModelMappingFromSpecialSettings,
+} from "./requestLogSpecialSettings";
 import type { TraceSession } from "./traceStore";
 
 export type RequestLogTraceMergeSource = Pick<
@@ -27,6 +30,29 @@ export type RequestLogTraceMergeSource = Pick<
   | "created_at_ms"
   | "created_at"
 >;
+
+function selectTerminalRequestedModel(
+  trace: TraceSession,
+  requestLog: RequestLogTraceMergeSource,
+  summary: TraceSession["summary"] | undefined
+) {
+  return requestLog.requested_model ?? trace.requested_model ?? summary?.requested_model ?? null;
+}
+
+function selectTerminalSpecialSettingsJson(
+  trace: TraceSession,
+  requestLog: RequestLogTraceMergeSource,
+  summary: TraceSession["summary"] | undefined
+) {
+  if (requestLog.special_settings_json != null) return requestLog.special_settings_json;
+  if (hasExplicitCodexReasoningEffortSpecialSetting(trace.special_settings_json)) {
+    return trace.special_settings_json ?? null;
+  }
+  if (hasExplicitCodexReasoningEffortSpecialSetting(summary?.special_settings_json)) {
+    return summary?.special_settings_json ?? null;
+  }
+  return trace.special_settings_json ?? summary?.special_settings_json ?? null;
+}
 
 export function mergeTraceWithRequestLog(
   trace: TraceSession,
@@ -55,12 +81,23 @@ export function mergeTraceWithRequestLog(
   }
 
   const summary = trace.summary;
+  const mergedRequestedModel = requestLogInProgress
+    ? (trace.requested_model ?? requestLog.requested_model ?? summary?.requested_model ?? null)
+    : selectTerminalRequestedModel(trace, requestLog, summary);
+  const mergedSpecialSettingsJson = requestLogInProgress
+    ? (trace.special_settings_json ??
+      requestLog.special_settings_json ??
+      summary?.special_settings_json ??
+      null)
+    : selectTerminalSpecialSettingsJson(trace, requestLog, summary);
   const mergedSummary: NonNullable<TraceSession["summary"]> = {
     trace_id: trace.trace_id,
     cli_key: trace.cli_key,
     method: trace.method,
     path: trace.path,
     query: trace.query,
+    requested_model: mergedRequestedModel,
+    special_settings_json: mergedSpecialSettingsJson,
     status: requestLog.status ?? summary?.status ?? null,
     error_category: summary?.error_category ?? null,
     error_code: requestLog.error_code ?? summary?.error_code ?? null,
@@ -86,8 +123,8 @@ export function mergeTraceWithRequestLog(
   return {
     ...trace,
     session_id: trace.session_id ?? requestLog.session_id ?? null,
-    requested_model: trace.requested_model ?? requestLog.requested_model ?? null,
-    special_settings_json: trace.special_settings_json ?? requestLog.special_settings_json ?? null,
+    requested_model: mergedRequestedModel,
+    special_settings_json: mergedSpecialSettingsJson,
     claude_model_mapping: claudeModelMapping,
     summary: mergedSummary,
     last_seen_ms: Math.max(trace.last_seen_ms, requestLogTsMs),

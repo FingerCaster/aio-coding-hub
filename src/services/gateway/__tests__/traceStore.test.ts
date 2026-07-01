@@ -1,6 +1,7 @@
 import { act, renderHook } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { createRequestLogSummary } from "../requestLogFixtures";
+import { resolveCodexReasoningEffort } from "../requestLogSpecialSettings";
 
 async function importFreshTraceStore() {
   vi.resetModules();
@@ -825,6 +826,160 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
+  it("lets a terminal persisted request log replace live guard-only Codex settings", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const guardOnlySettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard",
+        actionTaken: "switch_provider",
+        guardRetryPhase: "retry",
+      },
+    ]);
+    const terminalEffortSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "codex-effort-terminal",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: guardOnlySettings,
+        ts: 0,
+      });
+    });
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "codex-effort-terminal",
+          cli_key: "codex",
+          status: 200,
+          requested_model: "gpt-5.5",
+          special_settings_json: terminalEffortSettings,
+          created_at_ms: 1_000,
+        })
+      );
+      expect(reconciled).toBe(true);
+    });
+
+    expect(result.current.traces[0]?.special_settings_json).toBe(terminalEffortSettings);
+    expect(result.current.traces[0]?.summary?.special_settings_json).toBe(terminalEffortSettings);
+    expect(
+      resolveCodexReasoningEffort(
+        result.current.traces[0]?.requested_model,
+        result.current.traces[0]?.special_settings_json
+      )
+    ).toEqual({ effort: "high", source: "request" });
+
+    vi.useRealTimers();
+  });
+
+  it("lets a terminal persisted request log replace stale live Codex requested_model", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "codex-model-terminal",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        ts: 0,
+      });
+    });
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "codex-model-terminal",
+          cli_key: "codex",
+          status: 200,
+          requested_model: "gpt-5.5-pro",
+          special_settings_json: null,
+          created_at_ms: 1_000,
+        })
+      );
+      expect(reconciled).toBe(true);
+    });
+
+    expect(result.current.traces[0]?.requested_model).toBe("gpt-5.5-pro");
+    expect(result.current.traces[0]?.summary?.requested_model).toBe("gpt-5.5-pro");
+    expect(
+      resolveCodexReasoningEffort(
+        result.current.traces[0]?.requested_model,
+        result.current.traces[0]?.special_settings_json
+      )
+    ).toEqual({ effort: "high", source: "default" });
+
+    vi.useRealTimers();
+  });
+
+  it("keeps explicit live Codex effort when terminal request log settings are missing", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const liveEffortSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "xhigh" },
+    ]);
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "codex-live-effort-terminal-missing",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: liveEffortSettings,
+        ts: 0,
+      });
+    });
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "codex-live-effort-terminal-missing",
+          cli_key: "codex",
+          status: 200,
+          requested_model: "gpt-5.5-pro",
+          special_settings_json: null,
+          created_at_ms: 1_000,
+        })
+      );
+      expect(reconciled).toBe(true);
+    });
+
+    expect(result.current.traces[0]?.requested_model).toBe("gpt-5.5-pro");
+    expect(result.current.traces[0]?.special_settings_json).toBe(liveEffortSettings);
+    expect(result.current.traces[0]?.summary?.special_settings_json).toBe(liveEffortSettings);
+    expect(
+      resolveCodexReasoningEffort(
+        result.current.traces[0]?.requested_model,
+        result.current.traces[0]?.special_settings_json
+      )
+    ).toEqual({ effort: "xhigh", source: "request" });
+
+    vi.useRealTimers();
+  });
+
   it("does not reconcile a trace from a pending persisted request log", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -840,6 +995,8 @@ describe("services/gateway/traceStore", () => {
         method: "POST",
         path: "/v1/messages",
         query: null,
+        requested_model: "claude-live",
+        special_settings_json: "live-settings",
         ts: 0,
       });
     });
@@ -850,12 +1007,16 @@ describe("services/gateway/traceStore", () => {
           trace_id: "still-running",
           status: null,
           error_code: null,
+          requested_model: "claude-persisted",
+          special_settings_json: "persisted-settings",
         })
       );
       expect(reconciled).toBe(false);
     });
 
     expect(result.current.traces[0]?.summary).toBeUndefined();
+    expect(result.current.traces[0]?.requested_model).toBe("claude-live");
+    expect(result.current.traces[0]?.special_settings_json).toBe("live-settings");
 
     vi.useRealTimers();
   });
@@ -913,6 +1074,62 @@ describe("services/gateway/traceStore", () => {
       output_tokens: 20,
       total_tokens: 30,
     });
+
+    vi.useRealTimers();
+  });
+
+  it("lets terminal request logs correct stale Codex model settings on an existing realtime summary", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceRequest, reconcileTraceFromRequestLog, useTraceStore } =
+      await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const guardOnlySettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard",
+        actionTaken: "switch_provider",
+      },
+    ]);
+    const terminalEffortSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+
+    act(() => {
+      ingestTraceRequest({
+        trace_id: "corrected-codex-summary",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: guardOnlySettings,
+        status: 200,
+        error_category: null,
+        error_code: null,
+        duration_ms: 10,
+        attempts: [],
+      });
+    });
+
+    act(() => {
+      const reconciled = reconcileTraceFromRequestLog(
+        createRequestLogSummary({
+          trace_id: "corrected-codex-summary",
+          cli_key: "codex",
+          status: 200,
+          requested_model: "gpt-5.5-pro",
+          special_settings_json: terminalEffortSettings,
+          duration_ms: 2_000,
+        })
+      );
+      expect(reconciled).toBe(true);
+    });
+
+    expect(result.current.traces[0]?.requested_model).toBe("gpt-5.5-pro");
+    expect(result.current.traces[0]?.special_settings_json).toBe(terminalEffortSettings);
+    expect(result.current.traces[0]?.summary?.requested_model).toBe("gpt-5.5-pro");
+    expect(result.current.traces[0]?.summary?.special_settings_json).toBe(terminalEffortSettings);
 
     vi.useRealTimers();
   });
