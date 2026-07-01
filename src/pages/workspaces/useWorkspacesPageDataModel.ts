@@ -67,7 +67,7 @@ export function useWorkspacesPageDataModel() {
     pickDefaultCliByPriority(settingsQuery.data?.cli_priority_order, orderedCliKeys) ?? CLIS[0].key;
 
   const [activeCli, setActiveCli] = useState<CliKey | null>(null);
-  const [selectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
+  const [requestedSelectedWorkspaceId, setSelectedWorkspaceId] = useState<number | null>(null);
   const [filterText, setFilterText] = useState("");
   const [rightTab, setRightTab] = useState<WorkspacesRightTab>("overview");
   const [createOpen, setCreateOpen] = useState(false);
@@ -107,19 +107,6 @@ export function useWorkspacesPageDataModel() {
     toast("加载失败：请查看控制台日志");
   }, [effectiveCli, workspacesQuery.error]);
 
-  useEffect(() => {
-    const result = workspacesQuery.data;
-    if (!result) return;
-
-    setSelectedWorkspaceId((previousId) => {
-      const stillExists =
-        previousId != null && result.items.some((workspace) => workspace.id === previousId);
-      if (stillExists) return previousId;
-      if (result.active_id != null) return result.active_id;
-      return result.items[0]?.id ?? null;
-    });
-  }, [workspacesQuery.data]);
-
   const filtered = useMemo(() => {
     const normalizedQuery = filterText.trim().toLowerCase();
     if (!normalizedQuery) return items;
@@ -129,25 +116,33 @@ export function useWorkspacesPageDataModel() {
     );
   }, [filterText, items]);
 
-  const selectedWorkspace = useMemo(
-    () => pickWorkspaceById(items, selectedWorkspaceId),
-    [items, selectedWorkspaceId]
-  );
-
   const workspaceById = useMemo(
     () => new Map(items.map((workspace) => [workspace.id, workspace])),
     [items]
   );
+  const selectedWorkspaceId = useMemo(() => {
+    let nextId =
+      requestedSelectedWorkspaceId != null && workspaceById.has(requestedSelectedWorkspaceId)
+        ? requestedSelectedWorkspaceId
+        : (activeWorkspaceId ?? items[0]?.id ?? null);
+
+    if (
+      filterText.trim() &&
+      nextId != null &&
+      !filtered.some((workspace) => workspace.id === nextId) &&
+      filtered.length > 0
+    ) {
+      nextId = filtered[0].id;
+    }
+
+    return nextId;
+  }, [activeWorkspaceId, filterText, filtered, items, requestedSelectedWorkspaceId, workspaceById]);
+
+  const selectedWorkspace = useMemo(
+    () => pickWorkspaceById(items, selectedWorkspaceId),
+    [items, selectedWorkspaceId]
+  );
   const switchTarget = switchTargetId != null ? (workspaceById.get(switchTargetId) ?? null) : null;
-
-  useEffect(() => {
-    if (!filterText.trim()) return;
-    if (!selectedWorkspace) return;
-    if (filtered.some((workspace) => workspace.id === selectedWorkspace.id)) return;
-    if (filtered.length === 0) return;
-
-    setSelectedWorkspaceId(filtered[0].id);
-  }, [filterText, filtered, selectedWorkspace]);
 
   const overviewWorkspaceId = rightTab === "overview" ? (selectedWorkspace?.id ?? null) : null;
   const promptsQuery = usePromptsListQuery(overviewWorkspaceId, {

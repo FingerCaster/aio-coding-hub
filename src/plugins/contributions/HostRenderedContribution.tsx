@@ -325,11 +325,15 @@ function badgeClassName(tone: HostRenderedSchema & { type: "badge" }) {
   );
 }
 
+const EMPTY_VALUES: NonNullable<HostRenderedContributionProps["values"]> = {};
+const NOOP_CHANGE: NonNullable<HostRenderedContributionProps["onChange"]> = () => undefined;
+const NOOP_COMMAND: NonNullable<HostRenderedContributionProps["onCommand"]> = () => undefined;
+
 export function HostRenderedContribution({
   contribution,
-  values = {},
-  onChange = () => undefined,
-  onCommand = () => undefined,
+  values = EMPTY_VALUES,
+  onChange = NOOP_CHANGE,
+  onCommand = NOOP_COMMAND,
   disabled = false,
 }: HostRenderedContributionProps) {
   const schema = parseSchema(contribution.schema);

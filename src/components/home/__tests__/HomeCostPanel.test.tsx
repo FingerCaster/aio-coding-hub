@@ -41,7 +41,7 @@ describe("components/home/HomeCostPanel", () => {
     vi.clearAllMocks();
   });
 
-  it("prefers real data over dev preview fallback", () => {
+  it("prefers real data over dev preview fallback", async () => {
     setTauriRuntime();
 
     vi.mocked(useCustomDateRange).mockReturnValue({
@@ -150,10 +150,14 @@ describe("components/home/HomeCostPanel", () => {
     expect(screen.getByText("花费占比")).toBeInTheDocument();
     expect(screen.queryByText(/Claude Main/)).not.toBeInTheDocument();
     // Check that recharts containers are rendered (we mock ResponsiveContainer)
-    expect(screen.getAllByTestId("recharts-responsive-container").length).toBeGreaterThanOrEqual(3);
+    await waitFor(() => {
+      expect(screen.getAllByTestId("recharts-responsive-container").length).toBeGreaterThanOrEqual(
+        3
+      );
+    });
   });
 
-  it("renders preview analytics when dev preview is enabled and query is empty", () => {
+  it("renders preview analytics when dev preview is enabled and query is empty", async () => {
     clearTauriRuntime();
 
     vi.mocked(useCustomDateRange).mockReturnValue({
@@ -181,7 +185,11 @@ describe("components/home/HomeCostPanel", () => {
     expect(screen.getByText(/Claude Main/)).toBeInTheDocument();
     expect(screen.getByText(/OpenAI Primary/)).toBeInTheDocument();
     expect(screen.queryByText(/未检测到 Tauri Runtime/)).not.toBeInTheDocument();
-    expect(screen.getAllByTestId("recharts-responsive-container").length).toBeGreaterThanOrEqual(3);
+    await waitFor(() => {
+      expect(screen.getAllByTestId("recharts-responsive-container").length).toBeGreaterThanOrEqual(
+        3
+      );
+    });
   });
 
   it("drives filter controls and triggers refetch", () => {

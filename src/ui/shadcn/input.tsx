@@ -1,14 +1,10 @@
-import { forwardRef } from "react";
 import { cn } from "@/ui/shadcn/utils";
 
-export type InputProps = React.InputHTMLAttributes<HTMLInputElement> & {
+export type InputProps = React.ComponentPropsWithRef<"input"> & {
   mono?: boolean;
 };
 
-export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
-  { className, mono, ...props },
-  ref
-) {
+export function Input({ className, mono, ref, ...props }: InputProps) {
   return (
     <input
       ref={ref}
@@ -23,4 +19,4 @@ export const Input = forwardRef<HTMLInputElement, InputProps>(function Input(
       {...props}
     />
   );
-});
+}

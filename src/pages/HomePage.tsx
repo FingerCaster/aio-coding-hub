@@ -1,11 +1,12 @@
 // Usage: Dashboard / overview page. Backend commands: `request_logs_*`, `request_attempt_logs_*`, `usage_*`, `gateway_*`, `providers_*`, `sort_modes_*`, `provider_limit_usage_*`.
 
-import { lazy, Suspense, useEffect, useMemo, useState, useSyncExternalStore } from "react";
+import { lazy, Suspense, useMemo, useReducer, useSyncExternalStore, type ReactNode } from "react";
 import { useMutation, useQueryClient } from "@tanstack/react-query";
 import { toast } from "sonner";
 import { CLIS } from "../constants/clis";
 import {
   HomeOverviewPanel,
+  type HomeOverviewPanelProps,
   type HomeOverviewUsageView,
 } from "../components/home/HomeOverviewPanel";
 import type { HomeWorkspaceConfigItem } from "../components/home/homeWorkspaceConfigTypes";
@@ -46,9 +47,57 @@ import { useHomeWorkspaceConfigs } from "./home/hooks/useHomeWorkspaceConfigs";
 
 type HomeTabKey = "overview" | "cost" | "tokenCost";
 
-function buildHomeTabs(
-  personalizedLayoutEnabled: boolean
-): Array<{ key: HomeTabKey; label: string }> {
+type HomeTabItem = {
+  key: HomeTabKey;
+  label: string;
+};
+
+type HomeUiState = {
+  tab: HomeTabKey;
+  selectedLogId: number | null;
+  togglingWorkspaceConfigItemId: string | null;
+  switchingWorkspaceKey: string | null;
+  personalizedUsageView: HomeOverviewUsageView;
+};
+
+type HomeUiAction =
+  | { type: "setTab"; tab: HomeTabKey }
+  | { type: "setSelectedLogId"; selectedLogId: number | null }
+  | { type: "setTogglingWorkspaceConfigItemId"; itemId: string | null }
+  | { type: "setSwitchingWorkspaceKey"; key: string | null }
+  | { type: "togglePersonalizedUsageView" };
+
+const initialHomeUiState: HomeUiState = {
+  tab: "overview",
+  selectedLogId: null,
+  togglingWorkspaceConfigItemId: null,
+  switchingWorkspaceKey: null,
+  personalizedUsageView: "summary",
+};
+
+function homeUiReducer(state: HomeUiState, action: HomeUiAction): HomeUiState {
+  switch (action.type) {
+    case "setTab":
+      return { ...state, tab: action.tab };
+    case "setSelectedLogId":
+      return { ...state, selectedLogId: action.selectedLogId };
+    case "setTogglingWorkspaceConfigItemId":
+      return { ...state, togglingWorkspaceConfigItemId: action.itemId };
+    case "setSwitchingWorkspaceKey":
+      return { ...state, switchingWorkspaceKey: action.key };
+    case "togglePersonalizedUsageView":
+      return {
+        ...state,
+        personalizedUsageView: state.personalizedUsageView === "summary" ? "usageChart" : "summary",
+      };
+  }
+}
+
+function resolveHomeTab(tab: HomeTabKey, personalizedLayoutEnabled: boolean): HomeTabKey {
+  return personalizedLayoutEnabled && tab === "cost" ? "tokenCost" : tab;
+}
+
+function buildHomeTabs(personalizedLayoutEnabled: boolean): HomeTabItem[] {
   return personalizedLayoutEnabled
     ? [
         { key: "overview", label: "概览" },
@@ -76,6 +125,199 @@ const LazyRequestLogDetailDialog = lazy(() =>
     default: m.RequestLogDetailDialog,
   }))
 );
+
+type PendingSortModeSwitch = ReturnType<typeof useHomeSortMode>["pendingSortModeSwitch"];
+
+function HomePageHeaderActions({
+  devPreviewEnabled,
+  isDevMode,
+  personalizedLayoutEnabled,
+  personalizedUsageView,
+  tab,
+  tabs,
+  onTabChange,
+  onToggleDevPreview,
+  onTogglePersonalizedUsageView,
+}: {
+  devPreviewEnabled: boolean;
+  isDevMode: boolean;
+  personalizedLayoutEnabled: boolean;
+  personalizedUsageView: HomeOverviewUsageView;
+  tab: HomeTabKey;
+  tabs: HomeTabItem[];
+  onTabChange: (tab: HomeTabKey) => void;
+  onToggleDevPreview: () => void;
+  onTogglePersonalizedUsageView: () => void;
+}) {
+  return (
+    <>
+      {isDevMode ? (
+        <Button
+          variant={devPreviewEnabled ? "primary" : "secondary"}
+          size="md"
+          onClick={onToggleDevPreview}
+        >
+          {devPreviewEnabled ? "Dev关闭预览数据" : "Dev开启预览数据"}
+        </Button>
+      ) : null}
+      {personalizedLayoutEnabled && tab === "overview" ? (
+        <Button variant="secondary" size="md" onClick={onTogglePersonalizedUsageView}>
+          {personalizedUsageView === "summary" ? "查看曲线" : "查看总览"}
+        </Button>
+      ) : null}
+      <TabList ariaLabel="首页视图切换" items={tabs} value={tab} onChange={onTabChange} />
+    </>
+  );
+}
+
+function HomeTabLoadingFallback({ label }: { label: string }) {
+  return (
+    <Card padding="md" className="flex h-full items-center justify-center">
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <Spinner />
+        <span>{label}</span>
+      </div>
+    </Card>
+  );
+}
+
+function HomePageTabContent({
+  devPreviewEnabled,
+  overviewPanel,
+  tab,
+}: {
+  devPreviewEnabled: boolean;
+  overviewPanel: ReactNode;
+  tab: HomeTabKey;
+}) {
+  if (tab === "overview") return overviewPanel;
+
+  if (tab === "cost") {
+    return (
+      <Suspense fallback={<HomeTabLoadingFallback label="加载花费面板中…" />}>
+        <LazyHomeCostPanel devPreviewEnabled={devPreviewEnabled} />
+      </Suspense>
+    );
+  }
+
+  if (tab === "tokenCost") {
+    return (
+      <Suspense fallback={<HomeTabLoadingFallback label="加载用量面板中…" />}>
+        <LazyHomeTokenCostPanel devPreviewEnabled={devPreviewEnabled} />
+      </Suspense>
+    );
+  }
+
+  return <div />;
+}
+
+function SortModeConfirmDialog({
+  pendingSortModeSwitch,
+  onCancel,
+  onConfirm,
+}: {
+  pendingSortModeSwitch: PendingSortModeSwitch;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog
+      open={pendingSortModeSwitch != null}
+      onOpenChange={(open) => {
+        if (!open) onCancel();
+      }}
+      title={
+        pendingSortModeSwitch
+          ? `确认切换 ${CLIS.find((cli) => cli.key === pendingSortModeSwitch.cliKey)?.name ?? pendingSortModeSwitch.cliKey} 模板？`
+          : "确认切换模板？"
+      }
+      description={
+        pendingSortModeSwitch
+          ? `目前还有 ${pendingSortModeSwitch.activeSessionCount} 个活跃 Session，切换模板可能导致会话中断，是否确认？`
+          : undefined
+      }
+      className="max-w-lg"
+    >
+      <div className="flex items-center justify-end gap-2">
+        <Button variant="secondary" size="md" onClick={onCancel}>
+          取消
+        </Button>
+        <Button variant="primary" size="md" onClick={onConfirm}>
+          确认切换
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+function RequestLogDetailDialogSlot({
+  selectedLogId,
+  onSelectLogId,
+}: {
+  selectedLogId: number | null;
+  onSelectLogId: (id: number | null) => void;
+}) {
+  if (selectedLogId == null) return null;
+
+  return (
+    <Suspense
+      fallback={
+        <Dialog
+          open
+          onOpenChange={(open) => {
+            if (!open) onSelectLogId(null);
+          }}
+          title="代理记录详情"
+          description="先看关键指标，再看为什么会重试、跳过或切换供应商。"
+          className="max-w-3xl"
+        >
+          <div className="flex items-center gap-3 text-sm text-muted-foreground">
+            <Spinner />
+            <span>加载代理记录详情中…</span>
+          </div>
+        </Dialog>
+      }
+    >
+      <LazyRequestLogDetailDialog selectedLogId={selectedLogId} onSelectLogId={onSelectLogId} />
+    </Suspense>
+  );
+}
+
+function HomePageFrame({
+  headerActions,
+  tabContent,
+  pendingSortModeSwitch,
+  selectedLogId,
+  onCancelSortModeSwitch,
+  onConfirmSortModeSwitch,
+  onSelectLogId,
+}: {
+  headerActions: ReactNode;
+  tabContent: ReactNode;
+  pendingSortModeSwitch: PendingSortModeSwitch;
+  selectedLogId: number | null;
+  onCancelSortModeSwitch: () => void;
+  onConfirmSortModeSwitch: () => void;
+  onSelectLogId: (id: number | null) => void;
+}) {
+  return (
+    <div className="flex flex-col h-full gap-6 overflow-hidden">
+      <div className="shrink-0">
+        <PageHeader title="首页" actions={headerActions} />
+      </div>
+
+      <div className="flex-1 min-h-0">{tabContent}</div>
+
+      <SortModeConfirmDialog
+        pendingSortModeSwitch={pendingSortModeSwitch}
+        onCancel={onCancelSortModeSwitch}
+        onConfirm={onConfirmSortModeSwitch}
+      />
+
+      <RequestLogDetailDialogSlot selectedLogId={selectedLogId} onSelectLogId={onSelectLogId} />
+    </div>
+  );
+}
 
 export function HomePage() {
   const queryClient = useQueryClient();
@@ -106,14 +348,16 @@ export function HomePage() {
     [personalizedLayoutEnabled]
   );
 
-  const [tab, setTab] = useState<HomeTabKey>("overview");
-  const [selectedLogId, setSelectedLogId] = useState<number | null>(null);
-  const [togglingWorkspaceConfigItemId, setTogglingWorkspaceConfigItemId] = useState<string | null>(
-    null
-  );
-  const [switchingWorkspaceKey, setSwitchingWorkspaceKey] = useState<string | null>(null);
-  const [personalizedUsageView, setPersonalizedUsageView] =
-    useState<HomeOverviewUsageView>("summary");
+  const [homeUiState, dispatchHomeUi] = useReducer(homeUiReducer, initialHomeUiState);
+  const tab = resolveHomeTab(homeUiState.tab, personalizedLayoutEnabled);
+  const {
+    selectedLogId,
+    togglingWorkspaceConfigItemId,
+    switchingWorkspaceKey,
+    personalizedUsageView,
+  } = homeUiState;
+  const setSelectedLogId = (selectedLogId: number | null) =>
+    dispatchHomeUi({ type: "setSelectedLogId", selectedLogId });
   const personalizedUsageChartVisible =
     personalizedLayoutEnabled && personalizedUsageView === "usageChart";
   const overviewUsageSeriesEnabled =
@@ -195,7 +439,7 @@ export function HomePage() {
         queryClient.invalidateQueries({ queryKey: mcpKeys.serversList(input.workspaceId) }),
         queryClient.invalidateQueries({ queryKey: skillsKeys.installedList(input.workspaceId) }),
       ]);
-      setTogglingWorkspaceConfigItemId(null);
+      dispatchHomeUi({ type: "setTogglingWorkspaceConfigItemId", itemId: null });
     },
   });
   const oauthQuota = useHomeOAuthQuota({
@@ -215,7 +459,7 @@ export function HomePage() {
     enabled: boolean
   ) {
     if (workspaceConfigToggleMutation.isPending) return;
-    setTogglingWorkspaceConfigItemId(item.id);
+    dispatchHomeUi({ type: "setTogglingWorkspaceConfigItemId", itemId: item.id });
     workspaceConfigToggleMutation.mutate({ workspaceId, item, enabled });
   }
 
@@ -226,7 +470,7 @@ export function HomePage() {
     if (config?.workspaceId === workspaceId) return;
 
     const nextSwitchingWorkspaceKey = `${cliKey}:${workspaceId}`;
-    setSwitchingWorkspaceKey(nextSwitchingWorkspaceKey);
+    dispatchHomeUi({ type: "setSwitchingWorkspaceKey", key: nextSwitchingWorkspaceKey });
 
     try {
       const report = await workspaceApplyMutation.mutateAsync({ cliKey, workspaceId });
@@ -248,190 +492,94 @@ export function HomePage() {
         queryClient.invalidateQueries({ queryKey: mcpKeys.serversList(workspaceId) }),
         queryClient.invalidateQueries({ queryKey: skillsKeys.installedList(workspaceId) }),
       ]);
-      setSwitchingWorkspaceKey(null);
+      dispatchHomeUi({ type: "setSwitchingWorkspaceKey", key: null });
     }
   }
 
-  useEffect(() => {
-    if (personalizedLayoutEnabled && tab === "cost") setTab("tokenCost");
-  }, [personalizedLayoutEnabled, tab]);
+  const overviewPanelProps: HomeOverviewPanelProps = {
+    displayOptions: {
+      customTooltip: showCustomTooltip,
+      heatmap: showHomeHeatmap,
+      usage: showHomeUsage,
+      workspaceConfigQuickToggle: showAllWorkspaceConfigItems,
+    },
+    devPreviewEnabled: devPreview.enabled,
+    cliPriorityOrder,
+    usageWindowDays: homeUsageWindowDays,
+    usageHeatmapRows,
+    usageHeatmapLoading,
+    onRefreshUsageHeatmap: refreshUsageHeatmap,
+    sortModes: sortMode.sortModes,
+    sortModesLoading: sortMode.sortModesLoading,
+    sortModesAvailable: sortMode.sortModesAvailable,
+    activeModeByCli: sortMode.activeModeByCli,
+    activeModeToggling: sortMode.activeModeToggling,
+    onSetCliActiveMode: sortMode.requestCliActiveModeSwitch,
+    activeSessions,
+    activeSessionsLoading,
+    activeSessionsAvailable,
+    workspaceConfigs,
+    togglingWorkspaceConfigItemIds,
+    switchingWorkspaceKey,
+    onSwitchWorkspace: (cliKey, workspaceId) => {
+      void switchWorkspace(cliKey, workspaceId);
+    },
+    onToggleWorkspaceConfigItemEnabled: toggleWorkspaceConfigItem,
+    providerLimitRows,
+    providerLimitLoading,
+    providerLimitAvailable,
+    providerLimitRefreshing,
+    onRefreshProviderLimit: refreshProviderLimit,
+    oauthQuotaRows: oauthQuota.oauthQuotaRows,
+    oauthQuotaVisible: oauthQuota.oauthQuotaVisible,
+    oauthQuotaRefreshing: oauthQuota.oauthQuotaRefreshing,
+    oauthQuotaHasRefreshed: oauthQuota.oauthQuotaHasRefreshed,
+    onRefreshOAuthQuota: oauthQuota.refreshOAuthQuota,
+    onRefreshOAuthQuotaRow: oauthQuota.refreshOAuthQuotaRow,
+    onResetOAuthQuotaRow: oauthQuota.resetOAuthQuotaRow,
+    openCircuits: circuit.openCircuits,
+    onResetCircuitProvider: circuit.handleResetProvider,
+    resettingCircuitProviderIds: circuit.resettingProviderIds,
+    traces,
+    requestLogs,
+    requestLogsLoading,
+    requestLogsRefreshing,
+    requestLogsAvailable,
+    onRefreshRequestLogs: refreshRequestLogs,
+    selectedLogId,
+    onSelectLogId: setSelectedLogId,
+    personalizedUsageView,
+  };
+  const headerActions = (
+    <HomePageHeaderActions
+      devPreviewEnabled={devPreview.enabled}
+      isDevMode={isDevMode}
+      personalizedLayoutEnabled={personalizedLayoutEnabled}
+      personalizedUsageView={personalizedUsageView}
+      tab={tab}
+      tabs={homeTabs}
+      onTabChange={(tab) => dispatchHomeUi({ type: "setTab", tab })}
+      onToggleDevPreview={() => devPreview.toggle()}
+      onTogglePersonalizedUsageView={() => dispatchHomeUi({ type: "togglePersonalizedUsageView" })}
+    />
+  );
+  const tabContent = (
+    <HomePageTabContent
+      devPreviewEnabled={devPreview.enabled}
+      overviewPanel={<HomeOverviewPanel {...overviewPanelProps} />}
+      tab={tab}
+    />
+  );
 
   return (
-    <div className="flex flex-col h-full gap-6 overflow-hidden">
-      <div className="shrink-0">
-        <PageHeader
-          title="首页"
-          actions={
-            <>
-              {isDevMode ? (
-                <Button
-                  variant={devPreview.enabled ? "primary" : "secondary"}
-                  size="md"
-                  onClick={() => devPreview.toggle()}
-                >
-                  {devPreview.enabled ? "Dev关闭预览数据" : "Dev开启预览数据"}
-                </Button>
-              ) : null}
-              {personalizedLayoutEnabled && tab === "overview" ? (
-                <Button
-                  variant="secondary"
-                  size="md"
-                  onClick={() =>
-                    setPersonalizedUsageView((current) =>
-                      current === "summary" ? "usageChart" : "summary"
-                    )
-                  }
-                >
-                  {personalizedUsageView === "summary" ? "查看曲线" : "查看总览"}
-                </Button>
-              ) : null}
-              <TabList ariaLabel="首页视图切换" items={homeTabs} value={tab} onChange={setTab} />
-            </>
-          }
-        />
-      </div>
-
-      <div className="flex-1 min-h-0">
-        {tab === "overview" ? (
-          <HomeOverviewPanel
-            showCustomTooltip={showCustomTooltip}
-            devPreviewEnabled={devPreview.enabled}
-            showHomeHeatmap={showHomeHeatmap}
-            showHomeUsage={showHomeUsage}
-            cliPriorityOrder={cliPriorityOrder}
-            usageWindowDays={homeUsageWindowDays}
-            usageHeatmapRows={usageHeatmapRows}
-            usageHeatmapLoading={usageHeatmapLoading}
-            onRefreshUsageHeatmap={refreshUsageHeatmap}
-            sortModes={sortMode.sortModes}
-            sortModesLoading={sortMode.sortModesLoading}
-            sortModesAvailable={sortMode.sortModesAvailable}
-            activeModeByCli={sortMode.activeModeByCli}
-            activeModeToggling={sortMode.activeModeToggling}
-            onSetCliActiveMode={sortMode.requestCliActiveModeSwitch}
-            activeSessions={activeSessions}
-            activeSessionsLoading={activeSessionsLoading}
-            activeSessionsAvailable={activeSessionsAvailable}
-            workspaceConfigs={workspaceConfigs}
-            showWorkspaceConfigQuickToggle={showAllWorkspaceConfigItems}
-            togglingWorkspaceConfigItemIds={togglingWorkspaceConfigItemIds}
-            switchingWorkspaceKey={switchingWorkspaceKey}
-            onSwitchWorkspace={(cliKey, workspaceId) => {
-              void switchWorkspace(cliKey, workspaceId);
-            }}
-            onToggleWorkspaceConfigItemEnabled={toggleWorkspaceConfigItem}
-            providerLimitRows={providerLimitRows}
-            providerLimitLoading={providerLimitLoading}
-            providerLimitAvailable={providerLimitAvailable}
-            providerLimitRefreshing={providerLimitRefreshing}
-            onRefreshProviderLimit={refreshProviderLimit}
-            oauthQuotaRows={oauthQuota.oauthQuotaRows}
-            oauthQuotaVisible={oauthQuota.oauthQuotaVisible}
-            oauthQuotaRefreshing={oauthQuota.oauthQuotaRefreshing}
-            oauthQuotaHasRefreshed={oauthQuota.oauthQuotaHasRefreshed}
-            onRefreshOAuthQuota={oauthQuota.refreshOAuthQuota}
-            onRefreshOAuthQuotaRow={oauthQuota.refreshOAuthQuotaRow}
-            onResetOAuthQuotaRow={oauthQuota.resetOAuthQuotaRow}
-            openCircuits={circuit.openCircuits}
-            onResetCircuitProvider={circuit.handleResetProvider}
-            resettingCircuitProviderIds={circuit.resettingProviderIds}
-            traces={traces}
-            requestLogs={requestLogs}
-            requestLogsLoading={requestLogsLoading}
-            requestLogsRefreshing={requestLogsRefreshing}
-            requestLogsAvailable={requestLogsAvailable}
-            onRefreshRequestLogs={refreshRequestLogs}
-            selectedLogId={selectedLogId}
-            onSelectLogId={setSelectedLogId}
-            personalizedUsageView={personalizedUsageView}
-          />
-        ) : tab === "cost" ? (
-          <Suspense
-            fallback={
-              <Card padding="md" className="flex h-full items-center justify-center">
-                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                  <Spinner />
-                  <span>加载花费面板中…</span>
-                </div>
-              </Card>
-            }
-          >
-            <LazyHomeCostPanel devPreviewEnabled={devPreview.enabled} />
-          </Suspense>
-        ) : tab === "tokenCost" ? (
-          <Suspense
-            fallback={
-              <Card padding="md" className="flex h-full items-center justify-center">
-                <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                  <Spinner />
-                  <span>加载用量面板中…</span>
-                </div>
-              </Card>
-            }
-          >
-            <LazyHomeTokenCostPanel devPreviewEnabled={devPreview.enabled} />
-          </Suspense>
-        ) : (
-          <div />
-        )}
-      </div>
-
-      <Dialog
-        open={pendingSortModeSwitch != null}
-        onOpenChange={(open) => {
-          if (!open) sortMode.setPendingSortModeSwitch(null);
-        }}
-        title={
-          pendingSortModeSwitch
-            ? `确认切换 ${CLIS.find((cli) => cli.key === pendingSortModeSwitch.cliKey)?.name ?? pendingSortModeSwitch.cliKey} 模板？`
-            : "确认切换模板？"
-        }
-        description={
-          pendingSortModeSwitch
-            ? `目前还有 ${pendingSortModeSwitch.activeSessionCount} 个活跃 Session，切换模板可能导致会话中断，是否确认？`
-            : undefined
-        }
-        className="max-w-lg"
-      >
-        <div className="flex items-center justify-end gap-2">
-          <Button
-            variant="secondary"
-            size="md"
-            onClick={() => sortMode.setPendingSortModeSwitch(null)}
-          >
-            取消
-          </Button>
-          <Button variant="primary" size="md" onClick={sortMode.confirmPendingSortModeSwitch}>
-            确认切换
-          </Button>
-        </div>
-      </Dialog>
-
-      {selectedLogId != null ? (
-        <Suspense
-          fallback={
-            <Dialog
-              open
-              onOpenChange={(open) => {
-                if (!open) setSelectedLogId(null);
-              }}
-              title="代理记录详情"
-              description="先看关键指标，再看为什么会重试、跳过或切换供应商。"
-              className="max-w-3xl"
-            >
-              <div className="flex items-center gap-3 text-sm text-muted-foreground">
-                <Spinner />
-                <span>加载代理记录详情中…</span>
-              </div>
-            </Dialog>
-          }
-        >
-          <LazyRequestLogDetailDialog
-            selectedLogId={selectedLogId}
-            onSelectLogId={setSelectedLogId}
-          />
-        </Suspense>
-      ) : null}
-    </div>
+    <HomePageFrame
+      headerActions={headerActions}
+      tabContent={tabContent}
+      pendingSortModeSwitch={pendingSortModeSwitch}
+      selectedLogId={selectedLogId}
+      onCancelSortModeSwitch={() => sortMode.setPendingSortModeSwitch(null)}
+      onConfirmSortModeSwitch={sortMode.confirmPendingSortModeSwitch}
+      onSelectLogId={setSelectedLogId}
+    />
   );
 }

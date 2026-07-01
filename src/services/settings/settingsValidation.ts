@@ -4,32 +4,32 @@ import type {
   WslHostAddressMode,
 } from "../../generated/bindings";
 
-export const MAX_UPDATE_RELEASES_URL_LEN = 2048;
-export const MAX_UPSTREAM_PROXY_URL_LEN = 2048;
-export const MAX_UPSTREAM_PROXY_USERNAME_LEN = 256;
-export const MAX_UPSTREAM_PROXY_PASSWORD_LEN = 4096;
-export const MAX_CX2CC_MODEL_NAME_LEN = 128;
-export const MAX_CX2CC_OPTIONAL_FIELD_LEN = 64;
-export const MIN_PREFERRED_PORT = 1024;
-export const MAX_PREFERRED_PORT = 65535;
-export const MIN_LOG_RETENTION_DAYS = 1;
-export const MAX_LOG_RETENTION_DAYS = 3650;
-export const MAX_PROVIDER_COOLDOWN_SECONDS = 60 * 60;
-export const MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 1;
-export const MAX_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 60 * 60;
-export const MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS = 60 * 60;
+const MAX_UPDATE_RELEASES_URL_LEN = 2048;
+const MAX_UPSTREAM_PROXY_URL_LEN = 2048;
+const MAX_UPSTREAM_PROXY_USERNAME_LEN = 256;
+const MAX_UPSTREAM_PROXY_PASSWORD_LEN = 4096;
+const MAX_CX2CC_MODEL_NAME_LEN = 128;
+const MAX_CX2CC_OPTIONAL_FIELD_LEN = 64;
+const MIN_PREFERRED_PORT = 1024;
+const MAX_PREFERRED_PORT = 65535;
+const MIN_LOG_RETENTION_DAYS = 1;
+const MAX_LOG_RETENTION_DAYS = 3650;
+const MAX_PROVIDER_COOLDOWN_SECONDS = 60 * 60;
+const MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 1;
+const MAX_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 60 * 60;
+const MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS = 60 * 60;
 export const MIN_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS = 60;
 export const MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS = 60 * 60;
-export const MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS = 24 * 60 * 60;
-export const MIN_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 1;
-export const MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 20;
-export const MIN_FAILOVER_MAX_PROVIDERS_TO_TRY = 1;
-export const MAX_FAILOVER_MAX_PROVIDERS_TO_TRY = 20;
-export const MAX_FAILOVER_TOTAL_ATTEMPTS = 100;
-export const MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 1;
-export const MAX_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 50;
-export const MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 1;
-export const MAX_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 24 * 60;
+const MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS = 24 * 60 * 60;
+const MIN_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 1;
+const MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 20;
+const MIN_FAILOVER_MAX_PROVIDERS_TO_TRY = 1;
+const MAX_FAILOVER_MAX_PROVIDERS_TO_TRY = 20;
+const MAX_FAILOVER_TOTAL_ATTEMPTS = 100;
+const MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 1;
+const MAX_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 50;
+const MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 1;
+const MAX_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 24 * 60;
 
 const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 const DECIMAL_INTEGER_PATTERN = /^\d+$/u;
@@ -124,7 +124,7 @@ function isValidBareIpv6Host(value: string): boolean {
   }
 }
 
-export function parseCustomHostAddress(input: string): string | null {
+function parseCustomHostAddress(input: string): string | null {
   const raw = input.trim();
   if (!raw) return null;
   if (raw.includes("://") || raw.includes("/") || raw.includes("\\")) return null;
@@ -171,7 +171,7 @@ function parseUrl(value: string): URL | null {
   }
 }
 
-export function validateUpdateReleasesUrl(value: string): string | null {
+function validateUpdateReleasesUrl(value: string): string | null {
   const raw = value.trim();
   if (!raw) return null;
   if (utf8Length(raw) > MAX_UPDATE_RELEASES_URL_LEN) {

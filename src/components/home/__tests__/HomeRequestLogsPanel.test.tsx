@@ -21,6 +21,8 @@ vi.mock("../../../query/cliSessions", () => ({
   useCliSessionsFolderLookupByIdsQuery: useCliSessionsFolderLookupByIdsQueryMock,
 }));
 
+const TEST_CREATED_AT_SECONDS = 1_764_000_000;
+
 function makeRequestLogs(
   items: Array<Parameters<typeof createRequestLogSummary>[0]>
 ): RequestLogSummary[] {
@@ -134,7 +136,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={traces}
           requestLogs={requestLogs}
@@ -169,7 +171,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -211,7 +213,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
                 }),
               ],
               session_reuse: false,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -231,7 +233,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -299,7 +301,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
                 }),
               ],
               session_reuse: false,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -378,7 +380,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={traces}
           requestLogs={requestLogs}
@@ -479,7 +481,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -550,7 +552,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -672,7 +674,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -728,7 +730,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={requestLogs}
@@ -817,7 +819,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={traces}
           requestLogs={requestLogs}
@@ -950,7 +952,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
             path="/"
             element={
               <HomeRequestLogsPanel
-                showCustomTooltip={true}
+                displayOptions={{ customTooltip: true }}
                 traces={traces}
                 requestLogs={requestLogs}
                 requestLogsLoading={false}
@@ -992,7 +994,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={makeRequestLogs([
             {
@@ -1023,7 +1025,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               cache_creation_1h_input_tokens: 0,
               cost_usd: 0,
               cost_multiplier: 0,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -1044,7 +1046,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={[]}
           requestLogsLoading={false}
@@ -1102,7 +1104,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -1124,7 +1126,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={[]}
           requestLogsLoading={true}
@@ -1144,7 +1146,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           title="代理记录列表"
           summaryTextOverride="共 0 / 3 条"
           emptyStateTitle="没有符合筛选条件的代理记录"
@@ -1169,7 +1171,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           devPreviewEnabled={true}
           traces={[]}
           requestLogs={[]}
@@ -1253,7 +1255,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -1292,7 +1294,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={makeRequestLogs([
             {
@@ -1341,7 +1343,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               cache_creation_1h_input_tokens: 0,
               cost_usd: 0.01,
               cost_multiplier: 1.5,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -1374,7 +1376,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -1397,7 +1399,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               final_provider_name: "Unknown",
               route: [],
               session_reuse: false,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}

@@ -1,6 +1,6 @@
 // Usage: Manage installed community plugins and inspect manifest/permission state.
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
   BookOpen,
@@ -105,6 +105,25 @@ const TRUST_EVENT_TYPES = new Set([
 const PLUGIN_DOCS_URL =
   "https://github.com/dyndynjyxa/aio-coding-hub/blob/main/docs/plugins/README.md";
 
+async function runPluginAction(action: string, task: () => Promise<unknown>) {
+  try {
+    await task();
+    toast.success(`${action}成功`);
+    return true;
+  } catch (error) {
+    toast.error(formatActionFailureToast(action, error).toast);
+    return false;
+  }
+}
+
+async function openPluginDocs() {
+  try {
+    await openDesktopUrl(PLUGIN_DOCS_URL);
+  } catch (error) {
+    toast.error(formatActionFailureToast("打开插件文档", error).toast);
+  }
+}
+
 const GATEWAY_HOOK_ACCESS: Record<string, string[]> = {
   "gateway.request.afterBodyRead": [
     "request.meta.read",
@@ -151,13 +170,22 @@ type UpdatePreviewState =
     };
 
 function latestTrustAudit(detail: PluginDetail) {
-  return detail.audit_logs
-    .filter((log) => TRUST_EVENT_TYPES.has(log.event_type))
-    .sort((a, b) => b.created_at - a.created_at || b.id - a.id)[0];
+  let latest: PluginDetail["audit_logs"][number] | undefined;
+  for (const log of detail.audit_logs) {
+    if (!TRUST_EVENT_TYPES.has(log.event_type)) continue;
+    if (
+      !latest ||
+      log.created_at > latest.created_at ||
+      (log.created_at === latest.created_at && log.id > latest.id)
+    ) {
+      latest = log;
+    }
+  }
+  return latest;
 }
 
 function isUnsigned(detail: PluginDetail) {
-  return jsonRecord(latestTrustAudit(detail)?.details)?.unsigned === true;
+  return jsonRecord(latestTrustAudit(detail)?.details ?? null)?.unsigned === true;
 }
 
 function previousVersion(detail: PluginDetail) {
@@ -469,28 +497,14 @@ export function PluginsPage() {
   const uninstallMutation = usePluginUninstallMutation();
   const saveConfigMutation = usePluginSaveConfigMutation();
 
-  const selectedSummary = useMemo(
-    () => plugins.find((plugin) => plugin.plugin_id === selectedPluginId) ?? null,
-    [plugins, selectedPluginId]
-  );
+  const selectedSummary = useMemo(() => {
+    if (plugins.length === 0) return null;
+    return plugins.find((plugin) => plugin.plugin_id === selectedPluginId) ?? plugins[0] ?? null;
+  }, [plugins, selectedPluginId]);
   const effectiveSelectedPluginId = selectedSummary?.plugin_id ?? null;
   const detailQuery = usePluginQuery(effectiveSelectedPluginId, {
     enabled: Boolean(effectiveSelectedPluginId),
   });
-
-  useEffect(() => {
-    if (plugins.length === 0) {
-      if (selectedPluginId !== null) {
-        setSelectedPluginId(null);
-      }
-      return;
-    }
-
-    const selectedStillExists = plugins.some((plugin) => plugin.plugin_id === selectedPluginId);
-    if (!selectedStillExists) {
-      setSelectedPluginId(plugins[0].plugin_id);
-    }
-  }, [plugins, selectedPluginId]);
   const busy =
     previewInstallMutation.isPending ||
     previewUpdateMutation.isPending ||
@@ -506,17 +520,6 @@ export function PluginsPage() {
     uninstallMutation.isPending ||
     saveConfigMutation.isPending;
 
-  async function runAction(action: string, task: () => Promise<unknown>) {
-    try {
-      await task();
-      toast.success(`${action}成功`);
-      return true;
-    } catch (error) {
-      toast.error(formatActionFailureToast(action, error).toast);
-      return false;
-    }
-  }
-
   async function handleImport() {
     const filePath = await openDesktopSinglePath({
       title: "选择 .aio-plugin 插件包",
@@ -528,14 +531,6 @@ export function PluginsPage() {
       setInstallPreviewState({ filePath, preview });
     } catch (error) {
       toast.error(formatActionFailureToast("预览插件", error).toast);
-    }
-  }
-
-  async function handleOpenPluginDocs() {
-    try {
-      await openDesktopUrl(PLUGIN_DOCS_URL);
-    } catch (error) {
-      toast.error(formatActionFailureToast("打开插件文档", error).toast);
     }
   }
 
@@ -564,7 +559,7 @@ export function PluginsPage() {
 
   async function confirmInstallPreview() {
     if (!installPreviewState) return;
-    const done = await runAction("导入插件", () =>
+    const done = await runPluginAction("导入插件", () =>
       installMutation.mutateAsync(installPreviewState.filePath)
     );
     if (done) setInstallPreviewState(null);
@@ -572,7 +567,7 @@ export function PluginsPage() {
 
   async function confirmUpdatePreview() {
     if (!updatePreviewState) return;
-    const done = await runAction("更新插件", () => {
+    const done = await runPluginAction("更新插件", () => {
       if (updatePreviewState.source === "remote") {
         return updateRemoteMutation.mutateAsync(updatePreviewState.input);
       }
@@ -602,7 +597,7 @@ export function PluginsPage() {
           subtitle="为 AIO Coding Hub 增加本地能力。插件可以在请求发送前、响应返回后或日志保存前处理内容。"
           actions={
             <>
-              <Button variant="secondary" onClick={handleOpenPluginDocs}>
+              <Button variant="secondary" onClick={openPluginDocs}>
                 <BookOpen className="h-4 w-4" />
                 插件文档
               </Button>
@@ -625,11 +620,11 @@ export function PluginsPage() {
             plugins={plugins}
             busy={busy}
             onInstall={(input) =>
-              runAction("安装市场插件", () => installRemoteMutation.mutateAsync(input))
+              runPluginAction("安装市场插件", () => installRemoteMutation.mutateAsync(input))
             }
             onUpdate={handleRemoteUpdate}
             onInstallOfficial={(pluginId) =>
-              runAction("安装官方插件", () => installOfficialMutation.mutateAsync(pluginId))
+              runPluginAction("安装官方插件", () => installOfficialMutation.mutateAsync(pluginId))
             }
             onSelectInstalled={(pluginId) => setSelectedPluginId(pluginId)}
           />
@@ -650,17 +645,23 @@ export function PluginsPage() {
                   <PluginListRow
                     key={plugin.plugin_id}
                     plugin={plugin}
-                    active={plugin.plugin_id === selectedPluginId}
+                    active={plugin.plugin_id === effectiveSelectedPluginId}
                     busy={busy}
                     onSelect={() => setSelectedPluginId(plugin.plugin_id)}
                     onEnable={() =>
-                      runAction("启用插件", () => enableMutation.mutateAsync(plugin.plugin_id))
+                      runPluginAction("启用插件", () =>
+                        enableMutation.mutateAsync(plugin.plugin_id)
+                      )
                     }
                     onDisable={() =>
-                      runAction("禁用插件", () => disableMutation.mutateAsync(plugin.plugin_id))
+                      runPluginAction("禁用插件", () =>
+                        disableMutation.mutateAsync(plugin.plugin_id)
+                      )
                     }
                     onUninstall={() =>
-                      runAction("卸载插件", () => uninstallMutation.mutateAsync(plugin.plugin_id))
+                      runPluginAction("卸载插件", () =>
+                        uninstallMutation.mutateAsync(plugin.plugin_id)
+                      )
                     }
                   />
                 ))}
@@ -687,13 +688,13 @@ export function PluginsPage() {
                 onUpdate={handleUpdate}
                 onRollback={(version) => {
                   if (!effectiveSelectedPluginId) return;
-                  runAction("回滚插件", () =>
+                  runPluginAction("回滚插件", () =>
                     rollbackMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, version })
                   );
                 }}
                 onSaveConfig={(config) => {
                   if (!effectiveSelectedPluginId) return;
-                  runAction("保存配置", () =>
+                  runPluginAction("保存配置", () =>
                     saveConfigMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, config })
                   );
                 }}

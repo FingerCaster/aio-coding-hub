@@ -46,6 +46,7 @@ describe("pages/settings/SettingsDataSyncCard", () => {
   it("renders unavailable/error states and all relative time buckets", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-24T12:00:00Z"));
+    const now = Date.now();
 
     const { rerender } = render(
       <SettingsDataSyncCard
@@ -54,7 +55,7 @@ describe("pages/settings/SettingsDataSyncCard", () => {
         modelPricesCount={null}
         lastModelPricesSyncError="boom"
         lastModelPricesSyncReport={null}
-        lastModelPricesSyncTime={Date.now() - 30_000}
+        lastModelPricesSyncTime={now - 30_000}
         openModelPriceAliasesDialog={vi.fn()}
         todayRequestsAvailable="unavailable"
         todayRequestsTotal={null}
@@ -74,7 +75,7 @@ describe("pages/settings/SettingsDataSyncCard", () => {
         modelPricesCount={null}
         lastModelPricesSyncError="boom"
         lastModelPricesSyncReport={null}
-        lastModelPricesSyncTime={Date.now() - 5 * 60_000}
+        lastModelPricesSyncTime={now - 5 * 60_000}
         openModelPriceAliasesDialog={vi.fn()}
         todayRequestsAvailable="unavailable"
         todayRequestsTotal={null}
@@ -91,7 +92,7 @@ describe("pages/settings/SettingsDataSyncCard", () => {
         modelPricesCount={null}
         lastModelPricesSyncError="boom"
         lastModelPricesSyncReport={null}
-        lastModelPricesSyncTime={Date.now() - 2 * 60 * 60_000}
+        lastModelPricesSyncTime={now - 2 * 60 * 60_000}
         openModelPriceAliasesDialog={vi.fn()}
         todayRequestsAvailable="unavailable"
         todayRequestsTotal={null}
@@ -108,7 +109,7 @@ describe("pages/settings/SettingsDataSyncCard", () => {
         modelPricesCount={null}
         lastModelPricesSyncError="boom"
         lastModelPricesSyncReport={null}
-        lastModelPricesSyncTime={Date.now() - 3 * 24 * 60 * 60_000}
+        lastModelPricesSyncTime={now - 3 * 24 * 60 * 60_000}
         openModelPriceAliasesDialog={vi.fn()}
         todayRequestsAvailable="unavailable"
         todayRequestsTotal={null}

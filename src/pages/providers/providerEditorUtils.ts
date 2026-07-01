@@ -2,6 +2,7 @@ import { FREE_TAG } from "../../constants/providers";
 import type { ProviderEditorDialogFormInput } from "../../schemas/providerEditorDialog";
 import {
   getProviderTypeInfo,
+  type ClaudeModels,
   type CliKey,
   type ProviderSummary,
 } from "../../services/providers/providers";
@@ -29,6 +30,14 @@ export const DEFAULT_FORM_VALUES: ProviderEditorDialogFormInput = {
 
 export const CX2CC_GLOBAL_SOURCE_VALUE = "__codex_gateway__";
 export const CX2CC_PROXY_TOKEN = "aio-coding-hub";
+export const CX2CC_DEFAULT_MODEL = "gpt-5.5";
+const CX2CC_MODEL_MAPPING_KEYS = [
+  "main_model",
+  "reasoning_model",
+  "haiku_model",
+  "sonnet_model",
+  "opus_model",
+] as const;
 
 export function cliNameFromKey(cliKey: CliKey) {
   return cliLongLabel(cliKey);
@@ -44,20 +53,72 @@ export function isZeroMultiplier(value: string | null | undefined) {
   return Number.isFinite(parsed) && parsed === 0;
 }
 
-export function isNonZeroMultiplier(value: string | null | undefined) {
+function isNonZeroMultiplier(value: string | null | undefined) {
   if (!value?.trim()) return false;
   const parsed = Number(value);
   return Number.isFinite(parsed) && parsed !== 0;
 }
 
-export function moveFreeTagToFront(tags: string[]) {
+function moveFreeTagToFront(tags: string[]) {
   const withoutFreeTag = tags.filter((tag) => tag !== FREE_TAG);
   return [FREE_TAG, ...withoutFreeTag];
 }
 
-export function areTagsEqual(left: string[], right: string[]) {
+function areTagsEqual(left: string[], right: string[]) {
   if (left.length !== right.length) return false;
-  return left.every((tag, index) => tag === right[index]);
+  for (let index = 0; index < left.length; index += 1) {
+    if (left[index] !== right[index]) return false;
+  }
+  return true;
+}
+
+export function normalizeTagsForCostMultiplier(tags: string[], costMultiplierValue: string) {
+  const hasFreeTag = tags.includes(FREE_TAG);
+
+  if (isZeroMultiplier(costMultiplierValue)) {
+    const next = hasFreeTag ? moveFreeTagToFront(tags) : [FREE_TAG, ...tags];
+    return areTagsEqual(tags, next) ? tags : next;
+  }
+
+  if (isNonZeroMultiplier(costMultiplierValue) && hasFreeTag) {
+    return tags.filter((tag) => tag !== FREE_TAG);
+  }
+
+  return tags;
+}
+
+export function normalizeCx2ccModelName(value: string | null | undefined) {
+  const trimmed = value?.trim();
+  return trimmed || null;
+}
+
+export function withCx2ccDefaultModel(
+  value: ClaudeModels,
+  defaultModel = CX2CC_DEFAULT_MODEL
+): ClaudeModels {
+  return {
+    ...value,
+    main_model: normalizeCx2ccModelName(value.main_model) ?? defaultModel,
+    reasoning_model: normalizeCx2ccModelName(value.reasoning_model) ?? defaultModel,
+    haiku_model: normalizeCx2ccModelName(value.haiku_model) ?? defaultModel,
+    sonnet_model: normalizeCx2ccModelName(value.sonnet_model) ?? defaultModel,
+    opus_model: normalizeCx2ccModelName(value.opus_model) ?? defaultModel,
+  };
+}
+
+export function resolveCx2ccDefaultModelSelectValue(value: ClaudeModels) {
+  const normalizedValues = CX2CC_MODEL_MAPPING_KEYS.map((key) =>
+    normalizeCx2ccModelName(value[key])
+  );
+  const configuredValues = normalizedValues.filter((model): model is string => model != null);
+  if (configuredValues.length === 0) return CX2CC_DEFAULT_MODEL;
+
+  const firstModel = normalizedValues[0];
+  if (firstModel && normalizedValues.every((model) => model === firstModel)) {
+    return firstModel;
+  }
+
+  return "__manual__";
 }
 
 export function tagBadgeClassName(tag: string) {

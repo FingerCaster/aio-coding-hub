@@ -52,7 +52,6 @@ let uiSnapshot: UpdateUiState = {
 const listeners = new Set<Listener>();
 
 let started = false;
-let starting: Promise<void> | null = null;
 let checkingPromise: Promise<UpdaterCheckUpdate | null> | null = null;
 let installingPromise: Promise<boolean | null> | null = null;
 
@@ -95,24 +94,17 @@ function writeLastCheckedAtMs(ms: number) {
   } catch {}
 }
 
-async function ensureStarted() {
+function ensureStarted() {
   if (started) return;
-  if (starting) return starting;
-
-  starting = (async () => {
-    started = true;
-    starting = null;
-  })();
-
-  return starting;
+  started = true;
 }
 
 export async function updateCheckNow(options: {
   silent: boolean;
   openDialogIfUpdate: boolean;
 }): Promise<UpdaterCheckUpdate | null> {
-  await ensureStarted();
-
+  if (checkingPromise) return checkingPromise;
+  ensureStarted();
   if (checkingPromise) return checkingPromise;
 
   checkingPromise = (async () => {
@@ -175,7 +167,7 @@ function onUpdaterDownloadEvent(evt: UpdaterDownloadEvent) {
 }
 
 export async function updateDownloadAndInstall(): Promise<boolean | null> {
-  await ensureStarted();
+  ensureStarted();
 
   const updateCandidate =
     queryClient.getQueryData<UpdaterCheckUpdate | null>(updaterKeys.check()) ?? null;

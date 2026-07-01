@@ -26,10 +26,10 @@ import {
   FolderBadge,
   formatClaudeModelMappingText,
   FreeBadge,
-  getErrorCodeLabel,
   SessionReuseBadge,
 } from "./HomeLogShared";
 import { CliBrandIcon } from "./CliBrandIcon";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 
 export type RealtimeTraceCardsProps = {
   folderLookupBySessionKey: Map<string, CliSessionsFolderLookupEntry>;
@@ -165,9 +165,12 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const hasSessionReuse = (trace.attempts ?? []).some(
           (attempt) => attempt.session_reuse === true
         );
-        const latestAttempt = (trace.attempts ?? [])
-          .slice()
-          .sort((a, b) => b.attempt_index - a.attempt_index)[0];
+        let latestAttempt: NonNullable<typeof trace.attempts>[number] | undefined;
+        for (const attempt of trace.attempts ?? []) {
+          if (!latestAttempt || attempt.attempt_index > latestAttempt.attempt_index) {
+            latestAttempt = attempt;
+          }
+        }
 
         const providerText = attemptRoute.providerText;
         const sessionFolder = (() => {

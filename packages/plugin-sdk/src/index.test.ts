@@ -1,10 +1,17 @@
 import { describe, expect, it, test } from "vitest";
 import contract from "../../../docs/plugins/plugin-api-v1-contract.json";
 import {
+  type ActivationEvent,
+  type GatewayHookName,
+  type PluginCapability,
+  type PluginContributes,
   type PluginHookContext,
   type PluginHookResult,
   type PluginApi,
   type PluginManifest,
+  type PluginPermission,
+  type PluginRuntime,
+  type UiContributionSlot,
   permissionRisk,
   validateManifest,
 } from "./index";
@@ -59,6 +66,133 @@ const openRouterManifest: PluginManifest = {
 };
 
 describe("validateManifest", () => {
+  test("keeps plugin API contribution types representable", () => {
+    const gatewayHook: GatewayHookName = "gateway.request.afterBodyRead";
+    const permission: PluginPermission = "request.body.read";
+    const activationEvent: ActivationEvent = "onProviderEditor:openrouter";
+    const capability: PluginCapability = "provider.extensionValues";
+    const privacyCapability: PluginCapability = "privacy.redact";
+    const slot: UiContributionSlot = "providers.editor.sections";
+
+    expect(permissionRisk(permission)).toBe("high");
+
+    const manifest: PluginManifest = {
+      id: "acme.openrouter",
+      name: "OpenRouter Provider",
+      version: "0.1.0",
+      apiVersion: "1.0.0",
+      main: "dist/extension.js",
+      runtime: { kind: "extensionHost", language: "typescript" },
+      activationEvents: [
+        "onStartup",
+        "onCommand:acme.openrouter.refreshModels",
+        activationEvent,
+        "onGatewayHook:gateway.request.afterBodyRead",
+        "onProtocolBridge:acme.openrouter.openai-gemini",
+      ],
+      contributes: {
+        providers: [
+          {
+            providerType: "openrouter",
+            displayName: "OpenRouter",
+            targetCliKeys: ["claude", "codex"],
+            extensionNamespace: "openrouter",
+          },
+        ],
+        commands: [
+          {
+            command: "acme.openrouter.refreshModels",
+            title: "Refresh OpenRouter models",
+            category: "Provider",
+          },
+        ],
+        gatewayHooks: [{ name: gatewayHook, priority: 10 }],
+        protocolBridges: [
+          {
+            bridgeType: "acme.openrouter.openai-gemini",
+            inboundProtocol: "openai.chat",
+            outboundProtocol: "gemini.generateContent",
+            supportsStreaming: true,
+          },
+        ],
+        ui: {
+          [slot]: [
+            {
+              id: "openrouter-routing",
+              title: "OpenRouter routing",
+              schema: {
+                type: "section",
+                fields: [{ type: "text", key: "route", label: "Route" }],
+              },
+            },
+          ],
+          "settings.sections": [
+            {
+              id: "openrouter-refresh",
+              title: "OpenRouter refresh",
+              schema: {
+                type: "panel",
+                fields: [
+                  {
+                    type: "button",
+                    key: "refresh",
+                    label: "Refresh",
+                    command: "acme.openrouter.refreshModels",
+                  },
+                ],
+              },
+            },
+          ],
+        },
+      },
+      capabilities: [
+        capability,
+        privacyCapability,
+        "commands.execute",
+        "gateway.hooks",
+        "protocol.bridge",
+      ],
+      hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+    };
+
+    const runtime: PluginRuntime = manifest.runtime;
+    const contributes: PluginContributes = manifest.contributes ?? {};
+    const replaceRequestResult: PluginHookResult = {
+      action: "replace",
+      requestBody: "{\"messages\":[]}",
+    };
+    const replaceResponseHeadersResult: PluginHookResult = {
+      action: "replace",
+      headers: { "x-plugin-redacted": "1" },
+      responseBody: "{\"ok\":true}",
+    };
+    const passResult: PluginHookResult = { action: "pass" };
+    const pluginApi: PluginApi = {
+      commands: {
+        registerCommand: (_command, _handler) => undefined,
+      },
+      gateway: {
+        registerHook: (_name, _handler) => undefined,
+      },
+      privacy: {
+        redactText: (text) => ({ hit: true, count: 1, redacted: text }),
+        redactRequestBody: (body) => ({ hit: false, count: 0, redacted: body }),
+      },
+    };
+
+    expect(runtime.kind).toBe("extensionHost");
+    expect(contributes.commands?.[0]?.command).toBe("acme.openrouter.refreshModels");
+    expect(contributes.ui?.[slot]?.[0]?.schema.type).toBe("section");
+    expect(contributes.providers?.[0]?.extensionNamespace).toBe("openrouter");
+    expect(contributes.gatewayHooks?.[0]?.name).toBe(gatewayHook);
+    expect(contributes.protocolBridges?.[0]?.bridgeType).toBe("acme.openrouter.openai-gemini");
+    expect(validateManifest(manifest)).toEqual({ ok: true });
+    expect(replaceRequestResult.action).toBe("replace");
+    expect(replaceResponseHeadersResult.headers?.["x-plugin-redacted"]).toBe("1");
+    expect(passResult.action).toBe("pass");
+    expect(pluginApi.privacy?.redactText("secret").count).toBe(1);
+  });
+
   test("validates extension host provider manifest", () => {
     expect(validateManifest(openRouterManifest)).toEqual({ ok: true });
   });

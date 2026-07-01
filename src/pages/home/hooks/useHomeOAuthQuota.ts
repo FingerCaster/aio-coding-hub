@@ -35,14 +35,17 @@ type OAuthProviderSummary = {
 
 function readOAuthProviders(rows: ProviderSummary[] | null | undefined): OAuthProviderSummary[] {
   if (!rows?.length) return [];
-  return rows
-    .filter((row) => row.auth_mode === "oauth")
-    .map((row) => ({
+  const providers: OAuthProviderSummary[] = [];
+  for (const row of rows) {
+    if (row.auth_mode !== "oauth") continue;
+    providers.push({
       providerId: row.id,
       cliKey: row.cli_key,
       providerName: row.name,
       enabled: row.enabled,
-    }));
+    });
+  }
+  return providers;
 }
 
 function formatRefreshError(error: unknown): string {

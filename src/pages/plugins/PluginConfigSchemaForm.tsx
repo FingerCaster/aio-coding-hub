@@ -1,6 +1,6 @@
 // Usage: Render and edit the manifest configSchema subset supported by the plugin host.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState } from "react";
 import type { JsonValue } from "../../services/plugins";
 import { Button } from "../../ui/Button";
 import { Input } from "../../ui/Input";
@@ -18,6 +18,12 @@ export type PluginConfigSchemaFormProps = {
   value: JsonValue;
   pending: boolean;
   onSubmit: (value: JsonValue) => void;
+};
+
+type PluginConfigSchemaFormState = {
+  identity: string;
+  draft: PluginConfigObject;
+  fieldErrors: Record<string, string>;
 };
 
 function fieldToText(value: JsonValue | undefined, type: string | null): string {
@@ -45,6 +51,14 @@ function selectedValueForField(field: PluginConfigFieldModel, raw: string): Json
   return option?.value ?? raw;
 }
 
+function FieldError({ message }: { message: string | undefined }) {
+  return message ? <span className="text-xs text-destructive">{message}</span> : null;
+}
+
+function fieldAriaLabel(field: PluginConfigFieldModel): string {
+  return field.label === `${field.key} *` ? field.key : field.label;
+}
+
 export function PluginConfigSchemaForm({
   identity,
   schema,
@@ -52,19 +66,30 @@ export function PluginConfigSchemaForm({
   pending,
   onSubmit,
 }: PluginConfigSchemaFormProps) {
-  const [draft, setDraft] = useState<PluginConfigObject>(() => initialObject(value));
-  const [fieldErrors, setFieldErrors] = useState<Record<string, string>>({});
+  const [formState, setFormState] = useState<PluginConfigSchemaFormState>(() => ({
+    identity,
+    draft: initialObject(value),
+    fieldErrors: {},
+  }));
+  let effectiveFormState = formState;
+
+  if (formState.identity !== identity) {
+    effectiveFormState = {
+      identity,
+      draft: initialObject(value),
+      fieldErrors: {},
+    };
+    setFormState(effectiveFormState);
+  }
+
   const valueRef = useRef(value);
+  const { draft, fieldErrors } = effectiveFormState;
   const model = useMemo(
     () => buildPluginConfigRenderModel({ schema, value: draft }),
     [schema, draft]
   );
 
   valueRef.current = value;
-  useEffect(() => {
-    setDraft(initialObject(valueRef.current));
-    setFieldErrors({});
-  }, [identity]);
 
   if (!model.editable) {
     return (
@@ -78,28 +103,28 @@ export function PluginConfigSchemaForm({
   }
 
   function setField(key: string, next: JsonValue) {
-    setDraft((current) => ({ ...current, [key]: next }));
+    setFormState((current) => ({ ...current, draft: { ...current.draft, [key]: next } }));
   }
 
   function setParsedField(key: string, raw: string, type: string | null) {
     const parsed = parseConfigField(raw, type);
     if (!parsed.ok) {
-      setFieldErrors((current) => ({ ...current, [key]: parsed.error }));
+      setFormState((current) => ({
+        ...current,
+        fieldErrors: { ...current.fieldErrors, [key]: parsed.error },
+      }));
       return;
     }
-    setFieldErrors((current) => {
-      const next = { ...current };
-      delete next[key];
-      return next;
-    });
-    setDraft((current) => {
-      const next = { ...current };
+    setFormState((current) => {
+      const nextFieldErrors = { ...current.fieldErrors };
+      const nextDraft = { ...current.draft };
+      delete nextFieldErrors[key];
       if (parsed.value === undefined) {
-        delete next[key];
+        delete nextDraft[key];
       } else {
-        next[key] = parsed.value;
+        nextDraft[key] = parsed.value;
       }
-      return next;
+      return { ...current, draft: nextDraft, fieldErrors: nextFieldErrors };
     });
   }
 
@@ -113,16 +138,6 @@ export function PluginConfigSchemaForm({
       }
     }
     return next;
-  }
-
-  function fieldAriaLabel(field: PluginConfigFieldModel): string {
-    return field.label === `${field.key} *` ? field.key : field.label;
-  }
-
-  function renderFieldError(field: PluginConfigFieldModel) {
-    return fieldErrors[field.key] ? (
-      <span className="text-xs text-destructive">{fieldErrors[field.key]}</span>
-    ) : null;
   }
 
   function renderField(field: PluginConfigFieldModel, sectionTitle: string) {
@@ -173,7 +188,7 @@ export function PluginConfigSchemaForm({
             ))}
           </select>
           {field.warning ? <span className="text-xs text-warning">{field.warning}</span> : null}
-          {renderFieldError(field)}
+          <FieldError message={fieldErrors[field.key]} />
         </label>
       );
     }
@@ -224,7 +239,7 @@ export function PluginConfigSchemaForm({
               {field.warning}
             </div>
           ) : null}
-          {renderFieldError(field)}
+          <FieldError message={fieldErrors[field.key]} />
         </fieldset>
       );
     }
@@ -243,7 +258,7 @@ export function PluginConfigSchemaForm({
             onChange={(event) => setParsedField(field.key, event.target.value, field.type)}
           />
           {field.warning ? <span className="text-xs text-warning">{field.warning}</span> : null}
-          {renderFieldError(field)}
+          <FieldError message={fieldErrors[field.key]} />
         </label>
       );
     }
@@ -260,7 +275,7 @@ export function PluginConfigSchemaForm({
             value={fieldToText(current, field.type)}
             onChange={(event) => setParsedField(field.key, event.target.value, field.type)}
           />
-          {renderFieldError(field)}
+          <FieldError message={fieldErrors[field.key]} />
         </label>
       );
     }
@@ -281,7 +296,7 @@ export function PluginConfigSchemaForm({
           onChange={(event) => setParsedField(field.key, event.target.value, field.type)}
         />
         {field.warning ? <span className="text-xs text-warning">{field.warning}</span> : null}
-        {renderFieldError(field)}
+        <FieldError message={fieldErrors[field.key]} />
       </label>
     );
   }

@@ -350,13 +350,13 @@ export function buildPreviewCostAnalytics(
   customApplied: CustomDateRangeApplied | null
 ): CostAnalyticsV1 {
   const now = new Date();
-  const records = buildPreviewCostRecords(now)
-    .filter((record) => matchesPreviewCostPeriod(record, period, customApplied, now))
-    .filter((record) => (filters.cliKey == null ? true : record.cli_key === filters.cliKey))
-    .filter((record) =>
-      filters.providerId == null ? true : record.provider_id === filters.providerId
-    )
-    .filter((record) => (filters.model == null ? true : record.model === filters.model));
+  const records = buildPreviewCostRecords(now).filter(
+    (record) =>
+      matchesPreviewCostPeriod(record, period, customApplied, now) &&
+      (filters.cliKey == null || record.cli_key === filters.cliKey) &&
+      (filters.providerId == null || record.provider_id === filters.providerId) &&
+      (filters.model == null || record.model === filters.model)
+  );
 
   const successRecords = records.filter((record) => record.success);
   const coveredSuccessRecords = successRecords.filter((record) => record.cost_covered);

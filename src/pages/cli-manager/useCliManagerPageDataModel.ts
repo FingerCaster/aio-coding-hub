@@ -62,6 +62,90 @@ const DEFAULT_RECTIFIER: GatewayRectifierSettingsPatch = {
   response_fixer_max_fix_size: 1024 * 1024,
 };
 
+type GeneralSettingsDraft = {
+  rectifier: GatewayRectifierSettingsPatch;
+  circuitBreakerNoticeEnabled: boolean;
+  codexSessionIdCompletionEnabled: boolean;
+  upstreamFirstByteTimeoutSeconds: number;
+  upstreamStreamIdleTimeoutSeconds: number;
+  upstreamRequestTimeoutNonStreamingSeconds: number;
+  providerCooldownSeconds: number;
+  providerBaseUrlPingCacheTtlSeconds: number;
+  circuitBreakerFailureThreshold: number;
+  circuitBreakerOpenDurationMinutes: number;
+};
+
+const DEFAULT_GENERAL_SETTINGS_DRAFT: GeneralSettingsDraft = {
+  rectifier: DEFAULT_RECTIFIER,
+  circuitBreakerNoticeEnabled: false,
+  codexSessionIdCompletionEnabled: true,
+  upstreamFirstByteTimeoutSeconds: 0,
+  upstreamStreamIdleTimeoutSeconds: 0,
+  upstreamRequestTimeoutNonStreamingSeconds: 0,
+  providerCooldownSeconds: 30,
+  providerBaseUrlPingCacheTtlSeconds: 60,
+  circuitBreakerFailureThreshold: 5,
+  circuitBreakerOpenDurationMinutes: 30,
+};
+
+function appSettingsToGeneralSettingsDraft(appSettings: AppSettings): GeneralSettingsDraft {
+  return {
+    rectifier: {
+      verbose_provider_error: appSettings.verbose_provider_error,
+      intercept_anthropic_warmup_requests: appSettings.intercept_anthropic_warmup_requests,
+      enable_thinking_signature_rectifier: appSettings.enable_thinking_signature_rectifier,
+      enable_thinking_budget_rectifier: appSettings.enable_thinking_budget_rectifier,
+      enable_billing_header_rectifier: appSettings.enable_billing_header_rectifier,
+      enable_claude_metadata_user_id_injection:
+        appSettings.enable_claude_metadata_user_id_injection,
+      enable_response_fixer: appSettings.enable_response_fixer,
+      response_fixer_fix_encoding: appSettings.response_fixer_fix_encoding,
+      response_fixer_fix_sse_format: appSettings.response_fixer_fix_sse_format,
+      response_fixer_fix_truncated_json: appSettings.response_fixer_fix_truncated_json,
+      response_fixer_max_json_depth: appSettings.response_fixer_max_json_depth,
+      response_fixer_max_fix_size: appSettings.response_fixer_max_fix_size,
+    },
+    circuitBreakerNoticeEnabled: appSettings.enable_circuit_breaker_notice ?? false,
+    codexSessionIdCompletionEnabled: appSettings.enable_codex_session_id_completion ?? true,
+    upstreamFirstByteTimeoutSeconds: appSettings.upstream_first_byte_timeout_seconds,
+    upstreamStreamIdleTimeoutSeconds: appSettings.upstream_stream_idle_timeout_seconds,
+    upstreamRequestTimeoutNonStreamingSeconds:
+      appSettings.upstream_request_timeout_non_streaming_seconds,
+    providerCooldownSeconds: appSettings.provider_cooldown_seconds,
+    providerBaseUrlPingCacheTtlSeconds: appSettings.provider_base_url_ping_cache_ttl_seconds,
+    circuitBreakerFailureThreshold: appSettings.circuit_breaker_failure_threshold,
+    circuitBreakerOpenDurationMinutes: appSettings.circuit_breaker_open_duration_minutes,
+  };
+}
+
+function generalSettingsDraftPatchFromAppSettings(
+  appSettings: AppSettings
+): Pick<
+  GeneralSettingsDraft,
+  | "upstreamFirstByteTimeoutSeconds"
+  | "upstreamStreamIdleTimeoutSeconds"
+  | "upstreamRequestTimeoutNonStreamingSeconds"
+  | "providerCooldownSeconds"
+  | "providerBaseUrlPingCacheTtlSeconds"
+  | "circuitBreakerFailureThreshold"
+  | "circuitBreakerOpenDurationMinutes"
+> {
+  return {
+    upstreamFirstByteTimeoutSeconds: appSettings.upstream_first_byte_timeout_seconds,
+    upstreamStreamIdleTimeoutSeconds: appSettings.upstream_stream_idle_timeout_seconds,
+    upstreamRequestTimeoutNonStreamingSeconds:
+      appSettings.upstream_request_timeout_non_streaming_seconds,
+    providerCooldownSeconds: appSettings.provider_cooldown_seconds,
+    providerBaseUrlPingCacheTtlSeconds: appSettings.provider_base_url_ping_cache_ttl_seconds,
+    circuitBreakerFailureThreshold: appSettings.circuit_breaker_failure_threshold,
+    circuitBreakerOpenDurationMinutes: appSettings.circuit_breaker_open_duration_minutes,
+  };
+}
+
+function blurOnEnter(e: ReactKeyboardEvent<HTMLInputElement>) {
+  if (e.key === "Enter") e.currentTarget.blur();
+}
+
 export function useCliManagerPageDataModel() {
   const [tab, setTab] = useState<CliManagerTabKey>("general");
 
@@ -86,20 +170,21 @@ export function useCliManagerPageDataModel() {
   const codexSessionIdCompletionSaving = codexSessionIdCompletionMutation.isPending;
   const commonSettingsSaving = commonSettingsMutation.isPending;
 
-  const [rectifier, setRectifier] = useState<GatewayRectifierSettingsPatch>(DEFAULT_RECTIFIER);
-  const [circuitBreakerNoticeEnabled, setCircuitBreakerNoticeEnabled] = useState(false);
-  const [codexSessionIdCompletionEnabled, setCodexSessionIdCompletionEnabled] = useState(true);
-  const [upstreamFirstByteTimeoutSeconds, setUpstreamFirstByteTimeoutSeconds] = useState<number>(0);
-  const [upstreamStreamIdleTimeoutSeconds, setUpstreamStreamIdleTimeoutSeconds] =
-    useState<number>(0);
-  const [upstreamRequestTimeoutNonStreamingSeconds, setUpstreamRequestTimeoutNonStreamingSeconds] =
-    useState<number>(0);
-  const [providerCooldownSeconds, setProviderCooldownSeconds] = useState<number>(30);
-  const [providerBaseUrlPingCacheTtlSeconds, setProviderBaseUrlPingCacheTtlSeconds] =
-    useState<number>(60);
-  const [circuitBreakerFailureThreshold, setCircuitBreakerFailureThreshold] = useState<number>(5);
-  const [circuitBreakerOpenDurationMinutes, setCircuitBreakerOpenDurationMinutes] =
-    useState<number>(30);
+  const [generalSettingsDraft, setGeneralSettingsDraft] = useState<GeneralSettingsDraft>(
+    DEFAULT_GENERAL_SETTINGS_DRAFT
+  );
+  const {
+    rectifier,
+    circuitBreakerNoticeEnabled,
+    codexSessionIdCompletionEnabled,
+    upstreamFirstByteTimeoutSeconds,
+    upstreamStreamIdleTimeoutSeconds,
+    upstreamRequestTimeoutNonStreamingSeconds,
+    providerCooldownSeconds,
+    providerBaseUrlPingCacheTtlSeconds,
+    circuitBreakerFailureThreshold,
+    circuitBreakerOpenDurationMinutes,
+  } = generalSettingsDraft;
   const cacheAnomalyMonitorEnabled = appSettings?.enable_cache_anomaly_monitor ?? false;
   const taskCompleteNotifyEnabled = appSettings?.enable_task_complete_notify ?? true;
   const notificationSoundEnabled = appSettings?.enable_notification_sound ?? true;
@@ -160,33 +245,20 @@ export function useCliManagerPageDataModel() {
 
   useEffect(() => {
     if (!appSettings) return;
-    setRectifier({
-      verbose_provider_error: appSettings.verbose_provider_error,
-      intercept_anthropic_warmup_requests: appSettings.intercept_anthropic_warmup_requests,
-      enable_thinking_signature_rectifier: appSettings.enable_thinking_signature_rectifier,
-      enable_thinking_budget_rectifier: appSettings.enable_thinking_budget_rectifier,
-      enable_billing_header_rectifier: appSettings.enable_billing_header_rectifier,
-      enable_claude_metadata_user_id_injection:
-        appSettings.enable_claude_metadata_user_id_injection,
-      enable_response_fixer: appSettings.enable_response_fixer,
-      response_fixer_fix_encoding: appSettings.response_fixer_fix_encoding,
-      response_fixer_fix_sse_format: appSettings.response_fixer_fix_sse_format,
-      response_fixer_fix_truncated_json: appSettings.response_fixer_fix_truncated_json,
-      response_fixer_max_json_depth: appSettings.response_fixer_max_json_depth,
-      response_fixer_max_fix_size: appSettings.response_fixer_max_fix_size,
-    });
-    setCircuitBreakerNoticeEnabled(appSettings.enable_circuit_breaker_notice ?? false);
-    setCodexSessionIdCompletionEnabled(appSettings.enable_codex_session_id_completion ?? true);
-    setUpstreamFirstByteTimeoutSeconds(appSettings.upstream_first_byte_timeout_seconds);
-    setUpstreamStreamIdleTimeoutSeconds(appSettings.upstream_stream_idle_timeout_seconds);
-    setUpstreamRequestTimeoutNonStreamingSeconds(
-      appSettings.upstream_request_timeout_non_streaming_seconds
-    );
-    setProviderCooldownSeconds(appSettings.provider_cooldown_seconds);
-    setProviderBaseUrlPingCacheTtlSeconds(appSettings.provider_base_url_ping_cache_ttl_seconds);
-    setCircuitBreakerFailureThreshold(appSettings.circuit_breaker_failure_threshold);
-    setCircuitBreakerOpenDurationMinutes(appSettings.circuit_breaker_open_duration_minutes);
+    setGeneralSettingsDraft(appSettingsToGeneralSettingsDraft(appSettings));
   }, [appSettings]);
+
+  function updateGeneralSettingsDraft(patch: Partial<GeneralSettingsDraft>) {
+    setGeneralSettingsDraft((draft) => ({ ...draft, ...patch }));
+  }
+
+  function updateRectifierDraft(rectifier: GatewayRectifierSettingsPatch) {
+    setGeneralSettingsDraft((draft) => ({ ...draft, rectifier }));
+  }
+
+  function setDraftNumber<K extends keyof GeneralSettingsDraft>(key: K, value: number) {
+    setGeneralSettingsDraft((draft) => ({ ...draft, [key]: value }));
+  }
 
   async function persistRectifier(patch: Partial<GatewayRectifierSettingsPatch>) {
     if (settingsWriteBlocked) {
@@ -198,15 +270,15 @@ export function useCliManagerPageDataModel() {
 
     const prev = rectifier;
     const next = { ...prev, ...patch };
-    setRectifier(next);
+    updateRectifierDraft(next);
     try {
       const updated = await rectifierMutation.mutateAsync(next);
       if (!updated) {
-        setRectifier(prev);
+        updateRectifierDraft(prev);
         return;
       }
 
-      setRectifier({
+      updateRectifierDraft({
         verbose_provider_error: updated.verbose_provider_error,
         intercept_anthropic_warmup_requests: updated.intercept_anthropic_warmup_requests,
         enable_thinking_signature_rectifier: updated.enable_thinking_signature_rectifier,
@@ -223,7 +295,7 @@ export function useCliManagerPageDataModel() {
     } catch (err) {
       logToConsole("error", "更新网关整流配置失败", { error: String(err) });
       toast("更新网关整流配置失败：请稍后重试");
-      setRectifier(prev);
+      updateRectifierDraft(prev);
     }
   }
 
@@ -236,20 +308,22 @@ export function useCliManagerPageDataModel() {
     if (rectifierAvailable !== "available") return;
 
     const prev = circuitBreakerNoticeEnabled;
-    setCircuitBreakerNoticeEnabled(enable);
+    updateGeneralSettingsDraft({ circuitBreakerNoticeEnabled: enable });
     try {
       const updated = await circuitBreakerNoticeMutation.mutateAsync(enable);
       if (!updated) {
-        setCircuitBreakerNoticeEnabled(prev);
+        updateGeneralSettingsDraft({ circuitBreakerNoticeEnabled: prev });
         return;
       }
 
-      setCircuitBreakerNoticeEnabled(updated.enable_circuit_breaker_notice ?? enable);
+      updateGeneralSettingsDraft({
+        circuitBreakerNoticeEnabled: updated.enable_circuit_breaker_notice ?? enable,
+      });
       toast(enable ? "已开启熔断通知" : "已关闭熔断通知");
     } catch (err) {
       logToConsole("error", "更新熔断通知配置失败", { error: String(err) });
       toast("更新熔断通知配置失败：请稍后重试");
-      setCircuitBreakerNoticeEnabled(prev);
+      updateGeneralSettingsDraft({ circuitBreakerNoticeEnabled: prev });
     }
   }
 
@@ -262,20 +336,22 @@ export function useCliManagerPageDataModel() {
     if (rectifierAvailable !== "available") return;
 
     const prev = codexSessionIdCompletionEnabled;
-    setCodexSessionIdCompletionEnabled(enable);
+    updateGeneralSettingsDraft({ codexSessionIdCompletionEnabled: enable });
     try {
       const updated = await codexSessionIdCompletionMutation.mutateAsync(enable);
       if (!updated) {
-        setCodexSessionIdCompletionEnabled(prev);
+        updateGeneralSettingsDraft({ codexSessionIdCompletionEnabled: prev });
         return;
       }
 
-      setCodexSessionIdCompletionEnabled(updated.enable_codex_session_id_completion ?? enable);
+      updateGeneralSettingsDraft({
+        codexSessionIdCompletionEnabled: updated.enable_codex_session_id_completion ?? enable,
+      });
       toast(enable ? "已开启 Codex Session ID 补全" : "已关闭 Codex Session ID 补全");
     } catch (err) {
       logToConsole("error", "更新 Codex Session ID 补全配置失败", { error: String(err) });
       toast("更新 Codex Session ID 补全配置失败：请稍后重试");
-      setCodexSessionIdCompletionEnabled(prev);
+      updateGeneralSettingsDraft({ codexSessionIdCompletionEnabled: prev });
     }
   }
 
@@ -350,17 +426,7 @@ export function useCliManagerPageDataModel() {
       }
       const updatedSettings = updated.settings;
 
-      setUpstreamFirstByteTimeoutSeconds(updatedSettings.upstream_first_byte_timeout_seconds);
-      setUpstreamStreamIdleTimeoutSeconds(updatedSettings.upstream_stream_idle_timeout_seconds);
-      setUpstreamRequestTimeoutNonStreamingSeconds(
-        updatedSettings.upstream_request_timeout_non_streaming_seconds
-      );
-      setProviderCooldownSeconds(updatedSettings.provider_cooldown_seconds);
-      setProviderBaseUrlPingCacheTtlSeconds(
-        updatedSettings.provider_base_url_ping_cache_ttl_seconds
-      );
-      setCircuitBreakerFailureThreshold(updatedSettings.circuit_breaker_failure_threshold);
-      setCircuitBreakerOpenDurationMinutes(updatedSettings.circuit_breaker_open_duration_minutes);
+      updateGeneralSettingsDraft(generalSettingsDraftPatchFromAppSettings(updatedSettings));
       toast("已保存");
       return updatedSettings;
     } catch (err) {
@@ -370,15 +436,7 @@ export function useCliManagerPageDataModel() {
         error_code: formatted.error_code ?? undefined,
       });
       toast(formatted.toast);
-      setUpstreamFirstByteTimeoutSeconds(prev.upstream_first_byte_timeout_seconds);
-      setUpstreamStreamIdleTimeoutSeconds(prev.upstream_stream_idle_timeout_seconds);
-      setUpstreamRequestTimeoutNonStreamingSeconds(
-        prev.upstream_request_timeout_non_streaming_seconds
-      );
-      setProviderCooldownSeconds(prev.provider_cooldown_seconds);
-      setProviderBaseUrlPingCacheTtlSeconds(prev.provider_base_url_ping_cache_ttl_seconds);
-      setCircuitBreakerFailureThreshold(prev.circuit_breaker_failure_threshold);
-      setCircuitBreakerOpenDurationMinutes(prev.circuit_breaker_open_duration_minutes);
+      updateGeneralSettingsDraft(generalSettingsDraftPatchFromAppSettings(prev));
       return null;
     }
   }
@@ -554,10 +612,6 @@ export function useCliManagerPageDataModel() {
     }
   }
 
-  function blurOnEnter(e: ReactKeyboardEvent<HTMLInputElement>) {
-    if (e.key === "Enter") e.currentTarget.blur();
-  }
-
   return {
     tab,
     setTab,
@@ -587,19 +641,26 @@ export function useCliManagerPageDataModel() {
       commonSettingsSaving: commonSettingsSaving || settingsWriteBlocked,
       onPersistCommonSettings: persistCommonSettings,
       upstreamFirstByteTimeoutSeconds,
-      setUpstreamFirstByteTimeoutSeconds,
+      setUpstreamFirstByteTimeoutSeconds: (value: number) =>
+        setDraftNumber("upstreamFirstByteTimeoutSeconds", value),
       upstreamStreamIdleTimeoutSeconds,
-      setUpstreamStreamIdleTimeoutSeconds,
+      setUpstreamStreamIdleTimeoutSeconds: (value: number) =>
+        setDraftNumber("upstreamStreamIdleTimeoutSeconds", value),
       upstreamRequestTimeoutNonStreamingSeconds,
-      setUpstreamRequestTimeoutNonStreamingSeconds,
+      setUpstreamRequestTimeoutNonStreamingSeconds: (value: number) =>
+        setDraftNumber("upstreamRequestTimeoutNonStreamingSeconds", value),
       providerCooldownSeconds,
-      setProviderCooldownSeconds,
+      setProviderCooldownSeconds: (value: number) =>
+        setDraftNumber("providerCooldownSeconds", value),
       providerBaseUrlPingCacheTtlSeconds,
-      setProviderBaseUrlPingCacheTtlSeconds,
+      setProviderBaseUrlPingCacheTtlSeconds: (value: number) =>
+        setDraftNumber("providerBaseUrlPingCacheTtlSeconds", value),
       circuitBreakerFailureThreshold,
-      setCircuitBreakerFailureThreshold,
+      setCircuitBreakerFailureThreshold: (value: number) =>
+        setDraftNumber("circuitBreakerFailureThreshold", value),
       circuitBreakerOpenDurationMinutes,
-      setCircuitBreakerOpenDurationMinutes,
+      setCircuitBreakerOpenDurationMinutes: (value: number) =>
+        setDraftNumber("circuitBreakerOpenDurationMinutes", value),
       blurOnEnter,
     },
     claudeTabProps: {

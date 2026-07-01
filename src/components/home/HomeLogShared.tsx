@@ -2,7 +2,7 @@
 // - Import helpers/components from this module for Home "request logs" list and "realtime traces" cards.
 // - Designed to keep status badge / error_code label / session reuse tooltip consistent across the Home page.
 
-import { GatewayErrorCodes, getGatewayErrorShortLabel } from "../../constants/gatewayErrorCodes";
+import { GatewayErrorCodes } from "../../constants/gatewayErrorCodes";
 import {
   normalizeClaudeModelMapping,
   type ClaudeModelMapping,
@@ -19,6 +19,7 @@ import { Tooltip } from "../../ui/Tooltip";
 import { computeEffectiveInputTokens as computeSharedEffectiveInputTokens } from "../../utils/cacheRateMetrics";
 import { FolderOpen } from "lucide-react";
 import { RouteTooltipContent } from "./RouteTooltipContent";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 
 const CLIENT_ABORT_ERROR_CODES: ReadonlySet<string> = new Set([
   GatewayErrorCodes.STREAM_ABORTED,
@@ -120,7 +121,7 @@ function auditTag(label: string, className: string, title?: string): RequestLogA
 
 export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogAuditMeta {
   const settings = parseRequestLogSpecialSettings(log.special_settings_json);
-  const settingTypes = new Set(settings.map((item) => item.type).filter(Boolean));
+  const settingTypes = new Set(settings.flatMap((item) => (item.type ? [item.type] : [])));
   const isWarmupIntercept = settingTypes.has("warmup_intercept");
   const isCliProxyGuard = settingTypes.has("cli_proxy_guard");
   const isSuccessful = typeof log.status === "number" && log.status >= 200 && log.status < 300;
@@ -242,10 +243,6 @@ export function resolveLiveTraceDurationMs(
 ) {
   if (!trace) return null;
   return Math.max(0, nowMs - trace.first_seen_ms);
-}
-
-export function getErrorCodeLabel(errorCode: string) {
-  return getGatewayErrorShortLabel(errorCode);
 }
 
 export function SessionReuseBadge({ showCustomTooltip }: { showCustomTooltip: boolean }) {

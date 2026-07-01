@@ -53,14 +53,23 @@ const TRUST_EVENT_TYPES = new Set([
 ]);
 
 function latestTrustAudit(detail: PluginDetail) {
-  return detail.audit_logs
-    .filter((log) => TRUST_EVENT_TYPES.has(log.event_type))
-    .sort((a, b) => b.created_at - a.created_at || b.id - a.id)[0];
+  let latest: PluginDetail["audit_logs"][number] | undefined;
+  for (const log of detail.audit_logs) {
+    if (!TRUST_EVENT_TYPES.has(log.event_type)) continue;
+    if (
+      !latest ||
+      log.created_at > latest.created_at ||
+      (log.created_at === latest.created_at && log.id > latest.id)
+    ) {
+      latest = log;
+    }
+  }
+  return latest;
 }
 
 function trustLabel(detail: PluginDetail) {
   const latest = latestTrustAudit(detail);
-  const details = jsonRecord(latest?.details);
+  const details = jsonRecord(latest?.details ?? null);
   if (details?.unsigned === true) return "未签名";
   if (details?.signatureVerified === true || details?.signature_verified === true) {
     return "签名已验证";
@@ -72,10 +81,12 @@ function trustLabel(detail: PluginDetail) {
 }
 
 function quarantineReason(detail: PluginDetail) {
-  const fromAudit = detail.audit_logs
-    .filter((log) => log.event_type === "plugin.quarantined")
-    .map((log) => stringDetail(jsonRecord(log.details)?.reason))
-    .find(Boolean);
+  let fromAudit: string | null = null;
+  for (const log of detail.audit_logs) {
+    if (log.event_type !== "plugin.quarantined") continue;
+    fromAudit = stringDetail(jsonRecord(log.details)?.reason);
+    if (fromAudit) break;
+  }
   return fromAudit ?? detail.summary.last_error;
 }
 

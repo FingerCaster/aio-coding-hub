@@ -12,7 +12,6 @@ import {
   FolderBadge,
   formatClaudeModelMappingText,
   FreeBadge,
-  getErrorCodeLabel,
   hasClaudeModelMappingSpecialSetting,
   hasPriorityServiceTierSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
@@ -20,6 +19,7 @@ import {
   resolveLiveTraceProvider,
   SessionReuseBadge,
 } from "../HomeLogShared";
+import { getErrorCodeLabel } from "../requestLogErrorLabels";
 
 function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
   return {

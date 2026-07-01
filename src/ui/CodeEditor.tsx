@@ -1,9 +1,4 @@
 import { useEffect, useRef } from "react";
-import { EditorView, basicSetup } from "codemirror";
-import { EditorState } from "@codemirror/state";
-import { placeholder as placeholderExt } from "@codemirror/view";
-import { StreamLanguage } from "@codemirror/language";
-import { toml as tomlMode } from "@codemirror/legacy-modes/mode/toml";
 import { cn } from "../utils/cn";
 import { BRAND } from "../constants/colors";
 
@@ -20,6 +15,38 @@ export type CodeEditorProps = {
   className?: string;
 };
 
+type EditorViewInstance = import("@codemirror/view").EditorView;
+
+type CodeMirrorBundle = {
+  EditorView: typeof import("codemirror").EditorView;
+  basicSetup: typeof import("codemirror").basicSetup;
+  EditorState: typeof import("@codemirror/state").EditorState;
+  placeholderExt: typeof import("@codemirror/view").placeholder;
+  StreamLanguage: typeof import("@codemirror/language").StreamLanguage;
+  tomlMode: typeof import("@codemirror/legacy-modes/mode/toml").toml;
+};
+
+let codeMirrorBundlePromise: Promise<CodeMirrorBundle> | null = null;
+
+function loadCodeMirrorBundle() {
+  codeMirrorBundlePromise ??= Promise.all([
+    import("codemirror"),
+    import("@codemirror/state"),
+    import("@codemirror/view"),
+    import("@codemirror/language"),
+    import("@codemirror/legacy-modes/mode/toml"),
+  ]).then(([codemirror, state, view, language, toml]) => ({
+    EditorView: codemirror.EditorView,
+    basicSetup: codemirror.basicSetup,
+    EditorState: state.EditorState,
+    placeholderExt: view.placeholder,
+    StreamLanguage: language.StreamLanguage,
+    tomlMode: toml.toml,
+  }));
+
+  return codeMirrorBundlePromise;
+}
+
 export function CodeEditor({
   value,
   onChange,
@@ -31,107 +58,121 @@ export function CodeEditor({
   className,
 }: CodeEditorProps) {
   const editorRef = useRef<HTMLDivElement>(null);
-  const viewRef = useRef<EditorView | null>(null);
+  const viewRef = useRef<EditorViewInstance | null>(null);
+  const valueRef = useRef(value);
+  valueRef.current = value;
 
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
 
   useEffect(() => {
-    if (!editorRef.current) return;
+    const parent = editorRef.current;
+    if (!parent) return;
+    viewRef.current = null;
+    let cancelled = false;
+    let view: EditorViewInstance | null = null;
 
-    const heightValue = height ? (typeof height === "number" ? `${height}px` : height) : undefined;
+    void loadCodeMirrorBundle().then(
+      ({ EditorView, basicSetup, EditorState, placeholderExt, StreamLanguage, tomlMode }) => {
+        if (cancelled || !editorRef.current) return;
 
-    const baseTheme = EditorView.baseTheme({
-      ".cm-editor": {
-        border: "1px solid rgb(226 232 240)",
-        borderRadius: "0.5rem",
-        background: "transparent",
-      },
-      ".cm-editor.cm-focused": {
-        outline: "none",
-        borderColor: BRAND.accent,
-      },
-      ".cm-scroller": {
-        background: "transparent",
-      },
-      ".cm-gutters": {
-        background: "transparent",
-        borderRight: "1px solid rgb(226 232 240)",
-        color: "rgb(100 116 139)",
-      },
-      ".cm-selectionBackground, .cm-content ::selection": {
-        background: "rgba(0, 82, 255, 0.18)",
-      },
-      ".cm-activeLine": {
-        background: "rgba(0, 82, 255, 0.06)",
-      },
-      ".cm-activeLineGutter": {
-        background: "rgba(0, 82, 255, 0.06)",
-      },
-    });
+        const heightValue = height
+          ? typeof height === "number"
+            ? `${height}px`
+            : height
+          : undefined;
 
-    const sizingTheme = EditorView.theme({
-      "&": heightValue ? { height: heightValue } : { minHeight },
-      ".cm-scroller": { overflow: "auto" },
-      ".cm-content": {
-        fontFamily:
-          "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
-        fontSize: "13px",
-      },
-    });
+        const baseTheme = EditorView.baseTheme({
+          ".cm-editor": {
+            border: "1px solid rgb(226 232 240)",
+            borderRadius: "0.5rem",
+            background: "transparent",
+          },
+          ".cm-editor.cm-focused": {
+            outline: "none",
+            borderColor: BRAND.accent,
+          },
+          ".cm-scroller": {
+            background: "transparent",
+          },
+          ".cm-gutters": {
+            background: "transparent",
+            borderRight: "1px solid rgb(226 232 240)",
+            color: "rgb(100 116 139)",
+          },
+          ".cm-selectionBackground, .cm-content ::selection": {
+            background: "rgba(0, 82, 255, 0.18)",
+          },
+          ".cm-activeLine": {
+            background: "rgba(0, 82, 255, 0.06)",
+          },
+          ".cm-activeLineGutter": {
+            background: "rgba(0, 82, 255, 0.06)",
+          },
+        });
 
-    const languageExtension = language === "toml" ? StreamLanguage.define(tomlMode) : [];
+        const sizingTheme = EditorView.theme({
+          "&": heightValue ? { height: heightValue } : { minHeight },
+          ".cm-scroller": { overflow: "auto" },
+          ".cm-content": {
+            fontFamily:
+              "ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'Courier New', monospace",
+            fontSize: "13px",
+          },
+        });
 
-    const extensions = [
-      basicSetup,
-      baseTheme,
-      sizingTheme,
-      languageExtension,
-      EditorState.readOnly.of(readOnly),
-      placeholder && !readOnly ? placeholderExt(placeholder) : [],
-      !readOnly
-        ? EditorView.updateListener.of((update) => {
-            if (!update.docChanged) return;
-            onChangeRef.current?.(update.state.doc.toString());
-          })
-        : [],
-      readOnly
-        ? EditorView.theme({
-            ".cm-cursor, .cm-dropCursor": { border: "none" },
-            ".cm-activeLine": { background: "transparent !important" },
-            ".cm-activeLineGutter": { background: "transparent !important" },
-          })
-        : [],
-    ];
+        const languageExtension = language === "toml" ? StreamLanguage.define(tomlMode) : [];
 
-    const state = EditorState.create({
-      doc: value,
-      extensions,
-    });
+        const extensions = [
+          basicSetup,
+          baseTheme,
+          sizingTheme,
+          languageExtension,
+          EditorState.readOnly.of(readOnly),
+          placeholder && !readOnly ? placeholderExt(placeholder) : [],
+          !readOnly
+            ? EditorView.updateListener.of((update) => {
+                if (!update.docChanged) return;
+                onChangeRef.current?.(update.state.doc.toString());
+              })
+            : [],
+          readOnly
+            ? EditorView.theme({
+                ".cm-cursor, .cm-dropCursor": { border: "none" },
+                ".cm-activeLine": { background: "transparent !important" },
+                ".cm-activeLineGutter": { background: "transparent !important" },
+              })
+            : [],
+        ];
 
-    const view = new EditorView({
-      state,
-      parent: editorRef.current,
-    });
+        const state = EditorState.create({
+          doc: valueRef.current,
+          extensions,
+        });
 
-    viewRef.current = view;
+        view = new EditorView({
+          state,
+          parent,
+        });
+
+        viewRef.current = view;
+      }
+    );
 
     return () => {
-      view.destroy();
-      viewRef.current = null;
+      cancelled = true;
+      view?.destroy();
     };
-    // value is intentionally omitted: initial doc only; synced via the second useEffect.
-    // onChange is accessed via onChangeRef to avoid recreating the editor on callback changes.
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [language, readOnly, minHeight, height, placeholder]);
 
   useEffect(() => {
-    if (!viewRef.current) return;
-    if (viewRef.current.state.doc.toString() === value) return;
-    viewRef.current.dispatch({
+    const view = viewRef.current;
+    if (!view) return;
+    if (view.state.doc.toString() === value) return;
+    view.dispatch({
       changes: {
         from: 0,
-        to: viewRef.current.state.doc.length,
+        to: view.state.doc.length,
         insert: value,
       },
     });

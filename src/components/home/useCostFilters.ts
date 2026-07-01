@@ -152,17 +152,13 @@ export function useCostFilters({ devPreviewEnabled = false }: UseCostFiltersOpti
     return modelRows.slice().sort((a, b) => b.cost_usd - a.cost_usd);
   }, [modelRows]);
 
-  useEffect(() => {
-    if (providerId == null) return;
-    if (providerOptions.some((row) => row.provider_id === providerId)) return;
+  if (providerId != null && !providerOptions.some((row) => row.provider_id === providerId)) {
     setProviderId(null);
-  }, [providerId, providerOptions]);
+  }
 
-  useEffect(() => {
-    if (model == null) return;
-    if (modelOptions.some((row) => row.model === model)) return;
+  if (model != null && !modelOptions.some((row) => row.model === model)) {
     setModel(null);
-  }, [model, modelOptions]);
+  }
 
   const coverage = useMemo(() => {
     if (!summary) return null;

@@ -63,6 +63,22 @@ describe("hooks/useNowMs", () => {
     expect(clearIntervalSpy).toHaveBeenCalledTimes(2);
   });
 
+  it("refreshes immediately when the clock becomes enabled", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(5_000);
+    const { useNowMs } = await importFreshUseNowMs();
+
+    const hook = renderHook(({ enabled }) => useNowMs(enabled, 250), {
+      initialProps: { enabled: false },
+    });
+    expect(hook.result.current).toBe(5_000);
+
+    vi.setSystemTime(8_000);
+    hook.rerender({ enabled: true });
+
+    expect(hook.result.current).toBe(8_000);
+  });
+
   it("keeps clock subscribers isolated when one listener throws", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(3_000);

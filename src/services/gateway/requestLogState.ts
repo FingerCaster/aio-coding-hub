@@ -5,7 +5,7 @@ export type RequestLogProgressInput = {
   created_at_ms?: number | null;
 };
 
-export const PENDING_IDLE_NOTICE_MS = 10 * 60 * 1000;
+const PENDING_IDLE_NOTICE_MS = 10 * 60 * 1000;
 
 export type RequestLogActivityState = "completed" | "in_progress_active" | "in_progress_idle";
 

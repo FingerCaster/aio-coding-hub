@@ -1,4 +1,4 @@
-export const CLIPBOARD_TEXT_MAX_CHARS = 1_000_000;
+const CLIPBOARD_TEXT_MAX_CHARS = 1_000_000;
 
 function charLength(value: string) {
   return [...value].length;

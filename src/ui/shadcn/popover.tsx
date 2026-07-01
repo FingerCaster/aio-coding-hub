@@ -1,14 +1,16 @@
 import * as PopoverPrimitive from "@radix-ui/react-popover";
-import { forwardRef } from "react";
 import { cn } from "@/ui/shadcn/utils";
 
 export const Popover = PopoverPrimitive.Root;
 export const PopoverTrigger = PopoverPrimitive.Trigger;
 
-export const PopoverContent = forwardRef<
-  React.ElementRef<typeof PopoverPrimitive.Content>,
-  React.ComponentPropsWithoutRef<typeof PopoverPrimitive.Content>
->(function PopoverContent({ className, align = "end", sideOffset = 8, ...props }, ref) {
+export function PopoverContent({
+  className,
+  align = "end",
+  sideOffset = 8,
+  ref,
+  ...props
+}: React.ComponentPropsWithRef<typeof PopoverPrimitive.Content>) {
   return (
     <PopoverPrimitive.Portal>
       <PopoverPrimitive.Content
@@ -23,4 +25,4 @@ export const PopoverContent = forwardRef<
       />
     </PopoverPrimitive.Portal>
   );
-});
+}

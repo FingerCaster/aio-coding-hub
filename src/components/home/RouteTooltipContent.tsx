@@ -5,7 +5,7 @@
 
 import type { RequestLogRouteHop } from "../../services/gateway/requestLogs";
 import { cn } from "../../utils/cn";
-import { getErrorCodeLabel } from "./HomeLogShared";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 
 type RouteTooltipContentProps = {
   hops: RequestLogRouteHop[];
@@ -44,7 +44,10 @@ export function RouteTooltipContent({
           {hops.map((hop, idx) => {
             const name = resolveProviderName(hop.provider_name);
             return (
-              <span key={idx} className="flex items-center gap-1">
+              <span
+                key={`${hop.provider_id}-${hop.status ?? "pending"}-${hop.error_code ?? "ok"}-${name}`}
+                className="flex items-center gap-1"
+              >
                 {idx > 0 && <span className="text-muted-foreground">→</span>}
                 <span className="text-white">{name}</span>
               </span>
@@ -58,7 +61,7 @@ export function RouteTooltipContent({
       <div className="flex flex-col gap-1.5">
         {hops.map((hop, idx) => (
           <RouteHopRow
-            key={`${hop.provider_id}-${idx}`}
+            key={`${hop.provider_id}-${hop.status ?? "pending"}-${hop.error_code ?? "ok"}-${idx}`}
             hop={hop}
             isLast={idx === hops.length - 1}
             finalStatus={finalStatus}

@@ -80,7 +80,7 @@ function providerTagClassName(tag: string) {
   return "shrink-0 rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground dark:bg-secondary dark:text-secondary-foreground";
 }
 
-function renderProviderNote(note: string) {
+function ProviderNote({ note }: { note: string }) {
   const nodes: ReactNode[] = [];
   let lastIndex = 0;
 
@@ -118,13 +118,13 @@ function renderProviderNote(note: string) {
     nodes.push(note.slice(lastIndex));
   }
 
-  return nodes.length > 0 ? nodes : [note];
+  return <>{nodes.length > 0 ? nodes : note}</>;
 }
 
-function renderEdgeAction(node: ReactNode) {
-  if (!isValidElement(node)) return node;
+function EdgeAction({ children }: { children: ReactNode }) {
+  if (!isValidElement(children)) return <>{children}</>;
 
-  const element = node as ReactElement<{ className?: string }>;
+  const element = children as ReactElement<{ className?: string }>;
   return cloneElement(element, {
     className: cn(element.props.className, "w-full justify-center"),
   });
@@ -135,6 +135,7 @@ export type SortableProviderCardProps = {
   sourceProviderName?: string | null;
   sourceProvider?: ProviderSummary | null;
   trailing?: ReactNode;
+  children?: ReactNode;
   circuit: GatewayProviderCircuitStatus | null;
   circuitResetting: boolean;
   onResetCircuit: (provider: ProviderSummary) => void;
@@ -153,11 +154,12 @@ type ProviderCardProps = SortableProviderCardProps & {
   dragHandleProps?: ButtonHTMLAttributes<HTMLButtonElement>;
 } & HTMLAttributes<HTMLDivElement>;
 
-export const ProviderCard = memo(function ProviderCard({
+const ProviderCard = memo(function ProviderCard({
   provider,
   sourceProviderName = null,
   sourceProvider = null,
   trailing = null,
+  children = null,
   circuit,
   circuitResetting,
   onResetCircuit,
@@ -173,6 +175,7 @@ export const ProviderCard = memo(function ProviderCard({
   dragHandleProps,
   ...cardProps
 }: ProviderCardProps) {
+  const trailingContent = trailing ?? children;
   const claudeModelMappings = getConfiguredClaudeModelMappings(provider.claude_models);
   const claudeModelsCount = claudeModelMappings.length;
   const hasClaudeModels = claudeModelsCount > 0;
@@ -451,7 +454,7 @@ export const ProviderCard = memo(function ProviderCard({
                 title={provider.note}
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                {renderProviderNote(provider.note)}
+                <ProviderNote note={provider.note} />
               </div>
             ) : null}
           </div>
@@ -549,12 +552,12 @@ export const ProviderCard = memo(function ProviderCard({
             </div>
           </div>
 
-          {trailing ? (
+          {trailingContent ? (
             <div
               data-provider-card-edge-action="true"
               className="flex w-16 shrink-0 items-center justify-end border-t border-border pt-2 sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0"
             >
-              {renderEdgeAction(trailing)}
+              <EdgeAction>{trailingContent}</EdgeAction>
             </div>
           ) : null}
         </div>
@@ -591,13 +594,14 @@ export const SortableProviderCard = memo(function SortableProviderCard(
     transform: CSS.Transform.toString(transform),
     transition,
   };
+  const dragHandleProps = useMemo(() => ({ ...attributes, ...listeners }), [attributes, listeners]);
 
   return (
     <div ref={setNodeRef} style={style} className="relative">
       <ProviderCard
         {...props}
         className={cn(isDragging && "z-10 scale-[1.02] shadow-lg ring-2 ring-accent/30")}
-        dragHandleProps={{ ...attributes, ...listeners }}
+        dragHandleProps={dragHandleProps}
       />
     </div>
   );

@@ -38,7 +38,8 @@ function FilterButtonGroup<T extends string>({
   loading: boolean;
 }) {
   return (
-    <div className="flex items-center gap-1.5" role="group" aria-label={ariaLabel}>
+    <fieldset className="flex items-center gap-1.5 border-0 p-0">
+      <legend className="sr-only">{ariaLabel}</legend>
       {items.map((item) => (
         <Button
           key={item.key}
@@ -52,7 +53,7 @@ function FilterButtonGroup<T extends string>({
           {item.label}
         </Button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 

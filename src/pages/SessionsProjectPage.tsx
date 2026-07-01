@@ -29,6 +29,14 @@ import { cn } from "../utils/cn";
 import { formatRelativeTimeFromUnixSeconds, formatUnixSeconds } from "../utils/formatters";
 
 type SessionSortKey = "recent" | "messages" | "created";
+type SessionsProjectOverview = {
+  totalSessions: number;
+  totalMessages: number;
+  lastModified: number | null;
+  topBranches: Array<[string, number]>;
+  providerList: string[];
+  sidechains: number;
+};
 
 function normalizeSource(raw: string | undefined): CliSessionsSource | null {
   if (raw === "claude" || raw === "codex") return raw;
@@ -84,6 +92,449 @@ function compareSession(
   return bTime - aTime;
 }
 
+function SessionsProjectHeaderActions({
+  backUrl,
+  projectPath,
+  onBack,
+}: {
+  backUrl: string;
+  projectPath: string | null | undefined;
+  onBack: (url: string) => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center gap-2">
+      <Button variant="secondary" onClick={() => onBack(backUrl)}>
+        <ArrowLeft className="h-4 w-4" />
+        返回项目
+      </Button>
+      {projectPath ? (
+        <Button variant="ghost" onClick={() => void copyText(projectPath)} title="复制项目路径">
+          复制路径
+        </Button>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionsProjectOverviewCard({
+  source,
+  distro,
+  overview,
+  onRefresh,
+}: {
+  source: CliSessionsSource;
+  distro: string | undefined;
+  overview: SessionsProjectOverview;
+  onRefresh: () => void;
+}) {
+  return (
+    <Card padding="md" className="flex flex-col gap-4 lg:min-h-0">
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground">项目概览</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            来源：<span className="font-semibold">{source}</span>
+            {distro ? (
+              <span className="ml-2 rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground dark:border-border dark:bg-secondary dark:text-secondary-foreground">
+                WSL: {distro}
+              </span>
+            ) : null}
+          </div>
+        </div>
+        <Button size="sm" variant="secondary" onClick={onRefresh} className="h-9">
+          刷新
+        </Button>
+      </div>
+
+      <div className="grid gap-3 sm:grid-cols-2">
+        <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
+          <div className="text-[11px] font-semibold text-muted-foreground">会话</div>
+          <div className="mt-1 text-lg font-semibold text-foreground">{overview.totalSessions}</div>
+        </div>
+        <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
+          <div className="text-[11px] font-semibold text-muted-foreground">消息总数</div>
+          <div className="mt-1 text-lg font-semibold text-foreground">{overview.totalMessages}</div>
+        </div>
+        <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
+          <div className="text-[11px] font-semibold text-muted-foreground">最近更新</div>
+          <div className="mt-1 text-lg font-semibold text-foreground">
+            {overview.lastModified != null
+              ? formatRelativeTimeFromUnixSeconds(overview.lastModified)
+              : "—"}
+          </div>
+        </div>
+        <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
+          <div className="text-[11px] font-semibold text-muted-foreground">Sidechain</div>
+          <div className="mt-1 text-lg font-semibold text-foreground">{overview.sidechains}</div>
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
+        <div className="text-sm font-semibold text-foreground">分支与 Provider</div>
+        <div className="mt-2 space-y-2 text-xs text-muted-foreground">
+          {overview.topBranches.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {overview.topBranches.map(([branch, count]) => (
+                <span
+                  key={branch}
+                  className="inline-flex items-center gap-1 rounded-full border border-border bg-white px-2 py-0.5 text-[11px] font-medium text-muted-foreground dark:border-border dark:bg-secondary dark:text-secondary-foreground"
+                  title={`${count} 个会话`}
+                >
+                  <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
+                  {branch}
+                  <span className="text-muted-foreground">{count}</span>
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="text-muted-foreground dark:text-muted-foreground">暂无分支信息</div>
+          )}
+
+          {overview.providerList.length > 0 ? (
+            <div className="flex flex-wrap gap-2">
+              {overview.providerList.map((provider) => (
+                <span
+                  key={provider}
+                  className="inline-flex items-center rounded-full border border-border bg-white px-2 py-0.5 text-[11px] font-medium text-muted-foreground dark:border-border dark:bg-secondary dark:text-secondary-foreground"
+                >
+                  {provider}
+                </span>
+              ))}
+            </div>
+          ) : (
+            <div className="text-muted-foreground dark:text-muted-foreground">
+              暂无 Provider 信息
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
+        <div className="text-sm font-semibold text-foreground">提示</div>
+        <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
+          <li>点击右侧会话即可进入消息阅览</li>
+          <li>每条会话都支持复制恢复命令</li>
+          <li>消息页支持分页加载更多内容</li>
+        </ul>
+      </div>
+    </Card>
+  );
+}
+
+function SessionsProjectToolbar({
+  filteredCount,
+  totalCount,
+  selectedCount,
+  sortKey,
+  setSortKey,
+  onRequestDeleteSelected,
+}: {
+  filteredCount: number;
+  totalCount: number;
+  selectedCount: number;
+  sortKey: SessionSortKey;
+  setSortKey: (next: SessionSortKey) => void;
+  onRequestDeleteSelected: () => void;
+}) {
+  return (
+    <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+      <div className="min-w-0">
+        <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+          <MessageSquare className="h-4 w-4 shrink-0 text-accent" />
+          <span className="shrink-0">会话</span>
+          <span className="shrink-0 text-xs font-medium text-muted-foreground">
+            {filteredCount}/{totalCount}
+          </span>
+        </div>
+        <div className="mt-1 text-xs text-muted-foreground">
+          支持按标题 / 分支 / Provider / 版本搜索。
+        </div>
+      </div>
+
+      <div className="flex items-center gap-2">
+        {selectedCount > 0 && (
+          <Button size="sm" variant="danger" onClick={onRequestDeleteSelected} className="h-9">
+            <Trash2 className="h-4 w-4" />
+            删除 ({selectedCount})
+          </Button>
+        )}
+        <Select
+          value={sortKey}
+          onChange={(e) => setSortKey(e.currentTarget.value as SessionSortKey)}
+          className="h-9 w-32 text-xs"
+          aria-label="排序"
+        >
+          <option value="recent">最近更新</option>
+          <option value="messages">消息最多</option>
+          <option value="created">创建时间</option>
+        </Select>
+      </div>
+    </div>
+  );
+}
+
+function SessionsProjectRow({
+  source,
+  session,
+  selected,
+  navUrl,
+  onOpen,
+  onToggleSelect,
+  onSingleDelete,
+}: {
+  source: CliSessionsSource;
+  session: CliSessionsSessionSummary;
+  selected: boolean;
+  navUrl: string;
+  onOpen: (navUrl: string, session: CliSessionsSessionSummary) => void;
+  onToggleSelect: (filePath: string) => void;
+  onSingleDelete: (event: React.MouseEvent, filePath: string) => void;
+}) {
+  const title = sessionTitle(session);
+  const modifiedLabel =
+    session.modified_at != null ? formatRelativeTimeFromUnixSeconds(session.modified_at) : "—";
+  const modifiedTitle = session.modified_at != null ? formatUnixSeconds(session.modified_at) : "—";
+  const createdText = session.created_at != null ? formatUnixSeconds(session.created_at) : "—";
+
+  return (
+    <div
+      className={cn(
+        "relative w-full cursor-pointer text-left rounded-2xl border border-border bg-white px-3 py-3 shadow-card transition",
+        "hover:border-border hover:bg-secondary",
+        "dark:border-border dark:bg-card/40 dark:hover:border-border dark:hover:bg-card/60",
+        selected && "border-accent/40 bg-accent/5 dark:border-accent/30 dark:bg-accent/5"
+      )}
+    >
+      <button
+        type="button"
+        className="absolute inset-0 z-0 rounded-2xl focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/35"
+        aria-label={`打开会话 ${title}`}
+        onClick={() => onOpen(navUrl, session)}
+      />
+      <div className="pointer-events-none relative z-10 grid gap-2 sm:grid-cols-[32px_1fr_90px_140px_120px] sm:items-center sm:gap-3">
+        <div className="pointer-events-auto hidden sm:flex items-center justify-center">
+          <input
+            type="checkbox"
+            checked={selected}
+            onChange={() => onToggleSelect(session.file_path)}
+            className="h-4 w-4 rounded border border-input bg-card accent-accent focus:ring-2 focus:ring-ring/30"
+            aria-label={`选择会话 ${title}`}
+          />
+        </div>
+
+        <div className="min-w-0">
+          <div className="line-clamp-2 text-sm font-semibold text-foreground">{title}</div>
+          <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
+            {session.git_branch ? (
+              <span className="inline-flex items-center gap-1">
+                <GitBranch className="h-3.5 w-3.5" />
+                {session.git_branch}
+              </span>
+            ) : null}
+            {session.model_provider ? (
+              <span className="inline-flex items-center gap-1">
+                <span className="font-semibold">{session.model_provider}</span>
+              </span>
+            ) : null}
+            <span className="text-muted-foreground">创建于 {createdText}</span>
+          </div>
+        </div>
+
+        <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground dark:text-secondary-foreground">
+          <span className="font-semibold">{session.message_count}</span>
+        </div>
+
+        <div
+          className="flex items-center justify-end gap-1 text-xs text-muted-foreground dark:text-secondary-foreground"
+          title={modifiedTitle}
+        >
+          <Clock className="h-3.5 w-3.5 text-muted-foreground" />
+          <span className="font-semibold">{modifiedLabel}</span>
+        </div>
+
+        <div className="pointer-events-auto flex items-center justify-end gap-1">
+          <Button
+            size="sm"
+            variant="primary"
+            onClick={async (e) => {
+              e.stopPropagation();
+              if (!session.session_id.trim()) {
+                toast("无效 sessionId");
+                return;
+              }
+              const cmd = buildResumeCommand(source, session.session_id);
+              await copyText(cmd);
+              toast("已复制恢复命令");
+            }}
+            title="复制恢复命令"
+            className="h-8"
+          >
+            <Copy className="h-3.5 w-3.5" />
+            复制
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={(event) => onSingleDelete(event, session.file_path)}
+            title="删除会话"
+            className="h-8 text-muted-foreground hover:text-rose-500 dark:text-muted-foreground dark:hover:text-rose-400"
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function SessionsProjectListCard({
+  source,
+  sessions,
+  filteredSessions,
+  selectedPaths,
+  allVisibleSelected,
+  filterText,
+  sortKey,
+  isLoading,
+  error,
+  setFilterText,
+  setSortKey,
+  onToggleSelect,
+  onToggleSelectAll,
+  onRequestDeleteSelected,
+  onSingleDelete,
+  onOpenSession,
+  onRetry,
+  buildSessionNavUrl,
+}: {
+  source: CliSessionsSource;
+  sessions: CliSessionsSessionSummary[];
+  filteredSessions: CliSessionsSessionSummary[];
+  selectedPaths: Set<string>;
+  allVisibleSelected: boolean;
+  filterText: string;
+  sortKey: SessionSortKey;
+  isLoading: boolean;
+  error: unknown;
+  setFilterText: (next: string) => void;
+  setSortKey: (next: SessionSortKey) => void;
+  onToggleSelect: (filePath: string) => void;
+  onToggleSelectAll: () => void;
+  onRequestDeleteSelected: () => void;
+  onSingleDelete: (event: React.MouseEvent, filePath: string) => void;
+  onOpenSession: (navUrl: string, session: CliSessionsSessionSummary) => void;
+  onRetry: () => void;
+  buildSessionNavUrl: (filePath: string) => string;
+}) {
+  const parentRef = useRef<HTMLDivElement>(null);
+  const rowVirtualizer = useVirtualizer({
+    count: filteredSessions.length,
+    getScrollElement: () => parentRef.current,
+    estimateSize: () => 100,
+    overscan: 10,
+  });
+
+  return (
+    <Card padding="sm" className="flex flex-col lg:min-h-0">
+      <SessionsProjectToolbar
+        filteredCount={filteredSessions.length}
+        totalCount={sessions.length}
+        selectedCount={selectedPaths.size}
+        sortKey={sortKey}
+        setSortKey={setSortKey}
+        onRequestDeleteSelected={onRequestDeleteSelected}
+      />
+
+      <div className="mt-3">
+        <div className="relative">
+          <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
+            <Search className="h-4 w-4" aria-hidden="true" />
+          </div>
+          <Input
+            value={filterText}
+            onChange={(e) => setFilterText(e.currentTarget.value)}
+            placeholder="搜索会话"
+            className="pl-9"
+            aria-label="搜索会话"
+          />
+        </div>
+      </div>
+
+      <div className="mt-3 hidden grid-cols-[32px_1fr_90px_140px_120px] gap-3 px-3 text-[11px] font-semibold text-muted-foreground sm:grid">
+        <span>
+          <input
+            type="checkbox"
+            checked={allVisibleSelected}
+            onChange={onToggleSelectAll}
+            className="h-4 w-4 rounded border border-input bg-card accent-accent focus:ring-2 focus:ring-ring/30"
+            aria-label="全选"
+          />
+        </span>
+        <span>会话</span>
+        <span className="text-right">消息</span>
+        <span className="text-right">更新</span>
+        <span className="text-right">操作</span>
+      </div>
+
+      <div
+        ref={(node) => {
+          if (node) parentRef.current = node;
+        }}
+        className="mt-2 h-[600px] lg:min-h-0 lg:flex-1 lg:h-auto overflow-auto lg:pr-1 scrollbar-overlay"
+      >
+        {error ? (
+          <ErrorState title="加载会话失败" message={String(error)} onRetry={onRetry} />
+        ) : isLoading ? (
+          <div className="flex items-center justify-center py-10">
+            <Spinner />
+          </div>
+        ) : filteredSessions.length === 0 ? (
+          <EmptyState
+            title={sessions.length === 0 ? "此项目没有会话记录" : "未匹配到会话"}
+            variant="dashed"
+          />
+        ) : (
+          <div
+            style={{
+              height: `${rowVirtualizer.getTotalSize()}px`,
+              width: "100%",
+              position: "relative",
+            }}
+          >
+            {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+              const session = filteredSessions[virtualRow.index];
+
+              return (
+                <div
+                  key={virtualRow.key}
+                  style={{
+                    position: "absolute",
+                    top: 0,
+                    left: 0,
+                    width: "100%",
+                    transform: `translateY(${virtualRow.start}px)`,
+                  }}
+                  className="px-1 pb-2"
+                >
+                  <SessionsProjectRow
+                    source={source}
+                    session={session}
+                    selected={selectedPaths.has(session.file_path)}
+                    navUrl={buildSessionNavUrl(session.file_path)}
+                    onOpen={onOpenSession}
+                    onToggleSelect={onToggleSelect}
+                    onSingleDelete={onSingleDelete}
+                  />
+                </div>
+              );
+            })}
+          </div>
+        )}
+      </div>
+    </Card>
+  );
+}
+
 export function SessionsProjectPage() {
   const params = useParams();
   const navigate = useNavigate();
@@ -104,13 +555,31 @@ export function SessionsProjectPage() {
   const sessions = useMemo(() => pickSessions(sessionsQuery.data), [sessionsQuery.data]);
   const [filterText, setFilterText] = useState("");
   const [sortKey, setSortKey] = useState<SessionSortKey>("recent");
-  const [selectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
+  const [requestedSelectedPaths, setSelectedPaths] = useState<Set<string>>(new Set());
   const [showDeleteDialog, setShowDeleteDialog] = useState(false);
   const filteredSessions = useMemo(() => {
     const q = filterText.trim();
     const next = q ? sessions.filter((s) => sessionMatchesQuery(s, q)) : sessions;
     return [...next].sort((a, b) => compareSession(sortKey, a, b));
   }, [filterText, sessions, sortKey]);
+  const visiblePaths = useMemo(
+    () => new Set(filteredSessions.map((session) => session.file_path)),
+    [filteredSessions]
+  );
+  let selectedPaths = requestedSelectedPaths;
+  const prunedSelectedPaths = new Set<string>();
+  let selectionChanged = false;
+  for (const path of requestedSelectedPaths) {
+    if (visiblePaths.has(path)) {
+      prunedSelectedPaths.add(path);
+    } else {
+      selectionChanged = true;
+    }
+  }
+  if (selectionChanged) {
+    selectedPaths = prunedSelectedPaths;
+    setSelectedPaths(prunedSelectedPaths);
+  }
   const project = useMemo(() => {
     return (projectsQuery.data ?? []).find((p) => p?.id === projectId) ?? null;
   }, [projectId, projectsQuery.data]);
@@ -135,13 +604,6 @@ export function SessionsProjectPage() {
     const providerList = [...providers.values()].slice(0, 5);
     return { totalSessions, totalMessages, lastModified, topBranches, providerList, sidechains };
   }, [sessions]);
-  const parentRef = useRef<HTMLDivElement>(null);
-  const rowVirtualizer = useVirtualizer({
-    count: filteredSessions.length,
-    getScrollElement: () => parentRef.current,
-    estimateSize: () => 100,
-    overscan: 10,
-  });
   const visibleSelectedCount = useMemo(() => {
     let count = 0;
     for (const session of filteredSessions) {
@@ -161,22 +623,6 @@ export function SessionsProjectPage() {
     setSelectedPaths(new Set());
     setShowDeleteDialog(false);
   }, [distro, projectId, source]);
-
-  useEffect(() => {
-    const visiblePaths = new Set(filteredSessions.map((session) => session.file_path));
-    setSelectedPaths((prev) => {
-      let changed = false;
-      const next = new Set<string>();
-      for (const path of prev) {
-        if (visiblePaths.has(path)) {
-          next.add(path);
-        } else {
-          changed = true;
-        }
-      }
-      return changed ? next : prev;
-    });
-  }, [filteredSessions]);
 
   function toggleSelect(filePath: string) {
     setSelectedPaths((prev) => {
@@ -224,6 +670,10 @@ export function SessionsProjectPage() {
     setShowDeleteDialog(true);
   }
 
+  function handleOpenSession(navUrl: string, session: CliSessionsSessionSummary) {
+    navigate(navUrl, { state: { session } });
+  }
+
   if (source == null) {
     return (
       <ErrorState
@@ -249,363 +699,42 @@ export function SessionsProjectPage() {
         title={project?.short_name || projectId}
         subtitle={project?.display_path}
         actions={
-          <div className="flex flex-wrap items-center gap-2">
-            <Button variant="secondary" onClick={() => navigate(backUrl)}>
-              <ArrowLeft className="h-4 w-4" />
-              返回项目
-            </Button>
-            {project?.display_path ? (
-              <Button
-                variant="ghost"
-                onClick={() => void copyText(project.display_path)}
-                title="复制项目路径"
-              >
-                复制路径
-              </Button>
-            ) : null}
-          </div>
+          <SessionsProjectHeaderActions
+            backUrl={backUrl}
+            projectPath={project?.display_path}
+            onBack={(url) => navigate(url)}
+          />
         }
       />
 
       <div className="grid gap-4 lg:flex-1 lg:min-h-0 lg:grid-cols-[360px_1fr] lg:items-stretch lg:overflow-hidden">
-        <Card padding="md" className="flex flex-col gap-4 lg:min-h-0">
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground">项目概览</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                来源：<span className="font-semibold">{source}</span>
-                {distro ? (
-                  <span className="ml-2 rounded-full border border-border bg-secondary px-2 py-0.5 text-[11px] font-medium text-muted-foreground dark:border-border dark:bg-secondary dark:text-secondary-foreground">
-                    WSL: {distro}
-                  </span>
-                ) : null}
-              </div>
-            </div>
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={() => void sessionsQuery.refetch()}
-              className="h-9"
-            >
-              刷新
-            </Button>
-          </div>
+        <SessionsProjectOverviewCard
+          source={source}
+          distro={distro}
+          overview={overview}
+          onRefresh={() => void sessionsQuery.refetch()}
+        />
 
-          <div className="grid gap-3 sm:grid-cols-2">
-            <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
-              <div className="text-[11px] font-semibold text-muted-foreground">会话</div>
-              <div className="mt-1 text-lg font-semibold text-foreground">
-                {overview.totalSessions}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
-              <div className="text-[11px] font-semibold text-muted-foreground">消息总数</div>
-              <div className="mt-1 text-lg font-semibold text-foreground">
-                {overview.totalMessages}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
-              <div className="text-[11px] font-semibold text-muted-foreground">最近更新</div>
-              <div className="mt-1 text-lg font-semibold text-foreground">
-                {overview.lastModified != null
-                  ? formatRelativeTimeFromUnixSeconds(overview.lastModified)
-                  : "—"}
-              </div>
-            </div>
-            <div className="rounded-2xl border border-border bg-secondary p-3 dark:border-border dark:bg-card/30">
-              <div className="text-[11px] font-semibold text-muted-foreground">Sidechain</div>
-              <div className="mt-1 text-lg font-semibold text-foreground">
-                {overview.sidechains}
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
-            <div className="text-sm font-semibold text-foreground">分支与 Provider</div>
-            <div className="mt-2 space-y-2 text-xs text-muted-foreground">
-              {overview.topBranches.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {overview.topBranches.map(([branch, count]) => (
-                    <span
-                      key={branch}
-                      className="inline-flex items-center gap-1 rounded-full border border-border bg-white px-2 py-0.5 text-[11px] font-medium text-muted-foreground dark:border-border dark:bg-secondary dark:text-secondary-foreground"
-                      title={`${count} 个会话`}
-                    >
-                      <GitBranch className="h-3.5 w-3.5 text-muted-foreground" />
-                      {branch}
-                      <span className="text-muted-foreground">{count}</span>
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-muted-foreground dark:text-muted-foreground">暂无分支信息</div>
-              )}
-
-              {overview.providerList.length > 0 ? (
-                <div className="flex flex-wrap gap-2">
-                  {overview.providerList.map((p) => (
-                    <span
-                      key={p}
-                      className="inline-flex items-center rounded-full border border-border bg-white px-2 py-0.5 text-[11px] font-medium text-muted-foreground dark:border-border dark:bg-secondary dark:text-secondary-foreground"
-                    >
-                      {p}
-                    </span>
-                  ))}
-                </div>
-              ) : (
-                <div className="text-muted-foreground dark:text-muted-foreground">
-                  暂无 Provider 信息
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
-            <div className="text-sm font-semibold text-foreground">提示</div>
-            <ul className="mt-2 space-y-1 text-xs text-muted-foreground">
-              <li>点击右侧会话即可进入消息阅览</li>
-              <li>每条会话都支持复制恢复命令</li>
-              <li>消息页支持分页加载更多内容</li>
-            </ul>
-          </div>
-        </Card>
-
-        <Card padding="sm" className="flex flex-col lg:min-h-0">
-          <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-            <div className="min-w-0">
-              <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                <MessageSquare className="h-4 w-4 shrink-0 text-accent" />
-                <span className="shrink-0">会话</span>
-                <span className="shrink-0 text-xs font-medium text-muted-foreground">
-                  {filteredSessions.length}/{sessions.length}
-                </span>
-              </div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                支持按标题 / 分支 / Provider / 版本搜索。
-              </div>
-            </div>
-
-            <div className="flex items-center gap-2">
-              {selectedPaths.size > 0 && (
-                <Button
-                  size="sm"
-                  variant="danger"
-                  onClick={() => setShowDeleteDialog(true)}
-                  className="h-9"
-                >
-                  <Trash2 className="h-4 w-4" />
-                  删除 ({selectedPaths.size})
-                </Button>
-              )}
-              <Select
-                value={sortKey}
-                onChange={(e) => setSortKey(e.currentTarget.value as SessionSortKey)}
-                className="h-9 w-32 text-xs"
-                aria-label="排序"
-              >
-                <option value="recent">最近更新</option>
-                <option value="messages">消息最多</option>
-                <option value="created">创建时间</option>
-              </Select>
-            </div>
-          </div>
-
-          <div className="mt-3">
-            <div className="relative">
-              <div className="pointer-events-none absolute inset-y-0 left-3 flex items-center text-muted-foreground">
-                <Search className="h-4 w-4" aria-hidden="true" />
-              </div>
-              <Input
-                value={filterText}
-                onChange={(e) => setFilterText(e.currentTarget.value)}
-                placeholder="搜索会话"
-                className="pl-9"
-                aria-label="搜索会话"
-              />
-            </div>
-          </div>
-
-          <div className="mt-3 hidden grid-cols-[32px_1fr_90px_140px_120px] gap-3 px-3 text-[11px] font-semibold text-muted-foreground sm:grid">
-            <span>
-              <input
-                type="checkbox"
-                checked={allVisibleSelected}
-                onChange={toggleSelectAll}
-                className="h-4 w-4 rounded border border-input bg-card accent-accent focus:ring-2 focus:ring-ring/30"
-                aria-label="全选"
-              />
-            </span>
-            <span>会话</span>
-            <span className="text-right">消息</span>
-            <span className="text-right">更新</span>
-            <span className="text-right">操作</span>
-          </div>
-
-          <div
-            ref={(node) => {
-              if (node) parentRef.current = node;
-            }}
-            className="mt-2 h-[600px] lg:min-h-0 lg:flex-1 lg:h-auto overflow-auto lg:pr-1 scrollbar-overlay"
-          >
-            {sessionsQuery.error ? (
-              <ErrorState
-                title="加载会话失败"
-                message={String(sessionsQuery.error)}
-                onRetry={() => void sessionsQuery.refetch()}
-              />
-            ) : sessionsQuery.isLoading ? (
-              <div className="flex items-center justify-center py-10">
-                <Spinner />
-              </div>
-            ) : filteredSessions.length === 0 ? (
-              <EmptyState
-                title={sessions.length === 0 ? "此项目没有会话记录" : "未匹配到会话"}
-                variant="dashed"
-              />
-            ) : (
-              <div
-                style={{
-                  height: `${rowVirtualizer.getTotalSize()}px`,
-                  width: "100%",
-                  position: "relative",
-                }}
-              >
-                {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                  const session = filteredSessions[virtualRow.index];
-                  const title = sessionTitle(session);
-                  const isSelected = selectedPaths.has(session.file_path);
-                  const modifiedLabel =
-                    session.modified_at != null
-                      ? formatRelativeTimeFromUnixSeconds(session.modified_at)
-                      : "—";
-                  const modifiedTitle =
-                    session.modified_at != null ? formatUnixSeconds(session.modified_at) : "—";
-                  const createdText =
-                    session.created_at != null ? formatUnixSeconds(session.created_at) : "—";
-
-                  return (
-                    <div
-                      key={virtualRow.key}
-                      style={{
-                        position: "absolute",
-                        top: 0,
-                        left: 0,
-                        width: "100%",
-                        transform: `translateY(${virtualRow.start}px)`,
-                      }}
-                      className="px-1 pb-2"
-                    >
-                      <div
-                        role="button"
-                        className={cn(
-                          "w-full cursor-pointer text-left rounded-2xl border border-border bg-white px-3 py-3 shadow-card transition",
-                          "hover:border-border hover:bg-secondary",
-                          "dark:border-border dark:bg-card/40 dark:hover:border-border dark:hover:bg-card/60",
-                          isSelected &&
-                            "border-accent/40 bg-accent/5 dark:border-accent/30 dark:bg-accent/5"
-                        )}
-                        tabIndex={0}
-                        onClick={() =>
-                          navigate(buildSessionNavUrl(session.file_path), {
-                            state: { session },
-                          })
-                        }
-                        onKeyDown={(e) => {
-                          if (e.target !== e.currentTarget) return;
-                          if (e.key === "Enter" || e.key === " ") {
-                            e.preventDefault();
-                            navigate(buildSessionNavUrl(session.file_path), {
-                              state: { session },
-                            });
-                          }
-                        }}
-                      >
-                        <div className="grid gap-2 sm:grid-cols-[32px_1fr_90px_140px_120px] sm:items-center sm:gap-3">
-                          <div
-                            className="hidden sm:flex items-center justify-center"
-                            onClick={(e) => e.stopPropagation()}
-                            onKeyDown={(e) => e.stopPropagation()}
-                          >
-                            <input
-                              type="checkbox"
-                              checked={isSelected}
-                              onChange={() => toggleSelect(session.file_path)}
-                              className="h-4 w-4 rounded border border-input bg-card accent-accent focus:ring-2 focus:ring-ring/30"
-                              aria-label={`选择会话 ${title}`}
-                            />
-                          </div>
-
-                          <div className="min-w-0">
-                            <div className="line-clamp-2 text-sm font-semibold text-foreground">
-                              {title}
-                            </div>
-                            <div className="mt-1 flex flex-wrap items-center gap-3 text-[11px] text-muted-foreground">
-                              {session.git_branch ? (
-                                <span className="inline-flex items-center gap-1">
-                                  <GitBranch className="h-3.5 w-3.5" />
-                                  {session.git_branch}
-                                </span>
-                              ) : null}
-                              {session.model_provider ? (
-                                <span className="inline-flex items-center gap-1">
-                                  <span className="font-semibold">{session.model_provider}</span>
-                                </span>
-                              ) : null}
-                              <span className="text-muted-foreground">创建于 {createdText}</span>
-                            </div>
-                          </div>
-
-                          <div className="flex items-center justify-end gap-1 text-xs text-muted-foreground dark:text-secondary-foreground">
-                            <span className="font-semibold">{session.message_count}</span>
-                          </div>
-
-                          <div
-                            className="flex items-center justify-end gap-1 text-xs text-muted-foreground dark:text-secondary-foreground"
-                            title={modifiedTitle}
-                          >
-                            <Clock className="h-3.5 w-3.5 text-muted-foreground" />
-                            <span className="font-semibold">{modifiedLabel}</span>
-                          </div>
-
-                          <div className="flex items-center justify-end gap-1">
-                            <Button
-                              size="sm"
-                              variant="primary"
-                              onClick={async (e) => {
-                                e.stopPropagation();
-                                if (!session.session_id.trim()) {
-                                  toast("无效 sessionId");
-                                  return;
-                                }
-                                const cmd = buildResumeCommand(source, session.session_id);
-                                await copyText(cmd);
-                                toast("已复制恢复命令");
-                              }}
-                              title="复制恢复命令"
-                              className="h-8"
-                            >
-                              <Copy className="h-3.5 w-3.5" />
-                              复制
-                            </Button>
-                            <Button
-                              size="sm"
-                              variant="ghost"
-                              onClick={(e) => handleSingleDelete(e, session.file_path)}
-                              title="删除会话"
-                              className="h-8 text-muted-foreground hover:text-rose-500 dark:text-muted-foreground dark:hover:text-rose-400"
-                            >
-                              <Trash2 className="h-3.5 w-3.5" />
-                            </Button>
-                          </div>
-                        </div>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            )}
-          </div>
-        </Card>
+        <SessionsProjectListCard
+          source={source}
+          sessions={sessions}
+          filteredSessions={filteredSessions}
+          selectedPaths={selectedPaths}
+          allVisibleSelected={allVisibleSelected}
+          filterText={filterText}
+          sortKey={sortKey}
+          isLoading={sessionsQuery.isLoading}
+          error={sessionsQuery.error}
+          setFilterText={setFilterText}
+          setSortKey={setSortKey}
+          onToggleSelect={toggleSelect}
+          onToggleSelectAll={toggleSelectAll}
+          onRequestDeleteSelected={() => setShowDeleteDialog(true)}
+          onSingleDelete={handleSingleDelete}
+          onOpenSession={handleOpenSession}
+          onRetry={() => void sessionsQuery.refetch()}
+          buildSessionNavUrl={buildSessionNavUrl}
+        />
       </div>
 
       <ConfirmDialog

@@ -20,6 +20,20 @@ export function formatDurationMsShort(value: number | null | undefined) {
   return `${hours}h${remainingMinutes}m`;
 }
 
+const INTEGER_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+const TOKENS_PER_SECOND_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 1,
+  minimumFractionDigits: 1,
+});
+const USD_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 6,
+  minimumFractionDigits: 6,
+});
+const USD_SHORT_FORMATTER = new Intl.NumberFormat(undefined, {
+  maximumFractionDigits: 2,
+  minimumFractionDigits: 2,
+});
+
 export function sanitizeTtfbMs(
   ttfbMs: number | null | undefined,
   durationMs: number | null | undefined
@@ -37,7 +51,7 @@ export function formatInteger(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
   const v = Math.max(0, Math.round(value));
   try {
-    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(v);
+    return INTEGER_FORMATTER.format(v);
   } catch {
     return String(v);
   }
@@ -92,10 +106,7 @@ export function formatTokensPerSecond(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
   const v = Math.max(0, value);
   try {
-    return `${new Intl.NumberFormat(undefined, {
-      maximumFractionDigits: 1,
-      minimumFractionDigits: 1,
-    }).format(v)} Token/秒`;
+    return `${TOKENS_PER_SECOND_FORMATTER.format(v)} Token/秒`;
   } catch {
     return `${v.toFixed(1)} Token/秒`;
   }
@@ -105,10 +116,7 @@ export function formatUsd(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
   const v = Math.max(0, value);
   try {
-    return `$${new Intl.NumberFormat(undefined, {
-      maximumFractionDigits: 6,
-      minimumFractionDigits: 6,
-    }).format(v)}`;
+    return `$${USD_FORMATTER.format(v)}`;
   } catch {
     return `$${v.toFixed(6)}`;
   }
@@ -124,10 +132,7 @@ export function formatUsdShort(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
   const v = Math.max(0, value);
   try {
-    return `$${new Intl.NumberFormat(undefined, {
-      maximumFractionDigits: 2,
-      minimumFractionDigits: 2,
-    }).format(v)}`;
+    return `$${USD_SHORT_FORMATTER.format(v)}`;
   } catch {
     return `$${v.toFixed(2)}`;
   }

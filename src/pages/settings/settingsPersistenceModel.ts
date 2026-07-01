@@ -103,7 +103,7 @@ const PERSISTED_SETTINGS_INPUT_KEYS = [
   "circuitBreakerOpenDurationMinutes",
 ] as const satisfies readonly SettingsViewBackedInputKey[];
 
-export function persistedSettingValuesEqual(
+function persistedSettingValuesEqual(
   left: PersistedSettings[PersistKey],
   right: PersistedSettings[PersistKey]
 ) {
@@ -112,12 +112,6 @@ export function persistedSettingValuesEqual(
   }
 
   return left === right;
-}
-
-export function arePersistedSettingsEqual(left: PersistedSettings, right: PersistedSettings) {
-  return (Object.keys(left) as PersistKey[]).every((key) =>
-    persistedSettingValuesEqual(left[key], right[key])
-  );
 }
 
 export function diffPersistedSettings(before: PersistedSettings, after: PersistedSettings) {

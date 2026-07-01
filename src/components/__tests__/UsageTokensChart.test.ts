@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildUsageTokensXAxisTicks } from "../UsageTokensChart";
+import { buildUsageTokensXAxisTicks } from "../usageTokensChartModel";
 
 describe("components/UsageTokensChart", () => {
   it("shows all labels for a 7-day window", () => {

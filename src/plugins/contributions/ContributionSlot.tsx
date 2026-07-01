@@ -10,9 +10,11 @@ import {
   type ContributionSlotProps,
 } from "./types";
 
+const EMPTY_VALUES_BY_CONTRIBUTION_KEY: Record<string, ContributionValues> = {};
+
 export function ContributionSlot({
   slotId,
-  valuesByContributionKey = {},
+  valuesByContributionKey = EMPTY_VALUES_BY_CONTRIBUTION_KEY,
   onChange,
   onCommand,
   disabled,

@@ -1,18 +1,16 @@
-import { useMemo } from "react";
+import { Suspense, useMemo, type ReactNode } from "react";
 import {
-  ResponsiveContainer,
-  LineChart,
-  Line,
-  XAxis,
-  YAxis,
-  Tooltip,
   CartesianGrid,
   Legend,
+  Line,
+  LineChart,
   ReferenceArea,
   ReferenceLine,
-} from "recharts";
-import type { TooltipProps } from "recharts";
-import type { ValueType, NameType } from "recharts/types/component/DefaultTooltipContent";
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "./charts/lazyRecharts";
 import type { CustomDateRangeApplied } from "../hooks/useCustomDateRange";
 import type { UsagePeriod, UsageProviderCacheRateTrendRowV1 } from "../services/usage/usage";
 import { useTheme } from "../hooks/useTheme";
@@ -49,6 +47,141 @@ type TooltipItem = PointMeta & {
   color: string;
   value: number;
 };
+
+type ChartTooltipPayloadEntry = {
+  dataKey?: string | number;
+  payload?: unknown;
+  value?: unknown;
+  name?: unknown;
+  color?: string;
+};
+
+type ChartTooltipProps = {
+  active?: boolean;
+  payload?: ChartTooltipPayloadEntry[];
+  label?: ReactNode;
+};
+
+function UsageProviderCacheRateTooltip({
+  active,
+  payload,
+  label,
+  isDark,
+  tooltipStyle,
+}: ChartTooltipProps & {
+  isDark: boolean;
+  tooltipStyle: ReturnType<typeof getTooltipStyle>;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const items: TooltipItem[] = payload
+    .map((entry) => {
+      const providerKey = String(entry.dataKey ?? "");
+      if (!providerKey) return null;
+      const meta = (entry.payload as ChartDataPoint | undefined)?.[`${providerKey}_meta`] as
+        | PointMeta
+        | undefined;
+      const value = entry.value;
+      if (value == null || !Number.isFinite(value as number) || !meta) return null;
+
+      return {
+        name: entry.name as string,
+        color: entry.color ?? "",
+        value: value as number,
+        ...meta,
+      };
+    })
+    .filter((v): v is TooltipItem => v != null);
+
+  const warnItems = items
+    .filter((item) => item.value < WARN_THRESHOLD)
+    .sort((a, b) => a.value - b.value);
+  const okItems = items
+    .filter((item) => item.value >= WARN_THRESHOLD)
+    .sort((a, b) => b.denomTokens - a.denomTokens);
+
+  const MAX_ITEMS = 12;
+  const renderItems = warnItems.length > 0 ? warnItems : okItems;
+  const sliced = renderItems.slice(0, MAX_ITEMS);
+  const hidden = renderItems.length - sliced.length;
+
+  return (
+    <div
+      style={{
+        backgroundColor: tooltipStyle.backgroundColor,
+        border: tooltipStyle.border,
+        borderRadius: tooltipStyle.borderRadius,
+        boxShadow: tooltipStyle.boxShadow,
+        padding: tooltipStyle.padding,
+        color: tooltipStyle.color,
+        minWidth: 200,
+      }}
+    >
+      <div style={{ marginBottom: 6, fontWeight: 600 }}>{label}</div>
+      {warnItems.length > 0 ? (
+        <div style={{ marginBottom: 6, color: "#b91c1c" }}>预警（&lt;60%）: {warnItems.length}</div>
+      ) : (
+        <div style={{ marginBottom: 6, color: isDark ? "#94a3b8" : "#64748b" }}>
+          供应商: {items.length}
+        </div>
+      )}
+      {sliced.map((item: TooltipItem) => {
+        const isWarn = item.value < WARN_THRESHOLD;
+        const valueColor = isWarn ? "#b91c1c" : isDark ? "#e2e8f0" : "#0f172a";
+
+        return (
+          <div key={item.name}>
+            <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
+              <span
+                style={{
+                  display: "inline-block",
+                  width: 8,
+                  height: 8,
+                  borderRadius: 999,
+                  background: item.color,
+                }}
+              />
+              <span
+                style={{
+                  flex: 1,
+                  minWidth: 0,
+                  overflow: "hidden",
+                  textOverflow: "ellipsis",
+                  whiteSpace: "nowrap",
+                }}
+              >
+                {item.name}
+              </span>
+              <span
+                style={{
+                  fontVariantNumeric: "tabular-nums",
+                  color: valueColor,
+                }}
+              >
+                {formatPercent(item.value, 2)}
+              </span>
+            </div>
+            <div
+              style={{
+                margin: "2px 0 8px 16px",
+                color: isDark ? "#94a3b8" : "#64748b",
+                fontSize: 12,
+              }}
+            >
+              denom {formatInteger(item.denomTokens)} · read {formatInteger(item.cacheReadTokens)} ·
+              ok {formatInteger(item.requestsSuccess)}
+            </div>
+          </div>
+        );
+      })}
+      {hidden > 0 && (
+        <div style={{ marginTop: 4, color: isDark ? "#94a3b8" : "#64748b" }}>
+          ... +{hidden}（可通过 legend 过滤）
+        </div>
+      )}
+    </div>
+  );
+}
 
 function toMmDd(dayKey: string) {
   const mmdd = dayKey.slice(5);
@@ -303,184 +436,77 @@ export function UsageProviderCacheRateTrendChart({
     return xLabels.filter((_, i) => i % interval === 0);
   }, [xLabels, period]);
 
-  const CustomTooltip = ({ active, payload, label }: TooltipProps<ValueType, NameType>) => {
-    if (!active || !payload || payload.length === 0) return null;
-
-    const items: TooltipItem[] = payload
-      .map((entry) => {
-        const providerKey = entry.dataKey;
-        const meta = (entry.payload as ChartDataPoint | undefined)?.[`${providerKey}_meta`] as
-          | PointMeta
-          | undefined;
-        const value = entry.value;
-        if (value == null || !Number.isFinite(value as number) || !meta) return null;
-
-        return {
-          name: entry.name as string,
-          color: entry.color ?? "",
-          value: value as number,
-          ...meta,
-        };
-      })
-      .filter((v): v is TooltipItem => v != null);
-
-    const warnItems = items
-      .filter((item) => item.value < WARN_THRESHOLD)
-      .sort((a, b) => a.value - b.value);
-    const okItems = items
-      .filter((item) => item.value >= WARN_THRESHOLD)
-      .sort((a, b) => b.denomTokens - a.denomTokens);
-
-    const MAX_ITEMS = 12;
-    const renderItems = warnItems.length > 0 ? warnItems : okItems;
-    const sliced = renderItems.slice(0, MAX_ITEMS);
-    const hidden = renderItems.length - sliced.length;
-
-    return (
-      <div
-        style={{
-          backgroundColor: tooltipStyle.backgroundColor,
-          border: tooltipStyle.border,
-          borderRadius: tooltipStyle.borderRadius,
-          boxShadow: tooltipStyle.boxShadow,
-          padding: tooltipStyle.padding,
-          color: tooltipStyle.color,
-          minWidth: 200,
-        }}
-      >
-        <div style={{ marginBottom: 6, fontWeight: 600 }}>{label}</div>
-        {warnItems.length > 0 ? (
-          <div style={{ marginBottom: 6, color: "#b91c1c" }}>
-            预警（&lt;60%）: {warnItems.length}
-          </div>
-        ) : (
-          <div style={{ marginBottom: 6, color: isDark ? "#94a3b8" : "#64748b" }}>
-            供应商: {items.length}
-          </div>
-        )}
-        {sliced.map((item: TooltipItem, idx: number) => {
-          const isWarn = item.value < WARN_THRESHOLD;
-          const valueColor = isWarn ? "#b91c1c" : isDark ? "#e2e8f0" : "#0f172a";
-
-          return (
-            <div key={idx}>
-              <div style={{ display: "flex", alignItems: "center", gap: 8 }}>
-                <span
-                  style={{
-                    display: "inline-block",
-                    width: 8,
-                    height: 8,
-                    borderRadius: 999,
-                    background: item.color,
-                  }}
-                />
-                <span
-                  style={{
-                    flex: 1,
-                    minWidth: 0,
-                    overflow: "hidden",
-                    textOverflow: "ellipsis",
-                    whiteSpace: "nowrap",
-                  }}
-                >
-                  {item.name}
-                </span>
-                <span
-                  style={{
-                    fontVariantNumeric: "tabular-nums",
-                    color: valueColor,
-                  }}
-                >
-                  {formatPercent(item.value, 2)}
-                </span>
-              </div>
-              <div
-                style={{
-                  margin: "2px 0 8px 16px",
-                  color: isDark ? "#94a3b8" : "#64748b",
-                  fontSize: 11,
-                }}
-              >
-                denom {formatInteger(item.denomTokens)} · read {formatInteger(item.cacheReadTokens)}{" "}
-                · ok {formatInteger(item.requestsSuccess)}
-              </div>
-            </div>
-          );
-        })}
-        {hidden > 0 && (
-          <div style={{ marginTop: 4, color: isDark ? "#94a3b8" : "#64748b" }}>
-            ... +{hidden}（可通过 legend 过滤）
-          </div>
-        )}
-      </div>
-    );
-  };
-
   const lineWidth = providers.length > 25 ? 1.5 : 2;
 
   return (
     <div className={cn("h-full w-full", className)}>
-      <ResponsiveContainer width="100%" height="100%">
-        <LineChart data={chartData} margin={{ left: 0, right: 16, top: 56, bottom: 0 }}>
-          <CartesianGrid
-            vertical={false}
-            stroke={gridLineStyle.stroke}
-            strokeDasharray={gridLineStyle.strokeDasharray}
-          />
-          <XAxis
-            dataKey="label"
-            axisLine={{ stroke: axisLineStroke }}
-            tickLine={false}
-            tick={{ ...axisStyle }}
-            ticks={xAxisTicks}
-            interval="preserveStartEnd"
-          />
-          <YAxis
-            domain={[yAxisRange.min, yAxisRange.max]}
-            ticks={yAxisTicks}
-            axisLine={false}
-            tickLine={false}
-            tick={{ ...axisStyle }}
-            tickFormatter={(v: number) => formatPercent(v, 0)}
-            width={45}
-          />
-          <Tooltip content={<CustomTooltip />} />
-          <Legend
-            wrapperStyle={{
-              paddingTop: 8,
-              fontSize: legendStyle.fontSize,
-              color: legendStyle.color,
-            }}
-          />
-          <ReferenceLine
-            y={WARN_THRESHOLD}
-            stroke={THRESHOLD_COLORS.warningLine}
-            strokeDasharray="3 3"
-            strokeWidth={1}
-          />
-          {warnRanges.map((range, idx) => (
-            <ReferenceArea
-              key={idx}
-              x1={range.x1}
-              x2={range.x2}
-              fill={THRESHOLD_COLORS.warning}
-              fillOpacity={1}
+      <Suspense fallback={<div className="h-full w-full" />}>
+        <ResponsiveContainer width="100%" height="100%">
+          <LineChart data={chartData} margin={{ left: 0, right: 16, top: 56, bottom: 0 }}>
+            <CartesianGrid
+              vertical={false}
+              stroke={gridLineStyle.stroke}
+              strokeDasharray={gridLineStyle.strokeDasharray}
             />
-          ))}
-          {providers.map((provider) => (
-            <Line
-              key={provider.key}
-              type="monotone"
-              dataKey={provider.key}
-              name={provider.name}
-              stroke={provider.color}
-              strokeWidth={lineWidth}
-              dot={false}
-              animationDuration={CHART_ANIMATION.animationDuration}
+            <XAxis
+              dataKey="label"
+              axisLine={{ stroke: axisLineStroke }}
+              tickLine={false}
+              tick={{ ...axisStyle }}
+              ticks={xAxisTicks}
+              interval="preserveStartEnd"
             />
-          ))}
-        </LineChart>
-      </ResponsiveContainer>
+            <YAxis
+              domain={[yAxisRange.min, yAxisRange.max]}
+              ticks={yAxisTicks}
+              axisLine={false}
+              tickLine={false}
+              tick={{ ...axisStyle }}
+              tickFormatter={(v: number) => formatPercent(v, 0)}
+              width={45}
+            />
+            <Tooltip
+              content={
+                <UsageProviderCacheRateTooltip isDark={isDark} tooltipStyle={tooltipStyle} />
+              }
+            />
+            <Legend
+              wrapperStyle={{
+                paddingTop: 8,
+                fontSize: legendStyle.fontSize,
+                color: legendStyle.color,
+              }}
+            />
+            <ReferenceLine
+              y={WARN_THRESHOLD}
+              stroke={THRESHOLD_COLORS.warningLine}
+              strokeDasharray="3 3"
+              strokeWidth={1}
+            />
+            {warnRanges.map((range) => (
+              <ReferenceArea
+                key={`${range.x1}:${range.x2}`}
+                x1={range.x1}
+                x2={range.x2}
+                fill={THRESHOLD_COLORS.warning}
+                fillOpacity={1}
+              />
+            ))}
+            {providers.map((provider) => (
+              <Line
+                key={provider.key}
+                type="monotone"
+                dataKey={provider.key}
+                name={provider.name}
+                stroke={provider.color}
+                strokeWidth={lineWidth}
+                dot={false}
+                animationDuration={CHART_ANIMATION.animationDuration}
+              />
+            ))}
+          </LineChart>
+        </ResponsiveContainer>
+      </Suspense>
     </div>
   );
 }

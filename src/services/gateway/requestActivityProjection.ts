@@ -9,8 +9,8 @@ import { resolveClaudeModelMappingFromSpecialSettings } from "./requestLogSpecia
 import type { TraceSession } from "./traceStore";
 
 export const REALTIME_TRACE_EXIT_START_MS = 600;
-export const REALTIME_TRACE_EXIT_ANIM_MS = 400;
-export const REALTIME_TRACE_EXIT_TOTAL_MS =
+const REALTIME_TRACE_EXIT_ANIM_MS = 400;
+const REALTIME_TRACE_EXIT_TOTAL_MS =
   REALTIME_TRACE_EXIT_START_MS + REALTIME_TRACE_EXIT_ANIM_MS + 100;
 
 export type ProjectedRealtimeCard = {
@@ -44,7 +44,7 @@ function normalizeTraceId(traceId: string | null | undefined) {
   return traceId?.trim() || null;
 }
 
-export function sortRequestLogsForActivity(a: RequestLogSummary, b: RequestLogSummary) {
+function sortRequestLogsForActivity(a: RequestLogSummary, b: RequestLogSummary) {
   const aInProgress = isPersistedRequestLogInProgress(a);
   const bInProgress = isPersistedRequestLogInProgress(b);
   if (aInProgress !== bInProgress) return aInProgress ? -1 : 1;
@@ -55,7 +55,7 @@ export function sortRequestLogsForActivity(a: RequestLogSummary, b: RequestLogSu
   return b.id - a.id;
 }
 
-export function shouldKeepProjectedRealtimeTraceVisible(trace: TraceSession, nowMs: number) {
+function shouldKeepProjectedRealtimeTraceVisible(trace: TraceSession, nowMs: number) {
   if (!trace.summary) return true;
   return Math.max(0, nowMs - trace.last_seen_ms) < REALTIME_TRACE_EXIT_TOTAL_MS;
 }
@@ -156,19 +156,16 @@ export function buildRequestActivityProjection({
       .filter((traceId): traceId is string => traceId != null)
   );
 
-  const requestRows = requestRowsSorted
-    .filter((log) => {
-      const traceId = normalizeTraceId(log.trace_id);
-      return !traceId || !visibleRealtimeTraceIds.has(traceId);
-    })
-    .map((log) => {
-      const traceId = normalizeTraceId(log.trace_id);
-      return {
-        log,
-        liveTrace: traceId ? (mergedTraceMap.get(traceId) ?? null) : null,
-        activityState: requestLogActivityState(log, nowMs),
-      };
+  const requestRows = [];
+  for (const log of requestRowsSorted) {
+    const traceId = normalizeTraceId(log.trace_id);
+    if (traceId && visibleRealtimeTraceIds.has(traceId)) continue;
+    requestRows.push({
+      log,
+      liveTrace: traceId ? (mergedTraceMap.get(traceId) ?? null) : null,
+      activityState: requestLogActivityState(log, nowMs),
     });
+  }
 
   return {
     realtimeCards,

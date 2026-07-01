@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import type { ActiveUiContribution, JsonValue } from "../../generated/bindings";
@@ -32,6 +32,8 @@ import {
   deriveAuthMode,
   deriveCx2ccSourceValue,
   cliNameFromKey,
+  normalizeTagsForCostMultiplier,
+  withCx2ccDefaultModel,
 } from "./providerEditorUtils";
 import { copyApiKey as copyApiKeyAction } from "./useProviderEditorActions";
 import {
@@ -81,13 +83,21 @@ function deriveExtensionValuesByContribution(
   existingValues: StoredProviderExtensionValues[]
 ) {
   const next: Record<string, ContributionValues> = {};
+  const valuesByPluginAndNamespace = new Map<string, StoredProviderExtensionValues>();
+  const firstValueByPlugin = new Map<string, StoredProviderExtensionValues>();
+
+  for (const value of existingValues) {
+    valuesByPluginAndNamespace.set(extensionValueKey(value.pluginId, value.namespace), value);
+    if (!firstValueByPlugin.has(value.pluginId)) {
+      firstValueByPlugin.set(value.pluginId, value);
+    }
+  }
 
   for (const contribution of contributions) {
     const namespace = resolveExtensionNamespace(contribution, existingValues);
     const existing =
-      existingValues.find(
-        (value) => value.pluginId === contribution.pluginId && value.namespace === namespace
-      ) ?? existingValues.find((value) => value.pluginId === contribution.pluginId);
+      valuesByPluginAndNamespace.get(extensionValueKey(contribution.pluginId, namespace)) ??
+      firstValueByPlugin.get(contribution.pluginId);
     next[contributionKey(contribution)] = isContributionValues(existing?.values)
       ? { ...existing.values }
       : {};
@@ -123,15 +133,67 @@ function buildExtensionValuesInput(
     });
   }
 
-  const preservedRows = existingValues
-    .filter((value) => !activeKeys.has(extensionValueKey(value.pluginId, value.namespace)))
-    .map((value) => ({
+  const preservedRows: ProviderExtensionValuesInput[] = [];
+  for (const value of existingValues) {
+    if (activeKeys.has(extensionValueKey(value.pluginId, value.namespace))) continue;
+    preservedRows.push({
       pluginId: value.pluginId,
       namespace: value.namespace,
       values: value.values,
-    }));
+    });
+  }
 
   return [...preservedRows, ...activeRows.values()];
+}
+
+type ExtensionValuesState = {
+  resetKey: string;
+  valuesByContributionKey: Record<string, ContributionValues>;
+};
+
+function buildExtensionValuesResetKey({
+  open,
+  mode,
+  editingProviderId,
+  contributionResetKey,
+  existingExtensionValuesResetKey,
+}: {
+  open: boolean;
+  mode: ProviderEditorDialogProps["mode"];
+  editingProviderId: number | null;
+  contributionResetKey: string;
+  existingExtensionValuesResetKey: string;
+}) {
+  if (!open) return "closed";
+  return [
+    mode,
+    editingProviderId ?? "new",
+    contributionResetKey,
+    mode === "edit" ? existingExtensionValuesResetKey : "",
+  ].join(":");
+}
+
+function buildExtensionValuesState({
+  resetKey,
+  mode,
+  providerEditorContributions,
+  existingExtensionValues,
+}: {
+  resetKey: string;
+  mode: ProviderEditorDialogProps["mode"];
+  providerEditorContributions: ActiveUiContribution[];
+  existingExtensionValues: StoredProviderExtensionValues[];
+}): ExtensionValuesState {
+  return {
+    resetKey,
+    valuesByContributionKey:
+      resetKey === "closed"
+        ? {}
+        : deriveExtensionValuesByContribution(
+            providerEditorContributions,
+            mode === "edit" ? existingExtensionValues : []
+          ),
+  };
 }
 
 export function useProviderEditorForm(props: ProviderEditorDialogProps) {
@@ -160,10 +222,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const [saving, setSaving] = useState(false);
   const [copyingApiKey, setCopyingApiKey] = useState(false);
 
-  const [authMode, setAuthMode] = useState<"api_key" | "oauth" | "cx2cc">(
+  const [authMode, setAuthMode] = useState<"api_key" | "oauth" | "cx2cc">(() =>
     deriveAuthMode(editProvider)
   );
-  const [cx2ccSourceValue, setCx2ccSourceValue] = useState<string>(
+  const [cx2ccSourceValue, setCx2ccSourceValue] = useState<string>(() =>
     deriveCx2ccSourceValue(editProvider)
   );
   const [oauthStatus, setOauthStatus] = useState<OAuthStatusValue>(null);
@@ -180,7 +242,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     opus: string;
   } | null>(null);
   const [codexGatewayBaseOrigin, setCodexGatewayBaseOrigin] = useState<string | null>(null);
-  const oauthStatusRequestSeqRef = useRef(0);
   const oauthLoginAttemptSeqRef = useRef(0);
   const activeOAuthDeviceFlowRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
@@ -198,10 +259,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
 
   const form = useForm<ProviderEditorDialogFormInput>({ defaultValues: DEFAULT_FORM_VALUES });
   const editProviderSnapshotRef = useRef<ProviderSummary | null>(null);
-  const extensionValuesResetKeyRef = useRef<string | null>(null);
-  const [extensionValuesByContributionKey, setExtensionValuesByContributionKey] = useState<
-    Record<string, ContributionValues>
-  >({});
 
   const { register, reset, setValue, watch } = form;
   const enabled = watch("enabled");
@@ -225,6 +282,56 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const codexGatewayBaseUrl = codexGatewayBaseOrigin
     ? `${codexGatewayBaseOrigin.replace(/\/$/, "")}/v1`
     : "当前网关 /v1";
+
+  const syncFreeTagForCostMultiplier = useCallback((value: string) => {
+    setTags((prev) => normalizeTagsForCostMultiplier(prev, value));
+  }, []);
+
+  const setCostMultiplierValue = useCallback(
+    (value: string, options?: Parameters<typeof setValue>[2]) => {
+      setValue("cost_multiplier", value, options);
+      syncFreeTagForCostMultiplier(value);
+    },
+    [setValue, syncFreeTagForCostMultiplier]
+  );
+
+  const resolveCx2ccInheritedMultiplier = useCallback(
+    (sourceValue: string) => {
+      if (sourceValue === CX2CC_GLOBAL_SOURCE_VALUE) return "0";
+      const sourceProvider = codexProviders.find((provider) => String(provider.id) === sourceValue);
+      return String(sourceProvider?.cost_multiplier ?? 1.0);
+    },
+    [codexProviders]
+  );
+
+  const setAuthModeFromUi = useCallback(
+    (next: "api_key" | "oauth" | "cx2cc") => {
+      setAuthMode(next);
+      if (next === "cx2cc") {
+        setClaudeModels((prev) => withCx2ccDefaultModel(prev));
+        setCostMultiplierValue(resolveCx2ccInheritedMultiplier(cx2ccSourceValue), {
+          shouldDirty: true,
+          shouldTouch: false,
+          shouldValidate: false,
+        });
+      }
+    },
+    [cx2ccSourceValue, resolveCx2ccInheritedMultiplier, setCostMultiplierValue]
+  );
+
+  const setCx2ccSourceValueFromUi = useCallback(
+    (value: string) => {
+      setCx2ccSourceValue(value);
+      if (authMode === "cx2cc") {
+        setCostMultiplierValue(resolveCx2ccInheritedMultiplier(value), {
+          shouldDirty: true,
+          shouldTouch: false,
+          shouldValidate: false,
+        });
+      }
+    },
+    [authMode, resolveCx2ccInheritedMultiplier, setCostMultiplierValue]
+  );
 
   const title =
     mode === "create"
@@ -252,49 +359,45 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       ),
     [existingExtensionValues]
   );
-
-  useEffect(() => {
-    if (!open) {
-      if (extensionValuesResetKeyRef.current !== null) {
-        extensionValuesResetKeyRef.current = null;
-        setExtensionValuesByContributionKey({});
-      }
-      return;
-    }
-
-    const resetKey = [
-      mode,
-      editingProviderId ?? "new",
-      contributionResetKey,
-      mode === "edit" ? existingExtensionValuesResetKey : "",
-    ].join(":");
-    if (extensionValuesResetKeyRef.current === resetKey) return;
-    extensionValuesResetKeyRef.current = resetKey;
-
-    setExtensionValuesByContributionKey(
-      deriveExtensionValuesByContribution(
-        providerEditorContributions,
-        mode === "edit" ? existingExtensionValues : []
-      )
-    );
-  }, [
-    contributionResetKey,
-    editingProviderId,
-    existingExtensionValues,
-    existingExtensionValuesResetKey,
-    mode,
+  const extensionValuesResetKey = buildExtensionValuesResetKey({
     open,
-    providerEditorContributions,
-  ]);
+    mode,
+    editingProviderId,
+    contributionResetKey,
+    existingExtensionValuesResetKey,
+  });
+  const [extensionValuesState, setExtensionValuesState] = useState<ExtensionValuesState>(() =>
+    buildExtensionValuesState({
+      resetKey: extensionValuesResetKey,
+      mode,
+      providerEditorContributions,
+      existingExtensionValues,
+    })
+  );
+  let effectiveExtensionValuesState = extensionValuesState;
+
+  if (extensionValuesState.resetKey !== extensionValuesResetKey) {
+    effectiveExtensionValuesState = buildExtensionValuesState({
+      resetKey: extensionValuesResetKey,
+      mode,
+      providerEditorContributions,
+      existingExtensionValues,
+    });
+    setExtensionValuesState(effectiveExtensionValuesState);
+  }
+  const extensionValuesByContributionKey = effectiveExtensionValuesState.valuesByContributionKey;
 
   const setExtensionValue = useCallback(
     (contribution: ActiveUiContribution, fieldKey: string, value: JsonValue) => {
       const key = contributionKey(contribution);
-      setExtensionValuesByContributionKey((prev) => ({
+      setExtensionValuesState((prev) => ({
         ...prev,
-        [key]: {
-          ...(prev[key] ?? {}),
-          [fieldKey]: value,
+        valuesByContributionKey: {
+          ...prev.valuesByContributionKey,
+          [key]: {
+            ...(prev.valuesByContributionKey[key] ?? {}),
+            [fieldKey]: value,
+          },
         },
       }));
     },
@@ -371,14 +474,9 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     editingProviderId,
     createInitialValues,
     authMode,
-    costMultiplierValue,
-    isCodexGatewaySource,
-    selectedCx2ccSourceProvider,
     reset,
-    setValue,
     editProviderSnapshotRef,
     baseUrlRowSeqRef,
-    oauthStatusRequestSeqRef,
     cancelActiveOAuthLoginAttempt,
     newBaseUrlRow,
     setBaseUrlMode,
@@ -572,7 +670,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     title,
     description,
     authMode,
-    setAuthMode,
+    setAuthMode: setAuthModeFromUi,
     supportsOAuth,
     supportsCx2cc,
     register,
@@ -586,6 +684,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     limitMonthlyUsd,
     limitTotalUsd,
     costMultiplierValue,
+    setCostMultiplierValue,
+    syncFreeTagForCostMultiplier,
     apiKeyField: apiKeyFieldReg,
     apiKeyValue,
     apiKeyConfigured,
@@ -612,7 +712,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     oauthDevicePolling,
     oauthDeviceError,
     cx2ccSourceValue,
-    setCx2ccSourceValue,
+    setCx2ccSourceValue: setCx2ccSourceValueFromUi,
     isCodexGatewaySource,
     selectedCx2ccSourceProvider,
     codexGatewayBaseUrl,

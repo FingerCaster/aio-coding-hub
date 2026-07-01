@@ -232,7 +232,9 @@ export function usePluginInstallFromFileMutation() {
     onSuccess: (next) => {
       if (!next) return;
       setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);
-      refreshPluginMutationQueries(queryClient, next.summary.plugin_id);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(next.summary.plugin_id) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -297,7 +299,9 @@ export function usePluginUpdateRemoteMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -310,7 +314,9 @@ export function usePluginInstallRemoteMutation() {
     onSuccess: (next) => {
       if (!next) return;
       setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);
-      refreshPluginMutationQueries(queryClient, next.summary.plugin_id);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(next.summary.plugin_id) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -326,7 +332,9 @@ export function usePluginRollbackMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -341,7 +349,9 @@ export function usePluginQuarantineRevokedMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -356,7 +366,9 @@ export function usePluginInstallOfficialMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -371,7 +383,9 @@ export function usePluginEnableMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -386,7 +400,9 @@ export function usePluginDisableMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -401,7 +417,9 @@ export function usePluginUninstallMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginMutationQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
+      queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
 }
@@ -417,7 +435,8 @@ export function usePluginSaveConfigMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
     },
   });
 }
@@ -433,7 +452,8 @@ export function usePluginGrantPermissionsMutation() {
       if (next) {
         setPluginDetailAndSummary(queryClient, normalizedPluginId, next);
       }
-      refreshPluginQueries(queryClient, normalizedPluginId);
+      queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(normalizedPluginId) });
     },
   });
 }

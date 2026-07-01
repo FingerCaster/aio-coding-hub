@@ -196,7 +196,7 @@ jobs:
           $label = "${{ matrix.stable_label }}"
           $targetDir = "src-tauri/target/${{ matrix.target }}/release"
 
-          # Find the built application exe (not the NSIS/MSI installer)
+          # Find the built application exe, not the bundled setup package.
           $exeName = "AIO Coding Hub.exe"
           $exePath = Join-Path $targetDir $exeName
 
@@ -237,10 +237,14 @@ jobs:
         run: |
           set -euo pipefail
 
-          # Download pinned stable release of appimagetool (no FUSE required).
+          # Fetch pinned stable release of appimagetool (no FUSE required).
           TOOL_URL="https://github.com/AppImage/appimagetool/releases/download/1.9.1/appimagetool-x86_64.AppImage"
+          TOOL_SHA256="ed4ce84f0d9caff66f50bcca6ff6f35aae54ce8135408b3fa33abfc3cb384eb0"
           TOOL_BIN="$(mktemp)"
-          curl -fsSL "$TOOL_URL" -o "$TOOL_BIN"
+          node scripts/fetch-checked-file.mjs \
+            --url "$TOOL_URL" \
+            --sha256 "$TOOL_SHA256" \
+            --output "$TOOL_BIN"
           chmod +x "$TOOL_BIN"
 
           label="${{ matrix.stable_label }}"

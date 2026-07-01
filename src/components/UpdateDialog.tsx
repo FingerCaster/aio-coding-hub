@@ -6,7 +6,6 @@ import {
   quotePlugin,
   thematicBreakPlugin,
 } from "@mdxeditor/editor";
-import type { MouseEvent } from "react";
 import { toast } from "sonner";
 import { AIO_RELEASES_URL } from "../constants/urls";
 import { logToConsole } from "../services/consoleLog";
@@ -29,44 +28,53 @@ const READONLY_PLUGINS = [
   thematicBreakPlugin(),
 ];
 
+async function openChangelogLink(url: string) {
+  try {
+    await openDesktopUrl(url);
+  } catch (err) {
+    logToConsole("error", "打开更新日志链接失败", { error: String(err), url });
+    toast("打开链接失败：请查看控制台日志");
+  }
+}
+
+async function openReleases() {
+  try {
+    await openDesktopUrl(AIO_RELEASES_URL);
+  } catch (err) {
+    logToConsole("error", "打开 Releases 失败", { error: String(err), url: AIO_RELEASES_URL });
+    toast("打开下载页失败：请查看控制台日志");
+  }
+}
+
+function getChangelogLinkHref(target: EventTarget | null) {
+  if (!(target instanceof Element)) return null;
+
+  const anchor = target.closest("a[href]");
+  const href = anchor?.getAttribute("href");
+  return href || null;
+}
+
+function handleChangelogLinkClick(event: MouseEvent) {
+  const href = getChangelogLinkHref(event.target);
+  if (!href) return;
+
+  event.preventDefault();
+  event.stopPropagation();
+  void openChangelogLink(href);
+}
+
+function connectChangelogLinks(node: HTMLElement | null) {
+  if (!node) return;
+
+  node.addEventListener("click", handleChangelogLinkClick);
+  return () => node.removeEventListener("click", handleChangelogLinkClick);
+}
+
 export function UpdateDialog() {
   const meta = useUpdateMeta();
   const updateCandidate = meta.updateCandidate;
   const about = meta.about;
   const isPortable = about?.run_mode === "portable";
-
-  async function openReleases() {
-    try {
-      await openDesktopUrl(AIO_RELEASES_URL);
-    } catch (err) {
-      logToConsole("error", "打开 Releases 失败", { error: String(err), url: AIO_RELEASES_URL });
-      toast("打开下载页失败：请查看控制台日志");
-    }
-  }
-
-  async function openChangelogLink(url: string) {
-    try {
-      await openDesktopUrl(url);
-    } catch (err) {
-      logToConsole("error", "打开更新日志链接失败", { error: String(err), url });
-      toast("打开链接失败：请查看控制台日志");
-    }
-  }
-
-  function handleChangelogClick(event: MouseEvent<HTMLDivElement>) {
-    const target = event.target;
-    if (!(target instanceof Element)) return;
-
-    const anchor = target.closest("a[href]");
-    if (!anchor) return;
-
-    const href = anchor.getAttribute("href");
-    if (!href) return;
-
-    event.preventDefault();
-    event.stopPropagation();
-    void openChangelogLink(href);
-  }
 
   async function installUpdate() {
     if (!updateCandidate) return;
@@ -143,9 +151,10 @@ export function UpdateDialog() {
         {updateCandidate?.body ? (
           <div className="space-y-1">
             <span className="text-xs font-medium text-muted-foreground">更新日志</span>
-            <div
+            <section
+              ref={connectChangelogLinks}
               className="max-h-60 overflow-y-auto rounded-lg border border-border bg-white dark:bg-secondary text-sm text-secondary-foreground"
-              onClick={handleChangelogClick}
+              aria-label="更新日志"
             >
               <MDXEditor
                 markdown={updateCandidate.body}
@@ -153,7 +162,7 @@ export function UpdateDialog() {
                 plugins={READONLY_PLUGINS}
                 contentEditableClassName="prose prose-sm dark:prose-invert max-w-none px-3 py-2"
               />
-            </div>
+            </section>
           </div>
         ) : null}
 

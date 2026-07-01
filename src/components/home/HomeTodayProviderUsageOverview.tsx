@@ -50,6 +50,8 @@ const IN_PROGRESS_BADGE = computeStatusBadge({
   errorCode: null,
   inProgress: true,
 });
+const EMPTY_ACTIVE_SESSIONS: GatewayActiveSession[] = [];
+const EMPTY_REQUEST_LOGS: RequestLogSummary[] = [];
 
 function formatTokenValue(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -214,9 +216,12 @@ function buildRunningProvidersFromRealtimeCards(
 
   for (const { trace } of cards) {
     if (trace.summary) continue;
-    const latestAttempt = (trace.attempts ?? [])
-      .slice()
-      .sort((left, right) => right.attempt_index - left.attempt_index)[0];
+    let latestAttempt: NonNullable<typeof trace.attempts>[number] | undefined;
+    for (const attempt of trace.attempts ?? []) {
+      if (!latestAttempt || attempt.attempt_index > latestAttempt.attempt_index) {
+        latestAttempt = attempt;
+      }
+    }
     const providerName = latestAttempt?.provider_name?.trim();
     if (!providerName || providerName === "Unknown") continue;
 
@@ -537,21 +542,27 @@ function ProviderUsageSkeleton() {
   return (
     <tr className="animate-pulse">
       <td className={TABLE_TD_CLASS}>
+        <span className="sr-only">供应商加载中</span>
         <div className="h-4 w-28 rounded bg-muted dark:bg-secondary" />
       </td>
       <td className={TABLE_MONO_TD_CLASS}>
+        <span className="sr-only">请求数加载中</span>
         <div className="h-3 w-16 rounded bg-secondary dark:bg-secondary" />
       </td>
       <td className={TABLE_MONO_TD_CLASS}>
+        <span className="sr-only">缓存命中率加载中</span>
         <div className="h-3 w-14 rounded bg-secondary dark:bg-secondary" />
       </td>
       <td className={TABLE_MONO_TD_CLASS}>
+        <span className="sr-only">Token 加载中</span>
         <div className="h-3 w-12 rounded bg-secondary dark:bg-secondary" />
       </td>
       <td className={TABLE_MONO_TD_CLASS}>
+        <span className="sr-only">费用加载中</span>
         <div className="h-3 w-12 rounded bg-secondary dark:bg-secondary" />
       </td>
       <td className={TABLE_MONO_TD_CLASS}>
+        <span className="sr-only">状态加载中</span>
         <div className="h-3 w-12 rounded bg-secondary dark:bg-secondary" />
       </td>
     </tr>
@@ -560,8 +571,8 @@ function ProviderUsageSkeleton() {
 
 export function HomeTodayProviderUsageOverview({
   devPreviewEnabled = false,
-  activeSessions = [],
-  requestLogs = [],
+  activeSessions = EMPTY_ACTIVE_SESSIONS,
+  requestLogs = EMPTY_REQUEST_LOGS,
   traces,
 }: {
   devPreviewEnabled?: boolean;

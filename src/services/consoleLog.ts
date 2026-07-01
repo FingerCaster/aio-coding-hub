@@ -313,9 +313,15 @@ export function subscribeConsoleLogs(listener: Listener): () => void {
   return () => listeners.delete(listener);
 }
 
-export function useConsoleLogs() {
+export function useConsoleLogs(onStoreChange?: () => void) {
   return useSyncExternalStore(
-    subscribeConsoleLogs,
+    onStoreChange
+      ? (listener) =>
+          subscribeConsoleLogs(() => {
+            listener();
+            onStoreChange();
+          })
+      : subscribeConsoleLogs,
     () => entries,
     () => entries
   );

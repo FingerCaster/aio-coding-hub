@@ -1,21 +1,19 @@
-import { useEffect, useState } from "react";
+import { useState } from "react";
 import { FormField } from "../../ui/FormField";
 import { Input } from "../../ui/Input";
 import { Select } from "../../ui/Select";
 import { TagsField } from "./TagsField";
-import { CX2CC_GLOBAL_SOURCE_VALUE, CX2CC_PROXY_TOKEN } from "./providerEditorUtils";
+import {
+  CX2CC_DEFAULT_MODEL,
+  CX2CC_GLOBAL_SOURCE_VALUE,
+  CX2CC_PROXY_TOKEN,
+  normalizeCx2ccModelName,
+  resolveCx2ccDefaultModelSelectValue,
+} from "./providerEditorUtils";
 import type { UseProviderEditorFormReturn } from "./useProviderEditorForm";
 
-const CX2CC_DEFAULT_MODEL = "gpt-5.5";
 const CX2CC_DEFAULT_MODEL_OPTIONS = [CX2CC_DEFAULT_MODEL, "gpt-5.4"] as const;
 const CX2CC_MANUAL_MODEL_VALUE = "__manual__";
-const CX2CC_MODEL_MAPPING_KEYS = [
-  "main_model",
-  "reasoning_model",
-  "haiku_model",
-  "sonnet_model",
-  "opus_model",
-] as const;
 type Cx2ccFallbackModels = { main: string; haiku: string; sonnet: string; opus: string } | null;
 
 export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
@@ -47,13 +45,6 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
     )
       ? ([selectedDefaultModel, ...CX2CC_DEFAULT_MODEL_OPTIONS] as const)
       : CX2CC_DEFAULT_MODEL_OPTIONS;
-
-  useEffect(() => {
-    setClaudeModels((prev) => {
-      if (normalizeModelName(prev.main_model)) return prev;
-      return withCx2ccDefaultModel(prev, CX2CC_DEFAULT_MODEL);
-    });
-  }, [setClaudeModels]);
 
   return (
     <>
@@ -91,13 +82,15 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
               <option value={CX2CC_GLOBAL_SOURCE_VALUE}>
                 当前 AIO 服务 Codex 网关（跟随当前分流）
               </option>
-              {codexProviders
-                .filter((p) => p.enabled && p.source_provider_id == null && p.bridge_type == null)
-                .map((p) => (
-                  <option key={p.id} value={p.id}>
-                    {p.name} ({p.auth_mode === "oauth" ? "OAuth" : "API Key"})
-                  </option>
-                ))}
+              {codexProviders.flatMap((p) =>
+                p.enabled && p.source_provider_id == null && p.bridge_type == null
+                  ? [
+                      <option key={p.id} value={p.id}>
+                        {p.name} ({p.auth_mode === "oauth" ? "OAuth" : "API Key"})
+                      </option>,
+                    ]
+                  : []
+              )}
             </Select>
           )}
         </FormField>
@@ -280,41 +273,11 @@ function Cx2ccFallbackModelsInfo(props: {
   );
 }
 
-function normalizeModelName(value: string | null | undefined) {
-  const trimmed = value?.trim();
-  return trimmed || null;
-}
-
-function withCx2ccDefaultModel(
-  value: UseProviderEditorFormReturn["claudeModels"],
-  defaultModel: string
-) {
-  return {
-    ...value,
-    main_model: normalizeModelName(value.main_model) ?? defaultModel,
-    reasoning_model: normalizeModelName(value.reasoning_model) ?? defaultModel,
-    haiku_model: normalizeModelName(value.haiku_model) ?? defaultModel,
-    sonnet_model: normalizeModelName(value.sonnet_model) ?? defaultModel,
-    opus_model: normalizeModelName(value.opus_model) ?? defaultModel,
-  };
-}
-
-function resolveCx2ccDefaultModelSelectValue(value: UseProviderEditorFormReturn["claudeModels"]) {
-  const normalizedValues = CX2CC_MODEL_MAPPING_KEYS.map((key) => normalizeModelName(value[key]));
-  const configuredValues = normalizedValues.filter((model): model is string => model != null);
-  if (configuredValues.length === 0) return CX2CC_DEFAULT_MODEL;
-
-  const firstModel = normalizedValues[0];
-  if (firstModel && normalizedValues.every((model) => model === firstModel)) {
-    return firstModel;
-  }
-
-  return CX2CC_MANUAL_MODEL_VALUE;
-}
-
 function effectiveCx2ccModel(
   providerModel: string | null | undefined,
   fallbackModel: string | null | undefined
 ) {
-  return normalizeModelName(providerModel) ?? normalizeModelName(fallbackModel) ?? "全局默认值";
+  return (
+    normalizeCx2ccModelName(providerModel) ?? normalizeCx2ccModelName(fallbackModel) ?? "全局默认值"
+  );
 }

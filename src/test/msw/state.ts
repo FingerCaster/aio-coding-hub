@@ -130,7 +130,7 @@ const DEFAULT_USAGE_SUMMARY: UsageSummary = {
 };
 
 let traceCounter = 0;
-let cliProxyStatusAllState: CliProxyStatus[] = JSON.parse(JSON.stringify(DEFAULT_CLI_PROXY_STATUS));
+let cliProxyStatusAllState: CliProxyStatus[] = structuredClone(DEFAULT_CLI_PROXY_STATUS);
 let envConflictsState: EnvConflict[] = [];
 let settingsState: AppSettings = clone(DEFAULT_SETTINGS);
 let gatewayStatusState: GatewayStatus = clone(DEFAULT_GATEWAY_STATUS);
@@ -144,7 +144,7 @@ let workspacesState: Map<CliKey, WorkspacesListResult> = new Map();
 let pluginState: Map<string, PluginDetail> = new Map();
 
 function clone<T>(value: T): T {
-  return JSON.parse(JSON.stringify(value)) as T;
+  return structuredClone(value);
 }
 
 function nextTraceId(): string {
@@ -180,18 +180,10 @@ export function getEnvConflictsState(): EnvConflict[] {
   return clone(envConflictsState);
 }
 
-export function setEnvConflictsState(next: EnvConflict[]) {
-  envConflictsState = clone(next);
-}
-
 // -- Settings --
 
 export function getSettingsState(): AppSettings {
   return clone(settingsState);
-}
-
-export function setSettingsState(next: AppSettings) {
-  settingsState = clone(next);
 }
 
 export function mergeSettingsState(partial: Partial<AppSettings>): AppSettings {
@@ -203,10 +195,6 @@ export function mergeSettingsState(partial: Partial<AppSettings>): AppSettings {
 
 export function getGatewayStatusState(): GatewayStatus {
   return clone(gatewayStatusState);
-}
-
-export function setGatewayStatusState(next: GatewayStatus) {
-  gatewayStatusState = clone(next);
 }
 
 // -- Plugins --
@@ -458,18 +446,10 @@ export function getUsageSummaryState(): UsageSummary {
   return clone(usageSummaryState);
 }
 
-export function setUsageSummaryState(next: UsageSummary) {
-  usageSummaryState = clone(next);
-}
-
 // -- App About --
 
 export function getAppAboutState(): AppAboutInfo {
   return clone(appAboutState);
-}
-
-export function setAppAboutState(next: AppAboutInfo) {
-  appAboutState = clone(next);
 }
 
 // -- DB Disk Usage --
@@ -478,26 +458,14 @@ export function getDbDiskUsageState(): DbDiskUsage {
   return clone(dbDiskUsageState);
 }
 
-export function setDbDiskUsageState(next: DbDiskUsage) {
-  dbDiskUsageState = clone(next);
-}
-
 // -- Sort Modes --
 
 export function getSortModesState(): SortModeSummary[] {
   return clone(sortModesState);
 }
 
-export function setSortModesState(next: SortModeSummary[]) {
-  sortModesState = clone(next);
-}
-
 export function getSortModeActiveState(): SortModeActiveRow[] {
   return clone(sortModeActiveState);
-}
-
-export function setSortModeActiveState(next: SortModeActiveRow[]) {
-  sortModeActiveState = clone(next);
 }
 
 // -- Workspaces --
@@ -506,11 +474,7 @@ export function getWorkspacesState(cliKey: CliKey): WorkspacesListResult {
   return clone(workspacesState.get(cliKey) ?? { active_id: null, items: [] });
 }
 
-export function setWorkspacesState(cliKey: CliKey, next: WorkspacesListResult) {
-  workspacesState.set(cliKey, clone(next));
-}
-
-export function setCliProxyEnabledState(cliKey: CliKey, enabled: boolean): CliProxyStatus[] {
+function setCliProxyEnabledState(cliKey: CliKey, enabled: boolean): CliProxyStatus[] {
   const rowIndex = cliProxyStatusAllState.findIndex((row) => row.cli_key === cliKey);
   const baseOrigin = enabled ? DEFAULT_BASE_ORIGIN : null;
   if (rowIndex < 0) {

@@ -52,13 +52,13 @@ import {
   formatClaudeModelMappingText,
   FolderBadge,
   FreeBadge,
-  getErrorCodeLabel,
   hasPriorityServiceTierSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
   resolveLiveTraceDurationMs,
   resolveLiveTraceProvider,
   SessionReuseBadge,
 } from "./HomeLogShared";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 import {
   Clock,
   CheckCircle2,
@@ -503,14 +503,26 @@ const RequestLogCard = memo(function RequestLogCard({
   );
 });
 
+export type HomeRequestLogsDisplayOptions = {
+  customTooltip: boolean;
+  summaryText: boolean;
+  openLogsPageButton: boolean;
+  refreshButton: boolean;
+  compactModeToggle: boolean;
+};
+
+const DEFAULT_HOME_REQUEST_LOGS_DISPLAY_OPTIONS: HomeRequestLogsDisplayOptions = {
+  customTooltip: false,
+  summaryText: true,
+  openLogsPageButton: true,
+  refreshButton: true,
+  compactModeToggle: true,
+};
+
 export type HomeRequestLogsPanelProps = {
-  showCustomTooltip: boolean;
+  displayOptions?: Partial<HomeRequestLogsDisplayOptions>;
   title?: string;
-  showSummaryText?: boolean;
   summaryTextOverride?: string;
-  showOpenLogsPageButton?: boolean;
-  showRefreshButton?: boolean;
-  showCompactModeToggle?: boolean;
   compactModeOverride?: boolean;
   emptyStateTitle?: string;
   devPreviewEnabled?: boolean;
@@ -528,13 +540,9 @@ export type HomeRequestLogsPanelProps = {
 };
 
 export function HomeRequestLogsPanel({
-  showCustomTooltip,
+  displayOptions,
   title,
-  showSummaryText = true,
   summaryTextOverride,
-  showOpenLogsPageButton = true,
-  showRefreshButton = true,
-  showCompactModeToggle = true,
   compactModeOverride,
   emptyStateTitle = "当前没有最近使用记录",
   devPreviewEnabled = false,
@@ -548,6 +556,10 @@ export function HomeRequestLogsPanel({
   onSelectLogId,
 }: HomeRequestLogsPanelProps) {
   const navigate = useNavigate();
+  const resolvedDisplayOptions = {
+    ...DEFAULT_HOME_REQUEST_LOGS_DISPLAY_OPTIONS,
+    ...displayOptions,
+  };
   const [compactMode, setCompactMode] = useState(() => {
     try {
       const stored = localStorage.getItem("home_request_logs_compact");
@@ -653,10 +665,10 @@ export function HomeRequestLogsPanel({
         </div>
 
         <div className="flex items-center gap-2">
-          {showSummaryText ? (
+          {resolvedDisplayOptions.summaryText ? (
             <div className="text-xs text-muted-foreground">{summaryText}</div>
           ) : null}
-          {showOpenLogsPageButton && (
+          {resolvedDisplayOptions.openLogsPageButton && (
             <Button
               onClick={() => navigate("/logs")}
               variant="ghost"
@@ -669,7 +681,7 @@ export function HomeRequestLogsPanel({
               <ArrowUpRight className="h-3.5 w-3.5" />
             </Button>
           )}
-          {showRefreshButton ? (
+          {resolvedDisplayOptions.refreshButton ? (
             <Button
               onClick={onRefreshRequestLogs}
               variant="ghost"
@@ -688,7 +700,7 @@ export function HomeRequestLogsPanel({
               />
             </Button>
           ) : null}
-          {showCompactModeToggle ? (
+          {resolvedDisplayOptions.compactModeToggle ? (
             <div className="flex items-center gap-1.5 pl-1">
               <span className="text-xs text-muted-foreground">简洁模式</span>
               <Switch
@@ -706,7 +718,7 @@ export function HomeRequestLogsPanel({
         <RequestLogsList
           realtimeCards={activityProjection.realtimeCards}
           formatUnixSeconds={formatUnixSecondsStable}
-          showCustomTooltip={showCustomTooltip}
+          showCustomTooltip={resolvedDisplayOptions.customTooltip}
           compactMode={effectiveCompactMode}
           folderLookupBySessionKey={sessionFolderLookupBySessionKey}
           nowMs={nowMs}

@@ -1,6 +1,6 @@
 // Usage: Compact official plugin entry plus advanced custom market source loader.
 
-import { useMemo, useState } from "react";
+import { useMemo, useReducer } from "react";
 import { ChevronDown, Download, RefreshCw } from "lucide-react";
 import type { PluginMarketListing, PluginSummary } from "../../services/plugins";
 import { pluginParseMarketIndex } from "../../services/plugins";
@@ -13,6 +13,57 @@ import {
   type MarketInstallInput,
   type PluginMarketCardView,
 } from "./pluginMarketModel";
+
+type PluginMarketState = {
+  indexUrl: string;
+  indexJson: string;
+  signature: string;
+  listings: PluginMarketListing[];
+  advancedOpen: boolean;
+  loading: boolean;
+  error: string | null;
+};
+
+type PluginMarketAction =
+  | { type: "setIndexUrl"; value: string }
+  | { type: "setIndexJson"; value: string }
+  | { type: "setSignature"; value: string }
+  | { type: "toggleAdvancedOpen" }
+  | { type: "loadStarted" }
+  | { type: "loadSucceeded"; listings: PluginMarketListing[] }
+  | { type: "loadFailed"; error: string };
+
+const initialPluginMarketState: PluginMarketState = {
+  indexUrl: "",
+  indexJson: "",
+  signature: "",
+  listings: [],
+  advancedOpen: false,
+  loading: false,
+  error: null,
+};
+
+function pluginMarketReducer(
+  state: PluginMarketState,
+  action: PluginMarketAction
+): PluginMarketState {
+  switch (action.type) {
+    case "setIndexUrl":
+      return { ...state, indexUrl: action.value };
+    case "setIndexJson":
+      return { ...state, indexJson: action.value };
+    case "setSignature":
+      return { ...state, signature: action.value };
+    case "toggleAdvancedOpen":
+      return { ...state, advancedOpen: !state.advancedOpen };
+    case "loadStarted":
+      return { ...state, loading: true, error: null };
+    case "loadSucceeded":
+      return { ...state, loading: false, listings: action.listings };
+    case "loadFailed":
+      return { ...state, loading: false, error: action.error };
+  }
+}
 
 export function PluginMarketPanel({
   plugins,
@@ -29,13 +80,8 @@ export function PluginMarketPanel({
   onInstallOfficial: (pluginId: string) => Promise<unknown>;
   onSelectInstalled: (pluginId: string) => void;
 }) {
-  const [indexUrl, setIndexUrl] = useState("");
-  const [indexJson, setIndexJson] = useState("");
-  const [signature, setSignature] = useState("");
-  const [listings, setListings] = useState<PluginMarketListing[]>([]);
-  const [advancedOpen, setAdvancedOpen] = useState(false);
-  const [loading, setLoading] = useState(false);
-  const [error, setError] = useState<string | null>(null);
+  const [{ indexUrl, indexJson, signature, listings, advancedOpen, loading, error }, dispatch] =
+    useReducer(pluginMarketReducer, initialPluginMarketState);
   const featuredCards = useMemo(() => buildFeaturedMarketCards(plugins), [plugins]);
   const officialCard = featuredCards.find((card) => card.pluginId === "official.privacy-filter");
   const listingCards = useMemo(
@@ -44,8 +90,7 @@ export function PluginMarketPanel({
   );
 
   async function handleLoadMarket() {
-    setLoading(true);
-    setError(null);
+    dispatch({ type: "loadStarted" });
     try {
       const trimmedIndexUrl = indexUrl.trim();
       const trimmedSignature = signature.trim();
@@ -54,11 +99,9 @@ export function PluginMarketPanel({
         trimmedIndexUrl ? trimmedIndexUrl : null,
         trimmedSignature ? trimmedSignature : null
       );
-      setListings(next);
+      dispatch({ type: "loadSucceeded", listings: next });
     } catch (error) {
-      setError(formatUnknownError(error));
-    } finally {
-      setLoading(false);
+      dispatch({ type: "loadFailed", error: formatUnknownError(error) });
     }
   }
 
@@ -101,7 +144,7 @@ export function PluginMarketPanel({
         <Button
           size="sm"
           variant="secondary"
-          onClick={() => setAdvancedOpen((open) => !open)}
+          onClick={() => dispatch({ type: "toggleAdvancedOpen" })}
           aria-expanded={advancedOpen}
         >
           <ChevronDown
@@ -118,7 +161,7 @@ export function PluginMarketPanel({
                 <input
                   className="rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
                   value={indexUrl}
-                  onChange={(event) => setIndexUrl(event.target.value)}
+                  onChange={(event) => dispatch({ type: "setIndexUrl", value: event.target.value })}
                   placeholder="https://plugins.example/index.json"
                 />
               </label>
@@ -127,7 +170,9 @@ export function PluginMarketPanel({
                 <input
                   className="rounded-md border border-border bg-background px-2 py-1.5 text-sm text-foreground"
                   value={signature}
-                  onChange={(event) => setSignature(event.target.value)}
+                  onChange={(event) =>
+                    dispatch({ type: "setSignature", value: event.target.value })
+                  }
                   placeholder="可选"
                 />
               </label>
@@ -138,7 +183,7 @@ export function PluginMarketPanel({
               <textarea
                 className="min-h-24 rounded-md border border-border bg-background px-2 py-1.5 font-mono text-xs text-foreground"
                 value={indexJson}
-                onChange={(event) => setIndexJson(event.target.value)}
+                onChange={(event) => dispatch({ type: "setIndexJson", value: event.target.value })}
                 placeholder='{"plugins":[]}'
               />
             </label>

@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { buildAvailabilityTimeline } from "../UsageAvailabilityPanel";
+import { buildAvailabilityTimeline } from "../usageAvailabilityTimeline";
 import type { RequestLogSummary } from "../../../services/gateway/requestLogs";
 import type { GatewayProviderCircuitStatus } from "../../../services/gateway/gateway";
 import type { CliKey } from "../../../services/providers/providers";

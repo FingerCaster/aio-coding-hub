@@ -1,15 +1,13 @@
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import {
-  ResponsiveContainer,
-  AreaChart,
   Area,
+  AreaChart,
+  CartesianGrid,
+  ResponsiveContainer,
+  Tooltip,
   XAxis,
   YAxis,
-  Tooltip,
-  CartesianGrid,
-} from "recharts";
-import type { TooltipProps } from "recharts";
-import type { ValueType, NameType } from "recharts/types/component/DefaultTooltipContent";
+} from "./charts/lazyRecharts";
 import type { UsageHourlyRow } from "../services/usage/usage";
 import { useTheme } from "../hooks/useTheme";
 import { cn } from "../utils/cn";
@@ -22,27 +20,20 @@ import {
   getCursorStroke,
   CHART_ANIMATION,
 } from "./charts/chartTheme";
+import { buildUsageTokensXAxisTicks } from "./usageTokensChartModel";
 
 type ChartDataPoint = {
   label: string;
   tokens: number;
 };
 
-export function buildUsageTokensXAxisTicks(labels: string[]) {
-  if (labels.length <= 7) return labels;
+type ChartTooltipProps = {
+  active?: boolean;
+  payload?: Array<{ value?: unknown }>;
+  label?: string;
+};
 
-  const interval = Math.max(1, Math.ceil((labels.length - 1) / 6));
-  const ticks = labels.filter((_, i) => i % interval === 0);
-  const last = labels[labels.length - 1];
-
-  if (last && ticks[ticks.length - 1] !== last) {
-    ticks.push(last);
-  }
-
-  return ticks;
-}
-
-const CustomTooltip = ({ active, payload, label }: TooltipProps<ValueType, NameType>) => {
+const CustomTooltip = ({ active, payload, label }: ChartTooltipProps) => {
   if (active && payload && payload.length) {
     const value = typeof payload[0]?.value === "number" ? payload[0].value : 0;
 
@@ -121,54 +112,59 @@ export function UsageTokensChart({
 
   return (
     <div className={cn("h-full w-full", className)}>
-      <ResponsiveContainer width="100%" height="100%">
-        <AreaChart data={chartData} margin={{ left: 0, right: 16, top: 8, bottom: 0 }}>
-          <defs>
-            <linearGradient id="tokenAreaGradient" x1="0" y1="0" x2="0" y2="1">
-              <stop offset="0%" stopColor="hsl(var(--page-accent-color))" stopOpacity={0.25} />
-              <stop offset="100%" stopColor="hsl(var(--page-accent-color))" stopOpacity={0} />
-            </linearGradient>
-          </defs>
-          <CartesianGrid
-            vertical={false}
-            stroke={gridLineStyle.stroke}
-            strokeDasharray={gridLineStyle.strokeDasharray}
-          />
-          <XAxis
-            dataKey="label"
-            axisLine={{ stroke: axisLineStroke }}
-            tickLine={false}
-            tick={{ ...axisStyle }}
-            ticks={xAxisTicks}
-            interval="preserveStartEnd"
-          />
-          <YAxis
-            domain={[0, yAxisConfig.max]}
-            ticks={tickValues}
-            axisLine={false}
-            tickLine={false}
-            tick={{ ...axisStyle }}
-            tickFormatter={formatTokensMillions}
-            width={45}
-          />
-          <Tooltip content={<CustomTooltip />} cursor={{ stroke: cursorStroke, strokeWidth: 1 }} />
-          <Area
-            type="monotone"
-            dataKey="tokens"
-            stroke="hsl(var(--page-accent-color))"
-            strokeWidth={3.5}
-            fill="url(#tokenAreaGradient)"
-            animationDuration={CHART_ANIMATION.animationDuration}
-            activeDot={{
-              r: 5,
-              stroke: "hsl(var(--page-accent-color))",
-              strokeWidth: 2,
-              fill: "hsl(var(--chart-active-dot-fill))",
-              className: "animate-pulse",
-            }}
-          />
-        </AreaChart>
-      </ResponsiveContainer>
+      <Suspense fallback={<div className="h-full w-full" />}>
+        <ResponsiveContainer width="100%" height="100%">
+          <AreaChart data={chartData} margin={{ left: 0, right: 16, top: 8, bottom: 0 }}>
+            <defs>
+              <linearGradient id="tokenAreaGradient" x1="0" y1="0" x2="0" y2="1">
+                <stop offset="0%" stopColor="hsl(var(--page-accent-color))" stopOpacity={0.25} />
+                <stop offset="100%" stopColor="hsl(var(--page-accent-color))" stopOpacity={0} />
+              </linearGradient>
+            </defs>
+            <CartesianGrid
+              vertical={false}
+              stroke={gridLineStyle.stroke}
+              strokeDasharray={gridLineStyle.strokeDasharray}
+            />
+            <XAxis
+              dataKey="label"
+              axisLine={{ stroke: axisLineStroke }}
+              tickLine={false}
+              tick={{ ...axisStyle }}
+              ticks={xAxisTicks}
+              interval="preserveStartEnd"
+            />
+            <YAxis
+              domain={[0, yAxisConfig.max]}
+              ticks={tickValues}
+              axisLine={false}
+              tickLine={false}
+              tick={{ ...axisStyle }}
+              tickFormatter={formatTokensMillions}
+              width={45}
+            />
+            <Tooltip
+              content={<CustomTooltip />}
+              cursor={{ stroke: cursorStroke, strokeWidth: 1 }}
+            />
+            <Area
+              type="monotone"
+              dataKey="tokens"
+              stroke="hsl(var(--page-accent-color))"
+              strokeWidth={3.5}
+              fill="url(#tokenAreaGradient)"
+              animationDuration={CHART_ANIMATION.animationDuration}
+              activeDot={{
+                r: 5,
+                stroke: "hsl(var(--page-accent-color))",
+                strokeWidth: 2,
+                fill: "hsl(var(--chart-active-dot-fill))",
+                className: "animate-pulse",
+              }}
+            />
+          </AreaChart>
+        </ResponsiveContainer>
+      </Suspense>
     </div>
   );
 }

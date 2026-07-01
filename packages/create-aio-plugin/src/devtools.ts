@@ -273,13 +273,13 @@ export function validatePluginFiles(files: ScaffoldFiles): ValidationResult {
   return result.ok ? { ok: true } : { ok: false, error: result.error };
 }
 
-export function readPluginDirectory(root: string): ScaffoldFiles {
+function readPluginDirectory(root: string): ScaffoldFiles {
   const files: ScaffoldFiles = {};
   walkPluginDirectory(root, root, files);
   return files;
 }
 
-export function readPluginDirectoryBytes(root: string): PluginFileBytes {
+function readPluginDirectoryBytes(root: string): PluginFileBytes {
   const files: PluginFileBytes = {};
   walkPluginDirectoryBytes(root, root, files);
   return files;
@@ -289,7 +289,7 @@ export function validatePluginDirectory(root: string): ValidationResult {
   return validatePluginFiles(readPluginDirectory(root));
 }
 
-export function validatePluginDirectoryStrict(root: string): StrictValidationResult {
+function validatePluginDirectoryStrict(root: string): StrictValidationResult {
   return validatePluginFilesStrict(readPluginDirectory(root));
 }
 

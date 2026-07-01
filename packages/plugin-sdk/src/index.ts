@@ -457,10 +457,16 @@ function validateContributes(
   if (!raw) {
     return invalid("PLUGIN_INVALID_CONTRIBUTES", "contributes must be an object");
   }
+  const supportedContributionKeys = new Set([
+    "providers",
+    "protocols",
+    "protocolBridges",
+    "commands",
+    "gatewayHooks",
+    "ui",
+  ]);
   for (const key of Object.keys(raw)) {
-    if (
-      !["providers", "protocols", "protocolBridges", "commands", "gatewayHooks", "ui"].includes(key)
-    ) {
+    if (!supportedContributionKeys.has(key)) {
       return invalid("PLUGIN_INVALID_CONTRIBUTION", `unsupported contribution field: ${key}`);
     }
   }

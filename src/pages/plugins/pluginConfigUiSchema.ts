@@ -35,18 +35,20 @@ export function configSchemaSections(schema: JsonValue | undefined): PluginConfi
   const rawSections = ui(schema).sections;
   if (!Array.isArray(rawSections)) return [];
 
-  return rawSections
-    .filter(isRecord)
-    .map((section) => {
-      const id = stringOrNull(section.id) ?? "default";
-      return {
-        id,
-        title: stringOrNull(section.title) ?? id,
-        description: stringOrNull(section.description),
-        order: numberOrInfinity(section.order),
-      };
-    })
-    .sort((left, right) => left.order - right.order || left.title.localeCompare(right.title));
+  const sections: PluginConfigUiSection[] = [];
+  for (const section of rawSections) {
+    if (!isRecord(section)) continue;
+    const id = stringOrNull(section.id) ?? "default";
+    sections.push({
+      id,
+      title: stringOrNull(section.title) ?? id,
+      description: stringOrNull(section.description),
+      order: numberOrInfinity(section.order),
+    });
+  }
+  return sections.sort(
+    (left, right) => left.order - right.order || left.title.localeCompare(right.title)
+  );
 }
 
 export function configFieldLabel(
