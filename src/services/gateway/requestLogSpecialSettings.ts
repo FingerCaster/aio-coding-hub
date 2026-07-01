@@ -132,6 +132,15 @@ export function resolveCodexReasoningEffort(
   return { effort: "unknown", source: "unknown" };
 }
 
+export function hasExplicitCodexReasoningEffortSpecialSetting(
+  specialSettingsJson: string | null | undefined
+) {
+  return parseRequestLogSpecialSettings(specialSettingsJson).some((setting) => {
+    if (setting.type !== "codex_reasoning_effort") return false;
+    return normalizeCodexReasoningEffort(setting.effort) !== null;
+  });
+}
+
 function hasCodexReasoningEffortField(setting: ParsedRequestLogSpecialSetting): boolean {
   return Object.keys(setting).some((key) => CODEX_REASONING_EFFORT_FIELD_NAMES.has(key));
 }

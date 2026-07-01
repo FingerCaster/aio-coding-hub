@@ -203,6 +203,49 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.realtimeCards[0]?.trace.special_settings_json).toBe(specialSettingsJson);
   });
 
+  it("uses terminal Codex settings after reasoning guard provider switch", () => {
+    const guardOnlySettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard",
+        actionTaken: "switch_provider",
+        guardRetryPhase: "retry",
+      },
+    ]);
+    const terminalEffortSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+
+    const projection = buildRequestActivityProjection({
+      requestLogs: [
+        log({
+          trace_id: "codex-terminal-guard",
+          cli_key: "codex",
+          status: 200,
+          requested_model: "gpt-5.5-pro",
+          special_settings_json: terminalEffortSettings,
+          duration_ms: 1_200,
+        }),
+      ],
+      traces: [
+        trace({
+          trace_id: "codex-terminal-guard",
+          cli_key: "codex",
+          requested_model: "gpt-5.5",
+          special_settings_json: guardOnlySettings,
+        }),
+      ],
+      nowMs: 1_700_000_000_500,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    const projectedTrace = projection.realtimeCards[0]?.trace;
+    expect(projectedTrace?.requested_model).toBe("gpt-5.5-pro");
+    expect(projectedTrace?.special_settings_json).toBe(terminalEffortSettings);
+    expect(projectedTrace?.summary?.requested_model).toBe("gpt-5.5-pro");
+    expect(projectedTrace?.summary?.special_settings_json).toBe(terminalEffortSettings);
+  });
+
   it("keeps live trace model mapping ahead of persisted request log settings", () => {
     const projection = buildRequestActivityProjection({
       requestLogs: [
