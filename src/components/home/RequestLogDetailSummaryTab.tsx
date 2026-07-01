@@ -29,6 +29,7 @@ export type RequestLogDetailSummaryTabProps = {
   displayDurationMs: number;
   isInProgress: boolean;
   attemptCount: number;
+  codexReasoningGuardHitLabel?: string;
 };
 
 export function RequestLogDetailSummaryTab({
@@ -39,8 +40,9 @@ export function RequestLogDetailSummaryTab({
   displayDurationMs,
   isInProgress: _isInProgress,
   attemptCount: _attemptCount,
+  codexReasoningGuardHitLabel,
 }: RequestLogDetailSummaryTabProps) {
-  const auditMeta = buildRequestLogAuditMeta(selectedLog);
+  const auditMeta = buildRequestLogAuditMeta(selectedLog, { codexReasoningGuardHitLabel });
   const usageReasoningTokens = resolveRequestLogUsageReasoningTokens(selectedLog.usage_json);
   const codexReasoningEffort =
     selectedLog.cli_key === "codex"

@@ -105,6 +105,7 @@ type RequestLogCardProps = {
   showCustomTooltip: boolean;
   onSelectLogId: (id: number | null) => void;
   formatUnixSeconds: (ts: number) => string;
+  codexReasoningGuardHitLabel?: string;
 };
 
 const RequestLogCard = memo(function RequestLogCard({
@@ -117,8 +118,9 @@ const RequestLogCard = memo(function RequestLogCard({
   showCustomTooltip,
   onSelectLogId,
   formatUnixSeconds,
+  codexReasoningGuardHitLabel,
 }: RequestLogCardProps) {
-  const auditMeta = buildRequestLogAuditMeta(log);
+  const auditMeta = buildRequestLogAuditMeta(log, { codexReasoningGuardHitLabel });
   const isInProgress = isPersistedRequestLogInProgress(log);
   const liveProvider = resolveLiveTraceProvider(liveTrace);
   const persistedRunningMs = (() => {
@@ -533,6 +535,7 @@ export type HomeRequestLogsPanelProps = {
 
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
+  codexReasoningGuardHitLabel?: string;
 };
 
 export function HomeRequestLogsPanel({
@@ -554,6 +557,7 @@ export function HomeRequestLogsPanel({
   onRefreshRequestLogs,
   selectedLogId,
   onSelectLogId,
+  codexReasoningGuardHitLabel,
 }: HomeRequestLogsPanelProps) {
   const navigate = useNavigate();
   const [compactMode, setCompactMode] = useState(() => {
@@ -724,6 +728,7 @@ export function HomeRequestLogsPanel({
           emptyStateTitle={emptyStateTitle}
           selectedLogId={selectedLogId}
           onSelectLogId={onSelectLogId}
+          codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
         />
       </div>
     </Card>
@@ -744,6 +749,7 @@ type RequestLogsListProps = {
   emptyStateTitle: string;
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
+  codexReasoningGuardHitLabel?: string;
 };
 
 const RequestLogsList = memo(function RequestLogsList({
@@ -759,6 +765,7 @@ const RequestLogsList = memo(function RequestLogsList({
   emptyStateTitle,
   selectedLogId,
   onSelectLogId,
+  codexReasoningGuardHitLabel,
 }: RequestLogsListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasRealtimeCards = realtimeCards.length > 0;
@@ -796,6 +803,7 @@ const RequestLogsList = memo(function RequestLogsList({
             showCustomTooltip={showCustomTooltip}
             onSelectLogId={onSelectLogId}
             formatUnixSeconds={formatUnixSeconds}
+            codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
           />
         );
       })}
@@ -868,6 +876,7 @@ const RequestLogsList = memo(function RequestLogsList({
                     showCustomTooltip={showCustomTooltip}
                     onSelectLogId={onSelectLogId}
                     formatUnixSeconds={formatUnixSeconds}
+                    codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
                   />
                 </div>
               );

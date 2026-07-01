@@ -243,6 +243,54 @@ describe("components/home/HomeLogShared", () => {
     });
   });
 
+  it("allows overriding only the reasoning guard hit tag label", () => {
+    const reasoningGuard = buildRequestLogAuditMeta(
+      {
+        cli_key: "codex",
+        path: "/v1/responses",
+        status: 200,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            compareMode: "less_than_or_equal",
+            compareModeSymbol: "<=",
+            matchedRuleValue: 516,
+            reasoningTokens: 300,
+          },
+        ]),
+      },
+      { codexReasoningGuardHitLabel: "守卫命中" }
+    );
+
+    expect(reasoningGuard.tags.map((tag) => tag.label)).toContain("守卫命中 <= 516");
+    expect(reasoningGuard.summary).toBe("本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试。");
+  });
+
+  it("shows switch-model wording when the reasoning guard exhausts into model fallback", () => {
+    const reasoningGuard = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: JSON.stringify([
+        {
+          type: "codex_reasoning_guard",
+          compareMode: "equals",
+          compareModeSymbol: "==",
+          matchedRuleValue: 516,
+          reasoningTokens: 516,
+          actionTaken: "switch_model_no_circuit",
+          guardExhaustedAction: "switch_model",
+        },
+      ]),
+    });
+
+    expect(reasoningGuard.tags.map((tag) => tag.label)).toContain("降智命中 == 516");
+    expect(reasoningGuard.tags[0]?.title).toContain("预算耗尽后切换模型");
+    expect(reasoningGuard.summary).toBe(
+      "本次请求命中了 Codex 降智拦截（规则 == 516），预算耗尽后切换模型。"
+    );
+  });
+
   it("computes status badges across success, failover, errors, and client aborts", () => {
     expect(computeStatusBadge({ status: null, errorCode: null, inProgress: true })).toMatchObject({
       text: "进行中",

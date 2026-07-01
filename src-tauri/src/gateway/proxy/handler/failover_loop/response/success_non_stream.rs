@@ -13,6 +13,24 @@ use crate::gateway::proxy::{
     upstream_client_error_rules, GatewayErrorCode,
 };
 
+fn resolve_requested_model_for_log(
+    requested_model: Option<String>,
+    fallback_model: Option<&str>,
+    cli_key: &str,
+    body_bytes: &[u8],
+) -> Option<String> {
+    fallback_model
+        .map(str::to_string)
+        .or(requested_model)
+        .or_else(|| {
+            if body_bytes.is_empty() {
+                None
+            } else {
+                usage::parse_model_from_json_or_sse_bytes(cli_key, body_bytes)
+            }
+        })
+}
+
 fn buffer_cx2cc_event_stream_as_json(
     cx2cc_active: bool,
     response_headers: &mut HeaderMap,
@@ -1397,13 +1415,12 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let requested_model_for_log = common.requested_model.clone().or_else(|| {
-        if body_bytes.is_empty() {
-            None
-        } else {
-            usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
-        }
-    });
+    let requested_model_for_log = resolve_requested_model_for_log(
+        common.requested_model.clone(),
+        retry_state.codex_reasoning_guard_current_model.as_deref(),
+        common.cli_key.as_str(),
+        &body_bytes,
+    );
 
     let body = Body::from(body_bytes);
     let mut builder = Response::builder().status(status);
@@ -1626,13 +1643,12 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let requested_model_for_log = common.requested_model.clone().or_else(|| {
-        if body_bytes.is_empty() {
-            None
-        } else {
-            usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes)
-        }
-    });
+    let requested_model_for_log = resolve_requested_model_for_log(
+        common.requested_model.clone(),
+        _retry_state.codex_reasoning_guard_current_model.as_deref(),
+        common.cli_key.as_str(),
+        &body_bytes,
+    );
 
     let now_unix = now_unix_seconds() as i64;
     let change = provider_router::record_success_and_emit_transition(

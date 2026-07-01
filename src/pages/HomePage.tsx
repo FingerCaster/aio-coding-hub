@@ -83,6 +83,8 @@ export function HomePage() {
   const showCustomTooltip = true;
   const foregroundActive = useDocumentVisibility();
   const settingsQuery = useSettingsQuery();
+  const codexReasoningGuardHitLabel =
+    settingsQuery.data?.codex_reasoning_guard_hit_label?.trim() || "降智命中";
   const showHomeHeatmap = settingsQuery.data?.show_home_heatmap ?? true;
   const showHomeUsage = settingsQuery.data?.show_home_usage ?? true;
   const showOverviewUsageSection = showHomeHeatmap || showHomeUsage;
@@ -344,6 +346,7 @@ export function HomePage() {
             selectedLogId={selectedLogId}
             onSelectLogId={setSelectedLogId}
             personalizedUsageView={personalizedUsageView}
+            codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
           />
         ) : tab === "cost" ? (
           <Suspense
@@ -429,6 +432,7 @@ export function HomePage() {
           <LazyRequestLogDetailDialog
             selectedLogId={selectedLogId}
             onSelectLogId={setSelectedLogId}
+            codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
           />
         </Suspense>
       ) : null}

@@ -8,6 +8,7 @@ import { RequestLogDetailDialog } from "../components/home/RequestLogDetailDialo
 import { CLI_FILTER_ITEMS, type CliFilterKey } from "../constants/clis";
 import { GatewayErrorCodes } from "../constants/gatewayErrorCodes";
 import { useRequestLogsFeed } from "../hooks/useRequestLogsFeed";
+import { useSettingsQuery } from "../query/settings";
 import { Button } from "../ui/Button";
 import { Card } from "../ui/Card";
 import { Input } from "../ui/Input";
@@ -55,6 +56,9 @@ function buildStatusPredicate(query: string): StatusPredicate | null {
 export function LogsPage() {
   const { traces } = useTraceStore();
   const showCustomTooltip = true;
+  const settingsQuery = useSettingsQuery();
+  const codexReasoningGuardHitLabel =
+    settingsQuery.data?.codex_reasoning_guard_hit_label?.trim() || "降智命中";
 
   const [cliKey, setCliKey] = useState<CliFilterKey>("all");
   const [statusFilter, setStatusFilter] = useState("");
@@ -235,9 +239,14 @@ export function LogsPage() {
         onRefreshRequestLogs={() => void refreshRequestLogs()}
         selectedLogId={selectedLogId}
         onSelectLogId={setSelectedLogId}
+        codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
       />
 
-      <RequestLogDetailDialog selectedLogId={selectedLogId} onSelectLogId={setSelectedLogId} />
+      <RequestLogDetailDialog
+        selectedLogId={selectedLogId}
+        onSelectLogId={setSelectedLogId}
+        codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
+      />
     </div>
   );
 }

@@ -323,6 +323,7 @@ export type HomeOverviewPanelProps = {
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
   personalizedUsageView: HomeOverviewUsageView;
+  codexReasoningGuardHitLabel?: string;
 };
 
 const PREVIEW_WORKSPACE_CONFIGS: HomeCliWorkspaceConfig[] = [
@@ -519,6 +520,7 @@ export function HomeOverviewPanel({
   selectedLogId,
   onSelectLogId,
   personalizedUsageView,
+  codexReasoningGuardHitLabel,
 }: HomeOverviewPanelProps) {
   const [sessionsTabsOrder] = useState<HomeOverviewTabKey[]>(() =>
     readHomeOverviewTabOrderFromStorage()
@@ -690,6 +692,7 @@ export function HomeOverviewPanel({
       onRefreshRequestLogs={onRefreshRequestLogs}
       selectedLogId={selectedLogId}
       onSelectLogId={onSelectLogId}
+      codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
     />
   );
 

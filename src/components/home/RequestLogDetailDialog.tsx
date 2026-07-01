@@ -30,6 +30,7 @@ import type { RequestAttemptLog } from "../../services/gateway/requestLogs";
 export type RequestLogDetailDialogProps = {
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
+  codexReasoningGuardHitLabel?: string;
 };
 
 type DetailTab = "summary" | "chain" | "raw";
@@ -53,6 +54,7 @@ function hasProviderFailover(attemptLogs: RequestAttemptLog[]) {
 export function RequestLogDetailDialog({
   selectedLogId,
   onSelectLogId,
+  codexReasoningGuardHitLabel,
 }: RequestLogDetailDialogProps) {
   const [activeTab, setActiveTab] = useState<DetailTab>("summary");
   const { traces } = useTraceStore();
@@ -96,7 +98,9 @@ export function RequestLogDetailDialog({
   const providerId = isInProgress
     ? (liveProvider?.providerId ?? selectedLog?.final_provider_id)
     : selectedLog?.final_provider_id;
-  const auditMeta = selectedLog ? buildRequestLogAuditMeta(selectedLog) : null;
+  const auditMeta = selectedLog
+    ? buildRequestLogAuditMeta(selectedLog, { codexReasoningGuardHitLabel })
+    : null;
   const usageReasoningTokens = selectedLog
     ? resolveRequestLogUsageReasoningTokens(selectedLog.usage_json)
     : null;
@@ -172,6 +176,7 @@ export function RequestLogDetailDialog({
               displayDurationMs={displayDurationMs}
               isInProgress={isInProgress}
               attemptCount={attemptLogs.length}
+              codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
             />
           )}
 

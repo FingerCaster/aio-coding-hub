@@ -668,6 +668,8 @@ pub fn write<R: tauri::Runtime>(
     settings.upstream_proxy_url = settings.upstream_proxy_url.trim().to_string();
     settings.upstream_proxy_username = settings.upstream_proxy_username.trim().to_string();
     settings.codex_provider_test_model = settings.codex_provider_test_model.trim().to_string();
+    settings.codex_reasoning_guard_hit_label =
+        settings.codex_reasoning_guard_hit_label.trim().to_string();
     settings.cx2cc_fallback_model_opus = settings.cx2cc_fallback_model_opus.trim().to_string();
     settings.cx2cc_fallback_model_sonnet = settings.cx2cc_fallback_model_sonnet.trim().to_string();
     settings.cx2cc_fallback_model_haiku = settings.cx2cc_fallback_model_haiku.trim().to_string();

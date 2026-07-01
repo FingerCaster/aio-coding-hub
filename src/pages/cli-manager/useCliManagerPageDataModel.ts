@@ -472,6 +472,7 @@ export function useCliManagerPageDataModel() {
       Pick<
         AppSettings,
         | "codex_reasoning_guard_enabled"
+        | "codex_reasoning_guard_hit_label"
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"

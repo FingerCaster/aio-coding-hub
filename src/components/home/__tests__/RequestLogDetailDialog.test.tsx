@@ -175,6 +175,37 @@ describe("home/RequestLogDetailDialog", () => {
     expect(screen.queryByText(/usage_json/)).not.toBeInTheDocument();
   });
 
+  it("renders a customized reasoning guard hit label on the summary tab", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            compareMode: "equals",
+            compareModeSymbol: "==",
+            matchedRuleValue: 516,
+            reasoningTokens: 516,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(
+      <RequestLogDetailDialog
+        selectedLogId={1}
+        onSelectLogId={vi.fn()}
+        codexReasoningGuardHitLabel="守卫命中"
+      />
+    );
+
+    expect(screen.getByText("守卫命中 == 516")).toBeInTheDocument();
+    expect(screen.queryByText("降智命中 == 516")).not.toBeInTheDocument();
+  });
+
   it("shows Codex fast mode badge on the summary tab", () => {
     setRequestLogQueryState({
       selectedLog: createSelectedLog({

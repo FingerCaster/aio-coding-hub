@@ -394,6 +394,7 @@ export type CliManagerCodexTabProps = {
       Pick<
         AppSettings,
         | "codex_reasoning_guard_enabled"
+        | "codex_reasoning_guard_hit_label"
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
@@ -610,6 +611,8 @@ export function CliManagerCodexTab({
   const [customHomeText, setCustomHomeText] = useState("");
   const [configLocationError, setConfigLocationError] = useState<string | null>(null);
   const [selectingCodexHomeDir, setSelectingCodexHomeDir] = useState(false);
+  const [codexReasoningGuardHitLabelText, setCodexReasoningGuardHitLabelText] =
+    useState("降智命中");
   const [codexReasoningGuardValuesText, setCodexReasoningGuardValuesText] = useState("");
   const [codexReasoningGuardCompareMode, setCodexReasoningGuardCompareMode] =
     useState<CodexReasoningGuardCompareMode>("equals");
@@ -736,6 +739,9 @@ export function CliManagerCodexTab({
 
   const syncCodexReasoningGuardDrafts = useCallback(
     (source: AppSettings | null | undefined = appSettings) => {
+      setCodexReasoningGuardHitLabelText(
+        source?.codex_reasoning_guard_hit_label?.trim() || "降智命中"
+      );
       const values =
         source?.codex_reasoning_guard_reasoning_equals ??
         DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS;
@@ -1380,6 +1386,7 @@ export function CliManagerCodexTab({
 
   async function saveCodexReasoningGuardRules() {
     if (!appSettings || !persistCodexReasoningGuardSettings) return;
+    const normalizedHitLabel = codexReasoningGuardHitLabelText.trim() || "降智命中";
 
     const parsedGlobalValues = parseCodexReasoningGuardValues(codexReasoningGuardValuesText);
     if (!parsedGlobalValues.ok) {
@@ -1503,6 +1510,7 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardBudgetError(null);
     setCodexReasoningGuardModelFallbacksError(null);
     setCodexReasoningGuardModelRuleErrors({});
+    setCodexReasoningGuardHitLabelText(normalizedHitLabel);
     setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
     setCodexReasoningGuardImmediateBudgetText(String(parsedImmediateBudget.value));
     setCodexReasoningGuardDelayedBudgetText(String(parsedDelayedBudget.value));
@@ -1516,6 +1524,7 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
 
     const saved = await persistCodexReasoningGuardSettings({
+      codex_reasoning_guard_hit_label: normalizedHitLabel,
       codex_reasoning_guard_compare_mode: codexReasoningGuardCompareMode,
       codex_reasoning_guard_reasoning_equals: parsedGlobalValues.values,
       codex_reasoning_guard_model_rules: nextModelRules,
@@ -1946,7 +1955,6 @@ export function CliManagerCodexTab({
                         size="sm"
                         className="gap-2"
                         onClick={() => {
-                          syncCodexReasoningGuardDrafts(appSettings);
                           setCodexReasoningGuardDetailsTab("rules");
                           setCodexReasoningGuardDetailsOpen(true);
                         }}
@@ -2715,6 +2723,24 @@ export function CliManagerCodexTab({
                     placeholder={DEFAULT_CODEX_PROVIDER_TEST_MODEL}
                     className="font-mono w-[280px] max-w-full"
                     disabled={providerTestModelControlsDisabled}
+                  />
+                </SettingItem>
+
+                <SettingItem
+                  label="降智命中标签"
+                  subtitle="只影响请求记录和详情里的降智命中标签前缀；命中次数和规则后缀仍自动拼接。"
+                >
+                  <Input
+                    aria-label="降智命中标签"
+                    value={codexReasoningGuardHitLabelText}
+                    onChange={(e) => setCodexReasoningGuardHitLabelText(e.currentTarget.value)}
+                    onBlur={(e) => {
+                      const normalized = e.currentTarget.value.trim() || "降智命中";
+                      setCodexReasoningGuardHitLabelText(normalized);
+                    }}
+                    placeholder="降智命中"
+                    className="w-[220px] max-w-full"
+                    disabled={reasoningGuardControlsDisabled}
                   />
                 </SettingItem>
 

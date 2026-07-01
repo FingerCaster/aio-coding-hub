@@ -23,6 +23,7 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     codex_home_override: "",
     codex_oauth_compatible_proxy_mode: false,
     codex_provider_test_model: "gpt-5.4-mini",
+    codex_reasoning_guard_hit_label: "降智命中",
     codex_reasoning_guard_enabled: true,
     codex_reasoning_guard_compare_mode: "equals",
     codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],

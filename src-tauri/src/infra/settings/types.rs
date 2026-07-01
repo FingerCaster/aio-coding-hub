@@ -7,6 +7,10 @@ fn default_codex_provider_test_model() -> String {
     DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
 }
 
+fn default_codex_reasoning_guard_hit_label() -> String {
+    DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string()
+}
+
 fn default_codex_reasoning_guard_immediate_retry_budget() -> u32 {
     DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
 }
@@ -205,6 +209,8 @@ pub struct AppSettings {
     pub codex_oauth_compatible_proxy_mode: bool,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
+    #[serde(default = "default_codex_reasoning_guard_hit_label")]
+    pub codex_reasoning_guard_hit_label: String,
     // Codex reasoning guard: detect degraded reasoning token signatures and
     // retry the same provider without affecting circuit breaker state.
     pub codex_reasoning_guard_enabled: bool,
@@ -320,6 +326,7 @@ impl Default for AppSettings {
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
+            codex_reasoning_guard_hit_label: DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string(),
             codex_reasoning_guard_enabled: DEFAULT_CODEX_REASONING_GUARD_ENABLED,
             codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::default(),
             codex_reasoning_guard_reasoning_equals: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS

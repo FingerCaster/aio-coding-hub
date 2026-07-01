@@ -93,6 +93,18 @@ pub(super) fn sanitize_codex_provider_test_model(settings: &mut AppSettings) -> 
     changed
 }
 
+pub(super) fn sanitize_codex_reasoning_guard_hit_label(settings: &mut AppSettings) -> bool {
+    let normalized = settings.codex_reasoning_guard_hit_label.trim();
+    let next = if normalized.is_empty() {
+        DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string()
+    } else {
+        normalized.to_string()
+    };
+    let changed = settings.codex_reasoning_guard_hit_label != next;
+    settings.codex_reasoning_guard_hit_label = next;
+    changed
+}
+
 pub(super) fn sanitize_codex_reasoning_guard_model_rules(settings: &mut AppSettings) -> bool {
     let mut changed = false;
     let mut seen_models = HashSet::new();
@@ -978,9 +990,30 @@ fn migrate_add_codex_reasoning_guard_retry_policy(
     true
 }
 
+fn migrate_add_codex_reasoning_guard_hit_label(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_HIT_LABEL,
+    ) {
+        return false;
+    }
+
+    if settings.codex_reasoning_guard_hit_label.trim().is_empty() {
+        settings.codex_reasoning_guard_hit_label =
+            DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string();
+        return true;
+    }
+
+    false
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 37] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 38] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -1018,6 +1051,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 37] = [
     migrate_update_codex_reasoning_guard_defaults,
     migrate_add_codex_reasoning_guard_budget,
     migrate_add_codex_reasoning_guard_retry_policy,
+    migrate_add_codex_reasoning_guard_hit_label,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1044,6 +1078,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_response_fixer_limits(settings);
     repaired |= sanitize_codex_home_override(settings);
     repaired |= sanitize_codex_provider_test_model(settings);
+    repaired |= sanitize_codex_reasoning_guard_hit_label(settings);
     repaired |= sanitize_codex_reasoning_guard_model_rules(settings);
     repaired |= sanitize_codex_reasoning_guard_runtime_settings(settings);
     repaired |= sanitize_cli_priority_order(settings);
@@ -1099,6 +1134,26 @@ mod tests {
             s.failover_max_attempts_per_provider,
             MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER
         );
+    }
+
+    #[test]
+    fn sanitize_codex_reasoning_guard_hit_label_trims_and_defaults_blank() {
+        let mut blank = AppSettings {
+            codex_reasoning_guard_hit_label: "   ".to_string(),
+            ..Default::default()
+        };
+        assert!(sanitize_codex_reasoning_guard_hit_label(&mut blank));
+        assert_eq!(
+            blank.codex_reasoning_guard_hit_label,
+            DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL
+        );
+
+        let mut custom = AppSettings {
+            codex_reasoning_guard_hit_label: "  守卫命中  ".to_string(),
+            ..Default::default()
+        };
+        assert!(sanitize_codex_reasoning_guard_hit_label(&mut custom));
+        assert_eq!(custom.codex_reasoning_guard_hit_label, "守卫命中");
     }
 
     #[test]
@@ -1754,6 +1809,25 @@ mod tests {
         assert_eq!(
             s.codex_reasoning_guard_exhausted_action,
             CodexReasoningGuardExhaustedAction::ReturnError
+        );
+    }
+
+    #[test]
+    fn migrate_add_codex_reasoning_guard_hit_label_bumps_schema_and_fills_default() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RETRY_POLICY,
+            codex_reasoning_guard_hit_label: String::new(),
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_reasoning_guard_hit_label(&mut s, true));
+        assert_eq!(
+            s.schema_version,
+            SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_HIT_LABEL
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_hit_label,
+            DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL
         );
     }
 

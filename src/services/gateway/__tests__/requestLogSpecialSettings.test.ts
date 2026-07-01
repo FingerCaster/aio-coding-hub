@@ -144,6 +144,34 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     });
   });
 
+  it("keeps latest switch-model action in Codex reasoning guard summary", () => {
+    expect(
+      resolveCodexReasoningGuardSummary(
+        JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            compareMode: "equals",
+            matchedRuleValue: 516,
+            reasoningTokens: 516,
+            actionTaken: "retry_same_provider_no_circuit",
+          },
+          {
+            type: "codex_reasoning_guard",
+            compareMode: "equals",
+            matchedRuleValue: 516,
+            reasoningTokens: 516,
+            actionTaken: "switch_model_no_circuit",
+            guardExhaustedAction: "switch_model",
+          },
+        ])
+      )
+    ).toMatchObject({
+      count: 2,
+      latestActionTaken: "switch_model_no_circuit",
+      latestExhaustedAction: "switch_model",
+    });
+  });
+
   it("resolves explicit Codex reasoning effort from special settings", () => {
     const settings = JSON.stringify([
       {

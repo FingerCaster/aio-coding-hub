@@ -72,6 +72,9 @@ function formatCodexReasoningGuardActionText(summary: {
   if (summary.latestActionTaken === "switch_provider_no_circuit") {
     return "预算耗尽后切换供应商";
   }
+  if (summary.latestActionTaken === "switch_model_no_circuit") {
+    return "预算耗尽后切换模型";
+  }
   if (summary.latestActionTaken === "return_guard_error_no_circuit") {
     return "预算耗尽后返回错误";
   }
@@ -221,7 +224,15 @@ function auditTag(label: string, className: string, title?: string): RequestLogA
   return { label, className, title };
 }
 
-export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogAuditMeta {
+type RequestLogAuditMetaOptions = {
+  codexReasoningGuardHitLabel?: string | null;
+};
+
+export function buildRequestLogAuditMeta(
+  log: RequestLogAuditInput,
+  options: RequestLogAuditMetaOptions = {}
+): RequestLogAuditMeta {
+  const codexReasoningGuardHitLabel = options.codexReasoningGuardHitLabel?.trim() || "降智命中";
   const settings = parseRequestLogSpecialSettings(log.special_settings_json);
   const settingTypes = new Set(settings.map((item) => item.type).filter(Boolean));
   const isWarmupIntercept = settingTypes.has("warmup_intercept");
@@ -290,8 +301,8 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
     tags.push(
       auditTag(
         codexReasoningGuardHitCount > 1
-          ? `降智命中 ${codexReasoningGuardHitCount}${codexReasoningGuardRuleSuffix}`
-          : `降智命中${codexReasoningGuardRuleSuffix}`,
+          ? `${codexReasoningGuardHitLabel} ${codexReasoningGuardHitCount}${codexReasoningGuardRuleSuffix}`
+          : `${codexReasoningGuardHitLabel}${codexReasoningGuardRuleSuffix}`,
         "bg-violet-50/80 text-violet-700 ring-1 ring-inset ring-violet-500/10 dark:bg-violet-500/15 dark:text-violet-200 dark:ring-violet-400/20",
         codexReasoningGuard.latestRuleLabel
           ? `命中 Codex 降智拦截规则 ${codexReasoningGuard.latestRuleLabel} 后${codexReasoningGuardActionText}，不计入熔断${codexReasoningGuardBudgetSuffix}`
