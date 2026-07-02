@@ -214,4 +214,5 @@ jobs:
 
       - name: Dependency audit (cargo)
         working-directory: src-tauri
-        run: cargo audit
+        # quick-xml <0.41 is still pulled by current upstream Tauri/Wayland/notification deps.
+        run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
