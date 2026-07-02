@@ -3,12 +3,20 @@
 use super::*;
 use crate::gateway::proxy::is_claude_count_tokens_request;
 
-fn timeout_decision(is_count_tokens: bool) -> FailoverDecision {
+fn timeout_decision(
+    is_count_tokens: bool,
+    retry_index: u32,
+    provider_max_attempts: u32,
+) -> FailoverDecision {
     if is_count_tokens {
         return FailoverDecision::Abort;
     }
 
-    FailoverDecision::SwitchProvider
+    if retry_index < provider_max_attempts {
+        FailoverDecision::RetrySameProvider
+    } else {
+        FailoverDecision::SwitchProvider
+    }
 }
 
 pub(super) async fn handle_timeout<R: tauri::Runtime>(
@@ -20,7 +28,11 @@ pub(super) async fn handle_timeout<R: tauri::Runtime>(
     let is_count_tokens =
         is_claude_count_tokens_request(ctx.cli_key.as_str(), ctx.forwarded_path.as_str());
     let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
-    let decision = timeout_decision(is_count_tokens);
+    let decision = timeout_decision(
+        is_count_tokens,
+        attempt_ctx.retry_index,
+        attempt_ctx.provider_max_attempts,
+    );
 
     let outcome = format!(
         "request_timeout: category={} code={} decision={} timeout_secs={}",
@@ -65,19 +77,19 @@ mod tests {
 
     #[test]
     fn timeout_decision_aborts_for_count_tokens() {
-        let decision = timeout_decision(true);
+        let decision = timeout_decision(true, 1, 5);
         assert!(matches!(decision, FailoverDecision::Abort));
     }
 
     #[test]
-    fn timeout_decision_switches_for_regular_requests_before_retry_limit() {
-        let decision = timeout_decision(false);
-        assert!(matches!(decision, FailoverDecision::SwitchProvider));
+    fn timeout_decision_retries_regular_requests() {
+        let decision = timeout_decision(false, 1, 5);
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
     }
 
     #[test]
-    fn timeout_decision_switches_for_regular_requests_after_retry_limit() {
-        let decision = timeout_decision(false);
+    fn timeout_decision_switches_regular_requests_at_retry_limit() {
+        let decision = timeout_decision(false, 5, 5);
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
     }
 }

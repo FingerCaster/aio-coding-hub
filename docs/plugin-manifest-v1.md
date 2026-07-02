@@ -111,12 +111,12 @@ Active hooks in plugin API v1 是当前已经接入 gateway 或 log pipeline 的
 
 | Hook | 触发时机 | 可修改内容 | 默认超时 | 默认失败策略 | Host-mediated context/mutation labels |
 | --- | --- | --- | --- | --- | --- |
-| `gateway.request.afterBodyRead` | Body reader 完成 allowed body buffering 后 | headers 和 request body | 150 ms | fail-open | `request.meta.read`, `request.header.read`, `request.header.readSensitive`, `request.body.read`, `request.header.write`, `request.body.write` |
-| `gateway.request.beforeSend` | provider resolution 后、reqwest 发送 upstream request 前 | headers 和 request body | 150 ms | fail-open | `request.meta.read`, `request.header.read`, `request.header.readSensitive`, `request.body.read`, `request.header.write`, `request.body.write` |
-| `gateway.response.chunk` | 每个 bounded streaming response chunk | stream chunk | 150 ms | fail-open | `stream.inspect`, `stream.modify` |
-| `gateway.response.after` | 大小预算内的完整 non-stream response | headers 和 response body | 150 ms | fail-open | `response.header.read`, `response.body.read`, `response.header.write`, `response.body.write` |
-| `gateway.error` | gateway error response materialization 后、发送前 | headers 和 error response body | 150 ms | fail-open | `response.header.read`, `response.body.read`, `response.header.write`, `response.body.write` |
-| `log.beforePersist` | Request 或 audit log 持久化前 | log message | 150 ms | fail-open | `log.redact` |
+| `gateway.request.afterBodyRead` | Body reader 完成 allowed body buffering 后 | headers 和 request body | 5000 ms | fail-open | `request.meta.read`, `request.header.read`, `request.header.readSensitive`, `request.body.read`, `request.header.write`, `request.body.write` |
+| `gateway.request.beforeSend` | provider resolution 后、reqwest 发送 upstream request 前 | headers 和 request body | 5000 ms | fail-open | `request.meta.read`, `request.header.read`, `request.header.readSensitive`, `request.body.read`, `request.header.write`, `request.body.write` |
+| `gateway.response.chunk` | 每个 bounded streaming response chunk | stream chunk | 5000 ms | fail-open | `stream.inspect`, `stream.modify` |
+| `gateway.response.after` | 大小预算内的完整 non-stream response | headers 和 response body | 5000 ms | fail-open | `response.header.read`, `response.body.read`, `response.header.write`, `response.body.write` |
+| `gateway.error` | gateway error response materialization 后、发送前 | headers 和 error response body | 5000 ms | fail-open | `response.header.read`, `response.body.read`, `response.header.write`, `response.body.write` |
+| `log.beforePersist` | Request 或 audit log 持久化前 | log message | 5000 ms | fail-open | `log.redact` |
 
 Streaming hooks 接收 bounded chunks 和固定大小 sliding window，不会接收无限制完整响应。
 
@@ -312,9 +312,9 @@ module.exports.activate = function(api) {
   "capabilities": ["gateway.hooks", "privacy.redact"],
   "contributes": {
     "gatewayHooks": [
-      { "name": "gateway.request.afterBodyRead", "priority": 5, "failurePolicy": "fail-closed" },
-      { "name": "gateway.request.beforeSend", "priority": 5, "failurePolicy": "fail-closed" },
-      { "name": "log.beforePersist", "priority": 1, "failurePolicy": "fail-closed" }
+      { "name": "gateway.request.afterBodyRead", "priority": 5, "failurePolicy": "fail-closed", "timeoutMs": 5000 },
+      { "name": "gateway.request.beforeSend", "priority": 5, "failurePolicy": "fail-closed", "timeoutMs": 5000 },
+      { "name": "log.beforePersist", "priority": 1, "failurePolicy": "fail-closed", "timeoutMs": 5000 }
     ]
   },
   "hostCompatibility": {

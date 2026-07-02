@@ -28,17 +28,20 @@
       {
         "name": "gateway.request.afterBodyRead",
         "priority": 5,
-        "failurePolicy": "fail-closed"
+        "failurePolicy": "fail-closed",
+        "timeoutMs": 5000
       },
       {
         "name": "gateway.request.beforeSend",
         "priority": 5,
-        "failurePolicy": "fail-closed"
+        "failurePolicy": "fail-closed",
+        "timeoutMs": 5000
       },
       {
         "name": "log.beforePersist",
         "priority": 1,
-        "failurePolicy": "fail-closed"
+        "failurePolicy": "fail-closed",
+        "timeoutMs": 5000
       }
     ]
   },
@@ -174,12 +177,7 @@
         "type": "array",
         "title": "请求处理范围",
         "description": "选择发送给模型前需要脱敏的协议文本字段。工具定义、工具调用参数、元数据、推理块和文件/图片引用不会被处理。",
-        "default": [
-          "system_instructions",
-          "user_prompts",
-          "tool_results",
-          "legacy_prompt"
-        ],
+        "default": ["system_instructions", "user_prompts", "tool_results", "legacy_prompt"],
         "items": {
           "type": "string",
           "enum": [

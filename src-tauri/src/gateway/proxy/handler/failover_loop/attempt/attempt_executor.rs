@@ -358,6 +358,7 @@ fn build_attempt_ctx<'a>(
     AttemptCtx {
         attempt_index,
         retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms,
         attempt_started: Instant::now(),
         circuit_before,

@@ -1,7 +1,7 @@
 {
   "apiVersion": "1.0.0",
   "manifestVersion": "1.0.0",
-  "defaultHookTimeoutMs": 150,
+  "defaultHookTimeoutMs": 5000,
   "defaultFailurePolicy": "fail-open",
   "runtimes": {
     "extensionHost": {
@@ -11,7 +11,7 @@
       "allowedMainExtensions": [".js", ".cjs"],
       "lifecycle": {
         "activation": "host-managed worker activation from manifest main",
-        "hookTimeoutMs": 150,
+        "hookTimeoutMs": 5000,
         "failurePolicy": "fail-open by default",
         "dispose": "host disposes worker state when plugin snapshot changes, disables, updates, or uninstalls"
       },
@@ -113,6 +113,12 @@
     "requiredFields": ["command", "title"],
     "optionalFields": ["category"]
   },
+  "gatewayHookContribution": {
+    "requiredFields": ["name"],
+    "optionalFields": ["priority", "failurePolicy", "timeoutMs"],
+    "defaultTimeoutMs": 5000,
+    "timeoutMs": "positive integer milliseconds; omitted hooks use defaultHookTimeoutMs"
+  },
   "hostRenderedSchema": {
     "schemaTypes": ["section", "panel", "badge"],
     "fieldTypes": ["text", "password", "number", "boolean", "select", "textarea", "info", "button"],
@@ -161,7 +167,7 @@
       "kind": "request",
       "status": "active",
       "defaultFailurePolicy": "fail-open",
-      "timeoutMs": 150,
+      "timeoutMs": 5000,
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": [
         "request.meta.read",
@@ -191,7 +197,7 @@
       "kind": "request",
       "status": "active",
       "defaultFailurePolicy": "fail-open",
-      "timeoutMs": 150,
+      "timeoutMs": 5000,
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": [
         "request.meta.read",
@@ -219,7 +225,7 @@
       "kind": "stream",
       "status": "active",
       "defaultFailurePolicy": "fail-open",
-      "timeoutMs": 150,
+      "timeoutMs": 5000,
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["stream.inspect"],
       "writePermissions": ["stream.modify"],
@@ -234,7 +240,7 @@
       "kind": "response",
       "status": "active",
       "defaultFailurePolicy": "fail-open",
-      "timeoutMs": 150,
+      "timeoutMs": 5000,
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
@@ -249,7 +255,7 @@
       "kind": "response",
       "status": "active",
       "defaultFailurePolicy": "fail-open",
-      "timeoutMs": 150,
+      "timeoutMs": 5000,
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["response.header.read", "response.body.read"],
       "writePermissions": ["response.header.write", "response.body.write"],
@@ -262,7 +268,7 @@
       "kind": "log",
       "status": "active",
       "defaultFailurePolicy": "fail-open",
-      "timeoutMs": 150,
+      "timeoutMs": 5000,
       "reservedHeaderPolicy": "block-gateway-owned",
       "readPermissions": ["log.redact"],
       "writePermissions": ["log.redact"],
@@ -283,7 +289,7 @@
       "activate": "module exports activate(api)",
       "gatewayRegistration": "api.gateway.registerHook",
       "privacyRedaction": "api.privacy.redactText and api.privacy.redactRequestBody when privacy.redact is declared",
-      "defaultHookTimeoutMs": 150,
+      "defaultHookTimeoutMs": 5000,
       "defaultFailurePolicy": "fail-open",
       "dispose": "host-managed"
     },

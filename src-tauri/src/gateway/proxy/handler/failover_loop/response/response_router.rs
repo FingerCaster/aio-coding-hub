@@ -60,6 +60,7 @@ where
     let attempt_ctx = AttemptCtx {
         attempt_index: indices.attempt_index,
         retry_index: indices.retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms: timing.attempt_started_ms,
         attempt_started: timing.attempt_started,
         circuit_before: &circuit_before,
@@ -159,6 +160,7 @@ where
     let attempt_ctx = AttemptCtx {
         attempt_index: indices.attempt_index,
         retry_index: indices.retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms: timing.attempt_started_ms,
         attempt_started: timing.attempt_started,
         circuit_before: &circuit_before,

@@ -36,13 +36,16 @@ Gateway hook 贡献点示例；公开文档中的规范名是 `contributes.gatew
       {
         "name": "gateway.request.afterBodyRead",
         "priority": 100,
-        "failurePolicy": "fail-open"
+        "failurePolicy": "fail-open",
+        "timeoutMs": 5000
       }
     ]
   },
   "capabilities": ["gateway.hooks"]
 }
 ```
+
+`timeoutMs` 可选；不填时使用宿主默认 hook timeout。需要扫描大 payload 或调用宿主侧重处理逻辑的插件可以自行声明更长的正整数毫秒值。
 
 Capability dependency table：
 

@@ -66,6 +66,8 @@ pub struct ActiveGatewayHookContribution {
     pub name: String,
     pub priority: i32,
     pub failure_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, specta::Type)]
@@ -164,6 +166,7 @@ impl ActiveContributionSnapshot {
                     name: hook.name.clone(),
                     priority: hook.priority,
                     failure_policy: hook.failure_policy.clone(),
+                    timeout_ms: hook.timeout_ms,
                 });
             }
 

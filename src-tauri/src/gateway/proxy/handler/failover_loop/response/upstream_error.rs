@@ -58,16 +58,12 @@ fn upstream_error_decision(
 
 fn reqwest_error_decision(
     is_count_tokens: bool,
-    is_connect: bool,
+    _is_connect: bool,
     retry_index: u32,
     max_attempts_per_provider: u32,
 ) -> FailoverDecision {
     if is_count_tokens {
         return FailoverDecision::Abort;
-    }
-
-    if is_connect {
-        return FailoverDecision::SwitchProvider;
     }
 
     if retry_index < max_attempts_per_provider {
@@ -289,7 +285,6 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     let mut resp = Some(resp);
 
     let state = ctx.state;
-    let max_attempts_per_provider = ctx.max_attempts_per_provider;
     let provider_cooldown_secs = ctx.provider_cooldown_secs;
 
     let ProviderCtx {
@@ -305,6 +300,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     let AttemptCtx {
         attempt_index: _,
         retry_index,
+        provider_max_attempts,
         attempt_started_ms,
         attempt_started,
         circuit_before,
@@ -326,7 +322,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         is_count_tokens,
         base_decision,
         retry_index,
-        max_attempts_per_provider,
+        provider_max_attempts,
     );
 
     let mut abort_body_bytes: Option<Bytes> = None;
@@ -787,7 +783,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
         is_count_tokens,
         is_connect,
         attempt_ctx.retry_index,
-        ctx.max_attempts_per_provider,
+        attempt_ctx.provider_max_attempts,
     );
     let outcome = format!(
         "request_error: category={} code={} decision={} err={err}",
@@ -1011,9 +1007,9 @@ mod tests {
     }
 
     #[test]
-    fn reqwest_error_decision_switches_non_count_tokens_connect_errors() {
+    fn reqwest_error_decision_retries_connect_errors_before_limit() {
         let decision = reqwest_error_decision(false, true, 1, 5);
-        assert!(matches!(decision, FailoverDecision::SwitchProvider));
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
     }
 
     #[test]

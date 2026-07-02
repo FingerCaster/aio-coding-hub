@@ -465,6 +465,7 @@ function PluginDetailPanel({
               <div className="mt-1 text-xs text-muted-foreground">
                 priority {hook.priority ?? 0}
                 {hook.failurePolicy ? ` · ${hook.failurePolicy}` : ""}
+                {hook.timeoutMs ? ` · timeout ${hook.timeoutMs}ms` : ""}
               </div>
             </div>
           ))}

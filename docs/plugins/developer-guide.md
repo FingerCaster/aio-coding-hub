@@ -148,7 +148,8 @@ acme.redactor/
       {
         "name": "gateway.request.afterBodyRead",
         "priority": 50,
-        "failurePolicy": "fail-open"
+        "failurePolicy": "fail-open",
+        "timeoutMs": 5000
       }
     ]
   },

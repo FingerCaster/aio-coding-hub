@@ -835,6 +835,7 @@ mod tests {
                             .to_string(),
                         priority: 10,
                         failure_policy: Some("fail-open".to_string()),
+                        timeout_ms: None,
                     }],
                     ui: BTreeMap::new(),
                 }),
@@ -1085,6 +1086,7 @@ mod tests {
         app_settings.upstream_first_byte_timeout_seconds = 1;
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        app_settings.circuit_breaker_failure_threshold = 1;
         settings::write(&app_handle, &app_settings).expect("write settings");
 
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -1094,7 +1096,21 @@ mod tests {
         let provider_id = insert_codex_provider(&db, upstream_base_url);
 
         let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
-        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            Arc::new(session_manager::SessionManager::new()),
+        ));
         let request = Request::builder()
             .method(Method::POST)
             .uri(format!(
@@ -2574,6 +2590,7 @@ module.exports.activate = function activate(api) {
         app_settings.upstream_first_byte_timeout_seconds = 1;
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
         app_settings.provider_cooldown_seconds = 0;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
@@ -2591,7 +2608,21 @@ module.exports.activate = function activate(api) {
             insert_codex_provider_with_priority(&db, "Success Stub", success_base_url, 1);
 
         let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
-        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            Arc::new(session_manager::SessionManager::new()),
+        ));
         let request = Request::builder()
             .method(Method::POST)
             .uri("/v1/chat/completions")
@@ -2861,6 +2892,7 @@ module.exports.activate = function activate(api) {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        app_settings.circuit_breaker_failure_threshold = 1;
         app_settings.provider_cooldown_seconds = 0;
         settings::write(&app_handle, &app_settings).expect("write settings");
 
@@ -2883,7 +2915,21 @@ module.exports.activate = function activate(api) {
             insert_codex_provider_with_priority(&db, "Large Error Stub", upstream_base_url, 0);
 
         let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
-        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            Arc::new(session_manager::SessionManager::new()),
+        ));
         let request = Request::builder()
             .method(Method::POST)
             .uri(format!(

@@ -159,12 +159,12 @@ describe("validateManifest", () => {
     const contributes: PluginContributes = manifest.contributes ?? {};
     const replaceRequestResult: PluginHookResult = {
       action: "replace",
-      requestBody: "{\"messages\":[]}",
+      requestBody: '{"messages":[]}',
     };
     const replaceResponseHeadersResult: PluginHookResult = {
       action: "replace",
       headers: { "x-plugin-redacted": "1" },
-      responseBody: "{\"ok\":true}",
+      responseBody: '{"ok":true}',
     };
     const passResult: PluginHookResult = { action: "pass" };
     const pluginApi: PluginApi = {
@@ -445,7 +445,12 @@ describe("validateManifest", () => {
       ...openRouterManifest,
       contributes: {
         gatewayHooks: [
-          { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
+          {
+            name: "gateway.request.afterBodyRead",
+            priority: 5,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
           { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
         ],
       },
@@ -478,6 +483,21 @@ describe("validateManifest", () => {
     expect(validateManifest(unknownHookManifest as unknown as PluginManifest)).toMatchObject({
       ok: false,
       error: { code: "PLUGIN_UNKNOWN_HOOK" },
+    });
+  });
+
+  test("rejects gatewayHooks with invalid timeoutMs", () => {
+    const manifest = {
+      ...openRouterManifest,
+      contributes: {
+        gatewayHooks: [{ name: "gateway.request.afterBodyRead", timeoutMs: 0 }],
+      },
+      capabilities: ["gateway.hooks"],
+    };
+
+    expect(validateManifest(manifest as unknown as PluginManifest)).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_INVALID_HOOK_TIMEOUT" },
     });
   });
 

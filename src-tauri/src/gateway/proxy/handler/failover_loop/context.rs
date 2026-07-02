@@ -273,6 +273,7 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
 pub(super) struct AttemptCtx<'a> {
     pub(super) attempt_index: u32,
     pub(super) retry_index: u32,
+    pub(super) provider_max_attempts: u32,
     pub(super) attempt_started_ms: u128,
     pub(super) attempt_started: Instant,
     pub(super) circuit_before: &'a circuit_breaker::CircuitSnapshot,

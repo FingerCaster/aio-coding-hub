@@ -68,13 +68,14 @@ function HookList({ hooks }: { hooks: readonly PluginHookLifecycleSummary[] }) {
     <div className="grid gap-2">
       {hooks.map((hook) => (
         <div
-          key={`${hook.name}:${hook.priority}:${hook.failurePolicy ?? "-"}`}
+          key={`${hook.name}:${hook.priority}:${hook.failurePolicy ?? "-"}:${hook.timeoutMs ?? "-"}`}
           className="rounded-md border border-border px-3 py-2 text-sm"
         >
           <div className="break-all font-mono text-foreground">{hook.name}</div>
           <div className="mt-1 text-xs text-muted-foreground">
             priority {hook.priority}
             {hook.failurePolicy ? ` / ${hook.failurePolicy}` : ""}
+            {hook.timeoutMs ? ` / timeout ${hook.timeoutMs}ms` : ""}
           </div>
         </div>
       ))}

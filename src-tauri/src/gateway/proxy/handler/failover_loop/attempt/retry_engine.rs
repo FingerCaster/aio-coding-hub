@@ -150,6 +150,7 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
     let attempt_ctx = AttemptCtx {
         attempt_index,
         retry_index,
+        provider_max_attempts: prepared.provider_max_attempts,
         attempt_started_ms: timing.attempt_started_ms,
         attempt_started: timing.attempt_started,
         circuit_before: &prepared.circuit_snapshot,

@@ -476,6 +476,7 @@ mod tests {
                         name: "gateway.request.afterBodyRead".to_string(),
                         priority: 10,
                         failure_policy: Some("fail-closed".to_string()),
+                        timeout_ms: None,
                     }],
                     ui: BTreeMap::new(),
                 }),

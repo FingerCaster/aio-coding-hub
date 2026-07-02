@@ -46,6 +46,7 @@ export type PluginHook = {
   name: GatewayHookName;
   priority?: number;
   failurePolicy?: "fail-open" | "fail-closed";
+  timeoutMs?: number;
 };
 
 export type PluginHostCompatibility = {
@@ -602,6 +603,16 @@ function validateGatewayHookContributions(gatewayHooks: unknown): ValidationResu
     }
     if (!KNOWN_HOOKS.has(record.name as GatewayHookName)) {
       return invalid("PLUGIN_UNKNOWN_HOOK", `unknown hook: ${record.name}`);
+    }
+    const timeoutMs = record.timeoutMs;
+    if (
+      timeoutMs != null &&
+      (typeof timeoutMs !== "number" || !Number.isSafeInteger(timeoutMs) || timeoutMs <= 0)
+    ) {
+      return invalid(
+        "PLUGIN_INVALID_HOOK_TIMEOUT",
+        "gateway hook timeoutMs must be a positive integer"
+      );
     }
   }
   return null;

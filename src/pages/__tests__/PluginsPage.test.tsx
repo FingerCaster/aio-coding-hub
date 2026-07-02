@@ -1040,9 +1040,24 @@ describe("pages/PluginsPage", () => {
           capabilities: ["gateway.hooks", "privacy.redact"],
           contributes: {
             gatewayHooks: [
-              { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
-              { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
-              { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+              {
+                name: "gateway.request.afterBodyRead",
+                priority: 5,
+                failurePolicy: "fail-closed",
+                timeoutMs: 5000,
+              },
+              {
+                name: "gateway.request.beforeSend",
+                priority: 5,
+                failurePolicy: "fail-closed",
+                timeoutMs: 5000,
+              },
+              {
+                name: "log.beforePersist",
+                priority: 1,
+                failurePolicy: "fail-closed",
+                timeoutMs: 5000,
+              },
             ],
           },
         },
@@ -1308,9 +1323,24 @@ describe("pages/PluginsPage", () => {
           capabilities: ["gateway.hooks", "privacy.redact"],
           contributes: {
             gatewayHooks: [
-              { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
-              { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
-              { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+              {
+                name: "gateway.request.afterBodyRead",
+                priority: 5,
+                failurePolicy: "fail-closed",
+                timeoutMs: 5000,
+              },
+              {
+                name: "gateway.request.beforeSend",
+                priority: 5,
+                failurePolicy: "fail-closed",
+                timeoutMs: 5000,
+              },
+              {
+                name: "log.beforePersist",
+                priority: 1,
+                failurePolicy: "fail-closed",
+                timeoutMs: 5000,
+              },
             ],
           },
           configSchema: {

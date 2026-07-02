@@ -1,6 +1,6 @@
 # 插件安全与隔离
 
-插件系统围绕最小 host surface 和运行时隔离设计。默认 vNext hook timeout: 150 ms。
+插件系统围绕最小 host surface 和运行时隔离设计。默认 vNext hook timeout: 5000 ms。
 
 核心规则：
 

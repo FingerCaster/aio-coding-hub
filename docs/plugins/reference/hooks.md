@@ -2,8 +2,8 @@
 
 Hooks 是网关和日志 pipeline 中稳定的扩展点。Plugin API v1 刻意保持 active surface 小而明确，让社区插件能清楚判断调用时机、capability 边界和 mutation 行为。
 
-默认 v1 hook timeout: 150 ms.
-默认 vNext hook timeout: 150 ms.
+默认 v1 hook timeout: 5000 ms.
+默认 vNext hook timeout: 5000 ms.
 默认 v1 failure policy: `fail-open`.
 
 `fail-open` 的实际语义是可用性优先：hook 失败、超时、输出超预算或输出 payload 无效时，宿主会记录诊断并继续原路径。对 `log.beforePersist`，当前代码会保留原始日志继续入库；没有宿主兜底脱敏或丢弃日志行为。
@@ -53,7 +53,7 @@ Replay 支持按 hook 分层：
 ## gateway.request.afterBodyRead
 
 - 阶段：读取 request body 后、发送 upstream provider 前。
-- 默认超时：150 ms。
+- 默认超时：5000 ms。
 - 默认失败策略：`fail-open`。
 - Visible context labels：`request.meta.read`、`request.header.read`、`request.header.readSensitive`、`request.body.read`。
 - Mutation labels：`request.header.write`、`request.body.write`。
@@ -104,7 +104,7 @@ Codex/OpenAI Responses-style fixture：
 ## gateway.request.beforeSend
 
 - 阶段：provider resolution 后、发送 upstream provider 前。
-- 默认超时：150 ms。
+- 默认超时：5000 ms。
 - 默认失败策略：`fail-open`。
 - Visible context labels：`request.meta.read`、`request.header.read`、`request.header.readSensitive`、`request.body.read`。
 - Mutation labels：`request.header.write`、`request.body.write`。
@@ -118,7 +118,7 @@ Codex/OpenAI Responses-style fixture：
 ## gateway.response.chunk
 
 - 阶段：每个有边界的 streaming response chunk。
-- 默认超时：150 ms。
+- 默认超时：5000 ms。
 - 默认失败策略：`fail-open`。
 - Visible context labels：`stream.inspect`。
 - Mutation labels：`stream.modify`。
@@ -130,7 +130,7 @@ Codex/OpenAI Responses-style fixture：
 ## gateway.response.after
 
 - 阶段：完整 non-streaming upstream response body 可用后。
-- 默认超时：150 ms。
+- 默认超时：5000 ms。
 - 默认失败策略：`fail-open`。
 - Visible context labels：`response.header.read`、`response.body.read`。
 - Mutation labels：`response.header.write`、`response.body.write`。
@@ -142,7 +142,7 @@ Codex/OpenAI Responses-style fixture：
 ## gateway.error
 
 - 阶段：gateway error response materialization 后、发送前。
-- 默认超时：150 ms。
+- 默认超时：5000 ms。
 - 默认失败策略：`fail-open`。
 - Visible context labels：`response.header.read`、`response.body.read`。
 - Mutation labels：`response.header.write`、`response.body.write`。
@@ -154,7 +154,7 @@ Codex/OpenAI Responses-style fixture：
 ## log.beforePersist
 
 - 阶段：gateway request log persistence 前。
-- 默认超时：150 ms。
+- 默认超时：5000 ms。
 - 默认失败策略：`fail-open`。
 - Visible context labels：`log.redact`。
 - Mutation labels：`log.redact`。

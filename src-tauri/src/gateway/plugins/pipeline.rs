@@ -5,6 +5,7 @@ use super::context::{
     GatewayPluginHookName, GatewayRequestHookInput, GatewayResponseHookInput,
     GatewayStreamHookInput, GatewayVisibleHookContext,
 };
+use super::contract::DEFAULT_HOOK_TIMEOUT_MS;
 use super::mutation::{enforce_descriptor_permissions_with_budget, GatewayPluginMutationBudget};
 use super::permissions::{
     enforce_hook_result_permissions as enforce_descriptor_result_permissions, GatewayPluginError,
@@ -114,7 +115,7 @@ pub(crate) struct GatewayPluginPipelineConfig {
 impl Default for GatewayPluginPipelineConfig {
     fn default() -> Self {
         Self {
-            hook_timeout: Duration::from_millis(150),
+            hook_timeout: Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS),
             circuit_failure_threshold: 3,
             circuit_cooldown: Duration::from_secs(30),
             context_budget: GatewayPluginContextBudget::default(),
@@ -1159,7 +1160,10 @@ impl GatewayPluginPipeline {
         !self.plugins_for_hook(hook_name).is_empty()
     }
 
-    fn hook_timeout(&self, _plugin: &PluginDetail, _hook_name: GatewayPluginHookName) -> Duration {
+    fn hook_timeout(&self, plugin: &PluginDetail, hook_name: GatewayPluginHookName) -> Duration {
+        if let Some(timeout_ms) = plugin_hook(plugin, hook_name).and_then(|hook| hook.timeout_ms) {
+            return Duration::from_millis(timeout_ms);
+        }
         self.config.hook_timeout
     }
 
@@ -1869,7 +1873,6 @@ mod tests {
         PluginDetail, PluginHook, PluginInstallSource, PluginManifest, PluginRuntime, PluginStatus,
         PluginSummary,
     };
-    use crate::gateway::plugins::contract::DEFAULT_HOOK_TIMEOUT_MS;
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Method};
     use std::collections::BTreeMap;
@@ -1880,8 +1883,9 @@ mod tests {
     fn default_pipeline_timeout_matches_plugin_contract() {
         assert_eq!(
             GatewayPluginPipelineConfig::default().hook_timeout,
-            Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS)
+            Duration::from_secs(5)
         );
+        assert_eq!(DEFAULT_HOOK_TIMEOUT_MS, 5_000);
     }
 
     fn plugin(plugin_id: &str, priority: i32, permissions: Vec<&str>) -> PluginDetail {
@@ -1920,6 +1924,7 @@ mod tests {
                         name: "gateway.request.afterBodyRead".to_string(),
                         priority,
                         failure_policy: Some("fail-open".to_string()),
+                        timeout_ms: None,
                     }],
                     ui: BTreeMap::new(),
                 }),
@@ -3092,6 +3097,34 @@ mod tests {
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner()),
             vec![Duration::from_millis(37)]
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_plugin_pipeline_uses_hook_declared_timeout() {
+        let executor = InMemoryGatewayPluginExecutor::new()
+            .with_request_handler("plugin.timeout", |_ctx| {
+                GatewayHookResult::continue_unchanged()
+            });
+        let observed_timeouts = executor.observed_timeouts();
+        let mut plugin = plugin("plugin.timeout", 10, vec!["request.body.read"]);
+        gateway_hook_mut(&mut plugin).timeout_ms = Some(5_000);
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+
+        pipeline
+            .run_request_hook(request_input())
+            .await
+            .expect("request hook should complete");
+
+        assert_eq!(
+            *observed_timeouts
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner()),
+            vec![Duration::from_secs(5)]
         );
     }
 

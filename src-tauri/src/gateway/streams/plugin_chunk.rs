@@ -232,6 +232,7 @@ mod tests {
                         name: hook_name.as_str().to_string(),
                         priority: 0,
                         failure_policy: Some("fail-open".to_string()),
+                        timeout_ms: None,
                     }],
                     ui: BTreeMap::new(),
                 }),

@@ -122,7 +122,6 @@ mod tests {
     use axum::http::{HeaderMap, Method};
     use serde_json::json;
     use std::sync::Arc;
-    use std::time::Duration;
 
     fn enabled_official_plugin(plugin_id: &str) -> crate::domain::plugins::PluginDetail {
         let fixture = official_plugin(plugin_id).expect("official plugin fixture");
@@ -187,10 +186,7 @@ mod tests {
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
             Arc::new(RuntimeGatewayPluginExecutor::with_db(db)),
-            GatewayPluginPipelineConfig {
-                hook_timeout: Duration::from_secs(5),
-                ..GatewayPluginPipelineConfig::default()
-            },
+            GatewayPluginPipelineConfig::default(),
         );
         (temp, pipeline)
     }

@@ -58,7 +58,7 @@ pub(crate) struct PermissionDependency {
     pub(crate) requires: &'static [&'static str],
 }
 
-pub(crate) const DEFAULT_HOOK_TIMEOUT_MS: u64 = 150;
+pub(crate) const DEFAULT_HOOK_TIMEOUT_MS: u64 = 5_000;
 pub(crate) const DEFAULT_FAILURE_POLICY: &str = "fail-open";
 const RESERVED_HEADER_POLICY: &str = "block-gateway-owned";
 

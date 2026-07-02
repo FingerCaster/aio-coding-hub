@@ -89,7 +89,7 @@ Rust 侧与 SDK 侧也一致：
 
 ### 4.2 Gateway pipeline 的防线比较完整
 
-Pipeline 的默认配置是 150 ms timeout、3 次失败打开 circuit、30 秒 cooldown：
+Pipeline 的默认配置是 5000 ms timeout、3 次失败打开 circuit、30 秒 cooldown：
 
 - `src-tauri/src/gateway/plugins/pipeline.rs:106` 到 `src-tauri/src/gateway/plugins/pipeline.rs:123`
 - `docs/plugins/reference/hooks.md:5` 到 `docs/plugins/reference/hooks.md:9`
@@ -413,8 +413,8 @@ disable/uninstall 还会 dispose 已初始化的 Extension Host 实例：
 
 性能风险：
 
-- 150 ms hook timeout 适合轻量 redaction/rewrite，不适合远程 I/O 或复杂模型调用；SDK/文档应继续强调 hook 中不应做长耗时操作。
-- Command 默认 JS timeout 是 30s：`src-tauri/src/app/plugins/extension_host_worker.rs:18`、`src-tauri/src/app/plugins/extension_host_worker.rs:1179` 到 `src-tauri/src/app/plugins/extension_host_worker.rs:1185`。这与 gateway hook 150ms 是不同场景，不是漂移；但文档要避免混淆。
+- 5000 ms hook timeout 适合轻量 redaction/rewrite，不适合远程 I/O 或复杂模型调用；SDK/文档应继续强调 hook 中不应做长耗时操作。
+- Command 默认 JS timeout 是 30s：`src-tauri/src/app/plugins/extension_host_worker.rs:18`、`src-tauri/src/app/plugins/extension_host_worker.rs:1179` 到 `src-tauri/src/app/plugins/extension_host_worker.rs:1185`。这与 gateway hook 5000ms 是不同场景，不是漂移；但文档要避免混淆。
 - Extension Host cold start 成本没有默认 CI 性能阈值。
 - 同插件串行、跨插件并行的行为有利于隔离同一插件状态，但慢插件仍可能影响其 own hook/command 后续调用。
 

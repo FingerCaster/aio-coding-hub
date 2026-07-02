@@ -2091,6 +2091,7 @@ export type ActiveGatewayHookContribution = {
   name: string;
   priority: number;
   failurePolicy: string | null;
+  timeoutMs?: number | null;
 };
 export type ActiveProtocolBridgeContribution = {
   pluginId: string;
@@ -2932,7 +2933,12 @@ export type PluginExtensionExecutionReport = {
 };
 export type PluginGetInput = { pluginId: string };
 export type PluginGrantPermissionsInput = { pluginId: string; permissions: string[] };
-export type PluginHook = { name: string; priority?: number; failurePolicy?: string | null };
+export type PluginHook = {
+  name: string;
+  priority?: number;
+  failurePolicy?: string | null;
+  timeoutMs?: number | null;
+};
 export type PluginHookExecutionReport = {
   id: number;
   plugin_id: string;
@@ -2957,6 +2963,7 @@ export type PluginHookLifecycleSummary = {
   name: string;
   priority: number;
   failurePolicy: string | null;
+  timeoutMs?: number | null;
 };
 export type PluginHostCompatibility = { app: string; pluginApi: string; platforms?: string[] };
 export type PluginInstallFromFileInput = { filePath: string };

@@ -91,6 +91,7 @@ mod tests {
                 name: "gateway.request.afterBodyRead".to_string(),
                 priority: 10,
                 failure_policy: Some("fail-open".to_string()),
+                timeout_ms: None,
             }],
             vec!["gateway.hooks"],
         );
@@ -109,6 +110,7 @@ mod tests {
                 name: "gateway.request.afterBodyRead".to_string(),
                 priority: 10,
                 failure_policy: Some("fail-open".to_string()),
+                timeout_ms: None,
             }],
             vec![],
         );

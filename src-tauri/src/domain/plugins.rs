@@ -74,6 +74,9 @@ pub struct PluginHook {
     #[serde(rename = "failurePolicy")]
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub failure_policy: Option<String>,
+    #[serde(rename = "timeoutMs")]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
@@ -380,6 +383,8 @@ pub struct PluginHookLifecycleSummary {
     pub name: String,
     pub priority: i32,
     pub failure_policy: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub timeout_ms: Option<u64>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
@@ -1063,7 +1068,14 @@ fn is_valid_contribution_id(value: &str) -> bool {
 }
 
 fn validate_hook(hook: &PluginHook) -> Result<(), PluginValidationError> {
-    validate_hook_name(&hook.name)
+    validate_hook_name(&hook.name)?;
+    if hook.timeout_ms == Some(0) {
+        return Err(PluginValidationError::new(
+            "PLUGIN_INVALID_HOOK_TIMEOUT",
+            "hook timeoutMs must be greater than zero",
+        ));
+    }
+    Ok(())
 }
 
 fn validate_hook_name(hook_name: &str) -> Result<(), PluginValidationError> {
@@ -1273,6 +1285,7 @@ mod tests {
             name: name.to_string(),
             priority: 100,
             failure_policy: Some("fail-open".to_string()),
+            timeout_ms: None,
         }
     }
 
@@ -1666,6 +1679,16 @@ mod tests {
         let err = validate_hook(&hook("gateway.request.received")).unwrap_err();
         assert_eq!(err.code, "PLUGIN_RESERVED_HOOK");
         assert!(err.message.contains("gateway.request.received"));
+    }
+
+    #[test]
+    fn manifest_rejects_zero_hook_timeout() {
+        let mut hook = hook("gateway.request.afterBodyRead");
+        hook.timeout_ms = Some(0);
+
+        let err = validate_hook(&hook).unwrap_err();
+
+        assert_eq!(err.code, "PLUGIN_INVALID_HOOK_TIMEOUT");
     }
 
     #[test]

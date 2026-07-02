@@ -387,6 +387,7 @@ where
         gemini_oauth_response_mode,
         cx2cc_active,
         anthropic_stream_requested,
+        ..
     } = attempt_ctx;
     let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
     let reason_code = dc::success_reason_code(provider_index, retry_index);

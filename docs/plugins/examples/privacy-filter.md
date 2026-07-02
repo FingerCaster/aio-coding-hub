@@ -53,7 +53,7 @@ Provider request shapes：
 
 Gateway boundary note：Privacy Filter 会接收原始 client-to-gateway body，因为 gateway 必须先看到 prompt 才能脱敏。它的保护保证是：当插件启用、hook 成功执行且选中匹配策略和处理范围后，gateway-to-upstream provider request body 中的白名单字段和 persisted request logs 会被脱敏。日志脱敏由 `redactLogs` 和 `sensitiveTypes` 控制，不受 request `redactionScopes` 影响。如果你检查 hook 执行前的本地 client request，仍可能看到原始输入。当前 `log.beforePersist` 失败或返回非法 payload 时会保留原始日志继续入库，所以它不是由宿主强制丢弃日志的合规边界。
 
-Official privacy filter rules are loaded under a 1 MiB host byte budget。`official.privacy-filter` 通过 `api.privacy.redactRequestBody` 和 `api.privacy.redactText` 调用宿主脱敏服务；community redaction plugins should use Extension Host gateway hooks and ordinary host APIs.
+Official privacy filter rules are loaded under a 1 MiB host byte budget。`official.privacy-filter` 通过 `api.privacy.redactRequestBody` 和 `api.privacy.redactText` 调用宿主脱敏服务，并在 manifest 的 gateway hooks 上声明 `timeoutMs: 5000`，避免大 payload 脱敏被默认轻量 hook 预算误杀；community redaction plugins should use Extension Host gateway hooks and ordinary host APIs, and may declare their own positive `timeoutMs` when needed.
 
 重要限制：
 

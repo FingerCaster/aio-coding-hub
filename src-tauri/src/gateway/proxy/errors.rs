@@ -53,7 +53,7 @@ pub(super) fn classify_upstream_status(
         return (
             ErrorCategory::ProviderError,
             GatewayErrorCode::Upstream5xx.as_str(),
-            FailoverDecision::SwitchProvider,
+            FailoverDecision::RetrySameProvider,
         );
     }
 
@@ -279,23 +279,23 @@ mod tests {
     }
 
     #[test]
-    fn upstream_5xx_switches_provider() {
+    fn upstream_5xx_retries_same_provider() {
         let (category, code, decision) =
             classify_upstream_status(reqwest::StatusCode::INTERNAL_SERVER_ERROR);
         assert!(matches!(category, ErrorCategory::ProviderError));
         assert_eq!(code, GatewayErrorCode::Upstream5xx.as_str());
-        assert!(matches!(decision, FailoverDecision::SwitchProvider));
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
 
         let (category, code, decision) = classify_upstream_status(reqwest::StatusCode::BAD_GATEWAY);
         assert!(matches!(category, ErrorCategory::ProviderError));
         assert_eq!(code, GatewayErrorCode::Upstream5xx.as_str());
-        assert!(matches!(decision, FailoverDecision::SwitchProvider));
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
 
         let (category, code, decision) =
             classify_upstream_status(reqwest::StatusCode::SERVICE_UNAVAILABLE);
         assert!(matches!(category, ErrorCategory::ProviderError));
         assert_eq!(code, GatewayErrorCode::Upstream5xx.as_str());
-        assert!(matches!(decision, FailoverDecision::SwitchProvider));
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
     }
 
     #[test]

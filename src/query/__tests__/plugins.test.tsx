@@ -150,9 +150,24 @@ function officialPrivacyFilterDetail(overrides: Partial<PluginDetail> = {}): Plu
       capabilities: ["gateway.hooks", "privacy.redact"],
       contributes: {
         gatewayHooks: [
-          { name: "gateway.request.afterBodyRead", priority: 5, failurePolicy: "fail-closed" },
-          { name: "gateway.request.beforeSend", priority: 5, failurePolicy: "fail-closed" },
-          { name: "log.beforePersist", priority: 1, failurePolicy: "fail-closed" },
+          {
+            name: "gateway.request.afterBodyRead",
+            priority: 5,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
+          {
+            name: "gateway.request.beforeSend",
+            priority: 5,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
+          {
+            name: "log.beforePersist",
+            priority: 1,
+            failurePolicy: "fail-closed",
+            timeoutMs: 5000,
+          },
         ],
       },
       hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
