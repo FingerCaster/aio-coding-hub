@@ -6,6 +6,7 @@ import { useWindowForeground } from "../../hooks/useWindowForeground";
 import type { GatewayActiveSession } from "../../services/gateway/gateway";
 import {
   buildRequestActivityProjection,
+  type ActiveRequestSnapshotItem,
   type ProjectedRealtimeCard,
 } from "../../services/gateway/requestActivityProjection";
 import type { RequestLogSummary } from "../../services/gateway/requestLogs";
@@ -52,6 +53,7 @@ const IN_PROGRESS_BADGE = computeStatusBadge({
 });
 const EMPTY_ACTIVE_SESSIONS: GatewayActiveSession[] = [];
 const EMPTY_REQUEST_LOGS: RequestLogSummary[] = [];
+const EMPTY_ACTIVE_REQUESTS: ActiveRequestSnapshotItem[] = [];
 
 function formatTokenValue(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
@@ -573,11 +575,13 @@ export function HomeTodayProviderUsageOverview({
   devPreviewEnabled = false,
   activeSessions = EMPTY_ACTIVE_SESSIONS,
   requestLogs = EMPTY_REQUEST_LOGS,
+  activeRequests = EMPTY_ACTIVE_REQUESTS,
   traces,
 }: {
   devPreviewEnabled?: boolean;
   activeSessions?: GatewayActiveSession[];
   requestLogs?: RequestLogSummary[];
+  activeRequests?: ActiveRequestSnapshotItem[];
   traces?: TraceSession[];
 }) {
   const documentVisible = useDocumentVisibility();
@@ -619,6 +623,7 @@ export function HomeTodayProviderUsageOverview({
     if (traces != null) {
       const projection = buildRequestActivityProjection({
         requestLogs,
+        activeRequests,
         traces,
         nowMs,
         realtimeCardLimit: REALTIME_PROVIDER_HINT_LIMIT,
@@ -631,7 +636,7 @@ export function HomeTodayProviderUsageOverview({
     }
 
     return activeSessionProviders;
-  }, [activeSessions, model.previewActive, nowMs, requestLogs, traces]);
+  }, [activeRequests, activeSessions, model.previewActive, nowMs, requestLogs, traces]);
 
   const topRows = useMemo(
     () => selectProviderRows(model.rows, activeProviders),

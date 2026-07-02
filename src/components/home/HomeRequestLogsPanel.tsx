@@ -14,13 +14,14 @@ import type {
   CliSessionsSource,
 } from "../../services/cli/cliSessions";
 import {
-  isPersistedRequestLogInProgress,
+  isRequestLogActivityInProgress,
   requestLogCreatedAtMs,
   requestLogLastActivityMs,
   type RequestLogActivityState,
 } from "../../services/gateway/requestLogState";
 import {
   buildRequestActivityProjection,
+  type ActiveRequestSnapshotItem,
   type ProjectedRealtimeCard,
   type ProjectedRequestLogRow,
 } from "../../services/gateway/requestActivityProjection";
@@ -100,6 +101,7 @@ type RequestLogCardProps = {
   compactMode: boolean;
   log: RequestLogSummary;
   liveTrace?: TraceSession;
+  activeRequest?: ActiveRequestSnapshotItem | null;
   activityState: RequestLogActivityState;
   nowMs: number;
   isSelected: boolean;
@@ -113,6 +115,7 @@ const RequestLogCard = memo(function RequestLogCard({
   compactMode,
   log,
   liveTrace,
+  activeRequest,
   activityState,
   nowMs,
   isSelected,
@@ -122,10 +125,11 @@ const RequestLogCard = memo(function RequestLogCard({
   formatUnixSeconds,
 }: RequestLogCardProps) {
   const auditMeta = buildRequestLogAuditMeta(log);
-  const isInProgress = isPersistedRequestLogInProgress(log);
+  const isInProgress = isRequestLogActivityInProgress(activityState);
+  const isInterrupted = activityState === "interrupted";
   const liveProvider = resolveLiveTraceProvider(liveTrace);
   const persistedRunningMs = (() => {
-    const createdAtMs = requestLogCreatedAtMs(log);
+    const createdAtMs = activeRequest?.created_at_ms ?? requestLogCreatedAtMs(log);
     if (createdAtMs <= 0) return log.duration_ms;
     return Math.max(0, nowMs - createdAtMs);
   })();
@@ -135,15 +139,26 @@ const RequestLogCard = memo(function RequestLogCard({
       : isInProgress
         ? persistedRunningMs
         : log.duration_ms;
-  const statusBadge = computeStatusBadge({
-    status: log.status,
-    errorCode: log.error_code,
-    inProgress: isInProgress,
-    hasFailover: log.has_failover,
-  });
+  const statusBadge = isInterrupted
+    ? {
+        text: "未完成",
+        semanticText: "请求未完成",
+        tone: "bg-amber-50 text-amber-600 ring-1 ring-inset ring-amber-500/15 dark:bg-amber-500/15 dark:text-amber-400 dark:ring-amber-400/25",
+        title: "请求未完成：历史日志缺少终态，当前网关没有对应的进行中请求",
+        isError: false,
+        isClientAbort: false,
+        hasFailover: log.has_failover,
+      }
+    : computeStatusBadge({
+        status: log.status,
+        errorCode: log.error_code,
+        inProgress: isInProgress,
+        hasFailover: log.has_failover,
+      });
+  const activityLastActivityMs = activeRequest?.last_activity_ms ?? requestLogLastActivityMs(log);
   const idleMinutes =
     isInProgress && activityState === "in_progress_idle"
-      ? Math.max(1, Math.floor(Math.max(0, nowMs - requestLogLastActivityMs(log)) / 60_000))
+      ? Math.max(1, Math.floor(Math.max(0, nowMs - activityLastActivityMs) / 60_000))
       : null;
   const inProgressActivityText = idleMinutes != null ? `进行中 · 已静默 ${idleMinutes} 分钟` : null;
 
@@ -223,7 +238,11 @@ const RequestLogCard = memo(function RequestLogCard({
   );
 
   return (
-    <button type="button" onClick={() => onSelectLogId(log.id)} className="w-full text-left group">
+    <button
+      type="button"
+      onClick={() => onSelectLogId(log.id > 0 ? log.id : null)}
+      className="w-full text-left group"
+    >
       <div
         className={cn(
           "relative transition-all duration-300 ease-out group/item mx-2 my-1.5 rounded-lg border",
@@ -267,6 +286,8 @@ const RequestLogCard = memo(function RequestLogCard({
               >
                 {isInProgress ? (
                   <Loader2 className="h-3 w-3 shrink-0 animate-spin" />
+                ) : isInterrupted ? (
+                  <Clock className="h-3 w-3 shrink-0" />
                 ) : statusBadge.isError ? (
                   <XCircle className="h-3 w-3 shrink-0" />
                 ) : (
@@ -528,6 +549,7 @@ export type HomeRequestLogsPanelProps = {
   devPreviewEnabled?: boolean;
 
   traces: TraceSession[];
+  activeRequests?: ActiveRequestSnapshotItem[];
 
   requestLogs: RequestLogSummary[];
   requestLogsLoading: boolean;
@@ -547,6 +569,7 @@ export function HomeRequestLogsPanel({
   emptyStateTitle = "当前没有最近使用记录",
   devPreviewEnabled = false,
   traces,
+  activeRequests = [],
   requestLogs,
   requestLogsLoading,
   requestLogsRefreshing,
@@ -591,23 +614,26 @@ export function HomeRequestLogsPanel({
   );
   const displayedTraces = traces.length > 0 ? traces : previewTraces;
   const displayedRequestLogs = requestLogs.length > 0 ? requestLogs : previewRequestLogs;
+  const displayedActiveRequests = activeRequests;
   const clockEnabled = useMemo(
     () =>
       displayedTraces.length > 0 ||
-      displayedRequestLogs.some((log) => isPersistedRequestLogInProgress(log)),
-    [displayedRequestLogs, displayedTraces.length]
+      displayedActiveRequests.length > 0 ||
+      displayedRequestLogs.some((log) => log.status == null && log.error_code == null),
+    [displayedActiveRequests.length, displayedRequestLogs, displayedTraces.length]
   );
   const nowMs = useNowMs(clockEnabled, 250);
   const activityProjection = useMemo(
     () =>
       buildRequestActivityProjection({
         requestLogs: displayedRequestLogs,
+        activeRequests: displayedActiveRequests,
         traces: displayedTraces,
         nowMs,
         realtimeCardLimit: 5,
         realtimeCandidateLimit: 20,
       }),
-    [displayedRequestLogs, displayedTraces, nowMs]
+    [displayedActiveRequests, displayedRequestLogs, displayedTraces, nowMs]
   );
   const summaryText =
     summaryTextOverride ??
@@ -783,7 +809,7 @@ const RequestLogsList = memo(function RequestLogsList({
     <>
       {requestRows.map((row) => {
         const { log, liveTrace: trace } = row;
-        const liveNow = isPersistedRequestLogInProgress(log) ? nowMs : 0;
+        const liveNow = isRequestLogActivityInProgress(row.activityState) ? nowMs : 0;
         const sessionFolder = (() => {
           const key = sessionFolderLookupKey(log.cli_key, log.session_id ?? trace?.session_id);
           return key ? (folderLookupBySessionKey.get(key) ?? null) : null;
@@ -794,6 +820,7 @@ const RequestLogsList = memo(function RequestLogsList({
             key={log.id}
             log={log}
             liveTrace={trace ?? undefined}
+            activeRequest={row.activeRequest}
             activityState={row.activityState}
             nowMs={liveNow}
             isSelected={selectedLogId === log.id}
@@ -853,7 +880,7 @@ const RequestLogsList = memo(function RequestLogsList({
               const vRow = requestRows[virtualRow.index];
               const vLog = vRow.log;
               const vTrace = vRow.liveTrace;
-              const vNow = isPersistedRequestLogInProgress(vLog) ? nowMs : 0;
+              const vNow = isRequestLogActivityInProgress(vRow.activityState) ? nowMs : 0;
               const sessionFolder = (() => {
                 const key = sessionFolderLookupKey(
                   vLog.cli_key,
@@ -867,6 +894,7 @@ const RequestLogsList = memo(function RequestLogsList({
                     compactMode={compactMode}
                     log={vLog}
                     liveTrace={vTrace ?? undefined}
+                    activeRequest={vRow.activeRequest}
                     activityState={vRow.activityState}
                     nowMs={vNow}
                     isSelected={selectedLogId === vLog.id}

@@ -1722,6 +1722,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async activeRequestLogsSnapshot(): Promise<Result<ActiveRequestSnapshotItem[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("active_request_logs_snapshot") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async cliSessionsFolderLookupByIds(
     items: CliSessionsFolderLookupInput[],
     wslDistro: string | null
@@ -2112,6 +2120,17 @@ export type ActiveProviderContribution = {
   displayName: string;
   targetCliKeys: TargetCliKey[];
   extensionNamespace: string;
+};
+export type ActiveRequestSnapshotItem = {
+  trace_id: string;
+  cli_key: string;
+  method: string;
+  path: string;
+  query: string | null;
+  session_id: string | null;
+  requested_model: string | null;
+  created_at_ms: number;
+  last_activity_ms: number;
 };
 export type ActiveUiContribution = {
   pluginId: string;

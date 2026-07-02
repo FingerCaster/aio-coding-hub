@@ -118,6 +118,11 @@ fn spawn_touch_activity<R: tauri::Runtime>(
     last_activity_ms: i64,
     details: Option<String>,
 ) {
+    if ctx.observe {
+        ctx.active_requests
+            .touch(ctx.trace_id.as_str(), last_activity_ms);
+    }
+
     let db = ctx.db.clone();
     let trace_id = ctx.trace_id.clone();
     let cli_key = ctx.cli_key.clone();
@@ -864,8 +869,9 @@ mod tests {
         is_codex_body_buffer_drop_successish, is_codex_client_abort_successish,
         is_codex_drop_successish, is_codex_responses_path, is_codex_stream_tail_error_successish,
         is_codex_stream_terminal_error_successish, is_plugin_stream_error_chunk, next_item,
-        spawn_usage_sse_relay_body, RelayBodyStream, StreamFinalizeCtx,
+        spawn_touch_activity, spawn_usage_sse_relay_body, RelayBodyStream, StreamFinalizeCtx,
     };
+    use crate::gateway::active_requests::{ActiveRequestRegistry, ActiveRequestStart};
     use crate::gateway::streams::StreamActivityTracker;
     use crate::{circuit_breaker, db, request_logs, session_manager};
     use axum::body::Bytes;
@@ -877,6 +883,7 @@ mod tests {
         app: tauri::AppHandle<tauri::test::MockRuntime>,
         db: db::Db,
         log_tx: tokio::sync::mpsc::Sender<request_logs::RequestLogInsert>,
+        active_requests: Arc<ActiveRequestRegistry>,
     ) -> StreamFinalizeCtx<tauri::test::MockRuntime> {
         StreamFinalizeCtx {
             app,
@@ -921,6 +928,20 @@ mod tests {
                 "codex",
                 1_700_000_000_000,
             ))),
+            active_requests,
+        }
+    }
+
+    fn active_request_start(trace_id: &str) -> ActiveRequestStart {
+        ActiveRequestStart {
+            trace_id: trace_id.to_string(),
+            cli_key: "codex".to_string(),
+            method: "POST".to_string(),
+            path: "/v1/responses".to_string(),
+            query: None,
+            session_id: Some("sess-usage-tee-drain".to_string()),
+            requested_model: Some("gpt-5".to_string()),
+            created_at_ms: 1_700_000_000_000,
         }
     }
 
@@ -941,6 +962,26 @@ mod tests {
         assert!(tracker.observe_chunk_at(31_000));
         assert!(!tracker.observe_chunk_at(45_000));
         assert!(tracker.observe_chunk_at(61_000));
+    }
+
+    #[test]
+    fn spawn_touch_activity_updates_active_registry_immediately() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-touch.sqlite"))
+            .expect("init test db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let ctx =
+            test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active_requests.clone());
+
+        spawn_touch_activity(&ctx, 1_700_000_045_000, None);
+
+        assert_eq!(
+            active_requests.snapshot()[0].last_activity_ms,
+            1_700_000_045_000
+        );
     }
 
     #[test]
@@ -1222,7 +1263,9 @@ mod tests {
         let db = db::init_for_tests(&db_dir.path().join("usage-tee-drain.sqlite"))
             .expect("init test db");
         let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
-        let ctx = test_stream_finalize_ctx(app_handle, db, log_tx);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let ctx = test_stream_finalize_ctx(app_handle, db, log_tx, active_requests.clone());
         let (upstream_tx, upstream_rx) =
             tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
 

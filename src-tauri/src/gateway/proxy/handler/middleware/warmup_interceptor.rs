@@ -108,6 +108,7 @@ fn respond_warmup_intercept<R: tauri::Runtime>(
                 &ctx.state.db,
                 &ctx.state.log_tx,
                 &ctx.state.plugin_pipeline,
+                &ctx.state.active_requests,
             ),
             trace_id: &ctx.trace_id,
             cli_key: &ctx.cli_key,

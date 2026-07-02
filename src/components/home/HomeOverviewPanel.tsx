@@ -24,6 +24,7 @@ import { getOrderedClis } from "../../services/cli/cliPriorityOrder";
 import type { CliKey } from "../../services/providers/providers";
 import type { ProviderLimitUsageRow } from "../../services/providers/providerLimitUsage";
 import type { RequestLogSummary } from "../../services/gateway/requestLogs";
+import type { ActiveRequestSnapshotItem } from "../../services/gateway/requestActivityProjection";
 import type { SortModeSummary } from "../../services/providers/sortModes";
 import type { TraceSession } from "../../services/gateway/traceStore";
 import type { UsageHourlyRow } from "../../services/usage/usage";
@@ -797,6 +798,7 @@ function HomeOverviewContentLayout({
   overviewInfoPanel,
   personalizedUsageView,
   requestLogs,
+  activeRequests,
   requestLogsPanel,
   traces,
   usageWindowDays,
@@ -811,6 +813,7 @@ function HomeOverviewContentLayout({
   overviewInfoPanel: ReactNode;
   personalizedUsageView: HomeOverviewUsageView;
   requestLogs: RequestLogSummary[];
+  activeRequests: ActiveRequestSnapshotItem[];
   requestLogsPanel: ReactNode;
   traces: TraceSession[];
   usageWindowDays: number;
@@ -830,6 +833,7 @@ function HomeOverviewContentLayout({
                   devPreviewEnabled={devPreviewEnabled}
                   activeSessions={activeSessions}
                   requestLogs={requestLogs}
+                  activeRequests={activeRequests}
                   traces={traces}
                 />
               </div>
@@ -917,6 +921,7 @@ export type HomeOverviewPanelProps = {
   traces: TraceSession[];
 
   requestLogs: RequestLogSummary[];
+  activeRequests?: ActiveRequestSnapshotItem[];
   requestLogsLoading: boolean;
   requestLogsRefreshing: boolean;
   requestLogsAvailable: boolean | null;
@@ -1111,6 +1116,7 @@ export function HomeOverviewPanel({
   resettingCircuitProviderIds,
   traces,
   requestLogs,
+  activeRequests = [],
   requestLogsLoading,
   requestLogsRefreshing,
   requestLogsAvailable,
@@ -1193,6 +1199,7 @@ export function HomeOverviewPanel({
       compactModeOverride={logsPrimaryLayout ? true : undefined}
       traces={traces}
       requestLogs={requestLogs}
+      activeRequests={activeRequests}
       requestLogsLoading={requestLogsLoading}
       requestLogsRefreshing={requestLogsRefreshing}
       requestLogsAvailable={requestLogsAvailable}
@@ -1292,6 +1299,7 @@ export function HomeOverviewPanel({
         overviewInfoPanel={overviewInfoPanel}
         personalizedUsageView={personalizedUsageView}
         requestLogs={requestLogs}
+        activeRequests={activeRequests}
         requestLogsPanel={requestLogsPanel}
         traces={traces}
         usageWindowDays={usageWindowDays}

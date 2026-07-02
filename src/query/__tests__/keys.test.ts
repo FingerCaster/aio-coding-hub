@@ -40,6 +40,7 @@ describe("query/keys", () => {
     expect(requestLogsKeys.all).toEqual(["requestLogs"]);
     expect(requestLogsKeys.lists()).toEqual(["requestLogs", "list"]);
     expect(requestLogsKeys.listAll(10)).toEqual(["requestLogs", "list", "all", 10]);
+    expect(requestLogsKeys.activeSnapshot()).toEqual(["requestLogs", "activeSnapshot"]);
     expect(requestLogsKeys.detail(1)).toEqual(["requestLogs", "detail", 1]);
     expect(requestLogsKeys.attemptsByTrace("trace-1", 10)).toEqual([
       "requestLogs",

@@ -783,6 +783,9 @@ mod tests {
             recent_errors: Arc::new(Mutex::new(RecentErrorCache::default())),
             latency_cache: Arc::new(Mutex::new(ProviderBaseUrlPingCache::default())),
             plugin_pipeline: GatewayPluginPipeline::empty_shared(),
+            active_requests: Arc::new(
+                crate::gateway::active_requests::ActiveRequestRegistry::default(),
+            ),
         }
     }
 

@@ -3,6 +3,21 @@ import type { RequestLogSummary } from "../requestLogs";
 import type { TraceSession } from "../traceStore";
 import { buildRequestActivityProjection } from "../requestActivityProjection";
 
+function activeRequest(overrides: Record<string, unknown> = {}) {
+  return {
+    trace_id: "trace-1",
+    cli_key: "claude",
+    session_id: null,
+    method: "POST",
+    path: "/v1/messages",
+    query: null,
+    requested_model: "claude-3-opus",
+    created_at_ms: 1_700_000_000_000,
+    last_activity_ms: 1_700_000_000_000,
+    ...overrides,
+  };
+}
+
 function log(overrides: Partial<RequestLogSummary> = {}): RequestLogSummary {
   return {
     id: 1,
@@ -76,6 +91,7 @@ describe("services/gateway/requestActivityProjection", () => {
           created_at_ms: 1_700_000_000_000 - 10 * 60 * 1000,
         }),
       ],
+      activeRequests: [],
       traces: [],
       nowMs: 1_700_000_000_000,
       realtimeCardLimit: 5,
@@ -85,13 +101,15 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.realtimeCards).toHaveLength(0);
     expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual(["old-pending"]);
     expect(projection.requestRows[0]?.liveTrace).toBeNull();
-    expect(projection.hasPending).toBe(true);
+    expect(projection.requestRows[0]?.activityState).toBe("interrupted");
+    expect(projection.hasPending).toBe(false);
   });
 
-  it("classifies pending logs as active or idle from last_activity_ms", () => {
+  it("classifies active request logs as active or idle from active registry activity", () => {
     const nowMs = 1_700_000_900_000;
     const active = buildRequestActivityProjection({
-      requestLogs: [log({ trace_id: "active", last_activity_ms: nowMs - 60_000 } as any)],
+      requestLogs: [log({ trace_id: "active", last_activity_ms: nowMs - 11 * 60_000 } as any)],
+      activeRequests: [activeRequest({ trace_id: "active", last_activity_ms: nowMs - 60_000 })],
       traces: [],
       nowMs,
       realtimeCardLimit: 5,
@@ -100,7 +118,8 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(active.requestRows[0]?.activityState).toBe("in_progress_active");
 
     const idle = buildRequestActivityProjection({
-      requestLogs: [log({ trace_id: "idle", last_activity_ms: nowMs - 11 * 60_000 } as any)],
+      requestLogs: [log({ trace_id: "idle", last_activity_ms: nowMs - 60_000 } as any)],
+      activeRequests: [activeRequest({ trace_id: "idle", last_activity_ms: nowMs - 11 * 60_000 })],
       traces: [],
       nowMs,
       realtimeCardLimit: 5,
@@ -112,6 +131,7 @@ describe("services/gateway/requestActivityProjection", () => {
   it("renders a pending log with a visible trace as one realtime card and no duplicate row", () => {
     const projection = buildRequestActivityProjection({
       requestLogs: [log({ trace_id: "live-pending" })],
+      activeRequests: [activeRequest({ trace_id: "live-pending" })],
       traces: [trace({ trace_id: "live-pending" })],
       nowMs: 1_700_000_000_000 + 10 * 60 * 1000,
       realtimeCardLimit: 5,
@@ -146,6 +166,7 @@ describe("services/gateway/requestActivityProjection", () => {
 
     const duringExit = buildRequestActivityProjection({
       requestLogs: [completedLog],
+      activeRequests: [],
       traces: [completedTrace],
       nowMs: 1_700_000_000_500,
       realtimeCardLimit: 5,
@@ -156,6 +177,7 @@ describe("services/gateway/requestActivityProjection", () => {
 
     const afterExit = buildRequestActivityProjection({
       requestLogs: [completedLog],
+      activeRequests: [],
       traces: [completedTrace],
       nowMs: 1_700_000_002_000,
       realtimeCardLimit: 5,
@@ -175,6 +197,7 @@ describe("services/gateway/requestActivityProjection", () => {
           final_provider_id: 2,
         }),
       ],
+      activeRequests: [activeRequest({ trace_id: "mapped-pending" })],
       traces: [
         trace({
           trace_id: "mapped-pending",
@@ -203,6 +226,7 @@ describe("services/gateway/requestActivityProjection", () => {
           final_provider_id: 2,
         }),
       ],
+      activeRequests: [activeRequest({ trace_id: "mapped-live" })],
       traces: [
         trace({
           trace_id: "mapped-live",
@@ -225,5 +249,72 @@ describe("services/gateway/requestActivityProjection", () => {
       effectiveModel: "gpt-4.1",
       providerId: 1,
     });
+  });
+
+  it("projects active requests even before their placeholder log is persisted", () => {
+    const projection = buildRequestActivityProjection({
+      requestLogs: [],
+      activeRequests: [
+        activeRequest({
+          trace_id: "active-without-log",
+          created_at_ms: 1_700_000_900_000,
+          last_activity_ms: 1_700_000_899_500,
+        }),
+      ],
+      traces: [],
+      nowMs: 1_700_000_900_000,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    expect(projection.hasPending).toBe(true);
+    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual(["active-without-log"]);
+    expect(projection.requestRows[0]?.activityState).toBe("in_progress_active");
+  });
+
+  it("orders active rows first and interrupted audit rows after terminal history", () => {
+    const nowMs = 1_700_001_000_000;
+    const projection = buildRequestActivityProjection({
+      requestLogs: [
+        log({
+          id: 1,
+          trace_id: "interrupted-newer",
+          status: null,
+          error_code: null,
+          created_at_ms: nowMs,
+          created_at: Math.floor(nowMs / 1000),
+        }),
+        log({
+          id: 2,
+          trace_id: "completed-older",
+          status: 200,
+          error_code: null,
+          created_at_ms: nowMs - 60_000,
+          created_at: Math.floor((nowMs - 60_000) / 1000),
+        }),
+      ],
+      activeRequests: [
+        activeRequest({
+          trace_id: "active-without-log",
+          created_at_ms: nowMs - 120_000,
+          last_activity_ms: nowMs - 500,
+        }),
+      ],
+      traces: [],
+      nowMs,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual([
+      "active-without-log",
+      "completed-older",
+      "interrupted-newer",
+    ]);
+    expect(projection.requestRows.map((row) => row.activityState)).toEqual([
+      "in_progress_active",
+      "completed",
+      "interrupted",
+    ]);
   });
 });

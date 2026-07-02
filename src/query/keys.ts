@@ -48,6 +48,7 @@ export const requestLogsKeys = {
   all: requestLogsAllKey,
   lists: () => [...requestLogsAllKey, "list"] as const,
   listAll: (limit: number | null) => [...requestLogsAllKey, "list", "all", limit] as const,
+  activeSnapshot: () => [...requestLogsAllKey, "activeSnapshot"] as const,
   detail: (logId: number | null) => [...requestLogsAllKey, "detail", logId] as const,
   attemptsByTrace: (traceId: string | null, limit: number | null) =>
     [...requestLogsAllKey, "attempts", traceId, limit] as const,

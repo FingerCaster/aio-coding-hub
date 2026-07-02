@@ -619,6 +619,11 @@ fn insert_batch_once(
 		  final_provider_id = excluded.final_provider_id,
 		  provider_chain_json = excluded.provider_chain_json,
 		  error_details_json = excluded.error_details_json
+		WHERE NOT (
+		  (request_logs.status IS NOT NULL OR request_logs.error_code IS NOT NULL)
+		  AND excluded.status IS NULL
+		  AND excluded.error_code IS NULL
+		)
 		"#,
             )
             .map_err(|e| DbWriteError::from_rusqlite("failed to prepare insert", e))?;
@@ -1146,6 +1151,122 @@ WHERE trace_id = ?1
             .expect("read activity");
         assert_eq!(row.0, 1_770_000_090_000);
         assert_eq!(row.1.as_deref(), Some(r#"{"terminal_signal":"completed"}"#));
+    }
+
+    #[test]
+    fn late_placeholder_does_not_downgrade_terminal_request_log() {
+        let (app, db, _dir) = init_test_db();
+        let app_handle = app.handle().clone();
+        let mut cache = InsertBatchCache::default();
+
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[RequestLogInsert {
+                attempts_json: r#"[{"outcome":"success"}]"#.to_string(),
+                input_tokens: Some(12),
+                output_tokens: Some(34),
+                total_tokens: Some(46),
+                usage_json: Some(r#"{"input_tokens":12,"output_tokens":34}"#.to_string()),
+                requested_model: Some("claude-sonnet-4".to_string()),
+                provider_chain_json: Some(r#"[{"provider":"anthropic"}]"#.to_string()),
+                ..request_log_insert("trace-late-placeholder")
+            }],
+            &mut cache,
+        )
+        .expect("insert terminal");
+
+        insert_batch_once(
+            &app_handle,
+            &db,
+            &[RequestLogInsert {
+                status: None,
+                error_code: None,
+                duration_ms: 0,
+                ttfb_ms: None,
+                attempts_json: "[]".to_string(),
+                input_tokens: None,
+                output_tokens: None,
+                total_tokens: None,
+                usage_json: None,
+                requested_model: None,
+                provider_chain_json: None,
+                error_details_json: None,
+                ..request_log_insert("trace-late-placeholder")
+            }],
+            &mut cache,
+        )
+        .expect("insert late placeholder");
+
+        struct TerminalRow {
+            status: Option<i64>,
+            error_code: Option<String>,
+            duration_ms: i64,
+            ttfb_ms: Option<i64>,
+            input_tokens: Option<i64>,
+            output_tokens: Option<i64>,
+            total_tokens: Option<i64>,
+            attempts_json: String,
+            usage_json: Option<String>,
+            requested_model: Option<String>,
+            provider_chain_json: Option<String>,
+        }
+
+        let conn = db.open_connection().expect("open connection");
+        let row = conn
+            .query_row(
+                r#"
+SELECT
+  status,
+  error_code,
+  duration_ms,
+  ttfb_ms,
+  input_tokens,
+  output_tokens,
+  total_tokens,
+  attempts_json,
+  usage_json,
+  requested_model,
+  provider_chain_json
+FROM request_logs
+WHERE trace_id = ?1
+"#,
+                ["trace-late-placeholder"],
+                |row| {
+                    Ok(TerminalRow {
+                        status: row.get(0)?,
+                        error_code: row.get(1)?,
+                        duration_ms: row.get(2)?,
+                        ttfb_ms: row.get(3)?,
+                        input_tokens: row.get(4)?,
+                        output_tokens: row.get(5)?,
+                        total_tokens: row.get(6)?,
+                        attempts_json: row.get(7)?,
+                        usage_json: row.get(8)?,
+                        requested_model: row.get(9)?,
+                        provider_chain_json: row.get(10)?,
+                    })
+                },
+            )
+            .expect("read request log");
+
+        assert_eq!(row.status, Some(200));
+        assert_eq!(row.error_code, None);
+        assert_eq!(row.duration_ms, 10);
+        assert_eq!(row.ttfb_ms, Some(5));
+        assert_eq!(row.input_tokens, Some(12));
+        assert_eq!(row.output_tokens, Some(34));
+        assert_eq!(row.total_tokens, Some(46));
+        assert_eq!(row.attempts_json, r#"[{"outcome":"success"}]"#);
+        assert_eq!(
+            row.usage_json.as_deref(),
+            Some(r#"{"input_tokens":12,"output_tokens":34}"#)
+        );
+        assert_eq!(row.requested_model.as_deref(), Some("claude-sonnet-4"));
+        assert_eq!(
+            row.provider_chain_json.as_deref(),
+            Some(r#"[{"provider":"anthropic"}]"#)
+        );
     }
 
     #[test]

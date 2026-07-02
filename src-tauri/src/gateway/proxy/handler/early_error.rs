@@ -200,6 +200,7 @@ fn early_error_request_end_args<'a, R: tauri::Runtime>(
             &ctx.state.db,
             &ctx.state.log_tx,
             &ctx.state.plugin_pipeline,
+            &ctx.state.active_requests,
         ),
         trace_id: ctx.trace_id,
         cli_key: ctx.cli_key,

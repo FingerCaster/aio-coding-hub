@@ -1,5 +1,6 @@
 //! Usage: Stream finalization context for gateway body relays.
 
+use crate::gateway::active_requests::ActiveRequestRegistry;
 use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
 use crate::{circuit_breaker, db, request_logs, session_manager};
 use std::sync::{Arc, Mutex};
@@ -94,4 +95,5 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) fake_200_detected: bool,
     pub(in crate::gateway) fake_200_quota_exhausted: bool,
     pub(in crate::gateway) activity: Arc<Mutex<StreamActivityTracker>>,
+    pub(in crate::gateway) active_requests: Arc<ActiveRequestRegistry>,
 }
