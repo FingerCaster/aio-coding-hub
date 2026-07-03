@@ -1,0 +1,8 @@
+[advisories]
+ignore = [
+  # quick-xml 0.39.2 is still pulled by plist 1.9.0 and wayland-scanner.
+  # tauri-winrt-notification is updated to 0.7.3 to remove quick-xml 0.37.5.
+  # Remove these ignores when upstream crates can use quick-xml >= 0.41.0.
+  "RUSTSEC-2026-0194",
+  "RUSTSEC-2026-0195",
+]

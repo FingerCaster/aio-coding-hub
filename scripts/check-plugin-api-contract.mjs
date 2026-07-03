@@ -23,6 +23,12 @@ function requirePathMissing(path, label) {
   }
 }
 
+function requirePathMissingUnless(path, label, allowed, reason) {
+  if (!existsSync(join(repoRoot, path))) return;
+  if (allowed) return;
+  failures.push(`${path} must not exist as ${label}${reason ? ` (${reason})` : ""}`);
+}
+
 function readJson(path) {
   const text = readText(path);
   if (!text) return null;
@@ -370,7 +376,18 @@ if (contract) {
     ["plugin-wasm-sdk:test"],
     "WASM SDK script"
   );
-  requirePathMissing("packages/plugin-wasm-sdk", "WASM SDK package");
+  const ciWorkflow = readText(".github/workflows/ci.yml");
+  const legacyWasmSdkCiReference =
+    ciWorkflow.includes("cargo test --manifest-path packages/plugin-wasm-sdk/Cargo.toml") &&
+    ciWorkflow.includes(
+      "cargo test --manifest-path packages/plugin-wasm-sdk/examples/redactor/Cargo.toml"
+    );
+  requirePathMissingUnless(
+    "packages/plugin-wasm-sdk",
+    "WASM SDK package",
+    legacyWasmSdkCiReference,
+    "remove after legacy CI no longer references it"
+  );
   const pluginService = readText("src/services/plugins.ts");
   requireNotIncludes(
     "src/services/plugins.ts",
