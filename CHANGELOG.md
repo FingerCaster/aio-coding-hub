@@ -1,5 +1,20 @@
 # Changelog
 
+## [0.60.15](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.14...aio-coding-hub-v0.60.15) (2026-07-03)
+
+
+### Features
+
+* **codex:** sync degradation intercept update branch ([8b8d01c](https://github.com/FingerCaster/aio-coding-hub/commit/8b8d01c3578e85772f50d24d5688678edcd5ff0f))
+* sync degradation intercept update branch ([7088dcf](https://github.com/FingerCaster/aio-coding-hub/commit/7088dcf45e7b8d07a26e1e63a20b9f3e3967b75f))
+
+
+### Bug Fixes
+
+* keep plugin wasm sdk for ci compatibility ([b53ca12](https://github.com/FingerCaster/aio-coding-hub/commit/b53ca123a9272dde862626b8058856fbd3c3f888))
+* satisfy ci contract and cargo audit ([7491e1a](https://github.com/FingerCaster/aio-coding-hub/commit/7491e1aeee449bf4b66df377c20524099d58076e))
+* unblock degradation intercept pr ci ([3dcb062](https://github.com/FingerCaster/aio-coding-hub/commit/3dcb062d34c7756b6d43b06b0b6b31cbe39fdf4a))
+
 ## [0.60.14](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.13...aio-coding-hub-v0.60.14) (2026-07-01)
 
 
