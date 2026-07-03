@@ -111,27 +111,45 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.hasPending).toBe(false);
   });
 
-  it("classifies active request logs as active or idle from active registry activity", () => {
+  it("renders registry-active logs without live traces as synthesized realtime cards", () => {
     const nowMs = 1_700_000_900_000;
-    const active = buildRequestActivityProjection({
-      requestLogs: [log({ trace_id: "active", last_activity_ms: nowMs - 11 * 60_000 } as any)],
-      activeRequests: [activeRequest({ trace_id: "active", last_activity_ms: nowMs - 60_000 })],
+    const projection = buildRequestActivityProjection({
+      requestLogs: [log({ trace_id: "active" })],
+      activeRequests: [
+        activeRequest({
+          trace_id: "active",
+          created_at_ms: nowMs - 120_000,
+          last_activity_ms: nowMs - 60_000,
+        }),
+      ],
       traces: [],
       nowMs,
       realtimeCardLimit: 5,
       realtimeCandidateLimit: 20,
     });
-    expect(active.requestRows[0]?.activityState).toBe("in_progress_active");
 
-    const idle = buildRequestActivityProjection({
-      requestLogs: [log({ trace_id: "idle", last_activity_ms: nowMs - 60_000 } as any)],
-      activeRequests: [activeRequest({ trace_id: "idle", last_activity_ms: nowMs - 11 * 60_000 })],
+    expect(projection.realtimeCards.map((card) => card.trace.trace_id)).toEqual(["active"]);
+    expect(projection.realtimeCards[0]?.trace.summary).toBeUndefined();
+    expect(projection.realtimeCards[0]?.trace.first_seen_ms).toBe(nowMs - 120_000);
+    expect(projection.requestRows).toHaveLength(0);
+    expect(projection.hasPending).toBe(true);
+  });
+
+  it("keeps terminal logs out of the in-progress projection despite a stale registry entry", () => {
+    const nowMs = 1_700_000_900_000;
+    const projection = buildRequestActivityProjection({
+      requestLogs: [log({ trace_id: "finished", status: 200, duration_ms: 1_234 })],
+      activeRequests: [activeRequest({ trace_id: "finished", last_activity_ms: nowMs - 1_000 })],
       traces: [],
       nowMs,
       realtimeCardLimit: 5,
       realtimeCandidateLimit: 20,
     });
-    expect(idle.requestRows[0]?.activityState).toBe("in_progress_idle");
+
+    expect(projection.realtimeCards).toHaveLength(0);
+    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual(["finished"]);
+    expect(projection.requestRows[0]?.activityState).toBe("completed");
+    expect(projection.hasPending).toBe(false);
   });
 
   it("renders a pending log with a visible trace as one realtime card and no duplicate row", () => {
@@ -257,7 +275,7 @@ describe("services/gateway/requestActivityProjection", () => {
     });
   });
 
-  it("projects active requests even before their placeholder log is persisted", () => {
+  it("projects active requests as realtime cards even before their placeholder log is persisted", () => {
     const projection = buildRequestActivityProjection({
       requestLogs: [],
       activeRequests: [
@@ -274,11 +292,13 @@ describe("services/gateway/requestActivityProjection", () => {
     });
 
     expect(projection.hasPending).toBe(true);
-    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual(["active-without-log"]);
-    expect(projection.requestRows[0]?.activityState).toBe("in_progress_active");
+    expect(projection.realtimeCards.map((card) => card.trace.trace_id)).toEqual([
+      "active-without-log",
+    ]);
+    expect(projection.requestRows).toHaveLength(0);
   });
 
-  it("orders active rows first and interrupted audit rows after terminal history", () => {
+  it("orders interrupted audit rows after terminal history while active requests become cards", () => {
     const nowMs = 1_700_001_000_000;
     const projection = buildRequestActivityProjection({
       requestLogs: [
@@ -312,15 +332,63 @@ describe("services/gateway/requestActivityProjection", () => {
       realtimeCandidateLimit: 20,
     });
 
-    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual([
+    expect(projection.realtimeCards.map((card) => card.trace.trace_id)).toEqual([
       "active-without-log",
+    ]);
+    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual([
       "completed-older",
       "interrupted-newer",
     ]);
     expect(projection.requestRows.map((row) => row.activityState)).toEqual([
-      "in_progress_active",
       "completed",
       "interrupted",
     ]);
+  });
+
+  it("never evicts in-progress cards in favor of completed exiting cards at the card limit", () => {
+    const nowMs = 1_700_000_500_000;
+    const summary = (traceId: string) =>
+      ({
+        trace_id: traceId,
+        cli_key: "claude",
+        method: "POST",
+        path: "/v1/messages",
+        query: null,
+        status: 200,
+        error_category: null,
+        error_code: null,
+        duration_ms: 500,
+        ttfb_ms: null,
+        attempts: [],
+      }) as TraceSession["summary"];
+    const projection = buildRequestActivityProjection({
+      requestLogs: [],
+      activeRequests: [
+        activeRequest({ trace_id: "live-old", created_at_ms: nowMs - 60_000 }),
+        activeRequest({ trace_id: "live-older", created_at_ms: nowMs - 120_000 }),
+      ],
+      traces: [
+        trace({
+          trace_id: "done-new",
+          first_seen_ms: nowMs - 100,
+          last_seen_ms: nowMs,
+          summary: summary("done-new"),
+        }),
+        trace({
+          trace_id: "done-newer",
+          first_seen_ms: nowMs - 50,
+          last_seen_ms: nowMs,
+          summary: summary("done-newer"),
+        }),
+      ],
+      nowMs,
+      realtimeCardLimit: 3,
+      realtimeCandidateLimit: 20,
+    });
+
+    const cardIds = projection.realtimeCards.map((card) => card.trace.trace_id);
+    expect(cardIds).toContain("live-old");
+    expect(cardIds).toContain("live-older");
+    expect(cardIds).toHaveLength(3);
   });
 });

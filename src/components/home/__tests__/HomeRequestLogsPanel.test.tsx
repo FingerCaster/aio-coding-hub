@@ -639,8 +639,12 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
+    // Registry-only requests render with the same realtime card style as
+    // trace-backed in-progress requests — never as a log-row fallback.
     expect(screen.getByText("进行中")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /gpt-5/ })).toBeInTheDocument();
+    expect(screen.getByText("当前阶段")).toBeInTheDocument();
+    expect(screen.getByText("gpt-5")).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /gpt-5/ })).not.toBeInTheDocument();
     expect(screen.queryByText("当前没有最近使用记录")).not.toBeInTheDocument();
   });
 
@@ -821,18 +825,18 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    // Without a live trace the status-null log is NOT promoted to realtime cards.
-    // It stays in the regular list as an in-progress fallback row.
+    // Even without a live trace, the registry-active log is promoted to a
+    // realtime card above the list instead of an in-progress log-row fork.
     expect(screen.getByText("pending-model")).toBeInTheDocument();
-    expect(screen.queryByText("当前阶段")).not.toBeInTheDocument();
+    expect(screen.getByText("当前阶段")).toBeInTheDocument();
     expect(screen.getByText("进行中")).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: /pending-model/ })).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: /pending-model/ })).not.toBeInTheDocument();
+    const pendingCard = screen.getByText("pending-model");
     const completedNewerButton = screen.getByRole("button", { name: /done-newer-model/ });
-    const pendingButton = screen.getByRole("button", { name: /pending-model/ });
     const completedOlderButton = screen.getByRole("button", { name: /done-older-model/ });
 
-    // Pending rows stay above completed rows even when the live trace is missing.
-    expect(pendingButton.compareDocumentPosition(completedNewerButton)).toBe(
+    // The pending card stays above completed rows, which keep time order.
+    expect(pendingCard.compareDocumentPosition(completedNewerButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
     expect(completedNewerButton.compareDocumentPosition(completedOlderButton)).toBe(
@@ -886,7 +890,9 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText("进行中 · 已静默 12 分钟")).toBeInTheDocument();
+    // The idle notice now lives in the realtime card's stage slot.
+    expect(screen.getByText("已静默 12 分钟")).toBeInTheDocument();
+    expect(screen.getByText("进行中")).toBeInTheDocument();
   });
 
   it("uses live trace data to show current provider and elapsed duration for in-progress logs", () => {

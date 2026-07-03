@@ -9,6 +9,7 @@ import type { CliSessionsFolderLookupEntry } from "../../services/cli/cliSession
 import type { CliKey } from "../../services/providers/providers";
 import type { ProjectedRealtimeCard } from "../../services/gateway/requestActivityProjection";
 import { REALTIME_TRACE_EXIT_START_MS } from "../../services/gateway/requestActivityProjection";
+import { requestLogActiveActivityState } from "../../services/gateway/requestLogState";
 import { cn } from "../../utils/cn";
 import {
   computeOutputTokensPerSecond,
@@ -68,6 +69,13 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
   showCustomTooltip,
 }: RealtimeTraceCardsProps) {
   const visibleTraces = useMemo(() => cards.map((card) => card.trace), [cards]);
+  const activeRequestByTraceId = useMemo(() => {
+    const map = new Map<string, NonNullable<ProjectedRealtimeCard["activeRequest"]>>();
+    for (const card of cards) {
+      if (card.activeRequest) map.set(card.trace.trace_id, card.activeRequest);
+    }
+    return map;
+  }, [cards]);
 
   // Compute a batch-aligned exit threshold: if multiple traces completed within
   // BATCH_EXIT_WINDOW_MS of each other, they all exit when the earliest one would.
@@ -264,8 +272,24 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
               ? attemptRoute.segments.map((seg) => seg.provider).join(" → ")
               : null;
         const providerTitle = providerText;
+        const idleMinutes = (() => {
+          if (!isInProgress) return null;
+          const activeRequest = activeRequestByTraceId.get(trace.trace_id);
+          if (!activeRequest) return null;
+          if (
+            requestLogActiveActivityState(activeRequest.last_activity_ms, nowMs) !==
+            "in_progress_idle"
+          ) {
+            return null;
+          }
+          return Math.max(
+            1,
+            Math.floor(Math.max(0, nowMs - activeRequest.last_activity_ms) / 60_000)
+          );
+        })();
         const liveStageText = (() => {
           if (!isInProgress) return null;
+          if (idleMinutes != null) return `已静默 ${idleMinutes} 分钟`;
           if (!latestAttempt) return "等待首个尝试";
           if (hasFailover) return "切换处理中";
           if (latestAttempt.outcome === "started") return "处理中";
