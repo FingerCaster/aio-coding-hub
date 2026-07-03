@@ -3,7 +3,7 @@
 //! Sends a minimal API request to verify that a provider's base URL + credentials
 //! are reachable and functional. Supports all CLI types (claude, codex, gemini).
 
-use crate::providers::{is_supported_bridge_type, CX2CC_BRIDGE_TYPE};
+use crate::providers::{is_supported_bridge_type, ModelMapping, CX2CC_BRIDGE_TYPE};
 use crate::shared::error::AppResult;
 use crate::{blocking, db};
 use reqwest::header::{HeaderMap, HeaderValue};
@@ -36,6 +36,7 @@ struct LoadedProvider {
     base_urls: Vec<String>,
     api_key_plaintext: String,
     availability_test_model: Option<String>,
+    model_mapping: ModelMapping,
     auth_mode: String,
     oauth_provider_type: Option<String>,
     source_provider_id: Option<i64>,
@@ -126,13 +127,14 @@ async fn load_provider_for_test(db: db::Db, provider_id: i64) -> AppResult<Loade
             String,
             Option<String>,
             String,
+            String,
             Option<String>,
             Option<i64>,
             Option<String>,
         )> = conn
             .query_row(
                 r#"
-SELECT id, cli_key, name, base_url, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, oauth_provider_type, source_provider_id, bridge_type
+SELECT id, cli_key, name, base_url, base_urls_json, api_key_plaintext, availability_test_model, model_mapping_json, auth_mode, oauth_provider_type, source_provider_id, bridge_type
 FROM providers
 WHERE id = ?1
 "#,
@@ -150,13 +152,14 @@ WHERE id = ?1
                         row.get(8)?,
                         row.get(9)?,
                         row.get(10)?,
+                        row.get(11)?,
                     ))
                 },
             )
             .optional()
             .map_err(|e| format!("DB_ERROR: {e}"))?;
 
-        let Some((id, cli_key, name, base_url_fallback, base_urls_json, api_key_plaintext, availability_test_model, auth_mode, oauth_provider_type, source_provider_id, bridge_type)) = row else {
+        let Some((id, cli_key, name, base_url_fallback, base_urls_json, api_key_plaintext, availability_test_model, model_mapping_json, auth_mode, oauth_provider_type, source_provider_id, bridge_type)) = row else {
             return Err("DB_NOT_FOUND: provider not found".into());
         };
 
@@ -183,6 +186,7 @@ WHERE id = ?1
             base_urls,
             api_key_plaintext,
             availability_test_model: normalize_probe_model(availability_test_model.as_deref()),
+            model_mapping: model_mapping_from_json(&model_mapping_json),
             auth_mode,
             oauth_provider_type,
             source_provider_id,
@@ -220,6 +224,7 @@ async fn load_effective_provider_for_test(
         base_urls: source.base_urls,
         api_key_plaintext: source.api_key_plaintext,
         availability_test_model: provider.availability_test_model,
+        model_mapping: provider.model_mapping,
         auth_mode: source.auth_mode,
         oauth_provider_type: source.oauth_provider_type,
         source_provider_id: provider.source_provider_id,
@@ -252,6 +257,24 @@ fn normalize_probe_model(value: Option<&str>) -> Option<String> {
     Some(trimmed.to_string())
 }
 
+fn model_mapping_from_json(raw: &str) -> ModelMapping {
+    let mapping = serde_json::from_str::<ModelMapping>(raw)
+        .ok()
+        .unwrap_or_default();
+    ModelMapping {
+        default_model: normalize_probe_model(mapping.default_model.as_deref()),
+        exact: mapping
+            .exact
+            .into_iter()
+            .filter_map(|(key, value)| {
+                let key = normalize_probe_model(Some(&key))?;
+                let value = normalize_probe_model(Some(&value))?;
+                Some((key, value))
+            })
+            .collect(),
+    }
+}
+
 fn resolve_codex_probe_model_from_sources(
     provider_override: Option<&str>,
     global_setting: Option<&str>,
@@ -279,7 +302,7 @@ fn build_probe_request(
             headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
             headers.insert("content-type", HeaderValue::from_static("application/json"));
             let body = serde_json::json!({
-                "model": "claude-sonnet-4-6",
+                "model": model_override.unwrap_or("claude-sonnet-4-6"),
                 "max_tokens": 1,
                 "messages": [{"role": "user", "content": "ping"}]
             });
@@ -315,6 +338,72 @@ fn build_probe_request(
     }
 }
 
+fn build_probe_request_with_body(
+    cli_key: &str,
+    base_url: &str,
+    api_key: &str,
+    target_path: &str,
+    body: serde_json::Value,
+) -> AppResult<(String, HeaderMap, serde_json::Value)> {
+    let base = base_url.trim_end_matches('/');
+    let path = if target_path.starts_with('/') {
+        target_path.to_string()
+    } else {
+        format!("/{target_path}")
+    };
+    let mut url = format!("{base}{path}");
+    let mut headers = HeaderMap::new();
+
+    match cli_key {
+        "claude" => {
+            if let Ok(v) = HeaderValue::from_str(api_key) {
+                headers.insert("x-api-key", v);
+            }
+            headers.insert("anthropic-version", HeaderValue::from_static("2023-06-01"));
+        }
+        "codex" => {
+            let bearer = format!("Bearer {api_key}");
+            if let Ok(v) = HeaderValue::from_str(&bearer) {
+                headers.insert("authorization", v);
+            }
+        }
+        "gemini" => {
+            let separator = if url.contains('?') { '&' } else { '?' };
+            url.push(separator);
+            url.push_str("key=");
+            url.push_str(api_key);
+        }
+        _ => return Err(format!("UNSUPPORTED_CLI_KEY: {cli_key}").into()),
+    }
+
+    headers.insert("content-type", HeaderValue::from_static("application/json"));
+    Ok((url, headers, body))
+}
+
+fn build_bridge_probe_request(
+    provider: &LoadedProvider,
+    base_url: &str,
+    api_key: &str,
+    source_model: &str,
+) -> AppResult<(String, HeaderMap, serde_json::Value)> {
+    let bridge_type = provider
+        .bridge_type
+        .as_deref()
+        .ok_or_else(|| "BRIDGE_MISSING_TYPE: bridge provider missing bridge_type".to_string())?;
+    let (target_path, translated_body) = crate::gateway::build_translated_bridge_probe(
+        bridge_type,
+        provider.model_mapping.clone(),
+        source_model,
+    )?;
+    build_probe_request_with_body(
+        &provider.cli_key,
+        base_url,
+        api_key,
+        &target_path,
+        translated_body,
+    )
+}
+
 fn redact_key_param(msg: &str) -> String {
     regex::Regex::new(r"([?&])key=[^&\s]*")
         .map(|re| re.replace_all(msg, "${1}key=***").to_string())
@@ -342,6 +431,10 @@ fn looks_like_auth_failure(status: u16, response_text: &str) -> bool {
 
 fn is_probe_available_status(status: u16, response_text: &str) -> bool {
     status < 500 && !looks_like_auth_failure(status, response_text)
+}
+
+fn should_map_bridge_probe_model(bridge_type: Option<&str>) -> bool {
+    matches!(bridge_type, Some(value) if value != CX2CC_BRIDGE_TYPE && is_supported_bridge_type(value))
 }
 
 pub async fn test_provider_availability<R: tauri::Runtime>(
@@ -408,7 +501,18 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
     )
     .await?;
 
-    let codex_probe_model = if provider.cli_key == "codex" {
+    let bridge_probe_source_model =
+        if should_map_bridge_probe_model(provider.bridge_type.as_deref()) {
+            let settings = crate::settings::read(app)?;
+            Some(resolve_codex_probe_model_from_sources(
+                provider.availability_test_model.as_deref(),
+                Some(settings.codex_provider_test_model.as_str()),
+            ))
+        } else {
+            None
+        };
+    let regular_probe_model = if bridge_probe_source_model.is_none() && provider.cli_key == "codex"
+    {
         match normalize_probe_model(provider.availability_test_model.as_deref()) {
             Some(model) => Some(model),
             None => {
@@ -422,12 +526,16 @@ pub async fn test_provider_availability<R: tauri::Runtime>(
     } else {
         None
     };
-    let (url, headers, body) = build_probe_request(
-        &provider.cli_key,
-        &base_url,
-        &effective_credential,
-        codex_probe_model.as_deref(),
-    )?;
+    let (url, headers, body) = if let Some(source_model) = bridge_probe_source_model.as_deref() {
+        build_bridge_probe_request(&provider, &base_url, &effective_credential, source_model)?
+    } else {
+        build_probe_request(
+            &provider.cli_key,
+            &base_url,
+            &effective_credential,
+            regular_probe_model.as_deref(),
+        )?
+    };
 
     let client = reqwest::Client::builder()
         .user_agent(format!(
@@ -518,6 +626,7 @@ mod tests {
     use crate::providers::{
         upsert, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode, ProviderUpsertParams,
         CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
+        CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
     };
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -548,6 +657,7 @@ mod tests {
             bridge_type: None,
             stream_idle_timeout_seconds: None,
             model_mapping: None,
+            extension_values: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         }
@@ -574,6 +684,22 @@ mod tests {
                 buf.extend_from_slice(&chunk[..read]);
                 if buf.windows(4).any(|window| window == b"\r\n\r\n") {
                     break;
+                }
+            }
+            if let Some(header_end) = buf.windows(4).position(|window| window == b"\r\n\r\n") {
+                let headers = String::from_utf8_lossy(&buf[..header_end]).to_ascii_lowercase();
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| line.strip_prefix("content-length:"))
+                    .and_then(|value| value.trim().parse::<usize>().ok())
+                    .unwrap_or_default();
+                let body_start = header_end + 4;
+                while buf.len().saturating_sub(body_start) < content_length {
+                    let read = stream.read(&mut chunk).await.expect("read request body");
+                    if read == 0 {
+                        break;
+                    }
+                    buf.extend_from_slice(&chunk[..read]);
                 }
             }
 
@@ -616,7 +742,21 @@ mod tests {
         assert_eq!(url, "https://api.example.com/v1/messages");
         assert_eq!(header_value(&headers, "x-api-key"), "sk-claude");
         assert_eq!(header_value(&headers, "anthropic-version"), "2023-06-01");
+        assert_eq!(body["model"], "claude-sonnet-4-6");
         assert_eq!(body["messages"][0]["content"], "ping");
+    }
+
+    #[test]
+    fn build_probe_request_for_claude_uses_model_override() {
+        let (_, _, body) = build_probe_request(
+            "claude",
+            "https://api.example.com/",
+            "sk-claude",
+            Some("claude-test-model"),
+        )
+        .expect("claude request");
+
+        assert_eq!(body["model"], "claude-test-model");
     }
 
     #[test]
@@ -776,7 +916,57 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_bridge_availability_rejects_disabled_source_with_gateway_rules() {
+    async fn codex_bridge_availability_maps_configured_test_model() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db_path = temp
+            .path()
+            .join("provider-availability-mapped-model.sqlite3");
+        let db = crate::db::init_for_tests(&db_path).expect("init db");
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let (source_base_url, server_task) = response_from_request_capture(
+            "/v1/messages",
+            400,
+            r#"{"error":{"message":"model not found"}}"#,
+        )
+        .await;
+
+        let mut source_params = default_provider_params("Claude source");
+        source_params.cli_key = "claude".to_string();
+        source_params.base_urls = vec![source_base_url.clone()];
+        source_params.api_key = Some("sk-claude".to_string());
+        let source = upsert(&db, source_params).expect("insert source");
+
+        let mut bridge_params = default_provider_params("Codex bridge");
+        bridge_params.base_urls = vec![];
+        bridge_params.api_key = None;
+        bridge_params.availability_test_model = Some("gpt-5.5".to_string());
+        bridge_params.model_mapping = Some(crate::providers::ModelMapping {
+            default_model: Some("claude-default".to_string()),
+            exact: std::collections::BTreeMap::from([(
+                "gpt-5.5".to_string(),
+                "claude-opus-test".to_string(),
+            )]),
+        });
+        bridge_params.source_provider_id = Some(source.id);
+        bridge_params.bridge_type = Some(CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE.to_string());
+        let bridge = upsert(&db, bridge_params).expect("insert bridge");
+
+        let result = test_provider_availability(&app_handle, db, bridge.id)
+            .await
+            .expect("availability result");
+
+        assert!(result.ok);
+        let request = server_task.await.expect("server task");
+        assert!(
+            request.contains(r#""model":"claude-opus-test""#),
+            "mapped test model was not used: {request}"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_bridge_availability_uses_disabled_source_transport() {
         let temp = tempfile::tempdir().expect("tempdir");
         let db_path = temp
             .path()
@@ -785,25 +975,42 @@ mod tests {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
 
+        let (source_base_url, server_task) = response_from_request_capture(
+            "/v1/responses",
+            400,
+            r#"{"error":{"message":"model not found"}}"#,
+        )
+        .await;
+
         let mut source_params = default_provider_params("Disabled source");
-        source_params.cli_key = "claude".to_string();
+        source_params.cli_key = "codex".to_string();
+        source_params.base_urls = vec![source_base_url.clone()];
+        source_params.api_key = Some("sk-disabled-source".to_string());
         let source = upsert(&db, source_params).expect("insert source");
 
         let mut bridge_params = default_provider_params("Codex bridge");
         bridge_params.base_urls = vec![];
         bridge_params.api_key = None;
         bridge_params.source_provider_id = Some(source.id);
-        bridge_params.bridge_type = Some(CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE.to_string());
+        bridge_params.bridge_type = Some(CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE.to_string());
         let bridge = upsert(&db, bridge_params).expect("insert bridge");
         crate::providers::set_enabled(&db, source.id, false).expect("disable source");
 
-        let err = test_provider_availability(&app_handle, db, bridge.id)
+        let result = test_provider_availability(&app_handle, db, bridge.id)
             .await
-            .expect_err("disabled source should fail gateway lookup");
+            .expect("availability result");
 
-        assert!(err
-            .to_string()
-            .contains("DB_NOT_FOUND: source provider not found"));
+        assert!(result.ok);
+        assert_eq!(result.provider_id, bridge.id);
+        assert_eq!(result.provider_name, "Codex bridge");
+        assert_eq!(result.base_url, source_base_url);
+        assert_eq!(result.status, Some(400));
+        assert!(result.error.is_none());
+
+        let request = server_task.await.expect("server task");
+        assert!(request
+            .to_ascii_lowercase()
+            .contains("authorization: bearer sk-disabled-source"));
     }
 
     #[allow(clippy::await_holding_lock)]

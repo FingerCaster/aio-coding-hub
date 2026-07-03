@@ -15,9 +15,11 @@ export const HOME_OVERVIEW_TABS: Array<{ key: HomeOverviewTabKey; label: string 
   { key: "oauthQuota", label: "OAuth 配额" },
 ];
 
+const DEFAULT_HOME_OVERVIEW_TAB_KEYS = HOME_OVERVIEW_TABS.map((item) => item.key);
+const DEFAULT_HOME_OVERVIEW_TAB_KEY_SET = new Set(DEFAULT_HOME_OVERVIEW_TAB_KEYS);
+
 export function normalizeHomeOverviewTabOrder(input: unknown): HomeOverviewTabKey[] {
-  const defaultKeys = HOME_OVERVIEW_TABS.map((item) => item.key);
-  if (!Array.isArray(input)) return defaultKeys;
+  if (!Array.isArray(input)) return DEFAULT_HOME_OVERVIEW_TAB_KEYS;
 
   const seen = new Set<HomeOverviewTabKey>();
   const normalized: HomeOverviewTabKey[] = [];
@@ -25,7 +27,7 @@ export function normalizeHomeOverviewTabOrder(input: unknown): HomeOverviewTabKe
   for (const value of input) {
     if (
       typeof value === "string" &&
-      defaultKeys.includes(value as HomeOverviewTabKey) &&
+      DEFAULT_HOME_OVERVIEW_TAB_KEY_SET.has(value as HomeOverviewTabKey) &&
       !seen.has(value as HomeOverviewTabKey)
     ) {
       normalized.push(value as HomeOverviewTabKey);
@@ -33,7 +35,7 @@ export function normalizeHomeOverviewTabOrder(input: unknown): HomeOverviewTabKe
     }
   }
 
-  for (const key of defaultKeys) {
+  for (const key of DEFAULT_HOME_OVERVIEW_TAB_KEYS) {
     if (!seen.has(key)) normalized.push(key);
   }
 
@@ -41,14 +43,14 @@ export function normalizeHomeOverviewTabOrder(input: unknown): HomeOverviewTabKe
 }
 
 export function readHomeOverviewTabOrderFromStorage(): HomeOverviewTabKey[] {
-  if (typeof window === "undefined") return HOME_OVERVIEW_TABS.map((item) => item.key);
+  if (typeof window === "undefined") return DEFAULT_HOME_OVERVIEW_TAB_KEYS;
 
   try {
     const raw = window.localStorage.getItem(HOME_OVERVIEW_TAB_ORDER_STORAGE_KEY);
-    if (!raw) return HOME_OVERVIEW_TABS.map((item) => item.key);
+    if (!raw) return DEFAULT_HOME_OVERVIEW_TAB_KEYS;
     return normalizeHomeOverviewTabOrder(JSON.parse(raw));
   } catch {
-    return HOME_OVERVIEW_TABS.map((item) => item.key);
+    return DEFAULT_HOME_OVERVIEW_TAB_KEYS;
   }
 }
 

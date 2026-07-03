@@ -11,6 +11,7 @@ pub(crate) struct PluginMarketListing {
     pub(crate) name: String,
     pub(crate) latest_version: Option<String>,
     pub(crate) download_url: Option<String>,
+    pub(crate) market_source_url: Option<String>,
     pub(crate) checksum: Option<String>,
     pub(crate) signature: Option<String>,
     pub(crate) risk_labels: Vec<String>,
@@ -22,6 +23,7 @@ pub(crate) struct PluginMarketListing {
 
 pub(crate) fn parse_market_index(
     bytes: &[u8],
+    market_source_url: Option<&str>,
     host_version: &str,
     installed_versions: &HashMap<String, String>,
 ) -> AppResult<Vec<PluginMarketListing>> {
@@ -57,7 +59,10 @@ pub(crate) fn parse_market_index(
             compare_semver(installed, &version.version).is_lt()
         });
 
-        let install_block_reason = if revoked {
+        let reserved_official_namespace = is_reserved_official_plugin_id(&plugin.id);
+        let install_block_reason = if reserved_official_namespace {
+            Some("reserved_official_namespace".to_string())
+        } else if revoked {
             Some("revoked".to_string())
         } else if compatible_version.is_none() {
             Some("incompatible".to_string())
@@ -71,6 +76,7 @@ pub(crate) fn parse_market_index(
             name: plugin.name,
             latest_version,
             download_url: selected.map(|version| version.download_url.clone()),
+            market_source_url: market_source_url.map(str::to_string),
             checksum: selected.map(|version| version.checksum.clone()),
             signature: selected.and_then(|version| version.signature.clone()),
             risk_labels: plugin.risk_labels,
@@ -86,13 +92,14 @@ pub(crate) fn parse_market_index(
 
 pub(crate) fn parse_signed_market_index(
     bytes: &[u8],
+    market_source_url: Option<&str>,
     signature: &str,
     public_key: &str,
     host_version: &str,
     installed_versions: &HashMap<String, String>,
 ) -> AppResult<Vec<PluginMarketListing>> {
     crate::infra::plugins::signing::verify_ed25519_signature(bytes, signature, public_key)?;
-    parse_market_index(bytes, host_version, installed_versions)
+    parse_market_index(bytes, market_source_url, host_version, installed_versions)
 }
 
 #[derive(Debug, Deserialize)]
@@ -153,6 +160,10 @@ fn validate_market_plugin_id(plugin_id: &str) -> AppResult<()> {
         ));
     }
     Ok(())
+}
+
+fn is_reserved_official_plugin_id(plugin_id: &str) -> bool {
+    plugin_id.starts_with("official.")
 }
 
 fn validate_market_version(version: &RawMarketVersion) -> AppResult<()> {
@@ -356,9 +367,13 @@ mod tests {
         let mut installed = HashMap::new();
         installed.insert("community.prompt-tools".to_string(), "1.0.0".to_string());
 
-        let listings =
-            parse_market_index(market_index().to_string().as_bytes(), "0.56.0", &installed)
-                .unwrap();
+        let listings = parse_market_index(
+            market_index().to_string().as_bytes(),
+            None,
+            "0.56.0",
+            &installed,
+        )
+        .unwrap();
 
         let prompt_tools = listings
             .iter()
@@ -375,9 +390,28 @@ mod tests {
     }
 
     #[test]
+    fn parse_market_index_preserves_market_source_url() {
+        let index_url = "https://plugins.example.test/index.json";
+        let listings = parse_market_index(
+            market_index().to_string().as_bytes(),
+            Some(index_url),
+            "0.56.0",
+            &HashMap::new(),
+        )
+        .unwrap();
+
+        let prompt_tools = listings
+            .iter()
+            .find(|item| item.plugin_id == "community.prompt-tools")
+            .unwrap();
+        assert_eq!(prompt_tools.market_source_url.as_deref(), Some(index_url));
+    }
+
+    #[test]
     fn plugin_market_index_marks_incompatible_plugins_as_blocked() {
         let listings = parse_market_index(
             market_index().to_string().as_bytes(),
+            None,
             "0.56.0",
             &HashMap::new(),
         )
@@ -395,6 +429,7 @@ mod tests {
     fn plugin_market_index_marks_revoked_plugins_as_blocked() {
         let listings = parse_market_index(
             market_index().to_string().as_bytes(),
+            None,
             "0.56.0",
             &HashMap::new(),
         )
@@ -410,12 +445,53 @@ mod tests {
     }
 
     #[test]
+    fn parse_market_index_marks_reserved_official_namespace_uninstallable() {
+        let installed = HashMap::new();
+        let listings = parse_market_index(
+            br#"{
+              "schemaVersion": "1",
+              "plugins": [
+                {
+                  "id": "official.privacy-filter",
+                  "name": "Fake Official",
+                  "riskLabels": ["request.body.read"],
+                  "versions": [
+                    {
+                      "version": "1.0.0",
+                      "downloadUrl": "https://plugins.example.test/fake-official.aio-plugin",
+                      "checksum": "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                      "hostCompatibility": {
+                        "app": ">=0.56.0 <1.0.0",
+                        "pluginApi": "^1.0.0",
+                        "platforms": ["macos", "windows", "linux"]
+                      }
+                    }
+                  ]
+                }
+              ]
+            }"#,
+            Some("https://plugins.example.test/index.json"),
+            "0.62.2",
+            &installed,
+        )
+        .unwrap();
+
+        assert_eq!(listings.len(), 1);
+        assert_eq!(listings[0].plugin_id, "official.privacy-filter");
+        assert!(!listings[0].compatible);
+        assert_eq!(
+            listings[0].install_block_reason.as_deref(),
+            Some("reserved_official_namespace")
+        );
+    }
+
+    #[test]
     fn plugin_market_index_rejects_invalid_checksum() {
         let mut raw = market_index();
         raw["plugins"][0]["versions"][1]["checksum"] = serde_json::json!("sha256:not-hex");
 
-        let err =
-            parse_market_index(raw.to_string().as_bytes(), "0.56.0", &HashMap::new()).unwrap_err();
+        let err = parse_market_index(raw.to_string().as_bytes(), None, "0.56.0", &HashMap::new())
+            .unwrap_err();
 
         assert!(err
             .to_string()
@@ -436,6 +512,7 @@ mod tests {
 
         let listings = parse_signed_market_index(
             &bytes,
+            None,
             &signature_b64,
             &public_key_b64,
             "0.56.0",
@@ -449,6 +526,7 @@ mod tests {
 
         let err = parse_signed_market_index(
             b"{\"schemaVersion\":\"1.0.0\",\"plugins\":[]}",
+            None,
             &signature_b64,
             &public_key_b64,
             "0.56.0",

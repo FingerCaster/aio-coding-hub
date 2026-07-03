@@ -99,9 +99,46 @@ function createReasoningGuardStats(overrides: Partial<any> = {}) {
   return {
     hit_request_count: 4,
     hit_attempt_count: 9,
+    token_hit_attempt_count: 7,
+    feature_hit_attempt_count: 2,
+    reasoning_token_hit_request_count: 3,
+    final_answer_only_high_xhigh_hit_request_count: 1,
     normal_request_count: 28,
     total_request_count: 32,
     hit_rate: 0.125,
+    feature_sample_request_count: 6,
+    feature_sample_count: 8,
+    final_answer_only_sample_count: 5,
+    high_xhigh_final_answer_only_sample_count: 3,
+    reasoning_516_final_answer_only_no_commentary_count: 2,
+    compaction_exempt_sample_count: 1,
+    reasoning_tokens_coverage_count: 7,
+    final_answer_only_coverage_count: 6,
+    commentary_observed_coverage_count: 6,
+    reasoning_effort_coverage_count: 8,
+    duration_ms_coverage_count: 8,
+    output_tokens_coverage_count: 4,
+    continuation_triggered_request_count: 5,
+    continuation_triggered_attempt_count: 6,
+    continuation_repaired_request_count: 3,
+    continuation_repaired_attempt_count: 3,
+    continuation_non_repaired_attempt_count: 3,
+    continuation_repair_rate: 0.6,
+    continuation_average_sent_rounds: 1.5,
+    continuation_by_status: [
+      {
+        status: "repaired",
+        request_count: 3,
+        attempt_count: 3,
+        average_sent_rounds: 1,
+      },
+      {
+        status: "still_matched",
+        request_count: 2,
+        attempt_count: 2,
+        average_sent_rounds: 3,
+      },
+    ],
     by_model: [
       {
         requested_model: "gpt-5-codex",
@@ -129,6 +166,9 @@ function createReasoningGuardStats(overrides: Partial<any> = {}) {
 
 describe("components/cli-manager/tabs/CodexTab", () => {
   const defaultCodexReasoningGuardRetrySettings = {
+    codex_reasoning_guard_rule_mode: "reasoning_tokens",
+    codex_reasoning_guard_active_template_id: "builtin-legacy-reasoning-tokens",
+    codex_reasoning_guard_custom_templates: [],
     codex_reasoning_guard_retry_policy: "single",
     codex_reasoning_guard_concurrent_max: 5,
     codex_reasoning_guard_concurrent_interval_ms: 1000,
@@ -405,6 +445,11 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByText("4")).toBeInTheDocument();
     expect(screen.getByText("9")).toBeInTheDocument();
     expect(screen.getByText("12.5%")).toBeInTheDocument();
+    expect(screen.getByText("补救触发数")).toBeInTheDocument();
+    expect(screen.getByText("平均续写轮数")).toBeInTheDocument();
+    expect(screen.getByText("60.0%")).toBeInTheDocument();
+    expect(screen.getByText(/优先级：续写补救会先尝试修复/)).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "切换 Codex 继续思考补救" })).not.toBeDisabled();
 
     fireEvent.click(
       within(screen.getByLabelText("降智拦截统计时间范围")).getByRole("button", { name: "刷新" })
@@ -466,7 +511,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /当天/ }));
+    fireEvent.click(
+      within(screen.getByLabelText("降智拦截统计时间范围")).getByRole("button", { name: /当天/ })
+    );
     expect(screen.getByRole("button", { name: "今天" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "昨天" })).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "近24小时" })).toBeInTheDocument();
@@ -480,14 +527,164 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
     fireEvent.click(screen.getByRole("button", { name: "应用" }));
 
-    expect(mockReasoningGuardStatsQuery).toHaveBeenLastCalledWith(
+    expect(mockReasoningGuardStatsQuery).toHaveBeenCalledWith(
       {
         startCreatedAtMs: new Date(2026, 5, 28, 0, 0, 0, 0).getTime(),
         endCreatedAtMs: new Date(2026, 6, 1, 0, 0, 0, 0).getTime(),
       },
       { enabled: true }
     );
-    expect(screen.getByRole("button", { name: /2026-06-28 至 2026-06-30/ })).toBeInTheDocument();
+    expect(
+      within(screen.getByLabelText("降智拦截统计时间范围")).getByRole("button", {
+        name: /2026-06-28 至 2026-06-30/,
+      })
+    ).toBeInTheDocument();
+  });
+
+  it("keeps Codex reasoning guard and continuation stats date ranges independent", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    const guardRangeControls = screen.getByLabelText("降智拦截统计时间范围");
+    const continuationRangeControls = screen.getByLabelText("继续思考补救统计时间范围");
+
+    fireEvent.click(within(guardRangeControls).getByRole("button", { name: /当天/ }));
+    fireEvent.change(screen.getByLabelText("降智拦截统计开始日期"), {
+      target: { value: "2026-06-28" },
+    });
+    fireEvent.change(screen.getByLabelText("降智拦截统计结束日期"), {
+      target: { value: "2026-06-30" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+
+    expect(
+      within(guardRangeControls).getByRole("button", { name: /2026-06-28 至 2026-06-30/ })
+    ).toBeInTheDocument();
+    expect(
+      within(continuationRangeControls).getByRole("button", { name: /当天/ })
+    ).toBeInTheDocument();
+
+    fireEvent.click(within(continuationRangeControls).getByRole("button", { name: /当天/ }));
+    fireEvent.change(screen.getByLabelText("继续思考补救统计开始日期"), {
+      target: { value: "2026-07-01" },
+    });
+    fireEvent.change(screen.getByLabelText("继续思考补救统计结束日期"), {
+      target: { value: "2026-07-02" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "应用" }));
+
+    expect(
+      within(guardRangeControls).getByRole("button", { name: /2026-06-28 至 2026-06-30/ })
+    ).toBeInTheDocument();
+    expect(
+      within(continuationRangeControls).getByRole("button", {
+        name: /2026-07-01 至 2026-07-02/,
+      })
+    ).toBeInTheDocument();
+  });
+
+  it("allows changing Codex reasoning guard stats date range inside detail dialog", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /当天/ }));
+
+    fireEvent.change(within(dialog).getByLabelText("降智拦截统计开始日期"), {
+      target: { value: "2026-06-20" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("降智拦截统计结束日期"), {
+      target: { value: "2026-06-22" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "应用" }));
+
+    expect(mockReasoningGuardStatsQuery).toHaveBeenCalledWith(
+      {
+        startCreatedAtMs: new Date(2026, 5, 20, 0, 0, 0, 0).getTime(),
+        endCreatedAtMs: new Date(2026, 5, 23, 0, 0, 0, 0).getTime(),
+      },
+      { enabled: true }
+    );
+    expect(
+      within(dialog).getByRole("button", { name: /2026-06-20 至 2026-06-22/ })
+    ).toBeInTheDocument();
+  });
+
+  it("allows changing Codex continuation repair stats date range inside detail dialog", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看继续思考补救详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(within(dialog).getByRole("button", { name: /当天/ }));
+
+    fireEvent.change(within(dialog).getByLabelText("继续思考补救统计开始日期"), {
+      target: { value: "2026-06-23" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("继续思考补救统计结束日期"), {
+      target: { value: "2026-06-25" },
+    });
+    fireEvent.click(within(dialog).getByRole("button", { name: "应用" }));
+
+    expect(mockReasoningGuardStatsQuery).toHaveBeenCalledWith(
+      {
+        startCreatedAtMs: new Date(2026, 5, 23, 0, 0, 0, 0).getTime(),
+        endCreatedAtMs: new Date(2026, 5, 26, 0, 0, 0, 0).getTime(),
+      },
+      { enabled: true }
+    );
+    expect(
+      within(dialog).getByRole("button", { name: /2026-06-23 至 2026-06-25/ })
+    ).toBeInTheDocument();
   });
 
   it("saves Codex reasoning guard rules from detail dialog", () => {
@@ -517,26 +714,229 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("降智命中标签"), {
       target: { value: "守卫命中" },
     });
-    const input = within(dialog).getByDisplayValue("516, 1034, 1552") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "516, 1024" } });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_hit_label: "守卫命中",
-      codex_reasoning_guard_compare_mode: "equals",
-      codex_reasoning_guard_reasoning_equals: [516, 1024],
-      codex_reasoning_guard_model_rules: [],
       codex_reasoning_guard_immediate_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
       codex_reasoning_guard_exhausted_action: "return_error",
       ...defaultCodexReasoningGuardRetrySettings,
     });
+  });
+
+  it("saves Codex reasoning guard final-answer-only rule mode", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("规则模板"), {
+      target: { value: "builtin-final-answer-only-high-xhigh" },
+    });
+    expect(
+      within(dialog).getByText(
+        "请求 reasoning effort 为 high/xhigh 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。"
+      )
+    ).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex_reasoning_guard_rule_mode: "final_answer_only_high_xhigh",
+        codex_reasoning_guard_active_template_id: "builtin-final-answer-only-high-xhigh",
+      })
+    );
+  });
+
+  it("copies and saves a custom Codex reasoning guard rule template", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "复制为自定义" }));
+
+    fireEvent.change(within(dialog).getByLabelText("模板名称"), {
+      target: { value: "Custom token template" },
+    });
+    fireEvent.change(within(dialog).getAllByLabelText("规则 ID")[0], {
+      target: { value: "token-777" },
+    });
+    fireEvent.change(within(dialog).getAllByLabelText("规则名称")[0], {
+      target: { value: "reasoning_tokens == 777" },
+    });
+    fireEvent.change(within(dialog).getAllByLabelText("token 匹配")[0], {
+      target: { value: "777" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex_reasoning_guard_active_template_id: "custom-builtin-legacy-reasoning-tokens",
+        codex_reasoning_guard_custom_templates: [
+          expect.objectContaining({
+            id: "custom-builtin-legacy-reasoning-tokens",
+            name: "Custom token template",
+            rules: expect.arrayContaining([
+              expect.objectContaining({
+                id: "token-777",
+                reasoning_tokens: 777,
+                action: "intercept",
+              }),
+            ]),
+          }),
+        ],
+      })
+    );
+  });
+
+  it("rejects invalid Codex reasoning guard template form before saving", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "复制为自定义" }));
+    fireEvent.change(within(dialog).getByLabelText("模板名称"), {
+      target: { value: "   " },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("Codex 降智拦截模板 1名称不能为空")).toBeInTheDocument();
+  });
+
+  it("rejects nonnumeric Codex reasoning guard token input before saving", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "复制为自定义" }));
+    fireEvent.change(within(dialog).getAllByLabelText("token 匹配")[0], {
+      target: { value: "abc" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
+    expect(screen.getByText(/token 匹配必须是 0 到 .*之间的整数/)).toBeInTheDocument();
+  });
+
+  it("copies final-answer-only template with the zero reasoning token exemption", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings({
+          codex_reasoning_guard_rule_mode: "final_answer_only_high_xhigh",
+          codex_reasoning_guard_active_template_id: "builtin-final-answer-only-high-xhigh",
+        })}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.click(screen.getByRole("button", { name: "复制为自定义" }));
+    const tokenInputs = within(dialog).getAllByLabelText("token 匹配") as HTMLInputElement[];
+    const actionSelects = within(dialog).getAllByLabelText("动作") as HTMLSelectElement[];
+
+    expect(tokenInputs[0]).toHaveValue("0");
+    expect(actionSelects[0].value).toBe("no_intercept");
   });
 
   it("saves Codex reasoning guard budget settings from detail dialog", () => {
@@ -566,7 +966,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("立即重试次数"), {
       target: { value: "4" },
@@ -584,9 +984,6 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_hit_label: "降智命中",
-      codex_reasoning_guard_compare_mode: "equals",
-      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
-      codex_reasoning_guard_model_rules: [],
       codex_reasoning_guard_immediate_retry_budget: 4,
       codex_reasoning_guard_delayed_retry_budget: 3,
       codex_reasoning_guard_delayed_retry_ms: 1500,
@@ -622,7 +1019,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("立即重试次数"), {
       target: { value: "101" },
@@ -631,6 +1028,309 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
     expect(screen.getByText("立即重试预算必须在 0 到 100 之间。")).toBeInTheDocument();
+  });
+
+  it("saves Codex reasoning guard continuation repair settings", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    expect(screen.getByText("继续思考补救")).toBeInTheDocument();
+    expect(screen.getByText(/独立于降智拦截开关生效/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("switch", { name: "切换 Codex 继续思考补救" }));
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_continuation_repair_enabled: true,
+    });
+
+    fireEvent.change(screen.getByLabelText("最大续写轮数"), {
+      target: { value: "4" },
+    });
+    fireEvent.change(screen.getByLabelText("最大 output tokens"), {
+      target: { value: "12000" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存补救" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
+      codex_reasoning_guard_continuation_repair_enabled: true,
+      codex_reasoning_guard_continuation_max_rounds: 4,
+      codex_reasoning_guard_continuation_max_output_tokens: 12000,
+    });
+  });
+
+  it("renders saved Codex continuation repair state without using unsaved cap drafts", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings({
+          codex_reasoning_guard_continuation_repair_enabled: true,
+          codex_reasoning_guard_continuation_max_rounds: 4,
+          codex_reasoning_guard_continuation_max_output_tokens: 12000,
+        })}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    expect(screen.getByRole("switch", { name: "切换 Codex 继续思考补救" })).toBeChecked();
+    expect(screen.getByText("on")).toBeInTheDocument();
+    expect(screen.getByText("rounds=4 / output=12000")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("最大续写轮数"), {
+      target: { value: "8" },
+    });
+    fireEvent.change(screen.getByLabelText("最大 output tokens"), {
+      target: { value: "24000" },
+    });
+
+    expect(screen.getByText("rounds=4 / output=12000")).toBeInTheDocument();
+  });
+
+  it("keeps unsaved continuation caps when the continuation toggle save fails", async () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(false);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("最大续写轮数"), {
+      target: { value: "4" },
+    });
+    fireEvent.change(screen.getByLabelText("最大 output tokens"), {
+      target: { value: "12000" },
+    });
+    fireEvent.click(screen.getByRole("switch", { name: "切换 Codex 继续思考补救" }));
+
+    await waitFor(() =>
+      expect(screen.getByRole("switch", { name: "切换 Codex 继续思考补救" })).not.toBeChecked()
+    );
+    expect(screen.getByLabelText("最大续写轮数")).toHaveValue(4);
+    expect(screen.getByLabelText("最大 output tokens")).toHaveValue(12000);
+  });
+
+  it("renders unknown Codex continuation status as localized text", () => {
+    mockReasoningGuardStatsQuery.mockReturnValue({
+      data: createReasoningGuardStats({
+        continuation_by_status: [
+          {
+            status: "unknown",
+            request_count: 2,
+            attempt_count: 9,
+            average_sent_rounds: 0,
+          },
+        ],
+      }),
+      isFetching: false,
+      refetch: reasoningGuardStatsRefetch,
+    } as any);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    expect(screen.getByText("未知状态 · 9")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看继续思考补救详情" }));
+    expect(within(screen.getByRole("dialog")).getByText("未知状态")).toBeInTheDocument();
+  });
+
+  it("rejects invalid Codex reasoning guard continuation caps before saving", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("最大续写轮数"), {
+      target: { value: "0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存补救" }));
+
+    expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
+    expect(screen.getByText("继续思考最大轮数必须在 1 到 10 之间。")).toBeInTheDocument();
+  });
+
+  it("does not validate continuation caps when saving Codex reasoning guard rules", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.change(screen.getByLabelText("最大续写轮数"), {
+      target: { value: "0" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    fireEvent.change(within(dialog).getByLabelText("降智命中标签"), {
+      target: { value: "规则命中" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex_reasoning_guard_hit_label: "规则命中",
+      })
+    );
+    expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex_reasoning_guard_continuation_max_rounds: expect.any(Number),
+      })
+    );
+  });
+
+  it("does not render removed Codex reasoning guard legacy controls or sample diagnostics", () => {
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    expect(screen.queryByText("候选样本")).not.toBeInTheDocument();
+    expect(screen.queryByText("被动样本")).not.toBeInTheDocument();
+    expect(screen.queryByText("全局回退规则")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+
+    expect(within(dialog).queryByLabelText("规则模板 JSON")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("全局回退规则")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("模型规则")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("候选样本")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("被动样本")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("继续思考补救")).not.toBeInTheDocument();
   });
 
   it("saves Codex reasoning guard concurrent retry settings", () => {
@@ -660,7 +1360,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("重试策略"), {
       target: { value: "concurrent" },
@@ -678,9 +1378,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_hit_label: "降智命中",
-      codex_reasoning_guard_compare_mode: "equals",
-      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
-      codex_reasoning_guard_model_rules: [],
+      codex_reasoning_guard_rule_mode: "reasoning_tokens",
+      codex_reasoning_guard_active_template_id: "builtin-legacy-reasoning-tokens",
+      codex_reasoning_guard_custom_templates: [],
       codex_reasoning_guard_immediate_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
@@ -720,7 +1420,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("预算耗尽后"), {
       target: { value: "switch_model" },
@@ -733,9 +1433,9 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_hit_label: "降智命中",
-      codex_reasoning_guard_compare_mode: "equals",
-      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
-      codex_reasoning_guard_model_rules: [],
+      codex_reasoning_guard_rule_mode: "reasoning_tokens",
+      codex_reasoning_guard_active_template_id: "builtin-legacy-reasoning-tokens",
+      codex_reasoning_guard_custom_templates: [],
       codex_reasoning_guard_immediate_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
@@ -748,7 +1448,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     });
   });
 
-  it("saves Codex reasoning guard compare mode and model rules", () => {
+  it("saves model-specific Codex reasoning guard matching through template filters", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 
     render(
@@ -775,44 +1475,59 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
-    const compareSelect = within(dialog).getAllByDisplayValue("等于 (==)")[0] as HTMLSelectElement;
-    fireEvent.change(compareSelect, { target: { value: "less_than_or_equal" } });
-    fireEvent.click(screen.getByRole("button", { name: "新增模型规则" }));
-    fireEvent.change(within(dialog).getByPlaceholderText("例如：gpt-5-codex"), {
-      target: { value: "gpt-5-mini-codex" },
+    fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
+    fireEvent.change(within(dialog).getByLabelText("模板名称"), {
+      target: { value: "Mini model template" },
     });
-    fireEvent.change(within(dialog).getByDisplayValue("516") as HTMLInputElement, {
+    fireEvent.change(within(dialog).getByLabelText("token 匹配"), {
       target: { value: "256" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "新增条件" }));
+    fireEvent.change(within(dialog).getByLabelText("条件字段 1"), {
+      target: { value: "requested_model" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("条件值 1"), {
+      target: { value: "gpt-5-mini-codex" },
     });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_hit_label: "降智命中",
-      codex_reasoning_guard_compare_mode: "less_than_or_equal",
-      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
+      codex_reasoning_guard_rule_mode: "reasoning_tokens",
+      codex_reasoning_guard_active_template_id: "custom-reasoning-guard",
+      codex_reasoning_guard_custom_templates: [
+        expect.objectContaining({
+          id: "custom-reasoning-guard",
+          name: "Mini model template",
+          rules: [
+            expect.objectContaining({
+              reasoning_tokens: 256,
+              filters: [
+                expect.objectContaining({
+                  field: "requested_model",
+                  operator: "equals",
+                  string_value: "gpt-5-mini-codex",
+                }),
+              ],
+            }),
+          ],
+        }),
+      ],
       codex_reasoning_guard_immediate_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
       codex_reasoning_guard_exhausted_action: "return_error",
-      ...defaultCodexReasoningGuardRetrySettings,
-      codex_reasoning_guard_model_rules: [
-        {
-          requested_model: "gpt-5-mini-codex",
-          compare_mode: "equals",
-          reasoning_equals: [256],
-        },
-      ],
+      codex_reasoning_guard_retry_policy: "single",
+      codex_reasoning_guard_concurrent_max: 5,
+      codex_reasoning_guard_concurrent_interval_ms: 1000,
+      codex_reasoning_guard_concurrent_max_attempts: 10,
+      codex_reasoning_guard_model_fallbacks: [],
     });
-    expect(
-      screen.getByText(
-        "多个值请用英文逗号分隔。命中条件为 reasoning_tokens 小于等于任一规则值；若有多个阈值，会优先匹配更贴近的较小阈值。"
-      )
-    ).toBeInTheDocument();
   });
 
-  it("defaults missing Codex model rule compare mode to equals", () => {
+  it("does not surface or resave legacy Codex model rules", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 
     render(
@@ -846,34 +1561,25 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
 
-    expect(within(dialog).getByDisplayValue("gpt-5-mini-codex")).toBeInTheDocument();
-    expect(within(dialog).getAllByDisplayValue("等于 (==)")[1]).toBeInTheDocument();
+    expect(within(dialog).queryByDisplayValue("gpt-5-mini-codex")).not.toBeInTheDocument();
+    expect(within(dialog).queryByText("模型规则")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith({
       codex_reasoning_guard_hit_label: "降智命中",
-      codex_reasoning_guard_compare_mode: "equals",
-      codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
       codex_reasoning_guard_immediate_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
       codex_reasoning_guard_exhausted_action: "return_error",
       ...defaultCodexReasoningGuardRetrySettings,
-      codex_reasoning_guard_model_rules: [
-        {
-          requested_model: "gpt-5-mini-codex",
-          compare_mode: "equals",
-          reasoning_equals: [256],
-        },
-      ],
     });
   });
 
-  it("shows validation for invalid Codex reasoning guard values", () => {
+  it("shows validation for invalid Codex reasoning guard template values", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 
     render(
@@ -900,14 +1606,16 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
-    const input = within(dialog).getByDisplayValue("516, 1034, 1552") as HTMLInputElement;
-    fireEvent.change(input, { target: { value: "516, nope" } });
+    fireEvent.click(screen.getByRole("button", { name: "新建模板" }));
+    fireEvent.change(within(dialog).getByLabelText("token 匹配"), {
+      target: { value: "-1" },
+    });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
 
     expect(persistCodexReasoningGuardSettings).not.toHaveBeenCalled();
-    expect(screen.getByText("只支持非负整数，多个值请用逗号分隔。")).toBeInTheDocument();
+    expect(screen.getByText(/token 匹配必须是 0 到 .*之间的整数/)).toBeInTheDocument();
   });
 
   it("falls back to default hit label when the field is blank", async () => {
@@ -933,7 +1641,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     const dialog = screen.getByRole("dialog");
     fireEvent.change(within(dialog).getByLabelText("降智命中标签"), { target: { value: "   " } });
     fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
@@ -969,7 +1677,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     );
 
     expect(screen.queryByLabelText("降智命中标签")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "详情" }));
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
     expect(within(screen.getByRole("dialog")).getByLabelText("降智命中标签")).toBeInTheDocument();
   });
 
@@ -1554,5 +2262,163 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.getByLabelText("mock-code-editor")).toHaveValue('model = "gpt-5.4"\n');
     expect(screen.getByRole("button", { name: "编辑" })).toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "取消" })).not.toBeInTheDocument();
+  });
+
+  it("validates, cancels, reloads, and saves raw config.toml edits", async () => {
+    const persistCodexConfigToml = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    vi.mocked(cliManagerCodexConfigTomlValidate)
+      .mockResolvedValueOnce({ ok: true, error: null })
+      .mockResolvedValueOnce({
+        ok: false,
+        error: { message: "invalid toml", line: 2, column: 3 },
+      })
+      .mockResolvedValueOnce({ ok: true, error: null })
+      .mockResolvedValueOnce({ ok: true, error: null })
+      .mockResolvedValueOnce({ ok: true, error: null });
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig({ config_path: null })}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'model = "gpt-5"\n',
+        }}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={persistCodexConfigToml}
+      />
+    );
+
+    fireEvent.click(screen.getByText("高级配置（config.toml）"));
+    const reloadButton = await screen.findByRole("button", { name: "重新加载" });
+    expect(
+      screen.getByText((_, element) => element?.textContent === "/home/user/.codex/config.toml")
+    ).toBeInTheDocument();
+
+    fireEvent.click(reloadButton);
+    expect(screen.getByLabelText("mock-code-editor")).toHaveValue('model = "gpt-5"\n');
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    await waitFor(() => expect(cliManagerCodexConfigTomlValidate).toHaveBeenCalled());
+
+    fireEvent.change(screen.getByLabelText("mock-code-editor"), {
+      target: { value: "bad = [" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(await screen.findByText("TOML 校验失败")).toBeInTheDocument();
+    expect(screen.getByText("invalid toml")).toBeInTheDocument();
+    expect(screen.getByText("(line 2, column 3)")).toBeInTheDocument();
+    expect(persistCodexConfigToml).not.toHaveBeenCalled();
+
+    fireEvent.change(screen.getByLabelText("mock-code-editor"), {
+      target: { value: 'model = "gpt-5.4"\n' },
+    });
+    await waitFor(
+      () => {
+        expect(cliManagerCodexConfigTomlValidate).toHaveBeenCalledWith('model = "gpt-5.4"\n');
+      },
+      { timeout: 1200 }
+    );
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => {
+      expect(persistCodexConfigToml).toHaveBeenCalledWith('model = "gpt-5.4"\n');
+    });
+    expect(screen.getByRole("button", { name: "取消" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+    await waitFor(() => expect(persistCodexConfigToml).toHaveBeenCalledTimes(2));
+    expect(await screen.findByRole("button", { name: "编辑" })).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "编辑" }));
+    fireEvent.change(screen.getByLabelText("mock-code-editor"), {
+      target: { value: 'model = "discarded"\n' },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "取消" }));
+    expect(screen.getByLabelText("mock-code-editor")).toHaveValue('model = "gpt-5"\n');
+  });
+
+  it("renders loading, missing config, fallback info, and detection error states", async () => {
+    const refreshCodex = vi.fn().mockResolvedValue(undefined);
+
+    const { rerender } = render(
+      <CliManagerCodexTab
+        codexAvailable="checking"
+        codexLoading={true}
+        codexConfigLoading={true}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={null}
+        codexConfig={null}
+        codexConfigToml={null}
+        refreshCodex={refreshCodex}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(false)}
+      />
+    );
+
+    expect(screen.getByText("加载中...")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "刷新" })).toBeDisabled();
+    expect(screen.getByText("暂无配置，请尝试刷新")).toBeInTheDocument();
+
+    rerender(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo({
+          found: false,
+          version: null,
+          executable_path: null,
+          resolved_via: null,
+          shell: null,
+          error: "codex boom",
+        })}
+        codexConfig={createCodexConfig({
+          exists: false,
+          executable_path: undefined,
+          resolved_via: undefined,
+          config_dir: "",
+          config_path: "",
+          user_home_default_dir: "",
+          follow_codex_home_dir: "",
+          approval_policy: null,
+          sandbox_mode: null,
+          model: null,
+          model_reasoning_effort: null,
+          plan_mode_reasoning_effort: null,
+          web_search: null,
+          personality: "  ",
+        })}
+        codexConfigToml={null}
+        refreshCodex={refreshCodex}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(false)}
+      />
+    );
+
+    expect(screen.getByText("未检测到")).toBeInTheDocument();
+    expect(screen.getByText("不存在（将自动创建）")).toBeInTheDocument();
+    expect(screen.getAllByText("—").length).toBeGreaterThan(0);
+    expect(screen.getByText("检测失败：")).toBeInTheDocument();
+    expect(screen.getByText("codex boom")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "刷新" }));
+    await waitFor(() => expect(refreshCodex).toHaveBeenCalled());
   });
 });

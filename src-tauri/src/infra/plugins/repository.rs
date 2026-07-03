@@ -1,7 +1,8 @@
 use crate::db;
 use crate::domain::plugins::{
-    validate_manifest, PluginAuditLog, PluginDetail, PluginInstallSource, PluginManifest,
-    PluginPermissionRisk, PluginRuntime, PluginRuntimeFailure, PluginStatus, PluginSummary,
+    manifest_permission_risk, validate_manifest, validate_manifest_for_official_plugin,
+    PluginAuditLog, PluginDetail, PluginInstallSource, PluginManifest, PluginPermissionRisk,
+    PluginRuntimeFailure, PluginStatus, PluginSummary,
 };
 use crate::shared::error::{db_err, AppResult};
 use crate::shared::time::now_unix_seconds;
@@ -56,12 +57,18 @@ WHERE enabled = 1
         })
         .map_err(|e| db_err!("failed to query plugin market sources: {e}"))?;
 
+    let mut sources = Vec::new();
     for row in rows {
         let (index_url, public_key) =
             row.map_err(|e| db_err!("failed to read plugin market source: {e}"))?;
-        if index_url == url {
-            return Ok(Some(public_key));
-        }
+        sources.push((index_url, public_key));
+    }
+
+    if let Some((_, public_key)) = sources.iter().find(|(index_url, _)| index_url == url) {
+        return Ok(Some(public_key.clone()));
+    }
+
+    for (index_url, public_key) in sources {
         let source_host = reqwest::Url::parse(&index_url)
             .ok()
             .and_then(|parsed| parsed.host_str().map(str::to_ascii_lowercase));
@@ -147,6 +154,8 @@ WHERE plugin_id = ?1
         load_plugin_permissions(conn, plugin_id)?.unwrap_or((row.granted_permissions, Vec::new()));
     let audit_logs = list_audit_logs_with_conn(conn, Some(plugin_id), 50)?;
     let runtime_failures = list_runtime_failures_with_conn(conn, plugin_id, 50)?;
+    let rollback_versions =
+        list_rollback_versions_with_conn(conn, plugin_id, row.summary.current_version.as_deref())?;
 
     Ok(PluginDetail {
         summary: row.summary,
@@ -158,12 +167,92 @@ WHERE plugin_id = ?1
         pending_permissions,
         audit_logs,
         runtime_failures,
+        rollback_versions,
     })
 }
 
+fn list_rollback_versions_with_conn(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+    current_version: Option<&str>,
+) -> AppResult<Vec<String>> {
+    let mut stmt = conn
+        .prepare_cached(
+            r#"
+SELECT version, installed_dir
+FROM plugin_versions
+WHERE plugin_id = ?1
+ORDER BY created_at DESC, version DESC
+"#,
+        )
+        .map_err(|e| db_err!("failed to prepare plugin rollback versions query: {e}"))?;
+
+    let rows = stmt
+        .query_map(params![plugin_id], |row| {
+            Ok((row.get::<_, String>(0)?, row.get::<_, Option<String>>(1)?))
+        })
+        .map_err(|e| db_err!("failed to query plugin rollback versions: {e}"))?;
+
+    let mut versions = Vec::new();
+    for row in rows {
+        let (version, installed_dir) =
+            row.map_err(|e| db_err!("failed to read plugin rollback version row: {e}"))?;
+        if Some(version.as_str()) == current_version {
+            continue;
+        }
+        if installed_dir
+            .as_deref()
+            .is_some_and(plugin_installed_dir_available)
+        {
+            versions.push(version);
+        }
+    }
+    Ok(versions)
+}
+
+pub(crate) fn plugin_installed_dir_available(installed_dir: &str) -> bool {
+    let root = std::path::Path::new(installed_dir);
+    root.is_dir() && root.join("plugin.json").is_file()
+}
+
+pub(crate) fn with_plugin_transaction<T>(
+    db: &db::Db,
+    f: impl FnOnce(&rusqlite::Transaction<'_>) -> AppResult<T>,
+) -> AppResult<T> {
+    let mut conn = db.open_connection()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| db_err!("failed to start plugin transaction: {e}"))?;
+    match f(&tx) {
+        Ok(value) => {
+            tx.commit()
+                .map_err(|e| db_err!("failed to commit plugin transaction: {e}"))?;
+            Ok(value)
+        }
+        Err(err) => {
+            let _ = tx.rollback();
+            Err(err)
+        }
+    }
+}
+
 pub(crate) fn insert_plugin(db: &db::Db, input: InsertPluginInput) -> AppResult<PluginDetail> {
-    validate_manifest(&input.manifest, env!("CARGO_PKG_VERSION"))?;
     let conn = db.open_connection()?;
+    insert_plugin_with_conn(&conn, input)
+}
+
+pub(crate) fn insert_plugin_with_tx(
+    conn: &rusqlite::Transaction<'_>,
+    input: InsertPluginInput,
+) -> AppResult<PluginDetail> {
+    insert_plugin_with_conn(conn, input)
+}
+
+fn insert_plugin_with_conn(
+    conn: &rusqlite::Connection,
+    input: InsertPluginInput,
+) -> AppResult<PluginDetail> {
+    validate_manifest_for_source(&input.manifest, input.install_source)?;
     let now = now_unix_seconds();
     let manifest_json = serde_json::to_string(&input.manifest)
         .map_err(|e| format!("PLUGIN_INVALID_MANIFEST: failed to serialize manifest: {e}"))?;
@@ -226,7 +315,7 @@ INSERT OR IGNORE INTO plugin_versions(
     )
     .map_err(|e| db_err!("failed to insert plugin version: {e}"))?;
 
-    get_plugin_with_conn(&conn, &input.manifest.id)
+    get_plugin_with_conn(conn, &input.manifest.id)
 }
 
 pub(crate) fn update_plugin_status(
@@ -255,13 +344,31 @@ WHERE plugin_id = ?4
     get_plugin_with_conn(&conn, plugin_id)
 }
 
+#[allow(dead_code)]
 pub(crate) fn update_plugin_manifest(
     db: &db::Db,
     manifest: PluginManifest,
     installed_dir: Option<String>,
 ) -> AppResult<PluginDetail> {
-    validate_manifest(&manifest, env!("CARGO_PKG_VERSION"))?;
     let conn = db.open_connection()?;
+    update_plugin_manifest_with_conn(&conn, manifest, installed_dir)
+}
+
+pub(crate) fn update_plugin_manifest_with_tx(
+    conn: &rusqlite::Transaction<'_>,
+    manifest: PluginManifest,
+    installed_dir: Option<String>,
+) -> AppResult<PluginDetail> {
+    update_plugin_manifest_with_conn(conn, manifest, installed_dir)
+}
+
+fn update_plugin_manifest_with_conn(
+    conn: &rusqlite::Connection,
+    manifest: PluginManifest,
+    installed_dir: Option<String>,
+) -> AppResult<PluginDetail> {
+    let install_source = install_source_for_plugin_with_conn(conn, &manifest.id)?;
+    validate_manifest_for_source(&manifest, install_source)?;
     let now = now_unix_seconds();
     let plugin_id = manifest.id.clone();
     let version = manifest.version.clone();
@@ -320,7 +427,7 @@ INSERT OR IGNORE INTO plugin_versions(
     )
     .map_err(|e| db_err!("failed to insert plugin version: {e}"))?;
 
-    get_plugin_with_conn(&conn, &manifest.id)
+    get_plugin_with_conn(conn, &manifest.id)
 }
 
 pub(crate) fn get_plugin_version(
@@ -361,7 +468,27 @@ pub(crate) fn save_plugin_config(
     sensitive_keys: &[String],
 ) -> AppResult<PluginDetail> {
     let conn = db.open_connection()?;
-    ensure_plugin_exists(&conn, plugin_id)?;
+    save_plugin_config_with_conn(&conn, plugin_id, config_version, config, sensitive_keys)
+}
+
+pub(crate) fn save_plugin_config_with_tx(
+    conn: &rusqlite::Transaction<'_>,
+    plugin_id: &str,
+    config_version: u32,
+    config: &serde_json::Value,
+    sensitive_keys: &[String],
+) -> AppResult<PluginDetail> {
+    save_plugin_config_with_conn(conn, plugin_id, config_version, config, sensitive_keys)
+}
+
+fn save_plugin_config_with_conn(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+    config_version: u32,
+    config: &serde_json::Value,
+    sensitive_keys: &[String],
+) -> AppResult<PluginDetail> {
+    ensure_plugin_exists(conn, plugin_id)?;
     let now = now_unix_seconds();
     let config_json = serde_json::to_string(config)
         .map_err(|e| format!("PLUGIN_INVALID_CONFIG: failed to serialize config: {e}"))?;
@@ -399,7 +526,7 @@ ON CONFLICT(plugin_id) DO UPDATE SET
     )
     .map_err(|e| db_err!("failed to mirror plugin config: {e}"))?;
 
-    get_plugin_with_conn(&conn, plugin_id)
+    get_plugin_with_conn(conn, plugin_id)
 }
 
 pub(crate) fn plugin_config_version(db: &db::Db, plugin_id: &str) -> AppResult<Option<u32>> {
@@ -420,7 +547,25 @@ pub(crate) fn save_plugin_permissions(
     pending_permissions: &[String],
 ) -> AppResult<PluginDetail> {
     let conn = db.open_connection()?;
-    ensure_plugin_exists(&conn, plugin_id)?;
+    save_plugin_permissions_with_conn(&conn, plugin_id, permissions, pending_permissions)
+}
+
+pub(crate) fn save_plugin_permissions_with_tx(
+    conn: &rusqlite::Transaction<'_>,
+    plugin_id: &str,
+    permissions: &[String],
+    pending_permissions: &[String],
+) -> AppResult<PluginDetail> {
+    save_plugin_permissions_with_conn(conn, plugin_id, permissions, pending_permissions)
+}
+
+fn save_plugin_permissions_with_conn(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+    permissions: &[String],
+    pending_permissions: &[String],
+) -> AppResult<PluginDetail> {
+    ensure_plugin_exists(conn, plugin_id)?;
     let now = now_unix_seconds();
     let permissions_json = serde_json::to_string(permissions)
         .map_err(|e| format!("PLUGIN_INVALID_PERMISSION: failed to serialize permissions: {e}"))?;
@@ -451,7 +596,7 @@ ON CONFLICT(plugin_id) DO UPDATE SET
     )
     .map_err(|e| db_err!("failed to mirror plugin permissions: {e}"))?;
 
-    get_plugin_with_conn(&conn, plugin_id)
+    get_plugin_with_conn(conn, plugin_id)
 }
 
 pub(crate) fn append_audit_log(
@@ -459,6 +604,20 @@ pub(crate) fn append_audit_log(
     input: AppendPluginAuditLogInput,
 ) -> AppResult<PluginAuditLog> {
     let conn = db.open_connection()?;
+    append_audit_log_with_conn(&conn, input)
+}
+
+pub(crate) fn append_audit_log_with_tx(
+    conn: &rusqlite::Transaction<'_>,
+    input: AppendPluginAuditLogInput,
+) -> AppResult<PluginAuditLog> {
+    append_audit_log_with_conn(conn, input)
+}
+
+fn append_audit_log_with_conn(
+    conn: &rusqlite::Connection,
+    input: AppendPluginAuditLogInput,
+) -> AppResult<PluginAuditLog> {
     let details_json = serde_json::to_string(&input.details)
         .map_err(|e| format!("PLUGIN_INVALID_AUDIT: failed to serialize details: {e}"))?;
     let now = now_unix_seconds();
@@ -487,7 +646,7 @@ INSERT INTO plugin_audit_logs(
     .map_err(|e| db_err!("failed to append plugin audit log: {e}"))?;
 
     let id = conn.last_insert_rowid();
-    get_audit_log_by_id(&conn, id)
+    get_audit_log_by_id(conn, id)
 }
 
 pub(crate) fn list_audit_logs(
@@ -549,10 +708,11 @@ fn summary_from_row(row: &rusqlite::Row<'_>) -> Result<PluginSummary, rusqlite::
     let runtime = manifest
         .as_ref()
         .map(runtime_name)
+        .or_else(|| legacy_runtime_name(&manifest_json))
         .unwrap_or_else(|| "unknown".to_string());
     let permission_risk = manifest
         .as_ref()
-        .map(|manifest| highest_permission_risk(&manifest.permissions))
+        .map(manifest_permission_risk)
         .unwrap_or(PluginPermissionRisk::Low);
 
     Ok(PluginSummary {
@@ -572,13 +732,25 @@ fn summary_from_row(row: &rusqlite::Row<'_>) -> Result<PluginSummary, rusqlite::
 
 fn detail_from_row(row: &rusqlite::Row<'_>) -> Result<PluginDetailRow, rusqlite::Error> {
     let manifest_json: String = row.get("manifest_json")?;
-    let manifest: PluginManifest = serde_json::from_str(&manifest_json).map_err(|err| {
-        rusqlite::Error::FromSqlConversionFailure(
-            manifest_json.len(),
-            rusqlite::types::Type::Text,
-            Box::new(err),
-        )
-    })?;
+    let manifest: PluginManifest = match serde_json::from_str(&manifest_json) {
+        Ok(manifest) => manifest,
+        Err(_) if legacy_runtime_name(&manifest_json).is_some() => {
+            legacy_manifest_placeholder(&manifest_json).map_err(|placeholder_err| {
+                rusqlite::Error::FromSqlConversionFailure(
+                    manifest_json.len(),
+                    rusqlite::types::Type::Text,
+                    Box::new(placeholder_err),
+                )
+            })?
+        }
+        Err(err) => {
+            return Err(rusqlite::Error::FromSqlConversionFailure(
+                manifest_json.len(),
+                rusqlite::types::Type::Text,
+                Box::new(err),
+            ));
+        }
+    };
     let install_source_raw: String = row.get("install_source")?;
     let install_source =
         PluginInstallSource::parse(&install_source_raw).unwrap_or(PluginInstallSource::Local);
@@ -598,25 +770,78 @@ fn detail_from_row(row: &rusqlite::Row<'_>) -> Result<PluginDetailRow, rusqlite:
 }
 
 fn runtime_name(manifest: &PluginManifest) -> String {
-    match manifest.runtime {
-        PluginRuntime::DeclarativeRules { .. } => "declarativeRules".to_string(),
-        PluginRuntime::Native { ref engine } => format!("native:{engine}"),
-        PluginRuntime::Wasm { .. } => "wasm".to_string(),
+    let _ = manifest;
+    "extensionHost".to_string()
+}
+
+fn legacy_runtime_name(manifest_json: &str) -> Option<String> {
+    let raw: serde_json::Value = serde_json::from_str(manifest_json).ok()?;
+    let kind = raw
+        .get("runtime")
+        .and_then(|runtime| runtime.get("kind"))
+        .and_then(serde_json::Value::as_str)?;
+    match kind {
+        "wasm" | "process" => Some(kind.to_string()),
+        "native" => raw
+            .get("runtime")
+            .and_then(|runtime| runtime.get("engine"))
+            .and_then(serde_json::Value::as_str)
+            .map(|engine| format!("native:{engine}"))
+            .or_else(|| Some("native".to_string())),
+        _ => None,
     }
 }
 
-fn highest_permission_risk(permissions: &[String]) -> PluginPermissionRisk {
-    use crate::domain::plugins::permission_risk;
-    permissions
-        .iter()
-        .filter_map(|permission| permission_risk(permission))
-        .max_by_key(|risk| match risk {
-            PluginPermissionRisk::Low => 0,
-            PluginPermissionRisk::Medium => 1,
-            PluginPermissionRisk::High => 2,
-            PluginPermissionRisk::Critical => 3,
-        })
-        .unwrap_or(PluginPermissionRisk::Low)
+fn legacy_manifest_placeholder(manifest_json: &str) -> Result<PluginManifest, serde_json::Error> {
+    let mut raw: serde_json::Value = serde_json::from_str(manifest_json)?;
+    raw["runtime"] = serde_json::json!({
+        "kind": "extensionHost",
+        "language": "typescript"
+    });
+    raw["main"] = serde_json::json!("legacy/unsupported.js");
+    raw["hooks"] = serde_json::json!([]);
+    raw["permissions"] = serde_json::json!([]);
+    raw["activationEvents"] = serde_json::json!([]);
+    raw["contributes"] = serde_json::json!({
+        "providers": [],
+        "protocols": [],
+        "protocolBridges": [],
+        "commands": [],
+        "gatewayHooks": [],
+        "ui": {}
+    });
+    raw["capabilities"] = serde_json::json!([]);
+    serde_json::from_value(raw)
+}
+
+fn validate_manifest_for_source(
+    manifest: &PluginManifest,
+    install_source: PluginInstallSource,
+) -> AppResult<()> {
+    if install_source == PluginInstallSource::Official {
+        validate_manifest_for_official_plugin(manifest, env!("CARGO_PKG_VERSION"))?;
+    } else {
+        validate_manifest(manifest, env!("CARGO_PKG_VERSION"))?;
+    }
+    Ok(())
+}
+
+fn install_source_for_plugin_with_conn(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+) -> AppResult<PluginInstallSource> {
+    let raw = conn
+        .query_row(
+            "SELECT install_source FROM plugins WHERE plugin_id = ?1",
+            params![plugin_id],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to read plugin install source: {e}"))?;
+    Ok(raw
+        .as_deref()
+        .and_then(PluginInstallSource::parse)
+        .unwrap_or(PluginInstallSource::Local))
 }
 
 fn parse_manifest_lossy(raw: &str) -> Option<PluginManifest> {
@@ -825,17 +1050,18 @@ mod tests {
             "version": "1.0.0",
             "apiVersion": "1.0.0",
             "runtime": {
-                "kind": "declarativeRules",
-                "rules": ["rules/main.json"]
+                "kind": "extensionHost",
+                "language": "typescript"
             },
-            "hooks": [
-                {
+            "main": "dist/index.js",
+            "contributes": {
+                "gatewayHooks": [{
                     "name": "gateway.request.afterBodyRead",
                     "priority": 100,
                     "failurePolicy": "fail-open"
-                }
-            ],
-            "permissions": ["request.body.read", "request.body.write"],
+                }]
+            },
+            "capabilities": ["gateway.hooks"],
             "hostCompatibility": {
                 "app": ">=0.56.0 <1.0.0",
                 "pluginApi": "^1.0.0",
@@ -843,6 +1069,69 @@ mod tests {
             }
         }))
         .unwrap()
+    }
+
+    fn test_manifest(plugin_id: &str, version: &str) -> PluginManifest {
+        let mut manifest = manifest();
+        manifest.id = plugin_id.to_string();
+        manifest.version = version.to_string();
+        manifest
+    }
+
+    #[test]
+    fn plugin_repository_transaction_rolls_back_partial_plugin_writes() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let manifest = test_manifest("tx.rollback", "1.0.0");
+        let granted = vec!["request.body.read".to_string()];
+        let pending = vec!["request.body.write".to_string()];
+
+        let result: AppResult<()> = with_plugin_transaction(&db, |tx| {
+            insert_plugin_with_tx(
+                tx,
+                InsertPluginInput {
+                    manifest: manifest.clone(),
+                    install_source: PluginInstallSource::Local,
+                    status: PluginStatus::Disabled,
+                    installed_dir: Some("/tmp/plugin".to_string()),
+                },
+            )?;
+            save_plugin_permissions_with_tx(tx, &manifest.id, &granted, &pending)?;
+            append_audit_log_with_tx(
+                tx,
+                AppendPluginAuditLogInput {
+                    plugin_id: Some(manifest.id.clone()),
+                    trace_id: None,
+                    event_type: "plugin.test".to_string(),
+                    risk_level: "low".to_string(),
+                    message: "test audit".to_string(),
+                    details: serde_json::json!({ "test": true }),
+                },
+            )?;
+            Err(crate::shared::error::AppError::new(
+                "TEST_ROLLBACK",
+                "force rollback",
+            ))
+        });
+
+        assert!(result.is_err());
+        assert!(get_plugin(&db, "tx.rollback").is_err());
+        let conn = db.open_connection().unwrap();
+        for table in [
+            "plugins",
+            "plugin_versions",
+            "plugin_permissions",
+            "plugin_audit_logs",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE plugin_id = ?1"),
+                    params!["tx.rollback"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} rows should roll back");
+        }
     }
 
     #[test]
@@ -909,7 +1198,7 @@ mod tests {
         assert_eq!(list.len(), 1);
         assert_eq!(list[0].plugin_id, "community.prompt-helper");
         assert_eq!(list[0].status, PluginStatus::Enabled);
-        assert_eq!(list[0].runtime, "declarativeRules");
+        assert_eq!(list[0].runtime, "extensionHost");
 
         let detail = get_plugin(&db, "community.prompt-helper").unwrap();
         assert_eq!(detail.manifest, manifest);
@@ -988,6 +1277,58 @@ INSERT INTO plugin_market_sources(
     }
 
     #[test]
+    fn trusted_market_public_key_prefers_exact_url_before_host_fallback() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let conn = db.open_connection().unwrap();
+        conn.execute(
+            r#"
+INSERT INTO plugin_market_sources(
+  name,
+  index_url,
+  enabled,
+  trusted_public_key,
+  created_at,
+  updated_at
+) VALUES (?1, ?2, 1, ?3, 1, 1)
+"#,
+            rusqlite::params![
+                "Host Fallback",
+                "https://plugins.example.test/community/index.json",
+                "host-key"
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            r#"
+INSERT INTO plugin_market_sources(
+  name,
+  index_url,
+  enabled,
+  trusted_public_key,
+  created_at,
+  updated_at
+) VALUES (?1, ?2, 1, ?3, 2, 2)
+"#,
+            rusqlite::params![
+                "Exact Source",
+                "https://plugins.example.test/official/index.json",
+                "exact-key"
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let key = trusted_market_public_key_for_url(
+            &db,
+            "https://plugins.example.test/official/index.json",
+        )
+        .unwrap();
+
+        assert_eq!(key.as_deref(), Some("exact-key"));
+    }
+
+    #[test]
     fn repository_maps_missing_plugin_to_not_found() {
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
@@ -1000,7 +1341,7 @@ INSERT INTO plugin_market_sources(
         let dir = tempfile::tempdir().unwrap();
         let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
         let mut manifest = manifest();
-        manifest.permissions.push("unknown.permission".to_string());
+        manifest.capabilities.push("unknown.capability".to_string());
 
         let err = insert_plugin(
             &db,
@@ -1013,6 +1354,6 @@ INSERT INTO plugin_market_sources(
         )
         .unwrap_err();
 
-        assert!(err.to_string().starts_with("PLUGIN_UNKNOWN_PERMISSION:"));
+        assert!(err.to_string().starts_with("PLUGIN_UNKNOWN_CAPABILITY:"));
     }
 }

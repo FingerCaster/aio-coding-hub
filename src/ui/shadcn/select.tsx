@@ -1,14 +1,10 @@
-import { forwardRef } from "react";
 import { cn } from "@/ui/shadcn/utils";
 
-export type SelectProps = React.SelectHTMLAttributes<HTMLSelectElement> & {
+export type SelectProps = React.ComponentPropsWithRef<"select"> & {
   mono?: boolean;
 };
 
-export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select(
-  { className, mono, ...props },
-  ref
-) {
+export function Select({ className, mono, ref, ...props }: SelectProps) {
   return (
     <select
       ref={ref}
@@ -22,4 +18,4 @@ export const Select = forwardRef<HTMLSelectElement, SelectProps>(function Select
       {...props}
     />
   );
-});
+}

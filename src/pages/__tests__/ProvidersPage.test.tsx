@@ -15,12 +15,6 @@ vi.mock("../providers/ProvidersView", () => ({
   ),
 }));
 
-vi.mock("../providers/SortModesView", () => ({
-  SortModesView: ({ activeCli }: any) => (
-    <div data-testid="sort-modes-view">sort-modes:{activeCli}</div>
-  ),
-}));
-
 vi.mock("../../query/providers", async () => {
   const actual =
     await vi.importActual<typeof import("../../query/providers")>("../../query/providers");
@@ -68,6 +62,5 @@ describe("pages/ProvidersPage", () => {
 
     expect(screen.getByRole("heading", { level: 1, name: "供应商" })).toBeInTheDocument();
     expect(screen.getByText("providers:claude")).toBeInTheDocument();
-    expect(screen.queryByTestId("sort-modes-view")).not.toBeInTheDocument();
   });
 });

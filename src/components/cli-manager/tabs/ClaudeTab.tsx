@@ -1,6 +1,6 @@
 // Usage: UI for configuring Claude Code global settings (settings.json) and safe env toggles.
 
-import { useCallback, useEffect, useState, type ReactNode } from "react";
+import { useCallback, useId, useReducer, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import type {
   ClaudeCliInfo,
@@ -90,10 +90,10 @@ function boolOrDefault(value: boolean | null | undefined, fallback: boolean) {
 }
 
 function parseLines(text: string): string[] {
-  return text
-    .split("\n")
-    .map((l) => l.trim())
-    .filter(Boolean);
+  return text.split("\n").flatMap((l) => {
+    const line = l.trim();
+    return line ? [line] : [];
+  });
 }
 
 function PermissionTextareaItem({
@@ -298,6 +298,1041 @@ type HookEditorState = {
   timeout: string;
 };
 
+type ClaudeHookEditorIds = {
+  eventSelectId: string;
+  matcherInputId: string;
+  commandInputId: string;
+  timeoutInputId: string;
+};
+
+type ClaudeDraftKey =
+  | "modelText"
+  | "outputStyleText"
+  | "languageText"
+  | "mcpTimeoutMsText"
+  | "mcpToolTimeoutMsText"
+  | "autoCompactWindowText"
+  | "blockingLimitOverrideText"
+  | "maxOutputTokensText"
+  | "maxMcpOutputTokensText"
+  | "permissionsAllowText"
+  | "permissionsAskText"
+  | "permissionsDenyText";
+
+type ClaudeDraftState = {
+  sourceKey: string;
+  values: Record<ClaudeDraftKey, string>;
+};
+
+type ClaudeDraftAction =
+  | { type: "resetFromSettings"; state: ClaudeDraftState }
+  | { type: "setValue"; key: ClaudeDraftKey; value: string };
+
+const EMPTY_CLAUDE_DRAFT_VALUES: Record<ClaudeDraftKey, string> = {
+  modelText: "",
+  outputStyleText: "",
+  languageText: "",
+  mcpTimeoutMsText: "",
+  mcpToolTimeoutMsText: "",
+  autoCompactWindowText: "",
+  blockingLimitOverrideText: "",
+  maxOutputTokensText: "",
+  maxMcpOutputTokensText: "",
+  permissionsAllowText: "",
+  permissionsAskText: "",
+  permissionsDenyText: "",
+};
+
+function formatNullableNumber(value: number | null | undefined) {
+  return value == null ? "" : String(value);
+}
+
+function createClaudeDraftState(claudeSettings: ClaudeSettingsState | null): ClaudeDraftState {
+  if (!claudeSettings) {
+    return { sourceKey: "empty", values: EMPTY_CLAUDE_DRAFT_VALUES };
+  }
+
+  const values: Record<ClaudeDraftKey, string> = {
+    modelText: claudeSettings.model ?? "",
+    outputStyleText: claudeSettings.output_style ?? "",
+    languageText: claudeSettings.language ?? "",
+    mcpTimeoutMsText: formatNullableNumber(claudeSettings.env_mcp_timeout_ms),
+    mcpToolTimeoutMsText: formatNullableNumber(claudeSettings.env_mcp_tool_timeout_ms),
+    autoCompactWindowText: formatNullableNumber(claudeSettings.env_claude_code_auto_compact_window),
+    blockingLimitOverrideText: formatNullableNumber(
+      claudeSettings.env_claude_code_blocking_limit_override
+    ),
+    maxOutputTokensText: formatNullableNumber(claudeSettings.env_claude_code_max_output_tokens),
+    maxMcpOutputTokensText: formatNullableNumber(claudeSettings.env_max_mcp_output_tokens),
+    permissionsAllowText: (claudeSettings.permissions_allow ?? []).join("\n"),
+    permissionsAskText: (claudeSettings.permissions_ask ?? []).join("\n"),
+    permissionsDenyText: (claudeSettings.permissions_deny ?? []).join("\n"),
+  };
+
+  return {
+    sourceKey: Object.values(values).join("\u0000"),
+    values,
+  };
+}
+
+function claudeDraftReducer(state: ClaudeDraftState, action: ClaudeDraftAction): ClaudeDraftState {
+  if (action.type === "resetFromSettings") {
+    return action.state;
+  }
+  return {
+    ...state,
+    values: {
+      ...state.values,
+      [action.key]: action.value,
+    },
+  };
+}
+
+function ClaudeHooksToolbar({
+  count,
+  loading,
+  hasError,
+  onCreate,
+  onRefresh,
+}: {
+  count: number;
+  loading: boolean;
+  hasError: boolean;
+  onCreate: () => void;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="mb-4 flex items-center justify-between gap-3">
+      <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
+        <Zap className="h-4 w-4 text-muted-foreground" />
+        Claude Code Hooks ({count})
+      </h3>
+      <div className="flex items-center gap-2">
+        <Button
+          onClick={onRefresh}
+          variant="secondary"
+          size="sm"
+          className="h-8"
+          disabled={loading}
+        >
+          <RefreshCw className="mr-1 h-3 w-3" />
+          刷新 Hooks
+        </Button>
+        <Button
+          onClick={onCreate}
+          variant="secondary"
+          size="sm"
+          className="h-8"
+          disabled={loading || hasError}
+        >
+          <Plus className="mr-1 h-3 w-3" />
+          添加
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ClaudeHooksList({
+  groups,
+  onDelete,
+  onEdit,
+}: {
+  groups: ClaudeHookGroup[];
+  onDelete: (index: number) => void;
+  onEdit: (index: number, hookIndex?: number) => void;
+}) {
+  return (
+    <div className="space-y-2">
+      {groups.map((group, index) => (
+        <div
+          key={`${group.event}-${group.matcher}-${index}`}
+          className="flex items-start justify-between gap-3 rounded-lg border border-border bg-white p-3 dark:border-border dark:bg-secondary"
+        >
+          <div className="min-w-0 flex-1">
+            <div className="flex flex-wrap items-center gap-1.5">
+              <span className="inline-flex items-center rounded-md bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
+                {group.event}
+              </span>
+              {group.matcher ? (
+                <span className="inline-flex items-center rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground dark:bg-secondary dark:text-secondary-foreground">
+                  {group.matcher}
+                </span>
+              ) : null}
+            </div>
+            {group.hooks.map((hook, hookIndex) => (
+              <div key={hookIndex} className="mt-1.5 flex items-center gap-1.5">
+                <div
+                  className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
+                  title={hook.command}
+                >
+                  {hook.command}
+                  {hook.timeout != null ? (
+                    <span className="ml-2 text-muted-foreground">({hook.timeout}s)</span>
+                  ) : null}
+                </div>
+                {group.hooks.length > 1 ? (
+                  <Button
+                    onClick={() => onEdit(index, hookIndex)}
+                    variant="secondary"
+                    size="sm"
+                    className="h-5 w-5 shrink-0 p-0"
+                    title="编辑此命令"
+                  >
+                    <Pencil className="h-2.5 w-2.5" />
+                  </Button>
+                ) : null}
+              </div>
+            ))}
+          </div>
+          <div className="flex shrink-0 items-center gap-1">
+            <Button
+              onClick={() => onEdit(index)}
+              variant="secondary"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="编辑"
+            >
+              <Pencil className="h-3 w-3" />
+            </Button>
+            <Button
+              onClick={() => onDelete(index)}
+              variant="secondary"
+              size="sm"
+              className="h-7 w-7 p-0"
+              title="删除"
+            >
+              <Trash2 className="h-3 w-3" />
+            </Button>
+          </div>
+        </div>
+      ))}
+    </div>
+  );
+}
+
+function ClaudeHookEditorDialog({
+  editor,
+  ids,
+  saving,
+  onClose,
+  onSave,
+  onUpdate,
+}: {
+  editor: HookEditorState | null;
+  ids: ClaudeHookEditorIds;
+  saving: boolean;
+  onClose: () => void;
+  onSave: () => void;
+  onUpdate: (editor: HookEditorState) => void;
+}) {
+  if (!editor) return null;
+
+  return (
+    <Dialog
+      open={true}
+      onOpenChange={(open) => {
+        if (!open && !saving) onClose();
+      }}
+      title={editor.mode === "create" ? "添加 Hook" : "编辑 Hook"}
+      className="max-w-lg"
+    >
+      <div className="flex flex-col gap-4">
+        <div>
+          <label
+            htmlFor={ids.eventSelectId}
+            className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground"
+          >
+            事件
+          </label>
+          <Select
+            id={ids.eventSelectId}
+            value={editor.event}
+            onChange={(event) => onUpdate({ ...editor, event: event.target.value })}
+            className="w-full"
+          >
+            {HOOK_EVENTS.map((eventName) => (
+              <option key={eventName} value={eventName}>
+                {eventName}
+              </option>
+            ))}
+          </Select>
+        </div>
+        <div>
+          <label
+            htmlFor={ids.matcherInputId}
+            className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground"
+          >
+            Matcher（匹配工具名或事件子类型，多个用 | 分隔，留空匹配全部）
+          </label>
+          <Input
+            id={ids.matcherInputId}
+            value={editor.matcher}
+            onChange={(event) => onUpdate({ ...editor, matcher: event.target.value })}
+            placeholder="例如 Edit|Write 或留空"
+            className="text-sm"
+          />
+        </div>
+        <div>
+          <label
+            htmlFor={ids.commandInputId}
+            className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground"
+          >
+            命令
+          </label>
+          <Input
+            id={ids.commandInputId}
+            value={editor.command}
+            onChange={(event) => onUpdate({ ...editor, command: event.target.value })}
+            placeholder="要执行的 shell 命令"
+            className="font-mono text-sm"
+          />
+        </div>
+        <div>
+          <label
+            htmlFor={ids.timeoutInputId}
+            className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground"
+          >
+            超时（秒，留空使用默认值）
+          </label>
+          <Input
+            id={ids.timeoutInputId}
+            value={editor.timeout}
+            onChange={(event) =>
+              onUpdate({
+                ...editor,
+                timeout: event.target.value.replace(/[^0-9]/g, ""),
+              })
+            }
+            placeholder="例如 30"
+            className="text-sm"
+          />
+        </div>
+        <div className="flex justify-end gap-2">
+          <Button onClick={onClose} variant="secondary" size="sm" disabled={saving}>
+            取消
+          </Button>
+          <Button
+            onClick={onSave}
+            variant="primary"
+            size="sm"
+            disabled={saving || !editor.command.trim()}
+          >
+            {saving ? "保存中…" : "保存"}
+          </Button>
+        </div>
+      </div>
+    </Dialog>
+  );
+}
+
+function ClaudeHookDeleteDialog({
+  deleteTarget,
+  groups,
+  saving,
+  onCancel,
+  onConfirm,
+}: {
+  deleteTarget: number | null;
+  groups: ClaudeHookGroup[];
+  saving: boolean;
+  onCancel: () => void;
+  onConfirm: () => void;
+}) {
+  return (
+    <Dialog
+      open={deleteTarget != null}
+      onOpenChange={(open) => {
+        if (!open && !saving) onCancel();
+      }}
+      title="确认删除 Hook"
+      description={
+        deleteTarget != null && groups[deleteTarget]
+          ? `将删除事件 ${groups[deleteTarget].event} 的 Hook${
+              groups[deleteTarget].matcher ? `（matcher: ${groups[deleteTarget].matcher}）` : ""
+            }`
+          : undefined
+      }
+      className="max-w-lg"
+    >
+      <div className="flex flex-wrap items-center justify-end gap-2">
+        <Button onClick={onCancel} variant="secondary" disabled={saving}>
+          取消
+        </Button>
+        <Button onClick={onConfirm} variant="primary" disabled={saving}>
+          {saving ? "删除中…" : "确认删除"}
+        </Button>
+      </div>
+    </Dialog>
+  );
+}
+
+function ClaudeHeader({
+  claudeAvailable,
+  claudeInfo,
+  loading,
+  versionRefreshToken,
+  onRefresh,
+}: {
+  claudeAvailable: CliManagerAvailability;
+  claudeInfo: ClaudeCliInfo | null;
+  loading: boolean;
+  versionRefreshToken: number;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+      <div className="flex items-center gap-4">
+        <div className="h-14 w-14 rounded-xl bg-[#D97757]/10 flex items-center justify-center text-[#D97757]">
+          <Bot className="h-8 w-8" />
+        </div>
+        <div>
+          <h2 className="text-base font-semibold text-foreground">Claude Code</h2>
+          <div className="flex items-center gap-2 mt-1">
+            {claudeAvailable === "available" && claudeInfo?.found ? (
+              <>
+                <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
+                  <CheckCircle2 className="h-3 w-3" />
+                  已安装 {claudeInfo.version}
+                </span>
+                <CliVersionBadge
+                  cliKey="claude"
+                  installedVersion={claudeInfo.version}
+                  refreshToken={versionRefreshToken}
+                  onUpdateComplete={onRefresh}
+                />
+              </>
+            ) : claudeAvailable === "checking" || loading ? (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-600/20">
+                <RefreshCw className="h-3 w-3 animate-spin" />
+                加载中...
+              </span>
+            ) : (
+              <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
+                未检测到
+              </span>
+            )}
+          </div>
+        </div>
+      </div>
+
+      <Button
+        onClick={onRefresh}
+        variant="secondary"
+        size="sm"
+        disabled={loading}
+        className="gap-2"
+      >
+        <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+        刷新
+      </Button>
+    </div>
+  );
+}
+
+function ClaudeInfoGrid({
+  claudeInfo,
+  claudeSettings,
+  configDir,
+  settingsPath,
+  onOpenConfigDir,
+}: {
+  claudeInfo: ClaudeCliInfo | null;
+  claudeSettings: ClaudeSettingsState | null;
+  configDir?: string | null;
+  settingsPath?: string | null;
+  onOpenConfigDir: () => void;
+}) {
+  if (!configDir && !settingsPath && !claudeInfo) return null;
+
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <FolderOpen className="h-3 w-3" />
+          配置目录
+        </div>
+        <div className="flex items-center gap-1.5">
+          <div
+            className="font-mono text-xs text-secondary-foreground truncate flex-1"
+            title={configDir ?? undefined}
+          >
+            {configDir ?? "—"}
+          </div>
+          <Button
+            onClick={onOpenConfigDir}
+            disabled={!configDir}
+            size="sm"
+            variant="ghost"
+            className="shrink-0 h-6 w-6 p-0 hover:bg-muted dark:hover:bg-secondary"
+            title="打开配置目录"
+          >
+            <ExternalLink className="h-3 w-3" />
+          </Button>
+        </div>
+      </div>
+
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <FileJson className="h-3 w-3" />
+          settings.json
+        </div>
+        <div
+          className="font-mono text-xs text-secondary-foreground truncate"
+          title={settingsPath ?? "—"}
+        >
+          {settingsPath ?? "—"}
+        </div>
+        {claudeSettings ? (
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            {claudeSettings.exists ? "已存在" : "不存在（将自动创建）"}
+          </div>
+        ) : null}
+      </div>
+
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <Terminal className="h-3 w-3" />
+          可执行文件
+        </div>
+        <div
+          className="font-mono text-xs text-secondary-foreground truncate"
+          title={claudeInfo?.executable_path ?? "—"}
+        >
+          {claudeInfo?.executable_path ?? "—"}
+        </div>
+      </div>
+
+      <div className="bg-secondary rounded-lg p-3 border border-border">
+        <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+          <Settings className="h-3 w-3" />
+          解析方式
+        </div>
+        <div
+          className="font-mono text-xs text-secondary-foreground truncate"
+          title={claudeInfo?.resolved_via ?? "—"}
+        >
+          {claudeInfo?.resolved_via ?? "—"}
+        </div>
+        <div className="mt-1 text-[11px] text-muted-foreground">
+          SHELL: {claudeInfo?.shell ?? "—"}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ClaudeBasicSettingsSection({
+  claudeSettings,
+  draftValues,
+  saving,
+  persistClaudeSettings,
+  setDraftValue,
+}: {
+  claudeSettings: ClaudeSettingsState;
+  draftValues: Record<ClaudeDraftKey, string>;
+  saving: boolean;
+  persistClaudeSettings: (patch: ClaudeSettingsPatch) => Promise<void> | void;
+  setDraftValue: (key: ClaudeDraftKey, value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        基础配置
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="默认模型 (model)"
+          subtitle="覆盖 Claude Code 默认使用的模型。留空表示不设置（交由 Claude Code 默认/上层配置决定）。"
+        >
+          <Input
+            value={draftValues.modelText}
+            onChange={(e) => setDraftValue("modelText", e.currentTarget.value)}
+            onBlur={() => void persistClaudeSettings({ model: draftValues.modelText.trim() })}
+            placeholder="例如：claude-sonnet-4-5-20250929"
+            className="font-mono w-[320px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="输出风格 (outputStyle)"
+          subtitle="配置输出风格（对应 /output-style）。留空表示不设置。"
+        >
+          <Input
+            value={draftValues.outputStyleText}
+            onChange={(e) => setDraftValue("outputStyleText", e.currentTarget.value)}
+            onBlur={() =>
+              void persistClaudeSettings({ output_style: draftValues.outputStyleText.trim() })
+            }
+            placeholder='例如："Explanatory"'
+            className="font-mono w-[320px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="语言 (language)" subtitle="设置默认回复语言。留空表示不设置。">
+          <Input
+            value={draftValues.languageText}
+            onChange={(e) => setDraftValue("languageText", e.currentTarget.value)}
+            onBlur={() => void persistClaudeSettings({ language: draftValues.languageText.trim() })}
+            placeholder='例如："japanese"'
+            className="font-mono w-[320px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="默认启用 Thinking (alwaysThinkingEnabled)"
+          subtitle="默认启用 extended thinking（通常建议用 /config 配置；此处为显式开关）。"
+        >
+          <Switch
+            checked={boolOrDefault(claudeSettings.always_thinking_enabled, false)}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ always_thinking_enabled: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function ClaudeInteractionSettingsSection({
+  claudeSettings,
+  saving,
+  persistClaudeSettings,
+}: {
+  claudeSettings: ClaudeSettingsState;
+  saving: boolean;
+  persistClaudeSettings: (patch: ClaudeSettingsPatch) => Promise<void> | void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        交互与显示
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="显示耗时 (showTurnDuration)"
+          subtitle="显示 turn duration（默认开启）。"
+        >
+          <Switch
+            checked={boolOrDefault(claudeSettings.show_turn_duration, true)}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ show_turn_duration: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="Spinner Tips (spinnerTipsEnabled)"
+          subtitle="在 spinner 中显示提示（默认开启）。"
+        >
+          <Switch
+            checked={boolOrDefault(claudeSettings.spinner_tips_enabled, true)}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ spinner_tips_enabled: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="Terminal Progress Bar (terminalProgressBarEnabled)"
+          subtitle="在支持的终端显示进度条（默认开启）。"
+        >
+          <Switch
+            checked={boolOrDefault(claudeSettings.terminal_progress_bar_enabled, true)}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ terminal_progress_bar_enabled: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="Respect .gitignore (respectGitignore)"
+          subtitle="@ 文件选择器是否遵循 .gitignore（默认开启）。"
+        >
+          <Switch
+            checked={boolOrDefault(claudeSettings.respect_gitignore, true)}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ respect_gitignore: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="关闭 Claude Git 参与者"
+          subtitle="开启后会写入 attribution.commit / attribution.pr 为空字符串，隐藏 Git commit / PR 里的 Claude 标记；关闭后删除这两个字段。"
+        >
+          <Switch
+            checked={claudeSettings.disable_git_participant}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ disable_git_participant: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function ClaudePermissionsSection({
+  draftValues,
+  saving,
+  persistClaudeSettings,
+  setDraftValue,
+}: {
+  draftValues: Record<ClaudeDraftKey, string>;
+  saving: boolean;
+  persistClaudeSettings: (patch: ClaudeSettingsPatch) => Promise<void> | void;
+  setDraftValue: (key: ClaudeDraftKey, value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Shield className="h-4 w-4 text-muted-foreground" />
+        Permissions
+      </h3>
+      <div className="divide-y divide-border">
+        <PermissionTextareaItem
+          label="permissions.allow"
+          subtitle="允许的工具规则（每行一条）。留空表示不设置。"
+          value={draftValues.permissionsAllowText}
+          onValueChange={(value) => setDraftValue("permissionsAllowText", value)}
+          onPersist={(lines) => void persistClaudeSettings({ permissions_allow: lines })}
+          disabled={saving}
+          placeholder={"例如：\nBash(git diff:*)\nRead(./docs/**)"}
+        />
+
+        <PermissionTextareaItem
+          label="permissions.ask"
+          subtitle="需要确认的工具规则（每行一条）。留空表示不设置。"
+          value={draftValues.permissionsAskText}
+          onValueChange={(value) => setDraftValue("permissionsAskText", value)}
+          onPersist={(lines) => void persistClaudeSettings({ permissions_ask: lines })}
+          disabled={saving}
+          placeholder={"例如：\nBash(git push:*)"}
+        />
+
+        <PermissionTextareaItem
+          label="permissions.deny"
+          subtitle="拒绝的工具规则（每行一条）。建议用于敏感文件与危险命令。"
+          value={draftValues.permissionsDenyText}
+          onValueChange={(value) => setDraftValue("permissionsDenyText", value)}
+          onPersist={(lines) => void persistClaudeSettings({ permissions_deny: lines })}
+          disabled={saving}
+          placeholder={"例如：\nRead(./.env)\nRead(./secrets/**)\nBash(rm -rf:*)"}
+        />
+      </div>
+    </div>
+  );
+}
+
+function ClaudeExperimentalSection({
+  claudeSettings,
+  maxMcpOutputTokensText,
+  saving,
+  persistClaudeSettings,
+  revertMaxMcpOutputTokensInput,
+  setMaxMcpOutputTokensText,
+}: {
+  claudeSettings: ClaudeSettingsState;
+  maxMcpOutputTokensText: string;
+  saving: boolean;
+  persistClaudeSettings: (patch: ClaudeSettingsPatch) => Promise<void> | void;
+  revertMaxMcpOutputTokensInput: () => void;
+  setMaxMcpOutputTokensText: (value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/20 p-5">
+      <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-400 flex items-center gap-2 mb-1">
+        <AlertTriangle className="h-4 w-4 text-amber-500" />
+        实验性功能
+      </h3>
+      <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">
+        以下功能为实验性质，可能随时变更或移除。
+      </p>
+      <div className="divide-y divide-amber-100 dark:divide-amber-800">
+        <SettingItem
+          label="ENABLE_EXPERIMENTAL_MCP_CLI"
+          subtitle="启用 MCP-CLI 模式，按需加载工具以节省上下文（可节省约 95% 上下文）。⚠️ 与 ENABLE_TOOL_SEARCH 互斥。"
+        >
+          <Switch
+            checked={claudeSettings.env_enable_experimental_mcp_cli}
+            onCheckedChange={(checked) => {
+              if (checked) {
+                void persistClaudeSettings({
+                  env_enable_experimental_mcp_cli: true,
+                  env_enable_tool_search: false,
+                });
+              } else {
+                void persistClaudeSettings({ env_enable_experimental_mcp_cli: false });
+              }
+            }}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="ENABLE_TOOL_SEARCH"
+          subtitle="启用工具搜索，当 MCP 工具超过 10% 上下文时自动懒加载。⚠️ 与 ENABLE_EXPERIMENTAL_MCP_CLI 互斥。"
+        >
+          <Switch
+            checked={claudeSettings.env_enable_tool_search}
+            onCheckedChange={(checked) => {
+              if (checked) {
+                void persistClaudeSettings({
+                  env_enable_tool_search: true,
+                  env_enable_experimental_mcp_cli: false,
+                });
+              } else {
+                void persistClaudeSettings({ env_enable_tool_search: false });
+              }
+            }}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <EnvU64Item
+          label="MAX_MCP_OUTPUT_TOKENS"
+          envVarName="MAX_MCP_OUTPUT_TOKENS"
+          subtitle="MCP 工具响应的最大 tokens。留空或 0 表示使用默认值（25000）。"
+          value={maxMcpOutputTokensText}
+          onValueChange={setMaxMcpOutputTokensText}
+          patchKey="env_max_mcp_output_tokens"
+          disabled={saving}
+          revert={revertMaxMcpOutputTokensInput}
+          persist={persistClaudeSettings}
+          placeholder="25000"
+        />
+      </div>
+    </div>
+  );
+}
+
+function ClaudeEnvironmentSection({
+  claudeSettings,
+  draftValues,
+  maxTimeoutMs,
+  saving,
+  normalizeTimeoutMsOrZero,
+  persistClaudeSettings,
+  revertAutoCompactWindowInput,
+  revertBlockingLimitOverrideInput,
+  revertMaxOutputTokensInput,
+  revertTimeoutInputs,
+  setDraftValue,
+}: {
+  claudeSettings: ClaudeSettingsState;
+  draftValues: Record<ClaudeDraftKey, string>;
+  maxTimeoutMs: number;
+  saving: boolean;
+  normalizeTimeoutMsOrZero: (raw: string) => number;
+  persistClaudeSettings: (patch: ClaudeSettingsPatch) => Promise<void> | void;
+  revertAutoCompactWindowInput: () => void;
+  revertBlockingLimitOverrideInput: () => void;
+  revertMaxOutputTokensInput: () => void;
+  revertTimeoutInputs: () => void;
+  setDraftValue: (key: ClaudeDraftKey, value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <FileJson className="h-4 w-4 text-muted-foreground" />
+        环境配置（env / 白名单）
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
+          subtitle="启用 Agent Teams 功能，允许多个 Agent 协作完成任务。"
+        >
+          <Switch
+            checked={claudeSettings.env_experimental_agent_teams}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_experimental_agent_teams: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <EnvTimeoutItem
+          label="MCP_TIMEOUT (ms)"
+          envVarName="MCP_TIMEOUT"
+          subtitle={`MCP server 启动超时（0/留空=默认，范围 0-${maxTimeoutMs}）。`}
+          value={draftValues.mcpTimeoutMsText}
+          onValueChange={(value) => setDraftValue("mcpTimeoutMsText", value)}
+          patchKey="env_mcp_timeout_ms"
+          maxTimeoutMs={maxTimeoutMs}
+          disabled={saving}
+          normalizeTimeoutMsOrZero={normalizeTimeoutMsOrZero}
+          revert={revertTimeoutInputs}
+          persist={persistClaudeSettings}
+        />
+
+        <EnvTimeoutItem
+          label="MCP_TOOL_TIMEOUT (ms)"
+          envVarName="MCP_TOOL_TIMEOUT"
+          subtitle={`MCP tool 执行超时（0/留空=默认，范围 0-${maxTimeoutMs}）。`}
+          value={draftValues.mcpToolTimeoutMsText}
+          onValueChange={(value) => setDraftValue("mcpToolTimeoutMsText", value)}
+          patchKey="env_mcp_tool_timeout_ms"
+          maxTimeoutMs={maxTimeoutMs}
+          disabled={saving}
+          normalizeTimeoutMsOrZero={normalizeTimeoutMsOrZero}
+          revert={revertTimeoutInputs}
+          persist={persistClaudeSettings}
+        />
+
+        <EnvU64Item
+          label="CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+          envVarName="CLAUDE_CODE_AUTO_COMPACT_WINDOW"
+          subtitle="设置 auto compact window。留空或 0 表示删除该键并回退 Claude Code 默认值。"
+          value={draftValues.autoCompactWindowText}
+          onValueChange={(value) => setDraftValue("autoCompactWindowText", value)}
+          patchKey="env_claude_code_auto_compact_window"
+          disabled={saving}
+          revert={revertAutoCompactWindowInput}
+          persist={persistClaudeSettings}
+          placeholder="例如: 200000"
+        />
+
+        <EnvU64Item
+          label="CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE"
+          envVarName="CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE"
+          subtitle="覆盖 blocking limit（有效上下文/阻断阈值）。留空或 0 表示不设置该项。"
+          value={draftValues.blockingLimitOverrideText}
+          onValueChange={(value) => setDraftValue("blockingLimitOverrideText", value)}
+          patchKey="env_claude_code_blocking_limit_override"
+          disabled={saving}
+          revert={revertBlockingLimitOverrideInput}
+          persist={persistClaudeSettings}
+          placeholder="例如：193000"
+        />
+
+        <EnvU64Item
+          label="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+          envVarName="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
+          subtitle="限制最大输出 tokens（可能影响有效上下文窗口）。留空或 0 表示不设置该项。"
+          value={draftValues.maxOutputTokensText}
+          onValueChange={(value) => setDraftValue("maxOutputTokensText", value)}
+          patchKey="env_claude_code_max_output_tokens"
+          disabled={saving}
+          revert={revertMaxOutputTokensInput}
+          persist={persistClaudeSettings}
+          placeholder="默认"
+        />
+
+        <SettingItem
+          label="CLAUDE_CODE_ATTRIBUTION_HEADER"
+          subtitle="启用 attribution header, 开启后解决部分中转无法使用的问题"
+        >
+          <Switch
+            checked={claudeSettings.env_claude_code_attribution_header}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_claude_code_attribution_header: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
+          subtitle="禁用后台任务与自动 backgrounding。"
+        >
+          <Switch
+            checked={claudeSettings.env_disable_background_tasks}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_disable_background_tasks: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="CLAUDE_CODE_DISABLE_TERMINAL_TITLE" subtitle="禁用自动更新终端标题。">
+          <Switch
+            checked={claudeSettings.env_disable_terminal_title}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_disable_terminal_title: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="CLAUDE_BASH_NO_LOGIN" subtitle="跳过 login shell（BashTool）。">
+          <Switch
+            checked={claudeSettings.env_claude_bash_no_login}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_claude_bash_no_login: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
+          subtitle="等同于设置 DISABLE_AUTOUPDATER、DISABLE_BUG_COMMAND、DISABLE_ERROR_REPORTING、DISABLE_TELEMETRY。"
+        >
+          <Switch
+            checked={claudeSettings.env_claude_code_disable_nonessential_traffic}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_claude_code_disable_nonessential_traffic: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="CLAUDE_CODE_PROXY_RESOLVES_HOSTS"
+          subtitle="如果 WEB_SEARCH 或 FETCH 经常获取不到结果可以打开试试。"
+        >
+          <Switch
+            checked={claudeSettings.env_claude_code_proxy_resolves_hosts}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_claude_code_proxy_resolves_hosts: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="CLAUDE_CODE_DISABLE_1M_CONTEXT"
+          subtitle="关闭 1M context 支持。开启时写入 1，关闭时删除该键。"
+        >
+          <Switch
+            checked={claudeSettings.env_claude_code_disable_1m_context}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_claude_code_disable_1m_context: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="CLAUDE_CODE_SKIP_PROMPT_HISTORY"
+          subtitle="多开 Claude Code 可能产生竞态冲突，打开此选项屏蔽相关日志（开启写入 1；关闭删除该项）。"
+        >
+          <Switch
+            checked={claudeSettings.env_claude_code_skip_prompt_history}
+            onCheckedChange={(checked) =>
+              void persistClaudeSettings({ env_claude_code_skip_prompt_history: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
 function ClaudeHooksSection() {
   const hooksQuery = useCliManagerClaudeHooksQuery();
   const hooksMutation = useCliManagerClaudeHooksSetMutation();
@@ -306,6 +1341,13 @@ function ClaudeHooksSection() {
   const loading = hooksQuery.isLoading;
   const loadError = hooksQuery.isError ? String(hooksQuery.error) : "";
   const saving = hooksMutation.isPending;
+  const hookEditorIdPrefix = useId();
+  const editorIds: ClaudeHookEditorIds = {
+    eventSelectId: `${hookEditorIdPrefix}-hook-event`,
+    matcherInputId: `${hookEditorIdPrefix}-hook-matcher`,
+    commandInputId: `${hookEditorIdPrefix}-hook-command`,
+    timeoutInputId: `${hookEditorIdPrefix}-hook-timeout`,
+  };
 
   const [editor, setEditor] = useState<HookEditorState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<number | null>(null);
@@ -402,34 +1444,13 @@ function ClaudeHooksSection() {
 
   return (
     <div className="rounded-lg border border-border bg-white p-5 dark:border-border dark:bg-secondary">
-      <div className="mb-4 flex items-center justify-between gap-3">
-        <h3 className="flex items-center gap-2 text-sm font-semibold text-foreground">
-          <Zap className="h-4 w-4 text-muted-foreground" />
-          Claude Code Hooks ({groups.length})
-        </h3>
-        <div className="flex items-center gap-2">
-          <Button
-            onClick={() => void hooksQuery.refetch()}
-            variant="secondary"
-            size="sm"
-            className="h-8"
-            disabled={loading}
-          >
-            <RefreshCw className="mr-1 h-3 w-3" />
-            刷新 Hooks
-          </Button>
-          <Button
-            onClick={openCreate}
-            variant="secondary"
-            size="sm"
-            className="h-8"
-            disabled={loading || hooksQuery.isError}
-          >
-            <Plus className="mr-1 h-3 w-3" />
-            添加
-          </Button>
-        </div>
-      </div>
+      <ClaudeHooksToolbar
+        count={groups.length}
+        loading={loading}
+        hasError={hooksQuery.isError}
+        onCreate={openCreate}
+        onRefresh={() => void hooksQuery.refetch()}
+      />
 
       {loading ? (
         <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -449,183 +1470,25 @@ function ClaudeHooksSection() {
           variant="dashed"
         />
       ) : (
-        <div className="space-y-2">
-          {groups.map((group, index) => (
-            <div
-              key={`${group.event}-${group.matcher}-${index}`}
-              className="flex items-start justify-between gap-3 rounded-lg border border-border bg-white p-3 dark:border-border dark:bg-secondary"
-            >
-              <div className="min-w-0 flex-1">
-                <div className="flex flex-wrap items-center gap-1.5">
-                  <span className="inline-flex items-center rounded-md bg-blue-50 px-2 py-0.5 text-xs font-medium text-blue-700 dark:bg-blue-900/30 dark:text-blue-300">
-                    {group.event}
-                  </span>
-                  {group.matcher ? (
-                    <span className="inline-flex items-center rounded-md bg-secondary px-2 py-0.5 text-xs text-muted-foreground dark:bg-secondary dark:text-secondary-foreground">
-                      {group.matcher}
-                    </span>
-                  ) : null}
-                </div>
-                {group.hooks.map((hook, hookIndex) => (
-                  <div key={hookIndex} className="mt-1.5 flex items-center gap-1.5">
-                    <div
-                      className="min-w-0 flex-1 truncate font-mono text-xs text-muted-foreground"
-                      title={hook.command}
-                    >
-                      {hook.command}
-                      {hook.timeout != null ? (
-                        <span className="ml-2 text-muted-foreground">({hook.timeout}s)</span>
-                      ) : null}
-                    </div>
-                    {group.hooks.length > 1 ? (
-                      <Button
-                        onClick={() => openEdit(index, hookIndex)}
-                        variant="secondary"
-                        size="sm"
-                        className="h-5 w-5 shrink-0 p-0"
-                        title="编辑此命令"
-                      >
-                        <Pencil className="h-2.5 w-2.5" />
-                      </Button>
-                    ) : null}
-                  </div>
-                ))}
-              </div>
-              <div className="flex shrink-0 items-center gap-1">
-                <Button
-                  onClick={() => openEdit(index)}
-                  variant="secondary"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  title="编辑"
-                >
-                  <Pencil className="h-3 w-3" />
-                </Button>
-                <Button
-                  onClick={() => setDeleteTarget(index)}
-                  variant="secondary"
-                  size="sm"
-                  className="h-7 w-7 p-0"
-                  title="删除"
-                >
-                  <Trash2 className="h-3 w-3" />
-                </Button>
-              </div>
-            </div>
-          ))}
-        </div>
+        <ClaudeHooksList groups={groups} onDelete={setDeleteTarget} onEdit={openEdit} />
       )}
 
-      {editor ? (
-        <Dialog
-          open={true}
-          onOpenChange={(open) => {
-            if (!open && !saving) setEditor(null);
-          }}
-          title={editor.mode === "create" ? "添加 Hook" : "编辑 Hook"}
-          className="max-w-lg"
-        >
-          <div className="flex flex-col gap-4">
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground">
-                事件
-              </label>
-              <Select
-                value={editor.event}
-                onChange={(event) => setEditor({ ...editor, event: event.target.value })}
-                className="w-full"
-              >
-                {HOOK_EVENTS.map((eventName) => (
-                  <option key={eventName} value={eventName}>
-                    {eventName}
-                  </option>
-                ))}
-              </Select>
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground">
-                Matcher（匹配工具名或事件子类型，多个用 | 分隔，留空匹配全部）
-              </label>
-              <Input
-                value={editor.matcher}
-                onChange={(event) => setEditor({ ...editor, matcher: event.target.value })}
-                placeholder="例如 Edit|Write 或留空"
-                className="text-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground">
-                命令
-              </label>
-              <Input
-                value={editor.command}
-                onChange={(event) => setEditor({ ...editor, command: event.target.value })}
-                placeholder="要执行的 shell 命令"
-                className="font-mono text-sm"
-              />
-            </div>
-            <div>
-              <label className="mb-1 block text-xs font-medium text-muted-foreground dark:text-secondary-foreground">
-                超时（秒，留空使用默认值）
-              </label>
-              <Input
-                value={editor.timeout}
-                onChange={(event) =>
-                  setEditor({
-                    ...editor,
-                    timeout: event.target.value.replace(/[^0-9]/g, ""),
-                  })
-                }
-                placeholder="例如 30"
-                className="text-sm"
-              />
-            </div>
-            <div className="flex justify-end gap-2">
-              <Button
-                onClick={() => setEditor(null)}
-                variant="secondary"
-                size="sm"
-                disabled={saving}
-              >
-                取消
-              </Button>
-              <Button
-                onClick={() => void handleSave()}
-                variant="primary"
-                size="sm"
-                disabled={saving || !editor.command.trim()}
-              >
-                {saving ? "保存中…" : "保存"}
-              </Button>
-            </div>
-          </div>
-        </Dialog>
-      ) : null}
+      <ClaudeHookEditorDialog
+        editor={editor}
+        ids={editorIds}
+        saving={saving}
+        onClose={() => setEditor(null)}
+        onSave={() => void handleSave()}
+        onUpdate={setEditor}
+      />
 
-      <Dialog
-        open={deleteTarget != null}
-        onOpenChange={(open) => {
-          if (!open && !saving) setDeleteTarget(null);
-        }}
-        title="确认删除 Hook"
-        description={
-          deleteTarget != null && groups[deleteTarget]
-            ? `将删除事件 ${groups[deleteTarget].event} 的 Hook${
-                groups[deleteTarget].matcher ? `（matcher: ${groups[deleteTarget].matcher}）` : ""
-              }`
-            : undefined
-        }
-        className="max-w-lg"
-      >
-        <div className="flex flex-wrap items-center justify-end gap-2">
-          <Button onClick={() => setDeleteTarget(null)} variant="secondary" disabled={saving}>
-            取消
-          </Button>
-          <Button onClick={() => void handleDelete()} variant="primary" disabled={saving}>
-            {saving ? "删除中…" : "确认删除"}
-          </Button>
-        </div>
-      </Dialog>
+      <ClaudeHookDeleteDialog
+        deleteTarget={deleteTarget}
+        groups={groups}
+        saving={saving}
+        onCancel={() => setDeleteTarget(null)}
+        onConfirm={() => void handleDelete()}
+      />
     </div>
   );
 }
@@ -642,55 +1505,14 @@ export function CliManagerClaudeTab({
   persistClaudeSettings,
 }: CliManagerClaudeTabProps) {
   const [versionRefreshToken, setVersionRefreshToken] = useState(0);
-  const [modelText, setModelText] = useState("");
-  const [outputStyleText, setOutputStyleText] = useState("");
-  const [languageText, setLanguageText] = useState("");
-  const [mcpTimeoutMsText, setMcpTimeoutMsText] = useState("");
-  const [mcpToolTimeoutMsText, setMcpToolTimeoutMsText] = useState("");
-  const [autoCompactWindowText, setAutoCompactWindowText] = useState("");
-  const [blockingLimitOverrideText, setBlockingLimitOverrideText] = useState("");
-  const [maxOutputTokensText, setMaxOutputTokensText] = useState("");
-  const [maxMcpOutputTokensText, setMaxMcpOutputTokensText] = useState("");
-  const [permissionsAllowText, setPermissionsAllowText] = useState("");
-  const [permissionsAskText, setPermissionsAskText] = useState("");
-  const [permissionsDenyText, setPermissionsDenyText] = useState("");
-  useEffect(() => {
-    if (!claudeSettings) return;
-    setModelText(claudeSettings.model ?? "");
-    setOutputStyleText(claudeSettings.output_style ?? "");
-    setLanguageText(claudeSettings.language ?? "");
-    setMcpTimeoutMsText(
-      claudeSettings.env_mcp_timeout_ms == null ? "" : String(claudeSettings.env_mcp_timeout_ms)
-    );
-    setMcpToolTimeoutMsText(
-      claudeSettings.env_mcp_tool_timeout_ms == null
-        ? ""
-        : String(claudeSettings.env_mcp_tool_timeout_ms)
-    );
-    setAutoCompactWindowText(
-      claudeSettings.env_claude_code_auto_compact_window == null
-        ? ""
-        : String(claudeSettings.env_claude_code_auto_compact_window)
-    );
-    setBlockingLimitOverrideText(
-      claudeSettings.env_claude_code_blocking_limit_override == null
-        ? ""
-        : String(claudeSettings.env_claude_code_blocking_limit_override)
-    );
-    setMaxOutputTokensText(
-      claudeSettings.env_claude_code_max_output_tokens == null
-        ? ""
-        : String(claudeSettings.env_claude_code_max_output_tokens)
-    );
-    setMaxMcpOutputTokensText(
-      claudeSettings.env_max_mcp_output_tokens == null
-        ? ""
-        : String(claudeSettings.env_max_mcp_output_tokens)
-    );
-    setPermissionsAllowText((claudeSettings.permissions_allow ?? []).join("\n"));
-    setPermissionsAskText((claudeSettings.permissions_ask ?? []).join("\n"));
-    setPermissionsDenyText((claudeSettings.permissions_deny ?? []).join("\n"));
-  }, [claudeSettings]);
+  const nextDraftState = createClaudeDraftState(claudeSettings);
+  const [draftState, dispatchDraft] = useReducer(claudeDraftReducer, nextDraftState);
+  const effectiveDraftState =
+    draftState.sourceKey === nextDraftState.sourceKey ? draftState : nextDraftState;
+  if (draftState.sourceKey !== nextDraftState.sourceKey) {
+    dispatchDraft({ type: "resetFromSettings", state: nextDraftState });
+  }
+  const { maxMcpOutputTokensText } = effectiveDraftState.values;
 
   const loading = claudeLoading || claudeSettingsLoading;
   const saving = claudeSettingsSaving;
@@ -704,6 +1526,34 @@ export function CliManagerClaudeTab({
     } finally {
       setVersionRefreshToken((value) => value + 1);
     }
+  }
+
+  function setDraftValue(key: ClaudeDraftKey, value: string) {
+    dispatchDraft({ type: "setValue", key, value });
+  }
+
+  function setMcpTimeoutMsText(value: string) {
+    setDraftValue("mcpTimeoutMsText", value);
+  }
+
+  function setMcpToolTimeoutMsText(value: string) {
+    setDraftValue("mcpToolTimeoutMsText", value);
+  }
+
+  function setAutoCompactWindowText(value: string) {
+    setDraftValue("autoCompactWindowText", value);
+  }
+
+  function setBlockingLimitOverrideText(value: string) {
+    setDraftValue("blockingLimitOverrideText", value);
+  }
+
+  function setMaxOutputTokensText(value: string) {
+    setDraftValue("maxOutputTokensText", value);
+  }
+
+  function setMaxMcpOutputTokensText(value: string) {
+    setDraftValue("maxMcpOutputTokensText", value);
   }
 
   const MAX_TIMEOUT_MS = 24 * 60 * 60 * 1000;
@@ -769,128 +1619,20 @@ export function CliManagerClaudeTab({
       <Card className="overflow-hidden">
         <div className="border-b border-border">
           <div className="flex flex-col gap-4 p-6">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <div className="h-14 w-14 rounded-xl bg-[#D97757]/10 flex items-center justify-center text-[#D97757]">
-                  <Bot className="h-8 w-8" />
-                </div>
-                <div>
-                  <h2 className="text-base font-semibold text-foreground">Claude Code</h2>
-                  <div className="flex items-center gap-2 mt-1">
-                    {claudeAvailable === "available" && claudeInfo?.found ? (
-                      <>
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
-                          <CheckCircle2 className="h-3 w-3" />
-                          已安装 {claudeInfo.version}
-                        </span>
-                        <CliVersionBadge
-                          cliKey="claude"
-                          installedVersion={claudeInfo.version}
-                          refreshToken={versionRefreshToken}
-                          onUpdateComplete={refreshClaudeStatus}
-                        />
-                      </>
-                    ) : claudeAvailable === "checking" || loading ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-600/20">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        加载中...
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
-                        未检测到
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <Button
-                onClick={() => void refreshClaudeStatus()}
-                variant="secondary"
-                size="sm"
-                disabled={loading}
-                className="gap-2"
-              >
-                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-                刷新
-              </Button>
-            </div>
-
-            {(configDir || settingsPath || claudeInfo) && (
-              <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <FolderOpen className="h-3 w-3" />
-                    配置目录
-                  </div>
-                  <div className="flex items-center gap-1.5">
-                    <div
-                      className="font-mono text-xs text-secondary-foreground truncate flex-1"
-                      title={configDir}
-                    >
-                      {configDir ?? "—"}
-                    </div>
-                    <Button
-                      onClick={() => void openClaudeConfigDir()}
-                      disabled={!configDir}
-                      size="sm"
-                      variant="ghost"
-                      className="shrink-0 h-6 w-6 p-0 hover:bg-muted dark:hover:bg-secondary"
-                      title="打开配置目录"
-                    >
-                      <ExternalLink className="h-3 w-3" />
-                    </Button>
-                  </div>
-                </div>
-
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <FileJson className="h-3 w-3" />
-                    settings.json
-                  </div>
-                  <div
-                    className="font-mono text-xs text-secondary-foreground truncate"
-                    title={settingsPath ?? "—"}
-                  >
-                    {settingsPath ?? "—"}
-                  </div>
-                  {claudeSettings ? (
-                    <div className="mt-1 text-[11px] text-muted-foreground">
-                      {claudeSettings.exists ? "已存在" : "不存在（将自动创建）"}
-                    </div>
-                  ) : null}
-                </div>
-
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <Terminal className="h-3 w-3" />
-                    可执行文件
-                  </div>
-                  <div
-                    className="font-mono text-xs text-secondary-foreground truncate"
-                    title={claudeInfo?.executable_path ?? "—"}
-                  >
-                    {claudeInfo?.executable_path ?? "—"}
-                  </div>
-                </div>
-
-                <div className="bg-secondary rounded-lg p-3 border border-border">
-                  <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                    <Settings className="h-3 w-3" />
-                    解析方式
-                  </div>
-                  <div
-                    className="font-mono text-xs text-secondary-foreground truncate"
-                    title={claudeInfo?.resolved_via ?? "—"}
-                  >
-                    {claudeInfo?.resolved_via ?? "—"}
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    SHELL: {claudeInfo?.shell ?? "—"}
-                  </div>
-                </div>
-              </div>
-            )}
+            <ClaudeHeader
+              claudeAvailable={claudeAvailable}
+              claudeInfo={claudeInfo}
+              loading={loading}
+              versionRefreshToken={versionRefreshToken}
+              onRefresh={() => void refreshClaudeStatus()}
+            />
+            <ClaudeInfoGrid
+              claudeInfo={claudeInfo}
+              claudeSettings={claudeSettings}
+              configDir={configDir}
+              settingsPath={settingsPath}
+              onOpenConfigDir={() => void openClaudeConfigDir()}
+            />
           </div>
         </div>
 
@@ -904,437 +1646,51 @@ export function CliManagerClaudeTab({
           </div>
         ) : (
           <div className="p-6 space-y-6">
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <Settings className="h-4 w-4 text-muted-foreground" />
-                基础配置
-              </h3>
-              <div className="divide-y divide-border">
-                <SettingItem
-                  label="默认模型 (model)"
-                  subtitle="覆盖 Claude Code 默认使用的模型。留空表示不设置（交由 Claude Code 默认/上层配置决定）。"
-                >
-                  <Input
-                    value={modelText}
-                    onChange={(e) => setModelText(e.currentTarget.value)}
-                    onBlur={() => void persistClaudeSettings({ model: modelText.trim() })}
-                    placeholder="例如：claude-sonnet-4-5-20250929"
-                    className="font-mono w-[320px] max-w-full"
-                    disabled={saving}
-                  />
-                </SettingItem>
+            <ClaudeBasicSettingsSection
+              claudeSettings={claudeSettings}
+              draftValues={effectiveDraftState.values}
+              saving={saving}
+              persistClaudeSettings={persistClaudeSettings}
+              setDraftValue={setDraftValue}
+            />
 
-                <SettingItem
-                  label="输出风格 (outputStyle)"
-                  subtitle="配置输出风格（对应 /output-style）。留空表示不设置。"
-                >
-                  <Input
-                    value={outputStyleText}
-                    onChange={(e) => setOutputStyleText(e.currentTarget.value)}
-                    onBlur={() =>
-                      void persistClaudeSettings({ output_style: outputStyleText.trim() })
-                    }
-                    placeholder='例如："Explanatory"'
-                    className="font-mono w-[320px] max-w-full"
-                    disabled={saving}
-                  />
-                </SettingItem>
+            <ClaudeInteractionSettingsSection
+              claudeSettings={claudeSettings}
+              saving={saving}
+              persistClaudeSettings={persistClaudeSettings}
+            />
 
-                <SettingItem label="语言 (language)" subtitle="设置默认回复语言。留空表示不设置。">
-                  <Input
-                    value={languageText}
-                    onChange={(e) => setLanguageText(e.currentTarget.value)}
-                    onBlur={() => void persistClaudeSettings({ language: languageText.trim() })}
-                    placeholder='例如："japanese"'
-                    className="font-mono w-[320px] max-w-full"
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="默认启用 Thinking (alwaysThinkingEnabled)"
-                  subtitle="默认启用 extended thinking（通常建议用 /config 配置；此处为显式开关）。"
-                >
-                  <Switch
-                    checked={boolOrDefault(claudeSettings.always_thinking_enabled, false)}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ always_thinking_enabled: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <Settings className="h-4 w-4 text-muted-foreground" />
-                交互与显示
-              </h3>
-              <div className="divide-y divide-border">
-                <SettingItem
-                  label="显示耗时 (showTurnDuration)"
-                  subtitle="显示 turn duration（默认开启）。"
-                >
-                  <Switch
-                    checked={boolOrDefault(claudeSettings.show_turn_duration, true)}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ show_turn_duration: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="Spinner Tips (spinnerTipsEnabled)"
-                  subtitle="在 spinner 中显示提示（默认开启）。"
-                >
-                  <Switch
-                    checked={boolOrDefault(claudeSettings.spinner_tips_enabled, true)}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ spinner_tips_enabled: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="Terminal Progress Bar (terminalProgressBarEnabled)"
-                  subtitle="在支持的终端显示进度条（默认开启）。"
-                >
-                  <Switch
-                    checked={boolOrDefault(claudeSettings.terminal_progress_bar_enabled, true)}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ terminal_progress_bar_enabled: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="Respect .gitignore (respectGitignore)"
-                  subtitle="@ 文件选择器是否遵循 .gitignore（默认开启）。"
-                >
-                  <Switch
-                    checked={boolOrDefault(claudeSettings.respect_gitignore, true)}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ respect_gitignore: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="关闭 Claude Git 参与者"
-                  subtitle="开启后会写入 attribution.commit / attribution.pr 为空字符串，隐藏 Git commit / PR 里的 Claude 标记；关闭后删除这两个字段。"
-                >
-                  <Switch
-                    checked={claudeSettings.disable_git_participant}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ disable_git_participant: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <Shield className="h-4 w-4 text-muted-foreground" />
-                Permissions
-              </h3>
-              <div className="divide-y divide-border">
-                <PermissionTextareaItem
-                  label="permissions.allow"
-                  subtitle="允许的工具规则（每行一条）。留空表示不设置。"
-                  value={permissionsAllowText}
-                  onValueChange={setPermissionsAllowText}
-                  onPersist={(lines) => void persistClaudeSettings({ permissions_allow: lines })}
-                  disabled={saving}
-                  placeholder={"例如：\nBash(git diff:*)\nRead(./docs/**)"}
-                />
-
-                <PermissionTextareaItem
-                  label="permissions.ask"
-                  subtitle="需要确认的工具规则（每行一条）。留空表示不设置。"
-                  value={permissionsAskText}
-                  onValueChange={setPermissionsAskText}
-                  onPersist={(lines) => void persistClaudeSettings({ permissions_ask: lines })}
-                  disabled={saving}
-                  placeholder={"例如：\nBash(git push:*)"}
-                />
-
-                <PermissionTextareaItem
-                  label="permissions.deny"
-                  subtitle="拒绝的工具规则（每行一条）。建议用于敏感文件与危险命令。"
-                  value={permissionsDenyText}
-                  onValueChange={setPermissionsDenyText}
-                  onPersist={(lines) => void persistClaudeSettings({ permissions_deny: lines })}
-                  disabled={saving}
-                  placeholder={"例如：\nRead(./.env)\nRead(./secrets/**)\nBash(rm -rf:*)"}
-                />
-              </div>
-            </div>
+            <ClaudePermissionsSection
+              draftValues={effectiveDraftState.values}
+              saving={saving}
+              persistClaudeSettings={persistClaudeSettings}
+              setDraftValue={setDraftValue}
+            />
 
             <ClaudeHooksSection />
 
-            <div className="rounded-lg border border-amber-200 dark:border-amber-700 bg-amber-50/50 dark:bg-amber-900/20 p-5">
-              <h3 className="text-sm font-semibold text-amber-900 dark:text-amber-400 flex items-center gap-2 mb-1">
-                <AlertTriangle className="h-4 w-4 text-amber-500" />
-                实验性功能
-              </h3>
-              <p className="text-xs text-amber-700 dark:text-amber-400 mb-3">
-                以下功能为实验性质，可能随时变更或移除。
-              </p>
-              <div className="divide-y divide-amber-100 dark:divide-amber-800">
-                <SettingItem
-                  label="ENABLE_EXPERIMENTAL_MCP_CLI"
-                  subtitle="启用 MCP-CLI 模式，按需加载工具以节省上下文（可节省约 95% 上下文）。⚠️ 与 ENABLE_TOOL_SEARCH 互斥。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_enable_experimental_mcp_cli}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        void persistClaudeSettings({
-                          env_enable_experimental_mcp_cli: true,
-                          env_enable_tool_search: false,
-                        });
-                      } else {
-                        void persistClaudeSettings({ env_enable_experimental_mcp_cli: false });
-                      }
-                    }}
-                    disabled={saving}
-                  />
-                </SettingItem>
+            <ClaudeExperimentalSection
+              claudeSettings={claudeSettings}
+              maxMcpOutputTokensText={maxMcpOutputTokensText}
+              saving={saving}
+              persistClaudeSettings={persistClaudeSettings}
+              revertMaxMcpOutputTokensInput={revertMaxMcpOutputTokensInput}
+              setMaxMcpOutputTokensText={setMaxMcpOutputTokensText}
+            />
 
-                <SettingItem
-                  label="ENABLE_TOOL_SEARCH"
-                  subtitle="启用工具搜索，当 MCP 工具超过 10% 上下文时自动懒加载。⚠️ 与 ENABLE_EXPERIMENTAL_MCP_CLI 互斥。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_enable_tool_search}
-                    onCheckedChange={(checked) => {
-                      if (checked) {
-                        void persistClaudeSettings({
-                          env_enable_tool_search: true,
-                          env_enable_experimental_mcp_cli: false,
-                        });
-                      } else {
-                        void persistClaudeSettings({ env_enable_tool_search: false });
-                      }
-                    }}
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <EnvU64Item
-                  label="MAX_MCP_OUTPUT_TOKENS"
-                  envVarName="MAX_MCP_OUTPUT_TOKENS"
-                  subtitle="MCP 工具响应的最大 tokens。留空或 0 表示使用默认值（25000）。"
-                  value={maxMcpOutputTokensText}
-                  onValueChange={setMaxMcpOutputTokensText}
-                  patchKey="env_max_mcp_output_tokens"
-                  disabled={saving}
-                  revert={revertMaxMcpOutputTokensInput}
-                  persist={persistClaudeSettings}
-                  placeholder="25000"
-                />
-              </div>
-            </div>
-
-            <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-              <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                <FileJson className="h-4 w-4 text-muted-foreground" />
-                环境配置（env / 白名单）
-              </h3>
-              <div className="divide-y divide-border">
-                <SettingItem
-                  label="CLAUDE_CODE_EXPERIMENTAL_AGENT_TEAMS"
-                  subtitle="启用 Agent Teams 功能，允许多个 Agent 协作完成任务。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_experimental_agent_teams}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_experimental_agent_teams: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <EnvTimeoutItem
-                  label="MCP_TIMEOUT (ms)"
-                  envVarName="MCP_TIMEOUT"
-                  subtitle={`MCP server 启动超时（0/留空=默认，范围 0-${MAX_TIMEOUT_MS}）。`}
-                  value={mcpTimeoutMsText}
-                  onValueChange={setMcpTimeoutMsText}
-                  patchKey="env_mcp_timeout_ms"
-                  maxTimeoutMs={MAX_TIMEOUT_MS}
-                  disabled={saving}
-                  normalizeTimeoutMsOrZero={normalizeTimeoutMsOrZero}
-                  revert={revertTimeoutInputs}
-                  persist={persistClaudeSettings}
-                />
-
-                <EnvTimeoutItem
-                  label="MCP_TOOL_TIMEOUT (ms)"
-                  envVarName="MCP_TOOL_TIMEOUT"
-                  subtitle={`MCP tool 执行超时（0/留空=默认，范围 0-${MAX_TIMEOUT_MS}）。`}
-                  value={mcpToolTimeoutMsText}
-                  onValueChange={setMcpToolTimeoutMsText}
-                  patchKey="env_mcp_tool_timeout_ms"
-                  maxTimeoutMs={MAX_TIMEOUT_MS}
-                  disabled={saving}
-                  normalizeTimeoutMsOrZero={normalizeTimeoutMsOrZero}
-                  revert={revertTimeoutInputs}
-                  persist={persistClaudeSettings}
-                />
-
-                <EnvU64Item
-                  label="CLAUDE_CODE_AUTO_COMPACT_WINDOW"
-                  envVarName="CLAUDE_CODE_AUTO_COMPACT_WINDOW"
-                  subtitle="设置 auto compact window。留空或 0 表示删除该键并回退 Claude Code 默认值。"
-                  value={autoCompactWindowText}
-                  onValueChange={setAutoCompactWindowText}
-                  patchKey="env_claude_code_auto_compact_window"
-                  disabled={saving}
-                  revert={revertAutoCompactWindowInput}
-                  persist={persistClaudeSettings}
-                  placeholder="例如: 200000"
-                />
-
-                <EnvU64Item
-                  label="CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE"
-                  envVarName="CLAUDE_CODE_BLOCKING_LIMIT_OVERRIDE"
-                  subtitle="覆盖 blocking limit（有效上下文/阻断阈值）。留空或 0 表示不设置该项。"
-                  value={blockingLimitOverrideText}
-                  onValueChange={setBlockingLimitOverrideText}
-                  patchKey="env_claude_code_blocking_limit_override"
-                  disabled={saving}
-                  revert={revertBlockingLimitOverrideInput}
-                  persist={persistClaudeSettings}
-                  placeholder="例如：193000"
-                />
-
-                <EnvU64Item
-                  label="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-                  envVarName="CLAUDE_CODE_MAX_OUTPUT_TOKENS"
-                  subtitle="限制最大输出 tokens（可能影响有效上下文窗口）。留空或 0 表示不设置该项。"
-                  value={maxOutputTokensText}
-                  onValueChange={setMaxOutputTokensText}
-                  patchKey="env_claude_code_max_output_tokens"
-                  disabled={saving}
-                  revert={revertMaxOutputTokensInput}
-                  persist={persistClaudeSettings}
-                  placeholder="默认"
-                />
-
-                <SettingItem
-                  label="CLAUDE_CODE_ATTRIBUTION_HEADER"
-                  subtitle="启用 attribution header, 开启后解决部分中转无法使用的问题"
-                >
-                  <Switch
-                    checked={claudeSettings.env_claude_code_attribution_header}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({
-                        env_claude_code_attribution_header: checked,
-                      })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="CLAUDE_CODE_DISABLE_BACKGROUND_TASKS"
-                  subtitle="禁用后台任务与自动 backgrounding。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_disable_background_tasks}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_disable_background_tasks: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="CLAUDE_CODE_DISABLE_TERMINAL_TITLE"
-                  subtitle="禁用自动更新终端标题。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_disable_terminal_title}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_disable_terminal_title: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem label="CLAUDE_BASH_NO_LOGIN" subtitle="跳过 login shell（BashTool）。">
-                  <Switch
-                    checked={claudeSettings.env_claude_bash_no_login}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_claude_bash_no_login: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="CLAUDE_CODE_DISABLE_NONESSENTIAL_TRAFFIC"
-                  subtitle="等同于设置 DISABLE_AUTOUPDATER、DISABLE_BUG_COMMAND、DISABLE_ERROR_REPORTING、DISABLE_TELEMETRY。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_claude_code_disable_nonessential_traffic}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({
-                        env_claude_code_disable_nonessential_traffic: checked,
-                      })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="CLAUDE_CODE_PROXY_RESOLVES_HOSTS"
-                  subtitle="如果 WEB_SEARCH 或 FETCH 经常获取不到结果可以打开试试。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_claude_code_proxy_resolves_hosts}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_claude_code_proxy_resolves_hosts: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="CLAUDE_CODE_DISABLE_1M_CONTEXT"
-                  subtitle="关闭 1M context 支持。开启时写入 1，关闭时删除该键。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_claude_code_disable_1m_context}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_claude_code_disable_1m_context: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-
-                <SettingItem
-                  label="CLAUDE_CODE_SKIP_PROMPT_HISTORY"
-                  subtitle="多开 Claude Code 可能产生竞态冲突，打开此选项屏蔽相关日志（开启写入 1；关闭删除该项）。"
-                >
-                  <Switch
-                    checked={claudeSettings.env_claude_code_skip_prompt_history}
-                    onCheckedChange={(checked) =>
-                      void persistClaudeSettings({ env_claude_code_skip_prompt_history: checked })
-                    }
-                    disabled={saving}
-                  />
-                </SettingItem>
-              </div>
-            </div>
+            <ClaudeEnvironmentSection
+              claudeSettings={claudeSettings}
+              draftValues={effectiveDraftState.values}
+              maxTimeoutMs={MAX_TIMEOUT_MS}
+              saving={saving}
+              normalizeTimeoutMsOrZero={normalizeTimeoutMsOrZero}
+              persistClaudeSettings={persistClaudeSettings}
+              revertAutoCompactWindowInput={revertAutoCompactWindowInput}
+              revertBlockingLimitOverrideInput={revertBlockingLimitOverrideInput}
+              revertMaxOutputTokensInput={revertMaxOutputTokensInput}
+              revertTimeoutInputs={revertTimeoutInputs}
+              setDraftValue={setDraftValue}
+            />
           </div>
         )}
 

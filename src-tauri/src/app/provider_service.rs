@@ -32,6 +32,7 @@ pub(crate) struct ProviderUpsertInput {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Option<Vec<providers::ProviderExtensionValuesInput>>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     #[serde(default)]
     pub upstream_retry_policy_override_specified: bool,
@@ -158,6 +159,7 @@ pub(crate) async fn provider_upsert(
         source_provider_id,
         bridge_type,
         stream_idle_timeout_seconds,
+        extension_values,
         upstream_retry_policy_override,
         upstream_retry_policy_override_specified,
     } = input;
@@ -208,6 +210,7 @@ pub(crate) async fn provider_upsert(
                 source_provider_id,
                 bridge_type,
                 stream_idle_timeout_seconds,
+                extension_values,
                 upstream_retry_policy_override,
                 upstream_retry_policy_override_specified,
             },
@@ -272,6 +275,17 @@ pub(crate) async fn provider_duplicate(
         } else {
             None
         };
+        let extension_values = Some(
+            source
+                .extension_values
+                .iter()
+                .map(|value| providers::ProviderExtensionValuesInput {
+                    plugin_id: value.plugin_id.clone(),
+                    namespace: value.namespace.clone(),
+                    values: value.values.clone(),
+                })
+                .collect(),
+        );
 
         providers::upsert(
             &db,
@@ -304,6 +318,7 @@ pub(crate) async fn provider_duplicate(
                 source_provider_id: source.source_provider_id,
                 bridge_type: source.bridge_type.clone(),
                 stream_idle_timeout_seconds: source.stream_idle_timeout_seconds,
+                extension_values,
                 upstream_retry_policy_override: source.upstream_retry_policy_override.clone(),
                 upstream_retry_policy_override_specified: true,
             },
@@ -565,6 +580,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
             upstream_retry_policy_override: None,
             api_key_configured: true,
         };
@@ -652,6 +668,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
             upstream_retry_policy_override: None,
             api_key_configured: true,
         };

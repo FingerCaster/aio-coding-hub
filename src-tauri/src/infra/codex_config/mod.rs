@@ -302,11 +302,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     let bytes = codex_config_normalize_raw_toml(toml)?;
     let backup_bytes = bytes.clone();
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
-    if let Err(err) = crate::infra::codex_provider_sync::codex_provider_sync_from_config_bytes(
-        app,
-        "codex_config_toml_set_raw",
-        bytes,
-    ) {
+    if let Err(err) = write_file_atomic_if_changed(&path, &bytes) {
         if let Some(snapshot) = backup_snapshot.as_ref() {
             restore_codex_cli_proxy_backup_snapshot(snapshot)?;
         }

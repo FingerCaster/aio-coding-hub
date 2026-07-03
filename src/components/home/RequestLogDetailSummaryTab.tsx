@@ -11,9 +11,14 @@ import {
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
 import {
+  resolveCodexReasoningContinuationSummary,
+  resolveCodexReasoningGuardSummary,
+} from "../../services/gateway/requestLogSpecialSettings";
+import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
   FastModeBadge,
+  formatCodexReasoningContinuationStatus,
   formatCodexReasoningEffortSource,
   hasCodexReasoningGuardSpecialSetting,
   hasPriorityServiceTierSpecialSetting,
@@ -48,7 +53,21 @@ export function RequestLogDetailSummaryTab({
     selectedLog.cli_key === "codex"
       ? resolveCodexReasoningEffort(selectedLog.requested_model, selectedLog.special_settings_json)
       : null;
-  const showKeyMetrics = hasTokens || codexReasoningEffort != null;
+  const codexReasoningGuard =
+    selectedLog.cli_key === "codex"
+      ? resolveCodexReasoningGuardSummary(selectedLog.special_settings_json)
+      : null;
+  const codexReasoningContinuation =
+    selectedLog.cli_key === "codex"
+      ? resolveCodexReasoningContinuationSummary(selectedLog.special_settings_json)
+      : null;
+  const showCodexReasoningSignals = (codexReasoningGuard?.count ?? 0) > 0;
+  const showCodexReasoningContinuation = (codexReasoningContinuation?.count ?? 0) > 0;
+  const showKeyMetrics =
+    hasTokens ||
+    codexReasoningEffort != null ||
+    showCodexReasoningSignals ||
+    showCodexReasoningContinuation;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -120,6 +139,38 @@ export function RequestLogDetailSummaryTab({
                 />
               </>
             ) : null}
+            {showCodexReasoningSignals ? (
+              <>
+                <MetricCard
+                  label="规则模式"
+                  value={formatCodexReasoningRuleMode(codexReasoningGuard?.latestRuleMode)}
+                />
+                <MetricCard
+                  label="命中来源"
+                  value={formatCodexReasoningHitSource(codexReasoningGuard?.latestHitSource)}
+                />
+                <MetricCard label="命中次数" value={codexReasoningGuard?.count ?? 0} />
+              </>
+            ) : null}
+            {showCodexReasoningContinuation ? (
+              <>
+                <MetricCard
+                  label="补救状态"
+                  value={formatCodexReasoningContinuationStatus(
+                    codexReasoningContinuation?.latestStatus
+                  )}
+                />
+                <MetricCard label="补救触发" value={codexReasoningContinuation?.count ?? 0} />
+                <MetricCard
+                  label="补救轮数"
+                  value={codexReasoningContinuation?.totalSentRounds ?? 0}
+                />
+                <MetricCard
+                  label="补救重试"
+                  value={codexReasoningContinuation?.continuationRepairGuardCount ?? 0}
+                />
+              </>
+            ) : null}
             <MetricCard label="缓存创建" value={resolveCacheWriteValue(selectedLog)} />
             <MetricCard label="缓存读取" value={selectedLog.cache_read_input_tokens} />
             <MetricCard label="总耗时" value={formatDurationMs(displayDurationMs)} />
@@ -174,11 +225,23 @@ function MetricCard({
   return (
     <div className="rounded-xl border border-border/80 bg-secondary/80 px-3 py-3 dark:border-border dark:bg-secondary/70">
       <div className="text-xs text-muted-foreground">{label}</div>
-      <div className="mt-1 text-lg font-semibold text-foreground">
+      <div className="mt-1 break-words text-base font-semibold leading-snug text-foreground">
         {value == null || value === "" ? "—" : value}
       </div>
     </div>
   );
+}
+
+function formatCodexReasoningRuleMode(value: string | null | undefined) {
+  if (value === "reasoning_tokens") return "reasoning tokens";
+  if (value === "final_answer_only_high_xhigh") return "final-only";
+  return value || "—";
+}
+
+function formatCodexReasoningHitSource(value: string | null | undefined) {
+  if (value === "reasoning_tokens") return "token";
+  if (value === "final_answer_only_high_xhigh") return "final-only";
+  return value || "—";
 }
 
 function formatCostMultiplier(value: number | null | undefined) {

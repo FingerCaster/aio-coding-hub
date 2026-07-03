@@ -25,6 +25,8 @@
 
 vNext does not provide host-managed secret storage for community plugin config。已保存的配置值仍然是普通插件配置值，可能出现在后端详情 payload 中。后端会在持久化前校验配置；前端校验只是便利层，不能作为唯一信任来源。
 
+`storage` 是当前 Extension Host storage API 的保留顶层字段：声明 `storage.plugin` 能力的插件通过 `api.storage` 写入的数据会保存在插件配置 JSON 的 `storage` object 中，并通过同一套插件配置持久化路径保存，大小限制为 64 KiB。`configSchema.properties.storage` 当前不会被校验器特别禁止，但插件作者不应定义这个顶层字段，否则会和宿主 API 状态混用。
+
 ## UI 元数据
 
 宿主会把 `configSchema` 渲染为低代码设置面板。优先使用标准 JSON Schema 展示字段：

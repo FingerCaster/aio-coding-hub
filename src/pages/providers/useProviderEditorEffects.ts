@@ -16,6 +16,7 @@ import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
 import type { ProviderEditorInitialValues } from "./providerDuplicate";
 import type { UseFormReset, UseFormSetValue } from "react-hook-form";
 import {
+  type CodexBridgeTarget,
   valueOrEmpty,
   isZeroMultiplier,
   isNonZeroMultiplier,
@@ -26,6 +27,7 @@ import {
   deriveCodexBridgeTarget,
   deriveAuthMode,
   deriveCx2ccSourceValue,
+  withCx2ccDefaultModel,
 } from "./providerEditorUtils";
 import {
   cloneUpstreamRetryPolicy,
@@ -40,7 +42,7 @@ export type EffectDeps = {
   editingProviderId: number | null;
   createInitialValues: ProviderEditorInitialValues | null;
   authMode: "api_key" | "oauth" | "cx2cc";
-  codexBridgeTarget: "openai_chat" | "anthropic_messages";
+  codexBridgeTarget: CodexBridgeTarget;
   costMultiplierValue: string;
   isCodexGatewaySource: boolean;
   selectedCx2ccSourceProvider: ProviderSummary | null;
@@ -65,7 +67,7 @@ export type EffectDeps = {
   setUpstreamRetryPolicyDraft: (v: UpstreamRetryPolicy) => void;
   setAuthMode: (v: "api_key" | "oauth" | "cx2cc") => void;
   setCx2ccSourceValue: (v: string) => void;
-  setCodexBridgeTarget: (v: "openai_chat" | "anthropic_messages") => void;
+  setCodexBridgeTarget: (v: CodexBridgeTarget) => void;
   setOauthStatus: (v: ProviderOAuthStatusResult | null) => void;
   setOauthLoading: (v: boolean) => void;
   setCx2ccFallbackModels: (
@@ -151,10 +153,15 @@ export function useProviderEditorEffects(d: EffectDeps) {
     baseUrlRowSeqRef.current = 1;
 
     if (mode === "create") {
+      const initialCx2ccSourceValue = deriveCx2ccSourceValue(createInitialValues);
       setBaseUrlMode(createInitialValues?.base_url_mode ?? "order");
       setBaseUrlRows(buildBaseUrlRows(createInitialValues, newBaseUrlRow));
       setPingingAll(false);
-      setClaudeModels(createInitialValues?.claude_models ?? {});
+      setClaudeModels(
+        initialCx2ccSourceValue
+          ? withCx2ccDefaultModel(createInitialValues?.claude_models ?? {})
+          : (createInitialValues?.claude_models ?? {})
+      );
       setModelMapping(createInitialValues?.model_mapping ?? { default_model: null, exact: {} });
       setTestModel(createInitialValues?.availability_test_model ?? "");
       setTags(createInitialValues?.tags ?? []);
@@ -168,12 +175,10 @@ export function useProviderEditorEffects(d: EffectDeps) {
           createInitialValues?.upstream_retry_policy_override ?? DEFAULT_UPSTREAM_RETRY_POLICY
         )
       );
-      setCx2ccSourceValue(deriveCx2ccSourceValue(createInitialValues));
+      setCx2ccSourceValue(initialCx2ccSourceValue);
       setCodexBridgeTarget(deriveCodexBridgeTarget(createInitialValues));
       setAuthMode(
-        deriveCx2ccSourceValue(createInitialValues)
-          ? "cx2cc"
-          : (createInitialValues?.auth_mode ?? "api_key")
+        initialCx2ccSourceValue ? "cx2cc" : (createInitialValues?.auth_mode ?? "api_key")
       );
       setOauthStatus(null);
       reset(buildFormValues(createInitialValues));
@@ -190,14 +195,19 @@ export function useProviderEditorEffects(d: EffectDeps) {
     }
 
     const initialAuthMode = deriveAuthMode(snapshot);
+    const initialCx2ccSourceValue = deriveCx2ccSourceValue(snapshot);
     setAuthMode(initialAuthMode);
-    setCx2ccSourceValue(deriveCx2ccSourceValue(snapshot));
+    setCx2ccSourceValue(initialCx2ccSourceValue);
     setCodexBridgeTarget(deriveCodexBridgeTarget(snapshot));
     setOauthStatus(null);
     setBaseUrlMode(snapshot.base_url_mode);
     setBaseUrlRows(snapshot.base_urls.map((url) => newBaseUrlRow(url)));
     setPingingAll(false);
-    setClaudeModels(snapshot.claude_models ?? {});
+    setClaudeModels(
+      initialAuthMode === "cx2cc"
+        ? withCx2ccDefaultModel(snapshot.claude_models ?? {})
+        : (snapshot.claude_models ?? {})
+    );
     setModelMapping(snapshot.model_mapping ?? { default_model: null, exact: {} });
     setTestModel(snapshot.availability_test_model ?? "");
     setTags(snapshot.tags ?? []);

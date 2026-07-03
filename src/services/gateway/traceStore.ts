@@ -7,7 +7,7 @@ import type {
   GatewayRequestEvent,
   GatewayRequestStartEvent,
 } from "./gatewayEvents";
-import { isPersistedRequestLogInProgress } from "./requestLogState";
+import { isPersistedRequestLogTerminal } from "./requestLogState";
 import type { RequestLogTraceMergeSource } from "./traceRequestLogMerge";
 import { mergeTraceWithRequestLog } from "./traceRequestLogMerge";
 import { MAX_ATTEMPTS_PER_TRACE } from "./traceLimits";
@@ -293,7 +293,7 @@ export function ingestTraceRequest(payload: GatewayRequestEvent) {
 export function reconcileTraceFromRequestLog(
   requestLog: RequestLogTraceMergeSource | null | undefined
 ) {
-  if (!requestLog?.trace_id || isPersistedRequestLogInProgress(requestLog)) return false;
+  if (!requestLog?.trace_id || !isPersistedRequestLogTerminal(requestLog)) return false;
 
   const traceId = requestLog.trace_id;
   const idx = findTraceIndex(traceId);

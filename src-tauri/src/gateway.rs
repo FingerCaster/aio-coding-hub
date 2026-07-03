@@ -1,3 +1,4 @@
+pub(crate) mod active_requests;
 mod background_tasks;
 mod billing_header_rectifier;
 mod binder;
@@ -63,4 +64,34 @@ pub(crate) fn resolve_transport_base_url(
     cli_key: &str,
 ) -> Result<String, String> {
     proxy::resolve_transport_base_url(transport, cli_key)
+}
+
+pub(crate) fn build_translated_bridge_probe(
+    bridge_type: &str,
+    model_mapping: crate::providers::ModelMapping,
+    source_model: &str,
+) -> Result<(String, serde_json::Value), String> {
+    let bridge = proxy::protocol_bridge::get_bridge(bridge_type)
+        .ok_or_else(|| format!("BRIDGE_UNSUPPORTED_TYPE: unsupported bridge_type={bridge_type}"))?;
+    let body = serde_json::json!({
+        "model": source_model,
+        "input": "ping",
+        "max_output_tokens": 1,
+        "stream": false
+    });
+    let ctx = proxy::protocol_bridge::BridgeContext {
+        claude_models: Default::default(),
+        model_mapping,
+        cx2cc_settings: Default::default(),
+        requested_model: Some(source_model.to_string()),
+        mapped_model: None,
+        stream_requested: false,
+        is_chatgpt_backend: false,
+        responses_cache_namespace: None,
+        responses_cache_input: None,
+    };
+    let translated = bridge
+        .translate_request(body, &ctx)
+        .map_err(|err| format!("BRIDGE_TRANSLATE_FAILED: {err}"))?;
+    Ok((translated.target_path, translated.body))
 }

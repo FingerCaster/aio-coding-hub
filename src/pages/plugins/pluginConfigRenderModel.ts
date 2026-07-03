@@ -172,13 +172,14 @@ export function buildPluginConfigRenderModel(input: {
     });
   });
 
-  const sections = [...sectionMap.values()]
-    .map((section) => ({
-      ...section,
-      fields: section.fields.sort((left, right) => left.order - right.order),
-    }))
-    .filter((section) => section.fields.length > 0)
-    .sort((left, right) => left.order - right.order || left.title.localeCompare(right.title));
+  const sections = [];
+  for (const section of sectionMap.values()) {
+    const fields = section.fields.sort((left, right) => left.order - right.order);
+    if (fields.length > 0) {
+      sections.push({ ...section, fields });
+    }
+  }
+  sections.sort((left, right) => left.order - right.order || left.title.localeCompare(right.title));
 
   return { editable: true, sections };
 }

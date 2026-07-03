@@ -591,13 +591,14 @@ function maybeEvaluate(nowMs: number) {
 
   for (const row of selfCheckRows) {
     const minKeep = minuteNow - SAMPLE_RETENTION_MINUTES;
-    row.group.samples = pruneSamples(row.group.samples, minKeep);
+    const samples = pruneSamples(row.group.samples, minKeep);
+    row.group.samples = samples;
 
-    const slowBaseline = slowSumSamples(row.group.samples, baselineStart, baselineEnd);
-    const slowRecent = slowSumSamples(row.group.samples, recentStart, recentEnd);
+    const slowBaseline = slowSumSamples(samples, baselineStart, baselineEnd);
+    const slowRecent = slowSumSamples(samples, recentStart, recentEnd);
 
     const slowObserve = coldStartActive
-      ? slowSumSamples(row.group.samples, observeStart, observeEnd)
+      ? slowSumSamples(samples, observeStart, observeEnd)
       : slowRecent;
 
     if (

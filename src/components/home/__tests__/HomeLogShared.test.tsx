@@ -13,7 +13,6 @@ import {
   formatClaudeModelMappingText,
   formatRequestLogModelText,
   FreeBadge,
-  getErrorCodeLabel,
   hasClaudeModelMappingSpecialSetting,
   hasPriorityServiceTierSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
@@ -22,6 +21,7 @@ import {
   resolveRequestLogUsageReasoningTokens,
   SessionReuseBadge,
 } from "../HomeLogShared";
+import { getErrorCodeLabel } from "../requestLogErrorLabels";
 
 function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
   return {
@@ -210,6 +210,135 @@ describe("components/home/HomeLogShared", () => {
       "本次请求命中了 2 次 Codex 降智拦截（规则 <= 516），等待 1000ms 后重试。"
     );
 
+    const featureCandidate = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: JSON.stringify([
+        {
+          type: "codex_reasoning_features",
+          ruleMode: "final_answer_only_high_xhigh",
+          requestReasoningEffort: "high",
+          responseClassification: "complete",
+          reasoningTokens: 516,
+          finalAnswerOnly: true,
+          commentaryObserved: false,
+        },
+      ]),
+    });
+    expect(featureCandidate.muted).toBe(false);
+    expect(featureCandidate.tags).toEqual([]);
+    expect(featureCandidate.summary).toBeNull();
+
+    const compactionFeature = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: JSON.stringify([
+        {
+          type: "codex_reasoning_features",
+          ruleMode: "final_answer_only_high_xhigh",
+          requestReasoningEffort: "xhigh",
+          responseClassification: "request_only",
+          classificationSkippedReason: "guard_disabled_stream_not_buffered",
+          interceptExemptReason: "context_compaction",
+        },
+      ]),
+    });
+    expect(compactionFeature.muted).toBe(false);
+    expect(compactionFeature.tags).toEqual([]);
+    expect(compactionFeature.summary).toBeNull();
+
+    const continuationRepair = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: JSON.stringify([
+        {
+          type: "codex_reasoning_continuation",
+          status: "failed",
+          sentRounds: 1,
+          reasoningTokens: 2070,
+          failureKind: "aggregate",
+        },
+        {
+          type: "codex_reasoning_guard",
+          ruleSource: "continuation_repair",
+          matchedRuleName: "reasoning_tokens == 518*n-2",
+          reasoningTokens: 516,
+        },
+        {
+          type: "codex_reasoning_continuation",
+          status: "failed",
+          sentRounds: 0,
+          reasoningTokens: 516,
+          failureKind: "aggregate",
+        },
+        {
+          type: "codex_reasoning_guard",
+          ruleSource: "continuation_repair",
+          matchedRuleName: "reasoning_tokens == 518*n-2",
+          reasoningTokens: 516,
+        },
+        {
+          type: "codex_reasoning_continuation",
+          status: "repaired",
+          sentRounds: 2,
+          reasoningTokens: 51,
+        },
+      ]),
+    });
+    expect(continuationRepair.tags.map((tag) => tag.label)).toEqual(["思考补救成功"]);
+    expect(continuationRepair.tags[0]?.title).toBe(
+      "本次请求触发 3 次思考补救，2 次补救失败后使用预算重试，最终补救成功。"
+    );
+    expect(continuationRepair.summary).toBe(
+      "本次请求触发 3 次思考补救，2 次补救失败后使用预算重试，最终补救成功。"
+    );
+    expect(continuationRepair.reasoningTokens).toBeNull();
+
+    const mixedReasoningGuardAndContinuation = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: JSON.stringify([
+        {
+          type: "codex_reasoning_guard",
+          compareMode: "less_than_or_equal",
+          compareModeSymbol: "<=",
+          matchedRuleValue: 516,
+          reasoningTokens: 300,
+        },
+        {
+          type: "codex_reasoning_continuation",
+          status: "failed",
+          sentRounds: 1,
+          reasoningTokens: 2070,
+          failureKind: "aggregate",
+        },
+        {
+          type: "codex_reasoning_guard",
+          ruleSource: " Continuation_Repair ",
+          matchedRuleName: "reasoning_tokens == 518*n-2",
+          reasoningTokens: 516,
+        },
+        {
+          type: "codex_reasoning_continuation",
+          status: "repaired",
+          sentRounds: 2,
+          reasoningTokens: 51,
+        },
+      ]),
+    });
+    expect(mixedReasoningGuardAndContinuation.tags.map((tag) => tag.label)).toEqual([
+      "降智命中 <= 516",
+      "思考补救成功",
+    ]);
+    expect(mixedReasoningGuardAndContinuation.summary).toBe(
+      "本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试；同时触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。"
+    );
+    expect(mixedReasoningGuardAndContinuation.reasoningTokens).toBe(300);
+
     const clientAbort = buildRequestLogAuditMeta({
       cli_key: "claude",
       path: "/v1/messages",
@@ -307,6 +436,13 @@ describe("components/home/HomeLogShared", () => {
     });
     expect(computeStatusBadge({ status: 500, errorCode: null })).toMatchObject({
       text: "500 失败",
+      isError: true,
+    });
+    expect(
+      computeStatusBadge({ status: 200, errorCode: GatewayErrorCodes.STREAM_ERROR })
+    ).toMatchObject({
+      text: "200 失败",
+      semanticText: "请求失败",
       isError: true,
     });
     expect(

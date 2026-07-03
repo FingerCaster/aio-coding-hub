@@ -56,10 +56,8 @@ vi.mock("../../components/home/HomeOverviewPanel", () => ({
       onRefreshRequestLogs,
       onSelectLogId,
       devPreviewEnabled,
-      showHomeHeatmap,
-      showHomeUsage,
+      displayOptions,
       personalizedUsageView,
-      showWorkspaceConfigQuickToggle,
       switchingWorkspaceKey,
       onSwitchWorkspace,
       openCircuits,
@@ -70,10 +68,12 @@ vi.mock("../../components/home/HomeOverviewPanel", () => ({
       <div>
         <div>sort-loading:{String(sortModesLoading)}</div>
         <div>dev-preview:{String(devPreviewEnabled)}</div>
-        <div>show-heatmap:{String(showHomeHeatmap)}</div>
-        <div>show-usage:{String(showHomeUsage)}</div>
+        <div>show-heatmap:{String(displayOptions?.heatmap)}</div>
+        <div>show-usage:{String(displayOptions?.usage)}</div>
         <div>personalized-usage-view:{String(personalizedUsageView)}</div>
-        <div>workspace-config-quick-toggle:{String(showWorkspaceConfigQuickToggle)}</div>
+        <div>
+          workspace-config-quick-toggle:{String(displayOptions?.workspaceConfigQuickToggle)}
+        </div>
         <div>switching-workspace-key:{String(switchingWorkspaceKey)}</div>
         <div>open-circuits:{openCircuits.length}</div>
         <button type="button" onClick={() => onSwitchWorkspace?.("claude", 4)}>

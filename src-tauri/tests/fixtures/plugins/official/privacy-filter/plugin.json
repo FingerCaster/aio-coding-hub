@@ -5,7 +5,7 @@
   "apiVersion": "1.0.0",
   "configVersion": 3,
   "category": "privacy",
-  "description": "Official native privacy filter aligned with packyme/privacy-filter for pre-upstream prompt and log redaction.",
+  "description": "Official Extension Host privacy filter aligned with packyme/privacy-filter for pre-upstream prompt and log redaction.",
   "homepage": "https://github.com/packyme/privacy-filter",
   "repository": {
     "type": "git",
@@ -13,29 +13,40 @@
   },
   "license": "MIT",
   "runtime": {
-    "kind": "native",
-    "engine": "privacyFilter"
+    "kind": "extensionHost",
+    "language": "typescript"
   },
-  "hooks": [
-    {
-      "name": "gateway.request.afterBodyRead",
-      "priority": 5,
-      "failurePolicy": "fail-closed"
-    },
-    {
-      "name": "gateway.request.beforeSend",
-      "priority": 5,
-      "failurePolicy": "fail-closed"
-    },
-    {
-      "name": "log.beforePersist",
-      "priority": 1,
-      "failurePolicy": "fail-closed"
-    }
+  "main": "dist/extension.js",
+  "activationEvents": [
+    "onGatewayHook:gateway.request.afterBodyRead",
+    "onGatewayHook:gateway.request.beforeSend",
+    "onGatewayHook:log.beforePersist"
   ],
-  "permissions": ["request.body.read", "request.body.write", "log.redact"],
+  "capabilities": ["gateway.hooks", "privacy.redact"],
+  "contributes": {
+    "gatewayHooks": [
+      {
+        "name": "gateway.request.afterBodyRead",
+        "priority": 5,
+        "failurePolicy": "fail-closed",
+        "timeoutMs": 5000
+      },
+      {
+        "name": "gateway.request.beforeSend",
+        "priority": 5,
+        "failurePolicy": "fail-closed",
+        "timeoutMs": 5000
+      },
+      {
+        "name": "log.beforePersist",
+        "priority": 1,
+        "failurePolicy": "fail-closed",
+        "timeoutMs": 5000
+      }
+    ]
+  },
   "hostCompatibility": {
-    "app": ">=0.56.0 <1.0.0",
+    "app": ">=0.60.0 <1.0.0",
     "pluginApi": "^1.0.0",
     "platforms": ["macos", "windows", "linux"]
   },

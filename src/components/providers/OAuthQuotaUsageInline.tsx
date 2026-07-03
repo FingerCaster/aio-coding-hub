@@ -13,10 +13,7 @@ function getOAuthShortWindowLabel(cliKey: CliKey, limits: OAuthLimitsResult | nu
   return limits?.limit_short_label ?? "5h";
 }
 
-export function formatOAuthQuotaResetCountdown(
-  resetAt: number | null,
-  nowUnix: number
-): string | null {
+function formatOAuthQuotaResetCountdown(resetAt: number | null, nowUnix: number): string | null {
   if (resetAt == null) return null;
   const remaining = resetAt - nowUnix;
   if (remaining <= 0) return "已重置";
@@ -36,7 +33,7 @@ export function formatOAuthQuotaResetCountdown(
   return parts.join(" ");
 }
 
-export function buildOAuthQuotaUsageSegments({
+function buildOAuthQuotaUsageSegments({
   cliKey,
   limits,
   nowUnix,

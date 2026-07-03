@@ -368,6 +368,7 @@ pub fn provider_upsert_bridge_json<R: tauri::Runtime>(
             source_provider_id,
             bridge_type,
             stream_idle_timeout_seconds: None,
+            extension_values: None,
             model_mapping: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,

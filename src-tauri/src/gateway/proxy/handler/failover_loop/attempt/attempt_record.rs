@@ -75,6 +75,7 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         attempts,
         failed_provider_ids,
         last_outcome,
+        active_requested_model: _,
         circuit_snapshot,
         abort_guard: _,
     } = loop_state;

@@ -2,7 +2,7 @@
 // - Import helpers/components from this module for Home "request logs" list and "realtime traces" cards.
 // - Designed to keep status badge / error_code label / session reuse tooltip consistent across the Home page.
 
-import { GatewayErrorCodes, getGatewayErrorShortLabel } from "../../constants/gatewayErrorCodes";
+import { GatewayErrorCodes } from "../../constants/gatewayErrorCodes";
 import {
   normalizeClaudeModelMapping,
   type ClaudeModelMapping,
@@ -11,6 +11,7 @@ import {
   formatCodexReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
   parseRequestLogSpecialSettings,
+  resolveCodexReasoningContinuationSummary,
   resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
@@ -22,6 +23,7 @@ import { Tooltip } from "../../ui/Tooltip";
 import { computeEffectiveInputTokens as computeSharedEffectiveInputTokens } from "../../utils/cacheRateMetrics";
 import { FolderOpen } from "lucide-react";
 import { RouteTooltipContent } from "./RouteTooltipContent";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 
 const CLIENT_ABORT_ERROR_CODES: ReadonlySet<string> = new Set([
   GatewayErrorCodes.STREAM_ABORTED,
@@ -85,6 +87,51 @@ function formatCodexReasoningGuardActionText(summary: {
     return `等待 ${summary.latestDelayMs}ms 后重试`;
   }
   return "继续重试";
+}
+
+export function formatCodexReasoningContinuationStatus(status: string | null | undefined): string {
+  if (status === "repaired") return "已修复";
+  if (status === "failed") return "补救失败";
+  if (status === "still_matched") return "仍命中";
+  if (status === "missing_encrypted") return "缺少 encrypted";
+  if (status === "capped_max_output_tokens") return "输出上限";
+  if (status === "unknown") return "未知状态";
+  return status || "未知状态";
+}
+
+function formatCodexReasoningContinuationSummary(summary: {
+  count: number;
+  continuationRepairGuardCount: number;
+  latestStatus: string | null;
+}): string {
+  return `本次请求${formatCodexReasoningContinuationSummaryClause(summary)}。`;
+}
+
+function formatCodexReasoningContinuationSummaryClause(summary: {
+  count: number;
+  continuationRepairGuardCount: number;
+  latestStatus: string | null;
+}): string {
+  const triggerText = summary.count > 1 ? `触发 ${summary.count} 次思考补救` : "触发思考补救";
+  const retryText =
+    summary.continuationRepairGuardCount > 0
+      ? `，${summary.continuationRepairGuardCount} 次补救失败后使用预算重试`
+      : "";
+
+  if (summary.latestStatus === "repaired") {
+    return `${triggerText}${retryText}，最终补救成功`;
+  }
+
+  return `${triggerText}${retryText}，最终状态：${formatCodexReasoningContinuationStatus(summary.latestStatus)}`;
+}
+
+function formatCodexReasoningGuardSummaryClause(summary: {
+  count: number;
+  latestRuleLabel: string | null;
+}): string {
+  return summary.count > 1
+    ? `命中了 ${summary.count} 次 Codex 降智拦截${summary.latestRuleLabel ? `（规则 ${summary.latestRuleLabel}）` : ""}`
+    : `命中了 Codex 降智拦截${summary.latestRuleLabel ? `（规则 ${summary.latestRuleLabel}）` : ""}`;
 }
 
 function finiteJsonNumber(value: unknown): number | null {
@@ -234,7 +281,7 @@ export function buildRequestLogAuditMeta(
 ): RequestLogAuditMeta {
   const codexReasoningGuardHitLabel = options.codexReasoningGuardHitLabel?.trim() || "降智命中";
   const settings = parseRequestLogSpecialSettings(log.special_settings_json);
-  const settingTypes = new Set(settings.map((item) => item.type).filter(Boolean));
+  const settingTypes = new Set(settings.flatMap((item) => (item.type ? [item.type] : [])));
   const isWarmupIntercept = settingTypes.has("warmup_intercept");
   const isCliProxyGuard = settingTypes.has("cli_proxy_guard");
   const isSuccessful = typeof log.status === "number" && log.status >= 200 && log.status < 300;
@@ -245,7 +292,11 @@ export function buildRequestLogAuditMeta(
   const isAllProvidersUnavailable = log.error_code === GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE;
   const excludedFromStats = !!log.excluded_from_stats;
   const codexReasoningGuard = resolveCodexReasoningGuardSummary(log.special_settings_json);
+  const codexReasoningContinuation = resolveCodexReasoningContinuationSummary(
+    log.special_settings_json
+  );
   const codexReasoningGuardHitCount = codexReasoningGuard.count;
+  const codexReasoningContinuationCount = codexReasoningContinuation.count;
   const codexReasoningGuardRuleSuffix = codexReasoningGuard.latestRuleLabel
     ? ` ${codexReasoningGuard.latestRuleLabel}`
     : "";
@@ -311,6 +362,20 @@ export function buildRequestLogAuditMeta(
     );
   }
 
+  if (codexReasoningContinuationCount > 0) {
+    tags.push(
+      auditTag(
+        codexReasoningContinuation.latestStatus === "repaired"
+          ? "思考补救成功"
+          : codexReasoningContinuationCount > 1
+            ? `思考补救 ${codexReasoningContinuationCount}`
+            : "思考补救",
+        "bg-emerald-50/80 text-emerald-700 ring-1 ring-inset ring-emerald-500/10 dark:bg-emerald-500/15 dark:text-emerald-200 dark:ring-emerald-400/20",
+        formatCodexReasoningContinuationSummary(codexReasoningContinuation)
+      )
+    );
+  }
+
   if (excludedFromStats) {
     tags.push(
       auditTag(
@@ -327,10 +392,15 @@ export function buildRequestLogAuditMeta(
   } else if (isCliProxyGuard) {
     summary = "这次请求由 CLI 代理守卫提前处理，保留为审计行。";
   } else if (codexReasoningGuardHitCount > 0) {
-    summary =
-      codexReasoningGuardHitCount > 1
-        ? `本次请求命中了 ${codexReasoningGuardHitCount} 次 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，${codexReasoningGuardActionText}。`
-        : `本次请求命中了 Codex 降智拦截${codexReasoningGuard.latestRuleLabel ? `（规则 ${codexReasoningGuard.latestRuleLabel}）` : ""}，${codexReasoningGuardActionText}。`;
+    summary = `本次请求${formatCodexReasoningGuardSummaryClause(
+      codexReasoningGuard
+    )}，${codexReasoningGuardActionText}${
+      codexReasoningContinuationCount > 0
+        ? `；同时${formatCodexReasoningContinuationSummaryClause(codexReasoningContinuation)}`
+        : ""
+    }。`;
+  } else if (codexReasoningContinuationCount > 0) {
+    summary = formatCodexReasoningContinuationSummary(codexReasoningContinuation);
   } else if (isAllProvidersUnavailable) {
     summary = "当前没有可用 Provider，网关未继续向已熔断或冷却中的供应商发起上游请求。";
   } else if (isClientAbort) {
@@ -386,10 +456,6 @@ export function resolveLiveTraceDurationMs(
 ) {
   if (!trace) return null;
   return Math.max(0, nowMs - trace.first_seen_ms);
-}
-
-export function getErrorCodeLabel(errorCode: string) {
-  return getGatewayErrorShortLabel(errorCode);
 }
 
 export function SessionReuseBadge({ showCustomTooltip }: { showCustomTooltip: boolean }) {
@@ -480,8 +546,11 @@ export function computeStatusBadge(input: {
 
   const isClientAbort = !!(input.errorCode && CLIENT_ABORT_ERROR_CODES.has(input.errorCode));
   const hasFailover = !!input.hasFailover;
-  const isSuccessStatus = input.status != null && input.status >= 200 && input.status < 400;
-  const isError = input.status != null ? input.status >= 400 : input.errorCode != null;
+  const hasTerminalErrorCode = !!input.errorCode && !isClientAbort;
+  const isSuccessStatus =
+    !hasTerminalErrorCode && input.status != null && input.status >= 200 && input.status < 400;
+  const isError =
+    hasTerminalErrorCode || (input.status != null ? input.status >= 400 : input.errorCode != null);
 
   let text = STATUS_TEXT_UNKNOWN;
   let semanticText = STATUS_TEXT_UNKNOWN;

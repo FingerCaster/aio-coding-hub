@@ -1045,6 +1045,196 @@ describe("components/home/HomeTokenCostPanel", () => {
     expect(screen.getByText("加载日期详情中…")).toBeInTheDocument();
   });
 
+  it("shows loading skeletons, disabled folder selector, and empty leaderboard copy", () => {
+    vi.mocked(useUsageFolderOptionsV1Query).mockReturnValue({
+      data: [],
+      isLoading: true,
+      isFetching: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: null,
+      isLoading: true,
+      isFetching: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockReturnValue({
+      data: [],
+      isLoading: true,
+      isFetching: true,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    const { rerender } = render(<HomeTokenCostPanel />);
+
+    expect(screen.queryByText("含缓存总 Token")).not.toBeInTheDocument();
+    expect(screen.getByText("加载用量中…")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /全部文件夹/ })).not.toBeDisabled();
+
+    vi.mocked(useUsageFolderOptionsV1Query).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: null,
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockReturnValue({
+      data: [],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    rerender(<HomeTokenCostPanel />);
+
+    expect(screen.getByRole("button", { name: /全部文件夹/ })).toBeDisabled();
+    expect(screen.getByText("当前时间范围暂无用量数据。")).toBeInTheDocument();
+  });
+
+  it("shows pending custom range copy and invalid range toast without querying", () => {
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: {
+        requests_total: 1,
+        requests_with_usage: 1,
+        requests_success: 1,
+        requests_failed: 0,
+        cost_covered_success: 1,
+        avg_duration_ms: 100,
+        avg_ttfb_ms: 50,
+        avg_output_tokens_per_second: 80,
+        input_tokens: 100,
+        output_tokens: 50,
+        io_total_tokens: 150,
+        total_tokens: 150,
+        cache_read_input_tokens: 0,
+        cache_creation_input_tokens: 0,
+        cache_creation_5m_input_tokens: 0,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockReturnValue({
+      data: [
+        {
+          key: "provider",
+          name: "Provider",
+          requests_total: 1,
+          requests_success: 1,
+          requests_failed: 0,
+          total_tokens: 150,
+          io_total_tokens: 150,
+          input_tokens: 100,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          avg_duration_ms: 100,
+          avg_ttfb_ms: 50,
+          avg_output_tokens_per_second: 80,
+          cost_usd: 0.01,
+        },
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<HomeTokenCostPanel />);
+
+    fireEvent.change(screen.getByLabelText("开始日期"), { target: { value: "2026-04-30" } });
+    fireEvent.change(screen.getByLabelText("结束日期"), { target: { value: "2026-04-01" } });
+    fireEvent.click(screen.getByRole("button", { name: "自定义" }));
+
+    expect(screen.getByRole("button", { name: "自定义" })).toHaveAttribute("aria-pressed", "false");
+    expect(screen.getByText("Provider")).toBeInTheDocument();
+  });
+
+  it("shows day detail empty and error states", () => {
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: {
+        requests_total: 1,
+        requests_with_usage: 1,
+        requests_success: 1,
+        requests_failed: 0,
+        cost_covered_success: 1,
+        avg_duration_ms: 880,
+        avg_ttfb_ms: 210,
+        avg_output_tokens_per_second: 102.4,
+        input_tokens: 3400,
+        output_tokens: 1800,
+        io_total_tokens: 5200,
+        total_tokens: 6200,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 200,
+        cache_creation_5m_input_tokens: 0,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockReturnValue({
+      data: [
+        {
+          key: "2026-04-16",
+          name: "2026-04-16",
+          requests_total: 1,
+          requests_success: 1,
+          requests_failed: 0,
+          total_tokens: 6200,
+          io_total_tokens: 5200,
+          input_tokens: 3400,
+          output_tokens: 1800,
+          cache_creation_input_tokens: 200,
+          cache_read_input_tokens: 800,
+          avg_duration_ms: 880,
+          avg_ttfb_ms: 210,
+          avg_output_tokens_per_second: 102.4,
+          cost_usd: 0.6,
+        },
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageDayDetailV1Query)
+      .mockReturnValueOnce({
+        data: null,
+        isLoading: false,
+        isFetching: false,
+        error: null,
+        refetch: vi.fn(),
+      } as any)
+      .mockReturnValue({
+        data: null,
+        isLoading: false,
+        isFetching: false,
+        error: new Error("detail failed"),
+        refetch: vi.fn(),
+      } as any);
+
+    render(<HomeTokenCostPanel />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "日期" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开 2026-04-16 日期详情" }));
+
+    expect(screen.getByText(/日期详情加载失败：.*detail failed/)).toBeInTheDocument();
+  });
+
   it("maps range filters to the expected usage query periods and bounds", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date(2026, 3, 16, 10, 0, 0));
@@ -1112,6 +1302,33 @@ describe("components/home/HomeTokenCostPanel", () => {
       "custom",
       expect.objectContaining({
         startTs: Math.floor(new Date(2026, 3, 14, 0, 0, 0).getTime() / 1000),
+        endTs: Math.floor(new Date(2026, 3, 17, 0, 0, 0).getTime() / 1000),
+        cliKey: null,
+        providerId: null,
+        limit: null,
+        excludeCx2CcGatewayBridge: true,
+      }),
+      undefined
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "最近 15 天" }));
+
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "custom",
+      expect.objectContaining({
+        startTs: Math.floor(new Date(2026, 3, 2, 0, 0, 0).getTime() / 1000),
+        endTs: Math.floor(new Date(2026, 3, 17, 0, 0, 0).getTime() / 1000),
+        cliKey: null,
+        providerId: null,
+        excludeCx2CcGatewayBridge: true,
+      }),
+      undefined
+    );
+    expect(vi.mocked(useUsageLeaderboardV2Query)).toHaveBeenLastCalledWith(
+      "provider",
+      "custom",
+      expect.objectContaining({
+        startTs: Math.floor(new Date(2026, 3, 2, 0, 0, 0).getTime() / 1000),
         endTs: Math.floor(new Date(2026, 3, 17, 0, 0, 0).getTime() / 1000),
         cliKey: null,
         providerId: null,
@@ -1275,6 +1492,287 @@ describe("components/home/HomeTokenCostPanel", () => {
     expect(screen.getByRole("button", { name: "自定义" })).toHaveAttribute("aria-pressed", "true");
     expect(screen.queryByText("2026-04-01 至 2026-04-30")).not.toBeInTheDocument();
     expect(screen.queryByText(/点击"应用"/)).not.toBeInTheDocument();
+  });
+
+  it("sorts the leaderboard by remaining metric headers and sparse values", () => {
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: {
+        requests_total: 7,
+        requests_with_usage: 7,
+        requests_success: 6,
+        requests_failed: 1,
+        cost_covered_success: 6,
+        avg_duration_ms: 1000,
+        avg_ttfb_ms: 200,
+        avg_output_tokens_per_second: 100,
+        input_tokens: 300,
+        output_tokens: 100,
+        io_total_tokens: 400,
+        total_tokens: 500,
+        cache_read_input_tokens: 100,
+        cache_creation_input_tokens: 0,
+        cache_creation_5m_input_tokens: 0,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockReturnValue({
+      data: [
+        {
+          key: "alpha",
+          name: "Alpha Provider",
+          requests_total: 0,
+          requests_success: 0,
+          requests_failed: 0,
+          total_tokens: 0,
+          io_total_tokens: 0,
+          input_tokens: 0,
+          output_tokens: 0,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          avg_duration_ms: 0,
+          avg_ttfb_ms: 0,
+          avg_output_tokens_per_second: null,
+          cost_usd: null,
+        },
+        {
+          key: "bravo",
+          name: "Bravo Provider",
+          requests_total: 5,
+          requests_success: 4,
+          requests_failed: 1,
+          total_tokens: 200,
+          io_total_tokens: 100,
+          input_tokens: 50,
+          output_tokens: 50,
+          cache_creation_input_tokens: 20,
+          cache_read_input_tokens: 80,
+          avg_duration_ms: 900,
+          avg_ttfb_ms: 180,
+          avg_output_tokens_per_second: 40,
+          cost_usd: 0.5,
+        },
+        {
+          key: "charlie",
+          name: "Charlie Provider",
+          requests_total: 2,
+          requests_success: 2,
+          requests_failed: 0,
+          total_tokens: 300,
+          io_total_tokens: 300,
+          input_tokens: 250,
+          output_tokens: 50,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 0,
+          avg_duration_ms: 700,
+          avg_ttfb_ms: 120,
+          avg_output_tokens_per_second: 80,
+          cost_usd: 0.2,
+        },
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<HomeTokenCostPanel />);
+
+    const table = screen.getByRole("table", { name: "用量排行榜" });
+    expectTableRowsInOrder(table, ["Alpha Provider", "Bravo Provider", "Charlie Provider"]);
+
+    clickSortableHeader(table, /输入\+输出 Token/);
+    expectTableRowsInOrder(table, ["Charlie Provider", "Bravo Provider", "Alpha Provider"]);
+
+    clickSortableHeader(table, /总花费/);
+    expectTableRowsInOrder(table, ["Bravo Provider", "Charlie Provider", "Alpha Provider"]);
+
+    clickSortableHeader(table, /请求数/);
+    expectTableRowsInOrder(table, ["Bravo Provider", "Charlie Provider", "Alpha Provider"]);
+
+    clickSortableHeader(table, /成功率/);
+    expectTableRowsInOrder(table, ["Charlie Provider", "Bravo Provider", "Alpha Provider"]);
+
+    clickSortableHeader(table, /Token 占比/);
+    expectTableRowsInOrder(table, ["Charlie Provider", "Bravo Provider", "Alpha Provider"]);
+
+    clickSortableHeader(table, /平均输出速度/);
+    expectTableRowsInOrder(table, ["Charlie Provider", "Bravo Provider", "Alpha Provider"]);
+
+    clickSortableHeader(table, "供应商");
+    expectTableRowsInOrder(table, ["Charlie Provider", "Bravo Provider", "Alpha Provider"]);
+    clickSortableHeader(table, "供应商");
+    expectTableRowsInOrder(table, ["Alpha Provider", "Bravo Provider", "Charlie Provider"]);
+    expect(within(table).getByRole("columnheader", { name: "供应商" })).toHaveAttribute(
+      "aria-sort",
+      "ascending"
+    );
+  });
+
+  it("clears and toggles folder filters from the multi-select", () => {
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: {
+        requests_total: 1,
+        requests_with_usage: 1,
+        requests_success: 1,
+        requests_failed: 0,
+        cost_covered_success: 1,
+        avg_duration_ms: 1000,
+        avg_ttfb_ms: 200,
+        avg_output_tokens_per_second: 100,
+        input_tokens: 1000,
+        output_tokens: 500,
+        io_total_tokens: 1500,
+        total_tokens: 1800,
+        cache_read_input_tokens: 300,
+        cache_creation_input_tokens: 0,
+        cache_creation_5m_input_tokens: 0,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockReturnValue({
+      data: [
+        {
+          key: "provider-1",
+          name: "Provider",
+          requests_total: 1,
+          requests_success: 1,
+          requests_failed: 0,
+          total_tokens: 1800,
+          io_total_tokens: 1500,
+          input_tokens: 1000,
+          output_tokens: 500,
+          cache_creation_input_tokens: 0,
+          cache_read_input_tokens: 300,
+          avg_duration_ms: 1000,
+          avg_ttfb_ms: 200,
+          avg_output_tokens_per_second: 100,
+          cost_usd: 0.1,
+        },
+      ],
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<HomeTokenCostPanel />);
+
+    fireEvent.click(screen.getByRole("button", { name: /全部文件夹/ }));
+    expect(screen.getByRole("button", { name: "清空文件夹筛选" })).toBeDisabled();
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /aio-coding-hub/ }));
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "daily",
+      expect.objectContaining({ folderKeys: ["/Users/demo/aio-coding-hub"] }),
+      undefined
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /aio-coding-hub/ }));
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "daily",
+      expect.objectContaining({ folderKeys: null }),
+      undefined
+    );
+
+    fireEvent.click(screen.getByRole("checkbox", { name: /aio-coding-hub/ }));
+    fireEvent.click(screen.getByRole("checkbox", { name: /未知文件夹/ }));
+    expect(screen.getByRole("button", { name: /2 个文件夹/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "清空文件夹筛选" })).toBeEnabled();
+
+    fireEvent.click(screen.getByRole("button", { name: "清空文件夹筛选" }));
+    expect(vi.mocked(useUsageSummaryV2Query)).toHaveBeenLastCalledWith(
+      "daily",
+      expect.objectContaining({ folderKeys: null }),
+      undefined
+    );
+  });
+
+  it("renders empty day detail folders and inactive hourly range", () => {
+    vi.mocked(useUsageSummaryV2Query).mockReturnValue({
+      data: {
+        requests_total: 1,
+        requests_with_usage: 1,
+        requests_success: 1,
+        requests_failed: 0,
+        cost_covered_success: 1,
+        avg_duration_ms: 880,
+        avg_ttfb_ms: 210,
+        avg_output_tokens_per_second: 102.4,
+        input_tokens: 3400,
+        output_tokens: 1800,
+        io_total_tokens: 5200,
+        total_tokens: 6200,
+        cache_read_input_tokens: 800,
+        cache_creation_input_tokens: 200,
+        cache_creation_5m_input_tokens: 0,
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useUsageLeaderboardV2Query).mockImplementation(
+      (scope) =>
+        ({
+          data:
+            scope === "day"
+              ? [
+                  {
+                    key: "2026-04-16",
+                    name: "2026-04-16",
+                    requests_total: 1,
+                    requests_success: 1,
+                    requests_failed: 0,
+                    total_tokens: 6200,
+                    io_total_tokens: 5200,
+                    input_tokens: 3400,
+                    output_tokens: 1800,
+                    cache_creation_input_tokens: 200,
+                    cache_read_input_tokens: 800,
+                    avg_duration_ms: 880,
+                    avg_ttfb_ms: 210,
+                    avg_output_tokens_per_second: 102.4,
+                    cost_usd: 0.6,
+                  },
+                ]
+              : [],
+          isLoading: false,
+          isFetching: false,
+          error: null,
+          refetch: vi.fn(),
+        }) as any
+    );
+    vi.mocked(useUsageDayDetailV1Query).mockReturnValue({
+      data: {
+        day: "2026-04-16",
+        folders: [],
+        hours: Array.from({ length: 24 }, (_, hour) => ({
+          hour,
+          requests_total: 0,
+          total_tokens: 0,
+          io_total_tokens: 0,
+        })),
+      },
+      isLoading: false,
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+
+    render(<HomeTokenCostPanel />);
+
+    fireEvent.click(screen.getByRole("tab", { name: "日期" }));
+    fireEvent.click(screen.getByRole("button", { name: "展开 2026-04-16 日期详情" }));
+
+    expect(screen.getByText("当天暂无可展示的文件夹用量。")).toBeInTheDocument();
+    expect(screen.getByText("最早 — · 最晚 —")).toBeInTheDocument();
+    expect(screen.getAllByTestId("day-hour-bar")).toHaveLength(24);
   });
 
   it("renders preview rows when dev preview is enabled and queries are empty", () => {

@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { CLIS, cliShortLabel, type CliFilterKey } from "../../constants/clis";
 import { useProvidersListQuery } from "../../query/providers";
 import type { CliKey, ProviderSummary } from "../../services/providers/providers";
@@ -46,11 +46,9 @@ export function useUsagePageProviderFilter(cliKey: CliFilterKey) {
     return providersForCli(cliKey, providersByCli).map(buildProviderOption);
   }, [cliKey, claudeProvidersQuery.data, codexProvidersQuery.data, geminiProvidersQuery.data]);
 
-  useEffect(() => {
-    if (providerId == null) return;
-    if (providerOptions.some((option) => option.id === providerId)) return;
+  if (providerId != null && !providerOptions.some((option) => option.id === providerId)) {
     setProviderId(null);
-  }, [providerId, providerOptions]);
+  }
 
   const providersLoading =
     claudeProvidersQuery.isFetching ||

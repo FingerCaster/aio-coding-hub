@@ -45,6 +45,7 @@ coverage*/
 .trellis/
 .agents/
 .serena/
+.superpowers/
 src/templates/
 .codex/
 .codex-temp/

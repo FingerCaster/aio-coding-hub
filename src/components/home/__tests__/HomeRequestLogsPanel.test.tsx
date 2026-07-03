@@ -4,6 +4,7 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
 import type { CliSessionsFolderLookupEntry } from "../../../services/cli/cliSessions";
 import type { RequestLogSummary } from "../../../services/gateway/requestLogs";
+import type { ActiveRequestSnapshotItem } from "../../../services/gateway/requestActivityProjection";
 import {
   createRequestLogRouteHop,
   createRequestLogSummary,
@@ -21,10 +22,29 @@ vi.mock("../../../query/cliSessions", () => ({
   useCliSessionsFolderLookupByIdsQuery: useCliSessionsFolderLookupByIdsQueryMock,
 }));
 
+const TEST_CREATED_AT_SECONDS = 1_764_000_000;
+
 function makeRequestLogs(
   items: Array<Parameters<typeof createRequestLogSummary>[0]>
 ): RequestLogSummary[] {
   return items.map((item) => createRequestLogSummary(item));
+}
+
+function activeRequest(
+  overrides: Partial<ActiveRequestSnapshotItem> = {}
+): ActiveRequestSnapshotItem {
+  return {
+    trace_id: "trace-active",
+    cli_key: "claude",
+    session_id: null,
+    method: "POST",
+    path: "/v1/messages",
+    query: null,
+    requested_model: "claude-3-opus",
+    created_at_ms: Date.now(),
+    last_activity_ms: Date.now(),
+    ...overrides,
+  };
 }
 
 describe("components/home/HomeRequestLogsPanel", () => {
@@ -134,9 +154,18 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={traces}
+          activeRequests={[
+            activeRequest({ trace_id: "t-log-claude", requested_model: "claude-3-opus" }),
+            activeRequest({
+              trace_id: "t-live-codex",
+              cli_key: "codex",
+              path: "/v1/responses",
+              requested_model: "gpt-5",
+            }),
+          ]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
           requestLogsRefreshing={false}
@@ -161,7 +190,9 @@ describe("components/home/HomeRequestLogsPanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "刷新" }));
     expect(onRefreshRequestLogs).toHaveBeenCalled();
 
-    fireEvent.click(screen.getByRole("button", { name: /claude-3-opus/ }));
+    const historicalLogButton = screen.getByText("$0.123456").closest("button");
+    expect(historicalLogButton).not.toBeNull();
+    fireEvent.click(historicalLogButton!);
     expect(onSelectLogId).toHaveBeenCalledWith(1);
   });
 
@@ -169,7 +200,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -211,7 +242,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
                 }),
               ],
               session_reuse: false,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -231,7 +262,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -275,11 +306,158 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getByTitle("Codex / gpt-future-unknown")).toBeInTheDocument();
   });
 
+  it("hides passive Codex reasoning features and renders continuation repair tags in list rows", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: false }}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={makeRequestLogs([
+            {
+              id: 45,
+              trace_id: "t-passive-feature",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-5.5",
+              status: 200,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "codex_reasoning_features",
+                  ruleMode: "final_answer_only_high_xhigh",
+                  requestReasoningEffort: "high",
+                  responseClassification: "complete",
+                  reasoningTokens: 516,
+                  finalAnswerOnly: true,
+                  commentaryObserved: false,
+                },
+              ]),
+              final_provider_name: "Provider A",
+              created_at: TEST_CREATED_AT_SECONDS,
+            },
+            {
+              id: 46,
+              trace_id: "t-continuation-repair",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-5.5",
+              status: 200,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "codex_reasoning_continuation",
+                  status: "failed",
+                  sentRounds: 1,
+                  reasoningTokens: 2070,
+                  failureKind: "aggregate",
+                },
+                {
+                  type: "codex_reasoning_guard",
+                  ruleSource: "continuation_repair",
+                  matchedRuleName: "reasoning_tokens == 518*n-2",
+                  reasoningTokens: 516,
+                },
+                {
+                  type: "codex_reasoning_continuation",
+                  status: "repaired",
+                  sentRounds: 2,
+                  reasoningTokens: 51,
+                },
+              ]),
+              final_provider_name: "Provider B",
+              created_at: TEST_CREATED_AT_SECONDS,
+            },
+          ])}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.queryByText("候选特征")).not.toBeInTheDocument();
+    expect(screen.queryByText("压缩豁免")).not.toBeInTheDocument();
+    expect(screen.queryByText("观察信号")).not.toBeInTheDocument();
+    expect(screen.queryByText(/降智命中/)).not.toBeInTheDocument();
+    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+  });
+
+  it("renders mixed reasoning guard and continuation repair audit semantics in list rows", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: false }}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={makeRequestLogs([
+            {
+              id: 47,
+              trace_id: "t-mixed-guard-continuation",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-5.5",
+              status: 200,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "codex_reasoning_guard",
+                  compareMode: "less_than_or_equal",
+                  compareModeSymbol: "<=",
+                  matchedRuleValue: 516,
+                  reasoningTokens: 300,
+                },
+                {
+                  type: "codex_reasoning_continuation",
+                  status: "failed",
+                  sentRounds: 1,
+                  reasoningTokens: 2070,
+                  failureKind: "aggregate",
+                },
+                {
+                  type: "codex_reasoning_guard",
+                  ruleSource: " Continuation_Repair ",
+                  matchedRuleName: "reasoning_tokens == 518*n-2",
+                  reasoningTokens: 516,
+                },
+                {
+                  type: "codex_reasoning_continuation",
+                  status: "repaired",
+                  sentRounds: 2,
+                  reasoningTokens: 51,
+                },
+              ]),
+              final_provider_name: "Provider C",
+              created_at: TEST_CREATED_AT_SECONDS,
+            },
+          ])}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText("降智命中 <= 516")).toBeInTheDocument();
+    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试；同时触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。"
+      )
+    ).toBeInTheDocument();
+  });
+
   it("shows dual TTFB only for reasoning-guard request logs", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -369,7 +547,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -437,7 +615,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
                 }),
               ],
               session_reuse: false,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -516,9 +694,18 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={traces}
+          activeRequests={[
+            activeRequest({ trace_id: "t-log-claude", requested_model: "claude-3-opus" }),
+            activeRequest({
+              trace_id: "t-live-codex",
+              cli_key: "codex",
+              path: "/v1/responses",
+              requested_model: "gpt-5",
+            }),
+          ]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
           requestLogsRefreshing={false}
@@ -617,7 +804,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -634,7 +821,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.queryByText("gemini-session-1")).not.toBeInTheDocument();
   });
 
-  it("shows status-null logs without active trace as in-progress fallback rows", () => {
+  it("shows status-null logs without active registry entry as interrupted history rows", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
 
@@ -688,8 +875,9 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
+          activeRequests={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
           requestLogsRefreshing={false}
@@ -701,12 +889,99 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    // Without a live trace, log appears as a regular fallback card, not as a realtime card.
-    expect(screen.getByText("进行中")).toBeInTheDocument();
+    // A persisted placeholder alone is historical/incomplete, not a live request.
+    expect(screen.queryByText("进行中")).not.toBeInTheDocument();
+    expect(screen.getByText("未完成")).toBeInTheDocument();
     expect(screen.queryByText("当前阶段")).not.toBeInTheDocument();
     // The log renders as a clickable card in the list.
     expect(screen.getByRole("button", { name: /claude-3-opus/ })).toBeInTheDocument();
     expect(screen.getAllByText("workspace-live-fallback")).toHaveLength(1);
+  });
+
+  it("shows active registry requests before a persisted request log row exists", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: true }}
+          traces={[]}
+          activeRequests={[
+            activeRequest({
+              trace_id: "t-active-only",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "gpt-5",
+            }),
+          ]}
+          requestLogs={[]}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText("进行中")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /gpt-5/ })).toBeInTheDocument();
+    expect(screen.queryByText("当前没有最近使用记录")).not.toBeInTheDocument();
+  });
+
+  it("places interrupted audit rows after terminal history even when they are newer", () => {
+    const nowMs = Date.now();
+    const requestLogs = makeRequestLogs([
+      {
+        id: 61,
+        trace_id: "t-interrupted-newer",
+        cli_key: "claude",
+        method: "POST",
+        path: "/v1/messages",
+        requested_model: "interrupted-newer-model",
+        status: null,
+        error_code: null,
+        created_at_ms: nowMs,
+        created_at: Math.floor(nowMs / 1000),
+      },
+      {
+        id: 62,
+        trace_id: "t-completed-older",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        requested_model: "completed-older-model",
+        status: 200,
+        error_code: null,
+        created_at_ms: nowMs - 60_000,
+        created_at: Math.floor((nowMs - 60_000) / 1000),
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: false }}
+          traces={[]}
+          activeRequests={[]}
+          requestLogs={requestLogs}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    const completedButton = screen.getByRole("button", { name: /completed-older-model/ });
+    const interruptedButton = screen.getByRole("button", { name: /interrupted-newer-model/ });
+    expect(screen.queryByText("进行中")).not.toBeInTheDocument();
+    expect(screen.getByText("未完成")).toBeInTheDocument();
+    expect(completedButton.compareDocumentPosition(interruptedButton)).toBe(
+      Node.DOCUMENT_POSITION_FOLLOWING
+    );
   });
 
   it("keeps in-progress request logs at the top while preserving time order for the rest", () => {
@@ -810,8 +1085,16 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
+          activeRequests={[
+            activeRequest({
+              trace_id: "t-pending-older",
+              created_at_ms: nowMs - 10_000,
+              last_activity_ms: nowMs - 500,
+              requested_model: "pending-model",
+            }),
+          ]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
           requestLogsRefreshing={false}
@@ -840,6 +1123,55 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(completedNewerButton.compareDocumentPosition(completedOlderButton)).toBe(
       Node.DOCUMENT_POSITION_FOLLOWING
     );
+  });
+
+  it("shows idle duration for silent in-progress request logs", () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
+
+    const requestLogs = makeRequestLogs([
+      {
+        id: 91,
+        trace_id: "t-idle-pending",
+        cli_key: "claude",
+        method: "POST",
+        path: "/v1/messages",
+        requested_model: "idle-model",
+        status: null,
+        error_code: null,
+        duration_ms: 0,
+        last_activity_ms: Date.now() - 12 * 60 * 1000,
+        created_at_ms: Date.now() - 20 * 60 * 1000,
+        created_at: Math.floor((Date.now() - 20 * 60 * 1000) / 1000),
+      },
+    ]);
+
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: true }}
+          compactModeOverride={false}
+          traces={[]}
+          activeRequests={[
+            activeRequest({
+              trace_id: "t-idle-pending",
+              created_at_ms: Date.now() - 20 * 60 * 1000,
+              last_activity_ms: Date.now() - 12 * 60 * 1000,
+              requested_model: "idle-model",
+            }),
+          ]}
+          requestLogs={requestLogs}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText("进行中 · 已静默 12 分钟")).toBeInTheDocument();
   });
 
   it("uses live trace data to show current provider and elapsed duration for in-progress logs", () => {
@@ -914,9 +1246,17 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={traces}
+          activeRequests={[
+            activeRequest({
+              trace_id: "t-live-provider",
+              created_at_ms: Date.now() - 6500,
+              last_activity_ms: Date.now() - 100,
+              requested_model: "claude-3-opus",
+            }),
+          ]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
           requestLogsRefreshing={false}
@@ -1047,7 +1387,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
             path="/"
             element={
               <HomeRequestLogsPanel
-                showCustomTooltip={true}
+                displayOptions={{ customTooltip: true }}
                 traces={traces}
                 requestLogs={requestLogs}
                 requestLogsLoading={false}
@@ -1089,7 +1429,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={makeRequestLogs([
             {
@@ -1120,7 +1460,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               cache_creation_1h_input_tokens: 0,
               cost_usd: 0,
               cost_multiplier: 0,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -1141,7 +1481,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={[]}
           requestLogsLoading={false}
@@ -1199,7 +1539,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -1221,7 +1561,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={[]}
           requestLogsLoading={true}
@@ -1241,7 +1581,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           title="代理记录列表"
           summaryTextOverride="共 0 / 3 条"
           emptyStateTitle="没有符合筛选条件的代理记录"
@@ -1266,7 +1606,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           devPreviewEnabled={true}
           traces={[]}
           requestLogs={[]}
@@ -1350,7 +1690,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           traces={[]}
           requestLogs={requestLogs}
           requestLogsLoading={false}
@@ -1389,7 +1729,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={false}
+          displayOptions={{ customTooltip: false }}
           traces={[]}
           requestLogs={makeRequestLogs([
             {
@@ -1438,7 +1778,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               cache_creation_1h_input_tokens: 0,
               cost_usd: 0.01,
               cost_multiplier: 1.5,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}
@@ -1471,7 +1811,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
-          showCustomTooltip={true}
+          displayOptions={{ customTooltip: true }}
           compactModeOverride={false}
           traces={[]}
           requestLogs={makeRequestLogs([
@@ -1494,7 +1834,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
               final_provider_name: "Unknown",
               route: [],
               session_reuse: false,
-              created_at: Math.floor(Date.now() / 1000),
+              created_at: TEST_CREATED_AT_SECONDS,
             },
           ])}
           requestLogsLoading={false}

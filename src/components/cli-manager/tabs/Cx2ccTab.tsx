@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useReducer, type ReactNode } from "react";
 import { toast } from "sonner";
 import { Settings } from "lucide-react";
 import type { AppSettings } from "../../../services/settings/settings";
@@ -24,6 +24,59 @@ type Cx2ccTextSettingKey =
   | "cx2cc_fallback_model_haiku"
   | "cx2cc_fallback_model_main"
   | "cx2cc_service_tier";
+
+type Cx2ccDraftKey = Cx2ccTextSettingKey | "cx2cc_model_reasoning_effort";
+
+type Cx2ccDraftState = {
+  sourceKey: string;
+  values: Record<Cx2ccDraftKey, string>;
+};
+
+type Cx2ccDraftAction =
+  | { type: "resetFromSettings"; state: Cx2ccDraftState }
+  | { type: "setValue"; key: Cx2ccDraftKey; value: string };
+
+const EMPTY_CX2CC_DRAFT_VALUES: Record<Cx2ccDraftKey, string> = {
+  cx2cc_fallback_model_opus: "",
+  cx2cc_fallback_model_sonnet: "",
+  cx2cc_fallback_model_haiku: "",
+  cx2cc_fallback_model_main: "",
+  cx2cc_model_reasoning_effort: "",
+  cx2cc_service_tier: "",
+};
+
+function createCx2ccDraftState(appSettings: AppSettings | null): Cx2ccDraftState {
+  if (!appSettings) {
+    return { sourceKey: "empty", values: EMPTY_CX2CC_DRAFT_VALUES };
+  }
+
+  const values: Record<Cx2ccDraftKey, string> = {
+    cx2cc_fallback_model_opus: appSettings.cx2cc_fallback_model_opus,
+    cx2cc_fallback_model_sonnet: appSettings.cx2cc_fallback_model_sonnet,
+    cx2cc_fallback_model_haiku: appSettings.cx2cc_fallback_model_haiku,
+    cx2cc_fallback_model_main: appSettings.cx2cc_fallback_model_main,
+    cx2cc_model_reasoning_effort: appSettings.cx2cc_model_reasoning_effort,
+    cx2cc_service_tier: appSettings.cx2cc_service_tier,
+  };
+
+  return {
+    sourceKey: Object.values(values).join("\u0000"),
+    values,
+  };
+}
+
+function cx2ccDraftReducer(state: Cx2ccDraftState, action: Cx2ccDraftAction): Cx2ccDraftState {
+  if (action.type === "resetFromSettings") {
+    return action.state;
+  }
+  return {
+    ...state,
+    values: {
+      ...state.values,
+      [action.key]: action.value,
+    },
+  };
+}
 
 function SettingItem({
   label,
@@ -57,84 +110,84 @@ export function CliManagerCx2ccTab({
   commonSettingsSaving,
   onPersistCommonSettings,
 }: CliManagerCx2ccTabProps) {
-  const [fallbackModelOpusText, setFallbackModelOpusText] = useState("");
-  const [fallbackModelSonnetText, setFallbackModelSonnetText] = useState("");
-  const [fallbackModelHaikuText, setFallbackModelHaikuText] = useState("");
-  const [fallbackModelMainText, setFallbackModelMainText] = useState("");
-  const [reasoningEffortText, setReasoningEffortText] = useState("");
-  const [serviceTierText, setServiceTierText] = useState("");
+  const nextDraftState = createCx2ccDraftState(appSettings);
+  const [draftState, dispatchDraft] = useReducer(cx2ccDraftReducer, nextDraftState);
+  const effectiveDraftState =
+    draftState.sourceKey === nextDraftState.sourceKey ? draftState : nextDraftState;
+  if (draftState.sourceKey !== nextDraftState.sourceKey) {
+    dispatchDraft({ type: "resetFromSettings", state: nextDraftState });
+  }
 
-  useEffect(() => {
-    if (!appSettings) return;
-    setFallbackModelOpusText(appSettings.cx2cc_fallback_model_opus);
-    setFallbackModelSonnetText(appSettings.cx2cc_fallback_model_sonnet);
-    setFallbackModelHaikuText(appSettings.cx2cc_fallback_model_haiku);
-    setFallbackModelMainText(appSettings.cx2cc_fallback_model_main);
-    setReasoningEffortText(appSettings.cx2cc_model_reasoning_effort);
-    setServiceTierText(appSettings.cx2cc_service_tier);
-  }, [appSettings]);
+  const fallbackModelOpusText = effectiveDraftState.values.cx2cc_fallback_model_opus;
+  const fallbackModelSonnetText = effectiveDraftState.values.cx2cc_fallback_model_sonnet;
+  const fallbackModelHaikuText = effectiveDraftState.values.cx2cc_fallback_model_haiku;
+  const fallbackModelMainText = effectiveDraftState.values.cx2cc_fallback_model_main;
+  const reasoningEffortText = effectiveDraftState.values.cx2cc_model_reasoning_effort;
+  const serviceTierText = effectiveDraftState.values.cx2cc_service_tier;
 
   const controlsDisabled = commonSettingsSaving || !appSettings;
+
+  function setDraftValue(key: Cx2ccDraftKey, value: string) {
+    dispatchDraft({ type: "setValue", key, value });
+  }
 
   async function persistReasoningEffort(value: string) {
     if (!appSettings) return;
 
     const previous = appSettings.cx2cc_model_reasoning_effort;
-    setReasoningEffortText(value);
+    setDraftValue("cx2cc_model_reasoning_effort", value);
 
     const updated = await onPersistCommonSettings({ cx2cc_model_reasoning_effort: value });
     if (!updated) {
-      setReasoningEffortText(previous);
+      setDraftValue("cx2cc_model_reasoning_effort", previous);
       return;
     }
 
-    setReasoningEffortText(updated.cx2cc_model_reasoning_effort);
+    setDraftValue("cx2cc_model_reasoning_effort", updated.cx2cc_model_reasoning_effort);
   }
 
   async function persistFallbackModel(
     key: Exclude<Cx2ccTextSettingKey, "cx2cc_service_tier">,
     label: string,
-    value: string,
-    setText: (value: string) => void
+    value: string
   ) {
     if (!appSettings) return;
 
     const previous = appSettings[key];
     const trimmed = value.trim();
-    setText(trimmed);
+    setDraftValue(key, trimmed);
 
     const validationMessage = validateCx2ccFallbackModel(label, trimmed);
     if (validationMessage) {
       toast(validationMessage);
-      setText(previous);
+      setDraftValue(key, previous);
       return;
     }
 
     const updated = await onPersistCommonSettings({ [key]: trimmed } as Partial<AppSettings>);
-    setText(updated ? updated[key] : previous);
+    setDraftValue(key, updated ? updated[key] : previous);
   }
 
   async function persistOptionalTextSetting(
     key: Extract<Cx2ccTextSettingKey, "cx2cc_service_tier">,
     label: string,
-    value: string,
-    setText: (value: string) => void
+    value: string
   ) {
     if (!appSettings) return;
 
     const previous = appSettings[key];
     const trimmed = value.trim();
-    setText(trimmed);
+    setDraftValue(key, trimmed);
 
     const validationMessage = validateCx2ccOptionalField(label, trimmed);
     if (validationMessage) {
       toast(validationMessage);
-      setText(previous);
+      setDraftValue(key, previous);
       return;
     }
 
     const updated = await onPersistCommonSettings({ [key]: trimmed } as Partial<AppSettings>);
-    setText(updated ? updated[key] : previous);
+    setDraftValue(key, updated ? updated[key] : previous);
   }
 
   return (
@@ -148,13 +201,12 @@ export function CliManagerCx2ccTab({
           <SettingItem label="Opus 默认模型" subtitle="当 Provider 未设置 Opus 覆盖时使用此模型">
             <Input
               value={fallbackModelOpusText}
-              onChange={(e) => setFallbackModelOpusText(e.currentTarget.value)}
+              onChange={(e) => setDraftValue("cx2cc_fallback_model_opus", e.currentTarget.value)}
               onBlur={(e) => {
                 void persistFallbackModel(
                   "cx2cc_fallback_model_opus",
                   "Opus 默认模型",
-                  e.currentTarget.value,
-                  setFallbackModelOpusText
+                  e.currentTarget.value
                 );
               }}
               placeholder="gpt-5.4"
@@ -169,13 +221,12 @@ export function CliManagerCx2ccTab({
           >
             <Input
               value={fallbackModelSonnetText}
-              onChange={(e) => setFallbackModelSonnetText(e.currentTarget.value)}
+              onChange={(e) => setDraftValue("cx2cc_fallback_model_sonnet", e.currentTarget.value)}
               onBlur={(e) => {
                 void persistFallbackModel(
                   "cx2cc_fallback_model_sonnet",
                   "Sonnet 默认模型",
-                  e.currentTarget.value,
-                  setFallbackModelSonnetText
+                  e.currentTarget.value
                 );
               }}
               placeholder="gpt-5.4"
@@ -187,13 +238,12 @@ export function CliManagerCx2ccTab({
           <SettingItem label="Haiku 默认模型" subtitle="当 Provider 未设置 Haiku 覆盖时使用此模型">
             <Input
               value={fallbackModelHaikuText}
-              onChange={(e) => setFallbackModelHaikuText(e.currentTarget.value)}
+              onChange={(e) => setDraftValue("cx2cc_fallback_model_haiku", e.currentTarget.value)}
               onBlur={(e) => {
                 void persistFallbackModel(
                   "cx2cc_fallback_model_haiku",
                   "Haiku 默认模型",
-                  e.currentTarget.value,
-                  setFallbackModelHaikuText
+                  e.currentTarget.value
                 );
               }}
               placeholder="gpt-5.4"
@@ -205,13 +255,12 @@ export function CliManagerCx2ccTab({
           <SettingItem label="主模型默认" subtitle="当 Provider 未设置 Main 覆盖时使用此模型">
             <Input
               value={fallbackModelMainText}
-              onChange={(e) => setFallbackModelMainText(e.currentTarget.value)}
+              onChange={(e) => setDraftValue("cx2cc_fallback_model_main", e.currentTarget.value)}
               onBlur={(e) => {
                 void persistFallbackModel(
                   "cx2cc_fallback_model_main",
                   "主模型默认",
-                  e.currentTarget.value,
-                  setFallbackModelMainText
+                  e.currentTarget.value
                 );
               }}
               placeholder="gpt-5.4"
@@ -252,13 +301,12 @@ export function CliManagerCx2ccTab({
           <SettingItem label="服务层级" subtitle="注入 service_tier 到上游请求；留空表示不注入。">
             <Input
               value={serviceTierText}
-              onChange={(e) => setServiceTierText(e.currentTarget.value)}
+              onChange={(e) => setDraftValue("cx2cc_service_tier", e.currentTarget.value)}
               onBlur={(e) => {
                 void persistOptionalTextSetting(
                   "cx2cc_service_tier",
                   "服务层级",
-                  e.currentTarget.value,
-                  setServiceTierText
+                  e.currentTarget.value
                 );
               }}
               placeholder="例如: fast"

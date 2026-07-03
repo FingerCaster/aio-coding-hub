@@ -1,6 +1,6 @@
 //! Usage: Built-in official plugin catalog.
 
-use crate::plugins::{validate_manifest, PluginManifest};
+use crate::plugins::{validate_manifest_for_official_plugin, PluginManifest};
 use crate::shared::error::{AppError, AppResult};
 use serde_json::Value;
 use std::path::{Path, PathBuf};
@@ -41,7 +41,7 @@ pub(crate) fn official_plugin_from_root(
             ),
         ));
     }
-    validate_manifest(&manifest, env!("CARGO_PKG_VERSION"))?;
+    validate_manifest_for_official_plugin(&manifest, env!("CARGO_PKG_VERSION"))?;
     let default_config = official_default_config(plugin_id);
 
     Ok(OfficialPluginFixture {
@@ -114,9 +114,10 @@ fn official_default_config(plugin_id: &str) -> Value {
 mod tests {
     use super::*;
     use crate::app::plugins::runtime_executor::RuntimeGatewayPluginExecutor;
-    use crate::domain::plugins::{PluginInstallSource, PluginRuntime, PluginStatus};
+    use crate::domain::plugins::{PluginInstallSource, PluginStatus};
     use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
     use crate::gateway::plugins::pipeline::{GatewayPluginPipeline, GatewayPluginPipelineConfig};
+    use crate::infra::plugins::repository::{self, InsertPluginInput};
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Method};
     use serde_json::json;
@@ -124,12 +125,6 @@ mod tests {
 
     fn enabled_official_plugin(plugin_id: &str) -> crate::domain::plugins::PluginDetail {
         let fixture = official_plugin(plugin_id).expect("official plugin fixture");
-        let permissions = fixture.manifest.permissions.clone();
-        let runtime = match &fixture.manifest.runtime {
-            PluginRuntime::DeclarativeRules { .. } => "declarativeRules".to_string(),
-            PluginRuntime::Native { engine } => format!("native:{engine}"),
-            PluginRuntime::Wasm { .. } => "wasm".to_string(),
-        };
         crate::domain::plugins::PluginDetail {
             summary: crate::domain::plugins::PluginSummary {
                 id: 1,
@@ -137,7 +132,7 @@ mod tests {
                 name: fixture.manifest.name.clone(),
                 current_version: Some(fixture.manifest.version.clone()),
                 status: PluginStatus::Enabled,
-                runtime,
+                runtime: "extensionHost".to_string(),
                 permission_risk: crate::domain::plugins::PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -148,11 +143,52 @@ mod tests {
             install_source: PluginInstallSource::Official,
             installed_dir: Some(fixture.root_dir.to_string_lossy().to_string()),
             config: fixture.default_config,
-            granted_permissions: permissions,
+            granted_permissions: vec![],
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         }
+    }
+
+    fn official_privacy_filter_pipeline() -> (tempfile::TempDir, GatewayPluginPipeline) {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("official-privacy-filter.db"))
+            .expect("init db");
+        let plugin = enabled_official_plugin("official.privacy-filter");
+        repository::insert_plugin(
+            &db,
+            InsertPluginInput {
+                manifest: plugin.manifest.clone(),
+                install_source: PluginInstallSource::Official,
+                status: PluginStatus::Enabled,
+                installed_dir: plugin.installed_dir.clone(),
+            },
+        )
+        .expect("insert official plugin");
+        repository::save_plugin_config(
+            &db,
+            &plugin.summary.plugin_id,
+            plugin.manifest.config_version.unwrap_or(1),
+            &plugin.config,
+            &[],
+        )
+        .expect("save official plugin config");
+        repository::save_plugin_permissions(
+            &db,
+            &plugin.summary.plugin_id,
+            &plugin.granted_permissions,
+            &[],
+        )
+        .expect("save official plugin permissions");
+        let plugin = repository::get_plugin(&db, &plugin.summary.plugin_id)
+            .expect("reload official plugin detail from db");
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin],
+            Arc::new(RuntimeGatewayPluginExecutor::with_db(db)),
+            GatewayPluginPipelineConfig::default(),
+        );
+        (temp, pipeline)
     }
 
     #[test]
@@ -215,12 +251,7 @@ mod tests {
 
     #[tokio::test]
     async fn official_privacy_filter_plugin_redacts_pii_and_secrets_before_upstream_and_logs() {
-        let plugin = enabled_official_plugin("official.privacy-filter");
-        let pipeline = GatewayPluginPipeline::for_tests(
-            vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
-            GatewayPluginPipelineConfig::default(),
-        );
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
 
         let request = pipeline
             .run_request_hook(GatewayRequestHookInput {
@@ -285,12 +316,7 @@ mod tests {
 
     #[tokio::test]
     async fn official_privacy_filter_plugin_redacts_responses_input_text_parts() {
-        let plugin = enabled_official_plugin("official.privacy-filter");
-        let pipeline = GatewayPluginPipeline::for_tests(
-            vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
-            GatewayPluginPipelineConfig::default(),
-        );
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
 
         let request = pipeline
             .run_request_hook(GatewayRequestHookInput {
@@ -325,13 +351,52 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn official_privacy_filter_plugin_redacts_large_responses_input_text_without_truncation()
+    {
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
+
+        let request = pipeline
+            .run_request_hook(GatewayRequestHookInput {
+                hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+                trace_id: "trace-privacy-filter-large-responses".to_string(),
+                cli_key: "codex".to_string(),
+                method: Method::POST,
+                path: "/v1/responses".to_string(),
+                query: None,
+                headers: HeaderMap::new(),
+                body: Bytes::from(
+                    json!({
+                        "input": [{
+                            "type": "message",
+                            "role": "user",
+                            "content": [{
+                                "type": "input_text",
+                                "text": format!(
+                                    "{} 你知道 13344441520 是哪里的手机号嘛",
+                                    "x".repeat(300 * 1024)
+                                )
+                            }]
+                        }]
+                    })
+                    .to_string(),
+                ),
+                requested_model: Some("gpt-test".to_string()),
+            })
+            .await
+            .expect("privacy filter request hook should accept large request body");
+        let request_text = String::from_utf8(request.body.to_vec()).expect("utf8 body");
+
+        assert!(request.blocked.is_none());
+        assert_eq!(request.execution_reports.len(), 1);
+        assert_eq!(request.execution_reports[0].status, "completed");
+        assert_eq!(request.execution_reports[0].error_code, None);
+        assert!(request_text.contains("[电话]"));
+        assert!(!request_text.contains("13344441520"));
+    }
+
+    #[tokio::test]
     async fn official_privacy_filter_plugin_matches_upstream_algorithmic_behavior() {
-        let plugin = enabled_official_plugin("official.privacy-filter");
-        let pipeline = GatewayPluginPipeline::for_tests(
-            vec![plugin],
-            Arc::new(RuntimeGatewayPluginExecutor::default()),
-            GatewayPluginPipelineConfig::default(),
-        );
+        let (_temp, pipeline) = official_privacy_filter_pipeline();
 
         let request = pipeline
             .run_request_hook(GatewayRequestHookInput {

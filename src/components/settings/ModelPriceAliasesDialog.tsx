@@ -2,7 +2,7 @@
 // - Rendered by `src/pages/SettingsPage.tsx` from the "数据与同步" section.
 // - Configure model price alias rules used by backend request log cost calculation.
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useId, useMemo, useState, type SetStateAction } from "react";
 import { toast } from "sonner";
 import { CLI_SHORT_ITEMS } from "../../constants/clis";
 import { Button } from "../../ui/Button";
@@ -31,6 +31,17 @@ const MATCH_TYPE_ITEMS: Array<{ key: ModelPriceAliasMatchType; label: string }> 
 
 const EMPTY_ALIASES: ModelPriceAliases = { version: 1, rules: [] };
 
+type RuleRow = ModelPriceAliasRule & { id: string };
+type AliasesDraft = { version: number; rules: RuleRow[] };
+type AliasesDraftState = { querySource: ModelPriceAliases | null; draft: AliasesDraft };
+
+let ruleRowIdSeq = 0;
+
+function nextRuleRowId() {
+  ruleRowIdSeq += 1;
+  return `rule-${ruleRowIdSeq}`;
+}
+
 function newRule(seed?: Partial<ModelPriceAliasRule>): ModelPriceAliasRule {
   return {
     cli_key: seed?.cli_key ?? "gemini",
@@ -41,15 +52,394 @@ function newRule(seed?: Partial<ModelPriceAliasRule>): ModelPriceAliasRule {
   };
 }
 
-function normalizeAliases(input: ModelPriceAliases | null | undefined): ModelPriceAliases {
-  if (!input || typeof input !== "object") return { ...EMPTY_ALIASES };
+function ruleRow(seed?: Partial<ModelPriceAliasRule>): RuleRow {
+  return { ...newRule(seed), id: nextRuleRowId() };
+}
+
+function normalizeAliases(input: ModelPriceAliases | null | undefined): AliasesDraft {
+  if (!input || typeof input !== "object") return { version: EMPTY_ALIASES.version, rules: [] };
   const version = Number.isFinite(input.version) ? input.version : 1;
   const rules = Array.isArray(input.rules) ? input.rules : [];
-  return { version, rules };
+  return {
+    version,
+    rules: rules.map((rule) =>
+      rule && typeof rule === "object" ? ruleRow(rule) : ruleRow({ enabled: false })
+    ),
+  };
+}
+
+function serializeAliases(input: AliasesDraft): ModelPriceAliases {
+  return {
+    version: input.version,
+    rules: input.rules.map(({ id: _id, ...rule }) => rule),
+  };
 }
 
 function modelsDatalistId(cliKey: CliKey) {
   return `model-price-aliases-models-${cliKey}`;
+}
+
+function ModelPriceAliasesToolbar({
+  enabledRuleCount,
+  modelCountsByCli,
+  loading,
+  saving,
+  addRule,
+  refresh,
+}: {
+  enabledRuleCount: number;
+  modelCountsByCli: Record<CliKey, number>;
+  loading: boolean;
+  saving: boolean;
+  addRule: () => void;
+  refresh: () => void;
+}) {
+  return (
+    <div className="flex flex-wrap items-center justify-between gap-3">
+      <div className="flex items-center gap-2 text-xs text-muted-foreground">
+        <span className="inline-flex items-center rounded-md border border-line-subtle bg-surface-inset px-2 py-1 font-medium">
+          启用 {enabledRuleCount} 条
+        </span>
+        <span className="text-muted-foreground">|</span>
+        <span>
+          模型数：Claude {modelCountsByCli.claude} · Codex {modelCountsByCli.codex} · Gemini{" "}
+          {modelCountsByCli.gemini}
+        </span>
+      </div>
+      <div className="flex items-center gap-2">
+        <Button variant="secondary" size="sm" disabled={loading || saving} onClick={addRule}>
+          新增规则
+        </Button>
+        <Button variant="secondary" size="sm" disabled={loading || saving} onClick={refresh}>
+          刷新
+        </Button>
+      </div>
+    </div>
+  );
+}
+
+function ModelPriceAliasesDatalists({ modelsByCli }: { modelsByCli: Record<CliKey, string[]> }) {
+  return (
+    <>
+      <datalist id={modelsDatalistId("claude")}>
+        {modelsByCli.claude.map((m) => (
+          <option key={`claude:${m}`} value={m}>
+            {m}
+          </option>
+        ))}
+      </datalist>
+      <datalist id={modelsDatalistId("codex")}>
+        {modelsByCli.codex.map((m) => (
+          <option key={`codex:${m}`} value={m}>
+            {m}
+          </option>
+        ))}
+      </datalist>
+      <datalist id={modelsDatalistId("gemini")}>
+        {modelsByCli.gemini.map((m) => (
+          <option key={`gemini:${m}`} value={m}>
+            {m}
+          </option>
+        ))}
+      </datalist>
+    </>
+  );
+}
+
+function ModelPriceAliasesLoadingState() {
+  return (
+    <div className="flex items-center justify-center rounded-2xl border border-line-subtle bg-surface-inset p-8">
+      <div className="flex items-center gap-3 text-sm text-muted-foreground">
+        <svg
+          className="h-5 w-5 animate-spin text-muted-foreground"
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+        >
+          <circle
+            className="opacity-25"
+            cx="12"
+            cy="12"
+            r="10"
+            stroke="currentColor"
+            strokeWidth="4"
+          />
+          <path
+            className="opacity-75"
+            fill="currentColor"
+            d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+          />
+        </svg>
+        <span>加载规则中…</span>
+      </div>
+    </div>
+  );
+}
+
+function ModelPriceAliasesEmptyState() {
+  return (
+    <div className="rounded-2xl border border-dashed border-line bg-surface-inset p-8 text-center">
+      <div className="mx-auto mb-2 h-10 w-10 rounded-full bg-surface-muted p-2.5 text-muted-foreground">
+        <svg
+          xmlns="http://www.w3.org/2000/svg"
+          fill="none"
+          viewBox="0 0 24 24"
+          strokeWidth={1.5}
+          stroke="currentColor"
+        >
+          <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
+        </svg>
+      </div>
+      <div className="text-sm font-medium text-secondary-foreground">暂无规则</div>
+      <div className="mt-1 text-xs text-muted-foreground">
+        示例：Gemini 配置{" "}
+        <code className="rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px]">
+          prefix gemini-3-flash
+        </code>{" "}
+        →{" "}
+        <code className="rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px]">
+          gemini-3-flash-preview
+        </code>
+      </div>
+    </div>
+  );
+}
+
+function ModelPriceAliasRuleCard({
+  rule,
+  index,
+  fieldIdPrefix,
+  saving,
+  updateRule,
+  deleteRule,
+}: {
+  rule: RuleRow;
+  index: number;
+  fieldIdPrefix: string;
+  saving: boolean;
+  updateRule: (index: number, patch: Partial<ModelPriceAliasRule>) => void;
+  deleteRule: (index: number) => void;
+}) {
+  const cliKey: CliKey = (rule?.cli_key as CliKey) ?? "gemini";
+  const matchType: ModelPriceAliasMatchType = rule?.match_type ?? "prefix";
+  const disabled = !rule?.enabled;
+  const cliSelectId = `${fieldIdPrefix}-rule-${index}-cli`;
+  const matchTypeSelectId = `${fieldIdPrefix}-rule-${index}-match-type`;
+  const patternInputId = `${fieldIdPrefix}-rule-${index}-pattern`;
+  const targetModelInputId = `${fieldIdPrefix}-rule-${index}-target-model`;
+
+  return (
+    <div
+      className={cn(
+        "group rounded-2xl border border-line bg-surface-panel p-4",
+        "transition-all duration-200 ease-in-out",
+        disabled ? "opacity-60 grayscale-[30%]" : "hover:border-line-strong hover:bg-surface-raised"
+      )}
+    >
+      <div className="flex flex-wrap items-center justify-between gap-3">
+        <div className="flex items-center gap-3">
+          <div className="text-xs font-semibold text-foreground">规则 #{index + 1}</div>
+          <div className="flex items-center gap-2">
+            <span className="text-xs text-muted-foreground">启用</span>
+            <Switch
+              size="sm"
+              checked={!!rule?.enabled}
+              onCheckedChange={(checked) => updateRule(index, { enabled: checked })}
+              aria-label={`启用规则 ${index + 1}`}
+            />
+          </div>
+        </div>
+        <Button
+          variant="danger"
+          size="sm"
+          onClick={() => {
+            deleteRule(index);
+            toast("已删除规则，点击「保存」生效");
+          }}
+        >
+          删除
+        </Button>
+      </div>
+
+      <div className="mt-4 grid items-start gap-4 lg:grid-cols-12">
+        <div className="lg:col-span-2">
+          <label
+            htmlFor={cliSelectId}
+            className="mb-1.5 block text-xs font-medium text-secondary-foreground"
+          >
+            CLI
+          </label>
+          <Select
+            id={cliSelectId}
+            value={cliKey}
+            onChange={(e) => updateRule(index, { cli_key: e.currentTarget.value as CliKey })}
+            disabled={saving}
+          >
+            {CLI_SHORT_ITEMS.map((it) => (
+              <option key={it.key} value={it.key}>
+                {it.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div className="lg:col-span-2">
+          <label
+            htmlFor={matchTypeSelectId}
+            className="mb-1.5 block text-xs font-medium text-secondary-foreground"
+          >
+            匹配类型
+          </label>
+          <Select
+            id={matchTypeSelectId}
+            value={matchType}
+            onChange={(e) =>
+              updateRule(index, {
+                match_type: e.currentTarget.value as ModelPriceAliasMatchType,
+              })
+            }
+            disabled={saving}
+          >
+            {MATCH_TYPE_ITEMS.map((it) => (
+              <option key={it.key} value={it.key}>
+                {it.label}
+              </option>
+            ))}
+          </Select>
+        </div>
+
+        <div className="lg:col-span-4">
+          <label
+            htmlFor={patternInputId}
+            className="mb-1.5 block text-xs font-medium text-secondary-foreground"
+          >
+            Pattern
+          </label>
+          <Input
+            id={patternInputId}
+            mono
+            value={rule?.pattern ?? ""}
+            onChange={(e) => updateRule(index, { pattern: e.currentTarget.value })}
+            placeholder={
+              matchType === "exact"
+                ? "例如：gemini-3-flash"
+                : matchType === "wildcard"
+                  ? "例如：gemini-3-*-preview"
+                  : "例如：claude-opus-4-5"
+            }
+            disabled={saving}
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            {matchType === "wildcard"
+              ? "wildcard：仅支持单个 *"
+              : matchType === "prefix"
+                ? "prefix：以 pattern 开头即命中"
+                : "exact：完全相等才命中"}
+          </p>
+        </div>
+
+        <div className="lg:col-span-4">
+          <label
+            htmlFor={targetModelInputId}
+            className="mb-1.5 block text-xs font-medium text-secondary-foreground"
+          >
+            目标模型
+          </label>
+          <Input
+            id={targetModelInputId}
+            mono
+            list={modelsDatalistId(cliKey)}
+            value={rule?.target_model ?? ""}
+            onChange={(e) => updateRule(index, { target_model: e.currentTarget.value })}
+            placeholder="输入或从建议中选择…"
+            disabled={saving}
+          />
+          <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
+            下拉列表选择具体模型
+          </p>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function ModelPriceAliasesRuleList({
+  rules,
+  fieldIdPrefix,
+  saving,
+  updateRule,
+  deleteRule,
+}: {
+  rules: RuleRow[];
+  fieldIdPrefix: string;
+  saving: boolean;
+  updateRule: (index: number, patch: Partial<ModelPriceAliasRule>) => void;
+  deleteRule: (index: number) => void;
+}) {
+  return (
+    <div className="space-y-3">
+      {rules.map((rule, idx) => (
+        <ModelPriceAliasRuleCard
+          key={rule.id}
+          rule={rule}
+          index={idx}
+          fieldIdPrefix={fieldIdPrefix}
+          saving={saving}
+          updateRule={updateRule}
+          deleteRule={deleteRule}
+        />
+      ))}
+    </div>
+  );
+}
+
+function ModelPriceAliasesActions({
+  loading,
+  saving,
+  onCancel,
+  save,
+}: {
+  loading: boolean;
+  saving: boolean;
+  onCancel: () => void;
+  save: () => void;
+}) {
+  return (
+    <div className="flex items-center justify-end gap-3 border-t border-line-subtle pt-4">
+      <Button variant="secondary" onClick={onCancel} disabled={saving}>
+        取消
+      </Button>
+      <Button variant="primary" onClick={save} disabled={loading || saving}>
+        {saving ? (
+          <span className="flex items-center gap-2">
+            <svg
+              className="h-4 w-4 animate-spin"
+              xmlns="http://www.w3.org/2000/svg"
+              fill="none"
+              viewBox="0 0 24 24"
+            >
+              <circle
+                className="opacity-25"
+                cx="12"
+                cy="12"
+                r="10"
+                stroke="currentColor"
+                strokeWidth="4"
+              />
+              <path
+                className="opacity-75"
+                fill="currentColor"
+                d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
+              />
+            </svg>
+            保存中…
+          </span>
+        ) : (
+          "保存"
+        )}
+      </Button>
+    </div>
+  );
 }
 
 export function ModelPriceAliasesDialog({
@@ -59,7 +449,11 @@ export function ModelPriceAliasesDialog({
   open: boolean;
   onOpenChange: (open: boolean) => void;
 }) {
-  const [aliases, setAliases] = useState<ModelPriceAliases>({ ...EMPTY_ALIASES });
+  const fieldIdPrefix = useId();
+  const [aliasesState, setAliasesState] = useState<AliasesDraftState>(() => ({
+    querySource: null,
+    draft: normalizeAliases(EMPTY_ALIASES),
+  }));
 
   const aliasesQuery = useModelPriceAliasesQuery({ enabled: open });
   const claudeModelsQuery = useModelPricesListQuery("claude", { enabled: open });
@@ -101,12 +495,22 @@ export function ModelPriceAliasesDialog({
     ]);
   }, [aliasesQuery, claudeModelsQuery, codexModelsQuery, geminiModelsQuery]);
 
-  useEffect(() => {
-    if (!open) return;
-    const res = aliasesQuery.data ?? null;
-    if (!res) return;
-    setAliases(normalizeAliases(res));
-  }, [aliasesQuery.data, open]);
+  const sourceAliases = open ? (aliasesQuery.data ?? null) : null;
+  let effectiveAliasesState = aliasesState;
+  if (sourceAliases && aliasesState.querySource !== sourceAliases) {
+    effectiveAliasesState = {
+      querySource: sourceAliases,
+      draft: normalizeAliases(sourceAliases),
+    };
+    setAliasesState(effectiveAliasesState);
+  }
+  const aliases = effectiveAliasesState.draft;
+  const setAliases = useCallback((update: SetStateAction<AliasesDraft>) => {
+    setAliasesState((prev) => ({
+      ...prev,
+      draft: typeof update === "function" ? update(prev.draft) : update,
+    }));
+  }, []);
 
   const enabledRuleCount = useMemo(() => {
     return (aliases.rules ?? []).filter((r) => r?.enabled).length;
@@ -115,7 +519,7 @@ export function ModelPriceAliasesDialog({
   function updateRule(index: number, patch: Partial<ModelPriceAliasRule>) {
     setAliases((prev) => {
       const rules = (prev.rules ?? []).slice();
-      const cur = rules[index] ?? newRule();
+      const cur = rules[index] ?? ruleRow();
       rules[index] = { ...cur, ...patch };
       return { ...prev, rules };
     });
@@ -132,11 +536,14 @@ export function ModelPriceAliasesDialog({
   async function save() {
     if (saving) return;
     try {
-      const saved = await aliasesSetMutation.mutateAsync(aliases);
+      const saved = await aliasesSetMutation.mutateAsync(serializeAliases(aliases));
       if (!saved) {
         return;
       }
-      setAliases(normalizeAliases(saved));
+      setAliasesState({
+        querySource: sourceAliases,
+        draft: normalizeAliases(saved),
+      });
       toast("已保存定价匹配规则");
       onOpenChange(false);
     } catch (err) {
@@ -157,264 +564,37 @@ export function ModelPriceAliasesDialog({
       className="max-w-4xl"
     >
       <div className="space-y-4">
-        <div className="flex flex-wrap items-center justify-between gap-3">
-          <div className="flex items-center gap-2 text-xs text-muted-foreground">
-            <span className="inline-flex items-center rounded-md border border-line-subtle bg-surface-inset px-2 py-1 font-medium">
-              启用 {enabledRuleCount} 条
-            </span>
-            <span className="text-muted-foreground">|</span>
-            <span>
-              模型数：Claude {modelCountsByCli.claude} · Codex {modelCountsByCli.codex} · Gemini{" "}
-              {modelCountsByCli.gemini}
-            </span>
-          </div>
-          <div className="flex items-center gap-2">
-            <Button
-              variant="secondary"
-              size="sm"
-              disabled={loading || saving}
-              onClick={() => setAliases((prev) => ({ ...prev, rules: [...prev.rules, newRule()] }))}
-            >
-              新增规则
-            </Button>
-            <Button variant="secondary" size="sm" disabled={loading || saving} onClick={refresh}>
-              刷新
-            </Button>
-          </div>
-        </div>
+        <ModelPriceAliasesToolbar
+          enabledRuleCount={enabledRuleCount}
+          modelCountsByCli={modelCountsByCli}
+          loading={loading}
+          saving={saving}
+          addRule={() => setAliases((prev) => ({ ...prev, rules: [...prev.rules, ruleRow()] }))}
+          refresh={refresh}
+        />
 
-        <datalist id={modelsDatalistId("claude")}>
-          {modelsByCli.claude.map((m) => (
-            <option key={`claude:${m}`} value={m} />
-          ))}
-        </datalist>
-        <datalist id={modelsDatalistId("codex")}>
-          {modelsByCli.codex.map((m) => (
-            <option key={`codex:${m}`} value={m} />
-          ))}
-        </datalist>
-        <datalist id={modelsDatalistId("gemini")}>
-          {modelsByCli.gemini.map((m) => (
-            <option key={`gemini:${m}`} value={m} />
-          ))}
-        </datalist>
+        <ModelPriceAliasesDatalists modelsByCli={modelsByCli} />
 
         {loading ? (
-          <div className="flex items-center justify-center rounded-2xl border border-line-subtle bg-surface-inset p-8">
-            <div className="flex items-center gap-3 text-sm text-muted-foreground">
-              <svg
-                className="h-5 w-5 animate-spin text-muted-foreground"
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-              >
-                <circle
-                  className="opacity-25"
-                  cx="12"
-                  cy="12"
-                  r="10"
-                  stroke="currentColor"
-                  strokeWidth="4"
-                />
-                <path
-                  className="opacity-75"
-                  fill="currentColor"
-                  d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                />
-              </svg>
-              <span>加载规则中…</span>
-            </div>
-          </div>
+          <ModelPriceAliasesLoadingState />
         ) : aliases.rules.length === 0 ? (
-          <div className="rounded-2xl border border-dashed border-line bg-surface-inset p-8 text-center">
-            <div className="mx-auto mb-2 h-10 w-10 rounded-full bg-surface-muted p-2.5 text-muted-foreground">
-              <svg
-                xmlns="http://www.w3.org/2000/svg"
-                fill="none"
-                viewBox="0 0 24 24"
-                strokeWidth={1.5}
-                stroke="currentColor"
-              >
-                <path strokeLinecap="round" strokeLinejoin="round" d="M12 4.5v15m7.5-7.5h-15" />
-              </svg>
-            </div>
-            <div className="text-sm font-medium text-secondary-foreground">暂无规则</div>
-            <div className="mt-1 text-xs text-muted-foreground">
-              示例：Gemini 配置{" "}
-              <code className="rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px]">
-                prefix gemini-3-flash
-              </code>{" "}
-              →{" "}
-              <code className="rounded bg-surface-muted px-1 py-0.5 font-mono text-[11px]">
-                gemini-3-flash-preview
-              </code>
-            </div>
-          </div>
+          <ModelPriceAliasesEmptyState />
         ) : (
-          <div className="space-y-3">
-            {aliases.rules.map((rule, idx) => {
-              const cliKey: CliKey = (rule?.cli_key as CliKey) ?? "gemini";
-              const matchType: ModelPriceAliasMatchType = rule?.match_type ?? "prefix";
-              const disabled = !rule?.enabled;
-              return (
-                <div
-                  key={`rule-${idx}`}
-                  className={cn(
-                    "group rounded-2xl border border-line bg-surface-panel p-4",
-                    "transition-all duration-200 ease-in-out",
-                    disabled
-                      ? "opacity-60 grayscale-[30%]"
-                      : "hover:border-line-strong hover:bg-surface-raised"
-                  )}
-                >
-                  <div className="flex flex-wrap items-center justify-between gap-3">
-                    <div className="flex items-center gap-3">
-                      <div className="text-xs font-semibold text-foreground">规则 #{idx + 1}</div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-xs text-muted-foreground">启用</span>
-                        <Switch
-                          size="sm"
-                          checked={!!rule?.enabled}
-                          onCheckedChange={(checked) => updateRule(idx, { enabled: checked })}
-                        />
-                      </div>
-                    </div>
-                    <Button
-                      variant="danger"
-                      size="sm"
-                      onClick={() => {
-                        deleteRule(idx);
-                        toast("已删除规则，点击「保存」生效");
-                      }}
-                    >
-                      删除
-                    </Button>
-                  </div>
-
-                  <div className="mt-4 grid items-start gap-4 lg:grid-cols-12">
-                    <div className="lg:col-span-2">
-                      <label className="mb-1.5 block text-xs font-medium text-secondary-foreground">
-                        CLI
-                      </label>
-                      <Select
-                        value={cliKey}
-                        onChange={(e) =>
-                          updateRule(idx, { cli_key: e.currentTarget.value as CliKey })
-                        }
-                        disabled={saving}
-                      >
-                        {CLI_SHORT_ITEMS.map((it) => (
-                          <option key={it.key} value={it.key}>
-                            {it.label}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-
-                    <div className="lg:col-span-2">
-                      <label className="mb-1.5 block text-xs font-medium text-secondary-foreground">
-                        匹配类型
-                      </label>
-                      <Select
-                        value={matchType}
-                        onChange={(e) =>
-                          updateRule(idx, {
-                            match_type: e.currentTarget.value as ModelPriceAliasMatchType,
-                          })
-                        }
-                        disabled={saving}
-                      >
-                        {MATCH_TYPE_ITEMS.map((it) => (
-                          <option key={it.key} value={it.key}>
-                            {it.label}
-                          </option>
-                        ))}
-                      </Select>
-                    </div>
-
-                    <div className="lg:col-span-4">
-                      <label className="mb-1.5 block text-xs font-medium text-secondary-foreground">
-                        Pattern
-                      </label>
-                      <Input
-                        mono
-                        value={rule?.pattern ?? ""}
-                        onChange={(e) => updateRule(idx, { pattern: e.currentTarget.value })}
-                        placeholder={
-                          matchType === "exact"
-                            ? "例如：gemini-3-flash"
-                            : matchType === "wildcard"
-                              ? "例如：gemini-3-*-preview"
-                              : "例如：claude-opus-4-5"
-                        }
-                        disabled={saving}
-                      />
-                      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                        {matchType === "wildcard"
-                          ? "wildcard：仅支持单个 *"
-                          : matchType === "prefix"
-                            ? "prefix：以 pattern 开头即命中"
-                            : "exact：完全相等才命中"}
-                      </p>
-                    </div>
-
-                    <div className="lg:col-span-4">
-                      <label className="mb-1.5 block text-xs font-medium text-secondary-foreground">
-                        目标模型
-                      </label>
-                      <Input
-                        mono
-                        list={modelsDatalistId(cliKey)}
-                        value={rule?.target_model ?? ""}
-                        onChange={(e) => updateRule(idx, { target_model: e.currentTarget.value })}
-                        placeholder="输入或从建议中选择…"
-                        disabled={saving}
-                      />
-                      <p className="mt-1.5 text-[11px] leading-relaxed text-muted-foreground">
-                        下拉列表选择具体模型
-                      </p>
-                    </div>
-                  </div>
-                </div>
-              );
-            })}
-          </div>
+          <ModelPriceAliasesRuleList
+            rules={aliases.rules}
+            fieldIdPrefix={fieldIdPrefix}
+            saving={saving}
+            updateRule={updateRule}
+            deleteRule={deleteRule}
+          />
         )}
 
-        <div className="flex items-center justify-end gap-3 border-t border-line-subtle pt-4">
-          <Button variant="secondary" onClick={() => onOpenChange(false)} disabled={saving}>
-            取消
-          </Button>
-          <Button variant="primary" onClick={save} disabled={loading || saving}>
-            {saving ? (
-              <span className="flex items-center gap-2">
-                <svg
-                  className="h-4 w-4 animate-spin"
-                  xmlns="http://www.w3.org/2000/svg"
-                  fill="none"
-                  viewBox="0 0 24 24"
-                >
-                  <circle
-                    className="opacity-25"
-                    cx="12"
-                    cy="12"
-                    r="10"
-                    stroke="currentColor"
-                    strokeWidth="4"
-                  />
-                  <path
-                    className="opacity-75"
-                    fill="currentColor"
-                    d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"
-                  />
-                </svg>
-                保存中…
-              </span>
-            ) : (
-              "保存"
-            )}
-          </Button>
-        </div>
+        <ModelPriceAliasesActions
+          loading={loading}
+          saving={saving}
+          onCancel={() => onOpenChange(false)}
+          save={save}
+        />
       </div>
     </Dialog>
   );

@@ -13,7 +13,8 @@ function UsageScopeGroup({
   loading,
 }: Pick<UsageDataPanelProps, "scope" | "onChangeScope" | "loading">) {
   return (
-    <div className="flex items-center gap-1.5" role="group" aria-label="维度筛选">
+    <fieldset className="flex items-center gap-1.5 border-0 p-0">
+      <legend className="sr-only">维度筛选</legend>
       {SCOPE_ITEMS.map((item) => (
         <Button
           key={item.key}
@@ -27,7 +28,7 @@ function UsageScopeGroup({
           {item.label}
         </Button>
       ))}
-    </div>
+    </fieldset>
   );
 }
 

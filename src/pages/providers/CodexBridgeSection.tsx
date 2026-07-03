@@ -5,6 +5,7 @@ import { Select } from "../../ui/Select";
 import { TabList } from "../../ui/TabList";
 import { TagsField } from "./TagsField";
 import type { UseProviderEditorFormReturn } from "./useProviderEditorForm";
+import type { CodexBridgeTarget } from "./providerEditorUtils";
 
 export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn }) {
   const { register, saving, tags, setTags, tagInput, setTagInput } = form;
@@ -50,11 +51,11 @@ export function CodexBridgeSection({ form }: { form: UseProviderEditorFormReturn
 
       <div className="space-y-4 rounded-lg border border-border bg-secondary/40 p-4">
         <FormField label="上游端点">
-          <TabList<"openai_chat" | "anthropic_messages">
+          <TabList<CodexBridgeTarget>
             ariaLabel="上游端点"
             items={[
+              { key: "openai_responses", label: "Responses" },
               { key: "openai_chat", label: "Chat Completions" },
-              { key: "anthropic_messages", label: "Anthropic Messages" },
             ]}
             value={form.codexBridgeTarget}
             onChange={form.setCodexBridgeTarget}

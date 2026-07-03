@@ -81,6 +81,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         attempts,
         failed_provider_ids,
         last_outcome,
+        active_requested_model: _,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -113,6 +114,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                                 &state.db,
                                 &state.log_tx,
                                 &state.plugin_pipeline,
+                                &state.active_requests,
                             ),
                             trace_id: trace_id.as_str(),
                             cli_key: cli_key.as_str(),
@@ -471,6 +473,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                             &state.db,
                             &state.log_tx,
                             &state.plugin_pipeline,
+                            &state.active_requests,
                         ),
                         trace_id: trace_id.as_str(),
                         cli_key: cli_key.as_str(),

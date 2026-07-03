@@ -50,31 +50,37 @@ fn ir_to_request(ir: &InternalRequest) -> Result<Value, BridgeError> {
         };
         let mut content = Vec::new();
         for block in &msg.content {
-            content.push(match block {
-                IRContentBlock::Text { text } => json!({"type": "text", "text": text}),
-                IRContentBlock::Image { media_type, data } => json!({
+            let Some(converted) = (match block {
+                IRContentBlock::Text { text } => Some(json!({"type": "text", "text": text})),
+                IRContentBlock::Image { media_type, data } => Some(json!({
                     "type": "image",
                     "source": {"type": "base64", "media_type": media_type, "data": data}
-                }),
+                })),
                 IRContentBlock::ToolUse { id, name, input } => {
-                    json!({"type": "tool_use", "id": id, "name": name, "input": input})
+                    Some(json!({"type": "tool_use", "id": id, "name": name, "input": input}))
                 }
                 IRContentBlock::ToolResult {
                     tool_use_id,
                     content,
                     is_error,
-                } => json!({
+                } => Some(json!({
                     "type": "tool_result",
                     "tool_use_id": tool_use_id,
                     "content": content,
                     "is_error": is_error
-                }),
+                })),
                 IRContentBlock::Thinking { thinking } => {
-                    json!({"type": "thinking", "thinking": thinking})
+                    Some(json!({"type": "thinking", "thinking": thinking}))
                 }
-            });
+                IRContentBlock::ResponsesNativeInputItem { .. } => None,
+            }) else {
+                continue;
+            };
+            content.push(converted);
         }
-        messages.push(json!({"role": role, "content": content}));
+        if !content.is_empty() {
+            messages.push(json!({"role": role, "content": content}));
+        }
     }
 
     let mut result = json!({
@@ -97,26 +103,109 @@ fn ir_to_request(ir: &InternalRequest) -> Result<Value, BridgeError> {
     if !ir.stop_sequences.is_empty() {
         result["stop_sequences"] = json!(ir.stop_sequences);
     }
-    if !ir.tools.is_empty() {
-        result["tools"] = json!(ir
-            .tools
-            .iter()
-            .map(|tool| json!({
-                "name": tool.name,
-                "description": tool.description,
-                "input_schema": tool.parameters
-            }))
-            .collect::<Vec<_>>());
+    let anthropic_tools: Vec<Value> = ir
+        .tools
+        .iter()
+        .filter_map(|tool| match tool {
+            IRToolDefinition::Function {
+                name,
+                description,
+                parameters,
+            } => Some(json!({
+                "name": name,
+                "description": description,
+                "input_schema": parameters
+            })),
+            IRToolDefinition::ResponsesNative { tool_type, raw } => {
+                responses_native_tool_to_anthropic(tool_type, raw)
+            }
+        })
+        .collect();
+    let anthropic_tool_names: Vec<String> = anthropic_tools
+        .iter()
+        .filter_map(|tool| tool.get("name").and_then(Value::as_str).map(str::to_string))
+        .collect();
+    if !anthropic_tools.is_empty() {
+        result["tools"] = json!(anthropic_tools);
     }
     if let Some(choice) = &ir.tool_choice {
-        result["tool_choice"] = match choice {
-            IRToolChoice::Auto => json!({"type": "auto"}),
-            IRToolChoice::Required => json!({"type": "any"}),
-            IRToolChoice::None => json!({"type": "none"}),
-            IRToolChoice::Specific { name } => json!({"type": "tool", "name": name}),
+        let converted = match choice {
+            IRToolChoice::Auto => Some(json!({"type": "auto"})),
+            IRToolChoice::Required => {
+                if ir.tools.is_empty() || !anthropic_tool_names.is_empty() {
+                    Some(json!({"type": "any"}))
+                } else {
+                    None
+                }
+            }
+            IRToolChoice::None => Some(json!({"type": "none"})),
+            IRToolChoice::Specific { name } => {
+                if ir.tools.is_empty() || anthropic_tool_names.iter().any(|tool| tool == name) {
+                    Some(json!({"type": "tool", "name": name}))
+                } else {
+                    None
+                }
+            }
+            IRToolChoice::ResponsesNative { raw } => {
+                let tool_type = raw.get("type").and_then(Value::as_str).unwrap_or("");
+                if tool_type.starts_with("web_search") {
+                    let name = raw
+                        .get("name")
+                        .and_then(Value::as_str)
+                        .filter(|value| !value.is_empty())
+                        .unwrap_or("web_search");
+                    if anthropic_tool_names.iter().any(|tool| tool == name) {
+                        Some(json!({"type": "tool", "name": name}))
+                    } else {
+                        None
+                    }
+                } else {
+                    None
+                }
+            }
         };
+        if let Some(converted) = converted {
+            result["tool_choice"] = converted;
+        }
     }
     Ok(result)
+}
+
+fn responses_native_tool_to_anthropic(tool_type: &str, raw: &Value) -> Option<Value> {
+    if !tool_type.starts_with("web_search") {
+        return None;
+    }
+    if raw
+        .get("external_web_access")
+        .and_then(Value::as_bool)
+        .is_some_and(|enabled| !enabled)
+    {
+        return None;
+    }
+
+    let name = raw
+        .get("name")
+        .and_then(Value::as_str)
+        .filter(|value| !value.is_empty())
+        .unwrap_or("web_search");
+    let mut tool = json!({
+        "type": "web_search_20250305",
+        "name": name
+    });
+    if let Some(max_uses) = raw.get("max_uses").and_then(Value::as_u64) {
+        tool["max_uses"] = json!(max_uses);
+    }
+    if let Some(allowed_domains) = raw
+        .get("filters")
+        .and_then(|filters| filters.get("allowed_domains"))
+        .filter(|value| value.is_array())
+    {
+        tool["allowed_domains"] = allowed_domains.clone();
+    }
+    if let Some(user_location) = raw.get("user_location").filter(|value| value.is_object()) {
+        tool["user_location"] = user_location.clone();
+    }
+    Some(tool)
 }
 
 fn response_to_ir(body: Value) -> Result<InternalResponse, BridgeError> {
@@ -331,11 +420,11 @@ mod tests {
                 content: vec![IRContentBlock::Text { text: "Hi".into() }],
             }],
             system: Some("Be brief".into()),
-            tools: vec![IRToolDefinition {
-                name: "lookup".into(),
-                description: None,
-                parameters: json!({"type": "object"}),
-            }],
+            tools: vec![IRToolDefinition::function(
+                "lookup",
+                None,
+                json!({"type": "object"}),
+            )],
             tool_choice: Some(IRToolChoice::Required),
             max_tokens: Some(100),
             temperature: None,
@@ -352,6 +441,50 @@ mod tests {
         assert_eq!(req["tools"][0]["input_schema"]["type"], "object");
         assert_eq!(req["tool_choice"]["type"], "any");
         assert_eq!(req["stream"], true);
+    }
+
+    #[test]
+    fn maps_responses_web_search_tool_for_anthropic() {
+        let req = ir_to_request(&InternalRequest {
+            model: "claude-3-5-sonnet".into(),
+            messages: vec![IRMessage {
+                role: IRRole::User,
+                content: vec![IRContentBlock::Text { text: "Hi".into() }],
+            }],
+            system: None,
+            tools: vec![
+                IRToolDefinition::responses_native(
+                    "web_search_preview",
+                    json!({
+                        "type": "web_search_preview",
+                        "max_uses": 3,
+                        "filters": {"allowed_domains": ["example.com"]},
+                        "user_location": {"type": "approximate", "country": "US"}
+                    }),
+                ),
+                IRToolDefinition::responses_native("tool_search", json!({"type": "tool_search"})),
+            ],
+            tool_choice: Some(IRToolChoice::ResponsesNative {
+                raw: json!({"type": "web_search_preview"}),
+            }),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: Vec::new(),
+            stream: false,
+            metadata: IRMetadata::default(),
+        })
+        .unwrap();
+
+        assert_eq!(req["tools"].as_array().unwrap().len(), 1);
+        assert_eq!(req["tools"][0]["type"], "web_search_20250305");
+        assert_eq!(req["tools"][0]["name"], "web_search");
+        assert_eq!(req["tools"][0]["max_uses"], 3);
+        assert_eq!(req["tools"][0]["allowed_domains"][0], "example.com");
+        assert_eq!(
+            req["tool_choice"],
+            json!({"type": "tool", "name": "web_search"})
+        );
     }
 
     #[test]

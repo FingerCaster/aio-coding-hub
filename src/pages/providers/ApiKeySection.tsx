@@ -1,3 +1,4 @@
+import { useMemo } from "react";
 import { FormField } from "../../ui/FormField";
 import { Input } from "../../ui/Input";
 import { Button } from "../../ui/Button";
@@ -12,7 +13,6 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
   const {
     mode,
     register,
-    setValue,
     saving,
     copyingApiKey,
     tags,
@@ -33,8 +33,11 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
     testModel,
     setTestModel,
     costMultiplierValue,
+    setCostMultiplierValue,
+    syncFreeTagForCostMultiplier,
     copyApiKey,
   } = props.form;
+  const costMultiplierField = register("cost_multiplier");
 
   const canCopyApiKey = Boolean(apiKeyValue.trim()) || (mode === "edit" && apiKeyConfigured);
   const apiKeyHint =
@@ -45,6 +48,26 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
       : undefined;
   const apiKeyPlaceholder =
     mode === "edit" && apiKeyConfigured ? "留空表示不改；输入新值表示替换" : "sk-…";
+  const baseUrlFooterStart = useMemo(
+    () => (
+      <div className="flex items-center gap-2">
+        <span className="shrink-0 text-[11px] font-medium text-muted-foreground">URL 选择策略</span>
+        <RadioButtonGroup<ProviderBaseUrlMode>
+          items={[
+            { value: "order", label: "按顺序" },
+            { value: "ping", label: "按 Ping" },
+          ]}
+          ariaLabel="Base URL 选择策略"
+          value={baseUrlMode}
+          onChange={setBaseUrlMode}
+          disabled={saving}
+          size="compact"
+          fullWidth={false}
+        />
+      </div>
+    ),
+    [baseUrlMode, saving, setBaseUrlMode]
+  );
 
   return (
     <>
@@ -75,25 +98,7 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
           newRow={newBaseUrlRow}
           placeholder="中转 endpoint（例如：https://example.com/v1）"
           disabled={saving}
-          footerStart={
-            <div className="flex items-center gap-2">
-              <span className="shrink-0 text-[11px] font-medium text-muted-foreground">
-                URL 选择策略
-              </span>
-              <RadioButtonGroup<ProviderBaseUrlMode>
-                items={[
-                  { value: "order", label: "按顺序" },
-                  { value: "ping", label: "按 Ping" },
-                ]}
-                ariaLabel="Base URL 选择策略"
-                value={baseUrlMode}
-                onChange={setBaseUrlMode}
-                disabled={saving}
-                size="compact"
-                fullWidth={false}
-              />
-            </div>
-          }
+          footerStart={baseUrlFooterStart}
         />
       </FormField>
 
@@ -126,7 +131,11 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
               min="0"
               step="0.01"
               placeholder="1.0"
-              {...register("cost_multiplier")}
+              {...costMultiplierField}
+              onChange={(event) => {
+                costMultiplierField.onChange(event);
+                syncFreeTagForCostMultiplier(event.currentTarget.value);
+              }}
             />
             <Button
               type="button"
@@ -139,7 +148,7 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
               }
               disabled={saving}
               onClick={() =>
-                setValue("cost_multiplier", "0", {
+                setCostMultiplierValue("0", {
                   shouldDirty: true,
                   shouldTouch: true,
                   shouldValidate: true,

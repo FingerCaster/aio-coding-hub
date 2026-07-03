@@ -1,10 +1,19 @@
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render,
+  renderHook,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import type { ReactElement } from "react";
+import type { ReactElement, ReactNode } from "react";
 import { MemoryRouter } from "react-router-dom";
 import { describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { SkillsMarketPage } from "../SkillsMarketPage";
+import { useSkillsMarketPageDataModel } from "../skills-market/useSkillsMarketPageDataModel";
 import {
   useSkillInstallToLocalMutation,
   useSkillRepoDiscoverAvailableMutation,
@@ -66,6 +75,17 @@ function renderWithProviders(element: ReactElement) {
       <MemoryRouter>{element}</MemoryRouter>
     </QueryClientProvider>
   );
+}
+
+function hookWrapper() {
+  const client = createTestQueryClient();
+  return function HookWrapper({ children }: { children: ReactNode }) {
+    return (
+      <QueryClientProvider client={client}>
+        <MemoryRouter>{children}</MemoryRouter>
+      </QueryClientProvider>
+    );
+  };
 }
 
 function mockCommonState() {
@@ -463,5 +483,247 @@ describe("pages/SkillsMarketPage", () => {
     expect(
       within(repoTwoSection as HTMLElement).queryByRole("button", { name: "去通用技能" })
     ).not.toBeInTheDocument();
+  });
+
+  it("covers hook action branches for refresh, repo mutations, filters, and install guards", async () => {
+    setTauriRuntime();
+    navigateMock.mockClear();
+    mockCommonState();
+    vi.mocked(toast).mockClear();
+    vi.mocked(logToConsole).mockClear();
+
+    vi.mocked(useSkillsInstalledListQuery).mockReturnValue({
+      data: [
+        {
+          id: 101,
+          skill_key: "beta",
+          name: "Beta",
+          description: "Beta desc",
+          source_git_url: "https://github.com/acme/repo-two",
+          source_branch: "main",
+          source_subdir: "skills/beta",
+          enabled: true,
+          created_at: 1,
+          updated_at: 1,
+        },
+      ],
+      isLoading: false,
+    } as any);
+    vi.mocked(useSkillsDiscoverAvailableQuery).mockReturnValue({
+      data: [
+        {
+          name: "Alpha",
+          description: "Alpha desc",
+          source_git_url: "https://github.com/acme/repo-one",
+          source_branch: "main",
+          source_subdir: "skills/alpha",
+          installed: false,
+        },
+        {
+          name: "Delta",
+          description: "Delta desc",
+          source_git_url: "https://github.com/acme/repo-one",
+          source_branch: "main",
+          source_subdir: "skills/delta",
+          installed: false,
+        },
+        {
+          name: "Beta",
+          description: "Beta desc",
+          source_git_url: "https://github.com/acme/repo-two",
+          source_branch: "main",
+          source_subdir: "skills/beta",
+          installed: true,
+        },
+      ],
+      isFetching: false,
+    } as any);
+
+    const discover = {
+      isPending: false,
+      mutateAsync: vi
+        .fn()
+        .mockResolvedValueOnce([{ name: "alpha" }])
+        .mockRejectedValueOnce(new Error("discover down"))
+        .mockRejectedValue(new Error("all down")),
+    };
+    vi.mocked(useSkillRepoDiscoverAvailableMutation).mockReturnValue(discover as any);
+
+    const upsert = {
+      mutateAsync: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("add down"))
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error("toggle down")),
+    };
+    vi.mocked(useSkillRepoUpsertMutation).mockReturnValue(upsert as any);
+
+    const repoDelete = {
+      mutateAsync: vi
+        .fn()
+        .mockResolvedValueOnce(null)
+        .mockRejectedValueOnce(new Error("delete down")),
+    };
+    vi.mocked(useSkillRepoDeleteMutation).mockReturnValue(repoDelete as any);
+
+    const install = {
+      mutateAsync: vi
+        .fn()
+        .mockRejectedValueOnce(new Error("single down"))
+        .mockResolvedValueOnce({ dir_name: "alpha", path: "/tmp/alpha", name: "Alpha" })
+        .mockRejectedValueOnce(new Error("bulk down")),
+    };
+    vi.mocked(useSkillInstallToLocalMutation).mockReturnValue(install as any);
+
+    const { result } = renderHook(() => useSkillsMarketPageDataModel(), {
+      wrapper: hookWrapper(),
+    });
+
+    await act(async () => {
+      await result.current.refreshAvailable(true);
+    });
+    expect(toast).toHaveBeenCalledWith("已刷新 1 个仓库，1 个失败");
+    expect(logToConsole).toHaveBeenCalledWith(
+      "error",
+      "刷新 Skill 仓库发现失败",
+      expect.objectContaining({ repo_id: 2 })
+    );
+
+    await act(async () => {
+      await result.current.refreshAvailable(true);
+    });
+    expect(toast).toHaveBeenCalledWith("刷新发现失败");
+
+    act(() => {
+      result.current.setNewRepoUrl("https://github.com/acme/fail");
+      result.current.setNewRepoBranch("");
+    });
+    await act(async () => {
+      await result.current.addRepo();
+    });
+    expect(upsert.mutateAsync).toHaveBeenCalledWith({
+      repoId: null,
+      gitUrl: "https://github.com/acme/fail",
+      branch: "auto",
+      enabled: true,
+    });
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("添加仓库失败"));
+
+    await act(async () => {
+      await result.current.toggleRepoEnabled(result.current.repos[0]!, false);
+    });
+    expect(toast).not.toHaveBeenCalledWith("仓库已禁用");
+
+    await act(async () => {
+      await result.current.toggleRepoEnabled(result.current.repos[0]!, false);
+    });
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("切换仓库失败"));
+
+    act(() => {
+      result.current.setRepoDeleteTarget(result.current.repos[0]!);
+    });
+    await act(async () => {
+      await result.current.confirmDeleteRepo();
+    });
+    expect(result.current.repoDeleteTarget?.id).toBe(1);
+
+    await act(async () => {
+      await result.current.confirmDeleteRepo();
+    });
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("删除仓库失败"));
+
+    await act(async () => {
+      await result.current.installSingleSkill(result.current.available[0]!);
+    });
+    expect(toast).toHaveBeenCalledWith(expect.stringContaining("安装到当前 CLI失败"));
+
+    act(() => {
+      result.current.setOnlyActionable(false);
+      result.current.setQuery("repo-two");
+      result.current.setRepoFilter(result.current.repoOptions[1]!.key);
+    });
+    await waitFor(() => expect(result.current.groupedAvailable).toHaveLength(1));
+    expect(result.current.groupedAvailable[0]!.repoPath).toBe("acme/repo-two");
+
+    await act(async () => {
+      await result.current.installWholeRepo(result.current.groupedAvailable[0]!);
+    });
+    expect(toast).toHaveBeenCalledWith("这个仓库下没有可安装的技能");
+
+    act(() => {
+      result.current.setRepoFilter("all");
+      result.current.setQuery("");
+    });
+    await waitFor(() => expect(result.current.groupedAvailable.length).toBeGreaterThan(0));
+    await act(async () => {
+      await result.current.installWholeRepo(result.current.groupedAvailable[0]!);
+    });
+    expect(toast).toHaveBeenCalledWith("已安装 1 个技能到 Claude");
+    expect(toast).toHaveBeenCalledWith("有 1 个技能安装失败");
+
+    act(() => {
+      result.current.setActiveCli("gemini");
+      result.current.toggleRepoExpanded(result.current.groupedAvailable[0]!.key);
+    });
+    expect(navigateMock).not.toHaveBeenCalled();
+    expect(localStorage.getItem("skills.activeCli")).toBe("gemini");
+  });
+
+  it("handles missing workspace and no enabled repos in the skills market data model", async () => {
+    setTauriRuntime();
+    navigateMock.mockClear();
+    mockCommonState();
+    vi.mocked(toast).mockClear();
+
+    vi.mocked(useSkillReposListQuery).mockReturnValue({
+      data: [{ id: 1, git_url: "https://github.com/acme/repo", branch: "main", enabled: false }],
+      isLoading: false,
+    } as any);
+    vi.mocked(useWorkspacesListQuery).mockReturnValue({
+      data: { active_id: null },
+      isLoading: false,
+    } as any);
+    vi.mocked(useSkillsInstalledListQuery).mockReturnValue({
+      data: [{ id: 1, name: "Stale", enabled: true }],
+      isLoading: false,
+    } as any);
+    vi.mocked(useSkillsLocalListQuery).mockReturnValue({
+      data: [{ dir_name: "stale", name: "Stale", path: "/tmp/stale" }],
+      isLoading: false,
+    } as any);
+    vi.mocked(useSkillsDiscoverAvailableQuery).mockReturnValue({
+      data: [
+        {
+          name: "Alpha",
+          description: "Alpha desc",
+          source_git_url: "https://github.com/acme/repo",
+          source_branch: "main",
+          source_subdir: "skills/alpha",
+          installed: false,
+        },
+      ],
+      isFetching: false,
+    } as any);
+    vi.mocked(useSkillInstallToLocalMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+
+    const { result } = renderHook(() => useSkillsMarketPageDataModel(), {
+      wrapper: hookWrapper(),
+    });
+
+    expect(result.current.enabledRepoCount).toBe(0);
+    expect(result.current.activeWorkspaceId).toBeNull();
+    expect(result.current.getStatus(result.current.available[0]!)).toBe("not_installed");
+
+    await act(async () => {
+      await result.current.refreshAvailable(true);
+    });
+    expect(toast).toHaveBeenCalledWith("没有启用的 Skill 仓库");
+
+    await act(async () => {
+      await result.current.installSingleSkill(result.current.available[0]!);
+    });
+    expect(toast).toHaveBeenCalledWith(
+      "未找到当前工作区（workspace）。请先在 Workspaces 页面创建并设为当前。"
+    );
   });
 });

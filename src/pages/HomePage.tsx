@@ -147,6 +147,7 @@ export function HomePage() {
     providerLimitRefreshing,
     providerLimitAvailable,
     requestLogs,
+    activeRequests,
     requestLogsLoading,
     requestLogsRefreshing,
     requestLogsAvailable,
@@ -296,10 +297,13 @@ export function HomePage() {
       <div className="flex-1 min-h-0">
         {tab === "overview" ? (
           <HomeOverviewPanel
-            showCustomTooltip={showCustomTooltip}
+            displayOptions={{
+              customTooltip: showCustomTooltip,
+              heatmap: showHomeHeatmap,
+              usage: showHomeUsage,
+              workspaceConfigQuickToggle: showAllWorkspaceConfigItems,
+            }}
             devPreviewEnabled={devPreview.enabled}
-            showHomeHeatmap={showHomeHeatmap}
-            showHomeUsage={showHomeUsage}
             cliPriorityOrder={cliPriorityOrder}
             usageWindowDays={homeUsageWindowDays}
             usageHeatmapRows={usageHeatmapRows}
@@ -315,7 +319,6 @@ export function HomePage() {
             activeSessionsLoading={activeSessionsLoading}
             activeSessionsAvailable={activeSessionsAvailable}
             workspaceConfigs={workspaceConfigs}
-            showWorkspaceConfigQuickToggle={showAllWorkspaceConfigItems}
             togglingWorkspaceConfigItemIds={togglingWorkspaceConfigItemIds}
             switchingWorkspaceKey={switchingWorkspaceKey}
             onSwitchWorkspace={(cliKey, workspaceId) => {
@@ -339,6 +342,7 @@ export function HomePage() {
             resettingCircuitProviderIds={circuit.resettingProviderIds}
             traces={traces}
             requestLogs={requestLogs}
+            activeRequests={activeRequests}
             requestLogsLoading={requestLogsLoading}
             requestLogsRefreshing={requestLogsRefreshing}
             requestLogsAvailable={requestLogsAvailable}

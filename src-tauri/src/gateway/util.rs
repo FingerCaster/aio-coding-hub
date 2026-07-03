@@ -22,7 +22,7 @@ fn parse_request_body_limit_mb(raw: Option<&str>) -> usize {
         .clamp(MIN_REQUEST_BODY_MB, MAX_REQUEST_BODY_MB)
 }
 
-pub(super) fn max_request_body_bytes() -> usize {
+pub(crate) fn max_request_body_bytes() -> usize {
     parse_request_body_limit_mb(
         std::env::var("AIO_GATEWAY_MAX_REQUEST_BODY_MB")
             .ok()

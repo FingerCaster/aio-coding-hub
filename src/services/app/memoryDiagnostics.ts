@@ -173,7 +173,7 @@ function collectFrontendDiagnostics(): AppMemoryDiagnosticsReport["frontend"] {
   };
 }
 
-export async function appMemoryDiagnosticsGet() {
+async function appMemoryDiagnosticsGet() {
   return invokeGeneratedIpc<AppMemoryDiagnosticsSnapshot>({
     title: "采集后端内存诊断失败",
     cmd: "app_memory_diagnostics_get",

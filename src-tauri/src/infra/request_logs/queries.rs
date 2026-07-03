@@ -8,8 +8,9 @@ use std::collections::HashMap;
 
 use super::costing::cost_usd_from_femto;
 use super::{
-    CodexReasoningGuardModelEffortStat, CodexReasoningGuardModelStat, CodexReasoningGuardStats,
-    RequestLogDetail, RequestLogRouteHop, RequestLogSummary,
+    CodexReasoningContinuationStatusStat, CodexReasoningGuardModelEffortStat,
+    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogRouteHop,
+    RequestLogSummary,
 };
 
 const CLAUDE_VISIBLE_LOG_PATH: &str = "/v1/messages";
@@ -44,6 +45,8 @@ const REQUEST_LOG_SUMMARY_FIELDS: &str = "
   cost_usd_femto,
   cost_multiplier,
   created_at_ms,
+  last_activity_ms,
+  activity_details_json,
   created_at,
   provider_chain_json,
   error_details_json
@@ -78,6 +81,8 @@ const REQUEST_LOG_DETAIL_FIELDS: &str = "
   cost_usd_femto,
   cost_multiplier,
   created_at_ms,
+  last_activity_ms,
+  activity_details_json,
   created_at,
   provider_chain_json,
   error_details_json
@@ -351,6 +356,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite
         cost_usd,
         cost_multiplier: row.get("cost_multiplier")?,
         created_at_ms: row.get("created_at_ms")?,
+        last_activity_ms: row.get("last_activity_ms")?,
+        activity_details_json: row.get("activity_details_json").unwrap_or(None),
         created_at: row.get("created_at")?,
         provider_chain_json: row.get("provider_chain_json").unwrap_or(None),
         error_details_json: row.get("error_details_json").unwrap_or(None),
@@ -395,6 +402,8 @@ fn row_to_detail(row: &rusqlite::Row<'_>) -> Result<RequestLogDetail, rusqlite::
         cost_usd,
         cost_multiplier: row.get("cost_multiplier")?,
         created_at_ms: row.get("created_at_ms")?,
+        last_activity_ms: row.get("last_activity_ms")?,
+        activity_details_json: row.get("activity_details_json").unwrap_or(None),
         created_at: row.get("created_at")?,
         provider_chain_json: row.get("provider_chain_json").unwrap_or(None),
         error_details_json: row.get("error_details_json").unwrap_or(None),
@@ -640,19 +649,54 @@ pub fn codex_reasoning_guard_stats(
 WITH codex_requests AS (
   SELECT
     id,
-    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model
+    COALESCE(NULLIF(TRIM(requested_model), ''), '{unknown}') AS requested_model,
+    duration_ms,
+    output_tokens
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
 guard_hit_attempts AS (
   SELECT
-    request_logs.id AS request_id,
-    COALESCE(NULLIF(TRIM(request_logs.requested_model), ''), '{unknown}') AS requested_model
-  FROM request_logs
+    codex_requests.id AS request_id,
+    codex_requests.requested_model AS requested_model,
+    COALESCE(
+      NULLIF(TRIM(json_extract(special.value, '$.hitSource')), ''),
+      'reasoning_tokens'
+    ) AS hit_source
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
-  WHERE request_logs.cli_key = 'codex'
-    {hit_time_filter}
-    AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.ruleSource'), ''))) != 'continuation_repair'
+),
+feature_samples AS (
+  SELECT
+    codex_requests.id AS request_id,
+    codex_requests.duration_ms AS duration_ms,
+    codex_requests.output_tokens AS output_tokens,
+    special.value AS feature,
+    LOWER(TRIM(COALESCE(
+      json_extract(special.value, '$.requestReasoningEffort'),
+      json_extract(special.value, '$.rawRequestReasoningEffort'),
+      ''
+    ))) AS request_reasoning_effort
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_features'
+),
+continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.status'))), ''),
+      'unknown'
+    ) AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.sentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_continuation'
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
@@ -662,26 +706,162 @@ guard_hit_requests AS (
 SELECT
   COALESCE((SELECT COUNT(*) FROM guard_hit_requests), 0) AS hit_request_count,
   COALESCE((SELECT SUM(hit_attempt_count) FROM guard_hit_requests), 0) AS hit_attempt_count,
+  COALESCE((SELECT SUM(CASE WHEN hit_source = 'reasoning_tokens' THEN 1 ELSE 0 END) FROM guard_hit_attempts), 0) AS token_hit_attempt_count,
+  COALESCE((SELECT SUM(CASE WHEN hit_source = 'final_answer_only_high_xhigh' THEN 1 ELSE 0 END) FROM guard_hit_attempts), 0) AS feature_hit_attempt_count,
+  COALESCE((SELECT COUNT(DISTINCT CASE WHEN hit_source = 'reasoning_tokens' THEN request_id END) FROM guard_hit_attempts), 0) AS reasoning_token_hit_request_count,
+  COALESCE((SELECT COUNT(DISTINCT CASE WHEN hit_source = 'final_answer_only_high_xhigh' THEN request_id END) FROM guard_hit_attempts), 0) AS final_answer_only_high_xhigh_hit_request_count,
+  COALESCE((SELECT COUNT(DISTINCT request_id) FROM feature_samples), 0) AS feature_sample_request_count,
+  COALESCE((SELECT COUNT(*) FROM feature_samples), 0) AS feature_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 THEN 1 ELSE 0 END) FROM feature_samples), 0) AS final_answer_only_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.finalAnswerOnly') = 1 AND request_reasoning_effort IN ('high', 'xhigh') THEN 1 ELSE 0 END) FROM feature_samples), 0) AS high_xhigh_final_answer_only_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.reasoningTokens') = 516 AND json_extract(feature, '$.finalAnswerOnly') = 1 AND COALESCE(json_extract(feature, '$.commentaryObserved'), 0) = 0 THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_516_final_answer_only_no_commentary_count,
+  COALESCE((SELECT SUM(CASE WHEN json_extract(feature, '$.interceptExemptReason') = 'context_compaction' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS compaction_exempt_sample_count,
+  COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.reasoningTokens') IS NOT NULL AND json_type(feature, '$.reasoningTokens') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_tokens_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.finalAnswerOnly') IS NOT NULL AND json_type(feature, '$.finalAnswerOnly') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS final_answer_only_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN json_type(feature, '$.commentaryObserved') IS NOT NULL AND json_type(feature, '$.commentaryObserved') != 'null' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS commentary_observed_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN request_reasoning_effort != '' THEN 1 ELSE 0 END) FROM feature_samples), 0) AS reasoning_effort_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN duration_ms IS NOT NULL THEN 1 ELSE 0 END) FROM feature_samples), 0) AS duration_ms_coverage_count,
+  COALESCE((SELECT SUM(CASE WHEN output_tokens IS NOT NULL THEN 1 ELSE 0 END) FROM feature_samples), 0) AS output_tokens_coverage_count,
+  COALESCE((SELECT COUNT(DISTINCT request_id) FROM continuation_attempts), 0) AS continuation_triggered_request_count,
+  COALESCE((SELECT COUNT(*) FROM continuation_attempts), 0) AS continuation_triggered_attempt_count,
+  COALESCE((SELECT COUNT(DISTINCT CASE WHEN status = 'repaired' THEN request_id END) FROM continuation_attempts), 0) AS continuation_repaired_request_count,
+  COALESCE((SELECT SUM(CASE WHEN status = 'repaired' THEN 1 ELSE 0 END) FROM continuation_attempts), 0) AS continuation_repaired_attempt_count,
+  COALESCE((SELECT SUM(CASE WHEN status != 'repaired' THEN 1 ELSE 0 END) FROM continuation_attempts), 0) AS continuation_non_repaired_attempt_count,
+  COALESCE((SELECT AVG(sent_rounds * 1.0) FROM continuation_attempts), 0.0) AS continuation_average_sent_rounds,
   COALESCE((SELECT COUNT(*) FROM codex_requests), 0) AS total_request_count
 "#,
         unknown = UNKNOWN_CODEX_REQUESTED_MODEL_LABEL,
-        time_filter = time_filter,
-        hit_time_filter = hit_time_filter
+        time_filter = time_filter
     );
 
     let range_params = [start_created_at_ms, end_created_at_ms];
     let range_params_iter = range_params.iter().flatten().copied();
 
-    let (hit_request_count, hit_attempt_count, total_request_count) = conn
+    let mut summary_stats = conn
         .query_row(
             &overall_sql,
             params_from_iter(range_params_iter.clone()),
             |row| {
+                let hit_request_count = row.get::<_, i64>("hit_request_count")?.max(0);
+                let total_request_count = row.get::<_, i64>("total_request_count")?.max(0);
+                let normal_request_count = (total_request_count - hit_request_count).max(0);
+                let hit_rate = if total_request_count > 0 {
+                    hit_request_count as f64 / total_request_count as f64
+                } else {
+                    0.0
+                };
                 Ok((
-                    row.get::<_, i64>("hit_request_count")?.max(0),
+                    hit_request_count,
                     row.get::<_, i64>("hit_attempt_count")?.max(0),
-                    row.get::<_, i64>("total_request_count")?.max(0),
+                    row.get::<_, i64>("token_hit_attempt_count")?.max(0),
+                    row.get::<_, i64>("feature_hit_attempt_count")?.max(0),
+                    row.get::<_, i64>("reasoning_token_hit_request_count")?
+                        .max(0),
+                    row.get::<_, i64>("final_answer_only_high_xhigh_hit_request_count")?
+                        .max(0),
+                    normal_request_count,
+                    total_request_count,
+                    hit_rate,
+                    row.get::<_, i64>("feature_sample_request_count")?.max(0),
+                    row.get::<_, i64>("feature_sample_count")?.max(0),
+                    row.get::<_, i64>("final_answer_only_sample_count")?.max(0),
+                    row.get::<_, i64>("high_xhigh_final_answer_only_sample_count")?
+                        .max(0),
+                    row.get::<_, i64>("reasoning_516_final_answer_only_no_commentary_count")?
+                        .max(0),
+                    row.get::<_, i64>("compaction_exempt_sample_count")?.max(0),
+                    row.get::<_, i64>("reasoning_tokens_coverage_count")?.max(0),
+                    row.get::<_, i64>("final_answer_only_coverage_count")?
+                        .max(0),
+                    row.get::<_, i64>("commentary_observed_coverage_count")?
+                        .max(0),
+                    row.get::<_, i64>("reasoning_effort_coverage_count")?.max(0),
+                    row.get::<_, i64>("duration_ms_coverage_count")?.max(0),
+                    row.get::<_, i64>("output_tokens_coverage_count")?.max(0),
+                    row.get::<_, i64>("continuation_triggered_request_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_triggered_attempt_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_repaired_request_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_repaired_attempt_count")?
+                        .max(0),
+                    row.get::<_, i64>("continuation_non_repaired_attempt_count")?
+                        .max(0),
+                    row.get::<_, f64>("continuation_average_sent_rounds")?
+                        .max(0.0),
                 ))
+            },
+        )
+        .map(
+            |(
+                hit_request_count,
+                hit_attempt_count,
+                token_hit_attempt_count,
+                feature_hit_attempt_count,
+                reasoning_token_hit_request_count,
+                final_answer_only_high_xhigh_hit_request_count,
+                normal_request_count,
+                total_request_count,
+                hit_rate,
+                feature_sample_request_count,
+                feature_sample_count,
+                final_answer_only_sample_count,
+                high_xhigh_final_answer_only_sample_count,
+                reasoning_516_final_answer_only_no_commentary_count,
+                compaction_exempt_sample_count,
+                reasoning_tokens_coverage_count,
+                final_answer_only_coverage_count,
+                commentary_observed_coverage_count,
+                reasoning_effort_coverage_count,
+                duration_ms_coverage_count,
+                output_tokens_coverage_count,
+                continuation_triggered_request_count,
+                continuation_triggered_attempt_count,
+                continuation_repaired_request_count,
+                continuation_repaired_attempt_count,
+                continuation_non_repaired_attempt_count,
+                continuation_average_sent_rounds,
+            )| {
+                let continuation_repair_rate = if continuation_triggered_request_count > 0 {
+                    continuation_repaired_request_count as f64
+                        / continuation_triggered_request_count as f64
+                } else {
+                    0.0
+                };
+                CodexReasoningGuardStats {
+                    hit_request_count,
+                    hit_attempt_count,
+                    token_hit_attempt_count,
+                    feature_hit_attempt_count,
+                    reasoning_token_hit_request_count,
+                    final_answer_only_high_xhigh_hit_request_count,
+                    normal_request_count,
+                    total_request_count,
+                    hit_rate,
+                    feature_sample_request_count,
+                    feature_sample_count,
+                    final_answer_only_sample_count,
+                    high_xhigh_final_answer_only_sample_count,
+                    reasoning_516_final_answer_only_no_commentary_count,
+                    compaction_exempt_sample_count,
+                    reasoning_tokens_coverage_count,
+                    final_answer_only_coverage_count,
+                    commentary_observed_coverage_count,
+                    reasoning_effort_coverage_count,
+                    duration_ms_coverage_count,
+                    output_tokens_coverage_count,
+                    continuation_triggered_request_count,
+                    continuation_triggered_attempt_count,
+                    continuation_repaired_request_count,
+                    continuation_repaired_attempt_count,
+                    continuation_non_repaired_attempt_count,
+                    continuation_repair_rate,
+                    continuation_average_sent_rounds,
+                    continuation_by_status: Vec::new(),
+                    by_model: Vec::new(),
+                    by_model_and_effort: Vec::new(),
+                }
             },
         )
         .map_err(|e| db_err!("failed to query codex reasoning guard summary stats: {e}"))?;
@@ -704,6 +884,7 @@ guard_hit_attempts AS (
   WHERE request_logs.cli_key = 'codex'
     {hit_time_filter}
     AND json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.ruleSource'), ''))) != 'continuation_repair'
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, COUNT(1) AS hit_attempt_count
@@ -837,6 +1018,7 @@ guard_hit_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.ruleSource'), ''))) != 'continuation_repair'
 ),
 guard_hit_requests AS (
   SELECT request_id, requested_model, reasoning_effort, COUNT(1) AS hit_attempt_count
@@ -936,22 +1118,78 @@ ORDER BY
         });
     }
 
-    let normal_request_count = (total_request_count - hit_request_count).max(0);
-    let hit_rate = if total_request_count > 0 {
-        hit_request_count as f64 / total_request_count as f64
-    } else {
-        0.0
-    };
+    let continuation_by_status_sql = format!(
+        r#"
+WITH codex_requests AS (
+  SELECT id
+  FROM request_logs
+  WHERE cli_key = 'codex'{time_filter}
+),
+continuation_attempts AS (
+  SELECT
+    codex_requests.id AS request_id,
+    COALESCE(
+      NULLIF(LOWER(TRIM(json_extract(special.value, '$.status'))), ''),
+      'unknown'
+    ) AS status,
+    MAX(COALESCE(CAST(json_extract(special.value, '$.sentRounds') AS INTEGER), 0), 0) AS sent_rounds
+  FROM codex_requests
+  JOIN request_logs ON request_logs.id = codex_requests.id
+  JOIN json_each(request_logs.special_settings_json) AS special
+  WHERE json_extract(special.value, '$.type') = 'codex_reasoning_continuation'
+)
+SELECT
+  status,
+  COUNT(DISTINCT request_id) AS request_count,
+  COUNT(*) AS attempt_count,
+  COALESCE(AVG(sent_rounds * 1.0), 0.0) AS average_sent_rounds
+FROM continuation_attempts
+GROUP BY status
+ORDER BY attempt_count DESC, status ASC
+"#,
+        time_filter = time_filter
+    );
 
-    Ok(CodexReasoningGuardStats {
-        hit_request_count,
-        hit_attempt_count,
-        normal_request_count,
-        total_request_count,
-        hit_rate,
-        by_model,
-        by_model_and_effort,
-    })
+    let mut stmt = conn.prepare(&continuation_by_status_sql).map_err(|e| {
+        db_err!("failed to prepare codex reasoning continuation status stats query: {e}")
+    })?;
+    let mut rows = stmt
+        .query(params_from_iter(range_params.iter().flatten().copied()))
+        .map_err(|e| {
+            db_err!("failed to run codex reasoning continuation status stats query: {e}")
+        })?;
+
+    let mut continuation_by_status = Vec::new();
+    while let Some(row) = rows
+        .next()
+        .map_err(|e| db_err!("failed to read codex reasoning continuation status stats row: {e}"))?
+    {
+        continuation_by_status.push(CodexReasoningContinuationStatusStat {
+            status: row
+                .get("status")
+                .map_err(|e| db_err!("invalid codex reasoning continuation status: {e}"))?,
+            request_count: row
+                .get::<_, i64>("request_count")
+                .map_err(|e| db_err!("invalid codex reasoning continuation request_count: {e}"))?
+                .max(0),
+            attempt_count: row
+                .get::<_, i64>("attempt_count")
+                .map_err(|e| db_err!("invalid codex reasoning continuation attempt_count: {e}"))?
+                .max(0),
+            average_sent_rounds: row
+                .get::<_, f64>("average_sent_rounds")
+                .map_err(|e| {
+                    db_err!("invalid codex reasoning continuation average_sent_rounds: {e}")
+                })?
+                .max(0.0),
+        });
+    }
+
+    summary_stats.continuation_by_status = continuation_by_status;
+    summary_stats.by_model = by_model;
+    summary_stats.by_model_and_effort = by_model_and_effort;
+
+    Ok(summary_stats)
 }
 
 #[cfg(test)]
@@ -1330,9 +1568,19 @@ INSERT INTO request_logs (
         let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
         assert_eq!(stats.hit_request_count, 2);
         assert_eq!(stats.hit_attempt_count, 3);
+        assert_eq!(stats.token_hit_attempt_count, 3);
+        assert_eq!(stats.feature_hit_attempt_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 2);
+        assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 0);
         assert_eq!(stats.normal_request_count, 3);
         assert_eq!(stats.total_request_count, 5);
         assert!((stats.hit_rate - 0.4).abs() < f64::EPSILON);
+        assert_eq!(stats.feature_sample_request_count, 0);
+        assert_eq!(stats.feature_sample_count, 0);
+        assert_eq!(stats.final_answer_only_sample_count, 0);
+        assert_eq!(stats.high_xhigh_final_answer_only_sample_count, 0);
+        assert_eq!(stats.reasoning_516_final_answer_only_no_commentary_count, 0);
+        assert_eq!(stats.compaction_exempt_sample_count, 0);
 
         assert_eq!(stats.by_model.len(), 4);
         assert_eq!(stats.by_model[0].requested_model, "gpt-5-codex");
@@ -1392,6 +1640,277 @@ INSERT INTO request_logs (
             .find(|row| row.requested_model == "gpt-5.4-mini" && row.reasoning_effort == "none")
             .expect("gpt-5.4-mini none stat");
         assert_eq!(mini_default_none.normal_request_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_ignore_no_intercept_decision_records() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-decision-only",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-hit-with-decision",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard","hit":true},{"type":"codex_reasoning_guard_decision","hit":false,"matchedRuleAction":"no_intercept"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-normal",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+
+        assert_eq!(stats.total_request_count, 3);
+        assert_eq!(stats.hit_request_count, 1);
+        assert_eq!(stats.hit_attempt_count, 1);
+        assert_eq!(stats.normal_request_count, 2);
+        assert_eq!(stats.token_hit_attempt_count, 1);
+
+        let codex_model = stats
+            .by_model
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex")
+            .expect("gpt-5-codex model stats");
+        assert_eq!(codex_model.total_request_count, 2);
+        assert_eq!(codex_model.hit_request_count, 1);
+        assert_eq!(codex_model.normal_request_count, 1);
+        assert_eq!(codex_model.hit_attempt_count, 1);
+
+        let codex_high = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "high")
+            .expect("gpt-5-codex high stats");
+        assert_eq!(codex_high.total_request_count, 2);
+        assert_eq!(codex_high.hit_request_count, 1);
+        assert_eq!(codex_high.normal_request_count, 1);
+        assert_eq!(codex_high.hit_attempt_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_counts_feature_samples_separately() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-feature-active",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_features","ruleMode":"final_answer_only_high_xhigh","reasoningTokens":516,"requestReasoningEffort":"high","responseClassification":"complete","finalAnswerOnly":true,"commentaryObserved":false,"interceptExemptReason":null},{"type":"codex_reasoning_guard","hitSource":"final_answer_only_high_xhigh"}]"#,
+            ),
+        );
+        conn.execute(
+            "UPDATE request_logs SET output_tokens = 42 WHERE id = 1",
+            [],
+        )
+        .unwrap();
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-feature-compaction",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_features","ruleMode":"final_answer_only_high_xhigh","reasoningTokens":null,"requestReasoningEffort":"xhigh","responseClassification":"request_only","classificationSkippedReason":"guard_disabled_stream_not_buffered","finalAnswerOnly":null,"commentaryObserved":null,"interceptExemptReason":"context_compaction"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-token-active",
+            Some("gpt-5-mini-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_features","ruleMode":"reasoning_tokens","reasoningTokens":516,"requestReasoningEffort":"low","responseClassification":"complete","finalAnswerOnly":true,"commentaryObserved":false,"interceptExemptReason":null},{"type":"codex_reasoning_guard"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            4,
+            "trace-normal",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+        assert_eq!(stats.total_request_count, 4);
+        assert_eq!(stats.hit_request_count, 2);
+        assert_eq!(stats.hit_attempt_count, 2);
+        assert_eq!(stats.token_hit_attempt_count, 1);
+        assert_eq!(stats.feature_hit_attempt_count, 1);
+        assert_eq!(stats.reasoning_token_hit_request_count, 1);
+        assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 1);
+        assert_eq!(stats.normal_request_count, 2);
+
+        assert_eq!(stats.feature_sample_request_count, 3);
+        assert_eq!(stats.feature_sample_count, 3);
+        assert_eq!(stats.final_answer_only_sample_count, 2);
+        assert_eq!(stats.high_xhigh_final_answer_only_sample_count, 1);
+        assert_eq!(stats.reasoning_516_final_answer_only_no_commentary_count, 2);
+        assert_eq!(stats.compaction_exempt_sample_count, 1);
+        assert_eq!(stats.reasoning_tokens_coverage_count, 2);
+        assert_eq!(stats.final_answer_only_coverage_count, 2);
+        assert_eq!(stats.commentary_observed_coverage_count, 2);
+        assert_eq!(stats.reasoning_effort_coverage_count, 3);
+        assert_eq!(stats.duration_ms_coverage_count, 3);
+        assert_eq!(stats.output_tokens_coverage_count, 1);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_counts_continuation_repair_separately() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-continuation-repaired",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":1},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            2,
+            "trace-continuation-multi-failure",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"still_matched","sentRounds":3},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"},{"type":"codex_reasoning_continuation","status":"failed","sentRounds":2},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            3,
+            "trace-continuation-missing",
+            Some("gpt-5-mini-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"missing_encrypted","sentRounds":0},{"type":"codex_reasoning_guard","ruleSource":"continuation_repair","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            4,
+            "trace-no-continuation",
+            Some("gpt-5-mini-codex"),
+            None,
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+
+        assert_eq!(stats.total_request_count, 4);
+        assert_eq!(stats.hit_request_count, 0);
+        assert_eq!(stats.hit_attempt_count, 0);
+        assert_eq!(stats.token_hit_attempt_count, 0);
+        assert_eq!(stats.feature_hit_attempt_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 0);
+        assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 0);
+        assert!(stats
+            .by_model
+            .iter()
+            .all(|row| row.hit_request_count == 0 && row.hit_attempt_count == 0));
+        assert!(stats
+            .by_model_and_effort
+            .iter()
+            .all(|row| row.hit_request_count == 0 && row.hit_attempt_count == 0));
+        assert_eq!(stats.continuation_triggered_request_count, 3);
+        assert_eq!(stats.continuation_triggered_attempt_count, 4);
+        assert_eq!(stats.continuation_repaired_request_count, 1);
+        assert_eq!(stats.continuation_repaired_attempt_count, 1);
+        assert_eq!(stats.continuation_non_repaired_attempt_count, 3);
+        assert!((stats.continuation_repair_rate - (1.0 / 3.0)).abs() < f64::EPSILON);
+        assert!((stats.continuation_average_sent_rounds - 1.5).abs() < f64::EPSILON);
+
+        let repaired = stats
+            .continuation_by_status
+            .iter()
+            .find(|row| row.status == "repaired")
+            .expect("repaired continuation stat");
+        assert_eq!(repaired.request_count, 1);
+        assert_eq!(repaired.attempt_count, 1);
+        assert!((repaired.average_sent_rounds - 1.0).abs() < f64::EPSILON);
+
+        let still_matched = stats
+            .continuation_by_status
+            .iter()
+            .find(|row| row.status == "still_matched")
+            .expect("still_matched continuation stat");
+        assert_eq!(still_matched.request_count, 1);
+        assert_eq!(still_matched.attempt_count, 1);
+        assert!((still_matched.average_sent_rounds - 3.0).abs() < f64::EPSILON);
+    }
+
+    #[test]
+    fn codex_reasoning_guard_stats_counts_mixed_guard_and_continuation_once() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            1,
+            "trace-mixed-guard-continuation",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_effort","effort":"high"},{"type":"codex_reasoning_guard","hitSource":"reasoning_tokens"},{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":2},{"type":"codex_reasoning_guard","ruleSource":" Continuation_Repair ","hitSource":"reasoning_tokens","matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
+        drop(conn);
+
+        let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
+
+        assert_eq!(stats.total_request_count, 1);
+        assert_eq!(stats.hit_request_count, 1);
+        assert_eq!(stats.hit_attempt_count, 1);
+        assert_eq!(stats.token_hit_attempt_count, 1);
+        assert_eq!(stats.feature_hit_attempt_count, 0);
+        assert_eq!(stats.reasoning_token_hit_request_count, 1);
+        assert_eq!(stats.continuation_triggered_request_count, 1);
+        assert_eq!(stats.continuation_triggered_attempt_count, 1);
+        assert_eq!(stats.continuation_repaired_request_count, 1);
+        assert_eq!(stats.continuation_repaired_attempt_count, 1);
+        assert_eq!(stats.continuation_non_repaired_attempt_count, 0);
+
+        let model_stats = stats
+            .by_model
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex")
+            .expect("gpt-5-codex model stats");
+        assert_eq!(model_stats.hit_request_count, 1);
+        assert_eq!(model_stats.hit_attempt_count, 1);
+
+        let high_stats = stats
+            .by_model_and_effort
+            .iter()
+            .find(|row| row.requested_model == "gpt-5-codex" && row.reasoning_effort == "high")
+            .expect("gpt-5-codex high stats");
+        assert_eq!(high_stats.hit_request_count, 1);
+        assert_eq!(high_stats.hit_attempt_count, 1);
     }
 
     #[test]

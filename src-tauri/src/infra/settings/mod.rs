@@ -7,9 +7,14 @@ mod types;
 
 // Re-export public API (preserves identical surface for all consumers).
 pub use defaults::{
-    DEFAULT_CODEX_PROVIDER_TEST_MODEL, DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
+    CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
+    CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID, DEFAULT_CODEX_PROVIDER_TEST_MODEL,
+    DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
     DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX,
     DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+    DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
+    DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
+    DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED,
     DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
     DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS, DEFAULT_CODEX_REASONING_GUARD_ENABLED,
     DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL, DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
@@ -25,7 +30,10 @@ pub(crate) use persistence::validate_bounds;
 pub use persistence::{clear_cache, log_retention_days_fail_open, read, write};
 pub use types::{
     AppSettings, CodexHomeMode, CodexReasoningGuardCompareMode, CodexReasoningGuardExhaustedAction,
-    CodexReasoningGuardModelRule, CodexReasoningGuardRetryPolicy, GatewayListenMode,
-    HomeUsagePeriod, UpstreamRetryPolicy, UpstreamTransportRetryKind, WslHostAddressMode,
-    WslTargetCli,
+    CodexReasoningGuardModelRule, CodexReasoningGuardRetryPolicy, CodexReasoningGuardRuleMode,
+    CodexReasoningGuardRuleTemplate, CodexReasoningGuardTemplateFilter,
+    CodexReasoningGuardTemplateFilterField, CodexReasoningGuardTemplateFilterOperator,
+    CodexReasoningGuardTemplateRule, CodexReasoningGuardTemplateRuleAction,
+    CodexReasoningGuardTemplateRuleLogic, GatewayListenMode, HomeUsagePeriod, UpstreamRetryPolicy,
+    UpstreamTransportRetryKind, WslHostAddressMode, WslTargetCli,
 };

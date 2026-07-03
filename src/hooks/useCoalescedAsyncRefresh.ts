@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect, useMemo } from "react";
 
 type UseCoalescedAsyncRefreshOptions<TSource, TResult> = {
   enabled: boolean;
@@ -7,119 +7,169 @@ type UseCoalescedAsyncRefreshOptions<TSource, TResult> = {
   onError?: (error: unknown, source: TSource) => TResult | Promise<TResult>;
 };
 
+type CoalescedAsyncRefreshRuntime<TSource, TResult> = {
+  initialized: boolean;
+  timer: number | null;
+  queued: boolean;
+  queuedSource: TSource | undefined;
+  queuedGeneration: number;
+  inFlight: boolean;
+  active: boolean;
+  previousEnabled: boolean;
+  enabledGeneration: number;
+  task: (source: TSource) => Promise<TResult>;
+  onError: ((error: unknown, source: TSource) => TResult | Promise<TResult>) | undefined;
+  flush: ((source: TSource) => Promise<TResult | null> | null) | null;
+};
+
 export function useCoalescedAsyncRefresh<TSource, TResult = unknown>({
   enabled,
   delayMs,
   task,
   onError,
 }: UseCoalescedAsyncRefreshOptions<TSource, TResult>) {
-  const timerRef = useRef<number | null>(null);
-  const queuedRef = useRef(false);
-  const queuedSourceRef = useRef<TSource | undefined>(undefined);
-  const inFlightRef = useRef(false);
-  const enabledRef = useRef(enabled);
-  const taskRef = useRef(task);
-  const onErrorRef = useRef(onError);
-  const flushRef = useRef<((source: TSource) => Promise<TResult | null> | null) | null>(null);
+  const runtime = useMemo<CoalescedAsyncRefreshRuntime<TSource, TResult>>(
+    () => ({
+      initialized: false,
+      timer: null,
+      queued: false,
+      queuedSource: undefined,
+      queuedGeneration: 0,
+      inFlight: false,
+      active: false,
+      previousEnabled: false,
+      enabledGeneration: 0,
+      task: async () => {
+        throw new Error("Refresh task called before initialization.");
+      },
+      onError: undefined,
+      flush: null,
+    }),
+    []
+  );
+  if (!runtime.initialized) {
+    runtime.initialized = true;
+    runtime.active = enabled;
+    runtime.previousEnabled = enabled;
+  }
+  runtime.task = task;
+  runtime.onError = onError;
 
-  useEffect(() => {
-    taskRef.current = task;
-  }, [task]);
-
-  useEffect(() => {
-    onErrorRef.current = onError;
-  }, [onError]);
-
-  const clearQueued = useCallback(() => {
-    if (timerRef.current != null) {
-      window.clearTimeout(timerRef.current);
-      timerRef.current = null;
-    }
-    queuedRef.current = false;
-    queuedSourceRef.current = undefined;
-  }, []);
-
-  const runTask = useCallback(async (source: TSource): Promise<TResult> => {
-    try {
-      return await taskRef.current(source);
-    } catch (error) {
-      if (onErrorRef.current) {
-        return await onErrorRef.current(error, source);
+  const clearQueuedForGeneration = useCallback(
+    (generation: number) => {
+      if (runtime.timer != null) {
+        window.clearTimeout(runtime.timer);
+        runtime.timer = null;
       }
-      throw error;
+      runtime.queued = false;
+      runtime.queuedSource = undefined;
+      runtime.queuedGeneration = generation;
+    },
+    [runtime]
+  );
+  const clearQueued = useCallback(() => {
+    clearQueuedForGeneration(runtime.enabledGeneration);
+  }, [clearQueuedForGeneration, runtime]);
+
+  runtime.active = enabled;
+  if (runtime.previousEnabled !== enabled) {
+    runtime.previousEnabled = enabled;
+    if (!enabled) {
+      runtime.enabledGeneration += 1;
+      clearQueued();
     }
-  }, []);
+  }
+
+  const runTask = useCallback(
+    async (source: TSource): Promise<TResult> => {
+      try {
+        return await runtime.task(source);
+      } catch (error) {
+        if (runtime.onError) {
+          return await runtime.onError(error, source);
+        }
+        throw error;
+      }
+    },
+    [runtime]
+  );
 
   const flush = useCallback(
     (source: TSource): Promise<TResult | null> | null => {
-      if (!enabledRef.current) {
+      if (!runtime.active) {
         clearQueued();
         return null;
       }
 
-      if (inFlightRef.current) {
-        queuedRef.current = true;
-        queuedSourceRef.current = source;
+      if (runtime.inFlight) {
+        runtime.queued = true;
+        runtime.queuedSource = source;
+        runtime.queuedGeneration = runtime.enabledGeneration;
         return null;
       }
 
-      queuedRef.current = false;
-      queuedSourceRef.current = undefined;
-      inFlightRef.current = true;
+      runtime.queued = false;
+      runtime.queuedSource = undefined;
+      runtime.inFlight = true;
 
       return runTask(source).finally(() => {
-        inFlightRef.current = false;
-        if (!queuedRef.current || !enabledRef.current) {
-          queuedRef.current = false;
-          queuedSourceRef.current = undefined;
+        runtime.inFlight = false;
+        if (
+          !runtime.queued ||
+          !runtime.active ||
+          runtime.queuedGeneration !== runtime.enabledGeneration
+        ) {
+          runtime.queued = false;
+          runtime.queuedSource = undefined;
           return;
         }
 
-        const nextSource = queuedSourceRef.current as TSource;
-        queuedRef.current = false;
-        queuedSourceRef.current = undefined;
-        void flushRef.current?.(nextSource);
+        const nextSource = runtime.queuedSource as TSource;
+        runtime.queued = false;
+        runtime.queuedSource = undefined;
+        void runtime.flush?.(nextSource);
       });
     },
-    [clearQueued, runTask]
+    [clearQueued, runTask, runtime]
   );
 
-  flushRef.current = flush;
+  runtime.flush = flush;
 
   const schedule = useCallback(
     (source: TSource) => {
-      if (!enabledRef.current) {
+      if (!runtime.active) {
         return;
       }
 
-      if (timerRef.current != null) {
-        queuedRef.current = true;
-        queuedSourceRef.current = source;
+      if (runtime.timer != null) {
+        runtime.queued = true;
+        runtime.queuedSource = source;
+        runtime.queuedGeneration = runtime.enabledGeneration;
         return;
       }
 
-      timerRef.current = window.setTimeout(() => {
-        timerRef.current = null;
+      const scheduledGeneration = runtime.enabledGeneration;
+      const timerId = window.setTimeout(() => {
+        if (runtime.timer === timerId) {
+          runtime.timer = null;
+        }
+        if (scheduledGeneration !== runtime.enabledGeneration || !runtime.active) {
+          return;
+        }
         void flush(source);
       }, delayMs);
+      runtime.timer = timerId;
     },
-    [delayMs, flush]
+    [delayMs, flush, runtime]
   );
 
   useEffect(() => {
-    enabledRef.current = enabled;
-    if (!enabled) {
-      clearQueued();
-    }
-  }, [clearQueued, enabled]);
-
-  useEffect(() => {
     return () => {
-      enabledRef.current = false;
-      inFlightRef.current = false;
-      clearQueued();
+      runtime.active = false;
+      runtime.inFlight = false;
+      clearQueuedForGeneration(-1);
     };
-  }, [clearQueued]);
+  }, [clearQueuedForGeneration, runtime]);
 
   return {
     clearQueued,

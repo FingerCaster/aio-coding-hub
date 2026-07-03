@@ -36,7 +36,7 @@ function parseTsCodes(source) {
 
 function parseTsShortLabelCodes(source) {
   const block = source.match(
-    /export const GatewayErrorShortLabels\s*=\s*\{([\s\S]*?)\}\s*satisfies/
+    /(?:export\s+)?const GatewayErrorShortLabels\s*=\s*\{([\s\S]*?)\}\s*satisfies/
   );
   if (!block) {
     throw new Error("Cannot parse GatewayErrorShortLabels object in TS file.");

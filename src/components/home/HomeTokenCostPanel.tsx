@@ -1,4 +1,4 @@
-import { Fragment, useCallback, useMemo, useState } from "react";
+import { Fragment, useCallback, useMemo, useReducer, useState } from "react";
 import {
   ArrowDown,
   ArrowUp,
@@ -568,21 +568,20 @@ function TokenShareBar({ percent }: { percent: number }) {
   const displayPct = (pct * 100).toFixed(1);
 
   return (
-    <div
-      className="flex items-center gap-1.5"
-      role="progressbar"
-      aria-valuenow={Number(displayPct)}
-      aria-valuemin={0}
-      aria-valuemax={100}
-      aria-label={`Token 占比 ${displayPct}%`}
-    >
-      <div className="h-1.5 flex-1 rounded-full bg-secondary">
+    <div className="flex items-center gap-1.5">
+      <progress className="sr-only" value={Number(displayPct)} max={100}>
+        Token 占比 {displayPct}%
+      </progress>
+      <div className="h-1.5 flex-1 rounded-full bg-secondary" aria-hidden="true">
         <div
           className="h-full rounded-full bg-sky-500 transition-all duration-300"
           style={{ width: `${pct * 100}%` }}
         />
       </div>
-      <span className="w-10 text-right text-[10px] tabular-nums text-muted-foreground">
+      <span
+        className="w-10 text-right text-[10px] tabular-nums text-muted-foreground"
+        aria-hidden="true"
+      >
         {displayPct}%
       </span>
     </div>
@@ -715,11 +714,8 @@ function DayHourlyMiniBarChart({ hours }: { hours: UsageDayHourRow[] }) {
           <div className="mt-0.5 text-xs text-muted-foreground">{activeRangeText}</div>
         </div>
       </div>
-      <div
-        className="flex h-28 items-end gap-1 rounded-md border border-border bg-white px-2 py-2 dark:border-border dark:bg-card/50"
-        role="img"
-        aria-label="24 小时 Token 分布"
-      >
+      <figure className="flex h-28 items-end gap-1 rounded-md border border-border bg-white px-2 py-2 dark:border-border dark:bg-card/50">
+        <figcaption className="sr-only">24 小时 Token 分布</figcaption>
         {hours.map((row) => {
           const ratio = maxTokens > 0 ? row.total_tokens / maxTokens : 0;
           const height = row.total_tokens > 0 ? Math.max(8, Math.round(ratio * 100)) : 2;
@@ -742,7 +738,7 @@ function DayHourlyMiniBarChart({ hours }: { hours: UsageDayHourRow[] }) {
             </div>
           );
         })}
-      </div>
+      </figure>
       <div className="mt-2 grid grid-cols-5 text-[10px] tabular-nums text-muted-foreground">
         <span>00</span>
         <span className="text-center">06</span>
@@ -1105,15 +1101,17 @@ function FolderMultiSelect({
     [options]
   );
   const displayOptions = useMemo(() => {
-    const missingSelected = selectedKeys
-      .filter((key) => !optionsByKey.has(key))
-      .map<UsageFolderOptionV1>((key) => ({
+    const missingSelected: UsageFolderOptionV1[] = [];
+    for (const key of selectedKeys) {
+      if (optionsByKey.has(key)) continue;
+      missingSelected.push({
         key,
         name: key,
         folder_path: null,
         requests_total: 0,
         total_tokens: 0,
-      }));
+      });
+    }
     return [...options, ...missingSelected];
   }, [options, optionsByKey, selectedKeys]);
   const selectedLabel =
@@ -1219,12 +1217,61 @@ type HomeTokenCostPanelProps = {
   devPreviewEnabled?: boolean;
 };
 
+type HomeTokenCostPanelState = {
+  scope: TokenCostScope;
+  range: TokenCostRange;
+  expandedDay: string | null;
+  selectedFolderKeys: string[];
+  excludeCx2CcGatewayBridge: boolean;
+};
+
+type HomeTokenCostPanelAction =
+  | { type: "setScope"; scope: TokenCostScope }
+  | { type: "setRange"; range: TokenCostRange }
+  | { type: "toggleExpandedDay"; day: string }
+  | { type: "toggleFolderKey"; key: string }
+  | { type: "clearFolderKeys" }
+  | { type: "setExcludeCx2CcGatewayBridge"; exclude: boolean };
+
+const initialHomeTokenCostPanelState: HomeTokenCostPanelState = {
+  scope: "provider",
+  range: "today",
+  expandedDay: null,
+  selectedFolderKeys: [],
+  excludeCx2CcGatewayBridge: true,
+};
+
+function homeTokenCostPanelReducer(
+  state: HomeTokenCostPanelState,
+  action: HomeTokenCostPanelAction
+): HomeTokenCostPanelState {
+  switch (action.type) {
+    case "setScope":
+      return { ...state, scope: action.scope };
+    case "setRange":
+      return { ...state, range: action.range };
+    case "toggleExpandedDay":
+      return {
+        ...state,
+        expandedDay: state.expandedDay === action.day ? null : action.day,
+      };
+    case "toggleFolderKey":
+      return {
+        ...state,
+        selectedFolderKeys: state.selectedFolderKeys.includes(action.key)
+          ? state.selectedFolderKeys.filter((item) => item !== action.key)
+          : [...state.selectedFolderKeys, action.key],
+      };
+    case "clearFolderKeys":
+      return { ...state, selectedFolderKeys: [] };
+    case "setExcludeCx2CcGatewayBridge":
+      return { ...state, excludeCx2CcGatewayBridge: action.exclude };
+  }
+}
+
 export function HomeTokenCostPanel({ devPreviewEnabled = false }: HomeTokenCostPanelProps) {
-  const [scope, setScope] = useState<TokenCostScope>("provider");
-  const [range, setRange] = useState<TokenCostRange>("today");
-  const [expandedDay, setExpandedDay] = useState<string | null>(null);
-  const [selectedFolderKeys, setSelectedFolderKeys] = useState<string[]>([]);
-  const [excludeCx2CcGatewayBridge, setExcludeCx2CcGatewayBridge] = useState(true);
+  const [state, dispatch] = useReducer(homeTokenCostPanelReducer, initialHomeTokenCostPanelState);
+  const { scope, range, expandedDay, selectedFolderKeys, excludeCx2CcGatewayBridge } = state;
   const onInvalidCustomRange = useCallback((message: string) => toast(message), []);
   const customDateRangeOptions = useMemo(
     () => ({ onInvalid: onInvalidCustomRange }),
@@ -1244,10 +1291,7 @@ export function HomeTokenCostPanel({ devPreviewEnabled = false }: HomeTokenCostP
     [customApplied, range]
   );
   const customPending = range === "custom" && !customApplied;
-  const selectedFolderKeysForQuery = useMemo(
-    () => (selectedFolderKeys.length > 0 ? selectedFolderKeys : null),
-    [selectedFolderKeys]
-  );
+  const selectedFolderKeysForQuery = selectedFolderKeys.length > 0 ? selectedFolderKeys : null;
   const filteredQueryConfig = useMemo(
     () => ({
       ...queryConfig,
@@ -1352,28 +1396,27 @@ export function HomeTokenCostPanel({ devPreviewEnabled = false }: HomeTokenCostP
   const handleToggleDay = useCallback(
     (day: string) => {
       if (customPending) return;
-      setExpandedDay((current) => (current === day ? null : day));
+      dispatch({ type: "toggleExpandedDay", day });
     },
     [customPending]
   );
   const handleToggleFolderKey = useCallback((key: string) => {
-    setSelectedFolderKeys((current) =>
-      current.includes(key) ? current.filter((item) => item !== key) : [...current, key]
-    );
+    dispatch({ type: "toggleFolderKey", key });
   }, []);
   const handleClearFolderKeys = useCallback(() => {
-    setSelectedFolderKeys([]);
+    dispatch({ type: "clearFolderKeys" });
   }, []);
   const handleApplyCustomRange = useCallback(() => {
     if (applyCustomRange()) {
-      setRange("custom");
+      dispatch({ type: "setRange", range: "custom" });
     }
   }, [applyCustomRange]);
 
   return (
     <div className="flex h-full min-h-0 flex-col gap-5 overflow-hidden">
       <div className="flex flex-col gap-3 lg:flex-row lg:items-center lg:justify-between">
-        <div className="flex flex-wrap items-center gap-1.5" role="group" aria-label="用量筛选">
+        <fieldset className="flex flex-wrap items-center gap-1.5 border-0 p-0">
+          <legend className="sr-only">用量筛选</legend>
           <FolderMultiSelect
             options={folderOptions}
             selectedKeys={selectedFolderKeys}
@@ -1382,15 +1425,17 @@ export function HomeTokenCostPanel({ devPreviewEnabled = false }: HomeTokenCostP
             onToggleKey={handleToggleFolderKey}
             onClear={handleClearFolderKeys}
           />
-          <label className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-white px-2.5 text-xs text-muted-foreground shadow-sm dark:border-border dark:bg-card dark:text-secondary-foreground">
+          <div className="flex h-8 items-center gap-1.5 rounded-md border border-border bg-white px-2.5 text-xs text-muted-foreground shadow-sm dark:border-border dark:bg-card dark:text-secondary-foreground">
             <span className="whitespace-nowrap">转接去重</span>
             <Switch
               checked={excludeCx2CcGatewayBridge}
-              onCheckedChange={setExcludeCx2CcGatewayBridge}
+              onCheckedChange={(exclude) =>
+                dispatch({ type: "setExcludeCx2CcGatewayBridge", exclude })
+              }
               size="sm"
               aria-label="过滤转接重复用量"
             />
-          </label>
+          </div>
           {TOKEN_COST_RANGE_ITEMS.map((item) => {
             const active = range === item.key;
             return (
@@ -1399,7 +1444,7 @@ export function HomeTokenCostPanel({ devPreviewEnabled = false }: HomeTokenCostP
                 size="sm"
                 variant={active ? "primary" : "secondary"}
                 aria-pressed={active}
-                onClick={() => setRange(item.key)}
+                onClick={() => dispatch({ type: "setRange", range: item.key })}
                 className="whitespace-nowrap"
               >
                 {item.label}
@@ -1414,13 +1459,13 @@ export function HomeTokenCostPanel({ devPreviewEnabled = false }: HomeTokenCostP
             onApplyCustomRange={handleApplyCustomRange}
             active={range === "custom" && Boolean(customApplied)}
           />
-        </div>
+        </fieldset>
         <div className="flex flex-wrap items-center gap-3 lg:justify-end">
           <TabList
             ariaLabel="用量维度切换"
             items={TOKEN_COST_SCOPE_ITEMS}
             value={scope}
-            onChange={setScope}
+            onChange={(scope) => dispatch({ type: "setScope", scope })}
             size="sm"
           />
         </div>

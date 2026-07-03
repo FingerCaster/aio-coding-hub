@@ -75,6 +75,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     ...partial,
     model_mapping: partial.model_mapping ?? { default_model: null, exact: {} },
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
   };
 }
@@ -469,6 +470,33 @@ describe("pages/providers/SortableProviderCard", () => {
       screen.getAllByText((_, el) => el?.textContent === "来源: 当前 AIO 服务 Codex 网关").length
     ).toBeGreaterThan(0);
     expect(screen.getByText("跟随当前 Codex 分流")).toBeInTheDocument();
+  });
+
+  it("renders codex responses bridge badge and title", () => {
+    renderCard(
+      {
+        cli_key: "codex",
+        bridge_type: "codex_to_openai_responses",
+        source_provider_id: 9,
+        base_urls: [],
+      },
+      {
+        sourceProviderName: "Gemini Responses Source",
+        sourceProvider: makeProvider({
+          id: 9,
+          cli_key: "gemini",
+          name: "Gemini Responses Source",
+          base_urls: ["https://gemini.example/v1"],
+        }),
+      }
+    );
+
+    expect(screen.getByText("Responses")).toBeInTheDocument();
+    expect(screen.getByText("Responses")).toHaveAttribute("title", "Codex → Responses");
+    expect(
+      screen.getAllByText((_, el) => el?.textContent === "来源: Gemini Responses Source").length
+    ).toBeGreaterThan(0);
+    expect(screen.getByText("https://gemini.example/v1")).toBeInTheDocument();
   });
 
   it("shows only one 免费 label for zero-cost cx2cc cards", () => {

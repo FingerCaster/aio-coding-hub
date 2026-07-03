@@ -67,6 +67,7 @@ export function TabList<T extends string>({
     <div
       role="tablist"
       aria-label={ariaLabel}
+      tabIndex={-1}
       onKeyDown={handleKeyDown}
       className={cn(
         "inline-flex items-center rounded-2xl overflow-hidden border border-line-subtle bg-surface-inset p-[3px]",

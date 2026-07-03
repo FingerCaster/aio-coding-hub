@@ -15,8 +15,7 @@ const SIZE_CLASS: Record<SpinnerSize, string> = {
 
 export function Spinner({ size = "md", className }: SpinnerProps) {
   return (
-    <div
-      role="status"
+    <output
       aria-label="Loading"
       className={cn(
         "animate-spin rounded-full border-muted-foreground/30 border-t-muted-foreground",

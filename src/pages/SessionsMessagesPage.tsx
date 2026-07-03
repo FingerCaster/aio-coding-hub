@@ -1,12 +1,13 @@
 // Usage: Session messages viewer. Backend command: `cli_sessions_messages_get`.
 
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
 import { ArrowDown, ArrowLeft, Copy, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   type CliSessionsDisplayContentBlock,
+  type CliSessionsDisplayMessage,
   type CliSessionsSource,
   type CliSessionsSessionSummary,
   escapeShellArg,
@@ -136,6 +137,11 @@ function renderBlock(block: CliSessionsDisplayContentBlock, key: string) {
 }
 
 type MessageSide = "left" | "right" | "center";
+type LoadedMessagesRange = {
+  total: number;
+  hasMore: boolean;
+  loadedRangeText: string;
+};
 
 function messageSide(roleRaw: string): MessageSide {
   const role = roleRaw.trim().toLowerCase();
@@ -160,6 +166,493 @@ function avatarTextForRole(roleRaw: string) {
   if (role === "system") return "SYS";
   if (role.startsWith("tool")) return "TL";
   return "AI";
+}
+
+function SessionsMessagesInfoPanel({
+  source,
+  distro,
+  session,
+  filePath,
+  range,
+  showTimestamp,
+  setShowTimestamp,
+  showModel,
+  setShowModel,
+  onScrollToBottom,
+  jumpBottomTitle,
+  jumpBottomLabel,
+}: {
+  source: CliSessionsSource;
+  distro: string | undefined;
+  session: CliSessionsSessionSummary;
+  filePath: string;
+  range: LoadedMessagesRange;
+  showTimestamp: boolean;
+  setShowTimestamp: (next: boolean) => void;
+  showModel: boolean;
+  setShowModel: (next: boolean) => void;
+  onScrollToBottom: () => void;
+  jumpBottomTitle: string;
+  jumpBottomLabel: string;
+}) {
+  const canCopyResume = Boolean(session.session_id?.trim());
+
+  return (
+    <Card
+      padding="md"
+      className="flex flex-col gap-4 lg:min-h-0 lg:overflow-auto scrollbar-overlay"
+    >
+      <div className="flex items-start justify-between gap-3">
+        <div className="min-w-0">
+          <div className="text-sm font-semibold text-foreground">会话信息</div>
+          <div className="mt-1 text-xs text-muted-foreground">
+            {range.total > 0 ? (
+              <span>
+                {range.loadedRangeText}
+                {range.hasMore ? "（可加载更多）" : ""}
+              </span>
+            ) : (
+              <span>—</span>
+            )}
+          </div>
+        </div>
+
+        <Button
+          size="sm"
+          variant="secondary"
+          onClick={onScrollToBottom}
+          className="h-9"
+          title={jumpBottomTitle}
+        >
+          <ArrowDown className="h-4 w-4" />
+          {jumpBottomLabel}
+        </Button>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
+        <div className="text-sm font-semibold text-foreground">快速操作</div>
+        <div className="mt-3 flex flex-wrap gap-2">
+          <Button
+            variant="primary"
+            disabled={!canCopyResume}
+            onClick={async () => {
+              if (!session.session_id?.trim()) return;
+              const cmd = buildResumeCommand(source, session.session_id);
+              await copyText(cmd);
+              toast("已复制恢复命令");
+            }}
+            title="复制恢复命令"
+          >
+            <Copy className="h-4 w-4" />
+            复制恢复命令
+          </Button>
+          {session.session_id ? (
+            <Button
+              variant="secondary"
+              onClick={() => void copyText(session.session_id)}
+              title="复制 Session ID"
+            >
+              复制 Session ID
+            </Button>
+          ) : null}
+          {filePath ? (
+            <Button variant="ghost" onClick={() => void copyText(filePath)} title="复制文件路径">
+              复制文件路径
+            </Button>
+          ) : null}
+        </div>
+      </div>
+
+      <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
+        <div className="text-sm font-semibold text-foreground">显示选项</div>
+        <div className="mt-3 space-y-3 text-xs text-muted-foreground">
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <label
+                htmlFor="switch-show-timestamp"
+                className="font-semibold text-secondary-foreground dark:text-foreground cursor-pointer"
+              >
+                显示时间
+              </label>
+              <div className="mt-0.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
+                消息头部展示时间戳
+              </div>
+            </div>
+            <Switch
+              id="switch-show-timestamp"
+              checked={showTimestamp}
+              onCheckedChange={setShowTimestamp}
+              size="sm"
+            />
+          </div>
+          <div className="flex items-center justify-between gap-3">
+            <div className="min-w-0">
+              <label
+                htmlFor="switch-show-model"
+                className="font-semibold text-secondary-foreground dark:text-foreground cursor-pointer"
+              >
+                显示模型
+              </label>
+              <div className="mt-0.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
+                消息头部展示模型名
+              </div>
+            </div>
+            <Switch
+              id="switch-show-model"
+              checked={showModel}
+              onCheckedChange={setShowModel}
+              size="sm"
+            />
+          </div>
+        </div>
+      </div>
+
+      <SessionsMessagesMetaCard
+        source={source}
+        distro={distro}
+        session={session}
+        filePath={filePath}
+      />
+    </Card>
+  );
+}
+
+function SessionsMessagesMetaCard({
+  source,
+  distro,
+  session,
+  filePath,
+}: {
+  source: CliSessionsSource;
+  distro: string | undefined;
+  session: CliSessionsSessionSummary;
+  filePath: string;
+}) {
+  return (
+    <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
+      <div className="text-sm font-semibold text-foreground">元信息</div>
+      <div className="mt-3 space-y-2 text-xs text-muted-foreground">
+        <div className="flex items-start justify-between gap-3">
+          <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">来源</span>
+          <span className="font-mono text-[11px] text-secondary-foreground">{source}</span>
+        </div>
+        {distro ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">环境</span>
+            <span className="font-mono text-[11px] text-secondary-foreground">WSL: {distro}</span>
+          </div>
+        ) : null}
+        {session.git_branch ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">分支</span>
+            <span className="font-mono text-[11px] text-secondary-foreground">
+              {session.git_branch}
+            </span>
+          </div>
+        ) : null}
+        {session.created_at != null ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">创建</span>
+            <span className="text-right font-mono text-[11px] text-secondary-foreground">
+              {formatUnixSeconds(session.created_at)}
+            </span>
+          </div>
+        ) : null}
+        {session.modified_at != null ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">更新</span>
+            <span
+              className="text-right font-mono text-[11px] text-secondary-foreground"
+              title={formatUnixSeconds(session.modified_at)}
+            >
+              {formatRelativeTimeFromUnixSeconds(session.modified_at)}
+            </span>
+          </div>
+        ) : null}
+        {session.cli_version ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
+              CLI 版本
+            </span>
+            <span className="font-mono text-[11px] text-secondary-foreground">
+              {session.cli_version}
+            </span>
+          </div>
+        ) : null}
+        {session.cwd ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">CWD</span>
+            <span
+              className="min-w-0 truncate text-right font-mono text-[11px] text-secondary-foreground"
+              title={session.cwd}
+            >
+              {session.cwd}
+            </span>
+          </div>
+        ) : null}
+        {session.project_path ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
+              项目路径
+            </span>
+            <span
+              className="min-w-0 truncate text-right font-mono text-[11px] text-secondary-foreground"
+              title={session.project_path}
+            >
+              {session.project_path}
+            </span>
+          </div>
+        ) : null}
+        {filePath ? (
+          <div className="flex items-start justify-between gap-3">
+            <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">文件</span>
+            <span
+              className="min-w-0 truncate text-right font-mono text-[11px] text-secondary-foreground"
+              title={filePath}
+            >
+              {filePath}
+            </span>
+          </div>
+        ) : null}
+      </div>
+    </div>
+  );
+}
+
+function SessionMessageBubble({
+  source,
+  msg,
+  index,
+  globalIndex,
+  showTimestamp,
+  showModel,
+}: {
+  source: CliSessionsSource;
+  msg: CliSessionsDisplayMessage;
+  index: number;
+  globalIndex: number;
+  showTimestamp: boolean;
+  showModel: boolean;
+}) {
+  const role = (msg.role || "unknown").trim() || "unknown";
+  const side = messageSide(role);
+  const timeText = showTimestamp && msg.timestamp ? formatIsoDateTime(msg.timestamp) : null;
+  const modelText = showModel && msg.model ? msg.model : null;
+  const messageKey = `${msg.uuid ?? "m"}:${index}`;
+  const sender = senderLabel(source, role);
+  const avatarText = avatarTextForRole(role);
+  const avatarClass =
+    side === "right"
+      ? "border-border bg-white text-foreground dark:border-border dark:bg-secondary dark:text-foreground"
+      : side === "left"
+        ? "bg-card text-white dark:bg-secondary dark:text-foreground"
+        : "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300";
+  const bubbleClass =
+    side === "right"
+      ? "border-accent/20 bg-gradient-to-br from-accent/10 to-accent-secondary/5 text-foreground dark:border-accent/30 dark:from-accent/20 dark:to-accent-secondary/10 dark:text-foreground"
+      : side === "center"
+        ? "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-800 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-200"
+        : role.toLowerCase().startsWith("tool")
+          ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
+          : "border-border bg-white text-foreground dark:border-border dark:bg-card/40 dark:text-foreground";
+
+  return (
+    <div className={cn("flex gap-3", side === "right" ? "justify-end" : "justify-start")}>
+      {side === "left" ? (
+        <div
+          className={cn(
+            "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-extrabold shadow-sm",
+            avatarClass
+          )}
+          aria-hidden="true"
+          title={sender}
+        >
+          {avatarText}
+        </div>
+      ) : null}
+
+      <div className={cn("min-w-0", side === "center" ? "w-full max-w-3xl" : "max-w-[85%]")}>
+        <div
+          className={cn(
+            "rounded-2xl border px-4 py-3 shadow-card",
+            bubbleClass,
+            side === "center" ? "mx-auto" : null
+          )}
+        >
+          <div
+            className={cn(
+              "mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]",
+              side === "right"
+                ? "text-muted-foreground dark:text-secondary-foreground"
+                : "text-muted-foreground"
+            )}
+          >
+            <div className="flex min-w-0 items-center gap-2">
+              <span className="shrink-0 font-mono text-[10px] opacity-70">#{globalIndex}</span>
+              <span className="truncate font-semibold">{sender}</span>
+              {modelText ? (
+                <span className="truncate font-mono text-[10px] opacity-70">{modelText}</span>
+              ) : null}
+            </div>
+            {timeText ? (
+              <span className="shrink-0 font-mono text-[10px] opacity-70">{timeText}</span>
+            ) : null}
+          </div>
+
+          <div className="flex flex-col gap-2">
+            {msg.content.map((block, blockIdx) =>
+              renderBlock(block, `${messageKey}:b:${blockIdx}`)
+            )}
+          </div>
+        </div>
+      </div>
+
+      {side === "right" ? (
+        <div
+          className={cn(
+            "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[11px] font-extrabold shadow-sm",
+            avatarClass
+          )}
+          aria-hidden="true"
+          title="你"
+        >
+          {avatarText}
+        </div>
+      ) : null}
+    </div>
+  );
+}
+
+function SessionsMessagesListCard({
+  source,
+  allMessages,
+  globalStartIndex,
+  containerRef,
+  range,
+  loading,
+  loadingMore,
+  onFetchNextPage,
+  onScrollToBottom,
+  jumpBottomTitle,
+  showTimestamp,
+  showModel,
+}: {
+  source: CliSessionsSource;
+  allMessages: CliSessionsDisplayMessage[];
+  globalStartIndex: number;
+  containerRef: RefObject<HTMLDivElement | null>;
+  range: LoadedMessagesRange;
+  loading: boolean;
+  loadingMore: boolean;
+  onFetchNextPage: () => void;
+  onScrollToBottom: () => void;
+  jumpBottomTitle: string;
+  showTimestamp: boolean;
+  showModel: boolean;
+}) {
+  const rowVirtualizer = useVirtualizer({
+    count: allMessages.length,
+    getScrollElement: () => containerRef.current,
+    getItemKey: (index) => allMessages[index]?.uuid ?? String(index),
+    estimateSize: () => 150,
+    overscan: 8,
+  });
+
+  return (
+    <Card padding="none" className="flex min-h-0 flex-1 flex-col">
+      <div className="flex items-center justify-between border-b border-border px-4 py-3 text-xs text-muted-foreground dark:border-border dark:text-muted-foreground">
+        <div>
+          {range.total > 0 ? (
+            <span>
+              {range.hasMore ? "可加载更多" : "已到会话末尾"} · {range.loadedRangeText}
+            </span>
+          ) : (
+            <span>—</span>
+          )}
+        </div>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!range.hasMore || loading || loadingMore}
+            onClick={onFetchNextPage}
+            title="加载更多消息"
+            className="h-9"
+          >
+            {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
+            加载更多
+          </Button>
+          <Button
+            size="sm"
+            variant="ghost"
+            onClick={onScrollToBottom}
+            className="h-9"
+            title={jumpBottomTitle}
+          >
+            <ArrowDown className="h-4 w-4" />
+          </Button>
+        </div>
+      </div>
+
+      <div
+        ref={containerRef}
+        className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 scrollbar-overlay"
+        style={{ overflowAnchor: "none" }}
+      >
+        {loading ? (
+          <div className="flex items-center justify-center py-10">
+            <Spinner />
+          </div>
+        ) : allMessages.length === 0 ? (
+          <EmptyState title="此会话没有可显示的消息" variant="dashed" />
+        ) : (
+          <>
+            <div className="py-2 text-center text-[11px] text-muted-foreground">— 会话开始 —</div>
+            <div
+              className="mx-auto w-full max-w-4xl"
+              style={{
+                height: `${rowVirtualizer.getTotalSize()}px`,
+                position: "relative",
+              }}
+            >
+              {rowVirtualizer.getVirtualItems().map((virtualRow) => {
+                const msg = allMessages[virtualRow.index];
+                const index = virtualRow.index;
+
+                return (
+                  <div
+                    key={virtualRow.key}
+                    data-index={virtualRow.index}
+                    ref={rowVirtualizer.measureElement}
+                    style={{
+                      position: "absolute",
+                      top: 0,
+                      left: 0,
+                      width: "100%",
+                      transform: `translateY(${virtualRow.start}px)`,
+                    }}
+                    className="pb-3"
+                  >
+                    <SessionMessageBubble
+                      source={source}
+                      msg={msg}
+                      index={index}
+                      globalIndex={globalStartIndex + index + 1}
+                      showTimestamp={showTimestamp}
+                      showModel={showModel}
+                    />
+                  </div>
+                );
+              })}
+            </div>
+            {!range.hasMore ? (
+              <div className="py-2 text-center text-[11px] text-muted-foreground">— 会话结束 —</div>
+            ) : null}
+          </>
+        )}
+      </div>
+    </Card>
+  );
 }
 
 export function SessionsMessagesPage() {
@@ -195,13 +688,6 @@ export function SessionsMessagesPage() {
   const firstCachedPage = messagesQuery.data?.pages[0]?.page ?? 0;
   const firstCachedPageSize = messagesQuery.data?.pages[0]?.page_size ?? 50;
   const globalStartIndex = firstCachedPage * firstCachedPageSize;
-  const rowVirtualizer = useVirtualizer({
-    count: allMessages.length,
-    getScrollElement: () => containerRef.current,
-    getItemKey: (index) => allMessages[index]?.uuid ?? String(index),
-    estimateSize: () => 150,
-    overscan: 8,
-  });
   const total = messagesQuery.data?.pages[0]?.total ?? 0;
   const hasMore = messagesQuery.hasNextPage ?? false;
   const loading = messagesQuery.isLoading;
@@ -264,12 +750,16 @@ export function SessionsMessagesPage() {
   if (session?.model_provider) subtitleParts.push(`Provider：${session.model_provider}`);
   if (distro) subtitleParts.push(`WSL: ${distro}`);
   const subtitle = subtitleParts.length > 0 ? subtitleParts.join(" · ") : undefined;
-  const canCopyResume = Boolean(session?.session_id?.trim());
   const loadedCount = allMessages.length;
   const loadedStart = total > 0 && loadedCount > 0 ? globalStartIndex + 1 : 0;
   const loadedEnd = globalStartIndex + loadedCount;
   const loadedRangeText =
     loadedStart > 0 ? `显示 ${loadedStart}-${loadedEnd}/${total} 条消息` : "—";
+  const range: LoadedMessagesRange = {
+    total,
+    hasMore,
+    loadedRangeText,
+  };
 
   return (
     <div className="flex min-h-0 flex-col gap-6 h-full overflow-hidden">
@@ -293,417 +783,35 @@ export function SessionsMessagesPage() {
       ) : null}
 
       <div className="grid gap-4 lg:flex-1 lg:min-h-0 lg:grid-cols-[360px_1fr] lg:items-stretch lg:overflow-hidden">
-        <Card
-          padding="md"
-          className="flex flex-col gap-4 lg:min-h-0 lg:overflow-auto scrollbar-overlay"
-        >
-          <div className="flex items-start justify-between gap-3">
-            <div className="min-w-0">
-              <div className="text-sm font-semibold text-foreground">会话信息</div>
-              <div className="mt-1 text-xs text-muted-foreground">
-                {total > 0 ? (
-                  <span>
-                    {loadedRangeText}
-                    {hasMore ? "（可加载更多）" : ""}
-                  </span>
-                ) : (
-                  <span>—</span>
-                )}
-              </div>
-            </div>
+        <SessionsMessagesInfoPanel
+          source={source}
+          distro={distro}
+          session={session}
+          filePath={filePath}
+          range={range}
+          showTimestamp={showTimestamp}
+          setShowTimestamp={setShowTimestamp}
+          showModel={showModel}
+          setShowModel={setShowModel}
+          onScrollToBottom={scrollToBottom}
+          jumpBottomTitle={jumpBottomTitle}
+          jumpBottomLabel={jumpBottomLabel}
+        />
 
-            <Button
-              size="sm"
-              variant="secondary"
-              onClick={scrollToBottom}
-              className="h-9"
-              title={jumpBottomTitle}
-            >
-              <ArrowDown className="h-4 w-4" />
-              {jumpBottomLabel}
-            </Button>
-          </div>
-
-          <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
-            <div className="text-sm font-semibold text-foreground">快速操作</div>
-            <div className="mt-3 flex flex-wrap gap-2">
-              <Button
-                variant="primary"
-                disabled={!canCopyResume}
-                onClick={async () => {
-                  if (!session?.session_id?.trim()) return;
-                  const cmd = buildResumeCommand(source, session.session_id);
-                  await copyText(cmd);
-                  toast("已复制恢复命令");
-                }}
-                title="复制恢复命令"
-              >
-                <Copy className="h-4 w-4" />
-                复制恢复命令
-              </Button>
-              {session?.session_id ? (
-                <Button
-                  variant="secondary"
-                  onClick={() => void copyText(session.session_id)}
-                  title="复制 Session ID"
-                >
-                  复制 Session ID
-                </Button>
-              ) : null}
-              {filePath ? (
-                <Button
-                  variant="ghost"
-                  onClick={() => void copyText(filePath)}
-                  title="复制文件路径"
-                >
-                  复制文件路径
-                </Button>
-              ) : null}
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
-            <div className="text-sm font-semibold text-foreground">显示选项</div>
-            <div className="mt-3 space-y-3 text-xs text-muted-foreground">
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <label
-                    htmlFor="switch-show-timestamp"
-                    className="font-semibold text-secondary-foreground dark:text-foreground cursor-pointer"
-                  >
-                    显示时间
-                  </label>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
-                    消息头部展示时间戳
-                  </div>
-                </div>
-                <Switch
-                  id="switch-show-timestamp"
-                  checked={showTimestamp}
-                  onCheckedChange={setShowTimestamp}
-                  size="sm"
-                />
-              </div>
-              <div className="flex items-center justify-between gap-3">
-                <div className="min-w-0">
-                  <label
-                    htmlFor="switch-show-model"
-                    className="font-semibold text-secondary-foreground dark:text-foreground cursor-pointer"
-                  >
-                    显示模型
-                  </label>
-                  <div className="mt-0.5 text-[11px] text-muted-foreground dark:text-muted-foreground">
-                    消息头部展示模型名
-                  </div>
-                </div>
-                <Switch
-                  id="switch-show-model"
-                  checked={showModel}
-                  onCheckedChange={setShowModel}
-                  size="sm"
-                />
-              </div>
-            </div>
-          </div>
-
-          <div className="rounded-2xl border border-border bg-white p-4 dark:border-border dark:bg-card/40">
-            <div className="text-sm font-semibold text-foreground">元信息</div>
-            <div className="mt-3 space-y-2 text-xs text-muted-foreground">
-              <div className="flex items-start justify-between gap-3">
-                <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                  来源
-                </span>
-                <span className="font-mono text-[11px] text-secondary-foreground">{source}</span>
-              </div>
-              {distro ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    环境
-                  </span>
-                  <span className="font-mono text-[11px] text-secondary-foreground">
-                    WSL: {distro}
-                  </span>
-                </div>
-              ) : null}
-              {session?.git_branch ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    分支
-                  </span>
-                  <span className="font-mono text-[11px] text-secondary-foreground">
-                    {session.git_branch}
-                  </span>
-                </div>
-              ) : null}
-              {session?.created_at != null ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    创建
-                  </span>
-                  <span className="text-right font-mono text-[11px] text-secondary-foreground">
-                    {formatUnixSeconds(session.created_at)}
-                  </span>
-                </div>
-              ) : null}
-              {session?.modified_at != null ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    更新
-                  </span>
-                  <span
-                    className="text-right font-mono text-[11px] text-secondary-foreground"
-                    title={formatUnixSeconds(session.modified_at)}
-                  >
-                    {formatRelativeTimeFromUnixSeconds(session.modified_at)}
-                  </span>
-                </div>
-              ) : null}
-              {session?.cli_version ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    CLI 版本
-                  </span>
-                  <span className="font-mono text-[11px] text-secondary-foreground">
-                    {session.cli_version}
-                  </span>
-                </div>
-              ) : null}
-              {session?.cwd ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    CWD
-                  </span>
-                  <span
-                    className="min-w-0 truncate text-right font-mono text-[11px] text-secondary-foreground"
-                    title={session.cwd}
-                  >
-                    {session.cwd}
-                  </span>
-                </div>
-              ) : null}
-              {session?.project_path ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    项目路径
-                  </span>
-                  <span
-                    className="min-w-0 truncate text-right font-mono text-[11px] text-secondary-foreground"
-                    title={session.project_path}
-                  >
-                    {session.project_path}
-                  </span>
-                </div>
-              ) : null}
-              {filePath ? (
-                <div className="flex items-start justify-between gap-3">
-                  <span className="shrink-0 text-muted-foreground dark:text-muted-foreground">
-                    文件
-                  </span>
-                  <span
-                    className="min-w-0 truncate text-right font-mono text-[11px] text-secondary-foreground"
-                    title={filePath}
-                  >
-                    {filePath}
-                  </span>
-                </div>
-              ) : null}
-            </div>
-          </div>
-        </Card>
-
-        <Card padding="none" className="flex min-h-0 flex-1 flex-col">
-          <div className="flex items-center justify-between border-b border-border px-4 py-3 text-xs text-muted-foreground dark:border-border dark:text-muted-foreground">
-            <div>
-              {total > 0 ? (
-                <span>
-                  {hasMore ? "可加载更多" : "已到会话末尾"} · {loadedRangeText}
-                </span>
-              ) : (
-                <span>—</span>
-              )}
-            </div>
-            <div className="flex items-center gap-2">
-              <Button
-                size="sm"
-                variant="secondary"
-                disabled={!hasMore || loading || loadingMore}
-                onClick={() => void handleFetchNextPage()}
-                title="加载更多消息"
-                className="h-9"
-              >
-                {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-                加载更多
-              </Button>
-              <Button
-                size="sm"
-                variant="ghost"
-                onClick={scrollToBottom}
-                className="h-9"
-                title={jumpBottomTitle}
-              >
-                <ArrowDown className="h-4 w-4" />
-              </Button>
-            </div>
-          </div>
-
-          <div
-            ref={containerRef}
-            className="min-h-0 flex-1 overflow-y-auto p-4 sm:p-6 scrollbar-overlay"
-            style={{ overflowAnchor: "none" }}
-          >
-            {loading ? (
-              <div className="flex items-center justify-center py-10">
-                <Spinner />
-              </div>
-            ) : allMessages.length === 0 ? (
-              <EmptyState title="此会话没有可显示的消息" variant="dashed" />
-            ) : (
-              <>
-                <div className="py-2 text-center text-[11px] text-muted-foreground">
-                  — 会话开始 —
-                </div>
-                <div
-                  className="mx-auto w-full max-w-4xl"
-                  style={{
-                    height: `${rowVirtualizer.getTotalSize()}px`,
-                    position: "relative",
-                  }}
-                >
-                  {rowVirtualizer.getVirtualItems().map((virtualRow) => {
-                    const msg = allMessages[virtualRow.index];
-                    const idx = virtualRow.index;
-                    const role = (msg.role || "unknown").trim() || "unknown";
-                    const side = messageSide(role);
-                    const timeText =
-                      showTimestamp && msg.timestamp ? formatIsoDateTime(msg.timestamp) : null;
-                    const modelText = showModel && msg.model ? msg.model : null;
-                    const messageKey = `${msg.uuid ?? "m"}:${idx}`;
-                    const globalIndex = globalStartIndex + idx + 1;
-                    const sender = senderLabel(source, role);
-
-                    const avatarText = avatarTextForRole(role);
-                    const avatarClass =
-                      side === "right"
-                        ? "border-border bg-white text-foreground dark:border-border dark:bg-secondary dark:text-foreground"
-                        : side === "left"
-                          ? "bg-card text-white dark:bg-secondary dark:text-foreground"
-                          : "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-700 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-300";
-
-                    const bubbleClass =
-                      side === "right"
-                        ? "border-accent/20 bg-gradient-to-br from-accent/10 to-accent-secondary/5 text-foreground dark:border-accent/30 dark:from-accent/20 dark:to-accent-secondary/10 dark:text-foreground"
-                        : side === "center"
-                          ? "border-fuchsia-200 bg-fuchsia-50 text-fuchsia-800 dark:border-fuchsia-700 dark:bg-fuchsia-900/30 dark:text-fuchsia-200"
-                          : role.toLowerCase().startsWith("tool")
-                            ? "border-amber-200 bg-amber-50 text-amber-900 dark:border-amber-700 dark:bg-amber-900/30 dark:text-amber-200"
-                            : "border-border bg-white text-foreground dark:border-border dark:bg-card/40 dark:text-foreground";
-
-                    return (
-                      <div
-                        key={virtualRow.key}
-                        data-index={virtualRow.index}
-                        ref={rowVirtualizer.measureElement}
-                        style={{
-                          position: "absolute",
-                          top: 0,
-                          left: 0,
-                          width: "100%",
-                          transform: `translateY(${virtualRow.start}px)`,
-                        }}
-                        className="pb-3"
-                      >
-                        <div
-                          className={cn(
-                            "flex gap-3",
-                            side === "right" ? "justify-end" : "justify-start"
-                          )}
-                        >
-                          {side === "left" ? (
-                            <div
-                              className={cn(
-                                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[10px] font-extrabold shadow-sm",
-                                avatarClass
-                              )}
-                              aria-hidden="true"
-                              title={sender}
-                            >
-                              {avatarText}
-                            </div>
-                          ) : null}
-
-                          <div
-                            className={cn(
-                              "min-w-0",
-                              side === "center" ? "w-full max-w-3xl" : "max-w-[85%]"
-                            )}
-                          >
-                            <div
-                              className={cn(
-                                "rounded-2xl border px-4 py-3 shadow-card",
-                                bubbleClass,
-                                side === "center" ? "mx-auto" : null
-                              )}
-                            >
-                              <div
-                                className={cn(
-                                  "mb-2 flex flex-wrap items-center justify-between gap-2 text-[11px]",
-                                  side === "right"
-                                    ? "text-muted-foreground dark:text-secondary-foreground"
-                                    : "text-muted-foreground"
-                                )}
-                              >
-                                <div className="flex min-w-0 items-center gap-2">
-                                  <span className="shrink-0 font-mono text-[10px] opacity-70">
-                                    #{globalIndex}
-                                  </span>
-                                  <span className="truncate font-semibold">{sender}</span>
-                                  {modelText ? (
-                                    <span className="truncate font-mono text-[10px] opacity-70">
-                                      {modelText}
-                                    </span>
-                                  ) : null}
-                                </div>
-                                {timeText ? (
-                                  <span className="shrink-0 font-mono text-[10px] opacity-70">
-                                    {timeText}
-                                  </span>
-                                ) : null}
-                              </div>
-
-                              <div className="flex flex-col gap-2">
-                                {msg.content.map((block, blockIdx) =>
-                                  renderBlock(block, `${messageKey}:b:${blockIdx}`)
-                                )}
-                              </div>
-                            </div>
-                          </div>
-
-                          {side === "right" ? (
-                            <div
-                              className={cn(
-                                "inline-flex h-9 w-9 shrink-0 items-center justify-center rounded-full border text-[11px] font-extrabold shadow-sm",
-                                avatarClass
-                              )}
-                              aria-hidden="true"
-                              title="你"
-                            >
-                              {avatarText}
-                            </div>
-                          ) : null}
-                        </div>
-                      </div>
-                    );
-                  })}
-                </div>
-                {!hasMore ? (
-                  <div className="py-2 text-center text-[11px] text-muted-foreground">
-                    — 会话结束 —
-                  </div>
-                ) : null}
-              </>
-            )}
-          </div>
-        </Card>
+        <SessionsMessagesListCard
+          source={source}
+          allMessages={allMessages}
+          globalStartIndex={globalStartIndex}
+          containerRef={containerRef}
+          range={range}
+          loading={loading}
+          loadingMore={loadingMore}
+          onFetchNextPage={() => void handleFetchNextPage()}
+          onScrollToBottom={scrollToBottom}
+          jumpBottomTitle={jumpBottomTitle}
+          showTimestamp={showTimestamp}
+          showModel={showModel}
+        />
       </div>
     </div>
   );

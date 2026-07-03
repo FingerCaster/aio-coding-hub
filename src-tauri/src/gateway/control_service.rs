@@ -8,6 +8,7 @@ use std::net::SocketAddr;
 use std::sync::{Arc, Mutex};
 use tokio::sync::oneshot;
 
+use super::active_requests::ActiveRequestRegistry;
 use super::background_tasks::GatewayBackgroundTasks;
 use super::binder::{bind_exact, bind_first_available, resolve_gateway_binding};
 use super::codex_session_id::CodexSessionIdCache;
@@ -82,6 +83,7 @@ impl GatewayControlService {
         let session = Arc::new(session_manager::SessionManager::new());
         let recent_errors = Arc::new(Mutex::new(RecentErrorCache::default()));
         let plugin_pipeline = load_gateway_plugin_pipeline(&db);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
 
         let state = GatewayAppState {
             app: app.clone(),
@@ -95,6 +97,7 @@ impl GatewayControlService {
             plugin_pipeline: plugin_pipeline.clone(),
             #[cfg(test)]
             http_client_override: None,
+            active_requests: active_requests.clone(),
         };
         let router = build_router(state);
         let (shutdown, shutdown_rx) = oneshot::channel::<()>();
@@ -127,6 +130,7 @@ impl GatewayControlService {
             circuit,
             session,
             recent_errors,
+            active_requests,
             shutdown,
             task,
             background_tasks,
@@ -263,18 +267,17 @@ fn load_gateway_plugin_pipeline(
     db: &db::Db,
 ) -> Arc<super::plugins::pipeline::GatewayPluginPipeline> {
     match plugin_service::enabled_plugins_for_gateway(db) {
-        Ok(plugins) if plugins.is_empty() => {
-            super::plugins::pipeline::GatewayPluginPipeline::empty_shared()
-        }
         Ok(plugins) => {
-            tracing::info!(
-                plugin_count = plugins.len(),
-                "loaded enabled gateway plugins"
-            );
+            if !plugins.is_empty() {
+                tracing::info!(
+                    plugin_count = plugins.len(),
+                    "loaded enabled gateway plugins"
+                );
+            }
             Arc::new(
                 super::plugins::pipeline::GatewayPluginPipeline::for_runtime(
                     plugins,
-                    Arc::new(RuntimeGatewayPluginExecutor::default()),
+                    Arc::new(RuntimeGatewayPluginExecutor::with_db(db.clone())),
                     super::plugins::pipeline::GatewayPluginPipelineConfig::default(),
                 ),
             )
@@ -284,9 +287,29 @@ fn load_gateway_plugin_pipeline(
                 error = %err,
                 "failed to load gateway plugins; continuing with empty plugin pipeline"
             );
-            super::plugins::pipeline::GatewayPluginPipeline::empty_shared()
+            empty_runtime_gateway_plugin_pipeline(db)
         }
     }
+}
+
+#[cfg(test)]
+fn fallback_gateway_plugin_pipeline_for_tests(
+    db: &db::Db,
+) -> Arc<super::plugins::pipeline::GatewayPluginPipeline> {
+    tracing::warn!("failed to load gateway plugins; continuing with empty plugin pipeline");
+    empty_runtime_gateway_plugin_pipeline(db)
+}
+
+fn empty_runtime_gateway_plugin_pipeline(
+    db: &db::Db,
+) -> Arc<super::plugins::pipeline::GatewayPluginPipeline> {
+    Arc::new(
+        super::plugins::pipeline::GatewayPluginPipeline::for_runtime(
+            Vec::new(),
+            Arc::new(RuntimeGatewayPluginExecutor::with_db(db.clone())),
+            super::plugins::pipeline::GatewayPluginPipelineConfig::default(),
+        ),
+    )
 }
 
 fn provider_ids_for_cli(db: &db::Db, cli_key: &str) -> crate::shared::error::AppResult<Vec<i64>> {
@@ -367,6 +390,15 @@ fn build_circuit_breaker(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::plugin_contributions::PluginContributes;
+    use crate::domain::plugins::{
+        PluginDetail, PluginHook, PluginHostCompatibility, PluginInstallSource, PluginManifest,
+        PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
+    };
+    use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
+    use axum::body::Bytes;
+    use axum::http::{HeaderMap, Method};
+    use std::collections::BTreeMap;
 
     #[test]
     fn configure_http_client_rejects_runtime_self_loop_proxy() {
@@ -382,5 +414,104 @@ mod tests {
 
         assert!(err.contains(GatewayErrorCode::HttpClientInit.as_str()));
         assert!(err.contains("self-loop"));
+    }
+
+    #[tokio::test]
+    async fn fallback_gateway_plugin_pipeline_retains_runtime_executor_for_refresh() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db =
+            crate::db::init_for_tests(&temp.path().join("gateway-fallback.db")).expect("init db");
+        let pipeline = fallback_gateway_plugin_pipeline_for_tests(&db);
+
+        pipeline.replace_plugins(vec![extension_host_plugin_without_root()]);
+
+        let err = pipeline
+            .run_request_hook(GatewayRequestHookInput {
+                hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+                trace_id: "trace-fallback-executor".to_string(),
+                cli_key: "codex".to_string(),
+                method: Method::POST,
+                path: "/v1/responses".to_string(),
+                query: None,
+                headers: HeaderMap::new(),
+                body: Bytes::from_static(b"hello"),
+                requested_model: None,
+            })
+            .await
+            .expect_err("fallback pipeline should keep runtime executor after refresh");
+
+        assert_eq!(err.code(), "PLUGIN_EXTENSION_HOST_GATEWAY_FAILED");
+        assert!(err
+            .to_string()
+            .contains("PLUGIN_EXTENSION_HOST_ROOT_UNAVAILABLE"));
+    }
+
+    fn extension_host_plugin_without_root() -> PluginDetail {
+        PluginDetail {
+            summary: PluginSummary {
+                id: 1,
+                plugin_id: "example.extension".to_string(),
+                name: "Example Extension".to_string(),
+                current_version: Some("1.0.0".to_string()),
+                status: PluginStatus::Enabled,
+                runtime: "extensionHost".to_string(),
+                permission_risk: PluginPermissionRisk::High,
+                update_available: false,
+                last_error: None,
+                created_at: 1,
+                updated_at: 1,
+            },
+            manifest: PluginManifest {
+                id: "example.extension".to_string(),
+                name: "Example Extension".to_string(),
+                version: "1.0.0".to_string(),
+                api_version: "1.0.0".to_string(),
+                runtime: PluginRuntime::ExtensionHost {
+                    language: "typescript".to_string(),
+                },
+                hooks: Vec::new(),
+                permissions: Vec::new(),
+                main: Some("dist/index.js".to_string()),
+                activation_events: Vec::new(),
+                contributes: Some(PluginContributes {
+                    providers: Vec::new(),
+                    protocols: Vec::new(),
+                    protocol_bridges: Vec::new(),
+                    commands: Vec::new(),
+                    gateway_hooks: vec![PluginHook {
+                        name: "gateway.request.afterBodyRead".to_string(),
+                        priority: 10,
+                        failure_policy: Some("fail-closed".to_string()),
+                        timeout_ms: None,
+                    }],
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
+                host_compatibility: PluginHostCompatibility {
+                    app: ">=0.56.0 <1.0.0".to_string(),
+                    plugin_api: "^1.0.0".to_string(),
+                    platforms: Vec::new(),
+                },
+                entry: None,
+                config_schema: None,
+                config_version: None,
+                description: None,
+                author: None,
+                homepage: None,
+                repository: None,
+                license: None,
+                checksum: None,
+                signature: None,
+                category: None,
+            },
+            install_source: PluginInstallSource::Local,
+            installed_dir: None,
+            config: serde_json::json!({}),
+            granted_permissions: vec!["request.body.read".to_string()],
+            pending_permissions: Vec::new(),
+            audit_logs: Vec::new(),
+            runtime_failures: Vec::new(),
+            rollback_versions: Vec::new(),
+        }
     }
 }

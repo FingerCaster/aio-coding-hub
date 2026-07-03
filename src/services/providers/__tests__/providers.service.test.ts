@@ -100,6 +100,7 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
     bridge_type: null,
     availability_test_model: null,
     stream_idle_timeout_seconds: null,
+    extension_values: [],
     upstream_retry_policy_override: null,
     api_key_configured: false,
     ...overrides,

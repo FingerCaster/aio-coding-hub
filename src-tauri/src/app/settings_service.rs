@@ -85,9 +85,13 @@ pub(crate) struct SettingsUpdate {
     pub codex_provider_test_model: Option<String>,
     pub codex_reasoning_guard_hit_label: Option<String>,
     pub codex_reasoning_guard_enabled: Option<bool>,
+    pub codex_reasoning_guard_rule_mode: Option<settings::CodexReasoningGuardRuleMode>,
     pub codex_reasoning_guard_compare_mode: Option<settings::CodexReasoningGuardCompareMode>,
     pub codex_reasoning_guard_reasoning_equals: Option<Vec<i64>>,
     pub codex_reasoning_guard_model_rules: Option<Vec<settings::CodexReasoningGuardModelRule>>,
+    pub codex_reasoning_guard_active_template_id: Option<String>,
+    pub codex_reasoning_guard_custom_templates:
+        Option<Vec<settings::CodexReasoningGuardRuleTemplate>>,
     pub codex_reasoning_guard_immediate_retry_budget: Option<u32>,
     pub codex_reasoning_guard_delayed_retry_budget: Option<u32>,
     pub codex_reasoning_guard_delayed_retry_ms: Option<u32>,
@@ -98,6 +102,9 @@ pub(crate) struct SettingsUpdate {
     pub codex_reasoning_guard_concurrent_interval_ms: Option<u32>,
     pub codex_reasoning_guard_concurrent_max_attempts: Option<u32>,
     pub codex_reasoning_guard_model_fallbacks: Option<Vec<String>>,
+    pub codex_reasoning_guard_continuation_repair_enabled: Option<bool>,
+    pub codex_reasoning_guard_continuation_max_rounds: Option<u32>,
+    pub codex_reasoning_guard_continuation_max_output_tokens: Option<u32>,
     pub codex_reasoning_guard_backoff_after_hits: Option<u32>,
     pub codex_reasoning_guard_backoff_ms: Option<u32>,
     #[serde(rename = "cx2CcFallbackModelOpus")]
@@ -167,9 +174,12 @@ pub(crate) struct SettingsView {
     pub codex_provider_test_model: String,
     pub codex_reasoning_guard_hit_label: String,
     pub codex_reasoning_guard_enabled: bool,
+    pub codex_reasoning_guard_rule_mode: settings::CodexReasoningGuardRuleMode,
     pub codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
+    pub codex_reasoning_guard_active_template_id: String,
+    pub codex_reasoning_guard_custom_templates: Vec<settings::CodexReasoningGuardRuleTemplate>,
     pub codex_reasoning_guard_immediate_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_budget: u32,
     pub codex_reasoning_guard_delayed_retry_ms: u32,
@@ -179,6 +189,9 @@ pub(crate) struct SettingsView {
     pub codex_reasoning_guard_concurrent_interval_ms: u32,
     pub codex_reasoning_guard_concurrent_max_attempts: u32,
     pub codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub codex_reasoning_guard_continuation_max_rounds: u32,
+    pub codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub codex_reasoning_guard_backoff_after_hits: u32,
     pub codex_reasoning_guard_backoff_ms: u32,
     pub auto_start: bool,
@@ -304,11 +317,18 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_provider_test_model: value.codex_provider_test_model.clone(),
             codex_reasoning_guard_hit_label: value.codex_reasoning_guard_hit_label.clone(),
             codex_reasoning_guard_enabled: value.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode: value.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: value.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: value
                 .codex_reasoning_guard_reasoning_equals
                 .clone(),
             codex_reasoning_guard_model_rules: value.codex_reasoning_guard_model_rules.clone(),
+            codex_reasoning_guard_active_template_id: value
+                .codex_reasoning_guard_active_template_id
+                .clone(),
+            codex_reasoning_guard_custom_templates: value
+                .codex_reasoning_guard_custom_templates
+                .clone(),
             codex_reasoning_guard_immediate_retry_budget: value
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: value
@@ -324,6 +344,12 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_reasoning_guard_model_fallbacks: value
                 .codex_reasoning_guard_model_fallbacks
                 .clone(),
+            codex_reasoning_guard_continuation_repair_enabled: value
+                .codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds: value
+                .codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens: value
+                .codex_reasoning_guard_continuation_max_output_tokens,
             codex_reasoning_guard_backoff_after_hits: value
                 .codex_reasoning_guard_backoff_after_hits,
             codex_reasoning_guard_backoff_ms: value.codex_reasoning_guard_backoff_ms,
@@ -645,9 +671,12 @@ pub(crate) async fn settings_set_impl(
         codex_provider_test_model,
         codex_reasoning_guard_hit_label,
         codex_reasoning_guard_enabled,
+        codex_reasoning_guard_rule_mode,
         codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals,
         codex_reasoning_guard_model_rules,
+        codex_reasoning_guard_active_template_id,
+        codex_reasoning_guard_custom_templates,
         codex_reasoning_guard_immediate_retry_budget,
         codex_reasoning_guard_delayed_retry_budget,
         codex_reasoning_guard_delayed_retry_ms,
@@ -657,6 +686,9 @@ pub(crate) async fn settings_set_impl(
         codex_reasoning_guard_concurrent_interval_ms,
         codex_reasoning_guard_concurrent_max_attempts,
         codex_reasoning_guard_model_fallbacks,
+        codex_reasoning_guard_continuation_repair_enabled,
+        codex_reasoning_guard_continuation_max_rounds,
+        codex_reasoning_guard_continuation_max_output_tokens,
         codex_reasoning_guard_backoff_after_hits,
         codex_reasoning_guard_backoff_ms,
         cx2cc_fallback_model_opus,
@@ -739,12 +771,20 @@ pub(crate) async fn settings_set_impl(
             };
             let codex_reasoning_guard_enabled = codex_reasoning_guard_enabled
                 .unwrap_or(previous.codex_reasoning_guard_enabled);
+            let codex_reasoning_guard_rule_mode = codex_reasoning_guard_rule_mode
+                .unwrap_or(previous.codex_reasoning_guard_rule_mode);
             let codex_reasoning_guard_compare_mode = codex_reasoning_guard_compare_mode
                 .unwrap_or(previous.codex_reasoning_guard_compare_mode);
             let codex_reasoning_guard_reasoning_equals = codex_reasoning_guard_reasoning_equals
                 .unwrap_or(previous.codex_reasoning_guard_reasoning_equals.clone());
             let codex_reasoning_guard_model_rules = codex_reasoning_guard_model_rules
                 .unwrap_or(previous.codex_reasoning_guard_model_rules.clone());
+            let codex_reasoning_guard_active_template_id = codex_reasoning_guard_active_template_id
+                .unwrap_or(previous.codex_reasoning_guard_active_template_id.clone())
+                .trim()
+                .to_string();
+            let codex_reasoning_guard_custom_templates = codex_reasoning_guard_custom_templates
+                .unwrap_or(previous.codex_reasoning_guard_custom_templates.clone());
             let codex_reasoning_guard_immediate_retry_budget =
                 codex_reasoning_guard_immediate_retry_budget
                     .unwrap_or(previous.codex_reasoning_guard_immediate_retry_budget);
@@ -773,6 +813,15 @@ pub(crate) async fn settings_set_impl(
                     .into_iter()
                     .map(|model| model.trim().to_string())
                     .collect();
+            let codex_reasoning_guard_continuation_repair_enabled =
+                codex_reasoning_guard_continuation_repair_enabled
+                    .unwrap_or(previous.codex_reasoning_guard_continuation_repair_enabled);
+            let codex_reasoning_guard_continuation_max_rounds =
+                codex_reasoning_guard_continuation_max_rounds
+                    .unwrap_or(previous.codex_reasoning_guard_continuation_max_rounds);
+            let codex_reasoning_guard_continuation_max_output_tokens =
+                codex_reasoning_guard_continuation_max_output_tokens
+                    .unwrap_or(previous.codex_reasoning_guard_continuation_max_output_tokens);
             let codex_reasoning_guard_backoff_after_hits =
                 codex_reasoning_guard_backoff_after_hits
                     .unwrap_or(previous.codex_reasoning_guard_backoff_after_hits);
@@ -906,9 +955,12 @@ pub(crate) async fn settings_set_impl(
                 codex_provider_test_model,
                 codex_reasoning_guard_hit_label,
                 codex_reasoning_guard_enabled,
+                codex_reasoning_guard_rule_mode,
                 codex_reasoning_guard_compare_mode,
                 codex_reasoning_guard_reasoning_equals,
                 codex_reasoning_guard_model_rules,
+                codex_reasoning_guard_active_template_id,
+                codex_reasoning_guard_custom_templates,
                 codex_reasoning_guard_immediate_retry_budget,
                 codex_reasoning_guard_delayed_retry_budget,
                 codex_reasoning_guard_delayed_retry_ms,
@@ -918,6 +970,9 @@ pub(crate) async fn settings_set_impl(
                 codex_reasoning_guard_concurrent_interval_ms,
                 codex_reasoning_guard_concurrent_max_attempts,
                 codex_reasoning_guard_model_fallbacks,
+                codex_reasoning_guard_continuation_repair_enabled,
+                codex_reasoning_guard_continuation_max_rounds,
+                codex_reasoning_guard_continuation_max_output_tokens,
                 codex_reasoning_guard_backoff_after_hits,
                 codex_reasoning_guard_backoff_ms,
                 auto_start: next_auto_start,

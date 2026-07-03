@@ -24,6 +24,7 @@ pub(crate) mod bridge;
 #[allow(dead_code)]
 pub(crate) mod ir;
 pub(crate) mod registry;
+pub(crate) mod response_cache;
 #[allow(dead_code)]
 pub(crate) mod stream;
 #[allow(dead_code)]

@@ -4,6 +4,13 @@ set -euo pipefail
 repo_root="$(git rev-parse --show-toplevel)"
 cd "$repo_root"
 
+# Do not let hook-local Git environment leak into child tests. Some tests create
+# temporary Git repositories; inherited GIT_DIR/GIT_WORK_TREE would point those
+# commands back at this repository instead of the temp repo.
+while IFS= read -r var_name; do
+  unset "$var_name"
+done < <(git rev-parse --local-env-vars)
+
 # Git passes ref update lines to pre-push via stdin. Our checks do not use
 # them, and letting child test processes inherit that stdin can make shell-based
 # tests accidentally execute ref names as commands.

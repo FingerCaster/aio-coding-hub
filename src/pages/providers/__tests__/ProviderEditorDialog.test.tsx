@@ -90,6 +90,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     api_key_configured: partial.api_key_configured ?? false,
     ...partial,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
   };
 }
@@ -706,16 +707,16 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
   });
 
-  it("shows all eligible codex bridge sources for both upstream endpoints and preserves selection", async () => {
+  it("shows all eligible codex bridge sources for responses and chat endpoints", async () => {
     vi.mocked(providerUpsert).mockResolvedValue(
       makeProvider({
         id: 21,
         cli_key: "codex",
-        name: "Codex Anthropic Bridge",
+        name: "Codex Responses Bridge",
         base_urls: [],
         cost_multiplier: 1.6,
         source_provider_id: 8,
-        bridge_type: "codex_to_anthropic_messages",
+        bridge_type: "codex_to_openai_responses",
       })
     );
 
@@ -746,17 +747,18 @@ describe("pages/providers/ProviderEditorDialog", () => {
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
     fireEvent.change(dialog.getByLabelText("名称"), {
-      target: { value: "Codex Anthropic Bridge" },
+      target: { value: "Codex Responses Bridge" },
     });
 
     const sourceSelect = dialog.getByLabelText("上游来源");
     expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
     expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
+    expect(dialog.queryByRole("tab", { name: "Anthropic Messages" })).not.toBeInTheDocument();
 
     fireEvent.change(sourceSelect, { target: { value: "7" } });
     expect(sourceSelect).toHaveValue("7");
 
-    fireEvent.click(dialog.getByRole("tab", { name: "Anthropic Messages" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "Responses" }));
     await waitFor(() => expect(sourceSelect).toHaveValue("7"));
     expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
     expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
@@ -768,9 +770,9 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
         expect.objectContaining({
           cliKey: "codex",
-          name: "Codex Anthropic Bridge",
+          name: "Codex Responses Bridge",
           sourceProviderId: 8,
-          bridgeType: "codex_to_anthropic_messages",
+          bridgeType: "codex_to_openai_responses",
           costMultiplier: 1.6,
         })
       )
@@ -835,7 +837,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
   });
 
-  it("reloads existing codex anthropic bridge endpoint in edit mode", async () => {
+  it("edits legacy codex anthropic bridge as responses endpoint", async () => {
     render(
       <ProviderEditorDialog
         mode="edit"
@@ -867,11 +869,93 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByRole("tab", { name: "转译" })).toHaveAttribute("aria-selected", "true");
-    expect(dialog.getByRole("tab", { name: "Anthropic Messages" })).toHaveAttribute(
-      "aria-selected",
-      "true"
-    );
+    expect(dialog.queryByRole("tab", { name: "Anthropic Messages" })).not.toBeInTheDocument();
+    expect(dialog.getByRole("tab", { name: "Responses" })).toHaveAttribute("aria-selected", "true");
     expect(dialog.getByLabelText("上游来源")).toHaveValue("8");
+  });
+
+  it("reloads existing codex responses bridge endpoint in edit mode", async () => {
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+        provider={makeProvider({
+          id: 23,
+          cli_key: "codex",
+          name: "Codex Responses Bridge",
+          base_urls: [],
+          source_provider_id: 9,
+          bridge_type: "codex_to_openai_responses",
+        })}
+        bridgeSourceProviders={[
+          makeProvider({
+            id: 9,
+            cli_key: "gemini",
+            name: "Gemini Responses Source",
+          }),
+        ]}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("tab", { name: "转译" })).toHaveAttribute("aria-selected", "true");
+    expect(dialog.getByRole("tab", { name: "Responses" })).toHaveAttribute("aria-selected", "true");
+    expect(dialog.getByLabelText("上游来源")).toHaveValue("9");
+  });
+
+  it("saves responses codex bridge with a non-codex source", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({
+        id: 24,
+        cli_key: "codex",
+        name: "Codex Responses Bridge",
+        base_urls: [],
+        cost_multiplier: 1.4,
+        source_provider_id: 9,
+        bridge_type: "codex_to_openai_responses",
+      })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+        bridgeSourceProviders={[
+          makeProvider({
+            id: 9,
+            cli_key: "gemini",
+            name: "Gemini Responses Source",
+            cost_multiplier: 1.4,
+          }),
+        ]}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "Responses" }));
+    fireEvent.change(dialog.getByLabelText("名称"), {
+      target: { value: "Codex Responses Bridge" },
+    });
+    fireEvent.change(dialog.getByLabelText("上游来源"), { target: { value: "9" } });
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          cliKey: "codex",
+          name: "Codex Responses Bridge",
+          sourceProviderId: 9,
+          bridgeType: "codex_to_openai_responses",
+          costMultiplier: 1.4,
+        })
+      )
+    );
   });
 
   it("restores editable transport fields when switching a codex bridge back to api key mode", async () => {

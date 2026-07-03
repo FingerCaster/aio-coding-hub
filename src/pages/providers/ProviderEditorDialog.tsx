@@ -20,6 +20,7 @@ import { LimitsSection } from "./LimitsSection";
 import { ClaudeModelSection } from "./ClaudeModelSection";
 import { RetryPolicyFields } from "../../components/gateway/RetryPolicyFields";
 import { cn } from "../../utils/cn";
+import { ContributionSlot } from "../../plugins/contributions/ContributionSlot";
 
 type ProviderEditorDialogBaseProps = {
   open: boolean;
@@ -98,6 +99,13 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
         ) : (
           <ApiKeySection form={f} />
         )}
+
+        <ContributionSlot
+          slotId="providers.editor.sections"
+          valuesByContributionKey={f.extensionValuesByContributionKey}
+          onChange={(contribution, key, value) => f.setExtensionValue(contribution, key, value)}
+          disabled={f.saving}
+        />
 
         <FormField
           label="流式空闲超时覆盖（秒）"

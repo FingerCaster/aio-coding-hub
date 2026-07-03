@@ -207,11 +207,15 @@ export function CostFilterPanel({
         {/* Advanced Filters */}
         <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:gap-4">
           <div className="flex items-center gap-2 flex-1">
-            <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+            <label
+              htmlFor="home-cost-provider-filter"
+              className="text-xs font-medium text-muted-foreground whitespace-nowrap"
+            >
               供应商
             </label>
             <div className="relative flex-1">
               <select
+                id="home-cost-provider-filter"
                 value={providerSelectValue}
                 onChange={(e) => onProviderChange(e.currentTarget.value)}
                 disabled={fetching || tauriAvailable === false}
@@ -235,11 +239,15 @@ export function CostFilterPanel({
           </div>
 
           <div className="flex items-center gap-2 flex-1">
-            <label className="text-xs font-medium text-muted-foreground whitespace-nowrap">
+            <label
+              htmlFor="home-cost-model-filter"
+              className="text-xs font-medium text-muted-foreground whitespace-nowrap"
+            >
               模型
             </label>
             <div className="relative flex-1">
               <select
+                id="home-cost-model-filter"
                 value={modelSelectValue}
                 onChange={(e) => onModelChange(e.currentTarget.value)}
                 disabled={fetching || tauriAvailable === false}

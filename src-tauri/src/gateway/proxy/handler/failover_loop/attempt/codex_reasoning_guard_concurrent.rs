@@ -9,6 +9,7 @@ use super::provider_iterator::PreparedProvider;
 use super::*;
 use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
 use crate::gateway::proxy::request_context::RequestContext;
+use axum::http::HeaderMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
 use tokio::task::JoinSet;
@@ -108,9 +109,12 @@ struct ProbeCtx<R: tauri::Runtime = tauri::Wry> {
     empty_requested_model: Option<String>,
     empty_cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     empty_special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
+    codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     codex_reasoning_guard_reasoning_equals: Vec<i64>,
     codex_reasoning_guard_model_rules: Vec<crate::settings::CodexReasoningGuardModelRule>,
+    codex_reasoning_guard_active_template_id: String,
+    codex_reasoning_guard_custom_templates: Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
     empty_model_fallbacks: Vec<String>,
     empty_introspection_body: Vec<u8>,
     response_fixer_stream_config: crate::gateway::response_fixer::ResponseFixerConfig,
@@ -128,11 +132,18 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             empty_requested_model: ctx.requested_model.clone(),
             empty_cx2cc_settings: Default::default(),
             empty_special_settings: Arc::new(Mutex::new(Vec::new())),
+            codex_reasoning_guard_rule_mode: ctx.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: ctx.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: ctx
                 .codex_reasoning_guard_reasoning_equals
                 .to_vec(),
             codex_reasoning_guard_model_rules: ctx.codex_reasoning_guard_model_rules.to_vec(),
+            codex_reasoning_guard_active_template_id: ctx
+                .codex_reasoning_guard_active_template_id
+                .to_string(),
+            codex_reasoning_guard_custom_templates: ctx
+                .codex_reasoning_guard_custom_templates
+                .to_vec(),
             empty_model_fallbacks: Vec::new(),
             empty_introspection_body: Vec::new(),
             response_fixer_stream_config: ctx.response_fixer_stream_config,
@@ -165,9 +176,13 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             upstream_request_timeout_non_streaming: None,
             verbose_provider_error: false,
             codex_reasoning_guard_enabled: true,
+            codex_reasoning_guard_rule_mode: self.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: self.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: &self.codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules: &self.codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id: &self
+                .codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates: &self.codex_reasoning_guard_custom_templates,
             codex_reasoning_guard_immediate_retry_budget: 0,
             codex_reasoning_guard_delayed_retry_budget: 0,
             codex_reasoning_guard_delayed_retry_ms: 0,
@@ -179,6 +194,11 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             codex_reasoning_guard_concurrent_interval_ms: 0,
             codex_reasoning_guard_concurrent_max_attempts: 0,
             codex_reasoning_guard_model_fallbacks: &self.empty_model_fallbacks,
+            codex_reasoning_guard_continuation_repair_enabled: false,
+            codex_reasoning_guard_continuation_max_rounds:
+                crate::settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
+            codex_reasoning_guard_continuation_max_output_tokens:
+                crate::settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
             enable_response_fixer: false,
             response_fixer_stream_config: self.response_fixer_stream_config,
             response_fixer_non_stream_config: self.response_fixer_non_stream_config,
@@ -265,14 +285,18 @@ where
         query: input.query.clone(),
         headers: semantic_headers.clone(),
         body: body_state_for_attempt.decoded_clone(),
-        requested_model: input.requested_model.clone(),
+        requested_model: prepared
+            .active_requested_model
+            .clone()
+            .or_else(|| input.requested_model.clone()),
     };
     match ctx.state.plugin_pipeline.run_request_hook(hook_input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 &ctx.state.db,
                 &input.trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             if let Some(blocked) = output.blocked {
                 return ProbeAttemptOutcome::send(AttemptSendOutcome::PluginBlocked(
@@ -300,7 +324,7 @@ where
 
     match send::send_upstream(ctx, input.req_method.clone(), url, headers, upstream_body).await {
         send::SendResult::Ok(resp) => {
-            classify_probe_response(ctx, input, retry_state, resp, timing).await
+            classify_probe_response(ctx, input, prepared, retry_state, resp, timing).await
         }
         send::SendResult::Timeout => ProbeAttemptOutcome::send(AttemptSendOutcome::Timeout(timing)),
         send::SendResult::Err(err) => {
@@ -312,6 +336,7 @@ where
 async fn classify_probe_response<R>(
     ctx: CommonCtx<'_, R>,
     input: &RequestContext<R>,
+    prepared: &PreparedProvider,
     retry_state: &RetryLoopState,
     resp: reqwest::Response,
     timing: AttemptTiming,
@@ -337,7 +362,16 @@ where
         }
     };
 
-    if probe_body_hits_guard(ctx, input, retry_state, body.as_ref()) {
+    let duration_ms = Some(timing.attempt_started.elapsed().as_millis());
+    if probe_body_hits_guard(
+        ctx,
+        input,
+        prepared,
+        retry_state,
+        body.as_ref(),
+        duration_ms,
+        provider_ttfb_ms,
+    ) {
         return ProbeAttemptOutcome::GuardMatched;
     }
 
@@ -353,42 +387,80 @@ where
 fn probe_body_hits_guard<R>(
     ctx: CommonCtx<'_, R>,
     input: &RequestContext<R>,
+    prepared: &PreparedProvider,
     retry_state: &RetryLoopState,
     body: &[u8],
+    duration_ms: Option<u128>,
+    ttfb_ms: Option<u128>,
 ) -> bool
 where
     R: tauri::Runtime,
 {
-    probe_json_body_hits_guard(
-        input.cli_key.as_str(),
-        current_codex_reasoning_guard_model(input, retry_state),
-        ctx.codex_reasoning_guard_compare_mode,
-        ctx.codex_reasoning_guard_reasoning_equals,
-        ctx.codex_reasoning_guard_model_rules,
+    let special_settings_snapshot =
+        codex_reasoning_features::special_settings_snapshot(&input.special_settings);
+    let requested_model = prepared
+        .active_requested_model
+        .as_deref()
+        .or(current_codex_reasoning_guard_model(input, retry_state));
+    probe_json_body_hits_guard(ProbeJsonGuardInput {
+        cli_key: input.cli_key.as_str(),
+        requested_model,
+        rule_mode: ctx.codex_reasoning_guard_rule_mode,
+        request_headers: Some(&input.base_headers),
+        request_json: input.introspection_json.as_ref(),
+        special_settings: special_settings_snapshot.as_slice(),
+        active_template_id: ctx.codex_reasoning_guard_active_template_id,
+        custom_templates: ctx.codex_reasoning_guard_custom_templates,
+        duration_ms,
+        ttfb_ms,
         body,
-    )
+    })
 }
 
-fn probe_json_body_hits_guard(
-    cli_key: &str,
-    requested_model: Option<&str>,
-    compare_mode: crate::settings::CodexReasoningGuardCompareMode,
-    reasoning_equals: &[i64],
-    model_rules: &[crate::settings::CodexReasoningGuardModelRule],
-    body: &[u8],
-) -> bool {
-    let Ok(value) = serde_json::from_slice::<serde_json::Value>(body) else {
+struct ProbeJsonGuardInput<'a> {
+    cli_key: &'a str,
+    requested_model: Option<&'a str>,
+    rule_mode: crate::settings::CodexReasoningGuardRuleMode,
+    request_headers: Option<&'a HeaderMap>,
+    request_json: Option<&'a serde_json::Value>,
+    special_settings: &'a [serde_json::Value],
+    active_template_id: &'a str,
+    custom_templates: &'a [crate::settings::CodexReasoningGuardRuleTemplate],
+    duration_ms: Option<u128>,
+    ttfb_ms: Option<u128>,
+    body: &'a [u8],
+}
+
+fn probe_json_body_hits_guard(input: ProbeJsonGuardInput<'_>) -> bool {
+    let Ok(value) = serde_json::from_slice::<serde_json::Value>(input.body) else {
         return false;
     };
-    codex_reasoning_guard::detect_from_json(
-        cli_key,
-        requested_model,
+    let feature_sample = codex_reasoning_features::build_complete_sample(
+        input.cli_key,
+        input.rule_mode,
+        input.request_headers,
+        input.request_json,
+        input.special_settings,
         &value,
-        compare_mode,
-        reasoning_equals,
-        model_rules,
+    );
+    codex_reasoning_guard::evaluate_decision(
+        codex_reasoning_guard::CodexReasoningGuardDecisionEvaluationInput {
+            base: codex_reasoning_guard::CodexReasoningGuardEvaluationInput {
+                cli_key: input.cli_key,
+                requested_model: input.requested_model,
+                value: &value,
+                rule_mode: input.rule_mode,
+                feature_sample: feature_sample.as_ref(),
+            },
+            active_template_id: input.active_template_id,
+            custom_templates: input.custom_templates,
+            duration_ms: input.duration_ms,
+            ttfb_ms: input.ttfb_ms,
+        },
     )
-    .is_some()
+    .is_some_and(|decision| {
+        decision.action == crate::settings::CodexReasoningGuardTemplateRuleAction::Intercept
+    })
 }
 
 fn sync_before_send_body_output(
@@ -418,6 +490,35 @@ fn is_winning_outcome(send_outcome: &AttemptSendOutcome) -> bool {
 mod tests {
     use super::*;
 
+    fn guard_probe_input<'a>(
+        body: &'a [u8],
+        rule_mode: crate::settings::CodexReasoningGuardRuleMode,
+        special_settings: &'a [serde_json::Value],
+        request_json: Option<&'a serde_json::Value>,
+    ) -> ProbeJsonGuardInput<'a> {
+        let active_template_id = match rule_mode {
+            crate::settings::CodexReasoningGuardRuleMode::ReasoningTokens => {
+                crate::settings::CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+            }
+            crate::settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh => {
+                crate::settings::CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID
+            }
+        };
+        ProbeJsonGuardInput {
+            cli_key: "codex",
+            requested_model: Some("gpt-5.5"),
+            rule_mode,
+            request_headers: None,
+            request_json,
+            special_settings,
+            active_template_id,
+            custom_templates: &[],
+            duration_ms: Some(1_000),
+            ttfb_ms: Some(1),
+            body,
+        }
+    }
+
     #[test]
     fn probe_json_body_hits_guard_for_configured_reasoning_token() {
         let body = serde_json::json!({
@@ -429,14 +530,12 @@ mod tests {
         });
         let encoded = serde_json::to_vec(&body).unwrap();
 
-        assert!(probe_json_body_hits_guard(
-            "codex",
-            Some("gpt-5.5"),
-            crate::settings::CodexReasoningGuardCompareMode::Equals,
-            &[516],
-            &[],
+        assert!(probe_json_body_hits_guard(guard_probe_input(
             &encoded,
-        ));
+            crate::settings::CodexReasoningGuardRuleMode::ReasoningTokens,
+            &[],
+            None,
+        )));
     }
 
     #[test]
@@ -450,14 +549,157 @@ mod tests {
         });
         let encoded = serde_json::to_vec(&body).unwrap();
 
-        assert!(!probe_json_body_hits_guard(
-            "codex",
-            Some("gpt-5.5"),
-            crate::settings::CodexReasoningGuardCompareMode::Equals,
-            &[516],
-            &[],
+        assert!(!probe_json_body_hits_guard(guard_probe_input(
             &encoded,
-        ));
+            crate::settings::CodexReasoningGuardRuleMode::ReasoningTokens,
+            &[],
+            None,
+        )));
+    }
+
+    #[test]
+    fn probe_json_body_uses_requested_model_template_rules() {
+        let body = serde_json::json!({
+            "usage": {
+                "output_tokens_details": {
+                    "reasoning_tokens": 516
+                }
+            }
+        });
+        let encoded = serde_json::to_vec(&body).unwrap();
+        let template = crate::settings::CodexReasoningGuardRuleTemplate {
+            id: "custom-model-rules".to_string(),
+            name: "Custom model rules".to_string(),
+            description: String::new(),
+            rules: vec![
+                crate::settings::CodexReasoningGuardTemplateRule {
+                    id: "gpt-55-token-516".to_string(),
+                    name: "gpt-5.5 reasoning_tokens == 516".to_string(),
+                    reasoning_tokens: Some(516),
+                    action: crate::settings::CodexReasoningGuardTemplateRuleAction::Intercept,
+                    logic: crate::settings::CodexReasoningGuardTemplateRuleLogic::And,
+                    filters: vec![crate::settings::CodexReasoningGuardTemplateFilter {
+                        id: "requested-model-gpt-55".to_string(),
+                        field:
+                            crate::settings::CodexReasoningGuardTemplateFilterField::RequestedModel,
+                        operator:
+                            crate::settings::CodexReasoningGuardTemplateFilterOperator::Equals,
+                        number_value: None,
+                        bool_value: None,
+                        string_value: Some("gpt-5.5".to_string()),
+                        string_values: Vec::new(),
+                    }],
+                },
+                crate::settings::CodexReasoningGuardTemplateRule {
+                    id: "gpt-54-token-999".to_string(),
+                    name: "gpt-5.4 reasoning_tokens == 999".to_string(),
+                    reasoning_tokens: Some(999),
+                    action: crate::settings::CodexReasoningGuardTemplateRuleAction::Intercept,
+                    logic: crate::settings::CodexReasoningGuardTemplateRuleLogic::And,
+                    filters: vec![crate::settings::CodexReasoningGuardTemplateFilter {
+                        id: "requested-model-gpt-54".to_string(),
+                        field:
+                            crate::settings::CodexReasoningGuardTemplateFilterField::RequestedModel,
+                        operator:
+                            crate::settings::CodexReasoningGuardTemplateFilterOperator::Equals,
+                        number_value: None,
+                        bool_value: None,
+                        string_value: Some("gpt-5.4".to_string()),
+                        string_values: Vec::new(),
+                    }],
+                },
+            ],
+        };
+        let templates = vec![template];
+
+        assert!(!probe_json_body_hits_guard(ProbeJsonGuardInput {
+            cli_key: "codex",
+            requested_model: Some("gpt-5.4"),
+            rule_mode: crate::settings::CodexReasoningGuardRuleMode::ReasoningTokens,
+            request_headers: None,
+            request_json: None,
+            special_settings: &[],
+            active_template_id: "custom-model-rules",
+            custom_templates: &templates,
+            duration_ms: Some(1_000),
+            ttfb_ms: Some(1),
+            body: &encoded,
+        }));
+    }
+
+    #[test]
+    fn probe_json_body_hits_guard_for_final_answer_only_high_xhigh_feature() {
+        let body = serde_json::json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "redacted"}]
+            }]
+        });
+        let encoded = serde_json::to_vec(&body).unwrap();
+        let special_settings = vec![serde_json::json!({
+            "type": "codex_reasoning_effort",
+            "effort": "xhigh",
+            "rawEffort": "xhigh",
+            "pointer": "/reasoning/effort"
+        })];
+
+        assert!(probe_json_body_hits_guard(guard_probe_input(
+            &encoded,
+            crate::settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+            &special_settings,
+            None,
+        )));
+    }
+
+    #[test]
+    fn probe_json_body_observes_zero_reasoning_final_answer_only_feature() {
+        let body = serde_json::json!({
+            "output": [{
+                "type": "message",
+                "role": "assistant",
+                "content": [{"type": "output_text", "text": "redacted"}]
+            }],
+            "usage": {
+                "output_tokens_details": {
+                    "reasoning_tokens": 0
+                }
+            }
+        });
+        let encoded = serde_json::to_vec(&body).unwrap();
+        let special_settings = vec![serde_json::json!({
+            "type": "codex_reasoning_effort",
+            "effort": "xhigh",
+            "rawEffort": "xhigh",
+            "pointer": "/reasoning/effort"
+        })];
+
+        assert!(!probe_json_body_hits_guard(guard_probe_input(
+            &encoded,
+            crate::settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+            &special_settings,
+            None,
+        )));
+    }
+
+    #[test]
+    fn probe_json_body_intercepts_compaction_with_nonzero_reasoning() {
+        let body = serde_json::json!({
+            "usage": {
+                "output_tokens_details": {
+                    "reasoning_tokens": 516
+                }
+            }
+        });
+        let encoded = serde_json::to_vec(&body).unwrap();
+        let request = serde_json::json!({"request_kind": "context_compaction"});
+
+        assert!(probe_json_body_hits_guard(guard_probe_input(
+            &encoded,
+            crate::settings::CodexReasoningGuardRuleMode::ReasoningTokens,
+            &[],
+            Some(&request),
+        )));
     }
 
     #[test]

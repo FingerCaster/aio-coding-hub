@@ -5,7 +5,7 @@
 import { useCallback, useState } from "react";
 import { useNowMs } from "../../hooks/useNowMs";
 import { useRequestLogDetailSignalRefresh } from "../../hooks/useRequestLogDetailSignalRefresh";
-import { isPersistedRequestLogInProgress } from "../../services/gateway/requestLogState";
+import { isPersistedRequestLogIncomplete } from "../../services/gateway/requestLogState";
 import { useTraceStore } from "../../services/gateway/traceStore";
 import {
   useRequestAttemptLogsByTraceIdQuery,
@@ -25,6 +25,10 @@ import {
 import { RequestLogDetailSummaryTab } from "./RequestLogDetailSummaryTab";
 import { RequestLogDetailChainTab } from "./RequestLogDetailChainTab";
 import { RequestLogDetailRawTab } from "./RequestLogDetailRawTab";
+import { useContributionsForSlot } from "../../plugins/contributions/useActiveContributions";
+import { HostRenderedContribution } from "../../plugins/contributions/HostRenderedContribution";
+import type { ContributionCommandHandler } from "../../plugins/contributions/types";
+import { logToConsole } from "../../services/consoleLog";
 import type { RequestAttemptLog } from "../../services/gateway/requestLogs";
 
 export type RequestLogDetailDialogProps = {
@@ -41,6 +45,10 @@ const DETAIL_TABS: Array<{ key: DetailTab; label: string }> = [
   { key: "raw", label: "原始数据" },
 ];
 
+function pluginDetailTabKey(pluginId: string, contributionId: string) {
+  return `plugin:${pluginId}:${contributionId}`;
+}
+
 function hasProviderFailover(attemptLogs: RequestAttemptLog[]) {
   const providerIds = new Set<number>();
   for (const attempt of attemptLogs) {
@@ -56,7 +64,8 @@ export function RequestLogDetailDialog({
   onSelectLogId,
   codexReasoningGuardHitLabel,
 }: RequestLogDetailDialogProps) {
-  const [activeTab, setActiveTab] = useState<DetailTab>("summary");
+  const [activeTab, setActiveTab] = useState<string>("summary");
+  const { contributions: logDetailTabContributions } = useContributionsForSlot("logs.detail.tabs");
   const { traces } = useTraceStore();
   const selectedLogQuery = useRequestLogDetailQuery(selectedLogId);
   const queriedSelectedLog = selectedLogQuery.data ?? null;
@@ -88,7 +97,7 @@ export function RequestLogDetailDialog({
     ? (traces.find((trace) => trace.trace_id === selectedLog.trace_id) ?? null)
     : null;
   const isInProgress =
-    selectedLog != null && isPersistedRequestLogInProgress(selectedLog) && matchingTrace != null;
+    selectedLog != null && isPersistedRequestLogIncomplete(selectedLog) && matchingTrace != null;
   const liveTrace = isInProgress ? matchingTrace : null;
   const nowMs = useNowMs(isInProgress && liveTrace != null, 250);
   const liveProvider = resolveLiveTraceProvider(liveTrace);
@@ -139,6 +148,32 @@ export function RequestLogDetailDialog({
       selectedLog.ttfb_ms != null ||
       selectedLog.visible_ttfb_ms != null ||
       (isInProgress && liveTrace != null));
+  const detailTabs = [
+    ...DETAIL_TABS,
+    ...logDetailTabContributions.map((contribution) => ({
+      key: pluginDetailTabKey(contribution.pluginId, contribution.contributionId),
+      label: contribution.title ?? contribution.contributionId,
+    })),
+  ];
+  const activeLogDetailContribution =
+    logDetailTabContributions.find(
+      (contribution) =>
+        pluginDetailTabKey(contribution.pluginId, contribution.contributionId) === activeTab
+    ) ?? null;
+  const handleContributionCommand = useCallback<ContributionCommandHandler>(
+    (command, context) => {
+      if (!selectedLog) return;
+      logToConsole("info", "插件日志详情命令", {
+        command,
+        traceId: selectedLog.trace_id,
+        logId: selectedLog.id,
+        pluginId: context.pluginId,
+        contributionId: context.contributionId,
+        cliKey: selectedLog.cli_key,
+      });
+    },
+    [selectedLog]
+  );
 
   return (
     <Dialog
@@ -160,9 +195,9 @@ export function RequestLogDetailDialog({
         </div>
       ) : (
         <div className="space-y-3">
-          <TabList<DetailTab>
+          <TabList<string>
             ariaLabel="日志详情"
-            items={DETAIL_TABS}
+            items={detailTabs}
             value={activeTab}
             onChange={setActiveTab}
           />
@@ -191,6 +226,13 @@ export function RequestLogDetailDialog({
           )}
 
           {activeTab === "raw" && <RequestLogDetailRawTab selectedLog={selectedLog} />}
+
+          {activeLogDetailContribution ? (
+            <HostRenderedContribution
+              contribution={activeLogDetailContribution}
+              onCommand={handleContributionCommand}
+            />
+          ) : null}
         </div>
       )}
     </Dialog>

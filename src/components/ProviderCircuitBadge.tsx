@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { cliBadgeTone, cliShortLabel } from "../constants/clis";
 import { useNowUnix } from "../hooks/useNowUnix";
 import type { CliKey } from "../services/providers/providers";
@@ -28,14 +28,15 @@ export function ProviderCircuitBadge({
   resettingProviderIds,
 }: ProviderCircuitBadgeProps) {
   const count = rows.length;
-  const [popoverOpen, setPopoverOpen] = useState(false);
-  const nowUnix = useNowUnix(count > 0 && popoverOpen);
+  const [popoverState, setPopoverState] = useState({ rowCount: count, open: false });
+  let popoverOpen = popoverState.open;
 
-  useEffect(() => {
-    if (count === 0 && popoverOpen) {
-      setPopoverOpen(false);
-    }
-  }, [count, popoverOpen]);
+  if (popoverState.rowCount !== count) {
+    popoverOpen = count > 0 && popoverOpen;
+    setPopoverState({ rowCount: count, open: popoverOpen });
+  }
+
+  const nowUnix = useNowUnix(popoverOpen);
 
   const groupedByCli = useMemo(() => {
     const grouped: Record<CliKey, OpenCircuitRow[]> = {
@@ -61,12 +62,22 @@ export function ProviderCircuitBadge({
     return grouped;
   }, [rows]);
 
+  const visibleCliKeys = useMemo(() => {
+    const keys: CliKey[] = [];
+    for (const cliKey of Object.keys(groupedByCli) as CliKey[]) {
+      if (groupedByCli[cliKey].length > 0) {
+        keys.push(cliKey);
+      }
+    }
+    return keys;
+  }, [groupedByCli]);
+
   if (count === 0) return null;
 
   return (
     <Popover
       open={popoverOpen}
-      onOpenChange={setPopoverOpen}
+      onOpenChange={(open) => setPopoverState({ rowCount: count, open: count > 0 && open })}
       placement="bottom"
       align="end"
       trigger={
@@ -87,63 +98,61 @@ export function ProviderCircuitBadge({
         <span className="text-sm font-semibold text-foreground">熔断列表 ({count})</span>
       </div>
       <div className="max-h-[400px] overflow-y-auto p-3">
-        {(Object.keys(groupedByCli) as CliKey[])
-          .filter((cliKey) => groupedByCli[cliKey].length > 0)
-          .map((cliKey) => (
-            <div key={cliKey} className="mb-3 last:mb-0">
-              <div className="mb-2 flex items-center gap-2">
-                <span
-                  className={cn(
-                    "rounded px-1.5 py-0.5 text-xs font-bold uppercase tracking-wider",
-                    cliBadgeTone(cliKey)
-                  )}
-                >
-                  {cliShortLabel(cliKey)}
-                </span>
-                <span className="text-xs text-muted-foreground">
-                  {groupedByCli[cliKey].length} 个熔断
-                </span>
-              </div>
-              <div className="space-y-2">
-                {groupedByCli[cliKey].map((row) => {
-                  const remaining =
-                    row.open_until != null && Number.isFinite(row.open_until)
-                      ? formatCountdownSeconds(row.open_until - nowUnix)
-                      : "—";
-                  const isResetting = resettingProviderIds.has(row.provider_id);
-                  return (
-                    <div
-                      key={`${row.cli_key}:${row.provider_id}`}
-                      className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/50 dark:bg-secondary/50 px-3 py-2 transition-colors hover:bg-secondary dark:hover:bg-secondary"
-                    >
-                      <div className="min-w-0 flex-1">
-                        <div
-                          className="truncate text-sm font-medium text-secondary-foreground"
-                          title={row.provider_name}
-                        >
-                          {row.provider_name || "未知"}
-                        </div>
-                      </div>
-                      <div className="shrink-0 font-mono text-xs text-muted-foreground">
-                        {remaining}
-                      </div>
-                      <Button
-                        variant="secondary"
-                        size="sm"
-                        onClick={(e) => {
-                          e.stopPropagation();
-                          onResetProvider(row.provider_id);
-                        }}
-                        disabled={isResetting}
-                      >
-                        {isResetting ? "解除中..." : "解除熔断"}
-                      </Button>
-                    </div>
-                  );
-                })}
-              </div>
+        {visibleCliKeys.map((cliKey) => (
+          <div key={cliKey} className="mb-3 last:mb-0">
+            <div className="mb-2 flex items-center gap-2">
+              <span
+                className={cn(
+                  "rounded px-1.5 py-0.5 text-xs font-bold uppercase tracking-wider",
+                  cliBadgeTone(cliKey)
+                )}
+              >
+                {cliShortLabel(cliKey)}
+              </span>
+              <span className="text-xs text-muted-foreground">
+                {groupedByCli[cliKey].length} 个熔断
+              </span>
             </div>
-          ))}
+            <div className="space-y-2">
+              {groupedByCli[cliKey].map((row) => {
+                const remaining =
+                  row.open_until != null && Number.isFinite(row.open_until)
+                    ? formatCountdownSeconds(row.open_until - nowUnix)
+                    : "—";
+                const isResetting = resettingProviderIds.has(row.provider_id);
+                return (
+                  <div
+                    key={`${row.cli_key}:${row.provider_id}`}
+                    className="flex items-center justify-between gap-3 rounded-lg border border-border bg-secondary/50 dark:bg-secondary/50 px-3 py-2 transition-colors hover:bg-secondary dark:hover:bg-secondary"
+                  >
+                    <div className="min-w-0 flex-1">
+                      <div
+                        className="truncate text-sm font-medium text-secondary-foreground"
+                        title={row.provider_name}
+                      >
+                        {row.provider_name || "未知"}
+                      </div>
+                    </div>
+                    <div className="shrink-0 font-mono text-xs text-muted-foreground">
+                      {remaining}
+                    </div>
+                    <Button
+                      variant="secondary"
+                      size="sm"
+                      onClick={(e) => {
+                        e.stopPropagation();
+                        onResetProvider(row.provider_id);
+                      }}
+                      disabled={isResetting}
+                    >
+                      {isResetting ? "解除中..." : "解除熔断"}
+                    </Button>
+                  </div>
+                );
+              })}
+            </div>
+          </div>
+        ))}
       </div>
     </Popover>
   );

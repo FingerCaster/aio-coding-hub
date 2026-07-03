@@ -17,6 +17,12 @@ export type ClaudeOAuthCardProps = {
 };
 
 type OAuthStatus = NonNullable<Awaited<ReturnType<typeof providerOAuthStatus>>>;
+type OAuthStatusState = {
+  providerKey: string;
+  status: OAuthStatus | null;
+  statusLoading: boolean;
+  statusError: string | null;
+};
 
 function buildInitialStatus(provider: ProviderSummary): OAuthStatus {
   return {
@@ -34,6 +40,27 @@ function formatExpiresAt(expiresAt: number | null | undefined) {
   return new Date(ts).toLocaleString("zh-CN", { hour12: false });
 }
 
+function buildProviderKey(provider: ProviderSummary | null) {
+  if (!provider) return "none";
+  return [
+    provider.id,
+    provider.oauth_provider_type ?? "",
+    provider.oauth_email ?? "",
+    provider.oauth_expires_at ?? "",
+    provider.oauth_last_error ?? "",
+  ].join(":");
+}
+
+function buildStatusState(provider: ProviderSummary | null): OAuthStatusState {
+  const providerKey = buildProviderKey(provider);
+  return {
+    providerKey,
+    status: provider ? buildInitialStatus(provider) : null,
+    statusLoading: Boolean(provider),
+    statusError: null,
+  };
+}
+
 export function ClaudeOAuthCard({ providers }: ClaudeOAuthCardProps) {
   const oauthProvider = useMemo(
     () =>
@@ -42,52 +69,55 @@ export function ClaudeOAuthCard({ providers }: ClaudeOAuthCardProps) {
       ) ?? null,
     [providers]
   );
-  const [status, setStatus] = useState<OAuthStatus | null>(
-    oauthProvider ? buildInitialStatus(oauthProvider) : null
-  );
-  const [statusLoading, setStatusLoading] = useState(false);
+  const providerKey = buildProviderKey(oauthProvider);
+  const [statusState, setStatusState] = useState(() => buildStatusState(oauthProvider));
+  let effectiveStatusState = statusState;
+
+  if (statusState.providerKey !== providerKey) {
+    effectiveStatusState = buildStatusState(oauthProvider);
+    setStatusState(effectiveStatusState);
+  }
+
   const [actionLoading, setActionLoading] = useState<"login" | "refresh" | "disconnect" | null>(
     null
   );
-  const [statusError, setStatusError] = useState<string | null>(null);
 
   useEffect(() => {
-    if (!oauthProvider) {
-      setStatus(null);
-      setStatusError(null);
-      setStatusLoading(false);
-      return;
-    }
+    if (!oauthProvider) return;
 
     let cancelled = false;
-    setStatus(buildInitialStatus(oauthProvider));
-    setStatusError(null);
-    setStatusLoading(true);
 
-    void providerOAuthStatus(oauthProvider.id)
-      .then((next) => {
-        if (cancelled || !next) return;
-        setStatus(next);
-      })
-      .catch((error) => {
+    void (async () => {
+      try {
+        const next = await providerOAuthStatus(oauthProvider.id);
         if (cancelled) return;
-        setStatusError(error instanceof Error ? error.message : String(error));
-      })
-      .finally(() => {
-        if (!cancelled) {
-          setStatusLoading(false);
-        }
-      });
+        setStatusState((current) =>
+          current.providerKey === providerKey
+            ? { ...current, status: next ?? current.status, statusLoading: false }
+            : current
+        );
+      } catch (error) {
+        if (cancelled) return;
+        setStatusState((current) =>
+          current.providerKey === providerKey
+            ? {
+                ...current,
+                statusError: error instanceof Error ? error.message : String(error),
+                statusLoading: false,
+              }
+            : current
+        );
+      }
+    })();
 
     return () => {
       cancelled = true;
     };
-  }, [oauthProvider]);
+  }, [oauthProvider, providerKey]);
 
   async function reloadStatus(providerId: number) {
     const next = await providerOAuthStatus(providerId);
-    setStatus(next);
-    setStatusError(null);
+    setStatusState((current) => ({ ...current, status: next, statusError: null }));
     return next;
   }
 
@@ -113,6 +143,7 @@ export function ClaudeOAuthCard({ providers }: ClaudeOAuthCardProps) {
   // TypeScript doesn't narrow useMemo results across early returns, so re-bind.
   const provider = oauthProvider;
 
+  const { status, statusLoading, statusError } = effectiveStatusState;
   const connected = status?.connected ?? false;
   const busy = actionLoading !== null;
   const effectiveError = statusError ?? provider.oauth_last_error ?? null;
@@ -159,14 +190,18 @@ export function ClaudeOAuthCard({ providers }: ClaudeOAuthCardProps) {
         toast.error("断开连接失败");
         return;
       }
-      setStatus({
-        connected: false,
-        provider_type: status?.provider_type ?? provider.oauth_provider_type ?? null,
-        email: null,
-        expires_at: null,
-        has_refresh_token: null,
+      setStatusState({
+        providerKey,
+        status: {
+          connected: false,
+          provider_type: status?.provider_type ?? provider.oauth_provider_type ?? null,
+          email: null,
+          expires_at: null,
+          has_refresh_token: null,
+        },
+        statusLoading: false,
+        statusError: null,
       });
-      setStatusError(null);
       toast.success("已断开 Claude OAuth 连接");
     } catch (error) {
       toast.error(error instanceof Error ? error.message : "断开连接失败");

@@ -244,17 +244,14 @@ fn parse_tools(body: &Value, filter_batch_tool: bool) -> Vec<IRToolDefinition> {
         .filter(|t| {
             !filter_batch_tool || t.get("type").and_then(|v| v.as_str()) != Some("BatchTool")
         })
-        .map(|t| IRToolDefinition {
-            name: t
-                .get("name")
-                .and_then(|n| n.as_str())
-                .unwrap_or("")
-                .to_string(),
-            description: t
-                .get("description")
-                .and_then(|d| d.as_str())
-                .map(str::to_string),
-            parameters: t.get("input_schema").cloned().unwrap_or(json!({})),
+        .map(|t| {
+            IRToolDefinition::function(
+                t.get("name").and_then(|n| n.as_str()).unwrap_or(""),
+                t.get("description")
+                    .and_then(|d| d.as_str())
+                    .map(str::to_string),
+                t.get("input_schema").cloned().unwrap_or(json!({})),
+            )
         })
         .collect()
 }
@@ -550,6 +547,8 @@ mod tests {
             mapped_model: None,
             stream_requested: false,
             is_chatgpt_backend: false,
+            responses_cache_namespace: None,
+            responses_cache_input: None,
         }
     }
 
@@ -715,8 +714,11 @@ mod tests {
         });
         let ir = parse_request(body, &default_settings()).unwrap();
         assert_eq!(ir.tools.len(), 1);
-        assert_eq!(ir.tools[0].name, "get_weather");
-        assert_eq!(ir.tools[0].description.as_deref(), Some("Get weather"));
+        let Some((name, description, _)) = ir.tools[0].as_function() else {
+            panic!("expected function tool");
+        };
+        assert_eq!(name, "get_weather");
+        assert_eq!(description, Some("Get weather"));
     }
 
     #[test]
@@ -739,8 +741,8 @@ mod tests {
 
         let ir = parse_request(body, &settings).unwrap();
         assert_eq!(ir.tools.len(), 2);
-        assert_eq!(ir.tools[0].name, "batch");
-        assert_eq!(ir.tools[1].name, "get_weather");
+        assert_eq!(ir.tools[0].function_name(), Some("batch"));
+        assert_eq!(ir.tools[1].function_name(), Some("get_weather"));
     }
 
     #[test]

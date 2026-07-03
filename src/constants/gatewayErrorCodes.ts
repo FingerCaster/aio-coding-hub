@@ -47,7 +47,7 @@ export type GatewayErrorCode = (typeof GatewayErrorCodes)[keyof typeof GatewayEr
 
 export type GatewayErrorDescription = { desc: string; suggestion: string };
 
-export const GatewayErrorShortLabels = {
+const GatewayErrorShortLabels = {
   [GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE]: "全部不可用",
   [GatewayErrorCodes.UPSTREAM_ALL_FAILED]: "全部失败",
   [GatewayErrorCodes.NO_ENABLED_PROVIDER]: "无供应商",

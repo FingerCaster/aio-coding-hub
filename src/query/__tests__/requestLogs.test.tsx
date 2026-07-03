@@ -11,8 +11,10 @@ import {
   requestLogsCodexReasoningGuardStats,
   requestLogsListAfterIdAll,
   requestLogsListAll,
+  type CodexReasoningGuardStats,
   type RequestLogSummary,
 } from "../../services/gateway/requestLogs";
+import { activeRequestLogsSnapshot } from "../../services/gateway/activeRequests";
 import {
   createRequestLogDetail,
   createRequestLogSummary as createRequestLogSummaryFixture,
@@ -24,6 +26,7 @@ import {
   REQUEST_LOG_DETAIL_GC_TIME_MS,
   REQUEST_LOG_DETAIL_STALE_TIME_MS,
   useRequestAttemptLogsByTraceIdQuery,
+  useActiveRequestLogsSnapshotQuery,
   useRequestLogDetailQuery,
   useRequestLogsCodexReasoningGuardStatsQuery,
   useRequestLogsIncrementalRefreshMutation,
@@ -44,6 +47,10 @@ vi.mock("../../services/gateway/requestLogs", async () => {
   };
 });
 
+vi.mock("../../services/gateway/activeRequests", () => ({
+  activeRequestLogsSnapshot: vi.fn(),
+}));
+
 function makeRequestLogSummary(
   overrides: Parameters<typeof createRequestLogSummaryFixture>[0] = {}
 ): RequestLogSummary {
@@ -52,6 +59,45 @@ function makeRequestLogSummary(
     ...(hasTimestampOverride ? {} : { created_at_ms: 10_000, created_at: 10 }),
     ...overrides,
   });
+}
+
+function makeCodexReasoningGuardStats(
+  overrides: Partial<CodexReasoningGuardStats> = {}
+): CodexReasoningGuardStats {
+  return {
+    hit_request_count: 5,
+    hit_attempt_count: 8,
+    token_hit_attempt_count: 8,
+    feature_hit_attempt_count: 0,
+    reasoning_token_hit_request_count: 5,
+    final_answer_only_high_xhigh_hit_request_count: 0,
+    normal_request_count: 15,
+    total_request_count: 20,
+    hit_rate: 0.25,
+    feature_sample_request_count: 0,
+    feature_sample_count: 0,
+    final_answer_only_sample_count: 0,
+    high_xhigh_final_answer_only_sample_count: 0,
+    reasoning_516_final_answer_only_no_commentary_count: 0,
+    compaction_exempt_sample_count: 0,
+    reasoning_tokens_coverage_count: 0,
+    final_answer_only_coverage_count: 0,
+    commentary_observed_coverage_count: 0,
+    reasoning_effort_coverage_count: 0,
+    duration_ms_coverage_count: 0,
+    output_tokens_coverage_count: 0,
+    continuation_triggered_request_count: 0,
+    continuation_triggered_attempt_count: 0,
+    continuation_repaired_request_count: 0,
+    continuation_repaired_attempt_count: 0,
+    continuation_non_repaired_attempt_count: 0,
+    continuation_repair_rate: 0,
+    continuation_average_sent_rounds: 0,
+    continuation_by_status: [],
+    by_model: [],
+    by_model_and_effort: [],
+    ...overrides,
+  };
 }
 
 describe("query/requestLogs", () => {
@@ -176,6 +222,50 @@ describe("query/requestLogs", () => {
     await Promise.resolve();
 
     expect(requestLogsListAll).not.toHaveBeenCalled();
+  });
+
+  it("loads active request snapshots into their own query bucket", async () => {
+    setTauriRuntime();
+
+    vi.mocked(activeRequestLogsSnapshot).mockResolvedValue([
+      {
+        trace_id: "trace-active",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        session_id: "sess-1",
+        requested_model: "gpt-5",
+        created_at_ms: 1_000,
+        last_activity_ms: 2_000,
+      },
+    ]);
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useActiveRequestLogsSnapshotQuery(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.data?.map((row) => row.trace_id)).toEqual(["trace-active"]);
+    });
+    expect(client.getQueryState(requestLogsKeys.activeSnapshot())).toBeTruthy();
+  });
+
+  it("fails closed to no active requests when active snapshot loading rejects", async () => {
+    setTauriRuntime();
+
+    vi.mocked(activeRequestLogsSnapshot).mockRejectedValue(new Error("snapshot unavailable"));
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useActiveRequestLogsSnapshotQuery(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isSuccess).toBe(true);
+    });
+    expect(result.current.data).toEqual([]);
   });
 
   it("does not call requestLogGet when logId is null (even on manual refetch)", async () => {
@@ -363,16 +453,9 @@ describe("query/requestLogs", () => {
 
   it("queries Codex reasoning guard stats with a windowed cache key", async () => {
     setTauriRuntime();
+    const stats = makeCodexReasoningGuardStats();
 
-    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue({
-      hit_request_count: 5,
-      hit_attempt_count: 8,
-      normal_request_count: 15,
-      total_request_count: 20,
-      hit_rate: 0.25,
-      by_model: [],
-      by_model_and_effort: [],
-    });
+    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue(stats);
 
     const client = createTestQueryClient();
     const wrapper = createQueryWrapper(client);
@@ -389,15 +472,7 @@ describe("query/requestLogs", () => {
     );
 
     await waitFor(() => {
-      expect(result.current.data).toEqual({
-        hit_request_count: 5,
-        hit_attempt_count: 8,
-        normal_request_count: 15,
-        total_request_count: 20,
-        hit_rate: 0.25,
-        by_model: [],
-        by_model_and_effort: [],
-      });
+      expect(result.current.data).toEqual(stats);
     });
 
     expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith({
@@ -413,16 +488,9 @@ describe("query/requestLogs", () => {
 
   it("queries all-time Codex reasoning guard stats with a null cache key", async () => {
     setTauriRuntime();
+    const stats = makeCodexReasoningGuardStats();
 
-    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue({
-      hit_request_count: 5,
-      hit_attempt_count: 8,
-      normal_request_count: 15,
-      total_request_count: 20,
-      hit_rate: 0.25,
-      by_model: [],
-      by_model_and_effort: [],
-    });
+    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue(stats);
 
     const client = createTestQueryClient();
     const wrapper = createQueryWrapper(client);
@@ -439,15 +507,7 @@ describe("query/requestLogs", () => {
     );
 
     await waitFor(() => {
-      expect(result.current.data).toEqual({
-        hit_request_count: 5,
-        hit_attempt_count: 8,
-        normal_request_count: 15,
-        total_request_count: 20,
-        hit_rate: 0.25,
-        by_model: [],
-        by_model_and_effort: [],
-      });
+      expect(result.current.data).toEqual(stats);
     });
 
     expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith({

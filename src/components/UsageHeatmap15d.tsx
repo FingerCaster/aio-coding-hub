@@ -24,6 +24,8 @@ const LEVEL_CLASS: Record<number, string> = {
   4: "bg-heatmap-4",
 };
 
+const INTEGER_FORMATTER = new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 });
+
 function clampNumber(value: number, min: number, max: number) {
   return Math.max(min, Math.min(max, value));
 }
@@ -37,7 +39,7 @@ function pad2(v: number) {
 function formatNumber(value: number) {
   if (!Number.isFinite(value)) return "0";
   try {
-    return new Intl.NumberFormat(undefined, { maximumFractionDigits: 0 }).format(value);
+    return INTEGER_FORMATTER.format(value);
   } catch {
     return String(value);
   }
@@ -228,12 +230,14 @@ export function UsageHeatmap15d({
                 refreshing && "animate-spin"
               )}
               title="刷新"
+              aria-label="刷新用量热力图"
             >
               <svg
                 xmlns="http://www.w3.org/2000/svg"
                 viewBox="0 0 20 20"
                 fill="currentColor"
                 className="w-3.5 h-3.5"
+                aria-hidden="true"
               >
                 <path
                   fillRule="evenodd"

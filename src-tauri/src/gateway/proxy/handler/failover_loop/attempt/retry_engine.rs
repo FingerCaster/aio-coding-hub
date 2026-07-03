@@ -115,6 +115,7 @@ where
                     &mut retry_state,
                     &next_model,
                 ) {
+                    *loop_state.active_requested_model = prepared.active_requested_model.clone();
                     retry_index = retry_index.saturating_add(1);
                     continue;
                 }
@@ -245,12 +246,15 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
+        responses_cache_namespace: prepared.responses_cache_namespace.as_deref(),
+        responses_cache_input: prepared.responses_cache_input.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     };
     let provider_ctx = ProviderCtx {
         provider_id: prepared.provider_id,
         provider_name_base: &prepared.provider_name_base,
         provider_base_url_base: &prepared.provider_base_url_base,
+        active_requested_model: prepared.active_requested_model.as_deref(),
         auth_mode: prepared.auth_mode.as_str(),
         provider_index: prepared.provider_index,
         session_reuse: prepared.session_reuse,

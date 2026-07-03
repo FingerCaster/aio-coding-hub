@@ -40,10 +40,14 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) verbose_provider_error: bool,
     pub(super) enable_codex_session_id_completion: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules:
         Vec<crate::settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_active_template_id: String,
+    pub(super) codex_reasoning_guard_custom_templates:
+        Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -54,6 +58,9 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
@@ -84,6 +91,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             self.state.db.clone(),
             self.state.log_tx.clone(),
             self.state.plugin_pipeline.clone(),
+            self.state.active_requests.clone(),
             self.trace_id.clone(),
             self.cli_key.clone(),
             self.method_hint.clone(),
@@ -126,11 +134,18 @@ impl<R: tauri::Runtime> RequestContext<R> {
             verbose_provider_error: self.verbose_provider_error,
             enable_codex_session_id_completion: self.enable_codex_session_id_completion,
             codex_reasoning_guard_enabled: self.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode: self.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: self.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: self
                 .codex_reasoning_guard_reasoning_equals
                 .clone(),
             codex_reasoning_guard_model_rules: self.codex_reasoning_guard_model_rules.clone(),
+            codex_reasoning_guard_active_template_id: self
+                .codex_reasoning_guard_active_template_id
+                .clone(),
+            codex_reasoning_guard_custom_templates: self
+                .codex_reasoning_guard_custom_templates
+                .clone(),
             codex_reasoning_guard_immediate_retry_budget: self
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: self
@@ -146,6 +161,12 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_model_fallbacks: self
                 .codex_reasoning_guard_model_fallbacks
                 .clone(),
+            codex_reasoning_guard_continuation_repair_enabled: self
+                .codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds: self
+                .codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens: self
+                .codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider: self.max_attempts_per_provider,
             max_providers_to_try: self.max_providers_to_try,
             upstream_retry_policy: self.upstream_retry_policy.clone(),
@@ -198,9 +219,12 @@ impl<R: tauri::Runtime> RequestContext<R> {
             verbose_provider_error,
             enable_codex_session_id_completion,
             codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates,
             codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
@@ -210,6 +234,9 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_concurrent_interval_ms,
             codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks,
+            codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider,
             max_providers_to_try,
             upstream_retry_policy,
@@ -251,6 +278,7 @@ impl<R: tauri::Runtime> RequestContext<R> {
             state.db.clone(),
             state.log_tx.clone(),
             state.plugin_pipeline.clone(),
+            state.active_requests.clone(),
             trace_id.clone(),
             cli_key.clone(),
             method_hint.clone(),
@@ -294,9 +322,12 @@ impl<R: tauri::Runtime> RequestContext<R> {
             verbose_provider_error,
             enable_codex_session_id_completion,
             codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates,
             codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget,
             codex_reasoning_guard_delayed_retry_ms,
@@ -306,6 +337,9 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_concurrent_interval_ms,
             codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks,
+            codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider,
             max_providers_to_try,
             upstream_retry_policy,
@@ -410,10 +444,14 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) verbose_provider_error: bool,
     pub(super) enable_codex_session_id_completion: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules:
         Vec<crate::settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_active_template_id: String,
+    pub(super) codex_reasoning_guard_custom_templates:
+        Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -424,6 +462,9 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,

@@ -12,6 +12,11 @@ export const BREAKPOINTS = {
 
 export type Breakpoint = keyof typeof BREAKPOINTS;
 
+function getServerSnapshot() {
+  // SSR fallback - assume desktop
+  return true;
+}
+
 /**
  * Hook to check if a media query matches
  * @param query - CSS media query string (e.g., "(min-width: 768px)")
@@ -37,9 +42,6 @@ export function useMediaQuery(query: string): boolean {
     const mql = window.matchMedia?.(query);
     return mql?.matches ?? false;
   };
-
-  // SSR fallback - assume desktop
-  const getServerSnapshot = () => true;
 
   return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
 }

@@ -341,6 +341,8 @@ mod tests {
             mapped_model: None,
             stream_requested: false,
             is_chatgpt_backend: false,
+            responses_cache_namespace: None,
+            responses_cache_input: None,
         }
     }
 

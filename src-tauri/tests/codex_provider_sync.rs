@@ -152,21 +152,22 @@ fn symlink_dir(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 #[test]
-fn codex_config_raw_save_rejects_missing_model_provider() {
+fn codex_config_raw_save_does_not_run_provider_sync() {
     let app = support::TestApp::new();
     let handle = app.handle();
 
-    let err = aio_coding_hub_lib::test_support::codex_config_toml_raw_set(
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
+        true,
+    ));
+    let result = aio_coding_hub_lib::test_support::codex_config_toml_raw_set(
         &handle,
         "approval_policy = \"on-request\"\n".to_string(),
-    )
-    .expect_err("missing model_provider should fail");
-
-    let err_text = err.to_string();
-    assert!(
-        err_text.contains("CODEX_PROVIDER_SYNC_INVALID_TARGET"),
-        "unexpected error: {err_text}"
     );
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    result.expect("raw config save should not run provider sync");
+    let got = read_codex_config(&handle);
+    assert_eq!(got, "approval_policy = \"on-request\"\n");
 }
 
 #[test]

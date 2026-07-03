@@ -1,7 +1,7 @@
 // Usage: Prompt templates view for a specific workspace.
 
 import { Pencil, Trash2 } from "lucide-react";
-import { useEffect, useMemo, useState } from "react";
+import { useEffect, useMemo, useReducer } from "react";
 import { toast } from "sonner";
 import {
   usePromptDeleteMutation,
@@ -69,6 +69,66 @@ export type PromptsViewProps = {
   isActiveWorkspace?: boolean;
 };
 
+type PromptsViewState = {
+  togglingId: number | null;
+  deleteTarget: PromptSummary | null;
+  dialogOpen: boolean;
+  editTarget: PromptSummary | null;
+  name: string;
+  content: string;
+};
+
+type PromptsViewAction =
+  | { type: "openCreateDialog" }
+  | { type: "openEditDialog"; prompt: PromptSummary }
+  | { type: "setDialogOpen"; open: boolean }
+  | { type: "setName"; name: string }
+  | { type: "setContent"; content: string }
+  | { type: "setTogglingId"; promptId: number | null }
+  | { type: "setDeleteTarget"; prompt: PromptSummary | null };
+
+const INITIAL_PROMPTS_VIEW_STATE: PromptsViewState = {
+  togglingId: null,
+  deleteTarget: null,
+  dialogOpen: false,
+  editTarget: null,
+  name: "",
+  content: "",
+};
+
+function promptsViewReducer(state: PromptsViewState, action: PromptsViewAction): PromptsViewState {
+  switch (action.type) {
+    case "openCreateDialog":
+      return {
+        ...state,
+        dialogOpen: true,
+        editTarget: null,
+        name: "",
+        content: "",
+      };
+    case "openEditDialog":
+      return {
+        ...state,
+        dialogOpen: true,
+        editTarget: action.prompt,
+        name: action.prompt.name,
+        content: action.prompt.content,
+      };
+    case "setDialogOpen":
+      return action.open
+        ? { ...state, dialogOpen: true }
+        : { ...state, dialogOpen: false, editTarget: null, name: "", content: "" };
+    case "setName":
+      return { ...state, name: action.name };
+    case "setContent":
+      return { ...state, content: action.content };
+    case "setTogglingId":
+      return { ...state, togglingId: action.promptId };
+    case "setDeleteTarget":
+      return { ...state, deleteTarget: action.prompt };
+  }
+}
+
 export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: PromptsViewProps) {
   const promptsQuery = usePromptsListQuery(workspaceId);
   const upsertMutation = usePromptUpsertMutation(workspaceId);
@@ -78,13 +138,8 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
   const items: PromptSummary[] = promptsQuery.data ?? [];
   const loading = promptsQuery.isFetching;
   const saving = upsertMutation.isPending || toggleMutation.isPending || deleteMutation.isPending;
-  const [togglingId, setTogglingId] = useState<number | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<PromptSummary | null>(null);
-
-  const [dialogOpen, setDialogOpen] = useState(false);
-  const [editTarget, setEditTarget] = useState<PromptSummary | null>(null);
-  const [name, setName] = useState("");
-  const [content, setContent] = useState("");
+  const [state, dispatch] = useReducer(promptsViewReducer, INITIAL_PROMPTS_VIEW_STATE);
+  const { togglingId, deleteTarget, dialogOpen, editTarget, name, content } = state;
 
   const fileHint = useMemo(() => promptFileHint(cliKey), [cliKey]);
 
@@ -96,17 +151,6 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
     });
     toast("加载失败：请查看控制台日志");
   }, [promptsQuery.error, workspaceId]);
-
-  useEffect(() => {
-    if (!dialogOpen) return;
-    if (editTarget) {
-      setName(editTarget.name);
-      setContent(editTarget.content);
-    } else {
-      setName("");
-      setContent("");
-    }
-  }, [dialogOpen, editTarget]);
 
   async function save() {
     if (saving) return;
@@ -129,8 +173,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
       });
 
       toast(editTarget ? "提示词已更新" : "提示词已新增");
-      setDialogOpen(false);
-      setEditTarget(null);
+      dispatch({ type: "setDialogOpen", open: false });
     } catch (err) {
       const msg = formatUnknownError(err);
       logToConsole("error", "保存提示词失败", { error: msg, workspace_id: workspaceId });
@@ -140,7 +183,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
 
   async function toggleEnabled(target: PromptSummary, enabled: boolean) {
     if (togglingId != null) return;
-    setTogglingId(target.id);
+    dispatch({ type: "setTogglingId", promptId: target.id });
     try {
       const next = await toggleMutation.mutateAsync({ promptId: target.id, enabled });
       if (!next) {
@@ -168,7 +211,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
       });
       toast(`操作失败：${String(err)}`);
     } finally {
-      setTogglingId(null);
+      dispatch({ type: "setTogglingId", promptId: null });
     }
   }
 
@@ -183,7 +226,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
       }
       logToConsole("info", "删除提示词", { id: target.id, workspace_id: workspaceId });
       toast("已删除");
-      setDeleteTarget(null);
+      dispatch({ type: "setDeleteTarget", prompt: null });
     } catch (err) {
       logToConsole("error", "删除提示词失败", { error: String(err), id: target.id });
       toast(`删除失败：${String(err)}`);
@@ -207,13 +250,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
         </div>
 
         <div className="flex flex-wrap items-center gap-2">
-          <Button
-            onClick={() => {
-              setEditTarget(null);
-              setDialogOpen(true);
-            }}
-            variant="primary"
-          >
+          <Button onClick={() => dispatch({ type: "openCreateDialog" })} variant="primary">
             新增提示词
           </Button>
         </div>
@@ -265,10 +302,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
 
                   <div className="flex items-center gap-1">
                     <Button
-                      onClick={() => {
-                        setEditTarget(prompt);
-                        setDialogOpen(true);
-                      }}
+                      onClick={() => dispatch({ type: "openEditDialog", prompt })}
                       size="icon"
                       variant="ghost"
                       className="h-8 w-8 p-0 text-muted-foreground hover:text-indigo-600 hover:bg-indigo-50 dark:text-muted-foreground dark:hover:text-indigo-400 dark:hover:bg-indigo-900/30"
@@ -278,7 +312,7 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
                       <Pencil className="h-4 w-4" />
                     </Button>
                     <Button
-                      onClick={() => setDeleteTarget(prompt)}
+                      onClick={() => dispatch({ type: "setDeleteTarget", prompt })}
                       size="icon"
                       variant="ghost"
                       className="h-8 w-8 p-0 text-muted-foreground hover:text-rose-600 hover:bg-rose-50 dark:hover:text-rose-400 dark:hover:bg-rose-900/30"
@@ -302,26 +336,31 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
           isActiveWorkspace ? `启用后会同步到 ${fileHint}` : "非当前工作区：保存不会触发同步"
         }
         onOpenChange={(open) => {
-          setDialogOpen(open);
-          if (!open) setEditTarget(null);
+          dispatch({ type: "setDialogOpen", open });
         }}
         className="w-[90vw] max-w-5xl"
       >
         <div className="grid gap-4">
           <FormField label="名称">
-            <Input value={name} onChange={(e) => setName(e.currentTarget.value)} />
+            <Input
+              value={name}
+              onChange={(e) => dispatch({ type: "setName", name: e.currentTarget.value })}
+            />
           </FormField>
           <FormField label="内容">
             <Textarea
               value={content}
-              onChange={(e) => setContent(e.currentTarget.value)}
+              onChange={(e) => dispatch({ type: "setContent", content: e.currentTarget.value })}
               mono
               className="min-h-[16rem] max-h-[50vh] lg:min-h-[24rem]"
             />
           </FormField>
 
           <div className="flex items-center justify-end gap-2 border-t border-border pt-3">
-            <Button onClick={() => setDialogOpen(false)} variant="secondary">
+            <Button
+              onClick={() => dispatch({ type: "setDialogOpen", open: false })}
+              variant="secondary"
+            >
               取消
             </Button>
             <Button
@@ -341,13 +380,16 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
         title="确认删除提示词"
         description={deleteTarget ? `将删除：${deleteTarget.name}` : undefined}
         onOpenChange={(open) => {
-          if (!open) setDeleteTarget(null);
+          if (!open) dispatch({ type: "setDeleteTarget", prompt: null });
         }}
         className="max-w-lg"
       >
         <div className="space-y-4">
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button onClick={() => setDeleteTarget(null)} variant="secondary">
+            <Button
+              onClick={() => dispatch({ type: "setDeleteTarget", prompt: null })}
+              variant="secondary"
+            >
               取消
             </Button>
             <Button

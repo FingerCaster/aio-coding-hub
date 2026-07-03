@@ -21,6 +21,7 @@ import {
   requestLogsListAfterId,
   requestLogsListAfterIdAll,
   requestLogsListAll,
+  type CodexReasoningGuardStats,
 } from "../requestLogs";
 
 vi.mock("../../../generated/bindings", async () => {
@@ -57,6 +58,45 @@ function makeRequestAttemptLog(overrides: Partial<RequestAttemptLog> = {}): Requ
     attempt_started_ms: 1,
     attempt_duration_ms: 2,
     created_at: 1,
+    ...overrides,
+  };
+}
+
+function makeCodexReasoningGuardStats(
+  overrides: Partial<CodexReasoningGuardStats> = {}
+): CodexReasoningGuardStats {
+  return {
+    hit_request_count: 3,
+    hit_attempt_count: 7,
+    token_hit_attempt_count: 7,
+    feature_hit_attempt_count: 0,
+    reasoning_token_hit_request_count: 3,
+    final_answer_only_high_xhigh_hit_request_count: 0,
+    normal_request_count: 9,
+    total_request_count: 12,
+    hit_rate: 0.25,
+    feature_sample_request_count: 0,
+    feature_sample_count: 0,
+    final_answer_only_sample_count: 0,
+    high_xhigh_final_answer_only_sample_count: 0,
+    reasoning_516_final_answer_only_no_commentary_count: 0,
+    compaction_exempt_sample_count: 0,
+    reasoning_tokens_coverage_count: 0,
+    final_answer_only_coverage_count: 0,
+    commentary_observed_coverage_count: 0,
+    reasoning_effort_coverage_count: 0,
+    duration_ms_coverage_count: 0,
+    output_tokens_coverage_count: 0,
+    continuation_triggered_request_count: 0,
+    continuation_triggered_attempt_count: 0,
+    continuation_repaired_request_count: 0,
+    continuation_repaired_attempt_count: 0,
+    continuation_non_repaired_attempt_count: 0,
+    continuation_repair_rate: 0,
+    continuation_average_sent_rounds: 0,
+    continuation_by_status: [],
+    by_model: [],
+    by_model_and_effort: [],
     ...overrides,
   };
 }
@@ -138,15 +178,7 @@ describe("services/gateway/requestLogs", () => {
     });
     vi.mocked(commands.requestLogsCodexReasoningGuardStats).mockResolvedValueOnce({
       status: "ok",
-      data: {
-        hit_request_count: 3,
-        hit_attempt_count: 7,
-        normal_request_count: 9,
-        total_request_count: 12,
-        hit_rate: 0.25,
-        by_model: [],
-        by_model_and_effort: [],
-      },
+      data: makeCodexReasoningGuardStats(),
     });
 
     await requestLogsList("claude", 10);
@@ -322,63 +354,28 @@ describe("services/gateway/requestLogs", () => {
       status: "ok",
       data: [makeRequestAttemptLog({ cli_key: "gemini" }) as any],
     });
-    vi.mocked(commands.requestLogsCodexReasoningGuardStats).mockResolvedValueOnce({
-      status: "ok",
-      data: {
-        hit_request_count: 11,
-        hit_attempt_count: 19,
-        normal_request_count: 29,
-        total_request_count: 40,
-        hit_rate: 0.275,
-        by_model: [
-          {
-            requested_model: "gpt-5-codex",
-            total_request_count: 20,
-            hit_request_count: 10,
-            normal_request_count: 10,
-            hit_attempt_count: 17,
-            hit_rate: 0.5,
-          },
-        ],
-        by_model_and_effort: [
-          {
-            requested_model: "gpt-5-codex",
-            reasoning_effort: "high",
-            total_request_count: 20,
-            hit_request_count: 10,
-            normal_request_count: 10,
-            hit_attempt_count: 17,
-            hit_rate: 0.5,
-          },
-        ],
-      },
-    });
-
-    await expect(requestLogsList("codex")).resolves.toEqual([
-      expect.objectContaining({ cli_key: "codex" }),
-    ]);
-    await expect(requestLogsListAll()).resolves.toEqual([
-      expect.objectContaining({ cli_key: "gemini" }),
-    ]);
-    await expect(requestLogsListAfterId("claude", 10)).resolves.toEqual([
-      expect.objectContaining({ cli_key: "claude" }),
-    ]);
-    await expect(requestLogsListAfterIdAll(10)).resolves.toEqual([
-      expect.objectContaining({ cli_key: "codex" }),
-    ]);
-    await expect(requestLogGet(2)).resolves.toEqual(expect.objectContaining({ cli_key: "gemini" }));
-    await expect(requestLogGetByTraceId("trace-2")).resolves.toEqual(
-      expect.objectContaining({ cli_key: "codex" })
-    );
-    await expect(requestAttemptLogsByTraceId("trace-2")).resolves.toEqual([
-      expect.objectContaining({ cli_key: "gemini" }),
-    ]);
-    await expect(requestLogsCodexReasoningGuardStats()).resolves.toEqual({
+    const codexReasoningGuardStats = makeCodexReasoningGuardStats({
       hit_request_count: 11,
       hit_attempt_count: 19,
+      token_hit_attempt_count: 17,
+      feature_hit_attempt_count: 2,
+      reasoning_token_hit_request_count: 10,
+      final_answer_only_high_xhigh_hit_request_count: 1,
       normal_request_count: 29,
       total_request_count: 40,
       hit_rate: 0.275,
+      feature_sample_request_count: 4,
+      feature_sample_count: 6,
+      final_answer_only_sample_count: 3,
+      high_xhigh_final_answer_only_sample_count: 2,
+      reasoning_516_final_answer_only_no_commentary_count: 1,
+      compaction_exempt_sample_count: 1,
+      reasoning_tokens_coverage_count: 5,
+      final_answer_only_coverage_count: 4,
+      commentary_observed_coverage_count: 4,
+      reasoning_effort_coverage_count: 6,
+      duration_ms_coverage_count: 6,
+      output_tokens_coverage_count: 2,
       by_model: [
         {
           requested_model: "gpt-5-codex",
@@ -401,6 +398,31 @@ describe("services/gateway/requestLogs", () => {
         },
       ],
     });
+    vi.mocked(commands.requestLogsCodexReasoningGuardStats).mockResolvedValueOnce({
+      status: "ok",
+      data: codexReasoningGuardStats,
+    });
+
+    await expect(requestLogsList("codex")).resolves.toEqual([
+      expect.objectContaining({ cli_key: "codex" }),
+    ]);
+    await expect(requestLogsListAll()).resolves.toEqual([
+      expect.objectContaining({ cli_key: "gemini" }),
+    ]);
+    await expect(requestLogsListAfterId("claude", 10)).resolves.toEqual([
+      expect.objectContaining({ cli_key: "claude" }),
+    ]);
+    await expect(requestLogsListAfterIdAll(10)).resolves.toEqual([
+      expect.objectContaining({ cli_key: "codex" }),
+    ]);
+    await expect(requestLogGet(2)).resolves.toEqual(expect.objectContaining({ cli_key: "gemini" }));
+    await expect(requestLogGetByTraceId("trace-2")).resolves.toEqual(
+      expect.objectContaining({ cli_key: "codex" })
+    );
+    await expect(requestAttemptLogsByTraceId("trace-2")).resolves.toEqual([
+      expect.objectContaining({ cli_key: "gemini" }),
+    ]);
+    await expect(requestLogsCodexReasoningGuardStats()).resolves.toEqual(codexReasoningGuardStats);
 
     expect(commands.requestLogsList).toHaveBeenCalledWith("codex", null);
     expect(commands.requestLogsListAll).toHaveBeenCalledWith(null);

@@ -1,101 +1,154 @@
 import { createPublicKey, verify } from "node:crypto";
-import { dirname } from "node:path";
 import { existsSync, mkdirSync, mkdtempSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
-import { join } from "node:path";
+import { dirname, join } from "node:path";
 import { describe, expect, it } from "vitest";
 import { createPluginScaffold } from "./scaffold";
 import {
+  doctorPluginDirectory,
+  doctorPluginFiles,
   generateSigningKeyPair,
   packPlugin,
   packPluginBytes,
   packPluginDirectory,
+  publishCheckPluginBytes,
   replayHook,
+  replayHookExplain,
   runCreateAioPluginCli,
   signPackage,
   validatePluginDirectory,
   validatePluginFiles,
+  validatePluginFilesStrict,
   verifyPackage,
 } from "./devtools";
 
 describe("create-aio-plugin scaffold", () => {
-  it("creates a declarative rule plugin template", () => {
+  it("creates an extension host command template", () => {
     const files = createPluginScaffold({
       id: "acme.redactor",
       name: "Redactor",
-      template: "rule",
+      template: "command",
     });
+    const manifest = readManifest(files);
 
-    expect(files["plugin.json"]).toContain('"id": "acme.redactor"');
-    expect(files["plugin.json"]).toContain('"kind": "declarativeRules"');
-    expect(files["rules/main.json"]).toContain('"kind": "replace"');
+    expect(manifest).toMatchObject({
+      id: "acme.redactor",
+      name: "Redactor",
+      version: "0.1.0",
+      apiVersion: "1.0.0",
+      main: "dist/extension.js",
+      runtime: { kind: "extensionHost", language: "typescript" },
+      activationEvents: ["onCommand:acme.redactor.hello"],
+      contributes: {
+        commands: [
+          {
+            command: "acme.redactor.hello",
+            title: "Hello from Redactor",
+          },
+        ],
+      },
+      capabilities: ["commands.execute"],
+      hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
+    });
+    expect(manifest).not.toHaveProperty("hooks");
+    expect(manifest).not.toHaveProperty("permissions");
+    expect(files["dist/extension.js"]).toContain(
+      'api.commands.registerCommand("acme.redactor.hello"'
+    );
     expect(files["README.md"]).toContain("acme.redactor");
+    expectNoGeneratedLegacyFields(files);
+    expect(validatePluginFilesStrict(files).ok).toBe(true);
   });
 
-  it("creates a declarative rule template with the host rule ABI", () => {
+  it("keeps the legacy rule alias on the extension host command template", () => {
     const files = createPluginScaffold({
-      id: "acme.redactor",
-      name: "Redactor",
+      id: "acme.legacy",
+      name: "Legacy Alias",
       template: "rule",
     });
+    const manifest = readManifest(files);
 
-    const document = JSON.parse(files["rules/main.json"] ?? "{}") as {
-      rules?: Array<Record<string, unknown>>;
-    };
-    const rule = document.rules?.[0] ?? {};
-
-    expect(rule.target).toEqual({
-      field: "request.body",
-      jsonPath: "$.messages[*].content",
-    });
-    expect(rule.match).toMatchObject({
-      regex: "SECRET_[A-Za-z0-9_]+",
-      caseSensitive: true,
-    });
-    expect(rule).not.toHaveProperty("matcher");
+    expect(manifest.runtime).toEqual({ kind: "extensionHost", language: "typescript" });
+    expect(manifest.main).toBe("dist/extension.js");
+    expect(files).not.toHaveProperty("rules/main.json");
+    expect(files["dist/extension.js"]).toContain(
+      'api.commands.registerCommand("acme.legacy.hello"'
+    );
+    expectNoGeneratedLegacyFields(files);
   });
 
-  it("creates a WASM plugin template without enabling marketplace execution", () => {
-    const files = createPluginScaffold({
-      id: "acme.policy",
-      name: "Policy",
-      template: "wasm",
-    });
+  it("documents the legacy rule template as a command alias in CLI usage", () => {
+    const output: string[] = [];
 
-    expect(files["plugin.json"]).toContain('"kind": "wasm"');
-    expect(files["src/lib.rs"]).toContain("aio_plugin_handle");
-    expect(files["README.md"]).toContain("gateway execution remains policy-gated");
-    expect(files["README.md"]).toContain("PLUGIN_RUNTIME_DISABLED");
+    expect(
+      runCreateAioPluginCli([], process.cwd(), {
+        log: (line) => output.push(line),
+        error: (line) => output.push(line),
+      })
+    ).toBe(1);
+
+    expect(output[0]).toContain("rule");
+    expect(output[0]).toContain("legacy alias for command");
   });
 
-  it("packs binary wasm artifacts without utf8 rewriting", () => {
-    const wasmBytes = new Uint8Array([0x00, 0x61, 0x73, 0x6d, 0xff, 0x00, 0x80]);
+  it("rejects wasm as a public CLI template", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "aio-plugin-wasm-unsupported-"));
+    const output: string[] = [];
+
+    expect(
+      runCreateAioPluginCli(["acme.policy", "wasm"], cwd, {
+        log: (line) => output.push(line),
+        error: (line) => output.push(line),
+      })
+    ).toBe(1);
+
+    expect(output[0]).toContain("PLUGIN_TEMPLATE_UNSUPPORTED");
+    expect(output[0]).toContain("Extension Host");
+    expect(existsSync(join(cwd, "acme.policy", "plugin.json"))).toBe(false);
+  });
+
+  it("writes the default command template through the CLI helper", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "aio-plugin-default-"));
+
+    expect(
+      runCreateAioPluginCli(["acme.default"], cwd, {
+        log: () => undefined,
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    expect(existsSync(join(cwd, "acme.default", "plugin.json"))).toBe(true);
+    expect(existsSync(join(cwd, "acme.default", "dist/extension.js"))).toBe(true);
+    expect(existsSync(join(cwd, "acme.default", "rules/main.json"))).toBe(false);
+  });
+
+  it("packs binary artifacts without utf8 rewriting", () => {
+    const binaryBytes = new Uint8Array([0x00, 0x61, 0x69, 0x6f, 0xff, 0x00, 0x80]);
     const packed = packPluginBytes({
-      "plugin.json": new TextEncoder().encode(JSON.stringify(validWasmManifest())),
-      "plugin.wasm": wasmBytes,
+      "plugin.json": new TextEncoder().encode(JSON.stringify(validExtensionManifest())),
+      "dist/extension.js": new TextEncoder().encode("module.exports.activate = function() {};\n"),
+      "dist/payload.bin": binaryBytes,
     });
 
     expect(packed.checksum).toMatch(/^sha256:/);
-    expect(readStoredZipEntry(packed.bytes, "plugin.wasm")).toEqual(wasmBytes);
+    expect(readStoredZipEntry(packed.bytes, "dist/payload.bin")).toEqual(binaryBytes);
   });
 
-  it("validates manifests, replays hook fixtures, and verifies package signatures", () => {
+  it("validates manifests, packs extension source, and verifies package signatures", () => {
     const files = createPluginScaffold({
       id: "acme.redactor",
       name: "Redactor",
-      template: "rule",
+      template: "command",
     });
 
     expect(validatePluginFiles(files).ok).toBe(true);
-    expect(replayHook(files, "gateway.request.afterBodyRead", { body: "SECRET_TOKEN" })).toEqual({
-      action: "pass",
-    });
 
     const packed = packPlugin(files);
     const entries = unpackStoredZipEntries(packed.bytes);
 
-    expect(entries.get("plugin.json")).toContain('"id": "acme.redactor"');
-    expect(entries.get("rules/main.json")).toContain('"kind": "replace"');
+    expect(entries.get("plugin.json")).toContain('"kind": "extensionHost"');
+    expect(entries.get("dist/extension.js")).toContain("registerCommand");
+    expect(entries.has("rules/main.json")).toBe(false);
 
     const keyPair = generateSigningKeyPair();
     const signed = signPackage(packed.bytes, keyPair.privateKey);
@@ -126,6 +179,62 @@ describe("create-aio-plugin scaffold", () => {
     ).toMatchObject({
       ok: false,
     });
+  });
+
+  it("publish-check emits extension host package metadata", () => {
+    const files = createPluginScaffold({
+      id: "acme.redactor",
+      name: "Redactor",
+      template: "example:redactor",
+    });
+    const packed = packPlugin(files);
+    const keyPair = generateSigningKeyPair();
+    const signed = signPackage(packed.bytes, keyPair.privateKey);
+
+    const result = publishCheckPluginBytes(packed.bytes, {
+      checksum: signed.checksum,
+      signature: signed.signature,
+      publicKey: signed.publicKey,
+      manifest: files["plugin.json"] ?? "",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      checksum: signed.checksum,
+      signatureVerified: true,
+      manifestId: "acme.redactor",
+      version: "0.1.0",
+      runtime: "extensionHost",
+      capabilities: ["gateway.hooks"],
+      hooks: ["gateway.request.beforeSend", "log.beforePersist"],
+    });
+  });
+
+  it("publish-check reports runtime metadata from invalid manifests", () => {
+    const files = createPluginScaffold({
+      id: "acme.metadata",
+      name: "Metadata",
+      template: "command",
+    });
+    const packed = packPlugin(files);
+
+    const wasmRuntime = publishCheckPluginBytes(packed.bytes, {
+      checksum: packed.checksum,
+      manifest: JSON.stringify({
+        ...validExtensionManifest(),
+        runtime: { kind: "wasm", abiVersion: "1.0.0" },
+      }),
+    });
+    const missingRuntime = publishCheckPluginBytes(packed.bytes, {
+      checksum: packed.checksum,
+      manifest: JSON.stringify({
+        ...validExtensionManifest(),
+        runtime: undefined,
+      }),
+    });
+
+    expect(wasmRuntime).toMatchObject({ ok: false, runtime: "wasm" });
+    expect(missingRuntime).toMatchObject({ ok: false, runtime: "unknown" });
   });
 
   it("signs and verifies package bytes through the CLI helper", () => {
@@ -162,36 +271,138 @@ describe("create-aio-plugin scaffold", () => {
     });
   });
 
-  it("packs a scaffold into an .aio-plugin file through the CLI helper", () => {
-    const cwd = mkdtempSync(join(tmpdir(), "aio-plugin-pack-"));
+  it("pack and publish-check commands require extension host package shape", () => {
+    const cwd = mkdtempSync(join(tmpdir(), "aio-plugin-pack-shape-"));
     writeScaffold(
       join(cwd, "acme.redactor"),
       createPluginScaffold({
         id: "acme.redactor",
         name: "Redactor",
-        template: "rule",
+        template: "command",
       })
     );
-    const output: string[] = [];
+    const packOutput: string[] = [];
+    const publishCwd = mkdtempSync(join(tmpdir(), "aio-plugin-publish-shape-"));
+    writeScaffold(
+      join(publishCwd, "acme.redactor"),
+      createPluginScaffold({
+        id: "acme.redactor",
+        name: "Redactor",
+        template: "command",
+      })
+    );
+    const publishOutput: string[] = [];
 
     expect(
       runCreateAioPluginCli(["pack", "./acme.redactor"], cwd, {
-        log: (line) => output.push(line),
+        log: (line) => packOutput.push(line),
         error: () => undefined,
       })
     ).toBe(0);
 
-    const result = JSON.parse(output[0] ?? "{}") as {
+    const packResult = JSON.parse(packOutput[0] ?? "{}") as {
       path: string;
       checksum: string;
       sizeBytes: number;
     };
 
-    expect(result.path).toBe(join(cwd, "acme.redactor.aio-plugin"));
-    expect(result.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
-    expect(result.sizeBytes).toBeGreaterThan(0);
-    expect(existsSync(result.path)).toBe(true);
+    expect(packResult.path).toBe(join(cwd, "acme.redactor.aio-plugin"));
+    expect(packResult.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(packResult.sizeBytes).toBeGreaterThan(0);
+    expect(existsSync(packResult.path)).toBe(true);
+
+    expect(
+      runCreateAioPluginCli(["publish-check", "./acme.redactor"], publishCwd, {
+        log: (line) => publishOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    const publishResult = JSON.parse(publishOutput[0] ?? "{}") as {
+      artifactPath: string;
+      checksum: string;
+      manifestId: string;
+      runtime: string;
+      signatureVerified: boolean;
+    };
+
+    expect(publishResult).toMatchObject({
+      artifactPath: join(publishCwd, "acme.redactor.aio-plugin"),
+      manifestId: "acme.redactor",
+      runtime: "extensionHost",
+      signatureVerified: false,
+    });
+    expect(publishResult.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(existsSync(publishResult.artifactPath)).toBe(false);
   });
+
+  it("pack rejects packages missing the extension host main file", () => {
+    const files = createPluginScaffold({
+      id: "acme.broken",
+      name: "Broken",
+      template: "command",
+    });
+    delete files["dist/extension.js"];
+
+    expect(() => packPlugin(files)).toThrow(/PLUGIN_MAIN_FILE_MISSING/);
+  });
+
+  it("normalizes dot-prefixed extension host main paths for doctor, pack, and publish-check", () => {
+    const files = createPluginScaffold({
+      id: "acme.normalized",
+      name: "Normalized",
+      template: "command",
+    });
+    const manifest = readManifest(files);
+    manifest.main = "./dist/extension.js";
+    writeManifest(files, manifest);
+
+    expect(doctorPluginFiles(files).ok).toBe(true);
+    expect(validatePluginFiles(files).ok).toBe(true);
+
+    const packed = packPlugin(files);
+    const result = publishCheckPluginBytes(packed.bytes, {
+      checksum: packed.checksum,
+      manifest: files["plugin.json"] ?? "",
+    });
+
+    expect(result).toMatchObject({
+      ok: true,
+      manifestId: "acme.normalized",
+      runtime: "extensionHost",
+    });
+  });
+
+  it.each(["dist/extension.txt", "../extension.js"] as const)(
+    "rejects unsafe or non-JavaScript extension host main path %s",
+    (main) => {
+      const files = createPluginScaffold({
+        id: "acme.invalid-main",
+        name: "Invalid Main",
+        template: "command",
+      });
+      const manifest = readManifest(files);
+      manifest.main = main;
+      writeManifest(files, manifest);
+      files[main] = "module.exports.activate = function() {};\n";
+
+      const doctorResult = doctorPluginFiles(files);
+      const validateResult = validatePluginFiles(files);
+
+      expect(doctorResult.ok).toBe(false);
+      expect(doctorResult.diagnostics).toContainEqual(
+        expect.objectContaining({
+          severity: "error",
+          code: "PLUGIN_INVALID_MAIN",
+        })
+      );
+      expect(validateResult).toMatchObject({
+        ok: false,
+        error: { code: "PLUGIN_INVALID_MAIN" },
+      });
+      expect(() => packPlugin(files)).toThrow(/PLUGIN_INVALID_MAIN/);
+    }
+  );
 
   it("validate command reads plugin.json from a real plugin directory", () => {
     const root = mkdtempSync(join(tmpdir(), "aio-plugin-"));
@@ -200,6 +411,174 @@ describe("create-aio-plugin scaffold", () => {
     const result = validatePluginDirectory(root);
 
     expect(result).toEqual({ ok: true });
+  });
+
+  it("validate strict rejects legacy runtime and contribution fields", () => {
+    const legacy = validatePluginFilesStrict(legacyWasmFiles());
+
+    expect(legacy.ok).toBe(false);
+    expect(legacy.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME",
+        path: "plugin.json#/runtime",
+      })
+    );
+
+    const unknownContribution = validatePluginFilesStrict({
+      "plugin.json": `${JSON.stringify(
+        {
+          ...validExtensionManifest(),
+          contributes: { legacyRules: [{ rules: ["rules/main.json"] }] },
+        },
+        null,
+        2
+      )}\n`,
+      "dist/extension.js": "module.exports.activate = function() {};\n",
+    });
+
+    expect(unknownContribution.ok).toBe(false);
+    expect(unknownContribution.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_INVALID_CONTRIBUTION",
+        path: "plugin.json",
+      })
+    );
+  });
+
+  it("validate command rejects packages missing the extension host main file", () => {
+    const root = mkdtempSync(join(tmpdir(), "aio-plugin-strict-"));
+    const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
+    delete files["dist/extension.js"];
+    writeScaffold(root, files);
+    const normalOutput: string[] = [];
+    const strictOutput: string[] = [];
+
+    expect(
+      runCreateAioPluginCli(["validate", root], process.cwd(), {
+        log: (line) => normalOutput.push(line),
+        error: (line) => normalOutput.push(line),
+      })
+    ).toBe(1);
+    expect(JSON.parse(normalOutput[0] ?? "{}")).toMatchObject({
+      ok: false,
+      error: { code: "PLUGIN_MAIN_FILE_MISSING" },
+    });
+
+    expect(
+      runCreateAioPluginCli(["validate", "--strict", root], process.cwd(), {
+        log: (line) => strictOutput.push(line),
+        error: (line) => strictOutput.push(line),
+      })
+    ).toBe(1);
+    expect(JSON.parse(strictOutput[0] ?? "{}")).toMatchObject({
+      ok: false,
+      diagnostics: [expect.objectContaining({ code: "PLUGIN_MAIN_FILE_MISSING" })],
+    });
+  });
+
+  it("doctor reports unsupported diagnostics for legacy manifests", () => {
+    const legacyResult = doctorPluginFiles(legacyWasmFiles());
+
+    expect(legacyResult.ok).toBe(false);
+    expect(legacyResult.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME",
+        message: expect.stringContaining("Extension Host"),
+        path: "plugin.json#/runtime",
+      })
+    );
+    expect(legacyResult.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "PLUGIN_RULE_FILE_MISSING" })
+    );
+
+    const wasmResult = doctorPluginFiles({
+      "plugin.json": `${JSON.stringify(
+        {
+          id: "acme.policy",
+          name: "Policy",
+          version: "0.1.0",
+          apiVersion: "1.0.0",
+          runtime: { kind: "wasm", abiVersion: "1.0.0" },
+          entry: "plugin.wasm",
+          hostCompatibility: { app: ">=0.62.0 <1.0.0", pluginApi: "^1.0.0" },
+        },
+        null,
+        2
+      )}\n`,
+    });
+
+    expect(wasmResult.ok).toBe(false);
+    expect(wasmResult.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_UNSUPPORTED_LEGACY_RUNTIME",
+        path: "plugin.json#/runtime",
+      })
+    );
+    expect(wasmResult.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: "PLUGIN_WASM_ENTRY_MISSING" })
+    );
+  });
+
+  it("doctor accepts extension host manifests and reports missing main files", () => {
+    const files = createPluginScaffold({
+      id: "acme.real",
+      name: "Real",
+      template: "command",
+    });
+
+    const result = doctorPluginFiles(files);
+
+    expect(result.ok).toBe(true);
+    expect(result.manifest).toMatchObject({
+      id: "acme.real",
+      runtime: "extensionHost",
+    });
+
+    delete files["dist/extension.js"];
+    const missingMain = doctorPluginFiles(files);
+
+    expect(missingMain.ok).toBe(false);
+    expect(missingMain.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: "error",
+        code: "PLUGIN_MAIN_FILE_MISSING",
+        path: "dist/extension.js",
+      })
+    );
+  });
+
+  it("doctor command reads a real plugin directory and returns non-zero for errors", () => {
+    const root = mkdtempSync(join(tmpdir(), "aio-plugin-doctor-"));
+    writeScaffold(root, createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" }));
+    const output: string[] = [];
+
+    expect(doctorPluginDirectory(root).ok).toBe(true);
+    expect(
+      runCreateAioPluginCli(["doctor", root], process.cwd(), {
+        log: (line) => output.push(line),
+        error: (line) => output.push(line),
+      })
+    ).toBe(0);
+    expect(JSON.parse(output[0] ?? "{}")).toMatchObject({ ok: true });
+
+    const brokenRoot = mkdtempSync(join(tmpdir(), "aio-plugin-doctor-broken-"));
+    writeFileSync(join(brokenRoot, "README.md"), "# broken\n");
+    const brokenOutput: string[] = [];
+
+    expect(
+      runCreateAioPluginCli(["doctor", brokenRoot], process.cwd(), {
+        log: (line) => brokenOutput.push(line),
+        error: (line) => brokenOutput.push(line),
+      })
+    ).toBe(1);
+    expect(JSON.parse(brokenOutput[0] ?? "{}")).toMatchObject({
+      ok: false,
+      diagnostics: [expect.objectContaining({ code: "PLUGIN_MISSING_MANIFEST" })],
+    });
   });
 
   it("pack command writes package bytes from a real plugin directory", () => {
@@ -212,151 +591,219 @@ describe("create-aio-plugin scaffold", () => {
     expect(packed.bytes.length).toBeGreaterThan(64);
   });
 
-  it("replay command applies scaffold rule to fixture context", () => {
-    const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
-
-    const result = replayHook(files, "gateway.request.afterBodyRead", {
-      request: {
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "SECRET_TOKEN" }],
-        }),
-      },
+  it("replay is disabled for extension host and legacy packages", () => {
+    const extensionFiles = createPluginScaffold({
+      id: "acme.real",
+      name: "Real",
+      template: "example:redactor",
     });
 
-    expect(result).toMatchObject({ action: "replace" });
-    expect(JSON.stringify(result)).toContain("[REDACTED]");
+    expect(() =>
+      replayHook(extensionFiles, "gateway.request.beforeSend", { request: { body: "token=abc" } })
+    ).toThrow(/PLUGIN_REPLAY_UNSUPPORTED/);
+    expect(() =>
+      replayHookExplain(extensionFiles, "gateway.request.beforeSend", {
+        request: { body: "token=abc" },
+      })
+    ).toThrow(/PLUGIN_REPLAY_UNSUPPORTED/);
+    expect(() =>
+      replayHook(legacyWasmFiles(), "gateway.request.afterBodyRead", {
+        request: { body: "SECRET_TOKEN" },
+      })
+    ).toThrow(/PLUGIN_REPLAY_UNSUPPORTED/);
   });
 
-  it("replay command emits the active vNext mutation envelope", () => {
-    const files = createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" });
-
-    const result = replayHook(files, "gateway.request.afterBodyRead", {
-      request: {
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "SECRET_TOKEN" }],
-        }),
-      },
-    });
-
-    expect(result).toMatchObject({
-      action: "replace",
-      requestBody: expect.stringContaining("[REDACTED]"),
-    });
-    expect(result).not.toHaveProperty("contextPatch");
-  });
-
-  it("replay applies same-target JSONPath replacement like the host rule runtime", () => {
-    const files = createPluginScaffold({ id: "acme.redactor", name: "Redactor", template: "rule" });
-
-    const result = replayHook(files, "gateway.request.afterBodyRead", {
-      request: {
-        body: JSON.stringify({
-          messages: [{ role: "user", content: "SECRET_TOKEN" }],
-        }),
-      },
-    });
-
-    expect(result).toEqual({
-      action: "replace",
-      requestBody: JSON.stringify({
-        messages: [{ role: "user", content: "[REDACTED]" }],
-      }),
-    });
-  });
-
-  it("replay supports block, warn, and appendMessage actions", () => {
-    const blockFiles = rulePluginFilesWithAction({ kind: "block", reason: "blocked" });
+  it("replay command reports that extension host gateway hooks are not run locally", () => {
+    const root = mkdtempSync(join(tmpdir(), "aio-plugin-replay-"));
+    const fixturePath = join(root, "fixture.json");
+    writeScaffold(root, createPluginScaffold({ id: "acme.real", name: "Real", template: "rule" }));
+    writeFileSync(fixturePath, JSON.stringify({ request: { body: "token=abc" } }));
+    const output: string[] = [];
 
     expect(
-      replayHook(blockFiles, "gateway.request.afterBodyRead", { request: { body: "danger" } })
-    ).toEqual({ action: "block", reason: "blocked" });
-
-    const warnFiles = rulePluginFilesWithAction({ kind: "warn", message: "careful" });
-
-    expect(
-      replayHook(warnFiles, "gateway.request.afterBodyRead", { request: { body: "danger" } })
-    ).toEqual({ action: "warn", message: "careful" });
-
-    const appendFiles = rulePluginFilesWithAction({
-      kind: "appendMessage",
-      role: "developer",
-      content: "Use safe mode",
-    });
-
-    const result = replayHook(appendFiles, "gateway.request.afterBodyRead", {
-      request: { body: JSON.stringify({ messages: [{ role: "user", content: "hello" }] }) },
-    });
-
-    expect(JSON.stringify(result)).toContain("Use safe mode");
-    expect(result).not.toHaveProperty("contextPatch");
-  });
-
-  it("replay replaces Codex/OpenAI Responses input text like the host rule runtime", () => {
-    const files = rulePluginFilesWithTarget("$.input[*].content[*].text");
-
-    const result = replayHook(files, "gateway.request.afterBodyRead", {
-      request: {
-        body: JSON.stringify({
-          input: [
-            {
-              type: "message",
-              role: "user",
-              content: [{ type: "input_text", text: "SECRET_TOKEN" }],
-            },
-          ],
-        }),
-      },
-    });
-
-    expect(result).toEqual({
-      action: "replace",
-      requestBody: JSON.stringify({
-        input: [
-          {
-            type: "message",
-            role: "user",
-            content: [{ type: "input_text", text: "[REDACTED]" }],
-          },
-        ],
-      }),
-    });
-  });
-
-  it("replay maps response, stream, and log targets to their host mutation fields", () => {
-    expect(
-      replayHook(
-        rulePluginFilesWithRule({
-          hook: "gateway.response.after",
-          target: { field: "response.body" },
-        }),
-        "gateway.response.after",
-        { response: { body: "SECRET_TOKEN" } }
+      runCreateAioPluginCli(
+        ["replay", "--explain", root, fixturePath, "gateway.request.beforeSend"],
+        process.cwd(),
+        {
+          log: (line) => output.push(line),
+          error: (line) => output.push(line),
+        }
       )
-    ).toEqual({ action: "replace", responseBody: "[REDACTED]" });
+    ).toBe(1);
 
-    expect(
-      replayHook(
-        rulePluginFilesWithRule({
-          hook: "gateway.response.chunk",
-          target: { field: "stream.chunk" },
-        }),
-        "gateway.response.chunk",
-        { stream: { chunk: "data: SECRET_TOKEN\n\n" } }
-      )
-    ).toEqual({ action: "replace", streamChunk: "data: [REDACTED]\n\n" });
-
-    expect(
-      replayHook(
-        rulePluginFilesWithRule({
-          hook: "log.beforePersist",
-          target: { field: "log.message" },
-        }),
-        "log.beforePersist",
-        { log: { message: "apiKey=SECRET_TOKEN" } }
-      )
-    ).toEqual({ action: "replace", logMessage: "apiKey=[REDACTED]" });
+    expect(output[0]).toContain("PLUGIN_REPLAY_UNSUPPORTED");
+    expect(output[0]).toContain("Extension Host gateway hook replay is not executed locally");
   });
 });
+
+describe("create-aio-plugin example templates", () => {
+  it.each([
+    [
+      "acme.prompt-helper",
+      "Prompt Helper",
+      "example:prompt-helper",
+      ["gateway.request.afterBodyRead"],
+    ],
+    [
+      "acme.redactor",
+      "Redactor",
+      "example:redactor",
+      ["gateway.request.beforeSend", "log.beforePersist"],
+    ],
+    ["acme.response-guard", "Response Guard", "example:response-guard", ["gateway.response.after"]],
+  ] as const)(
+    "generates extension host gateway hook example %s",
+    (pluginId, name, template, hooks) => {
+      const files = createPluginScaffold({
+        id: pluginId,
+        name,
+        template,
+      });
+      const manifest = readManifest(files);
+
+      expect(manifest).toMatchObject({
+        id: pluginId,
+        main: "dist/extension.js",
+        runtime: { kind: "extensionHost", language: "typescript" },
+        capabilities: ["gateway.hooks"],
+        hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
+      });
+      expect(manifest.contributes.gatewayHooks.map((hook: { name: string }) => hook.name)).toEqual(
+        hooks
+      );
+      for (const hook of hooks) {
+        expect(files["dist/extension.js"]).toContain(`api.gateway.registerHook("${hook}"`);
+      }
+      expect(files["dist/extension.js"]).toContain('action: "pass"');
+      expect(validatePluginFilesStrict(files).ok).toBe(true);
+      expectNoGeneratedLegacyFields(files);
+      expectExampleReadmeDocumentsDevtoolsLoop(files);
+      expectExampleCanPackAndPublishCheck(files, pluginId, hooks);
+    }
+  );
+
+  it.each([
+    ["acme.prompt-helper", "example:prompt-helper"],
+    ["acme.redactor", "example:redactor"],
+    ["acme.response-guard", "example:response-guard"],
+  ] as const)("writes %s through the CLI example template %s", (pluginId, template) => {
+    const cwd = mkdtempSync(join(tmpdir(), "aio-plugin-example-"));
+    const validateOutput: string[] = [];
+    const packOutput: string[] = [];
+    const publishOutput: string[] = [];
+
+    expect(
+      runCreateAioPluginCli([pluginId, template], cwd, {
+        log: () => undefined,
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    expect(existsSync(join(cwd, pluginId, "plugin.json"))).toBe(true);
+    expect(existsSync(join(cwd, pluginId, "dist/extension.js"))).toBe(true);
+    expect(existsSync(join(cwd, pluginId, "rules/main.json"))).toBe(false);
+
+    expect(
+      runCreateAioPluginCli(["validate", "--strict", `./${pluginId}`], cwd, {
+        log: (line) => validateOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+    expect(JSON.parse(validateOutput[0] ?? "{}")).toMatchObject({ ok: true });
+
+    expect(
+      runCreateAioPluginCli(["pack", `./${pluginId}`], cwd, {
+        log: (line) => packOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    const packResult = JSON.parse(packOutput[0] ?? "{}") as {
+      path: string;
+      checksum: string;
+      sizeBytes: number;
+    };
+    expect(packResult.path).toBe(join(cwd, `${pluginId}.aio-plugin`));
+    expect(packResult.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+    expect(packResult.sizeBytes).toBeGreaterThan(0);
+    expect(existsSync(packResult.path)).toBe(true);
+
+    expect(
+      runCreateAioPluginCli(["publish-check", `./${pluginId}`], cwd, {
+        log: (line) => publishOutput.push(line),
+        error: () => undefined,
+      })
+    ).toBe(0);
+
+    const publishResult = JSON.parse(publishOutput[0] ?? "{}") as {
+      artifactPath: string;
+      manifestId: string;
+      checksum: string;
+      runtime: string;
+      signatureVerified: boolean;
+    };
+    expect(publishResult).toMatchObject({
+      artifactPath: join(cwd, `${pluginId}.aio-plugin`),
+      manifestId: pluginId,
+      runtime: "extensionHost",
+      signatureVerified: false,
+    });
+    expect(publishResult.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+  });
+});
+
+function expectExampleCanPackAndPublishCheck(
+  files: Record<string, string>,
+  manifestId: string,
+  hooks: readonly string[]
+) {
+  const packed = packPlugin(files);
+  const result = publishCheckPluginBytes(packed.bytes, {
+    checksum: packed.checksum,
+    manifest: files["plugin.json"] ?? "",
+  });
+
+  expect(packed.checksum).toMatch(/^sha256:[a-f0-9]{64}$/);
+  expect(result).toMatchObject({
+    ok: true,
+    manifestId,
+    runtime: "extensionHost",
+    checksumVerified: true,
+    signatureVerified: false,
+    unsigned: true,
+    capabilities: ["gateway.hooks"],
+    hooks,
+  });
+}
+
+function expectExampleReadmeDocumentsDevtoolsLoop(files: Record<string, string>) {
+  const readme = files["README.md"] ?? "";
+
+  expect(readme).toContain("development template, not a default installable marketplace package");
+  expect(readme).toContain("pnpm --filter create-aio-plugin cli validate --strict .");
+  expect(readme).toContain("pnpm --filter create-aio-plugin cli pack .");
+  expect(readme).toContain("pnpm --filter create-aio-plugin cli publish-check .");
+  expect(readme).not.toContain("create-aio-plugin replay");
+}
+
+function expectNoGeneratedLegacyFields(files: Record<string, string>): void {
+  for (const path of Object.keys(files)) {
+    expect(path).not.toContain("rules/");
+  }
+  const manifest = readManifest(files);
+  expect(manifest.runtime).toEqual({
+    kind: "extensionHost",
+    language: "typescript",
+  });
+}
+
+function readManifest(files: Record<string, string>): Record<string, any> {
+  return JSON.parse(files["plugin.json"] ?? "{}") as Record<string, any>;
+}
+
+function writeManifest(files: Record<string, string>, manifest: Record<string, any>): void {
+  files["plugin.json"] = `${JSON.stringify(manifest, null, 2)}\n`;
+}
 
 function writeScaffold(root: string, files: Record<string, string>): void {
   for (const [path, content] of Object.entries(files)) {
@@ -366,84 +813,38 @@ function writeScaffold(root: string, files: Record<string, string>): void {
   }
 }
 
-function validWasmManifest() {
+function validExtensionManifest() {
   return {
-    id: "acme.policy",
-    name: "Policy",
+    id: "acme.binary",
+    name: "Binary Payload",
     version: "0.1.0",
     apiVersion: "1.0.0",
-    runtime: { kind: "wasm", abiVersion: "1.0.0", memoryLimitBytes: 16777216 },
-    hooks: [{ name: "gateway.request.afterBodyRead", priority: 100 }],
-    permissions: ["request.meta.read"],
-    hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
-    entry: "plugin.wasm",
+    main: "dist/extension.js",
+    runtime: { kind: "extensionHost", language: "typescript" },
+    activationEvents: ["onStartup"],
+    capabilities: [],
+    hostCompatibility: { app: ">=0.60.0 <1.0.0", pluginApi: "^1.0.0" },
   };
 }
 
-function rulePluginFilesWithAction(action: Record<string, unknown>): Record<string, string> {
-  const files = rulePluginFilesWithTarget(undefined);
-  const document = JSON.parse(files["rules/main.json"] ?? "{}") as {
-    rules?: Array<Record<string, unknown>>;
-  };
-  const rule = document.rules?.[0];
-  if (rule) {
-    rule.target = { field: "request.body" };
-    rule.match = { regex: "danger|hello", caseSensitive: true };
-    rule.action = action;
-  }
+function legacyWasmFiles(): Record<string, string> {
   return {
-    ...files,
-    "rules/main.json": `${JSON.stringify(document, null, 2)}\n`,
+    "plugin.json": `${JSON.stringify(
+      {
+        id: "acme.legacy",
+        name: "Legacy",
+        version: "0.1.0",
+        apiVersion: "1.0.0",
+        runtime: { kind: "wasm", abiVersion: "1.0.0" },
+        hooks: [{ name: "gateway.request.afterBodyRead", priority: 100 }],
+        permissions: ["request.body.read", "request.body.write"],
+        hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
+      },
+      null,
+      2
+    )}\n`,
+    "plugin.wasm": "",
   };
-}
-
-function rulePluginFilesWithTarget(jsonPath: string | undefined): Record<string, string> {
-  return rulePluginFilesWithRule({
-    hook: "gateway.request.afterBodyRead",
-    target: jsonPath ? { field: "request.body", jsonPath } : { field: "request.body" },
-  });
-}
-
-function rulePluginFilesWithRule(options: {
-  hook: string;
-  target: Record<string, unknown>;
-}): Record<string, string> {
-  const files = createPluginScaffold({ id: "acme.redactor", name: "Redactor", template: "rule" });
-  const manifest = JSON.parse(files["plugin.json"] ?? "{}") as {
-    hooks?: Array<Record<string, unknown>>;
-    permissions?: string[];
-  };
-  if (manifest.hooks?.[0]) {
-    manifest.hooks[0].name = options.hook;
-  }
-  manifest.permissions = permissionsForReplayTarget(options.target.field);
-  const document = JSON.parse(files["rules/main.json"] ?? "{}") as {
-    rules?: Array<Record<string, unknown>>;
-  };
-  const rule = document.rules?.[0];
-  if (rule) {
-    rule.hook = options.hook;
-    rule.target = options.target;
-  }
-  return {
-    ...files,
-    "plugin.json": `${JSON.stringify(manifest, null, 2)}\n`,
-    "rules/main.json": `${JSON.stringify(document, null, 2)}\n`,
-  };
-}
-
-function permissionsForReplayTarget(field: unknown): string[] {
-  switch (field) {
-    case "response.body":
-      return ["response.body.read", "response.body.write"];
-    case "stream.chunk":
-      return ["stream.inspect", "stream.modify"];
-    case "log.message":
-      return ["log.redact"];
-    case "request.body":
-    default:
-      return ["request.body.read", "request.body.write"];
-  }
 }
 
 function unpackStoredZipEntries(bytes: Uint8Array): Map<string, string> {
@@ -490,7 +891,7 @@ function readStoredZipEntry(bytes: Uint8Array, expectedName: string): Uint8Array
 }
 
 function readU16(bytes: Uint8Array, offset: number): number {
-  return bytes[offset] | ((bytes[offset + 1] ?? 0) << 8);
+  return (bytes[offset] ?? 0) | ((bytes[offset + 1] ?? 0) << 8);
 }
 
 function readU32(bytes: Uint8Array, offset: number): number {

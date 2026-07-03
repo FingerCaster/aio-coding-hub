@@ -20,9 +20,13 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) provider_base_url_ping_cache_ttl_seconds: u32,
     pub(super) enable_codex_session_id_completion: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
     pub(super) codex_reasoning_guard_model_rules: Vec<settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_active_template_id: String,
+    pub(super) codex_reasoning_guard_custom_templates:
+        Vec<settings::CodexReasoningGuardRuleTemplate>,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -32,6 +36,9 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_claude_metadata_user_id_injection: bool,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
@@ -130,6 +137,9 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_enabled: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_enabled)
             .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_ENABLED),
+        codex_reasoning_guard_rule_mode: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_rule_mode)
+            .unwrap_or_default(),
         codex_reasoning_guard_compare_mode: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_compare_mode)
             .unwrap_or_default(),
@@ -138,6 +148,14 @@ pub(super) fn handler_runtime_settings(
             .unwrap_or_else(|| settings::DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec()),
         codex_reasoning_guard_model_rules: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_model_rules.clone())
+            .unwrap_or_default(),
+        codex_reasoning_guard_active_template_id: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_active_template_id.clone())
+            .unwrap_or_else(|| {
+                settings::CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string()
+            }),
+        codex_reasoning_guard_custom_templates: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_custom_templates.clone())
             .unwrap_or_default(),
         codex_reasoning_guard_immediate_retry_budget: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_immediate_retry_budget)
@@ -166,6 +184,15 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_model_fallbacks: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_model_fallbacks.clone())
             .unwrap_or_default(),
+        codex_reasoning_guard_continuation_repair_enabled: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_continuation_repair_enabled)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED),
+        codex_reasoning_guard_continuation_max_rounds: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_continuation_max_rounds)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS),
+        codex_reasoning_guard_continuation_max_output_tokens: settings_cfg
+            .map(|cfg| cfg.codex_reasoning_guard_continuation_max_output_tokens)
+            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS),
         enable_claude_metadata_user_id_injection: settings_cfg
             .map(|cfg| cfg.enable_claude_metadata_user_id_injection)
             .unwrap_or(true)
@@ -197,6 +224,8 @@ mod tests {
     #[test]
     fn codex_reasoning_guard_runtime_budget_uses_explicit_fields_only() {
         let settings = settings::AppSettings {
+            codex_reasoning_guard_rule_mode:
+                settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
             codex_reasoning_guard_immediate_retry_budget: 2,
             codex_reasoning_guard_delayed_retry_budget: 3,
             codex_reasoning_guard_delayed_retry_ms: 4_000,
@@ -208,6 +237,9 @@ mod tests {
             codex_reasoning_guard_concurrent_interval_ms: 250,
             codex_reasoning_guard_concurrent_max_attempts: 12,
             codex_reasoning_guard_model_fallbacks: vec!["gpt-5.4".to_string()],
+            codex_reasoning_guard_continuation_repair_enabled: true,
+            codex_reasoning_guard_continuation_max_rounds: 4,
+            codex_reasoning_guard_continuation_max_output_tokens: 12_345,
             codex_reasoning_guard_backoff_after_hits: 99,
             codex_reasoning_guard_backoff_ms: 60_000,
             ..Default::default()
@@ -215,6 +247,10 @@ mod tests {
 
         let runtime = handler_runtime_settings(Some(&settings), false);
 
+        assert_eq!(
+            runtime.codex_reasoning_guard_rule_mode,
+            settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh
+        );
         assert_eq!(runtime.codex_reasoning_guard_immediate_retry_budget, 2);
         assert_eq!(runtime.codex_reasoning_guard_delayed_retry_budget, 3);
         assert_eq!(runtime.codex_reasoning_guard_delayed_retry_ms, 4_000);
@@ -232,6 +268,69 @@ mod tests {
         assert_eq!(
             runtime.codex_reasoning_guard_model_fallbacks,
             vec!["gpt-5.4".to_string()]
+        );
+        assert!(runtime.codex_reasoning_guard_continuation_repair_enabled);
+        assert_eq!(runtime.codex_reasoning_guard_continuation_max_rounds, 4);
+        assert_eq!(
+            runtime.codex_reasoning_guard_continuation_max_output_tokens,
+            12_345
+        );
+    }
+
+    #[test]
+    fn codex_reasoning_guard_runtime_settings_snapshot_rule_collections() {
+        let mut settings = settings::AppSettings {
+            codex_reasoning_guard_rule_mode: settings::CodexReasoningGuardRuleMode::ReasoningTokens,
+            codex_reasoning_guard_compare_mode:
+                settings::CodexReasoningGuardCompareMode::LessThanOrEqual,
+            codex_reasoning_guard_reasoning_equals: vec![516],
+            codex_reasoning_guard_model_rules: vec![settings::CodexReasoningGuardModelRule {
+                requested_model: "gpt-5.5".to_string(),
+                compare_mode: settings::CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![516],
+            }],
+            codex_reasoning_guard_model_fallbacks: vec!["gpt-5.4".to_string()],
+            codex_reasoning_guard_continuation_repair_enabled: true,
+            codex_reasoning_guard_continuation_max_rounds: 4,
+            codex_reasoning_guard_continuation_max_output_tokens: 8_000,
+            ..Default::default()
+        };
+
+        let runtime = handler_runtime_settings(Some(&settings), false);
+        settings.codex_reasoning_guard_rule_mode =
+            settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh;
+        settings.codex_reasoning_guard_compare_mode =
+            settings::CodexReasoningGuardCompareMode::Equals;
+        settings.codex_reasoning_guard_reasoning_equals = vec![1024];
+        settings.codex_reasoning_guard_model_rules.clear();
+        settings.codex_reasoning_guard_model_fallbacks = vec!["gpt-5.3-codex".to_string()];
+        settings.codex_reasoning_guard_continuation_repair_enabled = false;
+        settings.codex_reasoning_guard_continuation_max_rounds = 1;
+        settings.codex_reasoning_guard_continuation_max_output_tokens = 0;
+
+        assert_eq!(
+            runtime.codex_reasoning_guard_rule_mode,
+            settings::CodexReasoningGuardRuleMode::ReasoningTokens
+        );
+        assert_eq!(
+            runtime.codex_reasoning_guard_compare_mode,
+            settings::CodexReasoningGuardCompareMode::LessThanOrEqual
+        );
+        assert_eq!(runtime.codex_reasoning_guard_reasoning_equals, vec![516]);
+        assert_eq!(runtime.codex_reasoning_guard_model_rules.len(), 1);
+        assert_eq!(
+            runtime.codex_reasoning_guard_model_rules[0].requested_model,
+            "gpt-5.5"
+        );
+        assert_eq!(
+            runtime.codex_reasoning_guard_model_fallbacks,
+            vec!["gpt-5.4".to_string()]
+        );
+        assert!(runtime.codex_reasoning_guard_continuation_repair_enabled);
+        assert_eq!(runtime.codex_reasoning_guard_continuation_max_rounds, 4);
+        assert_eq!(
+            runtime.codex_reasoning_guard_continuation_max_output_tokens,
+            8_000
         );
     }
 }

@@ -16,14 +16,14 @@ export function useSettingsPersistence(options: {
 
   const settingsQuery = useSettingsQuery();
   const settingsSetMutation = useSettingsSetMutation();
-  const { draft, applySnapshot, setField, revertKeys, reconcileSettledKeys } =
-    useSettingsFormController();
   const {
     settingsReady,
     settingsReadErrorMessage,
     settingsWriteBlocked,
     setSettingsReadErrorMessage,
     reportSettingsReadFailure,
+    appliedSettings,
+    appliedSettingsVersion,
     persistedSettingsRef,
     desiredSettingsRef,
   } = useSettingsPersistenceReadState({
@@ -34,7 +34,10 @@ export function useSettingsPersistence(options: {
       error: settingsQuery.error,
       dataUpdatedAt: settingsQuery.dataUpdatedAt,
     },
-    applySnapshot,
+  });
+  const { draft, setField, revertKeys, reconcileSettledKeys } = useSettingsFormController({
+    snapshot: appliedSettings,
+    snapshotVersion: appliedSettingsVersion,
   });
 
   const { settingsSaving, requestPersist, commitNumberField } = useSettingsPersistRunner({

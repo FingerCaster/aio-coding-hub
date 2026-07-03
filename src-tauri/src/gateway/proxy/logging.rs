@@ -131,6 +131,8 @@ fn request_log_insert_from_args(
         attempts_json,
         requested_model,
         created_at_ms,
+        last_activity_ms,
+        activity_details_json,
         created_at,
         usage_metrics,
         usage,
@@ -189,6 +191,11 @@ fn request_log_insert_from_args(
         usage_json: bound_optional_json_object(usage_json, "usage_json"),
         requested_model: bound_optional_chars(requested_model, REQUEST_LOG_SHORT_TEXT_MAX_CHARS),
         created_at_ms,
+        last_activity_ms,
+        activity_details_json: bound_optional_json_object(
+            activity_details_json,
+            "activity_details_json",
+        ),
         created_at,
         provider_chain_json: bound_optional_json_array(provider_chain_json, "provider_chain_json"),
         error_details_json: bound_optional_json_object(error_details_json, "error_details_json"),
@@ -275,10 +282,11 @@ async fn apply_log_before_persist_hook(
     };
     match plugin_pipeline.run_log_hook(input).await {
         Ok(output) => {
-            crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
                 db,
                 &args.trace_id,
                 output.audit_events.clone(),
+                output.execution_reports.clone(),
             );
             if !apply_log_hook_message_to_args(args, output.message.as_str()) {
                 tracing::warn!(
@@ -656,6 +664,8 @@ WHERE trace_id = ?1
             attempts_json: "[]".to_string(),
             requested_model: None,
             created_at_ms: 0,
+            last_activity_ms: None,
+            activity_details_json: None,
             created_at: 0,
             usage_metrics: None,
             usage: None,

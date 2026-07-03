@@ -12,8 +12,8 @@ import { normalizeBaseUrlRows } from "./baseUrl";
 import { resolveStreamIdleTimeoutSeconds } from "./providerEditorTimeout";
 import { validateUpstreamRetryPolicy } from "../../services/gateway/upstreamRetryPolicy";
 import {
-  CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
   CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
+  CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
 } from "./providerEditorUtils";
 
 export function buildProviderEditorUpsertInput(
@@ -153,8 +153,8 @@ export function buildProviderEditorUpsertInput(
     ctx.authMode !== "cx2cc"
       ? null
       : ctx.cliKey === "codex"
-        ? ctx.codexBridgeTarget === "anthropic_messages"
-          ? CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
+        ? ctx.codexBridgeTarget === "openai_responses"
+          ? CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE
           : CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE
         : "cx2cc";
 
@@ -194,6 +194,7 @@ export function buildProviderEditorUpsertInput(
         ? ctx.sourceProviderId
         : null,
     bridgeType,
+    extensionValues: ctx.extensionValues ?? null,
   };
 
   return {

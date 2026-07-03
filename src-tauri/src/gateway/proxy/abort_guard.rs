@@ -1,5 +1,6 @@
 //! Usage: Best-effort drop guard to log client-aborted requests.
 
+use crate::gateway::active_requests::ActiveRequestRegistry;
 use crate::gateway::events::FailoverAttempt;
 use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
 use crate::{db, request_logs};
@@ -16,6 +17,7 @@ pub(super) struct RequestAbortGuard<R: tauri::Runtime = tauri::Wry> {
     db: db::Db,
     log_tx: tokio::sync::mpsc::Sender<request_logs::RequestLogInsert>,
     plugin_pipeline: Arc<GatewayPluginPipeline>,
+    active_requests: Arc<ActiveRequestRegistry>,
     trace_id: String,
     cli_key: String,
     method: String,
@@ -38,6 +40,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
         db: db::Db,
         log_tx: tokio::sync::mpsc::Sender<request_logs::RequestLogInsert>,
         plugin_pipeline: Arc<GatewayPluginPipeline>,
+        active_requests: Arc<ActiveRequestRegistry>,
         trace_id: String,
         cli_key: String,
         method: String,
@@ -55,6 +58,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             db,
             log_tx,
             plugin_pipeline,
+            active_requests,
             trace_id,
             cli_key,
             method,
@@ -75,6 +79,10 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
         self.armed = false;
     }
 
+    pub(super) fn update_requested_model(&mut self, requested_model: Option<String>) {
+        self.requested_model = requested_model;
+    }
+
     /// Take ownership of this guard, leaving a disarmed placeholder behind.
     /// This is useful when you need to pass the guard to a sub-function while
     /// keeping the parent struct borrowable.
@@ -84,6 +92,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             db: self.db.clone(),
             log_tx: self.log_tx.clone(),
             plugin_pipeline: self.plugin_pipeline.clone(),
+            active_requests: self.active_requests.clone(),
             trace_id: std::mem::take(&mut self.trace_id),
             cli_key: std::mem::take(&mut self.cli_key),
             method: std::mem::take(&mut self.method),
@@ -120,7 +129,13 @@ impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
         let abort_attempts: Vec<FailoverAttempt> = self.in_flight_attempt.iter().cloned().collect();
         emit_request_event_and_spawn_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
-                deps: RequestEndDeps::new(&self.app, &self.db, &self.log_tx, &self.plugin_pipeline),
+                deps: RequestEndDeps::new(
+                    &self.app,
+                    &self.db,
+                    &self.log_tx,
+                    &self.plugin_pipeline,
+                    &self.active_requests,
+                ),
                 trace_id: self.trace_id.as_str(),
                 cli_key: self.cli_key.as_str(),
                 method: self.method.as_str(),
