@@ -1,10 +1,10 @@
 // Usage: Manage installed community plugins and inspect manifest/permission state.
 
-import { useEffect, useMemo, useState } from "react";
+import { useMemo, useState } from "react";
 import { toast } from "sonner";
 import {
+  BookOpen,
   Download,
-  RotateCcw,
   Upload,
   Power,
   PowerOff,
@@ -13,12 +13,16 @@ import {
   Trash2,
 } from "lucide-react";
 import { openDesktopSinglePath } from "../services/desktop/dialog";
+import { openDesktopUrl } from "../services/desktop/opener";
 import type {
   JsonValue,
   PluginDetail,
+  PluginInstallPreview,
   PluginPermissionRisk,
+  PluginRemotePackageInput,
   PluginStatus,
   PluginSummary,
+  PluginUpdateDiff,
 } from "../services/plugins";
 import { formatActionFailureToast, formatUnknownError } from "../utils/errors";
 import { Button } from "../ui/Button";
@@ -27,25 +31,32 @@ import { Spinner } from "../ui/Spinner";
 import {
   usePluginDisableMutation,
   usePluginEnableMutation,
-  usePluginGrantPermissionsMutation,
   usePluginInstallFromFileMutation,
   usePluginInstallOfficialMutation,
+  usePluginInstallRemoteMutation,
+  usePluginPreviewFromFileMutation,
+  usePluginPreviewRemoteUpdateMutation,
+  usePluginPreviewUpdateFromFileMutation,
   usePluginQuery,
   usePluginRollbackMutation,
   usePluginSaveConfigMutation,
   usePluginUninstallMutation,
   usePluginUpdateFromFileMutation,
+  usePluginUpdateRemoteMutation,
   usePluginsListQuery,
 } from "../query/plugins";
 import { PluginConfigSchemaForm } from "./plugins/PluginConfigSchemaForm";
+import { PluginInstallPreviewDialog } from "./plugins/PluginInstallPreviewDialog";
+import { PluginLifecyclePanel } from "./plugins/PluginLifecyclePanel";
+import { PluginMarketPanel } from "./plugins/PluginMarketPanel";
+import { PluginRuntimeReportsPanel } from "./plugins/PluginRuntimeReportsPanel";
+import { PluginUpdatePreviewDialog } from "./plugins/PluginUpdatePreviewDialog";
 import {
   describePluginPermission,
   describePluginRuntime,
   pluginRiskLabel,
   pluginStatusLabel,
 } from "./plugins/pluginProductCopy";
-
-const OFFICIAL_PLUGINS = [{ id: "official.privacy-filter", name: "Privacy Filter" }];
 
 const INSTALL_SOURCE_LABELS: Record<string, string> = {
   local: "本地",
@@ -83,17 +94,102 @@ function jsonRecord(value: JsonValue): Record<string, JsonValue> | null {
   return null;
 }
 
+const TRUST_EVENT_TYPES = new Set([
+  "plugin.installed",
+  "plugin.remote.installed",
+  "plugin.updated",
+  "plugin.rollback",
+  "plugin.official.installed",
+]);
+
+const PLUGIN_DOCS_URL =
+  "https://github.com/dyndynjyxa/aio-coding-hub/blob/main/docs/plugins/README.md";
+
+async function runPluginAction(action: string, task: () => Promise<unknown>) {
+  try {
+    await task();
+    toast.success(`${action}成功`);
+    return true;
+  } catch (error) {
+    toast.error(formatActionFailureToast(action, error).toast);
+    return false;
+  }
+}
+
+async function openPluginDocs() {
+  try {
+    await openDesktopUrl(PLUGIN_DOCS_URL);
+  } catch (error) {
+    toast.error(formatActionFailureToast("打开插件文档", error).toast);
+  }
+}
+
+const GATEWAY_HOOK_ACCESS: Record<string, string[]> = {
+  "gateway.request.afterBodyRead": [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.header.write",
+    "request.body.write",
+  ],
+  "gateway.request.beforeSend": [
+    "request.meta.read",
+    "request.header.read",
+    "request.header.readSensitive",
+    "request.body.read",
+    "request.header.write",
+    "request.body.write",
+  ],
+  "gateway.response.chunk": ["stream.inspect", "stream.modify"],
+  "gateway.response.after": [
+    "response.header.read",
+    "response.body.read",
+    "response.header.write",
+    "response.body.write",
+  ],
+  "gateway.error": [
+    "response.header.read",
+    "response.body.read",
+    "response.header.write",
+    "response.body.write",
+  ],
+  "log.beforePersist": ["log.redact"],
+};
+
+type UpdatePreviewState =
+  | {
+      source: "file";
+      filePath: string;
+      diff: PluginUpdateDiff;
+    }
+  | {
+      source: "remote";
+      input: PluginRemotePackageInput;
+      diff: PluginUpdateDiff;
+    };
+
+function latestTrustAudit(detail: PluginDetail) {
+  let latest: PluginDetail["audit_logs"][number] | undefined;
+  for (const log of detail.audit_logs) {
+    if (!TRUST_EVENT_TYPES.has(log.event_type)) continue;
+    if (
+      !latest ||
+      log.created_at > latest.created_at ||
+      (log.created_at === latest.created_at && log.id > latest.id)
+    ) {
+      latest = log;
+    }
+  }
+  return latest;
+}
+
 function isUnsigned(detail: PluginDetail) {
-  return detail.audit_logs.some((log) => jsonRecord(log.details)?.unsigned === true);
+  return jsonRecord(latestTrustAudit(detail)?.details ?? null)?.unsigned === true;
 }
 
 function previousVersion(detail: PluginDetail) {
-  const current = detail.summary.current_version ?? detail.manifest.version;
-  const fromAudit = detail.audit_logs
-    .map((log) => jsonRecord(log.details)?.fromVersion ?? null)
-    .find((value): value is string => typeof value === "string" && value !== current);
-  if (fromAudit) return fromAudit;
-  return current === "1.0.0" ? null : "1.0.0";
+  return detail.rollback_versions[0] ?? null;
 }
 
 function Section({ title, children }: { title: string; children: React.ReactNode }) {
@@ -200,11 +296,18 @@ function PluginListRow({
 }
 
 function PermissionList({ detail }: { detail: PluginDetail }) {
-  const granted = new Set(detail.granted_permissions);
+  const permissions = effectiveDataAccessPermissions(detail);
+  if (permissions.length === 0) {
+    return (
+      <div className="rounded-md border border-dashed border-border px-3 py-3 text-sm text-muted-foreground">
+        插件未声明网关数据访问
+      </div>
+    );
+  }
+
   return (
     <div className="grid gap-2">
-      {detail.manifest.permissions.map((permission) => {
-        const ok = granted.has(permission);
+      {permissions.map((permission) => {
         const copy = describePluginPermission(permission);
         return (
           <div
@@ -216,12 +319,8 @@ function PermissionList({ detail }: { detail: PluginDetail }) {
               <div className="mt-0.5 text-xs text-muted-foreground">{copy.detail}</div>
               <div className="mt-1 font-mono text-[11px] text-muted-foreground">{permission}</div>
             </div>
-            <span
-              className={`rounded-md px-2 py-0.5 text-xs font-semibold ${
-                ok ? "bg-success/10 text-success" : "bg-warning/10 text-warning"
-              }`}
-            >
-              {ok ? "已允许" : "待允许"}
+            <span className="rounded-md border border-border px-2 py-0.5 text-xs">
+              {pluginRiskLabel(copy.risk)}
             </span>
           </div>
         );
@@ -230,13 +329,25 @@ function PermissionList({ detail }: { detail: PluginDetail }) {
   );
 }
 
+function effectiveDataAccessPermissions(detail: PluginDetail): string[] {
+  if (detail.manifest.runtime.kind !== "extensionHost") return [];
+  if (!(detail.manifest.capabilities ?? []).includes("gateway.hooks")) return [];
+
+  const permissions = new Set<string>();
+  for (const hook of detail.manifest.contributes?.gatewayHooks ?? []) {
+    for (const permission of GATEWAY_HOOK_ACCESS[hook.name] ?? []) {
+      permissions.add(permission);
+    }
+  }
+  return Array.from(permissions).sort();
+}
+
 function PluginDetailPanel({
   detail,
   loading,
   onSaveConfig,
   onUpdate,
   onRollback,
-  onGrantPendingPermissions,
   savingConfig,
   busy,
 }: {
@@ -245,7 +356,6 @@ function PluginDetailPanel({
   onSaveConfig: (config: JsonValue) => void;
   onUpdate: () => void;
   onRollback: (version: string) => void;
-  onGrantPendingPermissions: (pluginId: string, permissions: readonly string[]) => void;
   savingConfig: boolean;
   busy: boolean;
 }) {
@@ -261,15 +371,11 @@ function PluginDetailPanel({
     return <div className="text-sm text-muted-foreground">选择一个插件查看详情。</div>;
   }
 
-  const runtime =
-    detail.manifest.runtime.kind === "declarativeRules"
-      ? `declarativeRules: ${detail.manifest.runtime.rules.join(", ")}`
-      : detail.manifest.runtime.kind === "native"
-        ? `native: ${detail.manifest.runtime.engine}`
-        : `wasm: ${detail.manifest.runtime.abiVersion}`;
+  const runtime = detail.summary.runtime;
   const runtimeCopy = describePluginRuntime(detail.summary.runtime);
   const unsigned = isUnsigned(detail);
   const rollbackVersion = previousVersion(detail);
+  const gatewayHooks = detail.manifest.contributes?.gatewayHooks ?? detail.manifest.hooks ?? [];
 
   return (
     <div className="space-y-5">
@@ -285,45 +391,23 @@ function PluginDetailPanel({
               未签名
             </span>
           ) : null}
-          {detail.pending_permissions.length > 0 ? (
-            <span className="rounded-md border border-warning/30 bg-warning/10 px-2 py-0.5 text-xs font-semibold text-warning">
-              新权限待授权
-            </span>
-          ) : null}
         </div>
         <div className="flex flex-wrap gap-2">
-          {detail.pending_permissions.length > 0 ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={busy}
-              onClick={() =>
-                onGrantPendingPermissions(detail.summary.plugin_id, detail.pending_permissions)
-              }
-            >
-              <ShieldAlert className="h-3.5 w-3.5" />
-              授权待审批权限
-            </Button>
-          ) : null}
           {detail.summary.update_available ? (
             <Button size="sm" variant="secondary" disabled={busy} onClick={onUpdate}>
               <Upload className="h-3.5 w-3.5" />
               更新
             </Button>
           ) : null}
-          {rollbackVersion ? (
-            <Button
-              size="sm"
-              variant="secondary"
-              disabled={busy}
-              onClick={() => onRollback(rollbackVersion)}
-            >
-              <RotateCcw className="h-3.5 w-3.5" />
-              回滚 {rollbackVersion}
-            </Button>
-          ) : null}
         </div>
       </div>
+
+      <PluginLifecyclePanel
+        detail={detail}
+        rollbackVersion={rollbackVersion}
+        busy={busy}
+        onRollback={onRollback}
+      />
 
       <Section title="这个插件会做什么">
         <div className="rounded-md border border-border px-3 py-2 text-sm">
@@ -339,7 +423,7 @@ function PluginDetailPanel({
         detail.summary.permission_risk === "critical" ? (
           <div className="flex items-center gap-2 rounded-md border border-destructive/30 bg-destructive/10 px-3 py-2 text-sm text-destructive">
             <ShieldAlert className="h-4 w-4" />
-            高危权限需要确认插件来源和用途。
+            高危数据访问需要确认插件来源和用途。
           </div>
         ) : null}
         <PermissionList detail={detail} />
@@ -354,6 +438,8 @@ function PluginDetailPanel({
           onSubmit={onSaveConfig}
         />
       </Section>
+
+      <PluginRuntimeReportsPanel detail={detail} />
 
       <Section title="开发者信息">
         <div className="grid gap-2 text-sm sm:grid-cols-2">
@@ -373,30 +459,17 @@ function PluginDetailPanel({
         </div>
 
         <div className="mt-3 grid gap-2">
-          {detail.manifest.hooks.map((hook) => (
+          {gatewayHooks.map((hook) => (
             <div key={hook.name} className="rounded-md border border-border px-3 py-2 text-sm">
               <div className="font-mono text-xs">{hook.name}</div>
               <div className="mt-1 text-xs text-muted-foreground">
                 priority {hook.priority ?? 0}
                 {hook.failurePolicy ? ` · ${hook.failurePolicy}` : ""}
+                {hook.timeoutMs ? ` · timeout ${hook.timeoutMs}ms` : ""}
               </div>
             </div>
           ))}
         </div>
-
-        {detail.audit_logs.length > 0 ? (
-          <div className="grid gap-2">
-            {detail.audit_logs.slice(0, 5).map((log) => (
-              <div key={log.id} className="rounded-md border border-border px-3 py-2 text-sm">
-                <div className="flex flex-wrap justify-between gap-2">
-                  <span className="font-medium">{log.message}</span>
-                  <span className="text-xs text-muted-foreground">{log.risk_level}</span>
-                </div>
-                <div className="mt-1 font-mono text-xs text-muted-foreground">{log.event_type}</div>
-              </div>
-            ))}
-          </div>
-        ) : null}
       </Section>
     </div>
   );
@@ -406,46 +479,47 @@ export function PluginsPage() {
   const listQuery = usePluginsListQuery();
   const plugins = useMemo(() => listQuery.data ?? [], [listQuery.data]);
   const [selectedPluginId, setSelectedPluginId] = useState<string | null>(null);
+  const [installPreviewState, setInstallPreviewState] = useState<{
+    filePath: string;
+    preview: PluginInstallPreview;
+  } | null>(null);
+  const [updatePreviewState, setUpdatePreviewState] = useState<UpdatePreviewState | null>(null);
+  const previewInstallMutation = usePluginPreviewFromFileMutation();
+  const previewUpdateMutation = usePluginPreviewUpdateFromFileMutation();
+  const previewRemoteUpdateMutation = usePluginPreviewRemoteUpdateMutation();
   const installMutation = usePluginInstallFromFileMutation();
   const installOfficialMutation = usePluginInstallOfficialMutation();
+  const installRemoteMutation = usePluginInstallRemoteMutation();
   const updateMutation = usePluginUpdateFromFileMutation();
+  const updateRemoteMutation = usePluginUpdateRemoteMutation();
   const rollbackMutation = usePluginRollbackMutation();
   const enableMutation = usePluginEnableMutation();
-  const grantPermissionsMutation = usePluginGrantPermissionsMutation();
   const disableMutation = usePluginDisableMutation();
   const uninstallMutation = usePluginUninstallMutation();
   const saveConfigMutation = usePluginSaveConfigMutation();
 
-  useEffect(() => {
-    if (!selectedPluginId && plugins.length > 0) {
-      setSelectedPluginId(plugins[0].plugin_id);
-    }
+  const selectedSummary = useMemo(() => {
+    if (plugins.length === 0) return null;
+    return plugins.find((plugin) => plugin.plugin_id === selectedPluginId) ?? plugins[0] ?? null;
   }, [plugins, selectedPluginId]);
-
-  const selectedSummary = useMemo(
-    () => plugins.find((plugin) => plugin.plugin_id === selectedPluginId) ?? null,
-    [plugins, selectedPluginId]
-  );
-  const detailQuery = usePluginQuery(selectedPluginId, { enabled: Boolean(selectedPluginId) });
+  const effectiveSelectedPluginId = selectedSummary?.plugin_id ?? null;
+  const detailQuery = usePluginQuery(effectiveSelectedPluginId, {
+    enabled: Boolean(effectiveSelectedPluginId),
+  });
   const busy =
+    previewInstallMutation.isPending ||
+    previewUpdateMutation.isPending ||
+    previewRemoteUpdateMutation.isPending ||
     installMutation.isPending ||
     installOfficialMutation.isPending ||
+    installRemoteMutation.isPending ||
     updateMutation.isPending ||
+    updateRemoteMutation.isPending ||
     rollbackMutation.isPending ||
     enableMutation.isPending ||
-    grantPermissionsMutation.isPending ||
     disableMutation.isPending ||
     uninstallMutation.isPending ||
     saveConfigMutation.isPending;
-
-  async function runAction(action: string, task: () => Promise<unknown>) {
-    try {
-      await task();
-      toast.success(`${action}成功`);
-    } catch (error) {
-      toast.error(formatActionFailureToast(action, error).toast);
-    }
-  }
 
   async function handleImport() {
     const filePath = await openDesktopSinglePath({
@@ -453,7 +527,12 @@ export function PluginsPage() {
       filters: [{ name: "AIO plugin package", extensions: ["aio-plugin"] }],
     });
     if (!filePath) return;
-    await runAction("导入插件", () => installMutation.mutateAsync(filePath));
+    try {
+      const preview = await previewInstallMutation.mutateAsync(filePath);
+      setInstallPreviewState({ filePath, preview });
+    } catch (error) {
+      toast.error(formatActionFailureToast("预览插件", error).toast);
+    }
   }
 
   async function handleUpdate() {
@@ -462,8 +541,46 @@ export function PluginsPage() {
       filters: [{ name: "AIO plugin package", extensions: ["aio-plugin"] }],
     });
     if (!filePath) return;
-    await runAction("更新插件", () => updateMutation.mutateAsync(filePath));
+    try {
+      const diff = await previewUpdateMutation.mutateAsync(filePath);
+      setUpdatePreviewState({ source: "file", filePath, diff });
+    } catch (error) {
+      toast.error(formatActionFailureToast("预览更新", error).toast);
+    }
   }
+
+  async function handleRemoteUpdate(input: PluginRemotePackageInput) {
+    try {
+      const diff = await previewRemoteUpdateMutation.mutateAsync(input);
+      setUpdatePreviewState({ source: "remote", input, diff });
+    } catch (error) {
+      toast.error(formatActionFailureToast("预览更新", error).toast);
+    }
+  }
+
+  async function confirmInstallPreview() {
+    if (!installPreviewState) return;
+    const done = await runPluginAction("导入插件", () =>
+      installMutation.mutateAsync(installPreviewState.filePath)
+    );
+    if (done) setInstallPreviewState(null);
+  }
+
+  async function confirmUpdatePreview() {
+    if (!updatePreviewState) return;
+    const done = await runPluginAction("更新插件", () => {
+      if (updatePreviewState.source === "remote") {
+        return updateRemoteMutation.mutateAsync(updatePreviewState.input);
+      }
+      return updateMutation.mutateAsync(updatePreviewState.filePath);
+    });
+    if (done) setUpdatePreviewState(null);
+  }
+
+  const updatePreviewLabel =
+    updatePreviewState?.source === "remote"
+      ? updatePreviewState.input.downloadUrl
+      : (updatePreviewState?.filePath ?? null);
 
   if (listQuery.isLoading) {
     return (
@@ -474,116 +591,136 @@ export function PluginsPage() {
   }
 
   return (
-    <div className="flex h-full flex-col gap-5 overflow-hidden">
-      <PageHeader
-        title="插件"
-        subtitle="为 AIO Coding Hub 增加本地能力。插件可以在请求发送前、响应返回后或日志保存前处理内容。"
-        actions={
-          <Button onClick={handleImport} disabled={busy}>
-            <Download className="h-4 w-4" />
-            导入 .aio-plugin
-          </Button>
-        }
-      />
+    <>
+      <div className="flex h-full flex-col gap-5 overflow-hidden">
+        <PageHeader
+          title="插件"
+          subtitle="为 AIO Coding Hub 增加本地能力。插件可以在请求发送前、响应返回后或日志保存前处理内容。"
+          actions={
+            <>
+              <Button variant="secondary" onClick={openPluginDocs}>
+                <BookOpen className="h-4 w-4" />
+                插件文档
+              </Button>
+              <Button onClick={handleImport} disabled={busy}>
+                <Download className="h-4 w-4" />
+                导入 .aio-plugin
+              </Button>
+            </>
+          }
+        />
 
-      {listQuery.error ? (
-        <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
-          插件列表加载失败：{formatUnknownError(listQuery.error)}
+        {listQuery.error ? (
+          <div className="rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive">
+            插件列表加载失败：{formatUnknownError(listQuery.error)}
+          </div>
+        ) : null}
+
+        <div className="grid gap-3">
+          <PluginMarketPanel
+            plugins={plugins}
+            busy={busy}
+            onInstall={(input) =>
+              runPluginAction("安装市场插件", () => installRemoteMutation.mutateAsync(input))
+            }
+            onUpdate={handleRemoteUpdate}
+            onInstallOfficial={(pluginId) =>
+              runPluginAction("安装官方插件", () => installOfficialMutation.mutateAsync(pluginId))
+            }
+            onSelectInstalled={(pluginId) => setSelectedPluginId(pluginId)}
+          />
         </div>
-      ) : null}
 
-      <div className="flex flex-wrap items-center gap-2 border-b border-border pb-3">
-        <span className="text-xs font-semibold text-muted-foreground">推荐插件</span>
-        {OFFICIAL_PLUGINS.map((plugin) => {
-          const installed = plugins.some((item) => item.plugin_id === plugin.id);
-          return (
-            <Button
-              key={plugin.id}
-              size="sm"
-              variant="secondary"
-              disabled={busy || installed}
-              onClick={() =>
-                runAction("安装官方插件", () => installOfficialMutation.mutateAsync(plugin.id))
-              }
-            >
-              <Download className="h-3.5 w-3.5" />
-              {installed ? "已安装" : plugin.name}
-            </Button>
-          );
-        })}
+        {plugins.length === 0 && !listQuery.error ? (
+          <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center">
+            <div className="text-sm font-semibold text-foreground">还没有安装插件</div>
+            <div className="mt-1 text-sm text-muted-foreground">
+              可以安装官方 Privacy Filter，或导入 .aio-plugin 插件包。
+            </div>
+          </div>
+        ) : (
+          <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
+            <div className="min-h-0 overflow-y-auto pr-1 scrollbar-overlay">
+              <div className="space-y-3">
+                {plugins.map((plugin) => (
+                  <PluginListRow
+                    key={plugin.plugin_id}
+                    plugin={plugin}
+                    active={plugin.plugin_id === effectiveSelectedPluginId}
+                    busy={busy}
+                    onSelect={() => setSelectedPluginId(plugin.plugin_id)}
+                    onEnable={() =>
+                      runPluginAction("启用插件", () =>
+                        enableMutation.mutateAsync(plugin.plugin_id)
+                      )
+                    }
+                    onDisable={() =>
+                      runPluginAction("禁用插件", () =>
+                        disableMutation.mutateAsync(plugin.plugin_id)
+                      )
+                    }
+                    onUninstall={() =>
+                      runPluginAction("卸载插件", () =>
+                        uninstallMutation.mutateAsync(plugin.plugin_id)
+                      )
+                    }
+                  />
+                ))}
+              </div>
+            </div>
+
+            <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-4 scrollbar-overlay">
+              <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
+                <div>
+                  <div className="text-sm font-semibold text-foreground">
+                    {selectedSummary?.name ?? "插件详情"}
+                  </div>
+                  <div className="font-mono text-xs text-muted-foreground">
+                    {selectedSummary?.plugin_id ?? "-"}
+                  </div>
+                </div>
+                {detailQuery.isFetching ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}
+              </div>
+              <PluginDetailPanel
+                detail={detailQuery.data}
+                loading={detailQuery.isLoading}
+                savingConfig={saveConfigMutation.isPending}
+                busy={busy}
+                onUpdate={handleUpdate}
+                onRollback={(version) => {
+                  if (!effectiveSelectedPluginId) return;
+                  runPluginAction("回滚插件", () =>
+                    rollbackMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, version })
+                  );
+                }}
+                onSaveConfig={(config) => {
+                  if (!effectiveSelectedPluginId) return;
+                  runPluginAction("保存配置", () =>
+                    saveConfigMutation.mutateAsync({ pluginId: effectiveSelectedPluginId, config })
+                  );
+                }}
+              />
+            </div>
+          </div>
+        )}
       </div>
 
-      {plugins.length === 0 && !listQuery.error ? (
-        <div className="rounded-lg border border-dashed border-border px-4 py-10 text-center">
-          <div className="text-sm font-semibold text-foreground">还没有安装插件</div>
-          <div className="mt-1 text-sm text-muted-foreground">
-            可以安装官方 Privacy Filter，或导入 .aio-plugin 插件包。
-          </div>
-        </div>
-      ) : (
-        <div className="grid min-h-0 flex-1 gap-4 lg:grid-cols-[minmax(360px,0.9fr)_minmax(0,1.1fr)]">
-          <div className="min-h-0 overflow-y-auto pr-1 scrollbar-overlay">
-            <div className="space-y-3">
-              {plugins.map((plugin) => (
-                <PluginListRow
-                  key={plugin.plugin_id}
-                  plugin={plugin}
-                  active={plugin.plugin_id === selectedPluginId}
-                  busy={busy}
-                  onSelect={() => setSelectedPluginId(plugin.plugin_id)}
-                  onEnable={() =>
-                    runAction("启用插件", () => enableMutation.mutateAsync(plugin.plugin_id))
-                  }
-                  onDisable={() =>
-                    runAction("禁用插件", () => disableMutation.mutateAsync(plugin.plugin_id))
-                  }
-                  onUninstall={() =>
-                    runAction("卸载插件", () => uninstallMutation.mutateAsync(plugin.plugin_id))
-                  }
-                />
-              ))}
-            </div>
-          </div>
-
-          <div className="min-h-0 overflow-y-auto rounded-lg border border-border bg-card p-4 scrollbar-overlay">
-            <div className="mb-4 flex flex-wrap items-center justify-between gap-2">
-              <div>
-                <div className="text-sm font-semibold text-foreground">
-                  {selectedSummary?.name ?? "插件详情"}
-                </div>
-                <div className="font-mono text-xs text-muted-foreground">
-                  {selectedSummary?.plugin_id ?? "-"}
-                </div>
-              </div>
-              {detailQuery.isFetching ? <RefreshCw className="h-4 w-4 animate-spin" /> : null}
-            </div>
-            <PluginDetailPanel
-              detail={detailQuery.data}
-              loading={detailQuery.isLoading}
-              savingConfig={saveConfigMutation.isPending}
-              busy={busy}
-              onUpdate={handleUpdate}
-              onRollback={(version) => {
-                if (!selectedPluginId) return;
-                runAction("回滚插件", () =>
-                  rollbackMutation.mutateAsync({ pluginId: selectedPluginId, version })
-                );
-              }}
-              onSaveConfig={(config) => {
-                if (!selectedPluginId) return;
-                runAction("保存配置", () =>
-                  saveConfigMutation.mutateAsync({ pluginId: selectedPluginId, config })
-                );
-              }}
-              onGrantPendingPermissions={(pluginId, permissions) => {
-                runAction("授权权限", () =>
-                  grantPermissionsMutation.mutateAsync({ pluginId, permissions })
-                );
-              }}
-            />
-          </div>
-        </div>
-      )}
-    </div>
+      <PluginInstallPreviewDialog
+        open={installPreviewState != null}
+        preview={installPreviewState?.preview ?? null}
+        filePath={installPreviewState?.filePath ?? null}
+        confirming={installMutation.isPending}
+        onClose={() => setInstallPreviewState(null)}
+        onConfirm={confirmInstallPreview}
+      />
+      <PluginUpdatePreviewDialog
+        open={updatePreviewState != null}
+        diff={updatePreviewState?.diff ?? null}
+        filePath={updatePreviewLabel}
+        confirming={updateMutation.isPending || updateRemoteMutation.isPending}
+        onClose={() => setUpdatePreviewState(null)}
+        onConfirm={confirmUpdatePreview}
+      />
+    </>
   );
 }

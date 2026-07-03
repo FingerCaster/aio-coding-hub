@@ -26,10 +26,10 @@ import {
   FolderBadge,
   formatRequestLogModelText,
   FreeBadge,
-  getErrorCodeLabel,
   hasCodexReasoningGuardRetryAttempt,
   SessionReuseBadge,
 } from "./HomeLogShared";
+import { getErrorCodeLabel } from "./requestLogErrorLabels";
 import { CliBrandIcon } from "./CliBrandIcon";
 
 export type RealtimeTraceCardsProps = {

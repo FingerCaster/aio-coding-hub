@@ -125,7 +125,7 @@ pub(super) fn resolve_session_bound_provider_id(
     created_at: i64,
     allow_session_reuse: bool,
     forced_provider_id: Option<i64>,
-    providers: &mut [providers::ProviderForGateway],
+    providers: &mut Vec<providers::ProviderForGateway>,
     bound_provider_order: Option<&[i64]>,
 ) -> Option<i64> {
     let bound_provider_id =
@@ -141,6 +141,7 @@ pub(super) fn resolve_session_bound_provider_id(
             } else {
                 let allow = circuit.should_allow(bound_provider_id, created_at).allow;
                 if !allow {
+                    providers.retain(|provider| provider.id != bound_provider_id);
                     return None;
                 }
             }

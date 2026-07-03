@@ -115,6 +115,7 @@ export function useHomeOverviewFeed({
         : providerLimitQuery.data != null
       : null,
     requestLogs: requestLogsFeed.requestLogs,
+    activeRequests: requestLogsFeed.activeRequests ?? [],
     requestLogsLoading: requestLogsFeed.requestLogsLoading,
     requestLogsRefreshing: requestLogsFeed.requestLogsRefreshing,
     requestLogsAvailable: requestLogsFeed.requestLogsAvailable,

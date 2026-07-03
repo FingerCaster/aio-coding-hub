@@ -3,6 +3,8 @@ import { afterEach, describe, expect, it, vi } from "vitest";
 import type { RequestAttemptLog, RequestLogDetail } from "../../../services/gateway/requestLogs";
 import { createRequestLogDetail } from "../../../services/gateway/requestLogFixtures";
 import type { TraceSession } from "../../../services/gateway/traceStore";
+import { logToConsole } from "../../../services/consoleLog";
+import { usePluginActiveContributionsQuery } from "../../../query/plugins";
 import { RequestLogDetailDialog } from "../RequestLogDetailDialog";
 
 const requestLogQueryState = vi.hoisted(() => ({
@@ -57,6 +59,16 @@ vi.mock("../../../services/gateway/traceStore", () => ({
   useTraceStore: () => ({
     traces: traceStoreState.traces,
   }),
+}));
+
+vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
+
+vi.mock("../../../query/plugins", () => ({
+  usePluginActiveContributionsQuery: vi.fn(() => ({
+    data: { ui: [] },
+    isLoading: false,
+    error: null,
+  })),
 }));
 
 function createSelectedLog(overrides: Partial<RequestLogDetail> = {}): RequestLogDetail {
@@ -134,6 +146,12 @@ describe("home/RequestLogDetailDialog", () => {
     setTraceStoreState();
     gatewayEventState.requestSignalHandler = null;
     gatewayEventState.unsubscribe = () => undefined;
+    vi.mocked(usePluginActiveContributionsQuery).mockReturnValue({
+      data: { ui: [] },
+      isLoading: false,
+      error: null,
+    } as any);
+    vi.mocked(logToConsole).mockReset();
     vi.useRealTimers();
   });
 
@@ -334,6 +352,142 @@ describe("home/RequestLogDetailDialog", () => {
     expect(
       screen.getByText("Warmup 命中后由网关直接应答，仅保留审计记录，不进入统计。")
     ).toBeInTheDocument();
+  });
+
+  it("does not show passive Codex reasoning feature samples as audit semantics", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_features",
+            ruleMode: "final_answer_only_high_xhigh",
+            requestReasoningEffort: "high",
+            responseClassification: "complete",
+            reasoningTokens: 516,
+            finalAnswerOnly: true,
+            commentaryObserved: false,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getByText("关键指标")).toBeInTheDocument();
+    expect(screen.queryByText("审计语义")).not.toBeInTheDocument();
+    expect(screen.queryByText("候选特征")).not.toBeInTheDocument();
+    expect(screen.queryByText("压缩豁免")).not.toBeInTheDocument();
+    expect(screen.queryByText("观察信号")).not.toBeInTheDocument();
+    expect(screen.queryByText("响应分类")).not.toBeInTheDocument();
+    expect(screen.queryByText("跳过原因")).not.toBeInTheDocument();
+  });
+
+  it("shows Codex reasoning continuation repair independently from guard hits", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_continuation",
+            status: "failed",
+            sentRounds: 1,
+            reasoningTokens: 2070,
+            failureKind: "aggregate",
+          },
+          {
+            type: "codex_reasoning_guard",
+            ruleSource: "continuation_repair",
+            matchedRuleName: "reasoning_tokens == 518*n-2",
+            reasoningTokens: 516,
+          },
+          {
+            type: "codex_reasoning_continuation",
+            status: "repaired",
+            sentRounds: 2,
+            reasoningTokens: 51,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getByText("审计语义")).toBeInTheDocument();
+    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(
+      screen.getByText("本次请求触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。")
+    ).toBeInTheDocument();
+    expectMetricValue("补救状态", "已修复");
+    expectMetricValue("补救触发", "2");
+    expectMetricValue("补救轮数", "3");
+    expectMetricValue("补救重试", "1");
+    expect(screen.queryByText(/降智命中/)).not.toBeInTheDocument();
+    expect(screen.queryByText("规则模式")).not.toBeInTheDocument();
+    expect(screen.queryByText("命中来源")).not.toBeInTheDocument();
+  });
+
+  it("shows mixed Codex reasoning guard and continuation repair details together", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            compareMode: "less_than_or_equal",
+            compareModeSymbol: "<=",
+            matchedRuleValue: 516,
+            reasoningTokens: 300,
+          },
+          {
+            type: "codex_reasoning_continuation",
+            status: "failed",
+            sentRounds: 1,
+            reasoningTokens: 2070,
+            failureKind: "aggregate",
+          },
+          {
+            type: "codex_reasoning_guard",
+            ruleSource: " Continuation_Repair ",
+            matchedRuleName: "reasoning_tokens == 518*n-2",
+            reasoningTokens: 516,
+          },
+          {
+            type: "codex_reasoning_continuation",
+            status: "repaired",
+            sentRounds: 2,
+            reasoningTokens: 51,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getByText("审计语义")).toBeInTheDocument();
+    expect(screen.getByText("降智命中 <= 516")).toBeInTheDocument();
+    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(
+      screen.getByText(
+        "本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试；同时触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。"
+      )
+    ).toBeInTheDocument();
+    expectMetricValue("命中次数", "1");
+    expectMetricValue("补救状态", "已修复");
+    expectMetricValue("补救触发", "2");
+    expectMetricValue("补救轮数", "3");
+    expectMetricValue("补救重试", "1");
   });
 
   it("renders not-found state when the selected log detail is unavailable", () => {
@@ -1025,6 +1179,61 @@ describe("home/RequestLogDetailDialog", () => {
     // Switch back to summary
     switchToTab("概览");
     expect(screen.getByText("关键指标")).toBeInTheDocument();
+  });
+
+  it("renders log detail contribution tabs after built-in tabs and sends command context", () => {
+    vi.mocked(usePluginActiveContributionsQuery).mockReturnValue({
+      data: {
+        ui: [
+          {
+            pluginId: "acme.debug",
+            contributionId: "trace-tools",
+            slotId: "logs.detail.tabs",
+            title: "调试工具",
+            order: 1,
+            schema: {
+              type: "panel",
+              fields: [
+                {
+                  type: "button",
+                  key: "export",
+                  label: "导出 Trace",
+                  command: "debug.exportTrace",
+                },
+              ],
+            },
+          },
+        ],
+      },
+      isLoading: false,
+      error: null,
+    } as any);
+    setRequestLogQueryState({ selectedLog: createSelectedLog({ id: 77, trace_id: "trace-77" }) });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={77} onSelectLogId={vi.fn()} />);
+
+    expect(screen.getAllByRole("tab").map((tab) => tab.textContent)).toEqual([
+      "概览",
+      "决策链",
+      "原始数据",
+      "调试工具",
+    ]);
+
+    switchToTab("调试工具");
+    fireEvent.click(screen.getByRole("button", { name: "导出 Trace" }));
+
+    expect(logToConsole).toHaveBeenCalledWith(
+      "info",
+      "插件日志详情命令",
+      expect.objectContaining({
+        command: "debug.exportTrace",
+        traceId: "trace-77",
+        logId: 77,
+        pluginId: "acme.debug",
+        contributionId: "trace-tools",
+      })
+    );
   });
 
   it("shows raw error_details_json on raw tab when available", () => {

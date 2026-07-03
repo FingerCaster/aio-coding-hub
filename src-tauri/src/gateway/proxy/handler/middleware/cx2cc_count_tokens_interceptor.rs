@@ -113,6 +113,7 @@ mod tests {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
+            extension_values: vec![],
             upstream_retry_policy_override: None,
         }
     }

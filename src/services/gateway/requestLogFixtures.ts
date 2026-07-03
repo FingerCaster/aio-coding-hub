@@ -81,6 +81,8 @@ export function createRequestLogSummary(
     provider_chain_json: null,
     error_details_json: null,
     cost_multiplier: 1,
+    last_activity_ms: null,
+    activity_details_json: null,
     ...overrides,
     cli_key: cliKey,
     created_at_ms: createdAtMs,
@@ -127,6 +129,8 @@ export function createRequestLogDetail(
     error_details_json: null,
     cost_multiplier: 1,
     created_at_ms: createdAtMs,
+    last_activity_ms: null,
+    activity_details_json: null,
     created_at: createdAt,
     ...overrides,
   };

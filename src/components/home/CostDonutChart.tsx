@@ -1,8 +1,8 @@
 // Usage:
 // - Extracted from HomeCostPanel. Renders the donut charts for provider and model cost distribution.
 
-import { useMemo } from "react";
-import { ResponsiveContainer, PieChart, Pie, Cell, Label, Tooltip } from "recharts";
+import { Suspense, useMemo } from "react";
+import { Cell, Label, Pie, PieChart, ResponsiveContainer, Tooltip } from "../charts/lazyRecharts";
 import { CHART_PALETTE } from "../../constants/colors";
 import { Card } from "../../ui/Card";
 import { formatUsd } from "../../utils/formatters";
@@ -32,45 +32,50 @@ function DonutChart({
   const tooltipStyle = useMemo(() => getTooltipStyle(isDark), [isDark]);
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <PieChart>
-        <Pie
-          data={data}
-          cx="50%"
-          cy="50%"
-          innerRadius="50%"
-          outerRadius="75%"
-          paddingAngle={2}
-          dataKey="value"
-          animationDuration={CHART_ANIMATION.animationDuration}
-        >
-          {data.map((_, index) => (
-            <Cell
-              key={`cell-${index}`}
-              fill={PIE_COLORS[index % PIE_COLORS.length]}
-              stroke={isDark ? "#1e293b" : "#fff"}
-              strokeWidth={2}
+    <Suspense fallback={<div className="h-full w-full" />}>
+      <ResponsiveContainer width="100%" height="100%">
+        <PieChart>
+          <Pie
+            data={data}
+            cx="50%"
+            cy="50%"
+            innerRadius="50%"
+            outerRadius="75%"
+            paddingAngle={2}
+            dataKey="value"
+            animationDuration={CHART_ANIMATION.animationDuration}
+          >
+            {data.map((item, index) => (
+              <Cell
+                key={`${item.name}-${item.value}`}
+                fill={PIE_COLORS[index % PIE_COLORS.length]}
+                stroke={isDark ? "#1e293b" : "#fff"}
+                strokeWidth={2}
+              />
+            ))}
+            <Label
+              value={formatUsd(total)}
+              position="center"
+              style={{
+                fontSize: 14,
+                fontWeight: 600,
+                fill: isDark ? "#e2e8f0" : "#334155",
+              }}
             />
-          ))}
-          <Label
-            value={formatUsd(total)}
-            position="center"
-            style={{
-              fontSize: 14,
-              fontWeight: 600,
-              fill: isDark ? "#e2e8f0" : "#334155",
+          </Pie>
+          <Tooltip
+            contentStyle={tooltipStyle}
+            formatter={(value: unknown, name: unknown) => {
+              const numericValue = Number(value) || 0;
+              return [
+                `${formatUsd(numericValue)} (${((numericValue / total) * 100).toFixed(1)}%)`,
+                String(name),
+              ];
             }}
           />
-        </Pie>
-        <Tooltip
-          contentStyle={tooltipStyle}
-          formatter={(value: number, name: string) => [
-            `${formatUsd(value)} (${((value / total) * 100).toFixed(1)}%)`,
-            name,
-          ]}
-        />
-      </PieChart>
-    </ResponsiveContainer>
+        </PieChart>
+      </ResponsiveContainer>
+    </Suspense>
   );
 }
 

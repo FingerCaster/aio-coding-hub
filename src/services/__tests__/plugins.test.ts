@@ -2,18 +2,20 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "../../generated/bindings";
 import {
   type PluginDetail,
+  pluginExecuteCommand,
   pluginDisable,
   pluginEnable,
   pluginGet,
-  pluginGrantPermissions,
   pluginInstallFromFile,
   pluginInstallRemote,
   pluginInstallOfficial,
   pluginList,
   pluginListAuditLogs,
+  pluginListExtensionRuntimeReports,
+  pluginListRuntimeReports,
   pluginParseMarketIndex,
+  pluginExportReplayFixture,
   pluginQuarantineRevoked,
-  pluginRevokePermission,
   pluginRollback,
   pluginSaveConfig,
   pluginUninstall,
@@ -35,9 +37,11 @@ vi.mock("../../generated/bindings", () => ({
     pluginDisable: vi.fn(),
     pluginUninstall: vi.fn(),
     pluginSaveConfig: vi.fn(),
-    pluginGrantPermissions: vi.fn(),
-    pluginRevokePermission: vi.fn(),
     pluginListAuditLogs: vi.fn(),
+    pluginListExtensionRuntimeReports: vi.fn(),
+    pluginListRuntimeReports: vi.fn(),
+    pluginExecuteCommand: vi.fn(),
+    pluginExportReplayFixture: vi.fn(),
   },
 }));
 
@@ -52,7 +56,7 @@ function pluginSummary() {
     name: "Community Prompt Helper",
     current_version: "1.0.0",
     status: "disabled" as const,
-    runtime: "declarativeRules",
+    runtime: "extensionHost",
     permission_risk: "high" as const,
     update_available: false,
     last_error: null,
@@ -69,7 +73,8 @@ function pluginDetail(install_source: PluginDetail["install_source"] = "local"):
       name: "Community Prompt Helper",
       version: "1.0.0",
       apiVersion: "1.0.0",
-      runtime: { kind: "declarativeRules", rules: ["rules/main.json"] },
+      runtime: { kind: "extensionHost", language: "typescript" },
+      main: "dist/extension.js",
       hooks: [{ name: "gateway.request.afterBodyRead", priority: 100 }],
       permissions: ["request.body.read"],
       hostCompatibility: { app: ">=0.56.0 <1.0.0", pluginApi: "^1.0.0" },
@@ -81,6 +86,7 @@ function pluginDetail(install_source: PluginDetail["install_source"] = "local"):
     pending_permissions: [],
     audit_logs: [],
     runtime_failures: [],
+    rollback_versions: [],
   };
 }
 
@@ -117,9 +123,58 @@ describe("services/plugins", () => {
     vi.mocked(commands.pluginDisable).mockResolvedValue({ status: "ok", data: detail });
     vi.mocked(commands.pluginUninstall).mockResolvedValue({ status: "ok", data: detail });
     vi.mocked(commands.pluginSaveConfig).mockResolvedValue({ status: "ok", data: detail });
-    vi.mocked(commands.pluginGrantPermissions).mockResolvedValue({ status: "ok", data: detail });
-    vi.mocked(commands.pluginRevokePermission).mockResolvedValue({ status: "ok", data: detail });
     vi.mocked(commands.pluginListAuditLogs).mockResolvedValue({ status: "ok", data: [] });
+    vi.mocked(commands.pluginListExtensionRuntimeReports).mockResolvedValue({
+      status: "ok",
+      data: [],
+    });
+    vi.mocked(commands.pluginListRuntimeReports).mockResolvedValue({ status: "ok", data: [] });
+    vi.mocked(commands.pluginExecuteCommand).mockResolvedValue({
+      status: "ok",
+      data: { ok: true },
+    });
+    vi.mocked(commands.pluginExportReplayFixture).mockResolvedValue({
+      status: "ok",
+      data: {
+        schemaVersion: 1,
+        traceId: "trace-replay-1",
+        source: {
+          appVersion: "0.62.3",
+          traceId: "trace-replay-1",
+          exportedAtMs: 1000,
+          requestLogId: 1,
+          createdAtMs: 900,
+        },
+        hookName: "gateway.request.afterBodyRead",
+        pluginId: "community.prompt-helper",
+        request: {
+          cliKey: "codex",
+          sessionId: null,
+          method: "POST",
+          path: "/v1/responses",
+          query: null,
+          provider: "OpenAI Primary",
+          providerSource: null,
+          model: "gpt-5-mini",
+          headers: null,
+          body: null,
+          normalizedMessages: [],
+          meta: {},
+        },
+        response: {
+          status: 200,
+          errorCode: null,
+          headers: null,
+          body: null,
+          chunks: [],
+          meta: {},
+        },
+        log: { body: null, meta: {} },
+        attempts: [],
+        runtimeReports: [],
+        notes: ["request body is not persisted"],
+      },
+    });
 
     await pluginInstallFromFile(" /tmp/plugin.json ");
     await pluginInstallRemote({
@@ -128,6 +183,7 @@ describe("services/plugins", () => {
       checksum: " sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa ",
       signature: " signature ",
       publicKey: " public-key ",
+      marketSourceUrl: " https://plugins.example.test/index.json ",
       source: "github_release",
     });
     await pluginUpdateFromFile(" /tmp/plugin-update.aio-plugin ");
@@ -143,14 +199,28 @@ describe("services/plugins", () => {
     await pluginDisable(" community.prompt-helper ");
     await pluginUninstall(" community.prompt-helper ");
     await pluginSaveConfig(" community.prompt-helper ", { mode: "append_instruction" });
-    await pluginGrantPermissions(" community.prompt-helper ", [
-      " request.body.read ",
-      "",
-      "request.body.read",
-      "request.body.write",
-    ]);
-    await pluginRevokePermission(" community.prompt-helper ", " request.body.write ");
     await pluginListAuditLogs({ pluginId: " community.prompt-helper ", limit: 9999 });
+    await pluginListRuntimeReports({
+      pluginId: " community.prompt-helper ",
+      hookName: " gateway.request.afterBodyRead ",
+      traceId: " trace-replay-1 ",
+      limit: 9999,
+    });
+    await pluginListExtensionRuntimeReports({
+      pluginId: " community.prompt-helper ",
+      contributionType: "hook",
+      contributionId: " gateway.request.afterBodyRead ",
+      traceId: " trace-replay-1 ",
+      limit: 9999,
+    });
+    await pluginExecuteCommand(" community.prompt-helper.open ", {
+      pluginId: "community.prompt-helper",
+    });
+    await pluginExportReplayFixture({
+      pluginId: " community.prompt-helper ",
+      hookName: " gateway.request.afterBodyRead ",
+      traceId: " trace-replay-1 ",
+    });
 
     expect(commands.pluginInstallFromFile).toHaveBeenCalledWith({ filePath: "/tmp/plugin.json" });
     expect(commands.pluginInstallRemote).toHaveBeenCalledWith({
@@ -159,6 +229,7 @@ describe("services/plugins", () => {
       checksum: "sha256:aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       signature: "signature",
       publicKey: "public-key",
+      marketSourceUrl: "https://plugins.example.test/index.json",
       source: "github_release",
     });
     expect(commands.pluginUpdateFromFile).toHaveBeenCalledWith({
@@ -188,22 +259,37 @@ describe("services/plugins", () => {
       pluginId: "community.prompt-helper",
       config: { mode: "append_instruction" },
     });
-    expect(commands.pluginGrantPermissions).toHaveBeenCalledWith({
-      pluginId: "community.prompt-helper",
-      permissions: ["request.body.read", "request.body.write"],
-    });
-    expect(commands.pluginRevokePermission).toHaveBeenCalledWith({
-      pluginId: "community.prompt-helper",
-      permission: "request.body.write",
-    });
     expect(commands.pluginListAuditLogs).toHaveBeenCalledWith({
       pluginId: "community.prompt-helper",
       limit: 500,
+    });
+    expect(commands.pluginListRuntimeReports).toHaveBeenCalledWith({
+      pluginId: "community.prompt-helper",
+      hookName: "gateway.request.afterBodyRead",
+      traceId: "trace-replay-1",
+      limit: 500,
+    });
+    expect(commands.pluginListExtensionRuntimeReports).toHaveBeenCalledWith({
+      pluginId: "community.prompt-helper",
+      contributionType: "hook",
+      contributionId: "gateway.request.afterBodyRead",
+      traceId: "trace-replay-1",
+      limit: 500,
+    });
+    expect(commands.pluginExecuteCommand).toHaveBeenCalledWith({
+      command: "community.prompt-helper.open",
+      args: { pluginId: "community.prompt-helper" },
+    });
+    expect(commands.pluginExportReplayFixture).toHaveBeenCalledWith({
+      pluginId: "community.prompt-helper",
+      hookName: "gateway.request.afterBodyRead",
+      traceId: "trace-replay-1",
     });
   });
 
   it("rejects empty plugin ids and file paths before IPC", async () => {
     await expect(pluginGet(" ")).rejects.toThrow("SEC_INVALID_INPUT");
+    await expect(pluginExecuteCommand(" ")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(pluginInstallFromFile(" ")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(pluginInstallOfficial(" ")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(
@@ -214,6 +300,7 @@ describe("services/plugins", () => {
       })
     ).rejects.toThrow("SEC_INVALID_INPUT");
     expect(commands.pluginGet).not.toHaveBeenCalled();
+    expect(commands.pluginExecuteCommand).not.toHaveBeenCalled();
     expect(commands.pluginInstallFromFile).not.toHaveBeenCalled();
     expect(commands.pluginInstallOfficial).not.toHaveBeenCalled();
     expect(commands.pluginInstallRemote).not.toHaveBeenCalled();

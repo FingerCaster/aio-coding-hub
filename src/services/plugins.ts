@@ -5,13 +5,18 @@ import {
   type JsonValue,
   type PluginAuditLog,
   type PluginDetail,
+  type PluginExtensionExecutionReport,
+  type PluginHookExecutionReport,
+  type PluginInstallPreview,
   type PluginInstallSource,
   type PluginManifest,
   type PluginMarketListing,
   type PluginPermissionRisk,
+  type PluginReplayFixture,
   type PluginRuntime,
   type PluginStatus,
   type PluginSummary,
+  type PluginUpdateDiff,
 } from "../generated/bindings";
 import { invokeGeneratedIpc } from "./generatedIpc";
 
@@ -19,17 +24,24 @@ export type {
   JsonValue,
   PluginAuditLog,
   PluginDetail,
+  PluginExtensionExecutionReport,
+  PluginHookExecutionReport,
+  PluginInstallPreview,
   PluginInstallSource,
   PluginManifest,
   PluginMarketListing,
   PluginPermissionRisk,
+  PluginReplayFixture,
   PluginRuntime,
   PluginStatus,
   PluginSummary,
+  PluginUpdateDiff,
 };
 
 const PLUGIN_AUDIT_LOG_DEFAULT_LIMIT = 50;
 const PLUGIN_AUDIT_LOG_MAX_LIMIT = 500;
+const PLUGIN_RUNTIME_REPORT_DEFAULT_LIMIT = 50;
+const PLUGIN_RUNTIME_REPORT_MAX_LIMIT = 500;
 
 function normalizeRequiredText(label: string, value: string): string {
   const normalized = value.trim();
@@ -47,21 +59,41 @@ export function normalizePluginFilePath(filePath: string): string {
   return normalizeRequiredText("filePath", filePath);
 }
 
+export type PluginRemotePackageInput = {
+  pluginId: string;
+  downloadUrl: string;
+  checksum: string;
+  signature?: string | null;
+  publicKey?: string | null;
+  marketSourceUrl?: string | null;
+  source?: "market" | "github_release" | null;
+};
+
+function normalizeRemotePackageInput(input: PluginRemotePackageInput) {
+  const pluginId = normalizePluginId(input.pluginId);
+  const downloadUrl = normalizeRequiredText("downloadUrl", input.downloadUrl);
+  const checksum = normalizeRequiredText("checksum", input.checksum);
+  const signature =
+    input.signature == null ? null : normalizeRequiredText("signature", input.signature);
+  const publicKey =
+    input.publicKey == null ? null : normalizeRequiredText("publicKey", input.publicKey);
+  const marketSourceUrl =
+    input.marketSourceUrl == null
+      ? null
+      : normalizeRequiredText("marketSourceUrl", input.marketSourceUrl);
+  const source = input.source ?? null;
+
+  return { pluginId, downloadUrl, checksum, signature, publicKey, marketSourceUrl, source };
+}
+
 function clampAuditLimit(limit: number | null | undefined): number {
   if (limit == null || !Number.isFinite(limit)) return PLUGIN_AUDIT_LOG_DEFAULT_LIMIT;
   return Math.min(PLUGIN_AUDIT_LOG_MAX_LIMIT, Math.max(1, Math.trunc(limit)));
 }
 
-function normalizePermissions(permissions: readonly string[]): string[] {
-  const out: string[] = [];
-  const seen = new Set<string>();
-  for (const raw of permissions) {
-    const permission = raw.trim();
-    if (!permission || seen.has(permission)) continue;
-    seen.add(permission);
-    out.push(permission);
-  }
-  return out;
+function clampRuntimeReportLimit(limit: number | null | undefined): number {
+  if (limit == null || !Number.isFinite(limit)) return PLUGIN_RUNTIME_REPORT_DEFAULT_LIMIT;
+  return Math.min(PLUGIN_RUNTIME_REPORT_MAX_LIMIT, Math.max(1, Math.trunc(limit)));
 }
 
 export async function pluginList() {
@@ -80,6 +112,28 @@ export async function pluginGet(pluginId: string) {
     cmd: "plugin_get",
     args: { pluginId: normalizedPluginId },
     invoke: async () => commands.pluginGet({ pluginId: normalizedPluginId }),
+  });
+}
+
+export async function pluginPreviewFromFile(filePath: string) {
+  const normalizedFilePath = normalizePluginFilePath(filePath);
+
+  return invokeGeneratedIpc<PluginInstallPreview>({
+    title: "预览插件失败",
+    cmd: "plugin_preview_from_file",
+    args: { filePath: normalizedFilePath },
+    invoke: async () => commands.pluginPreviewFromFile({ filePath: normalizedFilePath }),
+  });
+}
+
+export async function pluginPreviewUpdateFromFile(filePath: string) {
+  const normalizedFilePath = normalizePluginFilePath(filePath);
+
+  return invokeGeneratedIpc<PluginUpdateDiff>({
+    title: "预览插件更新失败",
+    cmd: "plugin_preview_update_from_file",
+    args: { filePath: normalizedFilePath },
+    invoke: async () => commands.pluginPreviewUpdateFromFile({ filePath: normalizedFilePath }),
   });
 }
 
@@ -105,36 +159,36 @@ export async function pluginUpdateFromFile(filePath: string) {
   });
 }
 
-export async function pluginInstallRemote(input: {
-  pluginId: string;
-  downloadUrl: string;
-  checksum: string;
-  signature?: string | null;
-  publicKey?: string | null;
-  source?: "market" | "github_release" | null;
-}) {
-  const pluginId = normalizePluginId(input.pluginId);
-  const downloadUrl = normalizeRequiredText("downloadUrl", input.downloadUrl);
-  const checksum = normalizeRequiredText("checksum", input.checksum);
-  const signature =
-    input.signature == null ? null : normalizeRequiredText("signature", input.signature);
-  const publicKey =
-    input.publicKey == null ? null : normalizeRequiredText("publicKey", input.publicKey);
-  const source = input.source ?? null;
+export async function pluginPreviewRemoteUpdate(input: PluginRemotePackageInput) {
+  const remoteInput = normalizeRemotePackageInput(input);
+
+  return invokeGeneratedIpc<PluginUpdateDiff>({
+    title: "预览远程插件更新失败",
+    cmd: "plugin_preview_remote_update",
+    args: remoteInput,
+    invoke: async () => commands.pluginPreviewRemoteUpdate(remoteInput),
+  });
+}
+
+export async function pluginInstallRemote(input: PluginRemotePackageInput) {
+  const remoteInput = normalizeRemotePackageInput(input);
 
   return invokeGeneratedIpc<PluginDetail>({
     title: "远程安装插件失败",
     cmd: "plugin_install_remote",
-    args: { pluginId, downloadUrl, checksum, signature, publicKey, source },
-    invoke: async () =>
-      commands.pluginInstallRemote({
-        pluginId,
-        downloadUrl,
-        checksum,
-        signature,
-        publicKey,
-        source,
-      }),
+    args: remoteInput,
+    invoke: async () => commands.pluginInstallRemote(remoteInput),
+  });
+}
+
+export async function pluginUpdateRemote(input: PluginRemotePackageInput) {
+  const remoteInput = normalizeRemotePackageInput(input);
+
+  return invokeGeneratedIpc<PluginDetail>({
+    title: "远程更新插件失败",
+    cmd: "plugin_update_remote",
+    args: remoteInput,
+    invoke: async () => commands.pluginUpdateRemote(remoteInput),
   });
 }
 
@@ -244,38 +298,6 @@ export async function pluginSaveConfig(pluginId: string, config: JsonValue) {
   });
 }
 
-export async function pluginGrantPermissions(pluginId: string, permissions: readonly string[]) {
-  const normalizedPluginId = normalizePluginId(pluginId);
-  const normalizedPermissions = normalizePermissions(permissions);
-
-  return invokeGeneratedIpc<PluginDetail>({
-    title: "授权插件权限失败",
-    cmd: "plugin_grant_permissions",
-    args: { pluginId: normalizedPluginId, permissions: normalizedPermissions },
-    invoke: async () =>
-      commands.pluginGrantPermissions({
-        pluginId: normalizedPluginId,
-        permissions: normalizedPermissions,
-      }),
-  });
-}
-
-export async function pluginRevokePermission(pluginId: string, permission: string) {
-  const normalizedPluginId = normalizePluginId(pluginId);
-  const normalizedPermission = normalizeRequiredText("permission", permission);
-
-  return invokeGeneratedIpc<PluginDetail>({
-    title: "撤销插件权限失败",
-    cmd: "plugin_revoke_permission",
-    args: { pluginId: normalizedPluginId, permission: normalizedPermission },
-    invoke: async () =>
-      commands.pluginRevokePermission({
-        pluginId: normalizedPluginId,
-        permission: normalizedPermission,
-      }),
-  });
-}
-
 export async function pluginListAuditLogs(input: {
   pluginId?: string | null;
   limit?: number | null;
@@ -288,5 +310,87 @@ export async function pluginListAuditLogs(input: {
     cmd: "plugin_list_audit_logs",
     args: { pluginId, limit },
     invoke: async () => commands.pluginListAuditLogs({ pluginId, limit }),
+  });
+}
+
+export async function pluginListRuntimeReports(input: {
+  pluginId?: string | null;
+  hookName?: string | null;
+  traceId?: string | null;
+  limit?: number | null;
+}) {
+  const pluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+  const hookName =
+    input.hookName == null ? null : normalizeRequiredText("hookName", input.hookName);
+  const traceId = input.traceId == null ? null : normalizeRequiredText("traceId", input.traceId);
+  const limit = clampRuntimeReportLimit(input.limit);
+
+  return invokeGeneratedIpc<PluginHookExecutionReport[]>({
+    title: "读取插件运行报告失败",
+    cmd: "plugin_list_runtime_reports",
+    args: { pluginId, hookName, traceId, limit },
+    invoke: async () => commands.pluginListRuntimeReports({ pluginId, hookName, traceId, limit }),
+  });
+}
+
+export async function pluginListExtensionRuntimeReports(input: {
+  pluginId?: string | null;
+  contributionType?: "command" | "hook" | null;
+  contributionId?: string | null;
+  traceId?: string | null;
+  limit?: number | null;
+}) {
+  const pluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+  const contributionType =
+    input.contributionType == null
+      ? null
+      : normalizeRequiredText("contributionType", input.contributionType);
+  const contributionId =
+    input.contributionId == null
+      ? null
+      : normalizeRequiredText("contributionId", input.contributionId);
+  const traceId = input.traceId == null ? null : normalizeRequiredText("traceId", input.traceId);
+  const limit = clampRuntimeReportLimit(input.limit);
+
+  return invokeGeneratedIpc<PluginExtensionExecutionReport[]>({
+    title: "读取插件运行报告失败",
+    cmd: "plugin_list_extension_runtime_reports",
+    args: { pluginId, contributionType, contributionId, traceId, limit },
+    invoke: async () =>
+      commands.pluginListExtensionRuntimeReports({
+        pluginId,
+        contributionType,
+        contributionId,
+        traceId,
+        limit,
+      }),
+  });
+}
+
+export async function pluginExecuteCommand(command: string, args: JsonValue = null) {
+  const normalizedCommand = normalizeRequiredText("command", command);
+
+  return invokeGeneratedIpc<JsonValue>({
+    title: "执行插件命令失败",
+    cmd: "plugin_execute_command",
+    args: { command: normalizedCommand, args },
+    invoke: async () => commands.pluginExecuteCommand({ command: normalizedCommand, args }),
+  });
+}
+
+export async function pluginExportReplayFixture(input: {
+  traceId: string;
+  hookName: string;
+  pluginId?: string | null;
+}) {
+  const traceId = normalizeRequiredText("traceId", input.traceId);
+  const hookName = normalizeRequiredText("hookName", input.hookName);
+  const pluginId = input.pluginId == null ? null : normalizePluginId(input.pluginId);
+
+  return invokeGeneratedIpc<PluginReplayFixture>({
+    title: "导出插件 replay fixture 失败",
+    cmd: "plugin_export_replay_fixture",
+    args: { traceId, hookName, pluginId },
+    invoke: async () => commands.pluginExportReplayFixture({ traceId, hookName, pluginId }),
   });
 }

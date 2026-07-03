@@ -12,6 +12,27 @@ use serde_json::{json, Value};
 /// Outbound adapter for the OpenAI Responses API protocol.
 pub(crate) struct OpenAIResponsesOutbound;
 
+#[derive(Debug, Clone, Copy)]
+struct ResponsesOutboundSettings<'a> {
+    model_reasoning_effort: Option<&'a str>,
+    service_tier: Option<&'a str>,
+    disable_response_storage: bool,
+    drop_stop_sequences: bool,
+    clean_schema: bool,
+}
+
+impl<'a> From<&'a Cx2ccSettings> for ResponsesOutboundSettings<'a> {
+    fn from(settings: &'a Cx2ccSettings) -> Self {
+        Self {
+            model_reasoning_effort: settings.model_reasoning_effort.as_deref(),
+            service_tier: settings.service_tier.as_deref(),
+            disable_response_storage: settings.disable_response_storage,
+            drop_stop_sequences: settings.drop_stop_sequences,
+            clean_schema: settings.clean_schema,
+        }
+    }
+}
+
 impl Outbound for OpenAIResponsesOutbound {
     fn protocol(&self) -> &'static str {
         "openai_responses"
@@ -52,6 +73,7 @@ impl Outbound for OpenAIResponsesOutbound {
 // ---------------------------------------------------------------------------
 
 fn ir_to_request(ir: &InternalRequest, settings: &Cx2ccSettings) -> Result<Value, BridgeError> {
+    let settings = ResponsesOutboundSettings::from(settings);
     let mut result = json!({});
 
     result["model"] = json!(ir.model);
@@ -121,6 +143,13 @@ fn ir_to_request(ir: &InternalRequest, settings: &Cx2ccSettings) -> Result<Value
                 IRContentBlock::Thinking { .. } => {
                     // Responses API has no thinking input type; skip.
                 }
+
+                IRContentBlock::ResponsesNativeInputItem { raw } => {
+                    if !message_content.is_empty() {
+                        input_items_push(&mut input, role_str, &mut message_content);
+                    }
+                    input.push(raw.clone());
+                }
             }
         }
 
@@ -158,21 +187,28 @@ fn ir_to_request(ir: &InternalRequest, settings: &Cx2ccSettings) -> Result<Value
         let response_tools: Vec<Value> = ir
             .tools
             .iter()
-            .map(|t| {
-                let mut params = t.parameters.clone();
-                if settings.clean_schema {
-                    clean_schema(&mut params);
+            .map(|tool| match tool {
+                IRToolDefinition::Function {
+                    name,
+                    description,
+                    parameters,
+                } => {
+                    let mut params = parameters.clone();
+                    if settings.clean_schema {
+                        clean_schema(&mut params);
+                    }
+                    json!({
+                        "type": "function",
+                        "name": name,
+                        "description": description,
+                        "parameters": params,
+                        // Claude Code tools rely on optional/conditional fields.
+                        // Responses API normalizes omitted `strict` schemas, which
+                        // can unintentionally over-constrain plan/team tools.
+                        "strict": false
+                    })
                 }
-                json!({
-                    "type": "function",
-                    "name": t.name,
-                    "description": t.description,
-                    "parameters": params,
-                    // Claude Code tools rely on optional/conditional fields.
-                    // Responses API normalizes omitted `strict` schemas, which
-                    // can unintentionally over-constrain plan/team tools.
-                    "strict": false
-                })
+                IRToolDefinition::ResponsesNative { raw, .. } => raw.clone(),
             })
             .collect();
         result["tools"] = json!(response_tools);
@@ -185,10 +221,37 @@ fn ir_to_request(ir: &InternalRequest, settings: &Cx2ccSettings) -> Result<Value
             IRToolChoice::Required => json!("required"),
             IRToolChoice::None => json!("none"),
             IRToolChoice::Specific { name } => json!({"type": "function", "name": name}),
+            IRToolChoice::ResponsesNative { raw } => raw.clone(),
         };
     }
 
+    apply_responses_metadata(&mut result, ir, &settings);
+
     Ok(result)
+}
+
+fn apply_responses_metadata(
+    result: &mut Value,
+    ir: &InternalRequest,
+    settings: &ResponsesOutboundSettings<'_>,
+) {
+    if let Some(value) = ir.metadata.extra.get("reasoning") {
+        result["reasoning"] = value.clone();
+    } else if let Some(effort) = settings.model_reasoning_effort {
+        result["reasoning"] = json!({ "effort": effort });
+    }
+
+    if let Some(value) = ir.metadata.extra.get("service_tier") {
+        result["service_tier"] = value.clone();
+    } else if let Some(tier) = settings.service_tier {
+        result["service_tier"] = json!(tier);
+    }
+
+    if let Some(value) = ir.metadata.extra.get("store") {
+        result["store"] = value.clone();
+    } else if settings.disable_response_storage {
+        result["store"] = json!(false);
+    }
 }
 
 /// Flush accumulated message content blocks into the input array wrapped with role.
@@ -994,6 +1057,8 @@ mod tests {
             mapped_model: None,
             stream_requested: false,
             is_chatgpt_backend: false,
+            responses_cache_namespace: None,
+            responses_cache_input: None,
         }
     }
 
@@ -1223,16 +1288,16 @@ mod tests {
                 content: vec![IRContentBlock::Text { text: "Hi".into() }],
             }],
             system: None,
-            tools: vec![IRToolDefinition {
-                name: "fetch_url".into(),
-                description: Some("Fetch a URL".into()),
-                parameters: json!({
+            tools: vec![IRToolDefinition::function(
+                "fetch_url",
+                Some("Fetch a URL".into()),
+                json!({
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "format": "uri"}
                     }
                 }),
-            }],
+            )],
             tool_choice: Some(IRToolChoice::Auto),
             max_tokens: None,
             temperature: None,
@@ -1262,16 +1327,16 @@ mod tests {
                 content: vec![IRContentBlock::Text { text: "Hi".into() }],
             }],
             system: None,
-            tools: vec![IRToolDefinition {
-                name: "fetch_url".into(),
-                description: Some("Fetch a URL".into()),
-                parameters: json!({
+            tools: vec![IRToolDefinition::function(
+                "fetch_url",
+                Some("Fetch a URL".into()),
+                json!({
                     "type": "object",
                     "properties": {
                         "url": {"type": "string", "format": "uri"}
                     }
                 }),
-            }],
+            )],
             tool_choice: None,
             max_tokens: None,
             temperature: None,
@@ -1288,6 +1353,101 @@ mod tests {
             result["tools"][0]["parameters"]["properties"]["url"]["format"],
             "uri"
         );
+    }
+
+    #[test]
+    fn ir_to_request_preserves_responses_native_tools() {
+        let ir = InternalRequest {
+            model: "gpt-4o".into(),
+            messages: vec![IRMessage {
+                role: IRRole::User,
+                content: vec![IRContentBlock::Text { text: "Hi".into() }],
+            }],
+            system: None,
+            tools: vec![
+                IRToolDefinition::responses_native(
+                    "tool_search",
+                    json!({"type": "tool_search", "description": "Find tools"}),
+                ),
+                IRToolDefinition::responses_native(
+                    "web_search_preview",
+                    json!({"type": "web_search_preview", "search_context_size": "low"}),
+                ),
+                IRToolDefinition::responses_native(
+                    "image_generation",
+                    json!({"type": "image_generation", "size": "1024x1024"}),
+                ),
+            ],
+            tool_choice: Some(IRToolChoice::ResponsesNative {
+                raw: json!({"type": "tool_search"}),
+            }),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: vec![],
+            stream: false,
+            metadata: IRMetadata::default(),
+        };
+
+        let result = ir_to_request(&ir, &default_settings()).unwrap();
+
+        assert_eq!(result["tools"][0]["type"], "tool_search");
+        assert_eq!(result["tools"][1]["type"], "web_search_preview");
+        assert_eq!(result["tools"][2]["type"], "image_generation");
+        assert_eq!(result["tool_choice"], json!({"type": "tool_search"}));
+    }
+
+    #[test]
+    fn ir_to_request_preserves_responses_native_input_items() {
+        let ir = InternalRequest {
+            model: "gpt-4o".into(),
+            messages: vec![
+                IRMessage {
+                    role: IRRole::Assistant,
+                    content: vec![IRContentBlock::ResponsesNativeInputItem {
+                        raw: json!({"type": "reasoning", "id": "rs_1", "summary": []}),
+                    }],
+                },
+                IRMessage {
+                    role: IRRole::Assistant,
+                    content: vec![IRContentBlock::ResponsesNativeInputItem {
+                        raw: json!({
+                            "type": "tool_search_output",
+                            "call_id": "call_search",
+                            "output": "ok"
+                        }),
+                    }],
+                },
+                IRMessage {
+                    role: IRRole::Assistant,
+                    content: vec![IRContentBlock::ResponsesNativeInputItem {
+                        raw: json!({"type": "compaction", "summary": "previous context"}),
+                    }],
+                },
+                IRMessage {
+                    role: IRRole::User,
+                    content: vec![IRContentBlock::Text {
+                        text: "continue".into(),
+                    }],
+                },
+            ],
+            system: None,
+            tools: vec![],
+            tool_choice: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: vec![],
+            stream: false,
+            metadata: IRMetadata::default(),
+        };
+
+        let result = ir_to_request(&ir, &default_settings()).unwrap();
+
+        assert_eq!(result["input"][0]["type"], "reasoning");
+        assert_eq!(result["input"][1]["type"], "tool_search_output");
+        assert_eq!(result["input"][2]["type"], "compaction");
+        assert_eq!(result["input"][3]["content"][0]["text"], "continue");
     }
 
     #[test]
@@ -1319,6 +1479,70 @@ mod tests {
             },
             json!({"type": "function", "name": "my_fn"}),
         );
+    }
+
+    #[test]
+    fn ir_to_request_preserves_responses_metadata() {
+        let mut metadata = IRMetadata::default();
+        metadata
+            .extra
+            .insert("reasoning".to_string(), json!({"effort": "high"}));
+        metadata
+            .extra
+            .insert("service_tier".to_string(), json!("flex"));
+        metadata.extra.insert("store".to_string(), json!(false));
+        let ir = InternalRequest {
+            model: "gpt-5".into(),
+            messages: vec![IRMessage {
+                role: IRRole::User,
+                content: vec![IRContentBlock::Text { text: "Hi".into() }],
+            }],
+            system: None,
+            tools: vec![],
+            tool_choice: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: vec![],
+            stream: false,
+            metadata,
+        };
+
+        let result = ir_to_request(&ir, &default_settings()).unwrap();
+
+        assert_eq!(result["reasoning"], json!({"effort": "high"}));
+        assert_eq!(result["service_tier"], json!("flex"));
+        assert_eq!(result["store"], json!(false));
+    }
+
+    #[test]
+    fn ir_to_request_injects_configured_responses_metadata() {
+        let ir = InternalRequest {
+            model: "gpt-5".into(),
+            messages: vec![IRMessage {
+                role: IRRole::User,
+                content: vec![IRContentBlock::Text { text: "Hi".into() }],
+            }],
+            system: None,
+            tools: vec![],
+            tool_choice: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: vec![],
+            stream: false,
+            metadata: IRMetadata::default(),
+        };
+        let mut settings = default_settings();
+        settings.model_reasoning_effort = Some("medium".to_string());
+        settings.service_tier = Some("flex".to_string());
+        settings.disable_response_storage = true;
+
+        let result = ir_to_request(&ir, &settings).unwrap();
+
+        assert_eq!(result["reasoning"], json!({"effort": "medium"}));
+        assert_eq!(result["service_tier"], json!("flex"));
+        assert_eq!(result["store"], json!(false));
     }
 
     // ── response_to_ir ────────────────────────────────────────────────

@@ -117,13 +117,13 @@ async fn read_response_body_with_limit(
     let mut out = Vec::with_capacity(limit.min(16 * 1024));
 
     loop {
-        let Some(chunk) = resp.chunk().await? else {
-            break;
-        };
-
         if out.len() >= limit {
             break;
         }
+
+        let Some(chunk) = resp.chunk().await? else {
+            break;
+        };
 
         let remaining = limit - out.len();
         if chunk.len() > remaining {
@@ -323,6 +323,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         provider_id,
         provider_name_base,
         provider_base_url_base,
+        active_requested_model: _,
         auth_mode,
         provider_index,
         session_reuse,
@@ -345,6 +346,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         attempts,
         failed_provider_ids,
         last_outcome,
+        active_requested_model,
         circuit_snapshot,
         abort_guard,
     } = loop_state;
@@ -650,6 +652,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 response_fixer_non_stream_config,
                 ..
             } = CommonCtxOwned::from(ctx);
+            let requested_model_for_log = active_requested_model.clone().or(requested_model);
 
             if let (Some(mut response_headers), Some(mut body_bytes)) =
                 (abort_response_headers, abort_body_bytes)
@@ -683,6 +686,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                             &state.db,
                             &state.log_tx,
                             &state.plugin_pipeline,
+                            &state.active_requests,
                         ),
                         trace_id: trace_id.as_str(),
                         cli_key: cli_key.as_str(),
@@ -695,7 +699,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         attempts: attempts.as_slice(),
                         special_settings_json,
                         session_id,
-                        requested_model,
+                        requested_model: requested_model_for_log.clone(),
                         created_at_ms,
                         created_at,
                     })
@@ -728,6 +732,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         &state.db,
                         &state.log_tx,
                         &state.plugin_pipeline,
+                        &state.active_requests,
                     ),
                     trace_id: trace_id.as_str(),
                     cli_key: cli_key.as_str(),
@@ -740,7 +745,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                     attempts: attempts.as_slice(),
                     special_settings_json,
                     session_id,
-                    requested_model,
+                    requested_model: requested_model_for_log,
                     created_at_ms,
                     created_at,
                 })

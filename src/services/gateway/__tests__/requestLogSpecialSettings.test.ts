@@ -3,6 +3,8 @@ import {
   countCodexReasoningGuardSpecialSettings,
   formatCodexReasoningEffortSource,
   hasClaudeModelMappingSpecialSetting,
+  resolveCodexReasoningContinuationSummary,
+  resolveCodexReasoningFeatureSummary,
   resolveCodexReasoningEffort,
   resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
@@ -102,6 +104,136 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(countCodexReasoningGuardSpecialSettings("bad-json")).toBe(0);
   });
 
+  it("does not count Codex reasoning guard no-intercept decisions as hits", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard_decision",
+        hit: false,
+        matchedRuleName: "allow fast final answer",
+        matchedRuleAction: "no_intercept",
+      },
+      {
+        type: "codex_reasoning_guard",
+        hit: true,
+        matchedRuleToken: 516,
+        matchedRuleName: "custom token 516",
+      },
+    ]);
+
+    expect(countCodexReasoningGuardSpecialSettings(specialSettings)).toBe(1);
+    expect(resolveCodexReasoningGuardSummary(specialSettings)).toMatchObject({
+      count: 1,
+      latestRuleLabel: "custom token 516",
+    });
+  });
+
+  it("excludes continuation repair budget retries from ordinary Codex reasoning guard hits", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard",
+        ruleSource: "continuation_repair",
+        matchedRuleName: "reasoning_tokens == 518*n-2",
+        reasoningTokens: 516,
+      },
+      {
+        type: "codex_reasoning_guard",
+        compareModeSymbol: "<=",
+        matchedRuleValue: 300,
+        reasoningTokens: 300,
+      },
+    ]);
+
+    expect(countCodexReasoningGuardSpecialSettings(specialSettings)).toBe(1);
+    expect(resolveCodexReasoningGuardSummary(specialSettings)).toMatchObject({
+      count: 1,
+      latestRuleLabel: "<= 300",
+      latestReasoningTokens: 300,
+    });
+    expect(
+      countCodexReasoningGuardSpecialSettings(
+        JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            ruleSource: " Continuation_Repair ",
+            matchedRuleName: "reasoning_tokens == 518*n-2",
+          },
+        ])
+      )
+    ).toBe(0);
+
+    const mixedSpecialSettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard",
+        compareModeSymbol: "<=",
+        matchedRuleValue: 516,
+        reasoningTokens: 300,
+      },
+      {
+        type: "codex_reasoning_continuation",
+        status: "repaired",
+        sentRounds: 2,
+        reasoningTokens: 51,
+      },
+      {
+        type: "codex_reasoning_guard",
+        ruleSource: " Continuation_Repair ",
+        matchedRuleName: "reasoning_tokens == 518*n-2",
+        reasoningTokens: 516,
+      },
+    ]);
+    expect(countCodexReasoningGuardSpecialSettings(mixedSpecialSettings)).toBe(1);
+    expect(resolveCodexReasoningGuardSummary(mixedSpecialSettings)).toMatchObject({
+      count: 1,
+      latestRuleLabel: "<= 516",
+      latestReasoningTokens: 300,
+    });
+    expect(resolveCodexReasoningContinuationSummary(mixedSpecialSettings)).toMatchObject({
+      count: 1,
+      repairedCount: 1,
+      continuationRepairGuardCount: 1,
+      latestStatus: "repaired",
+    });
+  });
+
+  it("resolves Codex reasoning continuation repair summary", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "codex_reasoning_continuation",
+        status: "failed",
+        sentRounds: 1,
+        reasoningTokens: 2070,
+        failureKind: "aggregate",
+        reason: "still matches",
+      },
+      {
+        type: "codex_reasoning_guard",
+        ruleSource: "continuation_repair",
+        matchedRuleName: "reasoning_tokens == 518*n-2",
+        reasoningTokens: 516,
+      },
+      {
+        type: "codex_reasoning_continuation",
+        status: "repaired",
+        sentRounds: 2,
+        reasoningTokens: 51,
+      },
+    ]);
+
+    expect(resolveCodexReasoningContinuationSummary(specialSettings)).toEqual({
+      count: 2,
+      repairedCount: 1,
+      nonRepairedCount: 1,
+      continuationRepairGuardCount: 1,
+      latestStatus: "repaired",
+      latestSentRounds: 2,
+      totalSentRounds: 3,
+      latestReasoningTokens: 51,
+      latestFailureKind: null,
+      latestReason: null,
+    });
+    expect(resolveCodexReasoningContinuationSummary("bad-json").count).toBe(0);
+  });
+
   it("resolves Codex reasoning guard summary with latest rule label", () => {
     expect(
       resolveCodexReasoningGuardSummary(
@@ -133,8 +265,15 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       )
     ).toEqual({
       count: 2,
+      latestRuleMode: null,
+      latestHitSource: null,
       latestRuleLabel: "<= 516",
       latestReasoningTokens: 300,
+      latestRequestReasoningEffort: null,
+      latestFinalAnswerOnly: null,
+      latestCommentaryObserved: null,
+      latestHasToolCall: null,
+      latestHasReasoningItem: null,
       latestPhase: "delayed",
       latestActionTaken: "retry_same_provider_delayed_no_circuit",
       latestExhaustedAction: "return_error",
@@ -170,6 +309,84 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       latestActionTaken: "switch_model_no_circuit",
       latestExhaustedAction: "switch_model",
     });
+  });
+
+  it("resolves Codex reasoning guard feature-hit metadata", () => {
+    expect(
+      resolveCodexReasoningGuardSummary(
+        JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            ruleMode: "final_answer_only_high_xhigh",
+            hitSource: "final_answer_only_high_xhigh",
+            requestReasoningEffort: "xhigh",
+            finalAnswerOnly: true,
+            commentaryObserved: false,
+            hasToolCall: false,
+            hasReasoningItem: false,
+          },
+        ])
+      )
+    ).toMatchObject({
+      count: 1,
+      latestRuleMode: "final_answer_only_high_xhigh",
+      latestHitSource: "final_answer_only_high_xhigh",
+      latestRuleLabel: "final-only high/xhigh",
+      latestRequestReasoningEffort: "xhigh",
+      latestFinalAnswerOnly: true,
+      latestCommentaryObserved: false,
+      latestHasToolCall: false,
+      latestHasReasoningItem: false,
+    });
+  });
+
+  it("resolves Codex reasoning passive feature samples", () => {
+    const summary = resolveCodexReasoningFeatureSummary(
+      JSON.stringify([
+        {
+          type: "codex_reasoning_features",
+          ruleMode: "final_answer_only_high_xhigh",
+          reasoningTokens: 516,
+          requestReasoningEffort: "high",
+          responseClassification: "complete",
+          finalAnswerOnly: true,
+          commentaryObserved: false,
+          hasToolCall: false,
+          hasReasoningItem: false,
+        },
+        {
+          type: "codex_reasoning_features",
+          ruleMode: "final_answer_only_high_xhigh",
+          requestReasoningEffort: "xhigh",
+          responseClassification: "request_only",
+          classificationSkippedReason: "guard_disabled_stream_not_buffered",
+          finalAnswerOnly: null,
+          commentaryObserved: null,
+          interceptExemptReason: "context_compaction",
+        },
+      ])
+    );
+
+    expect(summary).toMatchObject({
+      count: 2,
+      completeCount: 1,
+      requestOnlyCount: 1,
+      finalAnswerOnlyCount: 1,
+      highXhighFinalAnswerOnlyCount: 1,
+      highXhighFinalAnswerOnlyCandidateCount: 1,
+      reasoning516FinalAnswerOnlyNoCommentaryCount: 1,
+      compactionExemptCount: 1,
+      latestRuleMode: "final_answer_only_high_xhigh",
+      latestResponseClassification: "request_only",
+      latestClassificationSkippedReason: "guard_disabled_stream_not_buffered",
+      latestRequestReasoningEffort: "xhigh",
+      latestReasoningTokens: null,
+      latestFinalAnswerOnly: null,
+      latestCommentaryObserved: null,
+      latestCompactionExempt: true,
+      latestCandidate: false,
+    });
+    expect(resolveCodexReasoningFeatureSummary("bad-json").count).toBe(0);
   });
 
   it("resolves explicit Codex reasoning effort from special settings", () => {

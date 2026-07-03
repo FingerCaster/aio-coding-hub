@@ -1,4 +1,4 @@
-import { useEffect, useState, type ReactNode } from "react";
+import { useReducer, useState, type ReactNode } from "react";
 import { toast } from "sonner";
 import type {
   GeminiConfigPatch,
@@ -74,6 +74,682 @@ function formatNumberInput(value: number | null) {
   return value == null ? "" : String(value);
 }
 
+function revertNumberField(
+  setter: (value: string) => void,
+  currentValue: number | null | undefined
+) {
+  setter(currentValue == null ? "" : String(currentValue));
+}
+
+function parseIntegerInput(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
+  return value;
+}
+
+function parseFloatInput(raw: string) {
+  const trimmed = raw.trim();
+  if (!trimmed) return null;
+  const value = Number(trimmed);
+  if (!Number.isFinite(value)) return null;
+  return value;
+}
+
+type GeminiDraftKey =
+  | "modelNameText"
+  | "defaultApprovalModeText"
+  | "maxAttemptsText"
+  | "maxSessionTurnsText"
+  | "compressionThresholdText"
+  | "uiThemeText"
+  | "uiInlineThinkingModeText"
+  | "sessionRetentionMaxAgeText"
+  | "authTypeText";
+
+type GeminiDraftState = {
+  sourceKey: string;
+  values: Record<GeminiDraftKey, string>;
+};
+
+type GeminiDraftAction =
+  | { type: "resetFromConfig"; state: GeminiDraftState }
+  | { type: "setValue"; key: GeminiDraftKey; value: string };
+
+const EMPTY_GEMINI_DRAFT_VALUES: Record<GeminiDraftKey, string> = {
+  modelNameText: "",
+  defaultApprovalModeText: "default",
+  maxAttemptsText: "",
+  maxSessionTurnsText: "",
+  compressionThresholdText: "",
+  uiThemeText: "",
+  uiInlineThinkingModeText: "off",
+  sessionRetentionMaxAgeText: "",
+  authTypeText: "",
+};
+
+function createGeminiDraftState(geminiConfig: GeminiConfigState | null): GeminiDraftState {
+  if (!geminiConfig) {
+    return { sourceKey: "empty", values: EMPTY_GEMINI_DRAFT_VALUES };
+  }
+
+  const values: Record<GeminiDraftKey, string> = {
+    modelNameText: geminiConfig.modelName ?? "",
+    defaultApprovalModeText: stringOrDefault(geminiConfig.defaultApprovalMode, "default"),
+    maxAttemptsText: formatNumberInput(geminiConfig.maxAttempts),
+    maxSessionTurnsText: formatNumberInput(geminiConfig.modelMaxSessionTurns),
+    compressionThresholdText: formatNumberInput(geminiConfig.modelCompressionThreshold),
+    uiThemeText: geminiConfig.uiTheme ?? "",
+    uiInlineThinkingModeText: stringOrDefault(geminiConfig.uiInlineThinkingMode, "off"),
+    sessionRetentionMaxAgeText: geminiConfig.sessionRetentionMaxAge ?? "",
+    authTypeText: geminiConfig.securityAuthSelectedType ?? "",
+  };
+
+  return {
+    sourceKey: Object.values(values).join("\u0000"),
+    values,
+  };
+}
+
+function geminiDraftReducer(state: GeminiDraftState, action: GeminiDraftAction): GeminiDraftState {
+  if (action.type === "resetFromConfig") {
+    return action.state;
+  }
+  return {
+    ...state,
+    values: {
+      ...state.values,
+      [action.key]: action.value,
+    },
+  };
+}
+
+function GeminiHeader({
+  geminiAvailable,
+  geminiInfo,
+  loading,
+  versionRefreshToken,
+  onRefresh,
+}: {
+  geminiAvailable: CliManagerAvailability;
+  geminiInfo: SimpleCliInfo | null;
+  loading: boolean;
+  versionRefreshToken: number;
+  onRefresh: () => void;
+}) {
+  return (
+    <div className="border-b border-border">
+      <div className="flex flex-col gap-4 p-6">
+        <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
+          <div className="flex items-center gap-4">
+            <div className="h-14 w-14 rounded-xl bg-card/5 dark:bg-secondary flex items-center justify-center text-secondary-foreground">
+              <Cpu className="h-8 w-8" />
+            </div>
+            <div>
+              <h2 className="text-base font-semibold text-foreground">Gemini</h2>
+              <div className="flex items-center gap-2 mt-1 flex-wrap">
+                {geminiAvailable === "available" && geminiInfo?.found ? (
+                  <>
+                    <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
+                      <CheckCircle2 className="h-3 w-3" />
+                      已安装 {geminiInfo.version}
+                    </span>
+                    <CliVersionBadge
+                      cliKey="gemini"
+                      installedVersion={geminiInfo.version}
+                      refreshToken={versionRefreshToken}
+                      onUpdateComplete={onRefresh}
+                    />
+                  </>
+                ) : geminiAvailable === "checking" || loading ? (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-600/20">
+                    <RefreshCw className="h-3 w-3 animate-spin" />
+                    检测中...
+                  </span>
+                ) : (
+                  <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
+                    未检测到
+                  </span>
+                )}
+              </div>
+            </div>
+          </div>
+
+          <Button
+            onClick={onRefresh}
+            variant="secondary"
+            size="sm"
+            disabled={loading}
+            className="gap-2"
+          >
+            <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
+            刷新状态
+          </Button>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function GeminiInfoTile({
+  icon,
+  label,
+  title,
+  value,
+  detail,
+}: {
+  icon: ReactNode;
+  label: string;
+  title: string;
+  value: string;
+  detail?: ReactNode;
+}) {
+  return (
+    <div className="bg-secondary rounded-lg p-3 border border-border">
+      <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
+        {icon}
+        {label}
+      </div>
+      <div className="font-mono text-xs text-secondary-foreground truncate" title={title}>
+        {value}
+      </div>
+      {detail}
+    </div>
+  );
+}
+
+function GeminiInfoGrid({
+  configDir,
+  configPath,
+  geminiConfig,
+  geminiInfo,
+}: {
+  configDir: string;
+  configPath: string;
+  geminiConfig: GeminiConfigState | null;
+  geminiInfo: SimpleCliInfo | null;
+}) {
+  return (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
+      <GeminiInfoTile
+        icon={<FolderOpen className="h-3 w-3" />}
+        label="配置目录"
+        title={configDir}
+        value={configDir}
+      />
+      <GeminiInfoTile
+        icon={<FileJson className="h-3 w-3" />}
+        label="settings.json"
+        title={configPath}
+        value={configPath}
+        detail={
+          geminiConfig ? (
+            <div className="mt-1 text-[11px] text-muted-foreground">
+              {geminiConfig.exists ? "已存在" : "不存在（保存时自动创建）"}
+            </div>
+          ) : null
+        }
+      />
+      <GeminiInfoTile
+        icon={<Cpu className="h-3 w-3" />}
+        label="可执行文件"
+        title={geminiInfo?.executable_path ?? "—"}
+        value={geminiInfo?.executable_path ?? "—"}
+      />
+      <GeminiInfoTile
+        icon={<Settings className="h-3 w-3" />}
+        label="解析方式"
+        title={geminiInfo?.resolved_via ?? "—"}
+        value={geminiInfo?.resolved_via ?? "—"}
+        detail={
+          <div className="mt-1 text-[11px] text-muted-foreground">
+            SHELL: {geminiInfo?.shell ?? "—"}
+          </div>
+        }
+      />
+    </div>
+  );
+}
+
+function GeminiModelBehaviorSection({
+  geminiConfig,
+  modelNameText,
+  defaultApprovalModeText,
+  maxAttemptsText,
+  maxSessionTurnsText,
+  compressionThresholdText,
+  saving,
+  persistGeminiConfig,
+  setModelNameText,
+  setDefaultApprovalModeText,
+  setMaxAttemptsText,
+  setMaxSessionTurnsText,
+  setCompressionThresholdText,
+}: {
+  geminiConfig: GeminiConfigState;
+  modelNameText: string;
+  defaultApprovalModeText: string;
+  maxAttemptsText: string;
+  maxSessionTurnsText: string;
+  compressionThresholdText: string;
+  saving: boolean;
+  persistGeminiConfig: (patch: GeminiConfigPatch) => Promise<void> | void;
+  setModelNameText: (value: string) => void;
+  setDefaultApprovalModeText: (value: string) => void;
+  setMaxAttemptsText: (value: string) => void;
+  setMaxSessionTurnsText: (value: string) => void;
+  setCompressionThresholdText: (value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        模型与行为
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="默认模型 (model.name)"
+          subtitle="留空会删除该配置，交给 Gemini CLI 默认行为。"
+        >
+          <Input
+            value={modelNameText}
+            onChange={(e) => setModelNameText(e.currentTarget.value)}
+            onBlur={() => void persistGeminiConfig({ modelName: modelNameText.trim() })}
+            placeholder="例如：gemini-2.5-pro"
+            className="font-mono w-[280px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="审批模式 (general.defaultApprovalMode)"
+          subtitle="default / auto_edit / plan。"
+        >
+          <Select
+            value={defaultApprovalModeText}
+            onChange={(e) => {
+              const value = e.currentTarget.value;
+              setDefaultApprovalModeText(value);
+              void persistGeminiConfig({ defaultApprovalMode: value });
+            }}
+            className="w-[220px] max-w-full font-mono"
+            disabled={saving}
+          >
+            <option value="default">default</option>
+            <option value="auto_edit">auto_edit</option>
+            <option value="plan">plan</option>
+          </Select>
+        </SettingItem>
+
+        <SettingItem
+          label="最大尝试次数 (general.maxAttempts)"
+          subtitle="输入整数；留空会恢复当前显示值。"
+        >
+          <Input
+            type="number"
+            value={maxAttemptsText}
+            onChange={(e) => setMaxAttemptsText(e.currentTarget.value)}
+            onBlur={() => {
+              const next = parseIntegerInput(maxAttemptsText);
+              if (next == null) {
+                revertNumberField(setMaxAttemptsText, geminiConfig.maxAttempts);
+                if (maxAttemptsText.trim()) toast.error("maxAttempts 必须为整数");
+                return;
+              }
+              void persistGeminiConfig({ maxAttempts: next });
+            }}
+            className="font-mono w-[180px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="会话轮次上限 (model.maxSessionTurns)"
+          subtitle="输入整数，支持 -1 表示 unlimited。"
+        >
+          <Input
+            type="number"
+            value={maxSessionTurnsText}
+            onChange={(e) => setMaxSessionTurnsText(e.currentTarget.value)}
+            onBlur={() => {
+              const next = parseIntegerInput(maxSessionTurnsText);
+              if (next == null) {
+                revertNumberField(setMaxSessionTurnsText, geminiConfig.modelMaxSessionTurns);
+                if (maxSessionTurnsText.trim()) toast.error("maxSessionTurns 必须为整数");
+                return;
+              }
+              void persistGeminiConfig({ modelMaxSessionTurns: next });
+            }}
+            className="font-mono w-[180px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="压缩阈值 (model.compressionThreshold)" subtitle="输入数字，例如 0.7。">
+          <Input
+            type="number"
+            step="0.1"
+            value={compressionThresholdText}
+            onChange={(e) => setCompressionThresholdText(e.currentTarget.value)}
+            onBlur={() => {
+              const next = parseFloatInput(compressionThresholdText);
+              if (next == null) {
+                revertNumberField(
+                  setCompressionThresholdText,
+                  geminiConfig.modelCompressionThreshold
+                );
+                if (compressionThresholdText.trim()) {
+                  toast.error("compressionThreshold 必须为数字");
+                }
+                return;
+              }
+              void persistGeminiConfig({ modelCompressionThreshold: next });
+            }}
+            className="font-mono w-[180px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function GeminiUiSettingsSection({
+  geminiConfig,
+  uiThemeText,
+  uiInlineThinkingModeText,
+  saving,
+  persistGeminiConfig,
+  setUiThemeText,
+  setUiInlineThinkingModeText,
+}: {
+  geminiConfig: GeminiConfigState;
+  uiThemeText: string;
+  uiInlineThinkingModeText: string;
+  saving: boolean;
+  persistGeminiConfig: (patch: GeminiConfigPatch) => Promise<void> | void;
+  setUiThemeText: (value: string) => void;
+  setUiInlineThinkingModeText: (value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        界面设置
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem label="主题 (ui.theme)" subtitle="输入主题名；留空会删除该配置。">
+          <Input
+            value={uiThemeText}
+            onChange={(e) => setUiThemeText(e.currentTarget.value)}
+            onBlur={() => void persistGeminiConfig({ uiTheme: uiThemeText.trim() })}
+            className="font-mono w-[220px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="隐藏 Banner (ui.hideBanner)" subtitle="开启后隐藏欢迎 Banner。">
+          <Switch
+            checked={boolOrDefault(geminiConfig.uiHideBanner)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ uiHideBanner: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="隐藏 Tips (ui.hideTips)" subtitle="开启后隐藏提示文本。">
+          <Switch
+            checked={boolOrDefault(geminiConfig.uiHideTips)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ uiHideTips: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="显示行号 (ui.showLineNumbers)" subtitle="开启后显示行号。">
+          <Switch
+            checked={boolOrDefault(geminiConfig.uiShowLineNumbers)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ uiShowLineNumbers: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="思考展示模式 (ui.inlineThinkingMode)" subtitle="off / full。">
+          <Select
+            value={uiInlineThinkingModeText}
+            onChange={(e) => {
+              const value = e.currentTarget.value;
+              setUiInlineThinkingModeText(value);
+              void persistGeminiConfig({ uiInlineThinkingMode: value });
+            }}
+            className="w-[180px] max-w-full font-mono"
+            disabled={saving}
+          >
+            <option value="off">off</option>
+            <option value="full">full</option>
+          </Select>
+        </SettingItem>
+
+        <SettingItem label="Vim 模式 (general.vimMode)" subtitle="开启后启用 Vim 风格编辑交互。">
+          <Switch
+            checked={boolOrDefault(geminiConfig.vimMode)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ vimMode: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function GeminiFeatureTogglesSection({
+  geminiConfig,
+  saving,
+  persistGeminiConfig,
+}: {
+  geminiConfig: GeminiConfigState;
+  saving: boolean;
+  persistGeminiConfig: (patch: GeminiConfigPatch) => Promise<void> | void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        功能开关
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem label="自动更新 (general.enableAutoUpdate)" subtitle="控制 CLI 自更新。">
+          <Switch
+            checked={boolOrDefault(geminiConfig.enableAutoUpdate)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ enableAutoUpdate: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem label="通知 (general.enableNotifications)" subtitle="控制通知开关。">
+          <Switch
+            checked={boolOrDefault(geminiConfig.enableNotifications)}
+            onCheckedChange={(checked) =>
+              void persistGeminiConfig({ enableNotifications: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="重试抓取错误 (general.retryFetchErrors)"
+          subtitle="开启后自动重试 fetch 失败。"
+        >
+          <Switch
+            checked={boolOrDefault(geminiConfig.retryFetchErrors)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ retryFetchErrors: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="使用统计 (privacy.usageStatisticsEnabled)"
+          subtitle="控制匿名使用统计上报。"
+        >
+          <Switch
+            checked={boolOrDefault(geminiConfig.usageStatisticsEnabled)}
+            onCheckedChange={(checked) =>
+              void persistGeminiConfig({ usageStatisticsEnabled: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function GeminiSessionAuthSection({
+  geminiConfig,
+  sessionRetentionMaxAgeText,
+  authTypeText,
+  saving,
+  persistGeminiConfig,
+  setSessionRetentionMaxAgeText,
+  setAuthTypeText,
+}: {
+  geminiConfig: GeminiConfigState;
+  sessionRetentionMaxAgeText: string;
+  authTypeText: string;
+  saving: boolean;
+  persistGeminiConfig: (patch: GeminiConfigPatch) => Promise<void> | void;
+  setSessionRetentionMaxAgeText: (value: string) => void;
+  setAuthTypeText: (value: string) => void;
+}) {
+  return (
+    <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
+      <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
+        <Settings className="h-4 w-4 text-muted-foreground" />
+        会话与认证
+      </h3>
+      <div className="divide-y divide-border">
+        <SettingItem
+          label="会话保留 (general.sessionRetention.enabled)"
+          subtitle="开启后保留历史会话。"
+        >
+          <Switch
+            checked={boolOrDefault(geminiConfig.sessionRetentionEnabled)}
+            onCheckedChange={(checked) =>
+              void persistGeminiConfig({ sessionRetentionEnabled: checked })
+            }
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="会话保留时长 (general.sessionRetention.maxAge)"
+          subtitle="例如：30d, 7d。留空删除配置。"
+        >
+          <Input
+            value={sessionRetentionMaxAgeText}
+            onChange={(e) => setSessionRetentionMaxAgeText(e.currentTarget.value)}
+            onBlur={() =>
+              void persistGeminiConfig({
+                sessionRetentionMaxAge: sessionRetentionMaxAgeText.trim(),
+              })
+            }
+            placeholder="例如：30d"
+            className="font-mono w-[180px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="计划模式模型路由 (general.plan.modelRouting)"
+          subtitle="自动在 Pro/Flash 模型间切换。"
+        >
+          <Switch
+            checked={boolOrDefault(geminiConfig.planModelRouting)}
+            onCheckedChange={(checked) => void persistGeminiConfig({ planModelRouting: checked })}
+            disabled={saving}
+          />
+        </SettingItem>
+
+        <SettingItem
+          label="认证类型 (security.auth.selectedType)"
+          subtitle="例如：gemini-api-key。留空删除配置。"
+        >
+          <Input
+            value={authTypeText}
+            onChange={(e) => setAuthTypeText(e.currentTarget.value)}
+            onBlur={() =>
+              void persistGeminiConfig({
+                securityAuthSelectedType: authTypeText.trim(),
+              })
+            }
+            placeholder="例如：gemini-api-key"
+            className="font-mono w-[220px] max-w-full"
+            disabled={saving}
+          />
+        </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function GeminiConfigSections({
+  geminiConfig,
+  draftValues,
+  saving,
+  persistGeminiConfig,
+  setDraftValue,
+}: {
+  geminiConfig: GeminiConfigState;
+  draftValues: Record<GeminiDraftKey, string>;
+  saving: boolean;
+  persistGeminiConfig: (patch: GeminiConfigPatch) => Promise<void> | void;
+  setDraftValue: (key: GeminiDraftKey, value: string) => void;
+}) {
+  return (
+    <>
+      <GeminiModelBehaviorSection
+        geminiConfig={geminiConfig}
+        modelNameText={draftValues.modelNameText}
+        defaultApprovalModeText={draftValues.defaultApprovalModeText}
+        maxAttemptsText={draftValues.maxAttemptsText}
+        maxSessionTurnsText={draftValues.maxSessionTurnsText}
+        compressionThresholdText={draftValues.compressionThresholdText}
+        saving={saving}
+        persistGeminiConfig={persistGeminiConfig}
+        setModelNameText={(value) => setDraftValue("modelNameText", value)}
+        setDefaultApprovalModeText={(value) => setDraftValue("defaultApprovalModeText", value)}
+        setMaxAttemptsText={(value) => setDraftValue("maxAttemptsText", value)}
+        setMaxSessionTurnsText={(value) => setDraftValue("maxSessionTurnsText", value)}
+        setCompressionThresholdText={(value) => setDraftValue("compressionThresholdText", value)}
+      />
+      <GeminiUiSettingsSection
+        geminiConfig={geminiConfig}
+        uiThemeText={draftValues.uiThemeText}
+        uiInlineThinkingModeText={draftValues.uiInlineThinkingModeText}
+        saving={saving}
+        persistGeminiConfig={persistGeminiConfig}
+        setUiThemeText={(value) => setDraftValue("uiThemeText", value)}
+        setUiInlineThinkingModeText={(value) => setDraftValue("uiInlineThinkingModeText", value)}
+      />
+      <GeminiFeatureTogglesSection
+        geminiConfig={geminiConfig}
+        saving={saving}
+        persistGeminiConfig={persistGeminiConfig}
+      />
+      <GeminiSessionAuthSection
+        geminiConfig={geminiConfig}
+        sessionRetentionMaxAgeText={draftValues.sessionRetentionMaxAgeText}
+        authTypeText={draftValues.authTypeText}
+        saving={saving}
+        persistGeminiConfig={persistGeminiConfig}
+        setSessionRetentionMaxAgeText={(value) =>
+          setDraftValue("sessionRetentionMaxAgeText", value)
+        }
+        setAuthTypeText={(value) => setDraftValue("authTypeText", value)}
+      />
+    </>
+  );
+}
+
 export function CliManagerGeminiTab({
   geminiAvailable,
   geminiLoading,
@@ -85,29 +761,13 @@ export function CliManagerGeminiTab({
   persistGeminiConfig,
 }: CliManagerGeminiTabProps) {
   const [versionRefreshToken, setVersionRefreshToken] = useState(0);
-  const [modelNameText, setModelNameText] = useState("");
-  const [defaultApprovalModeText, setDefaultApprovalModeText] = useState("default");
-  const [maxAttemptsText, setMaxAttemptsText] = useState("");
-  const [maxSessionTurnsText, setMaxSessionTurnsText] = useState("");
-  const [compressionThresholdText, setCompressionThresholdText] = useState("");
-  const [uiThemeText, setUiThemeText] = useState("");
-  const [uiInlineThinkingModeText, setUiInlineThinkingModeText] = useState("off");
-  const [sessionRetentionMaxAgeText, setSessionRetentionMaxAgeText] = useState("");
-  const [authTypeText, setAuthTypeText] = useState("");
-
-  useEffect(() => {
-    if (!geminiConfig) return;
-    setModelNameText(geminiConfig.modelName ?? "");
-    setDefaultApprovalModeText(stringOrDefault(geminiConfig.defaultApprovalMode, "default"));
-    setMaxAttemptsText(formatNumberInput(geminiConfig.maxAttempts));
-    setMaxSessionTurnsText(formatNumberInput(geminiConfig.modelMaxSessionTurns));
-    setCompressionThresholdText(formatNumberInput(geminiConfig.modelCompressionThreshold));
-    setUiThemeText(geminiConfig.uiTheme ?? "");
-    setUiInlineThinkingModeText(stringOrDefault(geminiConfig.uiInlineThinkingMode, "off"));
-    setSessionRetentionMaxAgeText(geminiConfig.sessionRetentionMaxAge ?? "");
-    setAuthTypeText(geminiConfig.securityAuthSelectedType ?? "");
-  }, [geminiConfig]);
-
+  const nextDraftState = createGeminiDraftState(geminiConfig);
+  const [draftState, dispatchDraft] = useReducer(geminiDraftReducer, nextDraftState);
+  const effectiveDraftState =
+    draftState.sourceKey === nextDraftState.sourceKey ? draftState : nextDraftState;
+  if (draftState.sourceKey !== nextDraftState.sourceKey) {
+    dispatchDraft({ type: "resetFromConfig", state: nextDraftState });
+  }
   const loading = geminiLoading || geminiConfigLoading;
   const saving = geminiConfigSaving;
   const configDir = geminiConfig?.configDir ?? "—";
@@ -121,143 +781,27 @@ export function CliManagerGeminiTab({
     }
   }
 
-  function revertNumberField(
-    setter: (value: string) => void,
-    currentValue: number | null | undefined
-  ) {
-    setter(currentValue == null ? "" : String(currentValue));
-  }
-
-  function parseIntegerInput(raw: string) {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    const value = Number(trimmed);
-    if (!Number.isFinite(value) || !Number.isInteger(value)) return null;
-    return value;
-  }
-
-  function parseFloatInput(raw: string) {
-    const trimmed = raw.trim();
-    if (!trimmed) return null;
-    const value = Number(trimmed);
-    if (!Number.isFinite(value)) return null;
-    return value;
+  function setDraftValue(key: GeminiDraftKey, value: string) {
+    dispatchDraft({ type: "setValue", key, value });
   }
 
   return (
     <div className="space-y-6">
       <Card className="overflow-hidden">
-        <div className="border-b border-border">
-          <div className="flex flex-col gap-4 p-6">
-            <div className="flex flex-col md:flex-row items-start md:items-center justify-between gap-4">
-              <div className="flex items-center gap-4">
-                <div className="h-14 w-14 rounded-xl bg-card/5 dark:bg-secondary flex items-center justify-center text-secondary-foreground">
-                  <Cpu className="h-8 w-8" />
-                </div>
-                <div>
-                  <h2 className="text-base font-semibold text-foreground">Gemini</h2>
-                  <div className="flex items-center gap-2 mt-1 flex-wrap">
-                    {geminiAvailable === "available" && geminiInfo?.found ? (
-                      <>
-                        <span className="inline-flex items-center gap-1.5 rounded-full bg-green-50 dark:bg-green-900/30 px-2.5 py-0.5 text-xs font-medium text-green-700 dark:text-green-400 ring-1 ring-inset ring-green-600/20">
-                          <CheckCircle2 className="h-3 w-3" />
-                          已安装 {geminiInfo.version}
-                        </span>
-                        <CliVersionBadge
-                          cliKey="gemini"
-                          installedVersion={geminiInfo.version}
-                          refreshToken={versionRefreshToken}
-                          onUpdateComplete={refreshGeminiStatus}
-                        />
-                      </>
-                    ) : geminiAvailable === "checking" || loading ? (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-blue-50 dark:bg-blue-900/30 px-2.5 py-0.5 text-xs font-medium text-blue-700 dark:text-blue-400 ring-1 ring-inset ring-blue-600/20">
-                        <RefreshCw className="h-3 w-3 animate-spin" />
-                        检测中...
-                      </span>
-                    ) : (
-                      <span className="inline-flex items-center gap-1.5 rounded-full bg-secondary px-2.5 py-0.5 text-xs font-medium text-muted-foreground ring-1 ring-inset ring-border">
-                        未检测到
-                      </span>
-                    )}
-                  </div>
-                </div>
-              </div>
-
-              <Button
-                onClick={() => void refreshGeminiStatus()}
-                variant="secondary"
-                size="sm"
-                disabled={loading}
-                className="gap-2"
-              >
-                <RefreshCw className={cn("h-3.5 w-3.5", loading && "animate-spin")} />
-                刷新状态
-              </Button>
-            </div>
-
-            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-3 mt-2">
-              <div className="bg-secondary rounded-lg p-3 border border-border">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                  <FolderOpen className="h-3 w-3" />
-                  配置目录
-                </div>
-                <div
-                  className="font-mono text-xs text-secondary-foreground truncate"
-                  title={configDir}
-                >
-                  {configDir}
-                </div>
-              </div>
-
-              <div className="bg-secondary rounded-lg p-3 border border-border">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                  <FileJson className="h-3 w-3" />
-                  settings.json
-                </div>
-                <div
-                  className="font-mono text-xs text-secondary-foreground truncate"
-                  title={configPath}
-                >
-                  {configPath}
-                </div>
-                {geminiConfig ? (
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    {geminiConfig.exists ? "已存在" : "不存在（保存时自动创建）"}
-                  </div>
-                ) : null}
-              </div>
-
-              <div className="bg-secondary rounded-lg p-3 border border-border">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                  <Cpu className="h-3 w-3" />
-                  可执行文件
-                </div>
-                <div
-                  className="font-mono text-xs text-secondary-foreground truncate"
-                  title={geminiInfo?.executable_path ?? "—"}
-                >
-                  {geminiInfo?.executable_path ?? "—"}
-                </div>
-              </div>
-
-              <div className="bg-secondary rounded-lg p-3 border border-border">
-                <div className="flex items-center gap-1.5 text-xs text-muted-foreground mb-1.5">
-                  <Settings className="h-3 w-3" />
-                  解析方式
-                </div>
-                <div
-                  className="font-mono text-xs text-secondary-foreground truncate"
-                  title={geminiInfo?.resolved_via ?? "—"}
-                >
-                  {geminiInfo?.resolved_via ?? "—"}
-                </div>
-                <div className="mt-1 text-[11px] text-muted-foreground">
-                  SHELL: {geminiInfo?.shell ?? "—"}
-                </div>
-              </div>
-            </div>
-          </div>
+        <GeminiHeader
+          geminiAvailable={geminiAvailable}
+          geminiInfo={geminiInfo}
+          loading={loading}
+          versionRefreshToken={versionRefreshToken}
+          onRefresh={() => void refreshGeminiStatus()}
+        />
+        <div className="px-6 pb-6">
+          <GeminiInfoGrid
+            configDir={configDir}
+            configPath={configPath}
+            geminiConfig={geminiConfig}
+            geminiInfo={geminiInfo}
+          />
         </div>
 
         {geminiAvailable === "unavailable" ? (
@@ -267,341 +811,13 @@ export function CliManagerGeminiTab({
         ) : (
           <div className="p-6 space-y-6">
             {geminiConfig ? (
-              <>
-                <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-                  <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                    <Settings className="h-4 w-4 text-muted-foreground" />
-                    模型与行为
-                  </h3>
-                  <div className="divide-y divide-border">
-                    <SettingItem
-                      label="默认模型 (model.name)"
-                      subtitle="留空会删除该配置，交给 Gemini CLI 默认行为。"
-                    >
-                      <Input
-                        value={modelNameText}
-                        onChange={(e) => setModelNameText(e.currentTarget.value)}
-                        onBlur={() => void persistGeminiConfig({ modelName: modelNameText.trim() })}
-                        placeholder="例如：gemini-2.5-pro"
-                        className="font-mono w-[280px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="审批模式 (general.defaultApprovalMode)"
-                      subtitle="default / auto_edit / plan。"
-                    >
-                      <Select
-                        value={defaultApprovalModeText}
-                        onChange={(e) => {
-                          const value = e.currentTarget.value;
-                          setDefaultApprovalModeText(value);
-                          void persistGeminiConfig({ defaultApprovalMode: value });
-                        }}
-                        className="w-[220px] max-w-full font-mono"
-                        disabled={saving}
-                      >
-                        <option value="default">default</option>
-                        <option value="auto_edit">auto_edit</option>
-                        <option value="plan">plan</option>
-                      </Select>
-                    </SettingItem>
-
-                    <SettingItem
-                      label="最大尝试次数 (general.maxAttempts)"
-                      subtitle="输入整数；留空会恢复当前显示值。"
-                    >
-                      <Input
-                        type="number"
-                        value={maxAttemptsText}
-                        onChange={(e) => setMaxAttemptsText(e.currentTarget.value)}
-                        onBlur={() => {
-                          const next = parseIntegerInput(maxAttemptsText);
-                          if (next == null) {
-                            revertNumberField(setMaxAttemptsText, geminiConfig.maxAttempts);
-                            if (maxAttemptsText.trim()) {
-                              toast.error("maxAttempts 必须为整数");
-                            }
-                            return;
-                          }
-                          void persistGeminiConfig({ maxAttempts: next });
-                        }}
-                        className="font-mono w-[180px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="会话轮次上限 (model.maxSessionTurns)"
-                      subtitle="输入整数，支持 -1 表示 unlimited。"
-                    >
-                      <Input
-                        type="number"
-                        value={maxSessionTurnsText}
-                        onChange={(e) => setMaxSessionTurnsText(e.currentTarget.value)}
-                        onBlur={() => {
-                          const next = parseIntegerInput(maxSessionTurnsText);
-                          if (next == null) {
-                            revertNumberField(
-                              setMaxSessionTurnsText,
-                              geminiConfig.modelMaxSessionTurns
-                            );
-                            if (maxSessionTurnsText.trim()) {
-                              toast.error("maxSessionTurns 必须为整数");
-                            }
-                            return;
-                          }
-                          void persistGeminiConfig({ modelMaxSessionTurns: next });
-                        }}
-                        className="font-mono w-[180px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="压缩阈值 (model.compressionThreshold)"
-                      subtitle="输入数字，例如 0.7。"
-                    >
-                      <Input
-                        type="number"
-                        step="0.1"
-                        value={compressionThresholdText}
-                        onChange={(e) => setCompressionThresholdText(e.currentTarget.value)}
-                        onBlur={() => {
-                          const next = parseFloatInput(compressionThresholdText);
-                          if (next == null) {
-                            revertNumberField(
-                              setCompressionThresholdText,
-                              geminiConfig.modelCompressionThreshold
-                            );
-                            if (compressionThresholdText.trim()) {
-                              toast.error("compressionThreshold 必须为数字");
-                            }
-                            return;
-                          }
-                          void persistGeminiConfig({ modelCompressionThreshold: next });
-                        }}
-                        className="font-mono w-[180px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-                  <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                    <Settings className="h-4 w-4 text-muted-foreground" />
-                    界面设置
-                  </h3>
-                  <div className="divide-y divide-border">
-                    <SettingItem label="主题 (ui.theme)" subtitle="输入主题名；留空会删除该配置。">
-                      <Input
-                        value={uiThemeText}
-                        onChange={(e) => setUiThemeText(e.currentTarget.value)}
-                        onBlur={() => void persistGeminiConfig({ uiTheme: uiThemeText.trim() })}
-                        className="font-mono w-[220px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="隐藏 Banner (ui.hideBanner)"
-                      subtitle="开启后隐藏欢迎 Banner。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.uiHideBanner)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ uiHideBanner: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem label="隐藏 Tips (ui.hideTips)" subtitle="开启后隐藏提示文本。">
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.uiHideTips)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ uiHideTips: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem label="显示行号 (ui.showLineNumbers)" subtitle="开启后显示行号。">
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.uiShowLineNumbers)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ uiShowLineNumbers: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="思考展示模式 (ui.inlineThinkingMode)"
-                      subtitle="off / full。"
-                    >
-                      <Select
-                        value={uiInlineThinkingModeText}
-                        onChange={(e) => {
-                          const value = e.currentTarget.value;
-                          setUiInlineThinkingModeText(value);
-                          void persistGeminiConfig({ uiInlineThinkingMode: value });
-                        }}
-                        className="w-[180px] max-w-full font-mono"
-                        disabled={saving}
-                      >
-                        <option value="off">off</option>
-                        <option value="full">full</option>
-                      </Select>
-                    </SettingItem>
-
-                    <SettingItem
-                      label="Vim 模式 (general.vimMode)"
-                      subtitle="开启后启用 Vim 风格编辑交互。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.vimMode)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ vimMode: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-                  <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                    <Settings className="h-4 w-4 text-muted-foreground" />
-                    功能开关
-                  </h3>
-                  <div className="divide-y divide-border">
-                    <SettingItem
-                      label="自动更新 (general.enableAutoUpdate)"
-                      subtitle="控制 CLI 自更新。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.enableAutoUpdate)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ enableAutoUpdate: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="通知 (general.enableNotifications)"
-                      subtitle="控制通知开关。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.enableNotifications)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ enableNotifications: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="重试抓取错误 (general.retryFetchErrors)"
-                      subtitle="开启后自动重试 fetch 失败。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.retryFetchErrors)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ retryFetchErrors: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="使用统计 (privacy.usageStatisticsEnabled)"
-                      subtitle="控制匿名使用统计上报。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.usageStatisticsEnabled)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ usageStatisticsEnabled: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-                  </div>
-                </div>
-
-                <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
-                  <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
-                    <Settings className="h-4 w-4 text-muted-foreground" />
-                    会话与认证
-                  </h3>
-                  <div className="divide-y divide-border">
-                    <SettingItem
-                      label="会话保留 (general.sessionRetention.enabled)"
-                      subtitle="开启后保留历史会话。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.sessionRetentionEnabled)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ sessionRetentionEnabled: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="会话保留时长 (general.sessionRetention.maxAge)"
-                      subtitle="例如：30d, 7d。留空删除配置。"
-                    >
-                      <Input
-                        value={sessionRetentionMaxAgeText}
-                        onChange={(e) => setSessionRetentionMaxAgeText(e.currentTarget.value)}
-                        onBlur={() =>
-                          void persistGeminiConfig({
-                            sessionRetentionMaxAge: sessionRetentionMaxAgeText.trim(),
-                          })
-                        }
-                        placeholder="例如：30d"
-                        className="font-mono w-[180px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="计划模式模型路由 (general.plan.modelRouting)"
-                      subtitle="自动在 Pro/Flash 模型间切换。"
-                    >
-                      <Switch
-                        checked={boolOrDefault(geminiConfig.planModelRouting)}
-                        onCheckedChange={(checked) =>
-                          void persistGeminiConfig({ planModelRouting: checked })
-                        }
-                        disabled={saving}
-                      />
-                    </SettingItem>
-
-                    <SettingItem
-                      label="认证类型 (security.auth.selectedType)"
-                      subtitle="例如：gemini-api-key。留空删除配置。"
-                    >
-                      <Input
-                        value={authTypeText}
-                        onChange={(e) => setAuthTypeText(e.currentTarget.value)}
-                        onBlur={() =>
-                          void persistGeminiConfig({
-                            securityAuthSelectedType: authTypeText.trim(),
-                          })
-                        }
-                        placeholder="例如：gemini-api-key"
-                        className="font-mono w-[220px] max-w-full"
-                        disabled={saving}
-                      />
-                    </SettingItem>
-                  </div>
-                </div>
-              </>
+              <GeminiConfigSections
+                geminiConfig={geminiConfig}
+                draftValues={effectiveDraftState.values}
+                saving={saving}
+                persistGeminiConfig={persistGeminiConfig}
+                setDraftValue={setDraftValue}
+              />
             ) : (
               <div className="text-sm text-muted-foreground text-center py-8">
                 暂无配置，请尝试刷新

@@ -44,15 +44,29 @@ impl Outbound for OpenAIChatCompletionsOutbound {
 fn ir_to_request(ir: &InternalRequest) -> Result<Value, BridgeError> {
     for msg in &ir.messages {
         for block in &msg.content {
-            if matches!(
-                block,
-                IRContentBlock::Image { .. } | IRContentBlock::Thinking { .. }
-            ) {
-                return Err(BridgeError::UnsupportedFeature(
-                    "image/thinking content cannot be bridged to Chat Completions".into(),
-                ));
+            match block {
+                IRContentBlock::Image { .. } | IRContentBlock::Thinking { .. } => {
+                    return Err(BridgeError::UnsupportedFeature(
+                        "image/thinking content cannot be bridged to Chat Completions".into(),
+                    ));
+                }
+                IRContentBlock::ResponsesNativeInputItem { raw } => {
+                    let item_type = raw.get("type").and_then(Value::as_str).unwrap_or("unknown");
+                    return Err(BridgeError::UnsupportedFeature(format!(
+                        "Responses input item type '{item_type}' cannot be bridged to Chat Completions"
+                    )));
+                }
+                _ => {}
             }
         }
+    }
+    if let Some(native_tool_type) = ir.tools.iter().find_map(|tool| match tool {
+        IRToolDefinition::ResponsesNative { tool_type, .. } => Some(tool_type.as_str()),
+        _ => None,
+    }) {
+        return Err(BridgeError::UnsupportedFeature(format!(
+            "Responses tool type '{native_tool_type}' cannot be bridged to Chat Completions"
+        )));
     }
 
     let mut messages = Vec::new();
@@ -80,29 +94,59 @@ fn ir_to_request(ir: &InternalRequest) -> Result<Value, BridgeError> {
     if !ir.stop_sequences.is_empty() {
         result["stop"] = json!(ir.stop_sequences);
     }
-    if !ir.tools.is_empty() {
-        result["tools"] = json!(ir
-            .tools
-            .iter()
-            .map(|tool| json!({
+    let function_tools: Vec<Value> = ir
+        .tools
+        .iter()
+        .filter_map(|tool| {
+            tool.as_function().map(|(name, description, parameters)| {
+                json!({
                 "type": "function",
                 "function": {
-                    "name": tool.name,
-                    "description": tool.description,
-                    "parameters": tool.parameters
+                    "name": name,
+                    "description": description,
+                    "parameters": parameters
                 }
-            }))
-            .collect::<Vec<_>>());
+                })
+            })
+        })
+        .collect();
+    let has_function_tools = !function_tools.is_empty();
+    if has_function_tools {
+        result["tools"] = json!(function_tools);
     }
     if let Some(tool_choice) = &ir.tool_choice {
-        result["tool_choice"] = match tool_choice {
-            IRToolChoice::Auto => json!("auto"),
-            IRToolChoice::Required => json!("required"),
-            IRToolChoice::None => json!("none"),
+        let converted = match tool_choice {
+            IRToolChoice::Auto => Some(json!("auto")),
+            IRToolChoice::Required => {
+                if ir.tools.is_empty() || has_function_tools {
+                    Some(json!("required"))
+                } else {
+                    None
+                }
+            }
+            IRToolChoice::None => Some(json!("none")),
             IRToolChoice::Specific { name } => {
-                json!({"type": "function", "function": {"name": name}})
+                if ir.tools.is_empty()
+                    || ir
+                        .tools
+                        .iter()
+                        .any(|tool| tool.function_name() == Some(name.as_str()))
+                {
+                    Some(json!({"type": "function", "function": {"name": name}}))
+                } else {
+                    None
+                }
+            }
+            IRToolChoice::ResponsesNative { raw } => {
+                let tool_type = raw.get("type").and_then(Value::as_str).unwrap_or("unknown");
+                return Err(BridgeError::UnsupportedFeature(format!(
+                    "Responses tool_choice type '{tool_type}' cannot be bridged to Chat Completions"
+                )));
             }
         };
+        if let Some(converted) = converted {
+            result["tool_choice"] = converted;
+        }
     }
     Ok(result)
 }
@@ -336,11 +380,11 @@ mod tests {
                 content: vec![IRContentBlock::Text { text: "Hi".into() }],
             }],
             system: Some("Be brief".into()),
-            tools: vec![IRToolDefinition {
-                name: "lookup".into(),
-                description: None,
-                parameters: json!({"type": "object"}),
-            }],
+            tools: vec![IRToolDefinition::function(
+                "lookup",
+                None,
+                json!({"type": "object"}),
+            )],
             tool_choice: Some(IRToolChoice::Auto),
             max_tokens: Some(100),
             temperature: None,
@@ -356,6 +400,61 @@ mod tests {
         assert_eq!(req["messages"][1]["content"], "Hi");
         assert_eq!(req["tools"][0]["type"], "function");
         assert_eq!(req["stream"], true);
+    }
+
+    #[test]
+    fn rejects_responses_native_tools_for_chat_completions() {
+        let err = ir_to_request(&InternalRequest {
+            model: "gpt-4.1".into(),
+            messages: vec![IRMessage {
+                role: IRRole::User,
+                content: vec![IRContentBlock::Text { text: "Hi".into() }],
+            }],
+            system: None,
+            tools: vec![IRToolDefinition::responses_native(
+                "tool_search",
+                json!({"type": "tool_search"}),
+            )],
+            tool_choice: Some(IRToolChoice::ResponsesNative {
+                raw: json!({"type": "tool_search"}),
+            }),
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: Vec::new(),
+            stream: false,
+            metadata: IRMetadata::default(),
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("tool_search"));
+        assert!(err.to_string().contains("Chat Completions"));
+    }
+
+    #[test]
+    fn rejects_responses_native_input_items_for_chat_completions() {
+        let err = ir_to_request(&InternalRequest {
+            model: "gpt-4.1".into(),
+            messages: vec![IRMessage {
+                role: IRRole::Assistant,
+                content: vec![IRContentBlock::ResponsesNativeInputItem {
+                    raw: json!({"type": "reasoning", "summary": []}),
+                }],
+            }],
+            system: None,
+            tools: Vec::new(),
+            tool_choice: None,
+            max_tokens: None,
+            temperature: None,
+            top_p: None,
+            stop_sequences: Vec::new(),
+            stream: false,
+            metadata: IRMetadata::default(),
+        })
+        .unwrap_err();
+
+        assert!(err.to_string().contains("reasoning"));
+        assert!(err.to_string().contains("Chat Completions"));
     }
 
     #[test]

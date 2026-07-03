@@ -12,6 +12,8 @@ const { homeRequestLogsPanelMock } = vi.hoisted(() => ({
   homeRequestLogsPanelMock: vi.fn(() => <div>request-logs</div>),
 }));
 
+const TEST_NOW_SECONDS = 1_764_000_000;
+
 vi.mock("../HomeUsageSection", () => ({
   HomeUsageSection: ({
     showHeatmap,
@@ -166,13 +168,26 @@ function makeWorkspaceConfig(input: {
   };
 }
 
-function renderPanel(overrides: Partial<ComponentProps<typeof HomeOverviewPanel>> = {}) {
+type HomeOverviewPanelTestOverrides = Omit<
+  Partial<ComponentProps<typeof HomeOverviewPanel>>,
+  "displayOptions"
+> & {
+  displayOptions?: Partial<ComponentProps<typeof HomeOverviewPanel>["displayOptions"]>;
+};
+
+function renderPanel(overrides: HomeOverviewPanelTestOverrides = {}) {
   const onResetCircuitProvider = vi.fn();
   const onSetCliActiveMode = vi.fn();
+  const { displayOptions, ...panelOverrides } = overrides;
   const view = render(
     <HomeOverviewPanel
-      showCustomTooltip={false}
-      showHomeHeatmap={true}
+      displayOptions={{
+        customTooltip: false,
+        heatmap: true,
+        usage: true,
+        workspaceConfigQuickToggle: false,
+        ...displayOptions,
+      }}
       cliPriorityOrder={["claude", "codex", "gemini"]}
       usageWindowDays={15}
       usageHeatmapRows={[]}
@@ -230,7 +245,7 @@ function renderPanel(overrides: Partial<ComponentProps<typeof HomeOverviewPanel>
       selectedLogId={null}
       onSelectLogId={vi.fn()}
       personalizedUsageView="summary"
-      {...overrides}
+      {...panelOverrides}
     />
   );
 
@@ -443,19 +458,19 @@ describe("components/home/HomeOverviewPanel", () => {
   });
 
   it("omits the legacy top metrics row when both heatmap and usage are hidden", () => {
-    renderPanel({ showHomeHeatmap: false, showHomeUsage: false });
+    renderPanel({ displayOptions: { heatmap: false, usage: false } });
 
     expect(screen.queryByText(/usage-section:/)).not.toBeInTheDocument();
   });
 
   it("renders usage statistics when heatmap is hidden", () => {
-    renderPanel({ showHomeHeatmap: false, showHomeUsage: true });
+    renderPanel({ displayOptions: { heatmap: false, usage: true } });
 
     expect(screen.getByText("usage-section:false:true")).toBeInTheDocument();
   });
 
   it("renders the heatmap when usage statistics are hidden", () => {
-    renderPanel({ showHomeHeatmap: true, showHomeUsage: false });
+    renderPanel({ displayOptions: { heatmap: true, usage: false } });
 
     expect(screen.getByText("usage-section:true:false")).toBeInTheDocument();
   });
@@ -491,14 +506,14 @@ describe("components/home/HomeOverviewPanel", () => {
     ];
     const latestProps = latestCall?.[0];
     expect(latestProps?.compactModeOverride).toBe(true);
-    expect(latestProps?.showCompactModeToggle).toBe(false);
-    expect(latestProps?.showRefreshButton).toBe(false);
+    expect(latestProps?.displayOptions?.compactModeToggle).toBe(false);
+    expect(latestProps?.displayOptions?.refreshButton).toBe(false);
   });
 
   it("does not render proxy controls in logs-primary layout", () => {
     window.localStorage.setItem("aio-home-overview-logs-primary-layout", "true");
 
-    renderPanel({ showHomeHeatmap: true, showHomeUsage: false });
+    renderPanel({ displayOptions: { heatmap: true, usage: false } });
 
     const usageSummary = screen.getByText("today-provider-usage:false");
     expect(usageSummary).toBeInTheDocument();
@@ -610,8 +625,12 @@ describe("components/home/HomeOverviewPanel", () => {
 
     rerender(
       <HomeOverviewPanel
-        showCustomTooltip={false}
-        showHomeHeatmap={true}
+        displayOptions={{
+          customTooltip: false,
+          heatmap: true,
+          usage: true,
+          workspaceConfigQuickToggle: false,
+        }}
         cliPriorityOrder={["claude", "codex", "gemini"]}
         usageWindowDays={15}
         usageHeatmapRows={[]}
@@ -701,8 +720,12 @@ describe("components/home/HomeOverviewPanel", () => {
             switch-to-usage-chart
           </button>
           <HomeOverviewPanel
-            showCustomTooltip={false}
-            showHomeHeatmap={true}
+            displayOptions={{
+              customTooltip: false,
+              heatmap: true,
+              usage: true,
+              workspaceConfigQuickToggle: false,
+            }}
             cliPriorityOrder={["claude", "codex", "gemini"]}
             usageWindowDays={15}
             usageHeatmapRows={[]}
@@ -829,8 +852,12 @@ describe("components/home/HomeOverviewPanel", () => {
 
     rerender(
       <HomeOverviewPanel
-        showCustomTooltip={false}
-        showHomeHeatmap={true}
+        displayOptions={{
+          customTooltip: false,
+          heatmap: true,
+          usage: true,
+          workspaceConfigQuickToggle: false,
+        }}
         cliPriorityOrder={["claude", "codex", "gemini"]}
         usageWindowDays={15}
         usageHeatmapRows={[]}
@@ -862,7 +889,7 @@ describe("components/home/HomeOverviewPanel", () => {
             cli_key: "claude",
             provider_id: 9,
             provider_name: "Claude New Circuit",
-            open_until: Math.floor(Date.now() / 1000) + 60,
+            open_until: TEST_NOW_SECONDS + 60,
           },
         ]}
         onResetCircuitProvider={vi.fn()}
@@ -899,8 +926,12 @@ describe("components/home/HomeOverviewPanel", () => {
 
     rerender(
       <HomeOverviewPanel
-        showCustomTooltip={false}
-        showHomeHeatmap={true}
+        displayOptions={{
+          customTooltip: false,
+          heatmap: true,
+          usage: true,
+          workspaceConfigQuickToggle: false,
+        }}
         cliPriorityOrder={["claude", "codex", "gemini"]}
         usageWindowDays={15}
         usageHeatmapRows={[]}
@@ -973,8 +1004,12 @@ describe("components/home/HomeOverviewPanel", () => {
 
     rerender(
       <HomeOverviewPanel
-        showCustomTooltip={false}
-        showHomeHeatmap={true}
+        displayOptions={{
+          customTooltip: false,
+          heatmap: true,
+          usage: true,
+          workspaceConfigQuickToggle: false,
+        }}
         cliPriorityOrder={["claude", "codex", "gemini"]}
         usageWindowDays={15}
         usageHeatmapRows={[]}

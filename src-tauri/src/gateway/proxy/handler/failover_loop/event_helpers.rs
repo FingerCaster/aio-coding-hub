@@ -28,6 +28,7 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
         provider_id,
         provider_name_base,
         provider_base_url_base,
+        active_requested_model,
         provider_index: _,
         session_reuse,
         claude_model_mapping,
@@ -49,7 +50,9 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
         method: ctx.method_hint.clone(),
         path: ctx.forwarded_path.clone(),
         query: ctx.query.clone(),
-        requested_model: ctx.requested_model.clone(),
+        requested_model: active_requested_model
+            .map(str::to_string)
+            .or_else(|| ctx.requested_model.clone()),
         special_settings_json: response_fixer::special_settings_json(ctx.special_settings),
         attempt_index,
         provider_id,

@@ -8,7 +8,7 @@ import type {
   UsageScope,
   UsageSummary,
 } from "../../services/usage/usage";
-import type { AvailabilityTimelineData } from "../../components/usage/UsageAvailabilityPanel";
+import type { AvailabilityTimelineData } from "../../components/usage/usageAvailabilityTimeline";
 import { Card } from "../../ui/Card";
 import type { UsageTableTab } from "./types";
 import { useAutoFocus, useInert } from "./useInert";
@@ -67,15 +67,14 @@ function CustomPendingOverlay({
   overlayRef,
 }: {
   open: boolean;
-  overlayRef: RefObject<HTMLDivElement | null>;
+  overlayRef: RefObject<HTMLOutputElement | null>;
 }) {
   if (!open) return null;
 
   return (
-    <div
+    <output
       ref={overlayRef}
       tabIndex={-1}
-      role="status"
       aria-live="polite"
       className="absolute inset-0 z-20 flex items-center justify-center rounded-lg bg-white/60 dark:bg-card/60 backdrop-blur-[1px]"
     >
@@ -85,7 +84,7 @@ function CustomPendingOverlay({
         </div>
         <div className="mt-1 text-xs text-muted-foreground">当前显示为上一次查询的缓存数据</div>
       </div>
-    </div>
+    </output>
   );
 }
 
@@ -106,7 +105,7 @@ export function UsageDataPanel(props: UsageDataPanelProps) {
         : props.dataStale;
 
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const overlayRef = useRef<HTMLDivElement | null>(null);
+  const overlayRef = useRef<HTMLOutputElement | null>(null);
   useInert(contentRef, overlayOpen);
   useAutoFocus(overlayRef, overlayOpen);
 

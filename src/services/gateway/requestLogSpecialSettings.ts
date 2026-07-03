@@ -7,14 +7,56 @@ export type ParsedRequestLogSpecialSetting = {
 
 export type CodexReasoningGuardSummary = {
   count: number;
+  latestRuleMode: string | null;
+  latestHitSource: string | null;
   latestRuleLabel: string | null;
   latestReasoningTokens: number | null;
+  latestRequestReasoningEffort: string | null;
+  latestFinalAnswerOnly: boolean | null;
+  latestCommentaryObserved: boolean | null;
+  latestHasToolCall: boolean | null;
+  latestHasReasoningItem: boolean | null;
   latestPhase: string | null;
   latestActionTaken: string | null;
   latestExhaustedAction: string | null;
   latestDelayMs: number | null;
   latestBudgetRemaining: number | null;
   latestBudgetTotal: number | null;
+};
+
+export type CodexReasoningFeatureSummary = {
+  count: number;
+  completeCount: number;
+  requestOnlyCount: number;
+  finalAnswerOnlyCount: number;
+  highXhighFinalAnswerOnlyCount: number;
+  highXhighFinalAnswerOnlyCandidateCount: number;
+  reasoning516FinalAnswerOnlyNoCommentaryCount: number;
+  compactionExemptCount: number;
+  latestRuleMode: string | null;
+  latestResponseClassification: string | null;
+  latestClassificationSkippedReason: string | null;
+  latestRequestReasoningEffort: string | null;
+  latestReasoningTokens: number | null;
+  latestFinalAnswerOnly: boolean | null;
+  latestCommentaryObserved: boolean | null;
+  latestHasToolCall: boolean | null;
+  latestHasReasoningItem: boolean | null;
+  latestCompactionExempt: boolean;
+  latestCandidate: boolean;
+};
+
+export type CodexReasoningContinuationSummary = {
+  count: number;
+  repairedCount: number;
+  nonRepairedCount: number;
+  continuationRepairGuardCount: number;
+  latestStatus: string | null;
+  latestSentRounds: number | null;
+  totalSentRounds: number;
+  latestReasoningTokens: number | null;
+  latestFailureKind: string | null;
+  latestReason: string | null;
 };
 
 export type CodexReasoningEffort =
@@ -84,6 +126,15 @@ function parsedSettingNumber(value: unknown): number {
 
 function parsedSettingBoolean(value: unknown): boolean {
   return typeof value === "boolean" ? value : false;
+}
+
+function parsedSettingNullableBoolean(value: unknown): boolean | null {
+  return typeof value === "boolean" ? value : null;
+}
+
+function parsedSettingNullableNumber(value: unknown): number | null {
+  const number = parsedSettingNumber(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 function normalizeCodexReasoningEffort(
@@ -200,6 +251,21 @@ export function countCodexReasoningGuardSpecialSettings(
   return resolveCodexReasoningGuardSummary(specialSettingsJson).count;
 }
 
+export function countCodexReasoningFeatureSpecialSettings(
+  specialSettingsJson: string | null | undefined
+): number {
+  return resolveCodexReasoningFeatureSummary(specialSettingsJson).count;
+}
+
+function isCodexReasoningContinuationRepairGuardSetting(
+  setting: ParsedRequestLogSpecialSetting
+): boolean {
+  return (
+    setting.type === "codex_reasoning_guard" &&
+    normalizeSpecialSettingToken(setting.ruleSource)?.toLowerCase() === "continuation_repair"
+  );
+}
+
 function normalizeCodexReasoningGuardCompareSymbol(
   compareMode: unknown,
   compareModeSymbol: unknown
@@ -215,13 +281,25 @@ function normalizeCodexReasoningGuardCompareSymbol(
   return null;
 }
 
+function normalizeSpecialSettingToken(value: unknown): string | null {
+  const token = parsedSettingString(value).trim();
+  return token ? token : null;
+}
+
 export function resolveCodexReasoningGuardSummary(
   specialSettingsJson: string | null | undefined
 ): CodexReasoningGuardSummary {
   const settings = parseRequestLogSpecialSettings(specialSettingsJson);
   let count = 0;
+  let latestRuleMode: string | null = null;
+  let latestHitSource: string | null = null;
   let latestRuleLabel: string | null = null;
   let latestReasoningTokens: number | null = null;
+  let latestRequestReasoningEffort: string | null = null;
+  let latestFinalAnswerOnly: boolean | null = null;
+  let latestCommentaryObserved: boolean | null = null;
+  let latestHasToolCall: boolean | null = null;
+  let latestHasReasoningItem: boolean | null = null;
   let latestPhase: string | null = null;
   let latestActionTaken: string | null = null;
   let latestExhaustedAction: string | null = null;
@@ -230,19 +308,36 @@ export function resolveCodexReasoningGuardSummary(
   let latestBudgetTotal: number | null = null;
 
   for (const setting of settings) {
-    if (setting.type === "codex_reasoning_guard") {
+    if (
+      setting.type === "codex_reasoning_guard" &&
+      !isCodexReasoningContinuationRepairGuardSetting(setting)
+    ) {
       count += 1;
+      latestRuleMode = normalizeSpecialSettingToken(setting.ruleMode);
+      latestHitSource = normalizeSpecialSettingToken(setting.hitSource);
       const compareSymbol = normalizeCodexReasoningGuardCompareSymbol(
         setting.compareMode,
         setting.compareModeSymbol
       );
       const matchedRuleValue = parsedSettingNumber(setting.matchedRuleValue);
+      const matchedRuleToken = parsedSettingNumber(setting.matchedRuleToken);
+      const matchedRuleName = normalizeSpecialSettingToken(setting.matchedRuleName);
       const reasoningTokens = parsedSettingNumber(setting.reasoningTokens);
       latestRuleLabel =
-        compareSymbol && Number.isFinite(matchedRuleValue)
+        matchedRuleName ??
+        (compareSymbol && Number.isFinite(matchedRuleValue)
           ? `${compareSymbol} ${matchedRuleValue}`
-          : null;
+          : Number.isFinite(matchedRuleToken)
+            ? `token ${matchedRuleToken}`
+            : latestHitSource === "final_answer_only_high_xhigh"
+              ? "final-only high/xhigh"
+              : null);
       latestReasoningTokens = Number.isFinite(reasoningTokens) ? reasoningTokens : null;
+      latestRequestReasoningEffort = normalizeSpecialSettingToken(setting.requestReasoningEffort);
+      latestFinalAnswerOnly = parsedSettingNullableBoolean(setting.finalAnswerOnly);
+      latestCommentaryObserved = parsedSettingNullableBoolean(setting.commentaryObserved);
+      latestHasToolCall = parsedSettingNullableBoolean(setting.hasToolCall);
+      latestHasReasoningItem = parsedSettingNullableBoolean(setting.hasReasoningItem);
       latestPhase = parsedSettingString(setting.guardRetryPhase) || null;
       latestActionTaken =
         parsedSettingString(setting.actionTaken) || parsedSettingString(setting.action) || null;
@@ -258,13 +353,171 @@ export function resolveCodexReasoningGuardSummary(
 
   return {
     count,
+    latestRuleMode,
+    latestHitSource,
     latestRuleLabel,
     latestReasoningTokens,
+    latestRequestReasoningEffort,
+    latestFinalAnswerOnly,
+    latestCommentaryObserved,
+    latestHasToolCall,
+    latestHasReasoningItem,
     latestPhase,
     latestActionTaken,
     latestExhaustedAction,
     latestDelayMs,
     latestBudgetRemaining,
     latestBudgetTotal,
+  };
+}
+
+export function resolveCodexReasoningContinuationSummary(
+  specialSettingsJson: string | null | undefined
+): CodexReasoningContinuationSummary {
+  const settings = parseRequestLogSpecialSettings(specialSettingsJson);
+  let count = 0;
+  let repairedCount = 0;
+  let nonRepairedCount = 0;
+  let continuationRepairGuardCount = 0;
+  let latestStatus: string | null = null;
+  let latestSentRounds: number | null = null;
+  let totalSentRounds = 0;
+  let latestReasoningTokens: number | null = null;
+  let latestFailureKind: string | null = null;
+  let latestReason: string | null = null;
+
+  for (const setting of settings) {
+    if (isCodexReasoningContinuationRepairGuardSetting(setting)) {
+      continuationRepairGuardCount += 1;
+      continue;
+    }
+
+    if (setting.type !== "codex_reasoning_continuation") continue;
+
+    count += 1;
+    const status = normalizeSpecialSettingToken(setting.status) ?? "unknown";
+    const sentRounds = parsedSettingNullableNumber(setting.sentRounds);
+    const nonNegativeSentRounds =
+      sentRounds != null && sentRounds > 0 ? Math.floor(sentRounds) : sentRounds === 0 ? 0 : null;
+    const reasoningTokens = parsedSettingNullableNumber(setting.reasoningTokens);
+
+    if (status === "repaired") {
+      repairedCount += 1;
+    } else {
+      nonRepairedCount += 1;
+    }
+
+    latestStatus = status;
+    latestSentRounds = nonNegativeSentRounds;
+    if (nonNegativeSentRounds != null) totalSentRounds += nonNegativeSentRounds;
+    latestReasoningTokens = reasoningTokens;
+    latestFailureKind = normalizeSpecialSettingToken(setting.failureKind);
+    latestReason = normalizeSpecialSettingToken(setting.reason);
+  }
+
+  return {
+    count,
+    repairedCount,
+    nonRepairedCount,
+    continuationRepairGuardCount,
+    latestStatus,
+    latestSentRounds,
+    totalSentRounds,
+    latestReasoningTokens,
+    latestFailureKind,
+    latestReason,
+  };
+}
+
+export function resolveCodexReasoningFeatureSummary(
+  specialSettingsJson: string | null | undefined
+): CodexReasoningFeatureSummary {
+  const settings = parseRequestLogSpecialSettings(specialSettingsJson);
+  let count = 0;
+  let completeCount = 0;
+  let requestOnlyCount = 0;
+  let finalAnswerOnlyCount = 0;
+  let highXhighFinalAnswerOnlyCount = 0;
+  let highXhighFinalAnswerOnlyCandidateCount = 0;
+  let reasoning516FinalAnswerOnlyNoCommentaryCount = 0;
+  let compactionExemptCount = 0;
+  let latestRuleMode: string | null = null;
+  let latestResponseClassification: string | null = null;
+  let latestClassificationSkippedReason: string | null = null;
+  let latestRequestReasoningEffort: string | null = null;
+  let latestReasoningTokens: number | null = null;
+  let latestFinalAnswerOnly: boolean | null = null;
+  let latestCommentaryObserved: boolean | null = null;
+  let latestHasToolCall: boolean | null = null;
+  let latestHasReasoningItem: boolean | null = null;
+  let latestCompactionExempt = false;
+  let latestCandidate = false;
+
+  for (const setting of settings) {
+    if (setting.type !== "codex_reasoning_features") continue;
+
+    count += 1;
+    const ruleMode = normalizeSpecialSettingToken(setting.ruleMode);
+    const responseClassification = normalizeSpecialSettingToken(setting.responseClassification);
+    const skippedReason = normalizeSpecialSettingToken(setting.classificationSkippedReason);
+    const requestReasoningEffort =
+      normalizeCodexReasoningEffort(setting.requestReasoningEffort) ??
+      normalizeCodexReasoningEffort(setting.rawRequestReasoningEffort);
+    const reasoningTokens = parsedSettingNullableNumber(setting.reasoningTokens);
+    const finalAnswerOnly = parsedSettingNullableBoolean(setting.finalAnswerOnly);
+    const commentaryObserved = parsedSettingNullableBoolean(setting.commentaryObserved);
+    const hasToolCall = parsedSettingNullableBoolean(setting.hasToolCall);
+    const hasReasoningItem = parsedSettingNullableBoolean(setting.hasReasoningItem);
+    const compactionExempt =
+      normalizeSpecialSettingToken(setting.interceptExemptReason) === "context_compaction";
+    const highXhighFinalAnswerOnly =
+      finalAnswerOnly === true &&
+      (requestReasoningEffort === "high" || requestReasoningEffort === "xhigh");
+    const candidate =
+      responseClassification === "complete" && highXhighFinalAnswerOnly && !compactionExempt;
+
+    if (responseClassification === "complete") completeCount += 1;
+    if (responseClassification === "request_only") requestOnlyCount += 1;
+    if (finalAnswerOnly === true) finalAnswerOnlyCount += 1;
+    if (highXhighFinalAnswerOnly) highXhighFinalAnswerOnlyCount += 1;
+    if (candidate) highXhighFinalAnswerOnlyCandidateCount += 1;
+    if (reasoningTokens === 516 && finalAnswerOnly === true && commentaryObserved !== true) {
+      reasoning516FinalAnswerOnlyNoCommentaryCount += 1;
+    }
+    if (compactionExempt) compactionExemptCount += 1;
+
+    latestRuleMode = ruleMode;
+    latestResponseClassification = responseClassification;
+    latestClassificationSkippedReason = skippedReason;
+    latestRequestReasoningEffort = requestReasoningEffort;
+    latestReasoningTokens = reasoningTokens;
+    latestFinalAnswerOnly = finalAnswerOnly;
+    latestCommentaryObserved = commentaryObserved;
+    latestHasToolCall = hasToolCall;
+    latestHasReasoningItem = hasReasoningItem;
+    latestCompactionExempt = compactionExempt;
+    latestCandidate = candidate;
+  }
+
+  return {
+    count,
+    completeCount,
+    requestOnlyCount,
+    finalAnswerOnlyCount,
+    highXhighFinalAnswerOnlyCount,
+    highXhighFinalAnswerOnlyCandidateCount,
+    reasoning516FinalAnswerOnlyNoCommentaryCount,
+    compactionExemptCount,
+    latestRuleMode,
+    latestResponseClassification,
+    latestClassificationSkippedReason,
+    latestRequestReasoningEffort,
+    latestReasoningTokens,
+    latestFinalAnswerOnly,
+    latestCommentaryObserved,
+    latestHasToolCall,
+    latestHasReasoningItem,
+    latestCompactionExempt,
+    latestCandidate,
   };
 }

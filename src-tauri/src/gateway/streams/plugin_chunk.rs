@@ -73,6 +73,65 @@ where
     }
 }
 
+pub(in crate::gateway) async fn apply_plugin_chunk_hooks(
+    pipeline: Arc<GatewayPluginPipeline>,
+    db: crate::db::Db,
+    trace_id: String,
+    chunk: Bytes,
+    sequence: u64,
+) -> Bytes {
+    let input = GatewayStreamHookInput {
+        trace_id: trace_id.clone(),
+        chunk,
+        sequence,
+    };
+    match pipeline.run_stream_hook(input).await {
+        Ok(output) => {
+            crate::gateway::plugins::audit::persist_gateway_plugin_diagnostics(
+                &db,
+                &trace_id,
+                output.audit_events,
+                output.execution_reports,
+            );
+            if let Some(blocked) = output.blocked {
+                tracing::warn!(
+                    trace_id = %trace_id,
+                    status = blocked.status,
+                    reason = %blocked.reason,
+                    "plugin blocked gateway stream chunk"
+                );
+                return plugin_stream_error_chunk("plugin_blocked", &blocked.reason);
+            }
+            output.chunk
+        }
+        Err(mut err) => {
+            crate::gateway::plugins::audit::persist_gateway_plugin_error_audit_events(
+                &db, &trace_id, &mut err,
+            );
+            tracing::warn!(
+                trace_id = %trace_id,
+                error = %err,
+                "plugin stream hook failed"
+            );
+            plugin_stream_error_chunk("plugin_failed", &err.to_string())
+        }
+    }
+}
+
+pub(in crate::gateway) fn is_plugin_stream_error_chunk(chunk: &[u8]) -> bool {
+    chunk
+        .windows(PLUGIN_STREAM_ERROR_MARKER.len())
+        .any(|window| window == PLUGIN_STREAM_ERROR_MARKER.as_bytes())
+}
+
+fn plugin_stream_error_chunk(error: &str, reason: &str) -> Bytes {
+    Bytes::from(format!(
+        "{PLUGIN_STREAM_ERROR_MARKER}event: error\ndata: {{\"error\":\"{error}\",\"reason\":{}}}\n\n",
+        serde_json::to_string(reason)
+            .unwrap_or_else(|_| "\"Plugin stream hook failed\"".to_string())
+    ))
+}
+
 impl<S> Stream for MaybePluginChunkStream<S>
 where
     S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin + Send + 'static,
@@ -122,49 +181,9 @@ where
             let trace_id = this.trace_id.clone();
             let sequence = this.sequence;
             this.pending = Some(Box::pin(async move {
-                let input = GatewayStreamHookInput {
-                    trace_id: trace_id.clone(),
-                    chunk,
-                    sequence,
-                };
-                match pipeline.run_stream_hook(input).await {
-                    Ok(output) => {
-                        crate::gateway::plugins::audit::persist_gateway_plugin_audit_events(
-                            &db,
-                            &trace_id,
-                            output.audit_events.clone(),
-                        );
-                        if let Some(blocked) = output.blocked {
-                            tracing::warn!(
-                                trace_id = %trace_id,
-                                status = blocked.status,
-                                reason = %blocked.reason,
-                                "plugin blocked gateway stream chunk"
-                            );
-                            return Ok(Some(Bytes::from(format!(
-                                "{PLUGIN_STREAM_ERROR_MARKER}event: error\ndata: {{\"error\":\"plugin_blocked\",\"reason\":{}}}\n\n",
-                                serde_json::to_string(&blocked.reason)
-                                    .unwrap_or_else(|_| "\"Plugin blocked gateway stream\"".to_string())
-                            ))));
-                        }
-                        Ok(Some(output.chunk))
-                    }
-                    Err(mut err) => {
-                        crate::gateway::plugins::audit::persist_gateway_plugin_error_audit_events(
-                            &db, &trace_id, &mut err,
-                        );
-                        tracing::warn!(
-                            trace_id = %trace_id,
-                            error = %err,
-                            "plugin stream hook failed"
-                        );
-                        Ok(Some(Bytes::from(format!(
-                            "{PLUGIN_STREAM_ERROR_MARKER}event: error\ndata: {{\"error\":\"plugin_failed\",\"reason\":{}}}\n\n",
-                            serde_json::to_string(&err.to_string())
-                                .unwrap_or_else(|_| "\"Plugin stream hook failed\"".to_string())
-                        ))))
-                    }
-                }
+                Ok(Some(
+                    apply_plugin_chunk_hooks(pipeline, db, trace_id, chunk, sequence).await,
+                ))
             }));
         }
     }
@@ -173,6 +192,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::domain::plugin_contributions::PluginContributes;
     use crate::domain::plugins::{
         PluginDetail, PluginHook, PluginHostCompatibility, PluginInstallSource, PluginManifest,
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
@@ -181,6 +201,7 @@ mod tests {
     use crate::gateway::plugins::pipeline::{
         GatewayPluginPipeline, GatewayPluginPipelineConfig, InMemoryGatewayPluginExecutor,
     };
+    use std::collections::BTreeMap;
     use std::sync::Arc;
 
     struct EmptyStream;
@@ -201,7 +222,7 @@ mod tests {
                 name: plugin_id.to_string(),
                 current_version: Some("1.0.0".to_string()),
                 status: PluginStatus::Enabled,
-                runtime: "declarativeRules".to_string(),
+                runtime: "extensionHost".to_string(),
                 permission_risk: PluginPermissionRisk::High,
                 update_available: false,
                 last_error: None,
@@ -213,15 +234,27 @@ mod tests {
                 name: plugin_id.to_string(),
                 version: "1.0.0".to_string(),
                 api_version: "1.0.0".to_string(),
-                runtime: PluginRuntime::DeclarativeRules {
-                    rules: vec!["rules/main.json".to_string()],
+                runtime: PluginRuntime::ExtensionHost {
+                    language: "typescript".to_string(),
                 },
-                hooks: vec![PluginHook {
-                    name: hook_name.as_str().to_string(),
-                    priority: 0,
-                    failure_policy: Some("fail-open".to_string()),
-                }],
+                hooks: vec![],
                 permissions: vec![],
+                main: Some("dist/index.js".to_string()),
+                activation_events: vec![],
+                contributes: Some(PluginContributes {
+                    providers: vec![],
+                    protocols: vec![],
+                    protocol_bridges: vec![],
+                    commands: vec![],
+                    gateway_hooks: vec![PluginHook {
+                        name: hook_name.as_str().to_string(),
+                        priority: 0,
+                        failure_policy: Some("fail-open".to_string()),
+                        timeout_ms: None,
+                    }],
+                    ui: BTreeMap::new(),
+                }),
+                capabilities: vec!["gateway.hooks".to_string()],
                 host_compatibility: PluginHostCompatibility {
                     app: ">=0.56.0 <1.0.0".to_string(),
                     plugin_api: "^1.0.0".to_string(),
@@ -246,6 +279,7 @@ mod tests {
             pending_permissions: vec![],
             audit_logs: vec![],
             runtime_failures: vec![],
+            rollback_versions: vec![],
         }
     }
 

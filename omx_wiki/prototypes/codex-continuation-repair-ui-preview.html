@@ -1,0 +1,1211 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Codex 降智拦截与继续思考补救 UI 预览</title>
+    <style>
+      :root {
+        --background: #f8fafc;
+        --foreground: #0f172a;
+        --card: #ffffff;
+        --secondary: #f1f5f9;
+        --secondary-strong: #e2e8f0;
+        --muted: #64748b;
+        --muted-strong: #334155;
+        --border: #e2e8f0;
+        --border-strong: #cbd5e1;
+        --primary: #2563eb;
+        --primary-soft: #dbeafe;
+        --primary-border: #bfdbfe;
+        --success: #15803d;
+        --success-soft: #dcfce7;
+        --success-border: #bbf7d0;
+        --warning: #b45309;
+        --warning-soft: #fef3c7;
+        --warning-border: #fde68a;
+        --danger: #be123c;
+        --danger-soft: #ffe4e6;
+        --danger-border: #fecdd3;
+        --shadow-sm: 0 1px 2px rgb(15 23 42 / 0.04);
+        font-family:
+          Inter, ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+          "Microsoft YaHei", sans-serif;
+      }
+
+      * {
+        box-sizing: border-box;
+      }
+
+      body {
+        margin: 0;
+        background: var(--background);
+        color: var(--foreground);
+        font-size: 14px;
+        line-height: 1.5;
+      }
+
+      button,
+      input {
+        font: inherit;
+      }
+
+      .mono {
+        font-family:
+          "SFMono-Regular", Consolas, "Liberation Mono", Menlo, "Microsoft YaHei Mono", monospace;
+      }
+
+      .app {
+        min-height: 100vh;
+        padding: 24px;
+      }
+
+      .page {
+        max-width: 1180px;
+        margin: 0 auto;
+        display: flex;
+        min-height: calc(100vh - 48px);
+        flex-direction: column;
+        gap: 24px;
+      }
+
+      .page-header {
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 16px;
+      }
+
+      h1 {
+        margin: 0;
+        font-size: 24px;
+        line-height: 1.25;
+        letter-spacing: 0;
+      }
+
+      .tabs {
+        display: inline-flex;
+        flex-wrap: wrap;
+        gap: 4px;
+        border: 1px solid var(--border);
+        border-radius: 10px;
+        background: rgb(241 245 249 / 0.7);
+        padding: 4px;
+      }
+
+      .tab {
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        padding: 7px 12px;
+        font-size: 13px;
+        cursor: default;
+      }
+
+      .tab.active {
+        background: var(--card);
+        color: var(--foreground);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .content {
+        min-height: 0;
+        flex: 1;
+        overflow: auto;
+      }
+
+      .codex-stack {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+        padding-bottom: 24px;
+      }
+
+      .preview-note {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        border: 1px solid var(--primary-border);
+        border-radius: 12px;
+        background: var(--primary-soft);
+        color: #1e3a8a;
+        padding: 12px 14px;
+        font-size: 12px;
+      }
+
+      .preview-note strong {
+        color: #1d4ed8;
+      }
+
+      .scenario-buttons {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+        flex: 0 0 auto;
+      }
+
+      .scenario-buttons button {
+        border: 1px solid var(--primary-border);
+        border-radius: 8px;
+        background: rgb(255 255 255 / 0.65);
+        color: #1d4ed8;
+        padding: 5px 9px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .scenario-buttons button[aria-pressed="true"] {
+        background: var(--primary);
+        color: white;
+        border-color: var(--primary);
+      }
+
+      .card {
+        border: 1px solid rgb(226 232 240 / 0.85);
+        border-radius: 12px;
+        background: rgb(255 255 255 / 0.82);
+        padding: 16px;
+        box-shadow: var(--shadow-sm);
+      }
+
+      .card-inner {
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+
+      .card-header {
+        display: flex;
+        flex-direction: column;
+        gap: 12px;
+      }
+
+      .card-header-main {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+      }
+
+      .title-block {
+        min-width: 0;
+      }
+
+      .section-title {
+        color: var(--foreground);
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      .section-copy {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .section-subcopy {
+        margin-top: 8px;
+        color: var(--muted);
+        font-size: 11px;
+        line-height: 1.6;
+      }
+
+      .actions {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 8px;
+        flex: 0 0 auto;
+      }
+
+      .range-picker {
+        position: relative;
+        display: inline-flex;
+        flex: 0 0 auto;
+      }
+
+      .range-trigger {
+        display: inline-flex;
+        height: 36px;
+        align-items: center;
+        gap: 8px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: var(--card);
+        color: var(--foreground);
+        padding: 0 11px;
+        font-size: 12px;
+        font-weight: 600;
+        box-shadow: var(--shadow-sm);
+        cursor: pointer;
+      }
+
+      .range-trigger:hover,
+      .range-picker.open .range-trigger {
+        border-color: rgb(37 99 235 / 0.45);
+        background: rgb(248 250 252 / 0.95);
+      }
+
+      .range-title,
+      .chevron {
+        color: var(--muted);
+        font-weight: 500;
+      }
+
+      .range-popover {
+        position: absolute;
+        top: calc(100% + 8px);
+        right: 0;
+        z-index: 30;
+        display: none;
+        width: min(320px, calc(100vw - 32px));
+        border: 1px solid var(--border);
+        border-radius: 12px;
+        background: var(--card);
+        box-shadow: var(--shadow);
+        padding: 12px;
+      }
+
+      .range-picker.open .range-popover {
+        display: grid;
+        gap: 12px;
+      }
+
+      .range-presets {
+        display: grid;
+        grid-template-columns: repeat(3, minmax(0, 1fr));
+        gap: 6px;
+      }
+
+      .range-presets button {
+        border: 0;
+        border-radius: 8px;
+        background: transparent;
+        color: var(--muted);
+        padding: 7px 8px;
+        font-size: 12px;
+        cursor: pointer;
+      }
+
+      .range-presets button:hover,
+      .range-presets button.active {
+        background: var(--soft);
+        color: var(--foreground);
+      }
+
+      .range-dates {
+        display: grid;
+        gap: 8px;
+        border-top: 1px solid var(--border);
+        padding-top: 10px;
+      }
+
+      .range-dates label {
+        display: grid;
+        gap: 5px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .range-apply {
+        justify-self: end;
+      }
+
+      .button {
+        display: inline-flex;
+        align-items: center;
+        gap: 6px;
+        min-height: 32px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--secondary);
+        color: var(--foreground);
+        padding: 6px 10px;
+        font-size: 12px;
+      }
+
+      .button svg {
+        width: 14px;
+        height: 14px;
+      }
+
+      .switch {
+        position: relative;
+        display: inline-flex;
+        width: 42px;
+        height: 24px;
+        border-radius: 999px;
+        background: #cbd5e1;
+        flex: 0 0 auto;
+      }
+
+      .switch::after {
+        content: "";
+        position: absolute;
+        left: 3px;
+        top: 3px;
+        width: 18px;
+        height: 18px;
+        border-radius: 999px;
+        background: white;
+        box-shadow: 0 1px 2px rgb(15 23 42 / 0.22);
+        transition: transform 150ms ease;
+      }
+
+      .switch.on {
+        background: var(--primary);
+      }
+
+      .switch.on::after {
+        transform: translateX(18px);
+      }
+
+      .stats {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 12px;
+      }
+
+      .stat {
+        min-width: 0;
+        border: 1px solid rgb(226 232 240 / 0.72);
+        border-radius: 8px;
+        background: rgb(241 245 249 / 0.72);
+        padding: 12px;
+      }
+
+      .stat-label {
+        color: var(--muted);
+        font-size: 11px;
+        font-weight: 650;
+        letter-spacing: 0.03em;
+        text-transform: uppercase;
+      }
+
+      .stat-value {
+        margin-top: 4px;
+        color: var(--foreground);
+        font-size: 24px;
+        line-height: 1.15;
+        font-weight: 650;
+      }
+
+      .stat-help {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .summary {
+        display: grid;
+        gap: 8px;
+        border: 1px solid rgb(226 232 240 / 0.72);
+        border-radius: 8px;
+        background: rgb(241 245 249 / 0.82);
+        padding: 12px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .summary-row {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+      }
+
+      .summary-row strong {
+        color: var(--muted-strong);
+        font-weight: 600;
+        overflow-wrap: anywhere;
+      }
+
+      @media (min-width: 768px) {
+        .summary-row {
+          flex-direction: row;
+          align-items: center;
+          justify-content: space-between;
+          gap: 12px;
+        }
+
+        .summary-row strong {
+          text-align: right;
+        }
+      }
+
+      .priority-box {
+        border: 1px solid var(--warning-border);
+        border-radius: 8px;
+        background: var(--warning-soft);
+        color: #78350f;
+        padding: 10px 12px;
+        font-size: 12px;
+        line-height: 1.65;
+      }
+
+      .status-grid {
+        display: grid;
+        grid-template-columns: repeat(4, minmax(0, 1fr));
+        gap: 8px;
+      }
+
+      .status-chip {
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: rgb(248 250 252 / 0.8);
+        padding: 9px 10px;
+      }
+
+      .status-chip .label {
+        color: var(--muted);
+        font-size: 11px;
+      }
+
+      .status-chip .value {
+        margin-top: 2px;
+        color: var(--foreground);
+        font-size: 12px;
+        font-weight: 650;
+      }
+
+      .status-chip.success {
+        border-color: var(--success-border);
+        background: var(--success-soft);
+      }
+
+      .status-chip.warning {
+        border-color: var(--warning-border);
+        background: var(--warning-soft);
+      }
+
+      .status-chip.danger {
+        border-color: var(--danger-border);
+        background: var(--danger-soft);
+      }
+
+      .detail-shell {
+        border: 1px solid rgb(226 232 240 / 0.85);
+        border-radius: 12px;
+        background: var(--card);
+        overflow: hidden;
+      }
+
+      .detail-shell + .detail-shell {
+        margin-top: 12px;
+      }
+
+      .detail-modal-head {
+        display: flex;
+        align-items: flex-start;
+        justify-content: space-between;
+        gap: 12px;
+        border-bottom: 1px solid var(--border);
+        padding: 14px;
+      }
+
+      .detail-modal-title {
+        color: var(--foreground);
+        font-size: 14px;
+        font-weight: 650;
+      }
+
+      .detail-modal-description {
+        margin-top: 4px;
+        color: var(--muted);
+        font-size: 12px;
+      }
+
+      .detail-controls {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        justify-content: flex-end;
+        gap: 8px;
+      }
+
+      .date-input {
+        height: 32px;
+        min-width: 136px;
+        border: 1px solid var(--border);
+        border-radius: 8px;
+        background: var(--card);
+        color: var(--foreground);
+        padding: 0 9px;
+        font-size: 12px;
+      }
+
+      .detail-modal-body {
+        display: grid;
+        gap: 12px;
+        padding: 14px;
+      }
+
+      .detail-tabs {
+        display: inline-flex;
+        width: max-content;
+        max-width: 100%;
+        gap: 4px;
+        border: 1px solid var(--border);
+        border-radius: 9px;
+        background: rgb(241 245 249 / 0.72);
+        padding: 3px;
+        overflow-x: auto;
+      }
+
+      .detail-tabs span {
+        border-radius: 7px;
+        color: var(--muted);
+        padding: 5px 9px;
+        font-size: 12px;
+        white-space: nowrap;
+      }
+
+      .detail-tabs span.active {
+        background: var(--card);
+        color: var(--foreground);
+        box-shadow: var(--shadow-sm);
+      }
+
+      .log-preview {
+        display: grid;
+        gap: 10px;
+      }
+
+      .log-row {
+        display: grid;
+        grid-template-columns: minmax(0, 1fr);
+        gap: 8px;
+        border: 1px solid rgb(226 232 240 / 0.72);
+        border-radius: 8px;
+        background: rgb(241 245 249 / 0.7);
+        padding: 12px;
+        font-size: 12px;
+      }
+
+      .log-title {
+        color: var(--foreground);
+        font-weight: 650;
+      }
+
+      .log-meta {
+        color: var(--muted);
+        margin-top: 2px;
+      }
+
+      .badge-row {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 6px;
+      }
+
+      .badge {
+        display: inline-flex;
+        align-items: center;
+        min-height: 24px;
+        border: 1px solid var(--border);
+        border-radius: 999px;
+        background: var(--card);
+        color: var(--muted-strong);
+        padding: 3px 8px;
+        font-size: 11px;
+      }
+
+      .badge.success {
+        border-color: var(--success-border);
+        background: var(--success-soft);
+        color: var(--success);
+      }
+
+      .badge.warning {
+        border-color: var(--warning-border);
+        background: var(--warning-soft);
+        color: var(--warning);
+      }
+
+      .muted {
+        color: var(--muted);
+      }
+
+      .disabled {
+        opacity: 0.52;
+      }
+
+      @media (max-width: 860px) {
+        .app {
+          padding: 16px;
+        }
+
+        .page {
+          min-height: calc(100vh - 32px);
+        }
+
+        .page-header,
+        .preview-note,
+        .card-header-main,
+        .detail-modal-head {
+          align-items: stretch;
+          flex-direction: column;
+        }
+
+        .stats,
+        .status-grid {
+          grid-template-columns: repeat(2, minmax(0, 1fr));
+        }
+      }
+
+      @media (max-width: 560px) {
+        .app {
+          padding: 12px;
+        }
+
+        .tabs,
+        .actions,
+        .scenario-buttons,
+        .detail-controls {
+          width: 100%;
+        }
+
+        .tab,
+        .scenario-buttons button,
+        .date-input,
+        .range-picker,
+        .range-trigger {
+          flex: 1 1 auto;
+        }
+
+        .range-popover {
+          left: 0;
+          right: auto;
+        }
+
+        .stats,
+        .status-grid {
+          grid-template-columns: 1fr;
+        }
+      }
+    </style>
+  </head>
+  <body data-scenario="both">
+    <main class="app">
+      <div class="page">
+        <header class="page-header">
+          <h1>CLI 管理</h1>
+          <nav class="tabs" aria-label="CLI 管理视图切换">
+            <button class="tab" type="button">通用</button>
+            <button class="tab" type="button">Claude</button>
+            <button class="tab active" type="button">Codex</button>
+            <button class="tab" type="button">Cx2cc</button>
+            <button class="tab" type="button">Gemini</button>
+          </nav>
+        </header>
+
+        <section class="content">
+          <div class="codex-stack">
+            <div class="preview-note">
+              <div>
+                <strong>预览目标：</strong>
+                这份 HTML 只模拟真实 Codex 设置页里将要改的区域。最终实现应保持当前卡片密度和摘要样式，不做独立仪表盘。
+              </div>
+              <div class="scenario-buttons" role="group" aria-label="预览场景">
+                <button type="button" data-scenario="both" aria-pressed="true">两个都开</button>
+                <button type="button" data-scenario="repair-only" aria-pressed="false">只开续写</button>
+                <button type="button" data-scenario="guard-only" aria-pressed="false">只开拦截</button>
+              </div>
+            </div>
+
+            <section class="card" id="guard-card" aria-labelledby="guard-title">
+              <div class="card-inner">
+                <div class="card-header">
+                  <div class="card-header-main">
+                    <div class="title-block">
+                      <div class="section-title" id="guard-title">降智拦截</div>
+                      <div class="section-copy">
+                        支持按 <span class="mono">reasoning_tokens</span> 或
+                        <span class="mono">final-answer-only high/xhigh</span>
+                        特征拦截；命中后在当前 provider 上继续重试，并且不计入熔断。
+                      </div>
+                      <div class="section-subcopy">当前统计：今天，只统计当天产生的 Codex 请求。</div>
+                    </div>
+                    <div class="actions">
+                      <div class="range-picker" aria-label="降智拦截统计时间范围">
+                        <button class="range-trigger" type="button" aria-expanded="false">
+                          <span class="range-title">时间范围</span>
+                          <strong>今天</strong>
+                          <span class="chevron">v</span>
+                        </button>
+                        <div class="range-popover" aria-label="选择降智拦截统计时间范围">
+                          <div class="range-presets">
+                            <button class="active" type="button" data-range-label="今天">今天</button>
+                            <button type="button" data-range-label="近 7 天">近 7 天</button>
+                            <button type="button" data-range-label="近 30 天">近 30 天</button>
+                          </div>
+                          <div class="range-dates">
+                            <label>
+                              <span>开始日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                            <span class="muted">至</span>
+                            <label>
+                              <span>结束日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                          </div>
+                          <button class="button range-apply" type="button">应用</button>
+                        </div>
+                      </div>
+                      <button class="button" type="button" aria-label="打开降智拦截详情">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M4 19V5M4 19h16M8 16v-5M12 16V8M16 16v-3"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                        详情
+                      </button>
+                      <span class="switch on" id="guard-switch" aria-label="切换 Codex 降智拦截"></span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="stats">
+                  <div class="stat">
+                    <div class="stat-label">命中请求数</div>
+                    <div class="stat-value">12</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">命中次数</div>
+                    <div class="stat-value">18</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">降智命中率</div>
+                    <div class="stat-value">8.3%</div>
+                    <div class="stat-help">降智 12 / 正常 133</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">预算动作</div>
+                    <div class="stat-value" style="font-size: 18px">切模型</div>
+                    <div class="stat-help">预算耗尽后</div>
+                  </div>
+                </div>
+
+                <div class="summary">
+                  <div class="summary-row">
+                    <span>当前模板</span>
+                    <strong class="mono">Codex thinking low / reasoning_tokens &lt;= 516</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>规则模式</span>
+                    <strong>模板规则</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>最高命中模型</span>
+                    <strong>gpt-5.5-codex-high · 14.2%</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>Guard 策略</span>
+                    <strong class="mono">并发重试 / 2+1 / 1000ms / 切换模型</strong>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card" id="repair-card" aria-labelledby="repair-title">
+              <div class="card-inner">
+                <div class="card-header">
+                  <div class="card-header-main">
+                    <div class="title-block">
+                      <div class="section-title" id="repair-title">继续思考补救</div>
+                      <div class="section-copy">
+                        独立处理疑似截断的 Codex 成功响应；需要
+                        <span class="mono">reasoning.encrypted_content</span>
+                        才能发起续写补救。
+                      </div>
+                      <div class="section-subcopy" id="repair-subcopy">
+                        当前统计：今天，即使降智拦截关闭，此开关开启时仍会运行。
+                      </div>
+                    </div>
+                    <div class="actions">
+                      <div class="range-picker" aria-label="继续思考补救统计时间范围">
+                        <button class="range-trigger" type="button" aria-expanded="false">
+                          <span class="range-title">时间范围</span>
+                          <strong>今天</strong>
+                          <span class="chevron">v</span>
+                        </button>
+                        <div class="range-popover" aria-label="选择继续思考补救统计时间范围">
+                          <div class="range-presets">
+                            <button class="active" type="button" data-range-label="今天">今天</button>
+                            <button type="button" data-range-label="近 7 天">近 7 天</button>
+                            <button type="button" data-range-label="近 30 天">近 30 天</button>
+                          </div>
+                          <div class="range-dates">
+                            <label>
+                              <span>开始日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                            <span class="muted">至</span>
+                            <label>
+                              <span>结束日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                          </div>
+                          <button class="button range-apply" type="button">应用</button>
+                        </div>
+                      </div>
+                      <button class="button" type="button" aria-label="打开继续思考补救详情">
+                        <svg viewBox="0 0 24 24" aria-hidden="true">
+                          <path
+                            d="M12 3v3M12 18v3M5.6 5.6l2.1 2.1M16.3 16.3l2.1 2.1M3 12h3M18 12h3M5.6 18.4l2.1-2.1M16.3 7.7l2.1-2.1M9 12a3 3 0 1 0 6 0a3 3 0 0 0-6 0Z"
+                            fill="none"
+                            stroke="currentColor"
+                            stroke-width="2"
+                            stroke-linecap="round"
+                            stroke-linejoin="round"
+                          />
+                        </svg>
+                        详情
+                      </button>
+                      <span class="switch on" id="repair-switch" aria-label="切换继续思考补救"></span>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="stats">
+                  <div class="stat">
+                    <div class="stat-label">补救触发数</div>
+                    <div class="stat-value">9</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">修复成功数</div>
+                    <div class="stat-value">7</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">修复率</div>
+                    <div class="stat-value">77.8%</div>
+                    <div class="stat-help">已修复 7 / 触发 9</div>
+                  </div>
+                  <div class="stat">
+                    <div class="stat-label">平均续写轮数</div>
+                    <div class="stat-value">1.2</div>
+                    <div class="stat-help">总续写 11 轮</div>
+                  </div>
+                </div>
+
+                <div class="summary">
+                  <div class="summary-row">
+                    <span>补救配置</span>
+                    <strong class="mono">on / rounds=2 / output=4096</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>未修复原因</span>
+                    <strong class="mono">missing_encrypted=1 / capped_max_output_tokens=1</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>独立关系</span>
+                    <strong id="relation-row">独立生效，不受降智拦截主开关控制</strong>
+                  </div>
+                  <div class="summary-row">
+                    <span>处理优先级</span>
+                    <strong>续写补救先尝试；修复成功后跳过普通降智拦截</strong>
+                  </div>
+                </div>
+
+                <div class="priority-box" id="priority-copy">
+                  优先级：续写补救会先尝试修复疑似截断的成功响应；修复成功后不再触发普通降智拦截。修复失败或不适用时，再按降智拦截规则处理。
+                </div>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="detail-range-title">
+              <div class="card-inner">
+                <div class="card-header-main">
+                  <div class="title-block">
+                    <div class="section-title" id="detail-range-title">详情内日期范围</div>
+                    <div class="section-copy">
+                      当前页面 bug 修复目标：从外层卡片点击“详情”后，详情弹窗继承外层统计范围；详情里也显示同样的“时间范围”入口，点开后再选择日期。
+                    </div>
+                  </div>
+                </div>
+
+                <div class="detail-shell">
+                  <div class="detail-modal-head">
+                    <div class="title-block">
+                      <div class="detail-modal-title">降智拦截详情</div>
+                      <div class="detail-modal-description">
+                        规则、模型统计和命中样本共用同一日期范围。
+                      </div>
+                    </div>
+                    <div class="detail-controls" aria-label="降智拦截详情日期范围">
+                      <div class="range-picker" aria-label="降智拦截详情日期范围">
+                        <button class="range-trigger" type="button" aria-expanded="false">
+                          <span class="range-title">时间范围</span>
+                          <strong>今天</strong>
+                          <span class="chevron">v</span>
+                        </button>
+                        <div class="range-popover" aria-label="选择降智拦截详情日期范围">
+                          <div class="range-presets">
+                            <button class="active" type="button" data-range-label="今天">今天</button>
+                            <button type="button" data-range-label="近 7 天">近 7 天</button>
+                            <button type="button" data-range-label="近 30 天">近 30 天</button>
+                          </div>
+                          <div class="range-dates">
+                            <label>
+                              <span>开始日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                            <span class="muted">至</span>
+                            <label>
+                              <span>结束日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                          </div>
+                          <button class="button range-apply" type="button">应用</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="detail-modal-body">
+                    <div class="detail-tabs" aria-label="降智拦截详情标签">
+                      <span class="active">规则</span>
+                      <span>模型统计</span>
+                      <span>命中样本</span>
+                    </div>
+                    <div class="status-grid">
+                      <div class="status-chip">
+                        <div class="label">命中请求数</div>
+                        <div class="value">12</div>
+                      </div>
+                      <div class="status-chip">
+                        <div class="label">命中次数</div>
+                        <div class="value">18</div>
+                      </div>
+                      <div class="status-chip">
+                        <div class="label">最高命中模型</div>
+                        <div class="value">gpt-5.5-codex-high</div>
+                      </div>
+                      <div class="status-chip warning">
+                        <div class="label">预算耗尽动作</div>
+                        <div class="value">切换模型</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+
+                <div class="detail-shell">
+                  <div class="detail-modal-head">
+                    <div class="title-block">
+                      <div class="detail-modal-title">继续思考补救详情</div>
+                      <div class="detail-modal-description">
+                        补救统计、失败原因和最近样本也需要能在详情里改日期。
+                      </div>
+                    </div>
+                    <div class="detail-controls" aria-label="继续思考补救详情日期范围">
+                      <div class="range-picker" aria-label="继续思考补救详情日期范围">
+                        <button class="range-trigger" type="button" aria-expanded="false">
+                          <span class="range-title">时间范围</span>
+                          <strong>今天</strong>
+                          <span class="chevron">v</span>
+                        </button>
+                        <div class="range-popover" aria-label="选择继续思考补救详情日期范围">
+                          <div class="range-presets">
+                            <button class="active" type="button" data-range-label="今天">今天</button>
+                            <button type="button" data-range-label="近 7 天">近 7 天</button>
+                            <button type="button" data-range-label="近 30 天">近 30 天</button>
+                          </div>
+                          <div class="range-dates">
+                            <label>
+                              <span>开始日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                            <span class="muted">至</span>
+                            <label>
+                              <span>结束日期</span>
+                              <input class="date-input mono" type="date" value="2026-07-04" />
+                            </label>
+                          </div>
+                          <button class="button range-apply" type="button">应用</button>
+                        </div>
+                      </div>
+                    </div>
+                  </div>
+                  <div class="detail-modal-body">
+                    <div class="detail-tabs" aria-label="继续思考补救详情标签">
+                      <span class="active">状态分布</span>
+                      <span>失败原因</span>
+                      <span>最近样本</span>
+                    </div>
+                    <div class="status-grid">
+                      <div class="status-chip success">
+                        <div class="label">repaired</div>
+                        <div class="value">7</div>
+                      </div>
+                      <div class="status-chip warning">
+                        <div class="label">missing_encrypted</div>
+                        <div class="value">1</div>
+                      </div>
+                      <div class="status-chip warning">
+                        <div class="label">capped_max_output</div>
+                        <div class="value">1</div>
+                      </div>
+                      <div class="status-chip">
+                        <div class="label">平均续写轮数</div>
+                        <div class="value">1.2</div>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+
+            <section class="card" aria-labelledby="detail-title">
+              <div class="card-inner">
+                <div class="card-header-main">
+                  <div class="title-block">
+                    <div class="section-title" id="detail-title">请求详情展示补充</div>
+                    <div class="section-copy">
+                      真实实现里，日志详情需要明确展示续写状态，否则用户只看到
+                      <span class="mono">思考 Token = 516</span>
+                      仍会误判为未补救。
+                    </div>
+                  </div>
+                </div>
+
+                <div class="log-preview">
+                  <div class="log-row">
+                    <div>
+                      <div class="log-title">Request #30325 · Codex SSE</div>
+                      <div class="log-meta mono">trace_id=1783093952-124</div>
+                    </div>
+                    <div class="badge-row">
+                      <span class="badge success">继续思考补救：已修复 · 续写 1 轮</span>
+                      <span class="badge">思考 Token：516（首轮样本）</span>
+                      <span class="badge">普通降智拦截：已跳过</span>
+                    </div>
+                  </div>
+
+                  <div class="log-row">
+                    <div>
+                      <div class="log-title">Request #30326 · Codex SSE</div>
+                      <div class="log-meta">示例：补救失败后进入保护预算</div>
+                    </div>
+                    <div class="badge-row">
+                      <span class="badge warning">继续思考补救：未修复 · capped_max_output_tokens</span>
+                      <span class="badge">预算动作：切换模型</span>
+                      <span class="badge">普通规则：继续评估</span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            </section>
+          </div>
+        </section>
+      </div>
+    </main>
+
+    <script>
+      const scenarios = {
+        both: {
+          guard: true,
+          repair: true,
+          repairSubcopy: "当前统计：今天，即使降智拦截关闭，此开关开启时仍会运行。",
+          relation: "独立生效，不受降智拦截主开关控制",
+          priority:
+            "优先级：续写补救会先尝试修复疑似截断的成功响应；修复成功后不再触发普通降智拦截。修复失败或不适用时，再按降智拦截规则处理。",
+        },
+        "repair-only": {
+          guard: false,
+          repair: true,
+          repairSubcopy: "当前统计：今天。降智拦截关闭，但继续思考补救仍独立运行。",
+          relation: "降智拦截关闭时，续写补救仍会运行",
+          priority:
+            "当前状态：只开续写。疑似截断响应仍会尝试补救；普通降智模板规则不会运行。",
+        },
+        "guard-only": {
+          guard: true,
+          repair: false,
+          repairSubcopy: "当前统计：今天。继续思考补救关闭，不发送续写请求。",
+          relation: "续写补救关闭；仅保留普通降智拦截",
+          priority:
+            "当前状态：只开拦截。不会尝试续写补救；可分析响应直接进入普通降智模板和预算处理。",
+        },
+      };
+
+      const buttons = Array.from(document.querySelectorAll("button[data-scenario]"));
+      const guardCard = document.querySelector("#guard-card");
+      const repairCard = document.querySelector("#repair-card");
+      const guardSwitch = document.querySelector("#guard-switch");
+      const repairSwitch = document.querySelector("#repair-switch");
+      const repairSubcopy = document.querySelector("#repair-subcopy");
+      const relationRow = document.querySelector("#relation-row");
+      const priorityCopy = document.querySelector("#priority-copy");
+      const rangePickers = Array.from(document.querySelectorAll(".range-picker"));
+
+      function applyScenario(name) {
+        const config = scenarios[name] ?? scenarios.both;
+        document.body.dataset.scenario = name;
+
+        buttons.forEach((button) => {
+          button.setAttribute("aria-pressed", String(button.dataset.scenario === name));
+        });
+
+        guardCard.classList.toggle("disabled", !config.guard);
+        repairCard.classList.toggle("disabled", !config.repair);
+        guardSwitch.classList.toggle("on", config.guard);
+        repairSwitch.classList.toggle("on", config.repair);
+        repairSubcopy.textContent = config.repairSubcopy;
+        relationRow.textContent = config.relation;
+        priorityCopy.textContent = config.priority;
+      }
+
+      buttons.forEach((button) => {
+        button.addEventListener("click", () => applyScenario(button.dataset.scenario));
+      });
+
+      rangePickers.forEach((picker) => {
+        const trigger = picker.querySelector(".range-trigger");
+        const label = trigger?.querySelector("strong");
+        const presets = Array.from(picker.querySelectorAll("[data-range-label]"));
+        const apply = picker.querySelector(".range-apply");
+
+        picker.addEventListener("click", (event) => event.stopPropagation());
+
+        trigger?.addEventListener("click", () => {
+          const nextOpen = !picker.classList.contains("open");
+          rangePickers.forEach((item) => {
+            item.classList.remove("open");
+            item.querySelector(".range-trigger")?.setAttribute("aria-expanded", "false");
+          });
+          picker.classList.toggle("open", nextOpen);
+          trigger.setAttribute("aria-expanded", String(nextOpen));
+        });
+
+        presets.forEach((preset) => {
+          preset.addEventListener("click", () => {
+            presets.forEach((item) => item.classList.remove("active"));
+            preset.classList.add("active");
+            if (label) label.textContent = preset.dataset.rangeLabel;
+          });
+        });
+
+        apply?.addEventListener("click", () => {
+          picker.classList.remove("open");
+          trigger?.setAttribute("aria-expanded", "false");
+        });
+      });
+
+      document.addEventListener("click", () => {
+        rangePickers.forEach((picker) => {
+          picker.classList.remove("open");
+          picker.querySelector(".range-trigger")?.setAttribute("aria-expanded", "false");
+        });
+      });
+
+      applyScenario("both");
+    </script>
+  </body>
+</html>

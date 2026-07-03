@@ -77,9 +77,106 @@ type PendingRouteActivation = {
   activeSessionCount: number;
 };
 
+type ProviderUiState = {
+  activeCli: CliKey;
+  selectedTags: Set<string>;
+  providerSearch: string;
+  createDialogState: CreateDialogState | null;
+  editTarget: ProviderSummary | null;
+  deleteTarget: ProviderSummary | null;
+  routeDraftSelection: RouteDraftSelection;
+};
+
+type ModeProvidersState = {
+  resetKey: string;
+  rows: SortModeProviderRow[];
+};
+
+type CreateModeDialogState = {
+  open: boolean;
+  name: string;
+};
+
+type RenameModeDialogState = {
+  open: boolean;
+  name: string;
+};
+
+type ProviderActionState = {
+  activeCli: CliKey;
+  circuitResetting: ProviderActionMap;
+  circuitResettingAll: boolean;
+  terminalCopyingByProviderId: ProviderActionMap;
+  duplicatingByProviderId: ProviderActionMap;
+  testingByProviderId: ProviderActionMap;
+};
+
+function createProviderUiState(activeCli: CliKey): ProviderUiState {
+  return {
+    activeCli,
+    selectedTags: new Set(),
+    providerSearch: "",
+    createDialogState: null,
+    editTarget: null,
+    deleteTarget: null,
+    routeDraftSelection: { kind: "default", modeId: null },
+  };
+}
+
+function createProviderActionState(activeCli: CliKey): ProviderActionState {
+  return {
+    activeCli,
+    circuitResetting: {},
+    circuitResettingAll: false,
+    terminalCopyingByProviderId: {},
+    duplicatingByProviderId: {},
+    testingByProviderId: {},
+  };
+}
+
+function modeProvidersResetKey(
+  activeCli: CliKey,
+  selection: RouteDraftSelection,
+  rows: SortModeProviderRow[]
+) {
+  if (selection.kind !== "mode") return `${activeCli}:default`;
+  return `${activeCli}:mode:${selection.modeId}:${rows
+    .map((row) => `${row.provider_id}:${row.enabled}`)
+    .join(",")}`;
+}
+
 const EMPTY_SORT_MODES: SortModeSummary[] = [];
 const EMPTY_MODE_PROVIDERS: SortModeProviderRow[] = [];
+const CLOSED_CREATE_MODE_DIALOG: CreateModeDialogState = { open: false, name: "" };
+const CLOSED_RENAME_MODE_DIALOG: RenameModeDialogState = { open: false, name: "" };
+
+function terminalLaunchCopiedToastMessage(command: string) {
+  const normalized = command.trim().toLowerCase();
+  if (
+    normalized.startsWith("powershell ") ||
+    normalized.startsWith("powershell.exe ") ||
+    normalized.startsWith("pwsh ")
+  ) {
+    return "已复制, 请在目标文件夹 PowerShell 粘贴执行";
+  }
+  return "已复制, 请在目标文件夹终端粘贴执行";
+}
 const EMPTY_ROUTE_ROWS: ProviderRouteRow[] = [];
+
+function allCodexBridgeSourceCliKeys<T extends readonly CliKey[]>(
+  keys: T &
+    (Exclude<CliKey, T[number]> extends never
+      ? unknown
+      : readonly ["missing", Exclude<CliKey, T[number]>])
+) {
+  return keys;
+}
+
+const CODEX_BRIDGE_SOURCE_CLI_KEYS = allCodexBridgeSourceCliKeys([
+  "codex",
+  "claude",
+  "gemini",
+] as const);
 
 function emptyActiveModeByCli(): Record<CliKey, number | null> {
   return {
@@ -176,15 +273,25 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     [codexProvidersQuery.data]
   );
   const claudeProvidersForBridgeQuery = useProvidersListQuery("claude", {
-    enabled: activeCli === "codex",
+    enabled: activeCli === "codex" && CODEX_BRIDGE_SOURCE_CLI_KEYS.includes("claude"),
   });
   const claudeProvidersForBridge = useMemo<ProviderSummary[]>(
     () => claudeProvidersForBridgeQuery.data ?? [],
     [claudeProvidersForBridgeQuery.data]
   );
+  const geminiProvidersForBridgeQuery = useProvidersListQuery("gemini", {
+    enabled: activeCli === "codex" && CODEX_BRIDGE_SOURCE_CLI_KEYS.includes("gemini"),
+  });
+  const geminiProvidersForBridge = useMemo<ProviderSummary[]>(
+    () => geminiProvidersForBridgeQuery.data ?? [],
+    [geminiProvidersForBridgeQuery.data]
+  );
   const bridgeSourceProviders = useMemo<ProviderSummary[]>(
-    () => (activeCli === "codex" ? [...providers, ...claudeProvidersForBridge] : codexProviders),
-    [activeCli, claudeProvidersForBridge, codexProviders, providers]
+    () =>
+      activeCli === "codex" && CODEX_BRIDGE_SOURCE_CLI_KEYS.includes("codex")
+        ? [...providers, ...claudeProvidersForBridge, ...geminiProvidersForBridge]
+        : codexProviders,
+    [activeCli, claudeProvidersForBridge, codexProviders, geminiProvidersForBridge, providers]
   );
   const providersLoading = providersQuery.isFetching;
   const defaultRouteQuery = useDefaultRouteProvidersQuery(activeCli);
@@ -192,12 +299,12 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   const sortModeActiveQuery = useSortModeActiveListQuery();
 
   const sourceProvidersById = useMemo(
-    () => Object.fromEntries(codexProviders.map((provider) => [provider.id, provider])),
-    [codexProviders]
+    () => Object.fromEntries(bridgeSourceProviders.map((provider) => [provider.id, provider])),
+    [bridgeSourceProviders]
   );
   const sourceProviderNamesById = useMemo(
-    () => Object.fromEntries(codexProviders.map((provider) => [provider.id, provider.name])),
-    [codexProviders]
+    () => Object.fromEntries(bridgeSourceProviders.map((provider) => [provider.id, provider.name])),
+    [bridgeSourceProviders]
   );
 
   const providersRef = useRef(providers);
@@ -208,20 +315,105 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   const providersRefreshNextTokenRef = useRef(0);
   const providerReorderSaveTokenByCliRef = useRef<Partial<Record<CliKey, number>>>({});
   const providerReorderNextSaveTokenRef = useRef(0);
-  const [routeDraftSelection, setRouteDraftSelection] = useState<RouteDraftSelection>({
-    kind: "default",
-    modeId: null,
-  });
+  const [providerUiState, setProviderUiState] = useState<ProviderUiState>(() =>
+    createProviderUiState(activeCli)
+  );
+  let effectiveProviderUiState = providerUiState;
+
+  if (providerUiState.activeCli !== activeCli) {
+    effectiveProviderUiState = createProviderUiState(activeCli);
+    setProviderUiState(effectiveProviderUiState);
+  }
+
+  const {
+    selectedTags,
+    providerSearch,
+    createDialogState,
+    editTarget,
+    deleteTarget,
+    routeDraftSelection: storedRouteDraftSelection,
+  } = effectiveProviderUiState;
+  let routeDraftSelection = storedRouteDraftSelection;
+  const setSelectedTags: Dispatch<SetStateAction<Set<string>>> = useCallback((value) => {
+    setProviderUiState((current) => ({
+      ...current,
+      selectedTags: typeof value === "function" ? value(current.selectedTags) : value,
+    }));
+  }, []);
+  const setProviderSearch: Dispatch<SetStateAction<string>> = useCallback((value) => {
+    setProviderUiState((current) => ({
+      ...current,
+      providerSearch: typeof value === "function" ? value(current.providerSearch) : value,
+    }));
+  }, []);
+  const setCreateDialogState: Dispatch<SetStateAction<CreateDialogState | null>> = useCallback(
+    (value) => {
+      setProviderUiState((current) => ({
+        ...current,
+        createDialogState: typeof value === "function" ? value(current.createDialogState) : value,
+      }));
+    },
+    []
+  );
+  const setEditTarget: Dispatch<SetStateAction<ProviderSummary | null>> = useCallback((value) => {
+    setProviderUiState((current) => ({
+      ...current,
+      editTarget: typeof value === "function" ? value(current.editTarget) : value,
+    }));
+  }, []);
+  const setDeleteTarget: Dispatch<SetStateAction<ProviderSummary | null>> = useCallback((value) => {
+    setProviderUiState((current) => ({
+      ...current,
+      deleteTarget: typeof value === "function" ? value(current.deleteTarget) : value,
+    }));
+  }, []);
+  const setRouteDraftSelection: Dispatch<SetStateAction<RouteDraftSelection>> = useCallback(
+    (value) => {
+      setProviderUiState((current) => ({
+        ...current,
+        routeDraftSelection:
+          typeof value === "function" ? value(current.routeDraftSelection) : value,
+      }));
+    },
+    []
+  );
   const routeDraftSelectionRef = useRef(routeDraftSelection);
-  const [modeProviders, setModeProviders] = useState<SortModeProviderRow[]>(EMPTY_MODE_PROVIDERS);
-  const modeProvidersRef = useRef(modeProviders);
+  const [modeProvidersState, setModeProvidersState] = useState<ModeProvidersState>(() => ({
+    resetKey: "",
+    rows: EMPTY_MODE_PROVIDERS,
+  }));
+  const modeProvidersRef = useRef(modeProvidersState.rows);
+  const setModeProviders: Dispatch<SetStateAction<SortModeProviderRow[]>> = useCallback((value) => {
+    setModeProvidersState((current) => {
+      const rows = typeof value === "function" ? value(current.rows) : value;
+      modeProvidersRef.current = rows;
+      return { ...current, rows };
+    });
+  }, []);
   const [routeSaving, setRouteSaving] = useState(false);
   const routeSavingRef = useRef(false);
-  const [createModeDialogOpen, setCreateModeDialogOpen] = useState(false);
-  const [createModeName, setCreateModeName] = useState("");
+  const [createModeDialogState, setCreateModeDialogState] =
+    useState<CreateModeDialogState>(CLOSED_CREATE_MODE_DIALOG);
+  const createModeDialogOpen = createModeDialogState.open;
+  const createModeName = createModeDialogState.name;
+  const setCreateModeDialogOpen: Dispatch<SetStateAction<boolean>> = useCallback((value) => {
+    setCreateModeDialogState((current) => {
+      const open = typeof value === "function" ? value(current.open) : value;
+      if (open === current.open) return current;
+      return open ? { open: true, name: "" } : { ...current, open: false };
+    });
+  }, []);
+  const setCreateModeName: Dispatch<SetStateAction<string>> = useCallback((value) => {
+    setCreateModeDialogState((current) => ({
+      ...current,
+      name: typeof value === "function" ? value(current.name) : value,
+    }));
+  }, []);
   const [createModeSaving, setCreateModeSaving] = useState(false);
-  const [renameModeDialogOpen, setRenameModeDialogOpen] = useState(false);
-  const [renameModeName, setRenameModeName] = useState("");
+  const [renameModeDialogState, setRenameModeDialogState] =
+    useState<RenameModeDialogState>(CLOSED_RENAME_MODE_DIALOG);
+  const renameModeDialogOpen = renameModeDialogState.open;
+  const renameModeName = renameModeDialogState.name;
   const [renameModeSaving, setRenameModeSaving] = useState(false);
   const [deleteModeTarget, setDeleteModeTarget] = useState<SortModeSummary | null>(null);
   const [deleteModeDeleting, setDeleteModeDeleting] = useState(false);
@@ -244,28 +436,75 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   const circuitByProviderId = circuitSummary.byProviderId;
   useGatewayCircuitAutoRefresh(activeCli, circuitSummary);
 
-  const [circuitResetting, setCircuitResetting] = useState<Record<number, boolean>>({});
-  const circuitResettingRef = useRef<ProviderActionMap>({});
-  const [circuitResettingAll, setCircuitResettingAll] = useState(false);
-  const circuitResettingAllRef = useRef(false);
-  const [createDialogState, setCreateDialogState] = useState<CreateDialogState | null>(null);
-  const [editTarget, setEditTarget] = useState<ProviderSummary | null>(null);
-  const [deleteTarget, setDeleteTarget] = useState<ProviderSummary | null>(null);
-  const [deleting, setDeleting] = useState(false);
-  const deletingRef = useRef(false);
-  const [terminalCopyingByProviderId, setTerminalCopyingByProviderId] = useState<
-    Record<number, boolean>
-  >({});
-  const terminalCopyingByProviderIdRef = useRef<ProviderActionMap>({});
-  const [duplicatingByProviderId, setDuplicatingByProviderId] = useState<Record<number, boolean>>(
-    {}
+  const [providerActionState, setProviderActionState] = useState<ProviderActionState>(() =>
+    createProviderActionState(activeCli)
   );
+  let effectiveProviderActionState = providerActionState;
+  const circuitResettingRef = useRef<ProviderActionMap>({});
+  const circuitResettingAllRef = useRef(false);
+  const terminalCopyingByProviderIdRef = useRef<ProviderActionMap>({});
   const duplicatingByProviderIdRef = useRef<ProviderActionMap>({});
-  const [testingByProviderId, setTestingByProviderId] = useState<Record<number, boolean>>({});
   const testingByProviderIdRef = useRef<ProviderActionMap>({});
   const togglingByProviderIdRef = useRef<ProviderActionMap>({});
-  const [selectedTags, setSelectedTags] = useState<Set<string>>(new Set());
-  const [providerSearch, setProviderSearch] = useState("");
+
+  if (providerActionState.activeCli !== activeCli) {
+    effectiveProviderActionState = createProviderActionState(activeCli);
+    togglingByProviderIdRef.current = {};
+    circuitResettingRef.current = {};
+    circuitResettingAllRef.current = false;
+    terminalCopyingByProviderIdRef.current = {};
+    duplicatingByProviderIdRef.current = {};
+    testingByProviderIdRef.current = {};
+    setProviderActionState(effectiveProviderActionState);
+  }
+
+  const {
+    circuitResetting,
+    circuitResettingAll,
+    terminalCopyingByProviderId,
+    duplicatingByProviderId,
+    testingByProviderId,
+  } = effectiveProviderActionState;
+  const setProviderActionMap = useCallback(
+    (
+      key:
+        | "circuitResetting"
+        | "terminalCopyingByProviderId"
+        | "duplicatingByProviderId"
+        | "testingByProviderId",
+      value: SetStateAction<ProviderActionMap>
+    ) => {
+      setProviderActionState((current) => ({
+        ...current,
+        [key]: typeof value === "function" ? value(current[key]) : value,
+      }));
+    },
+    []
+  );
+  const setCircuitResetting: ProviderActionMapSetter = useCallback(
+    (value) => setProviderActionMap("circuitResetting", value),
+    [setProviderActionMap]
+  );
+  const setTerminalCopyingByProviderId: ProviderActionMapSetter = useCallback(
+    (value) => setProviderActionMap("terminalCopyingByProviderId", value),
+    [setProviderActionMap]
+  );
+  const setDuplicatingByProviderId: ProviderActionMapSetter = useCallback(
+    (value) => setProviderActionMap("duplicatingByProviderId", value),
+    [setProviderActionMap]
+  );
+  const setTestingByProviderId: ProviderActionMapSetter = useCallback(
+    (value) => setProviderActionMap("testingByProviderId", value),
+    [setProviderActionMap]
+  );
+  const setCircuitResettingAll: Dispatch<SetStateAction<boolean>> = useCallback((value) => {
+    setProviderActionState((current) => ({
+      ...current,
+      circuitResettingAll: typeof value === "function" ? value(current.circuitResettingAll) : value,
+    }));
+  }, []);
+  const [deleting, setDeleting] = useState(false);
+  const deletingRef = useRef(false);
   const [providersRefreshingByCli, setProvidersRefreshingByCli] = useState<
     Partial<Record<CliKey, boolean>>
   >({});
@@ -290,6 +529,13 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   const sortModesLoading = sortModesQuery.isLoading || sortModeActiveQuery.isLoading;
   const sortModesAvailable =
     sortModesQuery.data != null && sortModeActiveQuery.data != null ? true : null;
+  const routeDraftModeMissing =
+    routeDraftSelection.kind === "mode" &&
+    !sortModes.some((mode) => mode.id === routeDraftSelection.modeId);
+  if (routeDraftModeMissing) {
+    routeDraftSelection = { kind: "default", modeId: null };
+    setRouteDraftSelection(routeDraftSelection);
+  }
   const activeModeByCli = useMemo(
     () => buildActiveModeByCli(sortModeActiveQuery.data ?? []),
     [sortModeActiveQuery.data]
@@ -302,6 +548,24 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         : null,
     [routeDraftSelection, sortModes]
   );
+  const setRenameModeDialogOpen: Dispatch<SetStateAction<boolean>> = useCallback(
+    (value) => {
+      setRenameModeDialogState((current) => {
+        const open = typeof value === "function" ? value(current.open) : value;
+        if (open === current.open) return current;
+        return open
+          ? { open: true, name: selectedSortMode?.name ?? "" }
+          : { ...current, open: false };
+      });
+    },
+    [selectedSortMode]
+  );
+  const setRenameModeName: Dispatch<SetStateAction<string>> = useCallback((value) => {
+    setRenameModeDialogState((current) => ({
+      ...current,
+      name: typeof value === "function" ? value(current.name) : value,
+    }));
+  }, []);
   const selectedRouteLabel =
     routeDraftSelection.kind === "default"
       ? "Default"
@@ -321,6 +585,19 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     { modeId: activeModeForQuery, cliKey: activeCli },
     { enabled: routeDraftSelection.kind === "mode" && activeModeForQuery != null }
   );
+  const modeProviderRows = modeProvidersQuery.data ?? EMPTY_MODE_PROVIDERS;
+  const effectiveModeProvidersResetKey = modeProvidersResetKey(
+    activeCli,
+    routeDraftSelection,
+    modeProviderRows
+  );
+  let modeProviders = modeProvidersState.rows;
+
+  if (modeProvidersState.resetKey !== effectiveModeProvidersResetKey) {
+    modeProviders = routeDraftSelection.kind === "mode" ? modeProviderRows : EMPTY_MODE_PROVIDERS;
+    setModeProvidersState({ resetKey: effectiveModeProvidersResetKey, rows: modeProviders });
+    modeProvidersRef.current = modeProviders;
+  }
 
   const tagCounts = useMemo(() => {
     const counts = new Map<string, number>();
@@ -351,33 +628,6 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
   useEffect(() => {
     modeProvidersRef.current = modeProviders;
   }, [modeProviders]);
-
-  useEffect(() => {
-    if (routeDraftSelection.kind !== "mode") {
-      setModeProviders(EMPTY_MODE_PROVIDERS);
-      modeProvidersRef.current = EMPTY_MODE_PROVIDERS;
-      return;
-    }
-    const rows = modeProvidersQuery.data ?? EMPTY_MODE_PROVIDERS;
-    setModeProviders(rows);
-    modeProvidersRef.current = rows;
-  }, [modeProvidersQuery.data, routeDraftSelection.kind, routeDraftSelection.modeId]);
-
-  useEffect(() => {
-    if (routeDraftSelection.kind !== "mode") return;
-    if (sortModes.some((mode) => mode.id === routeDraftSelection.modeId)) return;
-    setRouteDraftSelection({ kind: "default", modeId: null });
-  }, [routeDraftSelection, sortModes]);
-
-  useEffect(() => {
-    if (!createModeDialogOpen) return;
-    setCreateModeName("");
-  }, [createModeDialogOpen]);
-
-  useEffect(() => {
-    if (!renameModeDialogOpen) return;
-    setRenameModeName(selectedSortMode?.name ?? "");
-  }, [renameModeDialogOpen, selectedSortMode]);
 
   const beginProvidersRefresh = useCallback((cliKey: CliKey) => {
     if (providersRefreshTokenByCliRef.current[cliKey] != null) {
@@ -426,6 +676,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
       refreshes.push(codexProvidersQuery.refetch());
     } else if (cliKey === "codex") {
       refreshes.push(claudeProvidersForBridgeQuery.refetch());
+      refreshes.push(geminiProvidersForBridgeQuery.refetch());
     }
 
     try {
@@ -444,31 +695,9 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     claudeProvidersForBridgeQuery,
     codexProvidersQuery,
     finishProvidersRefresh,
+    geminiProvidersForBridgeQuery,
     providersQuery,
   ]);
-
-  useEffect(() => {
-    setSelectedTags(new Set());
-    setProviderSearch("");
-    setCreateDialogState(null);
-    setEditTarget(null);
-    setDeleteTarget(null);
-    setRouteDraftSelection({ kind: "default", modeId: null });
-  }, [activeCli]);
-
-  useEffect(() => {
-    togglingByProviderIdRef.current = {};
-    circuitResettingRef.current = {};
-    circuitResettingAllRef.current = false;
-    terminalCopyingByProviderIdRef.current = {};
-    duplicatingByProviderIdRef.current = {};
-    testingByProviderIdRef.current = {};
-    setCircuitResetting({});
-    setCircuitResettingAll(false);
-    setTerminalCopyingByProviderId({});
-    setDuplicatingByProviderId({});
-    setTestingByProviderId({});
-  }, [activeCli]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -559,7 +788,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         finishStatefulProviderAction(circuitResettingRef, setCircuitResetting, provider.id);
       }
     },
-    [circuitQuery, resetCircuitProviderMutation]
+    [circuitQuery, resetCircuitProviderMutation, setCircuitResetting]
   );
 
   const resetCircuitAll = useCallback(
@@ -585,7 +814,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         setCircuitResettingAll(false);
       }
     },
-    [circuitQuery, resetCircuitCliMutation]
+    [circuitQuery, resetCircuitCliMutation, setCircuitResettingAll]
   );
 
   const confirmRemoveProvider = useCallback(
@@ -623,20 +852,8 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         setDeleting(false);
       }
     },
-    [deleteTarget, providerDeleteMutation]
+    [deleteTarget, providerDeleteMutation, setDeleteTarget]
   );
-
-  function terminalLaunchCopiedToastMessage(command: string) {
-    const normalized = command.trim().toLowerCase();
-    if (
-      normalized.startsWith("powershell ") ||
-      normalized.startsWith("powershell.exe ") ||
-      normalized.startsWith("pwsh ")
-    ) {
-      return "已复制, 请在目标文件夹 PowerShell 粘贴执行";
-    }
-    return "已复制, 请在目标文件夹终端粘贴执行";
-  }
 
   const copyTerminalLaunchCommand = useCallback(
     async (provider: ProviderSummary) => {
@@ -691,7 +908,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         );
       }
     },
-    [terminalLaunchCommandMutation]
+    [setTerminalCopyingByProviderId, terminalLaunchCommandMutation]
   );
 
   const duplicateProvider = useCallback(
@@ -734,7 +951,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         );
       }
     },
-    [providerDuplicateMutation]
+    [providerDuplicateMutation, setDuplicatingByProviderId]
   );
 
   const testProviderAvailability = useCallback(
@@ -752,7 +969,16 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         if (!result) return;
 
         if (result.ok) {
-          toast(`${provider.name}: 可用 (${result.latency_ms}ms)`);
+          const bridgeType = provider.bridge_type ?? "";
+          const isExplicitCodexBridge =
+            bridgeType === "codex_to_openai_chat" ||
+            bridgeType === "codex_to_openai_responses" ||
+            bridgeType === "codex_to_anthropic_messages";
+          toast(
+            isExplicitCodexBridge
+              ? `${provider.name}: 转译请求可用 (${result.latency_ms}ms)`
+              : `${provider.name}: 可用 (${result.latency_ms}ms)`
+          );
         } else {
           toast(`${provider.name}: 不可用 — ${result.error ?? "未知错误"}`);
         }
@@ -773,7 +999,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         finishStatefulProviderAction(testingByProviderIdRef, setTestingByProviderId, provider.id);
       }
     },
-    [testAvailabilityMutation]
+    [setTestingByProviderId, testAvailabilityMutation]
   );
 
   async function persistProvidersOrder(
@@ -957,6 +1183,18 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
       routeSavingRef.current = false;
       setRouteSaving(false);
     }
+  }
+
+  async function setRouteProviderEnabled(providerId: number, enabled: boolean) {
+    const selection = routeDraftSelectionRef.current;
+    if (selection.kind === "mode") {
+      await setModeProviderEnabled(providerId, enabled);
+      return;
+    }
+
+    const provider = providersRef.current.find((row) => row.id === providerId);
+    if (!provider || provider.enabled === enabled) return;
+    await toggleProviderEnabled(provider);
   }
 
   function addProviderToCurrentRoute(providerId: number) {
@@ -1155,6 +1393,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     addProviderToCurrentRoute,
     removeProviderFromCurrentRoute,
     setModeProviderEnabled,
+    setRouteProviderEnabled,
     handleRouteDragEnd,
     createSortMode,
     renameSortMode,

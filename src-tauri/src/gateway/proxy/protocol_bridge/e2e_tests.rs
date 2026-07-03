@@ -18,6 +18,8 @@ mod tests {
             mapped_model: None,
             stream_requested: false,
             is_chatgpt_backend: false,
+            responses_cache_namespace: None,
+            responses_cache_input: None,
         }
     }
 
@@ -45,10 +47,15 @@ mod tests {
     fn registry_returns_codex_bridge_types() {
         let types = registry::available_bridge_types();
         assert!(types.contains(&"codex_to_openai_chat"));
+        assert!(types.contains(&"codex_to_openai_responses"));
         assert!(types.contains(&"codex_to_anthropic_messages"));
         assert_eq!(
             get_bridge("codex_to_openai_chat").unwrap().bridge_type,
             "codex_to_openai_chat"
+        );
+        assert_eq!(
+            get_bridge("codex_to_openai_responses").unwrap().bridge_type,
+            "codex_to_openai_responses"
         );
         assert_eq!(
             get_bridge("codex_to_anthropic_messages")
@@ -208,6 +215,132 @@ mod tests {
             "object"
         );
         assert_eq!(translated.body["tool_choice"]["type"], "any");
+    }
+
+    #[test]
+    fn e2e_codex_responses_to_openai_responses_request() {
+        use crate::domain::providers::ModelMapping;
+        use std::collections::BTreeMap;
+
+        let bridge = get_bridge("codex_to_openai_responses").unwrap();
+        let ctx = BridgeContext {
+            model_mapping: ModelMapping {
+                default_model: Some("qwen3-coder".to_string()),
+                exact: BTreeMap::from([("gpt-5.5".to_string(), "deepseek-reasoner".to_string())]),
+            },
+            ..cx2cc_ctx()
+        };
+
+        let translated = bridge
+            .translate_request(
+                json!({
+                    "model": "gpt-5.5",
+                    "instructions": "Be helpful.",
+                    "input": [{"role": "user", "content": [{"type": "input_text", "text": "Hello"}]}],
+                    "reasoning": {"effort": "high"},
+                    "service_tier": "priority",
+                    "store": false,
+                    "stream": false
+                }),
+                &ctx,
+            )
+            .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/responses");
+        assert_eq!(translated.body["model"], "deepseek-reasoner");
+        assert_eq!(translated.body["instructions"], "Be helpful.");
+        assert_eq!(translated.body["input"][0]["content"][0]["text"], "Hello");
+        assert_eq!(translated.body["reasoning"], json!({"effort": "high"}));
+        assert_eq!(translated.body["service_tier"], json!("priority"));
+        assert_eq!(translated.body["store"], json!(false));
+    }
+
+    #[test]
+    fn e2e_codex_responses_to_openai_responses_preserves_native_tools() {
+        use crate::domain::providers::ModelMapping;
+
+        let bridge = get_bridge("codex_to_openai_responses").unwrap();
+        let ctx = BridgeContext {
+            model_mapping: ModelMapping {
+                default_model: Some("glm-5.2".to_string()),
+                exact: Default::default(),
+            },
+            ..cx2cc_ctx()
+        };
+
+        let translated = bridge
+            .translate_request(
+                json!({
+                    "model": "gpt-5.5",
+                    "input": "Hello",
+                    "tools": [
+                        {"type": "tool_search"},
+                        {"type": "web_search_preview", "search_context_size": "low"},
+                        {"type": "function", "name": "lookup", "parameters": {"type": "object"}}
+                    ],
+                    "tool_choice": {"type": "tool_search"},
+                    "stream": false
+                }),
+                &ctx,
+            )
+            .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/responses");
+        assert_eq!(translated.body["model"], "glm-5.2");
+        assert_eq!(translated.body["tools"][0]["type"], "tool_search");
+        assert_eq!(
+            translated.body["tools"][0]["description"],
+            "Search through available tools to find the most relevant one for the task."
+        );
+        assert_eq!(translated.body["tools"][1]["type"], "web_search_preview");
+        assert_eq!(translated.body["tools"][2]["type"], "function");
+        assert_eq!(translated.body["tools"][2]["name"], "lookup");
+        assert_eq!(
+            translated.body["tool_choice"],
+            json!({"type": "tool_search"})
+        );
+    }
+
+    #[test]
+    fn e2e_codex_responses_to_openai_responses_preserves_native_input_items() {
+        use crate::domain::providers::ModelMapping;
+
+        let bridge = get_bridge("codex_to_openai_responses").unwrap();
+        let ctx = BridgeContext {
+            model_mapping: ModelMapping {
+                default_model: Some("glm-5.2".to_string()),
+                exact: Default::default(),
+            },
+            ..cx2cc_ctx()
+        };
+
+        let translated = bridge
+            .translate_request(
+                json!({
+                    "model": "gpt-5.5",
+                    "input": [
+                        {"type": "reasoning", "id": "rs_1", "summary": []},
+                        {"type": "tool_search_call", "id": "ts_1", "call_id": "call_search", "status": "completed"},
+                        {"type": "tool_search_output", "call_id": "call_search", "output": "ok"},
+                        {"type": "compaction", "summary": "previous context"},
+                        {"role": "user", "content": [{"type": "input_text", "text": "continue"}]}
+                    ],
+                    "stream": false
+                }),
+                &ctx,
+            )
+            .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/responses");
+        assert_eq!(translated.body["model"], "glm-5.2");
+        assert_eq!(translated.body["input"][0]["type"], "reasoning");
+        assert_eq!(translated.body["input"][1]["type"], "tool_search_call");
+        assert_eq!(translated.body["input"][2]["type"], "tool_search_output");
+        assert_eq!(translated.body["input"][3]["type"], "compaction");
+        assert_eq!(
+            translated.body["input"][4]["content"][0]["text"],
+            "continue"
+        );
     }
 
     #[test]
@@ -635,6 +768,42 @@ mod tests {
         assert_eq!(anthropic_resp["content"][0]["text"], "Hello!");
         assert_eq!(anthropic_resp["usage"]["input_tokens"], 8);
         assert_eq!(anthropic_resp["usage"]["output_tokens"], 2);
+    }
+
+    #[test]
+    fn acceptance_cx2cc_round_trip_preserves_requested_model_and_usage() {
+        let bridge = get_bridge("cx2cc").unwrap();
+        let ctx = cx2cc_ctx();
+
+        let anthropic_req = json!({
+            "model": "claude-sonnet-4-20250514",
+            "max_tokens": 1024,
+            "messages": [
+                {"role": "user", "content": "Hello"}
+            ]
+        });
+
+        let translated_req = bridge.translate_request(anthropic_req, &ctx).unwrap();
+        assert_eq!(translated_req.target_path, "/v1/responses");
+
+        let openai_resp = json!({
+            "id": "resp_acceptance",
+            "model": translated_req.body["model"],
+            "status": "completed",
+            "output": [
+                {
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "Hi"}]
+                }
+            ],
+            "usage": {"input_tokens": 13, "output_tokens": 5}
+        });
+
+        let anthropic_resp = bridge.translate_response(openai_resp, &ctx).unwrap();
+        assert_eq!(anthropic_resp["model"], "claude-sonnet-4-20250514");
+        assert_eq!(anthropic_resp["usage"]["input_tokens"], 13);
+        assert_eq!(anthropic_resp["usage"]["output_tokens"], 5);
     }
 
     // ── Model mapping ───────────────────────────────────────────────────

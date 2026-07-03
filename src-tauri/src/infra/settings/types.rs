@@ -11,6 +11,10 @@ fn default_codex_reasoning_guard_hit_label() -> String {
     DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string()
 }
 
+fn default_codex_reasoning_guard_active_template_id() -> String {
+    CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string()
+}
+
 fn default_codex_reasoning_guard_immediate_retry_budget() -> u32 {
     DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
 }
@@ -33,6 +37,14 @@ fn default_codex_reasoning_guard_concurrent_interval_ms() -> u32 {
 
 fn default_codex_reasoning_guard_concurrent_max_attempts() -> u32 {
     DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+}
+
+fn default_codex_reasoning_guard_continuation_max_rounds() -> u32 {
+    DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
+}
+
+fn default_codex_reasoning_guard_continuation_max_output_tokens() -> u32 {
+    DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
@@ -89,6 +101,14 @@ pub enum CodexReasoningGuardCompareMode {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardRuleMode {
+    #[default]
+    ReasoningTokens,
+    FinalAnswerOnlyHighXhigh,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum CodexReasoningGuardExhaustedAction {
     #[default]
     ReturnError,
@@ -102,6 +122,115 @@ pub enum CodexReasoningGuardRetryPolicy {
     #[default]
     Single,
     Concurrent,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardTemplateRuleAction {
+    #[default]
+    Intercept,
+    NoIntercept,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardTemplateRuleLogic {
+    #[serde(rename = "and")]
+    #[default]
+    And,
+    #[serde(rename = "or")]
+    Or,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardTemplateFilterField {
+    DurationMs,
+    Tps,
+    OutputTokens,
+    InputTokens,
+    TotalTokens,
+    #[default]
+    ReasoningTokens,
+    FinalAnswerOnly,
+    HasToolCall,
+    HasReasoningItem,
+    CommentaryObserved,
+    RequestReasoningEffort,
+    RequestedModel,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CodexReasoningGuardTemplateFilterOperator {
+    #[default]
+    Equals,
+    NotEquals,
+    LessThan,
+    LessThanOrEqual,
+    GreaterThan,
+    GreaterThanOrEqual,
+    In,
+    NotIn,
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(default)]
+pub struct CodexReasoningGuardTemplateFilter {
+    pub id: String,
+    pub field: CodexReasoningGuardTemplateFilterField,
+    pub operator: CodexReasoningGuardTemplateFilterOperator,
+    pub number_value: Option<f64>,
+    pub bool_value: Option<bool>,
+    pub string_value: Option<String>,
+    pub string_values: Vec<String>,
+}
+
+impl Default for CodexReasoningGuardTemplateFilter {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            field: CodexReasoningGuardTemplateFilterField::ReasoningTokens,
+            operator: CodexReasoningGuardTemplateFilterOperator::Equals,
+            number_value: None,
+            bool_value: None,
+            string_value: None,
+            string_values: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(default)]
+pub struct CodexReasoningGuardTemplateRule {
+    pub id: String,
+    pub name: String,
+    pub reasoning_tokens: Option<i64>,
+    pub action: CodexReasoningGuardTemplateRuleAction,
+    pub logic: CodexReasoningGuardTemplateRuleLogic,
+    pub filters: Vec<CodexReasoningGuardTemplateFilter>,
+}
+
+impl Default for CodexReasoningGuardTemplateRule {
+    fn default() -> Self {
+        Self {
+            id: String::new(),
+            name: String::new(),
+            reasoning_tokens: None,
+            action: CodexReasoningGuardTemplateRuleAction::Intercept,
+            logic: CodexReasoningGuardTemplateRuleLogic::And,
+            filters: Vec::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize, specta::Type)]
+#[serde(default)]
+pub struct CodexReasoningGuardRuleTemplate {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub rules: Vec<CodexReasoningGuardTemplateRule>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type)]
@@ -215,10 +344,16 @@ pub struct AppSettings {
     // retry the same provider without affecting circuit breaker state.
     pub codex_reasoning_guard_enabled: bool,
     #[serde(default)]
+    pub codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode,
+    #[serde(default)]
     pub codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode,
     pub codex_reasoning_guard_reasoning_equals: Vec<i64>,
     #[serde(default)]
     pub codex_reasoning_guard_model_rules: Vec<CodexReasoningGuardModelRule>,
+    #[serde(default = "default_codex_reasoning_guard_active_template_id")]
+    pub codex_reasoning_guard_active_template_id: String,
+    #[serde(default)]
+    pub codex_reasoning_guard_custom_templates: Vec<CodexReasoningGuardRuleTemplate>,
     #[serde(default = "default_codex_reasoning_guard_immediate_retry_budget")]
     pub codex_reasoning_guard_immediate_retry_budget: u32,
     #[serde(default = "default_codex_reasoning_guard_delayed_retry_budget")]
@@ -237,6 +372,12 @@ pub struct AppSettings {
     pub codex_reasoning_guard_concurrent_max_attempts: u32,
     #[serde(default)]
     pub codex_reasoning_guard_model_fallbacks: Vec<String>,
+    #[serde(default)]
+    pub codex_reasoning_guard_continuation_repair_enabled: bool,
+    #[serde(default = "default_codex_reasoning_guard_continuation_max_rounds")]
+    pub codex_reasoning_guard_continuation_max_rounds: u32,
+    #[serde(default = "default_codex_reasoning_guard_continuation_max_output_tokens")]
+    pub codex_reasoning_guard_continuation_max_output_tokens: u32,
     // Deprecated compatibility fields. Runtime guard budget decisions use the
     // explicit budget fields above as the single source of truth.
     pub codex_reasoning_guard_backoff_after_hits: u32,
@@ -328,10 +469,14 @@ impl Default for AppSettings {
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
             codex_reasoning_guard_hit_label: DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string(),
             codex_reasoning_guard_enabled: DEFAULT_CODEX_REASONING_GUARD_ENABLED,
+            codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode::default(),
             codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::default(),
             codex_reasoning_guard_reasoning_equals: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
                 .to_vec(),
             codex_reasoning_guard_model_rules: Vec::new(),
+            codex_reasoning_guard_active_template_id:
+                CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID.to_string(),
+            codex_reasoning_guard_custom_templates: Vec::new(),
             codex_reasoning_guard_immediate_retry_budget:
                 DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
             codex_reasoning_guard_delayed_retry_budget:
@@ -345,6 +490,12 @@ impl Default for AppSettings {
             codex_reasoning_guard_concurrent_max_attempts:
                 DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
             codex_reasoning_guard_model_fallbacks: Vec::new(),
+            codex_reasoning_guard_continuation_repair_enabled:
+                DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED,
+            codex_reasoning_guard_continuation_max_rounds:
+                DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
+            codex_reasoning_guard_continuation_max_output_tokens:
+                DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
             codex_reasoning_guard_backoff_after_hits:
                 DEFAULT_CODEX_REASONING_GUARD_BACKOFF_AFTER_HITS,
             codex_reasoning_guard_backoff_ms: DEFAULT_CODEX_REASONING_GUARD_BACKOFF_MS,

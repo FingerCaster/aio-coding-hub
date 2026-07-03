@@ -234,6 +234,31 @@ fn codex_bridge_types_roundtrip_and_require_explicit_identity() {
     assert_eq!(json_array(anthropic_bridge["base_urls"].clone()).len(), 0);
     let anthropic_bridge_id = json_i64(&anthropic_bridge, "id");
 
+    let responses_bridge = aio_coding_hub_lib::test_support::provider_upsert_bridge_json(
+        &handle,
+        ProviderUpsertBridgeJsonInput {
+            base: ProviderUpsertJsonInput {
+                api_key: None,
+                ..provider_input("codex", "Responses bridge", "")
+            },
+            source_provider_id: Some(codex_source_id),
+            bridge_type: Some("codex_to_openai_responses".to_string()),
+        },
+    )
+    .expect("insert responses bridge provider");
+
+    assert_eq!(json_str(&responses_bridge, "cli_key"), "codex");
+    assert_eq!(
+        json_i64(&responses_bridge, "source_provider_id"),
+        codex_source_id
+    );
+    assert_eq!(
+        json_str(&responses_bridge, "bridge_type"),
+        "codex_to_openai_responses"
+    );
+    assert_eq!(json_array(responses_bridge["base_urls"].clone()).len(), 0);
+    let responses_bridge_id = json_i64(&responses_bridge, "id");
+
     let db_path = aio_coding_hub_lib::test_support::db_path(&handle).expect("db path");
     let conn = rusqlite::Connection::open(db_path).expect("open db");
     let chat_bridge_key: String = conn
@@ -250,17 +275,29 @@ fn codex_bridge_types_roundtrip_and_require_explicit_identity() {
             |row| row.get(0),
         )
         .expect("query anthropic bridge api key");
+    let responses_bridge_key: String = conn
+        .query_row(
+            "SELECT api_key_plaintext FROM providers WHERE id = ?1",
+            rusqlite::params![responses_bridge_id],
+            |row| row.get(0),
+        )
+        .expect("query responses bridge api key");
     assert_eq!(chat_bridge_key, "");
     assert_eq!(anthropic_bridge_key, "");
+    assert_eq!(responses_bridge_key, "");
 
     let list = aio_coding_hub_lib::test_support::providers_list_by_cli_json(&handle, "codex")
         .expect("list codex providers");
     let list = json_array(list);
-    assert_eq!(list.len(), 3);
+    assert_eq!(list.len(), 4);
     assert_eq!(json_str(&list[1], "bridge_type"), "codex_to_openai_chat");
     assert_eq!(
         json_str(&list[2], "bridge_type"),
         "codex_to_anthropic_messages"
+    );
+    assert_eq!(
+        json_str(&list[3], "bridge_type"),
+        "codex_to_openai_responses"
     );
 }
 

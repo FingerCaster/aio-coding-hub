@@ -40,6 +40,7 @@ function makeSavedProvider(partial: Partial<ProviderSummary> = {}): ProviderSumm
     bridge_type: partial.bridge_type ?? null,
     model_mapping: partial.model_mapping ?? { default_model: null, exact: {} },
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
+    extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
     availability_test_model: partial.availability_test_model ?? null,
     api_key_configured: partial.api_key_configured ?? true,

@@ -277,6 +277,9 @@ export const handlers = [
             ? input.streamIdleTimeoutSeconds
             : null
           : (existing?.stream_idle_timeout_seconds ?? null),
+      extension_values: Array.isArray(input.extensionValues)
+        ? (input.extensionValues as ProviderSummary["extension_values"])
+        : (existing?.extension_values ?? []),
       upstream_retry_policy_override:
         input.upstreamRetryPolicyOverrideSpecified === true
           ? input.upstreamRetryPolicyOverride == null

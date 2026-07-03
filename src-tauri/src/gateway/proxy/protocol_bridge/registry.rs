@@ -5,7 +5,8 @@
 
 use super::bridge::Bridge;
 use crate::domain::providers::{
-    CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
+    CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
+    CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
 };
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
@@ -24,6 +25,10 @@ fn registry() -> &'static RwLock<HashMap<&'static str, BridgeFactory>> {
         m.insert(
             CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
             codex_to_anthropic_messages_factory as BridgeFactory,
+        );
+        m.insert(
+            CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
+            codex_to_openai_responses_factory as BridgeFactory,
         );
         RwLock::new(m)
     })
@@ -87,6 +92,15 @@ fn codex_to_anthropic_messages_factory() -> Bridge {
         bridge_type: CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
         inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
         outbound: Box::new(super::outbound::anthropic_messages::AnthropicMessagesOutbound),
+        model_mapper: Box::new(ProviderModelMapper),
+    }
+}
+
+fn codex_to_openai_responses_factory() -> Bridge {
+    Bridge {
+        bridge_type: CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
+        inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
+        outbound: Box::new(super::outbound::openai_responses::OpenAIResponsesOutbound),
         model_mapper: Box::new(ProviderModelMapper),
     }
 }

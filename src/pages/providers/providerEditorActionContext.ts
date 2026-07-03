@@ -4,12 +4,14 @@ import type {
   ModelMapping,
   ProviderOAuthDeviceCodeStartResult,
   ProviderOAuthStatusResult,
+  ProviderExtensionValuesInput,
   ProviderUpsertInput,
   ProviderSummary,
   UpstreamRetryPolicy,
 } from "../../services/providers/providers";
 import type { ProviderEditorDialogFormInput } from "../../schemas/providerEditorDialog";
 import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
+import type { CodexBridgeTarget } from "./providerEditorUtils";
 
 /** Provider identity and lifecycle */
 export type ProviderActionContext = {
@@ -40,7 +42,7 @@ export type AuthActionContext = {
   oauthDeviceError: string | null;
   setOauthDeviceError: (v: string | null) => void;
   cx2ccSourceValue: string;
-  codexBridgeTarget: "openai_chat" | "anthropic_messages";
+  codexBridgeTarget: CodexBridgeTarget;
   isCodexGatewaySource: boolean;
   sourceProviderId: number | null;
   selectedCx2ccSourceProvider: ProviderSummary | null;
@@ -78,7 +80,7 @@ export type ProviderEditorPayloadContext = {
   cliKey: CliKey;
   editingProviderId: number | null;
   authMode: "api_key" | "oauth" | "cx2cc";
-  codexBridgeTarget: "openai_chat" | "anthropic_messages";
+  codexBridgeTarget: CodexBridgeTarget;
   baseUrlMode: ProviderBaseUrlMode;
   baseUrlRows: BaseUrlRow[];
   tags: string[];
@@ -93,6 +95,7 @@ export type ProviderEditorPayloadContext = {
   sourceProviderId: number | null;
   selectedCx2ccSourceProvider: ProviderSummary | null;
   formValues: ProviderEditorDialogFormInput;
+  extensionValues?: ProviderExtensionValuesInput[] | null;
 };
 
 export type ProviderEditorPayloadBuildError =

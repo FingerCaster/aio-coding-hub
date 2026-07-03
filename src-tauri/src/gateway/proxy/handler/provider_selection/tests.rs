@@ -36,6 +36,7 @@ fn insert_provider(db: &crate::db::Db, name: &str, enabled: bool) -> providers::
             bridge_type: None,
             stream_idle_timeout_seconds: None,
             model_mapping: None,
+            extension_values: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         },
@@ -339,7 +340,7 @@ fn sort_mode_ignores_global_provider_enabled_but_open_circuit_prevents_session_r
         Some(&[p1.id, p2.id]),
     );
 
-    assert_eq!(ids(&enabled), vec![p1.id, p2.id]);
+    assert_eq!(ids(&enabled), vec![p2.id]);
     assert_eq!(selected, None);
     assert_eq!(
         session.get_bound_provider("claude", "sess_1", now),

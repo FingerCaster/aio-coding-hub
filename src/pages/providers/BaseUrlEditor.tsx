@@ -74,9 +74,7 @@ async function pingAllBaseUrlRows(
   if (rowsSnapshot.length === 0) return;
   setPingingAll(true);
   try {
-    for (const row of rowsSnapshot) {
-      await pingBaseUrlRow(row.id, row.url, setRows);
-    }
+    await Promise.all(rowsSnapshot.map((row) => pingBaseUrlRow(row.id, row.url, setRows)));
   } finally {
     setPingingAll(false);
   }

@@ -929,6 +929,60 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
+  it("lets a live Codex reasoning-guard fallback attempt replace requested_model", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceStart, ingestTraceAttempt, useTraceStore } = await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const requestEffortSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "medium" },
+    ]);
+
+    act(() => {
+      ingestTraceStart({
+        trace_id: "codex-live-model-fallback",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.5",
+        special_settings_json: requestEffortSettings,
+        ts: 0,
+      });
+    });
+
+    act(() => {
+      ingestTraceAttempt({
+        trace_id: "codex-live-model-fallback",
+        cli_key: "codex",
+        method: "POST",
+        path: "/v1/responses",
+        query: null,
+        requested_model: "gpt-5.4",
+        attempt_index: 2,
+        provider_id: 1,
+        provider_name: "P1",
+        base_url: "https://p1",
+        outcome: "started",
+        status: null,
+        attempt_started_ms: 1_000,
+        attempt_duration_ms: 0,
+      });
+    });
+
+    expect(result.current.traces[0]?.requested_model).toBe("gpt-5.4");
+    expect(result.current.traces[0]?.special_settings_json).toBe(requestEffortSettings);
+    expect(
+      resolveCodexReasoningEffort(
+        result.current.traces[0]?.requested_model,
+        result.current.traces[0]?.special_settings_json
+      )
+    ).toEqual({ effort: "medium", source: "request" });
+
+    vi.useRealTimers();
+  });
+
   it("keeps explicit live Codex effort when terminal request log settings are missing", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

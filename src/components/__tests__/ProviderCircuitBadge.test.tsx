@@ -12,6 +12,7 @@ describe("components/ProviderCircuitBadge", () => {
 
   it("renders rows, opens popover, and calls onResetProvider", async () => {
     const onResetProvider = vi.fn();
+    const nowUnix = Math.floor(Date.now() / 1000);
     render(
       <ProviderCircuitBadge
         rows={[
@@ -19,7 +20,7 @@ describe("components/ProviderCircuitBadge", () => {
             cli_key: "claude",
             provider_id: 1,
             provider_name: "P1",
-            open_until: Math.floor(Date.now() / 1000) + 10,
+            open_until: nowUnix + 10,
           },
           {
             cli_key: "claude",
@@ -31,7 +32,7 @@ describe("components/ProviderCircuitBadge", () => {
             cli_key: "codex",
             provider_id: 3,
             provider_name: "P3",
-            open_until: Math.floor(Date.now() / 1000) + 5,
+            open_until: nowUnix + 5,
           },
         ]}
         onResetProvider={onResetProvider}
@@ -56,6 +57,7 @@ describe("components/ProviderCircuitBadge", () => {
   });
 
   it("auto closes popover when rows become empty", async () => {
+    const nowUnix = Math.floor(Date.now() / 1000);
     const { rerender } = render(
       <ProviderCircuitBadge
         rows={[
@@ -63,7 +65,7 @@ describe("components/ProviderCircuitBadge", () => {
             cli_key: "claude",
             provider_id: 1,
             provider_name: "P1",
-            open_until: Math.floor(Date.now() / 1000) + 10,
+            open_until: nowUnix + 10,
           },
         ]}
         onResetProvider={() => {}}

@@ -21,6 +21,7 @@ const CLEANUP_STATE_DONE: u8 = 2;
 
 const CLEANUP_WAIT_TIMEOUT: Duration = Duration::from_secs(15);
 const CLI_PROXY_RESTORE_TIMEOUT: Duration = Duration::from_secs(3);
+const EXTENSION_HOST_DISPOSE_TIMEOUT: Duration = Duration::from_secs(5);
 const GATEWAY_SERVER_STOP_TIMEOUT: Duration = Duration::from_secs(3);
 const GATEWAY_BACKGROUND_DRAIN_TIMEOUT: Duration = Duration::from_secs(1);
 const GATEWAY_OAUTH_STOP_TIMEOUT: Duration = Duration::from_secs(1);
@@ -59,6 +60,7 @@ pub(crate) async fn cleanup_before_exit(app: &tauri::AppHandle) {
         Ordering::Acquire,
     ) {
         Ok(_) => {
+            dispose_extension_hosts_best_effort(app).await;
             stop_gateway_best_effort(app).await;
             restore_cli_proxy_keep_state_best_effort(
                 app,
@@ -93,6 +95,22 @@ pub(crate) async fn cleanup_before_exit(app: &tauri::AppHandle) {
             }
             wait_for_cleanup_done(notify).await;
         }
+    }
+}
+
+async fn dispose_extension_hosts_best_effort(app: &tauri::AppHandle) {
+    let Some(state) =
+        app.try_state::<crate::app::plugins::extension_host_registry::ExtensionHostRuntimeState>()
+    else {
+        return;
+    };
+
+    match tokio::time::timeout(EXTENSION_HOST_DISPOSE_TIMEOUT, state.dispose_all()).await {
+        Ok(()) => tracing::info!("extension host instances disposed during exit cleanup"),
+        Err(_) => tracing::warn!(
+            "exit cleanup: extension host disposal timed out ({}s)",
+            EXTENSION_HOST_DISPOSE_TIMEOUT.as_secs()
+        ),
     }
 }
 

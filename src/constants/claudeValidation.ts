@@ -1,19 +1,5 @@
 export type ClaudeValidatePresetKey = "max_tokens_5";
 
-export type ClaudeValidatePreset = {
-  key: ClaudeValidatePresetKey;
-  label: string;
-  hint: string;
-};
-
-export const CLAUDE_VALIDATE_PRESETS: ClaudeValidatePreset[] = [
-  {
-    key: "max_tokens_5",
-    label: "综合验证（max_tokens=5 + cache_creation）",
-    hint: "观察输出长度<=5 + SSE usage.cache_creation 是否存在",
-  },
-];
-
 const CLAUDE_CLI_USER_HASH_STORAGE_KEY = "aio_claude_cli_user_hash";
 
 function randomHex(bytes: number) {

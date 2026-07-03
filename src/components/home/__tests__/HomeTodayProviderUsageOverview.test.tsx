@@ -921,7 +921,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
     expect(within(providerRow as HTMLElement).getByLabelText("进行中")).toBeInTheDocument();
   });
 
-  it("keeps running provider hints for long pending traces backed by request logs", () => {
+  it("keeps running provider hints for long pending traces backed by the active registry", () => {
     vi.useFakeTimers();
     const baseTime = 1_700_000_000_000;
     vi.setSystemTime(baseTime);
@@ -947,6 +947,19 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
             created_at_ms: baseTime - 11 * 60 * 1000,
             created_at: Math.floor((baseTime - 11 * 60 * 1000) / 1000),
           }),
+        ]}
+        activeRequests={[
+          {
+            trace_id: longTrace.trace_id,
+            cli_key: "claude",
+            session_id: null,
+            method: "POST",
+            path: "/v1/messages",
+            query: null,
+            requested_model: "claude-3-opus",
+            created_at_ms: baseTime - 11 * 60 * 1000,
+            last_activity_ms: baseTime - 6 * 60 * 1000,
+          },
         ]}
       />
     );

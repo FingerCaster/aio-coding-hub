@@ -64,16 +64,63 @@ pub(crate) enum IRContentBlock {
     Thinking {
         thinking: String,
     },
+    /// OpenAI Responses-native input item without a protocol-agnostic
+    /// equivalent. Responses outbound can preserve this exactly.
+    ResponsesNativeInputItem {
+        raw: Value,
+    },
 }
 
-/// Tool (function) definition.
+/// Tool definition.
 #[derive(Debug, Clone)]
-pub(crate) struct IRToolDefinition {
-    pub name: String,
-    pub description: Option<String>,
-    /// JSON Schema for the tool parameters.
-    /// Kept as `Value` because schemas are structurally diverse.
-    pub parameters: Value,
+pub(crate) enum IRToolDefinition {
+    Function {
+        name: String,
+        description: Option<String>,
+        /// JSON Schema for the tool parameters.
+        /// Kept as `Value` because schemas are structurally diverse.
+        parameters: Value,
+    },
+    /// OpenAI Responses-native tool declaration without a protocol-agnostic
+    /// equivalent. Responses outbound can preserve this exactly; other
+    /// outbounds must explicitly decide whether they can map it.
+    ResponsesNative { tool_type: String, raw: Value },
+}
+
+impl IRToolDefinition {
+    pub(crate) fn function(
+        name: impl Into<String>,
+        description: Option<String>,
+        parameters: Value,
+    ) -> Self {
+        Self::Function {
+            name: name.into(),
+            description,
+            parameters,
+        }
+    }
+
+    pub(crate) fn responses_native(tool_type: impl Into<String>, raw: Value) -> Self {
+        Self::ResponsesNative {
+            tool_type: tool_type.into(),
+            raw,
+        }
+    }
+
+    pub(crate) fn as_function(&self) -> Option<(&str, Option<&str>, &Value)> {
+        match self {
+            Self::Function {
+                name,
+                description,
+                parameters,
+            } => Some((name.as_str(), description.as_deref(), parameters)),
+            Self::ResponsesNative { .. } => None,
+        }
+    }
+
+    pub(crate) fn function_name(&self) -> Option<&str> {
+        self.as_function().map(|(name, _, _)| name)
+    }
 }
 
 /// Tool-choice mode.
@@ -83,6 +130,7 @@ pub(crate) enum IRToolChoice {
     Required,
     None,
     Specific { name: String },
+    ResponsesNative { raw: Value },
 }
 
 /// Escape hatch for protocol-specific fields that do not have a common mapping.

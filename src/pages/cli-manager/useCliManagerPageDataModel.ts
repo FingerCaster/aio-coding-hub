@@ -473,9 +473,12 @@ export function useCliManagerPageDataModel() {
         AppSettings,
         | "codex_reasoning_guard_enabled"
         | "codex_reasoning_guard_hit_label"
+        | "codex_reasoning_guard_rule_mode"
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
+        | "codex_reasoning_guard_active_template_id"
+        | "codex_reasoning_guard_custom_templates"
         | "codex_reasoning_guard_immediate_retry_budget"
         | "codex_reasoning_guard_delayed_retry_budget"
         | "codex_reasoning_guard_delayed_retry_ms"
@@ -519,6 +522,7 @@ export function useCliManagerPageDataModel() {
     try {
       const updated = await codexConfigSetMutation.mutateAsync(patch);
       if (!updated) {
+        toast("更新 Codex 配置失败：未返回更新后的配置");
         return;
       }
       toast("已更新 Codex 配置");
@@ -540,13 +544,14 @@ export function useCliManagerPageDataModel() {
     try {
       const updated = await codexConfigTomlSetMutation.mutateAsync({ toml });
       if (!updated) {
+        toast("保存 config.toml 失败：未返回更新后的配置");
         return false;
       }
       toast("已保存 config.toml");
       return true;
     } catch (err) {
-      const formatted = formatActionFailureToast("保存 config.toml", err);
-      logToConsole("error", "保存 Codex config.toml 失败", {
+      const formatted = formatActionFailureToast("保存 Codex TOML 配置", err);
+      logToConsole("error", "保存 Codex TOML 配置失败", {
         error: formatted.raw,
         error_code: formatted.error_code ?? undefined,
       });

@@ -53,7 +53,7 @@ function PageLoadingFallback() {
   );
 }
 
-function renderLazyPage(Page: ComponentType) {
+function LazyPage({ Page }: { Page: ComponentType }) {
   return (
     <Suspense fallback={<PageLoadingFallback />}>
       <Page />
@@ -66,24 +66,27 @@ export function AppRoutes() {
     <Routes>
       <Route element={<AppLayout />}>
         <Route index element={<HomePage />} />
-        <Route path="/providers" element={renderLazyPage(ProvidersPage)} />
-        <Route path="/sessions" element={renderLazyPage(SessionsPage)} />
-        <Route path="/sessions/:source/:projectId" element={renderLazyPage(SessionsProjectPage)} />
+        <Route path="/providers" element={<LazyPage Page={ProvidersPage} />} />
+        <Route path="/sessions" element={<LazyPage Page={SessionsPage} />} />
+        <Route
+          path="/sessions/:source/:projectId"
+          element={<LazyPage Page={SessionsProjectPage} />}
+        />
         <Route
           path="/sessions/:source/:projectId/session/*"
-          element={renderLazyPage(SessionsMessagesPage)}
+          element={<LazyPage Page={SessionsMessagesPage} />}
         />
-        <Route path="/workspaces" element={renderLazyPage(WorkspacesPage)} />
-        <Route path="/prompts" element={renderLazyPage(PromptsPage)} />
-        <Route path="/mcp" element={renderLazyPage(McpPage)} />
-        <Route path="/plugins" element={renderLazyPage(PluginsPage)} />
-        <Route path="/logs" element={renderLazyPage(LogsPage)} />
-        <Route path="/console" element={renderLazyPage(ConsolePage)} />
-        <Route path="/usage" element={renderLazyPage(UsagePage)} />
-        <Route path="/settings/*" element={renderLazyPage(SettingsPage)} />
-        <Route path="/cli-manager" element={renderLazyPage(CliManagerPage)} />
-        <Route path="/skills" element={renderLazyPage(SkillsPage)} />
-        <Route path="/skills/market" element={renderLazyPage(SkillsMarketPage)} />
+        <Route path="/workspaces" element={<LazyPage Page={WorkspacesPage} />} />
+        <Route path="/prompts" element={<LazyPage Page={PromptsPage} />} />
+        <Route path="/mcp" element={<LazyPage Page={McpPage} />} />
+        <Route path="/plugins" element={<LazyPage Page={PluginsPage} />} />
+        <Route path="/logs" element={<LazyPage Page={LogsPage} />} />
+        <Route path="/console" element={<LazyPage Page={ConsolePage} />} />
+        <Route path="/usage" element={<LazyPage Page={UsagePage} />} />
+        <Route path="/settings/*" element={<LazyPage Page={SettingsPage} />} />
+        <Route path="/cli-manager" element={<LazyPage Page={CliManagerPage} />} />
+        <Route path="/skills" element={<LazyPage Page={SkillsPage} />} />
+        <Route path="/skills/market" element={<LazyPage Page={SkillsMarketPage} />} />
         <Route path="*" element={<Navigate to="/" replace />} />
       </Route>
     </Routes>

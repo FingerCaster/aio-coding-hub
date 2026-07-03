@@ -19,32 +19,46 @@ import {
 import type {
   AppSettings,
   CodexHomeMode,
-  CodexReasoningGuardCompareMode,
   CodexReasoningGuardExhaustedAction,
-  CodexReasoningGuardModelRule,
   CodexReasoningGuardRetryPolicy,
+  CodexReasoningGuardTemplateFilter,
+  CodexReasoningGuardTemplateFilterField,
+  CodexReasoningGuardTemplateFilterOperator,
+  CodexReasoningGuardTemplateRule,
+  CodexReasoningGuardRuleTemplate,
+  CodexReasoningGuardRuleMode,
 } from "../../../services/settings/settings";
 import {
+  CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
+  CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX,
   DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+  DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
+  DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
+  DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION,
   DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
   DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS,
   DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY,
+  DEFAULT_CODEX_REASONING_GUARD_RULE_MODE,
+  MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES,
+  MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE,
+  MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS,
+  MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX,
   MAX_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS,
+  MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
+  MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_DELAYED_RETRY_MS,
   MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET,
   MAX_CODEX_REASONING_GUARD_MODEL_FALLBACKS_LEN,
   MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN,
-  MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN,
-  MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN,
-  MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE,
+  validateSettingsSetInput,
 } from "../../../services/settings/settingsValidation";
 import { normalizeCustomCodexHome, buildConfigTomlPath } from "../../../utils/codexPaths";
 import {
@@ -100,44 +114,155 @@ type CodexReasoningGuardStatsPreset =
   | "last30"
   | "thisMonth"
   | "lastMonth";
-type CodexReasoningGuardModelRuleDraft = {
-  requestedModel: string;
-  compareMode: CodexReasoningGuardCompareMode;
-  valuesText: string;
-};
 type CodexReasoningGuardStatsDateRange = {
   startDate: string;
   endDate: string;
 };
+type CodexReasoningGuardStatsRangePopoverScope =
+  | "overview"
+  | "details"
+  | "continuationOverview"
+  | "continuationDetails";
+type CodexReasoningGuardTemplateOption = CodexReasoningGuardRuleTemplate & {
+  source: "builtin" | "custom";
+  readOnly: boolean;
+};
+
+const CODEX_REASONING_GUARD_BUILTIN_TEMPLATES: CodexReasoningGuardTemplateOption[] = [
+  {
+    id: CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+    name: "Legacy reasoning tokens",
+    description: "拦截 reasoning_tokens 等于 516、1034、1552 的旧默认规则。",
+    source: "builtin",
+    readOnly: true,
+    rules: DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.map((value) => ({
+      id: `builtin-token-${value}`,
+      name: `reasoning_tokens == ${value}`,
+      reasoning_tokens: value,
+      action: "intercept",
+      logic: "and",
+      filters: [],
+    })),
+  },
+  {
+    id: CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID,
+    name: "Final answer only high/xhigh",
+    description:
+      "请求 reasoning effort 为 high/xhigh 且响应只有 final answer 时命中；仅 reasoning_tokens 为 0 的 context_compaction 豁免。",
+    source: "builtin",
+    readOnly: true,
+    rules: [
+      {
+        id: "builtin-reasoning-zero-allow",
+        name: "reasoning_tokens == 0 allow",
+        reasoning_tokens: 0,
+        action: "no_intercept",
+        logic: "and",
+        filters: [],
+      },
+      {
+        id: "builtin-final-answer-only-high-xhigh",
+        name: "final answer only high/xhigh",
+        reasoning_tokens: null,
+        action: "intercept",
+        logic: "and",
+        filters: [
+          {
+            id: "request-reasoning-effort-high-xhigh",
+            field: "request_reasoning_effort",
+            operator: "in",
+            number_value: null,
+            bool_value: null,
+            string_value: null,
+            string_values: ["high", "xhigh"],
+          },
+          {
+            id: "final-answer-only",
+            field: "final_answer_only",
+            operator: "equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+          {
+            id: "no-commentary",
+            field: "commentary_observed",
+            operator: "not_equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+          {
+            id: "no-tool-call",
+            field: "has_tool_call",
+            operator: "not_equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+          {
+            id: "no-reasoning-item",
+            field: "has_reasoning_item",
+            operator: "not_equals",
+            number_value: null,
+            bool_value: true,
+            string_value: null,
+            string_values: [],
+          },
+        ],
+      },
+    ],
+  },
+];
 
 const CODEX_REASONING_GUARD_PERCENT_FORMATTER = new Intl.NumberFormat("zh-CN", {
   style: "percent",
   minimumFractionDigits: 1,
   maximumFractionDigits: 1,
 });
-
-function formatCodexReasoningGuardValues(values: number[] | null | undefined) {
-  return (
-    values && values.length > 0 ? values : DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
-  ).join(", ");
-}
-
-function resolveCodexReasoningGuardCompareMode(
-  compareMode: CodexReasoningGuardCompareMode | null | undefined
-): CodexReasoningGuardCompareMode {
-  return compareMode ?? "equals";
-}
-
-function formatCodexReasoningGuardRuleLabel(
-  compareMode: CodexReasoningGuardCompareMode,
-  values: number[] | null | undefined
-) {
-  const symbol = compareMode === "less_than_or_equal" ? "<=" : "==";
-  return `${symbol} ${formatCodexReasoningGuardValues(values)}`;
-}
+const CODEX_REASONING_GUARD_DECIMAL_FORMATTER = new Intl.NumberFormat("zh-CN", {
+  minimumFractionDigits: 1,
+  maximumFractionDigits: 1,
+});
 
 function formatCodexReasoningGuardHitRate(value: number | null | undefined) {
   return CODEX_REASONING_GUARD_PERCENT_FORMATTER.format(value ?? 0);
+}
+
+function formatCodexReasoningGuardDecimal(value: number | null | undefined) {
+  return CODEX_REASONING_GUARD_DECIMAL_FORMATTER.format(value ?? 0);
+}
+
+function formatCodexReasoningContinuationStatusLabel(status: string | null | undefined) {
+  switch ((status ?? "").trim()) {
+    case "repaired":
+      return "已修复";
+    case "missing_encrypted":
+      return "缺少 encrypted";
+    case "capped_max_output_tokens":
+      return "达到 output 上限";
+    case "still_matched":
+      return "达到续写轮数";
+    case "failed":
+      return "补救失败";
+    case "unknown":
+      return "未知状态";
+    default:
+      return status ? status : "未知状态";
+  }
+}
+
+function formatCodexReasoningGuardRuleModeLabel(mode: CodexReasoningGuardRuleMode) {
+  switch (mode) {
+    case "final_answer_only_high_xhigh":
+      return "final answer only";
+    case "reasoning_tokens":
+    default:
+      return "reasoning tokens";
+  }
 }
 
 function formatCodexReasoningGuardExhaustedActionLabel(action: CodexReasoningGuardExhaustedAction) {
@@ -158,6 +283,173 @@ function formatCodexReasoningGuardRetryPolicyLabel(policy: CodexReasoningGuardRe
 
 function formatCodexReasoningGuardModelFallbacks(models: string[] | null | undefined) {
   return (models ?? []).join("\n");
+}
+
+const CODEX_REASONING_GUARD_FILTER_FIELD_OPTIONS: Array<{
+  value: CodexReasoningGuardTemplateFilterField;
+  label: string;
+  kind: "number" | "boolean" | "string";
+}> = [
+  { value: "duration_ms", label: "duration_ms", kind: "number" },
+  { value: "tps", label: "tps", kind: "number" },
+  { value: "output_tokens", label: "output_tokens", kind: "number" },
+  { value: "input_tokens", label: "input_tokens", kind: "number" },
+  { value: "total_tokens", label: "total_tokens", kind: "number" },
+  { value: "reasoning_tokens", label: "reasoning_tokens", kind: "number" },
+  { value: "final_answer_only", label: "final_answer_only", kind: "boolean" },
+  { value: "has_tool_call", label: "has_tool_call", kind: "boolean" },
+  { value: "has_reasoning_item", label: "has_reasoning_item", kind: "boolean" },
+  { value: "commentary_observed", label: "commentary_observed", kind: "boolean" },
+  { value: "request_reasoning_effort", label: "request_reasoning_effort", kind: "string" },
+  { value: "requested_model", label: "requested_model", kind: "string" },
+];
+
+const CODEX_REASONING_GUARD_NUMBER_OPERATORS: CodexReasoningGuardTemplateFilterOperator[] = [
+  "equals",
+  "not_equals",
+  "less_than",
+  "less_than_or_equal",
+  "greater_than",
+  "greater_than_or_equal",
+];
+const CODEX_REASONING_GUARD_BOOLEAN_OPERATORS: CodexReasoningGuardTemplateFilterOperator[] = [
+  "equals",
+  "not_equals",
+];
+const CODEX_REASONING_GUARD_STRING_OPERATORS: CodexReasoningGuardTemplateFilterOperator[] = [
+  "equals",
+  "not_equals",
+  "in",
+  "not_in",
+];
+
+function codexReasoningGuardFilterKind(field: CodexReasoningGuardTemplateFilterField) {
+  return (
+    CODEX_REASONING_GUARD_FILTER_FIELD_OPTIONS.find((option) => option.value === field)?.kind ??
+    "number"
+  );
+}
+
+function codexReasoningGuardFilterOperators(field: CodexReasoningGuardTemplateFilterField) {
+  switch (codexReasoningGuardFilterKind(field)) {
+    case "boolean":
+      return CODEX_REASONING_GUARD_BOOLEAN_OPERATORS;
+    case "string":
+      return CODEX_REASONING_GUARD_STRING_OPERATORS;
+    case "number":
+    default:
+      return CODEX_REASONING_GUARD_NUMBER_OPERATORS;
+  }
+}
+
+function normalizeCodexReasoningGuardFilterForField(
+  filter: CodexReasoningGuardTemplateFilter,
+  field: CodexReasoningGuardTemplateFilterField
+): CodexReasoningGuardTemplateFilter {
+  const kind = codexReasoningGuardFilterKind(field);
+  const operators = codexReasoningGuardFilterOperators(field);
+  const operator = operators.includes(filter.operator) ? filter.operator : operators[0];
+  return {
+    id: filter.id,
+    field,
+    operator,
+    number_value: kind === "number" ? (filter.number_value ?? 0) : null,
+    bool_value: kind === "boolean" ? (filter.bool_value ?? true) : null,
+    string_value:
+      kind === "string" && (operator === "equals" || operator === "not_equals")
+        ? (filter.string_value ?? "")
+        : null,
+    string_values:
+      kind === "string" && (operator === "in" || operator === "not_in") ? filter.string_values : [],
+  };
+}
+
+function buildCodexReasoningGuardFilter(id: string): CodexReasoningGuardTemplateFilter {
+  return {
+    id,
+    field: "reasoning_tokens",
+    operator: "less_than_or_equal",
+    number_value: 516,
+    bool_value: null,
+    string_value: null,
+    string_values: [],
+  };
+}
+
+function buildCodexReasoningGuardRule(id: string): CodexReasoningGuardTemplateRule {
+  return {
+    id,
+    name: "New rule",
+    reasoning_tokens: null,
+    action: "intercept",
+    logic: "and",
+    filters: [buildCodexReasoningGuardFilter(`${id}-filter-1`)],
+  };
+}
+
+function resolveCodexReasoningGuardTemplateOption(
+  id: string,
+  customTemplates: CodexReasoningGuardRuleTemplate[]
+): CodexReasoningGuardTemplateOption | null {
+  const builtin = CODEX_REASONING_GUARD_BUILTIN_TEMPLATES.find((template) => template.id === id);
+  if (builtin) return builtin;
+  const custom = customTemplates.find((template) => template.id === id);
+  return custom ? { ...custom, source: "custom", readOnly: false } : null;
+}
+
+function uniqueCodexReasoningGuardTemplateId(
+  templates: CodexReasoningGuardRuleTemplate[],
+  preferredId: string
+) {
+  const builtinIds = new Set(
+    CODEX_REASONING_GUARD_BUILTIN_TEMPLATES.map((template) => template.id)
+  );
+  const existingIds = new Set([...builtinIds, ...templates.map((template) => template.id.trim())]);
+  const base =
+    preferredId
+      .trim()
+      .toLowerCase()
+      .replace(/[^a-z0-9_-]+/gu, "-")
+      .replace(/^-+|-+$/gu, "")
+      .slice(0, 72) || "custom-template";
+  if (!existingIds.has(base)) return base;
+  for (let index = 2; index < 100; index += 1) {
+    const candidate = `${base}-${index}`;
+    if (!existingIds.has(candidate)) return candidate;
+  }
+  return `${base}-${templates.length + 1}`;
+}
+
+function buildNewCodexReasoningGuardTemplate(
+  customTemplates: CodexReasoningGuardRuleTemplate[]
+): CodexReasoningGuardRuleTemplate {
+  return {
+    id: uniqueCodexReasoningGuardTemplateId(customTemplates, "custom-reasoning-guard"),
+    name: "Custom reasoning guard",
+    description: "自定义 Codex 降智拦截规则模板。",
+    rules: [
+      {
+        id: "token-516",
+        name: "reasoning_tokens == 516",
+        reasoning_tokens: 516,
+        action: "intercept",
+        logic: "and",
+        filters: [],
+      },
+    ],
+  };
+}
+
+function copyCodexReasoningGuardTemplateAsCustom(
+  template: CodexReasoningGuardRuleTemplate,
+  customTemplates: CodexReasoningGuardRuleTemplate[]
+): CodexReasoningGuardRuleTemplate {
+  return {
+    rules: structuredClone(template.rules),
+    id: uniqueCodexReasoningGuardTemplateId(customTemplates, `custom-${template.id}`),
+    name: `${template.name} copy`,
+    description: template.description || "Copied from an existing Codex reasoning guard template.",
+  };
 }
 
 function formatLocalDateInputValue(date: Date) {
@@ -252,50 +544,6 @@ function buildCodexReasoningGuardStatsPresetRange(
       return { startDate: today, endDate: today };
     }
   }
-}
-
-function codexReasoningGuardCompareModeHelperText(compareMode: CodexReasoningGuardCompareMode) {
-  return compareMode === "less_than_or_equal"
-    ? "多个值请用英文逗号分隔。命中条件为 reasoning_tokens 小于等于任一规则值；若有多个阈值，会优先匹配更贴近的较小阈值。"
-    : `多个值请用英文逗号分隔。默认规则是 ${DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.join(", ")}。命中后会在同一 provider 上继续重试。`;
-}
-
-function buildCodexReasoningGuardModelRuleDrafts(
-  rules: CodexReasoningGuardModelRule[] | null | undefined
-): CodexReasoningGuardModelRuleDraft[] {
-  return (rules ?? []).map((rule) => ({
-    requestedModel: rule.requested_model,
-    compareMode: resolveCodexReasoningGuardCompareMode(rule.compare_mode),
-    valuesText: formatCodexReasoningGuardValues(rule.reasoning_equals),
-  }));
-}
-
-function resolveCodexReasoningGuardRuleForModel(
-  settings: AppSettings | null | undefined,
-  requestedModel: string
-) {
-  if (!settings) {
-    return { label: "—", sourceLabel: "—" };
-  }
-  const modelRule = settings.codex_reasoning_guard_model_rules.find(
-    (rule) => rule.requested_model === requestedModel
-  );
-  if (modelRule) {
-    return {
-      label: formatCodexReasoningGuardRuleLabel(
-        resolveCodexReasoningGuardCompareMode(modelRule.compare_mode),
-        modelRule.reasoning_equals
-      ),
-      sourceLabel: "模型规则",
-    };
-  }
-  return {
-    label: formatCodexReasoningGuardRuleLabel(
-      settings.codex_reasoning_guard_compare_mode,
-      settings.codex_reasoning_guard_reasoning_equals
-    ),
-    sourceLabel: "全局默认",
-  };
 }
 
 function buildModelPatch(
@@ -395,9 +643,12 @@ export type CliManagerCodexTabProps = {
         AppSettings,
         | "codex_reasoning_guard_enabled"
         | "codex_reasoning_guard_hit_label"
+        | "codex_reasoning_guard_rule_mode"
         | "codex_reasoning_guard_compare_mode"
         | "codex_reasoning_guard_reasoning_equals"
         | "codex_reasoning_guard_model_rules"
+        | "codex_reasoning_guard_active_template_id"
+        | "codex_reasoning_guard_custom_templates"
         | "codex_reasoning_guard_immediate_retry_budget"
         | "codex_reasoning_guard_delayed_retry_budget"
         | "codex_reasoning_guard_delayed_retry_ms"
@@ -407,6 +658,9 @@ export type CliManagerCodexTabProps = {
         | "codex_reasoning_guard_concurrent_interval_ms"
         | "codex_reasoning_guard_concurrent_max_attempts"
         | "codex_reasoning_guard_model_fallbacks"
+        | "codex_reasoning_guard_continuation_repair_enabled"
+        | "codex_reasoning_guard_continuation_max_rounds"
+        | "codex_reasoning_guard_continuation_max_output_tokens"
       >
     >
   ) => Promise<boolean> | boolean;
@@ -446,6 +700,8 @@ function SettingItem({
 }
 
 function CodexReasoningGuardStatsRangeControls({
+  ariaLabel = "降智拦截统计时间范围",
+  dateInputLabelPrefix = "降智拦截统计",
   label,
   startDate,
   endDate,
@@ -459,7 +715,10 @@ function CodexReasoningGuardStatsRangeControls({
   onPreset,
   onApply,
   onRefresh,
+  popoverPortalled = true,
 }: {
+  ariaLabel?: string;
+  dateInputLabelPrefix?: string;
   label?: string;
   startDate: string;
   endDate: string;
@@ -473,6 +732,7 @@ function CodexReasoningGuardStatsRangeControls({
   onPreset: (preset: CodexReasoningGuardStatsPreset) => void;
   onApply: () => void;
   onRefresh: () => void;
+  popoverPortalled?: boolean;
 }) {
   const presets: Array<[CodexReasoningGuardStatsPreset, string]> = [
     ["today", "今天"],
@@ -486,7 +746,7 @@ function CodexReasoningGuardStatsRangeControls({
   ];
 
   return (
-    <div className="flex flex-wrap items-center gap-2" aria-label="降智拦截统计时间范围">
+    <div className="flex flex-wrap items-center gap-2" aria-label={ariaLabel}>
       {label ? (
         <span className="text-sm font-medium text-secondary-foreground">{label}</span>
       ) : null}
@@ -497,6 +757,7 @@ function CodexReasoningGuardStatsRangeControls({
         placement="bottom"
         className="rounded-lg"
         contentClassName="w-[min(30rem,calc(100vw-2rem))] border-border bg-card p-0"
+        portalled={popoverPortalled}
         trigger={
           <span className="inline-flex h-10 items-center gap-2 rounded-lg border border-border bg-background px-3 text-sm font-medium text-foreground shadow-sm transition-colors hover:bg-muted data-[state=open]:border-accent">
             <Calendar className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
@@ -523,7 +784,7 @@ function CodexReasoningGuardStatsRangeControls({
               <label className="text-xs font-medium text-muted-foreground">
                 <span className="mb-1 block">开始日期</span>
                 <Input
-                  aria-label="降智拦截统计开始日期"
+                  aria-label={`${dateInputLabelPrefix}开始日期`}
                   type="date"
                   value={startDate}
                   onChange={(e) => onStartDateChange(e.currentTarget.value)}
@@ -534,7 +795,7 @@ function CodexReasoningGuardStatsRangeControls({
               <label className="text-xs font-medium text-muted-foreground">
                 <span className="mb-1 block">结束日期</span>
                 <Input
-                  aria-label="降智拦截统计结束日期"
+                  aria-label={`${dateInputLabelPrefix}结束日期`}
                   type="date"
                   value={endDate}
                   onChange={(e) => onEndDateChange(e.currentTarget.value)}
@@ -613,12 +874,8 @@ export function CliManagerCodexTab({
   const [selectingCodexHomeDir, setSelectingCodexHomeDir] = useState(false);
   const [codexReasoningGuardHitLabelText, setCodexReasoningGuardHitLabelText] =
     useState("降智命中");
-  const [codexReasoningGuardValuesText, setCodexReasoningGuardValuesText] = useState("");
-  const [codexReasoningGuardCompareMode, setCodexReasoningGuardCompareMode] =
-    useState<CodexReasoningGuardCompareMode>("equals");
-  const [codexReasoningGuardValuesError, setCodexReasoningGuardValuesError] = useState<
-    string | null
-  >(null);
+  const [codexReasoningGuardRuleMode, setCodexReasoningGuardRuleMode] =
+    useState<CodexReasoningGuardRuleMode>(DEFAULT_CODEX_REASONING_GUARD_RULE_MODE);
   const [codexReasoningGuardImmediateBudgetText, setCodexReasoningGuardImmediateBudgetText] =
     useState(String(DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET));
   const [codexReasoningGuardDelayedBudgetText, setCodexReasoningGuardDelayedBudgetText] = useState(
@@ -644,12 +901,29 @@ export function CliManagerCodexTab({
   ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS));
   const [codexReasoningGuardModelFallbacksText, setCodexReasoningGuardModelFallbacksText] =
     useState("");
+  const [
+    codexReasoningGuardContinuationRepairEnabled,
+    setCodexReasoningGuardContinuationRepairEnabled,
+  ] = useState(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED);
+  const [
+    codexReasoningGuardContinuationMaxRoundsText,
+    setCodexReasoningGuardContinuationMaxRoundsText,
+  ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS));
+  const [
+    codexReasoningGuardContinuationMaxOutputTokensText,
+    setCodexReasoningGuardContinuationMaxOutputTokensText,
+  ] = useState(String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS));
   const [codexReasoningGuardBudgetError, setCodexReasoningGuardBudgetError] = useState<
+    string | null
+  >(null);
+  const [codexReasoningGuardContinuationError, setCodexReasoningGuardContinuationError] = useState<
     string | null
   >(null);
   const [codexReasoningGuardModelFallbacksError, setCodexReasoningGuardModelFallbacksError] =
     useState<string | null>(null);
   const [codexReasoningGuardDetailsOpen, setCodexReasoningGuardDetailsOpen] = useState(false);
+  const [codexReasoningContinuationDetailsOpen, setCodexReasoningContinuationDetailsOpen] =
+    useState(false);
   const [codexReasoningGuardDetailsTab, setCodexReasoningGuardDetailsTab] =
     useState<CodexReasoningGuardDetailsTab>("rules");
   const [codexReasoningGuardStartDate, setCodexReasoningGuardStartDate] = useState(todayDate);
@@ -659,17 +933,33 @@ export function CliManagerCodexTab({
       startDate: todayDate,
       endDate: todayDate,
     });
+  const [codexReasoningContinuationStartDate, setCodexReasoningContinuationStartDate] =
+    useState(todayDate);
+  const [codexReasoningContinuationEndDate, setCodexReasoningContinuationEndDate] =
+    useState(todayDate);
+  const [
+    codexReasoningContinuationAppliedDateRange,
+    setCodexReasoningContinuationAppliedDateRange,
+  ] = useState<CodexReasoningGuardStatsDateRange>({
+    startDate: todayDate,
+    endDate: todayDate,
+  });
   const [codexReasoningGuardStatsRangeError, setCodexReasoningGuardStatsRangeError] = useState<
     string | null
   >(null);
-  const [codexReasoningGuardStatsRangePopoverOpen, setCodexReasoningGuardStatsRangePopoverOpen] =
-    useState(false);
-  const [codexReasoningGuardModelRuleDrafts, setCodexReasoningGuardModelRuleDrafts] = useState<
-    CodexReasoningGuardModelRuleDraft[]
+  const [codexReasoningContinuationStatsRangeError, setCodexReasoningContinuationStatsRangeError] =
+    useState<string | null>(null);
+  const [codexReasoningGuardStatsRangePopoverScope, setCodexReasoningGuardStatsRangePopoverScope] =
+    useState<CodexReasoningGuardStatsRangePopoverScope | null>(null);
+  const [codexReasoningGuardActiveTemplateId, setCodexReasoningGuardActiveTemplateId] = useState(
+    CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+  );
+  const [codexReasoningGuardCustomTemplates, setCodexReasoningGuardCustomTemplates] = useState<
+    CodexReasoningGuardRuleTemplate[]
   >([]);
-  const [codexReasoningGuardModelRuleErrors, setCodexReasoningGuardModelRuleErrors] = useState<
-    Record<number, string>
-  >({});
+  const [codexReasoningGuardTemplateError, setCodexReasoningGuardTemplateError] = useState<
+    string | null
+  >(null);
 
   const [tomlAdvancedOpen, setTomlAdvancedOpen] = useState(false);
   const [tomlEditEnabled, setTomlEditEnabled] = useState(false);
@@ -738,76 +1028,112 @@ export function CliManagerCodexTab({
   }, [appSettings?.codex_home_mode, appSettings?.codex_home_override]);
 
   const syncCodexReasoningGuardDrafts = useCallback(
-    (source: AppSettings | null | undefined = appSettings) => {
-      setCodexReasoningGuardHitLabelText(
-        source?.codex_reasoning_guard_hit_label?.trim() || "降智命中"
-      );
-      const values =
-        source?.codex_reasoning_guard_reasoning_equals ??
-        DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS;
-      setCodexReasoningGuardValuesText(values.join(", "));
-      setCodexReasoningGuardCompareMode(source?.codex_reasoning_guard_compare_mode ?? "equals");
-      setCodexReasoningGuardImmediateBudgetText(
-        String(
-          source?.codex_reasoning_guard_immediate_retry_budget ??
-            DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
-        )
-      );
-      setCodexReasoningGuardDelayedBudgetText(
-        String(
-          source?.codex_reasoning_guard_delayed_retry_budget ??
-            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
-        )
-      );
-      setCodexReasoningGuardDelayedMsText(
-        String(
-          source?.codex_reasoning_guard_delayed_retry_ms ??
-            DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
-        )
-      );
-      setCodexReasoningGuardExhaustedAction(
-        source?.codex_reasoning_guard_exhausted_action ??
-          DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
-      );
-      setCodexReasoningGuardRetryPolicy(
-        source?.codex_reasoning_guard_retry_policy ?? DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY
-      );
-      setCodexReasoningGuardConcurrentMaxText(
-        String(
-          source?.codex_reasoning_guard_concurrent_max ??
-            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX
-        )
-      );
-      setCodexReasoningGuardConcurrentIntervalMsText(
-        String(
-          source?.codex_reasoning_guard_concurrent_interval_ms ??
-            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
-        )
-      );
-      setCodexReasoningGuardConcurrentMaxAttemptsText(
-        String(
-          source?.codex_reasoning_guard_concurrent_max_attempts ??
-            DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
-        )
-      );
-      setCodexReasoningGuardModelFallbacksText(
-        formatCodexReasoningGuardModelFallbacks(source?.codex_reasoning_guard_model_fallbacks)
-      );
-      setCodexReasoningGuardValuesError(null);
-      setCodexReasoningGuardBudgetError(null);
-      setCodexReasoningGuardModelFallbacksError(null);
-      setCodexReasoningGuardModelRuleDrafts(
-        buildCodexReasoningGuardModelRuleDrafts(source?.codex_reasoning_guard_model_rules)
-      );
-      setCodexReasoningGuardModelRuleErrors({});
+    (
+      source: AppSettings | null | undefined = appSettings,
+      options: { includeGuard?: boolean; includeContinuation?: boolean } = {}
+    ) => {
+      const includeGuard = options.includeGuard ?? true;
+      const includeContinuation = options.includeContinuation ?? true;
+
+      if (includeGuard) {
+        setCodexReasoningGuardHitLabelText(
+          source?.codex_reasoning_guard_hit_label?.trim() || "降智命中"
+        );
+        setCodexReasoningGuardRuleMode(
+          source?.codex_reasoning_guard_rule_mode ?? DEFAULT_CODEX_REASONING_GUARD_RULE_MODE
+        );
+        setCodexReasoningGuardImmediateBudgetText(
+          String(
+            source?.codex_reasoning_guard_immediate_retry_budget ??
+              DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
+          )
+        );
+        setCodexReasoningGuardDelayedBudgetText(
+          String(
+            source?.codex_reasoning_guard_delayed_retry_budget ??
+              DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET
+          )
+        );
+        setCodexReasoningGuardDelayedMsText(
+          String(
+            source?.codex_reasoning_guard_delayed_retry_ms ??
+              DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS
+          )
+        );
+        setCodexReasoningGuardExhaustedAction(
+          source?.codex_reasoning_guard_exhausted_action ??
+            DEFAULT_CODEX_REASONING_GUARD_EXHAUSTED_ACTION
+        );
+        setCodexReasoningGuardRetryPolicy(
+          source?.codex_reasoning_guard_retry_policy ?? DEFAULT_CODEX_REASONING_GUARD_RETRY_POLICY
+        );
+        setCodexReasoningGuardConcurrentMaxText(
+          String(
+            source?.codex_reasoning_guard_concurrent_max ??
+              DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX
+          )
+        );
+        setCodexReasoningGuardConcurrentIntervalMsText(
+          String(
+            source?.codex_reasoning_guard_concurrent_interval_ms ??
+              DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_INTERVAL_MS
+          )
+        );
+        setCodexReasoningGuardConcurrentMaxAttemptsText(
+          String(
+            source?.codex_reasoning_guard_concurrent_max_attempts ??
+              DEFAULT_CODEX_REASONING_GUARD_CONCURRENT_MAX_ATTEMPTS
+          )
+        );
+        setCodexReasoningGuardModelFallbacksText(
+          formatCodexReasoningGuardModelFallbacks(source?.codex_reasoning_guard_model_fallbacks)
+        );
+        setCodexReasoningGuardBudgetError(null);
+        setCodexReasoningGuardModelFallbacksError(null);
+        const customTemplates = source?.codex_reasoning_guard_custom_templates ?? [];
+        const savedTemplateId =
+          source?.codex_reasoning_guard_active_template_id?.trim() ||
+          CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID;
+        const activeTemplateId =
+          resolveCodexReasoningGuardTemplateOption(savedTemplateId, customTemplates)?.id ??
+          CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID;
+        setCodexReasoningGuardCustomTemplates(customTemplates);
+        setCodexReasoningGuardActiveTemplateId(activeTemplateId);
+        setCodexReasoningGuardTemplateError(null);
+      }
+
+      if (includeContinuation) {
+        setCodexReasoningGuardContinuationRepairEnabled(
+          source?.codex_reasoning_guard_continuation_repair_enabled ??
+            DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED
+        );
+        setCodexReasoningGuardContinuationMaxRoundsText(
+          String(
+            source?.codex_reasoning_guard_continuation_max_rounds ??
+              DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
+          )
+        );
+        setCodexReasoningGuardContinuationMaxOutputTokensText(
+          String(
+            source?.codex_reasoning_guard_continuation_max_output_tokens ??
+              DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+          )
+        );
+        setCodexReasoningGuardContinuationError(null);
+      }
     },
     [appSettings]
   );
 
   useEffect(() => {
     if (codexReasoningGuardDetailsOpen) return;
-    syncCodexReasoningGuardDrafts(appSettings);
+    syncCodexReasoningGuardDrafts(appSettings, { includeContinuation: false });
   }, [codexReasoningGuardDetailsOpen, appSettings, syncCodexReasoningGuardDrafts]);
+
+  useEffect(() => {
+    if (codexReasoningContinuationDetailsOpen) return;
+    syncCodexReasoningGuardDrafts(appSettings, { includeGuard: false });
+  }, [codexReasoningContinuationDetailsOpen, appSettings, syncCodexReasoningGuardDrafts]);
 
   function readSavedConfigLocationState() {
     const savedOverride = appSettings?.codex_home_override?.trim() ?? "";
@@ -837,6 +1163,25 @@ export function CliManagerCodexTab({
     commonSettingsControlsDisabled || !persistCodexOauthCompatibleProxyMode;
   const reasoningGuardControlsDisabled =
     commonSettingsControlsDisabled || !persistCodexReasoningGuardSettings;
+  const codexReasoningGuardTemplateOptions = useMemo<CodexReasoningGuardTemplateOption[]>(
+    () => [
+      ...CODEX_REASONING_GUARD_BUILTIN_TEMPLATES,
+      ...codexReasoningGuardCustomTemplates.map((template) => ({
+        ...template,
+        source: "custom" as const,
+        readOnly: false,
+      })),
+    ],
+    [codexReasoningGuardCustomTemplates]
+  );
+  const codexReasoningGuardSelectedTemplate = useMemo(
+    () =>
+      resolveCodexReasoningGuardTemplateOption(
+        codexReasoningGuardActiveTemplateId,
+        codexReasoningGuardCustomTemplates
+      ) ?? CODEX_REASONING_GUARD_BUILTIN_TEMPLATES[0],
+    [codexReasoningGuardActiveTemplateId, codexReasoningGuardCustomTemplates]
+  );
   const codexReasoningGuardStatsRange = useMemo(
     () =>
       buildCodexReasoningGuardStatsRange(
@@ -845,21 +1190,45 @@ export function CliManagerCodexTab({
       ),
     [codexReasoningGuardAppliedDateRange]
   );
+  const codexReasoningContinuationStatsRange = useMemo(
+    () =>
+      buildCodexReasoningGuardStatsRange(
+        codexReasoningContinuationAppliedDateRange.startDate,
+        codexReasoningContinuationAppliedDateRange.endDate
+      ),
+    [codexReasoningContinuationAppliedDateRange]
+  );
   const codexReasoningGuardStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(
     codexReasoningGuardStatsRange,
     {
       enabled: codexReasoningGuardStatsRange != null,
     }
   );
+  const codexReasoningContinuationStatsQuery = useCliManagerCodexReasoningGuardStatsQuery(
+    codexReasoningContinuationStatsRange,
+    {
+      enabled: codexReasoningContinuationStatsRange != null,
+    }
+  );
   const codexReasoningGuardStatsRangeLabel = formatCodexReasoningGuardStatsDateRangeLabel(
     codexReasoningGuardAppliedDateRange
+  );
+  const codexReasoningContinuationStatsRangeLabel = formatCodexReasoningGuardStatsDateRangeLabel(
+    codexReasoningContinuationAppliedDateRange
   );
   const codexReasoningGuardStatsRangeDescription =
     codexReasoningGuardAppliedDateRange.startDate === codexReasoningGuardAppliedDateRange.endDate
       ? "只统计当天产生的 Codex 请求，方便快速判断今日的降智拦截情况。"
       : "按自然日统计所选日期范围内的 Codex 请求，包含结束日期当天。";
+  const codexReasoningContinuationStatsRangeDescription =
+    codexReasoningContinuationAppliedDateRange.startDate ===
+    codexReasoningContinuationAppliedDateRange.endDate
+      ? "只统计当天产生的 Codex 请求，方便快速判断今日的继续思考补救情况。"
+      : "按自然日统计所选日期范围内的 Codex 请求，包含结束日期当天。";
   const codexReasoningGuardStats = codexReasoningGuardStatsQuery.data ?? null;
   const codexReasoningGuardStatsLoading = codexReasoningGuardStatsQuery.isFetching;
+  const codexReasoningContinuationStats = codexReasoningContinuationStatsQuery.data ?? null;
+  const codexReasoningContinuationStatsLoading = codexReasoningContinuationStatsQuery.isFetching;
 
   async function refreshCodexStatus() {
     try {
@@ -1177,48 +1546,6 @@ export function CliManagerCodexTab({
     }
   }
 
-  function parseCodexReasoningGuardValues(raw: string):
-    | { ok: true; values: number[] }
-    | {
-        ok: false;
-        message: string;
-      } {
-    const parts = raw
-      .split(",")
-      .map((item) => item.trim())
-      .filter(Boolean);
-    if (parts.length === 0) {
-      return { ok: false, message: "至少填写一个 reasoning_tokens 值。" };
-    }
-    if (parts.length > MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN) {
-      return {
-        ok: false,
-        message: `最多支持 ${MAX_CODEX_REASONING_GUARD_REASONING_EQUALS_LEN} 个值。`,
-      };
-    }
-
-    const values: number[] = [];
-    for (const part of parts) {
-      if (!/^\d+$/u.test(part)) {
-        return { ok: false, message: "只支持非负整数，多个值请用逗号分隔。" };
-      }
-      const next = Number(part);
-      if (
-        !Number.isSafeInteger(next) ||
-        next < 0 ||
-        next > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE
-      ) {
-        return {
-          ok: false,
-          message: `取值范围必须在 0 到 ${MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE} 之间。`,
-        };
-      }
-      values.push(next);
-    }
-
-    return { ok: true, values };
-  }
-
   function parseCodexReasoningGuardInteger(
     raw: string,
     label: string,
@@ -1278,49 +1605,188 @@ export function CliManagerCodexTab({
     return { ok: true, models };
   }
 
-  function updateCodexReasoningGuardModelRuleDraft(
-    index: number,
-    patch: Partial<CodexReasoningGuardModelRuleDraft>
+  function selectCodexReasoningGuardTemplate(
+    templateId: string,
+    customTemplates = codexReasoningGuardCustomTemplates
   ) {
-    setCodexReasoningGuardModelRuleDrafts((prev) =>
-      prev.map((item, itemIndex) => (itemIndex === index ? { ...item, ...patch } : item))
+    const nextTemplate =
+      resolveCodexReasoningGuardTemplateOption(templateId, customTemplates) ??
+      CODEX_REASONING_GUARD_BUILTIN_TEMPLATES[0];
+    setCodexReasoningGuardActiveTemplateId(nextTemplate.id);
+    setCodexReasoningGuardTemplateError(null);
+    setCodexReasoningGuardRuleMode(
+      nextTemplate.id === CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID
+        ? "final_answer_only_high_xhigh"
+        : "reasoning_tokens"
     );
-    setCodexReasoningGuardModelRuleErrors((prev) => {
-      if (!(index in prev)) return prev;
-      const next = { ...prev };
-      delete next[index];
-      return next;
+  }
+
+  function addCodexReasoningGuardCustomTemplate() {
+    if (codexReasoningGuardCustomTemplates.length >= MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES) {
+      setCodexReasoningGuardTemplateError(
+        `最多支持 ${MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES} 个自定义模板。`
+      );
+      return;
+    }
+    const nextTemplate = buildNewCodexReasoningGuardTemplate(codexReasoningGuardCustomTemplates);
+    const nextTemplates = [...codexReasoningGuardCustomTemplates, nextTemplate];
+    setCodexReasoningGuardCustomTemplates(nextTemplates);
+    selectCodexReasoningGuardTemplate(nextTemplate.id, nextTemplates);
+  }
+
+  function copySelectedCodexReasoningGuardTemplate() {
+    if (codexReasoningGuardCustomTemplates.length >= MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES) {
+      setCodexReasoningGuardTemplateError(
+        `最多支持 ${MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES} 个自定义模板。`
+      );
+      return;
+    }
+    const nextTemplate = copyCodexReasoningGuardTemplateAsCustom(
+      codexReasoningGuardSelectedTemplate,
+      codexReasoningGuardCustomTemplates
+    );
+    const nextTemplates = [...codexReasoningGuardCustomTemplates, nextTemplate];
+    setCodexReasoningGuardCustomTemplates(nextTemplates);
+    selectCodexReasoningGuardTemplate(nextTemplate.id, nextTemplates);
+  }
+
+  function deleteSelectedCodexReasoningGuardTemplate() {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    const nextTemplates = codexReasoningGuardCustomTemplates.filter(
+      (template) => template.id !== codexReasoningGuardSelectedTemplate.id
+    );
+    setCodexReasoningGuardCustomTemplates(nextTemplates);
+    selectCodexReasoningGuardTemplate(
+      CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
+      nextTemplates
+    );
+  }
+
+  function updateSelectedCodexReasoningGuardTemplate(
+    patch: Partial<CodexReasoningGuardRuleTemplate>
+  ) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    setCodexReasoningGuardCustomTemplates((prev) =>
+      prev.map((template) =>
+        template.id === codexReasoningGuardSelectedTemplate.id
+          ? { ...template, ...patch }
+          : template
+      )
+    );
+    if (patch.id != null) {
+      setCodexReasoningGuardActiveTemplateId(patch.id);
+    }
+    setCodexReasoningGuardTemplateError(null);
+  }
+
+  function updateSelectedCodexReasoningGuardTemplateRule(
+    ruleIndex: number,
+    patch: Partial<CodexReasoningGuardTemplateRule>
+  ) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplate({
+      rules: codexReasoningGuardSelectedTemplate.rules.map((rule, index) =>
+        index === ruleIndex ? { ...rule, ...patch } : rule
+      ),
     });
   }
 
-  function addCodexReasoningGuardModelRuleDraft() {
-    setCodexReasoningGuardModelRuleDrafts((prev) => {
-      if (prev.length >= MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN) {
-        return prev;
-      }
-      return [
-        ...prev,
-        {
-          requestedModel: "",
-          compareMode: "equals",
-          valuesText: "516",
-        },
-      ];
+  function updateSelectedCodexReasoningGuardTemplateRuleToken(ruleIndex: number, value: string) {
+    const raw = value.trim();
+    if (raw === "") {
+      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, { reasoning_tokens: null });
+      return;
+    }
+    const parsed = Number(raw);
+    if (
+      !Number.isInteger(parsed) ||
+      parsed < 0 ||
+      parsed > MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE
+    ) {
+      setCodexReasoningGuardTemplateError(
+        `token 匹配必须是 0 到 ${MAX_CODEX_REASONING_GUARD_REASONING_TOKEN_VALUE} 之间的整数；留空才表示 wildcard。`
+      );
+      return;
+    }
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, { reasoning_tokens: parsed });
+  }
+
+  function addCodexReasoningGuardTemplateRule() {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    if (
+      codexReasoningGuardSelectedTemplate.rules.length >= MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES
+    ) {
+      setCodexReasoningGuardTemplateError(
+        `最多支持 ${MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES} 条规则。`
+      );
+      return;
+    }
+    const nextIndex = codexReasoningGuardSelectedTemplate.rules.length + 1;
+    updateSelectedCodexReasoningGuardTemplate({
+      rules: [
+        ...codexReasoningGuardSelectedTemplate.rules,
+        buildCodexReasoningGuardRule(`rule-${nextIndex}`),
+      ],
     });
   }
 
-  function removeCodexReasoningGuardModelRuleDraft(index: number) {
-    setCodexReasoningGuardModelRuleDrafts((prev) =>
-      prev.filter((_, itemIndex) => itemIndex !== index)
-    );
-    setCodexReasoningGuardModelRuleErrors((prev) => {
-      const next: Record<number, string> = {};
-      for (const [key, value] of Object.entries(prev)) {
-        const numericKey = Number(key);
-        if (numericKey === index) continue;
-        next[numericKey > index ? numericKey - 1 : numericKey] = value;
-      }
-      return next;
+  function removeCodexReasoningGuardTemplateRule(ruleIndex: number) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplate({
+      rules: codexReasoningGuardSelectedTemplate.rules.filter((_, index) => index !== ruleIndex),
+    });
+  }
+
+  function moveCodexReasoningGuardTemplateRule(ruleIndex: number, direction: -1 | 1) {
+    if (codexReasoningGuardSelectedTemplate.readOnly) return;
+    const targetIndex = ruleIndex + direction;
+    if (targetIndex < 0 || targetIndex >= codexReasoningGuardSelectedTemplate.rules.length) return;
+    const nextRules = [...codexReasoningGuardSelectedTemplate.rules];
+    const [rule] = nextRules.splice(ruleIndex, 1);
+    nextRules.splice(targetIndex, 0, rule);
+    updateSelectedCodexReasoningGuardTemplate({ rules: nextRules });
+  }
+
+  function updateCodexReasoningGuardTemplateFilter(
+    ruleIndex: number,
+    filterIndex: number,
+    patch: Partial<CodexReasoningGuardTemplateFilter>
+  ) {
+    const rule = codexReasoningGuardSelectedTemplate.rules[ruleIndex];
+    if (!rule || codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      filters: rule.filters.map((filter, index) => {
+        if (index !== filterIndex) return filter;
+        const nextFilter = { ...filter, ...patch };
+        return normalizeCodexReasoningGuardFilterForField(nextFilter, nextFilter.field);
+      }),
+    });
+  }
+
+  function addCodexReasoningGuardTemplateFilter(ruleIndex: number) {
+    const rule = codexReasoningGuardSelectedTemplate.rules[ruleIndex];
+    if (!rule || codexReasoningGuardSelectedTemplate.readOnly) return;
+    if (rule.filters.length >= MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS) {
+      setCodexReasoningGuardTemplateError(
+        `每条规则最多支持 ${MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS} 个过滤器。`
+      );
+      return;
+    }
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      filters: [
+        ...rule.filters,
+        buildCodexReasoningGuardFilter(
+          `${rule.id || `rule-${ruleIndex + 1}`}-filter-${rule.filters.length + 1}`
+        ),
+      ],
+    });
+  }
+
+  function removeCodexReasoningGuardTemplateFilter(ruleIndex: number, filterIndex: number) {
+    const rule = codexReasoningGuardSelectedTemplate.rules[ruleIndex];
+    if (!rule || codexReasoningGuardSelectedTemplate.readOnly) return;
+    updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+      filters: rule.filters.filter((_, index) => index !== filterIndex),
     });
   }
 
@@ -1338,7 +1804,7 @@ export function CliManagerCodexTab({
       startDate: codexReasoningGuardStartDate,
       endDate: codexReasoningGuardEndDate,
     });
-    setCodexReasoningGuardStatsRangePopoverOpen(false);
+    setCodexReasoningGuardStatsRangePopoverScope(null);
   }
 
   function applyCodexReasoningGuardStatsPreset(preset: CodexReasoningGuardStatsPreset) {
@@ -1347,7 +1813,7 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardEndDate(nextRange.endDate);
     setCodexReasoningGuardAppliedDateRange(nextRange);
     setCodexReasoningGuardStatsRangeError(null);
-    setCodexReasoningGuardStatsRangePopoverOpen(false);
+    setCodexReasoningGuardStatsRangePopoverScope(null);
   }
 
   function updateCodexReasoningGuardStatsStartDate(value: string) {
@@ -1364,35 +1830,122 @@ export function CliManagerCodexTab({
     }
   }
 
-  function renderCodexReasoningGuardStatsRangeControls(label = "时间范围:") {
+  function applyCodexReasoningContinuationStatsDateRange() {
+    const nextRange = buildCodexReasoningGuardStatsRange(
+      codexReasoningContinuationStartDate,
+      codexReasoningContinuationEndDate
+    );
+    if (!nextRange) {
+      setCodexReasoningContinuationStatsRangeError("日期范围无效：结束日期必须不早于开始日期");
+      return;
+    }
+    setCodexReasoningContinuationStatsRangeError(null);
+    setCodexReasoningContinuationAppliedDateRange({
+      startDate: codexReasoningContinuationStartDate,
+      endDate: codexReasoningContinuationEndDate,
+    });
+    setCodexReasoningGuardStatsRangePopoverScope(null);
+  }
+
+  function applyCodexReasoningContinuationStatsPreset(preset: CodexReasoningGuardStatsPreset) {
+    const nextRange = buildCodexReasoningGuardStatsPresetRange(preset);
+    setCodexReasoningContinuationStartDate(nextRange.startDate);
+    setCodexReasoningContinuationEndDate(nextRange.endDate);
+    setCodexReasoningContinuationAppliedDateRange(nextRange);
+    setCodexReasoningContinuationStatsRangeError(null);
+    setCodexReasoningGuardStatsRangePopoverScope(null);
+  }
+
+  function updateCodexReasoningContinuationStatsStartDate(value: string) {
+    setCodexReasoningContinuationStartDate(value);
+    if (codexReasoningContinuationStatsRangeError) {
+      setCodexReasoningContinuationStatsRangeError(null);
+    }
+  }
+
+  function updateCodexReasoningContinuationStatsEndDate(value: string) {
+    setCodexReasoningContinuationEndDate(value);
+    if (codexReasoningContinuationStatsRangeError) {
+      setCodexReasoningContinuationStatsRangeError(null);
+    }
+  }
+
+  function renderCodexReasoningGuardStatsRangeControls(
+    label = "时间范围:",
+    options?: {
+      ariaLabel?: string;
+      dateInputLabelPrefix?: string;
+      popoverPortalled?: boolean;
+      scope?: CodexReasoningGuardStatsRangePopoverScope;
+    }
+  ) {
+    const scope = options?.scope ?? "overview";
     return (
       <CodexReasoningGuardStatsRangeControls
+        ariaLabel={options?.ariaLabel}
+        dateInputLabelPrefix={options?.dateInputLabelPrefix}
         label={label}
         startDate={codexReasoningGuardStartDate}
         endDate={codexReasoningGuardEndDate}
         appliedLabel={codexReasoningGuardStatsRangeLabel}
         error={codexReasoningGuardStatsRangeError}
-        popoverOpen={codexReasoningGuardStatsRangePopoverOpen}
+        popoverOpen={codexReasoningGuardStatsRangePopoverScope === scope}
         fetching={codexReasoningGuardStatsQuery.isFetching}
-        onPopoverOpenChange={setCodexReasoningGuardStatsRangePopoverOpen}
+        onPopoverOpenChange={(open) =>
+          setCodexReasoningGuardStatsRangePopoverScope((current) =>
+            open ? scope : current === scope ? null : current
+          )
+        }
         onStartDateChange={updateCodexReasoningGuardStatsStartDate}
         onEndDateChange={updateCodexReasoningGuardStatsEndDate}
         onPreset={applyCodexReasoningGuardStatsPreset}
         onApply={applyCodexReasoningGuardStatsDateRange}
         onRefresh={() => void codexReasoningGuardStatsQuery.refetch()}
+        popoverPortalled={options?.popoverPortalled}
+      />
+    );
+  }
+
+  function renderCodexReasoningContinuationStatsRangeControls(
+    label = "时间范围:",
+    options?: {
+      ariaLabel?: string;
+      dateInputLabelPrefix?: string;
+      popoverPortalled?: boolean;
+      scope?: CodexReasoningGuardStatsRangePopoverScope;
+    }
+  ) {
+    const scope = options?.scope ?? "continuationOverview";
+    return (
+      <CodexReasoningGuardStatsRangeControls
+        ariaLabel={options?.ariaLabel ?? "继续思考补救统计时间范围"}
+        dateInputLabelPrefix={options?.dateInputLabelPrefix ?? "继续思考补救统计"}
+        label={label}
+        startDate={codexReasoningContinuationStartDate}
+        endDate={codexReasoningContinuationEndDate}
+        appliedLabel={codexReasoningContinuationStatsRangeLabel}
+        error={codexReasoningContinuationStatsRangeError}
+        popoverOpen={codexReasoningGuardStatsRangePopoverScope === scope}
+        fetching={codexReasoningContinuationStatsQuery.isFetching}
+        onPopoverOpenChange={(open) =>
+          setCodexReasoningGuardStatsRangePopoverScope((current) =>
+            open ? scope : current === scope ? null : current
+          )
+        }
+        onStartDateChange={updateCodexReasoningContinuationStatsStartDate}
+        onEndDateChange={updateCodexReasoningContinuationStatsEndDate}
+        onPreset={applyCodexReasoningContinuationStatsPreset}
+        onApply={applyCodexReasoningContinuationStatsDateRange}
+        onRefresh={() => void codexReasoningContinuationStatsQuery.refetch()}
+        popoverPortalled={options?.popoverPortalled}
       />
     );
   }
 
   async function saveCodexReasoningGuardRules() {
     if (!appSettings || !persistCodexReasoningGuardSettings) return;
+    if (codexReasoningGuardTemplateError) return;
     const normalizedHitLabel = codexReasoningGuardHitLabelText.trim() || "降智命中";
-
-    const parsedGlobalValues = parseCodexReasoningGuardValues(codexReasoningGuardValuesText);
-    if (!parsedGlobalValues.ok) {
-      setCodexReasoningGuardValuesError(parsedGlobalValues.message);
-      return;
-    }
 
     const parsedImmediateBudget = parseCodexReasoningGuardInteger(
       codexReasoningGuardImmediateBudgetText,
@@ -1463,55 +2016,30 @@ export function CliManagerCodexTab({
       return;
     }
 
-    const nextRuleErrors: Record<number, string> = {};
-    const nextModelRules: CodexReasoningGuardModelRule[] = [];
-    const seenModels = new Set<string>();
-
-    for (const [index, draft] of codexReasoningGuardModelRuleDrafts.entries()) {
-      const requestedModel = draft.requestedModel.trim();
-      if (!requestedModel) {
-        nextRuleErrors[index] = "请填写模型名。";
-        continue;
-      }
-      if (requestedModel.length > MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN) {
-        nextRuleErrors[index] = `模型名必须 <= ${MAX_CODEX_REASONING_GUARD_MODEL_NAME_LEN} 字符。`;
-        continue;
-      }
-      if (/[\u0000-\u001f\u007f-\u009f]/u.test(requestedModel)) {
-        nextRuleErrors[index] = "模型名不能包含控制字符。";
-        continue;
-      }
-      if (seenModels.has(requestedModel)) {
-        nextRuleErrors[index] = "模型规则不能重复。";
-        continue;
-      }
-
-      const parsedValues = parseCodexReasoningGuardValues(draft.valuesText);
-      if (!parsedValues.ok) {
-        nextRuleErrors[index] = parsedValues.message;
-        continue;
-      }
-
-      seenModels.add(requestedModel);
-      nextModelRules.push({
-        requested_model: requestedModel,
-        compare_mode: draft.compareMode,
-        reasoning_equals: parsedValues.values,
-      });
-    }
-
-    if (Object.keys(nextRuleErrors).length > 0) {
-      setCodexReasoningGuardValuesError(null);
-      setCodexReasoningGuardModelRuleErrors(nextRuleErrors);
+    const nextActiveTemplateId =
+      resolveCodexReasoningGuardTemplateOption(
+        codexReasoningGuardActiveTemplateId,
+        codexReasoningGuardCustomTemplates
+      )?.id ?? CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID;
+    const validationMessage = validateSettingsSetInput({
+      codexReasoningGuardActiveTemplateId: nextActiveTemplateId,
+      codexReasoningGuardCustomTemplates: codexReasoningGuardCustomTemplates,
+    });
+    if (validationMessage) {
+      setCodexReasoningGuardTemplateError(validationMessage);
       return;
     }
+    let nextRuleMode: CodexReasoningGuardRuleMode = codexReasoningGuardRuleMode;
+    if (nextActiveTemplateId === CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_ID) {
+      nextRuleMode = "final_answer_only_high_xhigh";
+    } else {
+      nextRuleMode = "reasoning_tokens";
+    }
 
-    setCodexReasoningGuardValuesError(null);
     setCodexReasoningGuardBudgetError(null);
     setCodexReasoningGuardModelFallbacksError(null);
-    setCodexReasoningGuardModelRuleErrors({});
+    setCodexReasoningGuardTemplateError(null);
     setCodexReasoningGuardHitLabelText(normalizedHitLabel);
-    setCodexReasoningGuardValuesText(parsedGlobalValues.values.join(", "));
     setCodexReasoningGuardImmediateBudgetText(String(parsedImmediateBudget.value));
     setCodexReasoningGuardDelayedBudgetText(String(parsedDelayedBudget.value));
     setCodexReasoningGuardDelayedMsText(String(parsedDelayedMs.value));
@@ -1521,13 +2049,14 @@ export function CliManagerCodexTab({
     setCodexReasoningGuardModelFallbacksText(
       formatCodexReasoningGuardModelFallbacks(parsedFallbackModels.models)
     );
-    setCodexReasoningGuardModelRuleDrafts(buildCodexReasoningGuardModelRuleDrafts(nextModelRules));
+    setCodexReasoningGuardActiveTemplateId(nextActiveTemplateId);
+    setCodexReasoningGuardRuleMode(nextRuleMode);
 
     const saved = await persistCodexReasoningGuardSettings({
       codex_reasoning_guard_hit_label: normalizedHitLabel,
-      codex_reasoning_guard_compare_mode: codexReasoningGuardCompareMode,
-      codex_reasoning_guard_reasoning_equals: parsedGlobalValues.values,
-      codex_reasoning_guard_model_rules: nextModelRules,
+      codex_reasoning_guard_rule_mode: nextRuleMode,
+      codex_reasoning_guard_active_template_id: nextActiveTemplateId,
+      codex_reasoning_guard_custom_templates: codexReasoningGuardCustomTemplates,
       codex_reasoning_guard_immediate_retry_budget: parsedImmediateBudget.value,
       codex_reasoning_guard_delayed_retry_budget: parsedDelayedBudget.value,
       codex_reasoning_guard_delayed_retry_ms: parsedDelayedMs.value,
@@ -1539,7 +2068,73 @@ export function CliManagerCodexTab({
       codex_reasoning_guard_model_fallbacks: parsedFallbackModels.models,
     });
     if (!saved) {
-      syncCodexReasoningGuardDrafts(appSettings);
+      syncCodexReasoningGuardDrafts(appSettings, { includeContinuation: false });
+    }
+  }
+
+  async function saveCodexReasoningGuardContinuationEnabled(nextEnabled: boolean) {
+    if (!appSettings || !persistCodexReasoningGuardSettings) return;
+    setCodexReasoningGuardContinuationRepairEnabled(nextEnabled);
+    setCodexReasoningGuardContinuationError(null);
+    const saved = await persistCodexReasoningGuardSettings({
+      codex_reasoning_guard_continuation_repair_enabled: nextEnabled,
+    });
+    if (!saved) {
+      setCodexReasoningGuardContinuationRepairEnabled(
+        appSettings.codex_reasoning_guard_continuation_repair_enabled ??
+          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED
+      );
+    }
+  }
+
+  async function saveCodexReasoningGuardContinuationSettings() {
+    if (!appSettings || !persistCodexReasoningGuardSettings) return;
+
+    const parsedContinuationMaxRounds = parseCodexReasoningGuardInteger(
+      codexReasoningGuardContinuationMaxRoundsText,
+      "继续思考最大轮数",
+      MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
+      1
+    );
+    if (!parsedContinuationMaxRounds.ok) {
+      setCodexReasoningGuardContinuationError(parsedContinuationMaxRounds.message);
+      return;
+    }
+
+    const parsedContinuationMaxOutputTokens = parseCodexReasoningGuardInteger(
+      codexReasoningGuardContinuationMaxOutputTokensText,
+      "继续思考最大 output tokens",
+      MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+    );
+    if (!parsedContinuationMaxOutputTokens.ok) {
+      setCodexReasoningGuardContinuationError(parsedContinuationMaxOutputTokens.message);
+      return;
+    }
+
+    const validationMessage = validateSettingsSetInput({
+      codexReasoningGuardContinuationRepairEnabled: codexReasoningGuardContinuationRepairEnabled,
+      codexReasoningGuardContinuationMaxRounds: parsedContinuationMaxRounds.value,
+      codexReasoningGuardContinuationMaxOutputTokens: parsedContinuationMaxOutputTokens.value,
+    });
+    if (validationMessage) {
+      setCodexReasoningGuardContinuationError(validationMessage);
+      return;
+    }
+
+    setCodexReasoningGuardContinuationError(null);
+    setCodexReasoningGuardContinuationMaxRoundsText(String(parsedContinuationMaxRounds.value));
+    setCodexReasoningGuardContinuationMaxOutputTokensText(
+      String(parsedContinuationMaxOutputTokens.value)
+    );
+
+    const saved = await persistCodexReasoningGuardSettings({
+      codex_reasoning_guard_continuation_repair_enabled:
+        codexReasoningGuardContinuationRepairEnabled,
+      codex_reasoning_guard_continuation_max_rounds: parsedContinuationMaxRounds.value,
+      codex_reasoning_guard_continuation_max_output_tokens: parsedContinuationMaxOutputTokens.value,
+    });
+    if (!saved) {
+      syncCodexReasoningGuardDrafts(appSettings, { includeGuard: false });
     }
   }
 
@@ -1574,6 +2169,23 @@ export function CliManagerCodexTab({
   const codexReasoningGuardTopHitModel = useMemo(() => {
     return codexReasoningGuardModelStats.find((row) => row.hit_request_count > 0) ?? null;
   }, [codexReasoningGuardModelStats]);
+
+  const codexReasoningContinuationStatusStats = useMemo(() => {
+    return [...(codexReasoningContinuationStats?.continuation_by_status ?? [])].sort(
+      (left, right) => {
+        if (left.attempt_count !== right.attempt_count) {
+          return right.attempt_count - left.attempt_count;
+        }
+        if (left.request_count !== right.request_count) {
+          return right.request_count - left.request_count;
+        }
+        return left.status.localeCompare(right.status);
+      }
+    );
+  }, [codexReasoningContinuationStats?.continuation_by_status]);
+
+  const codexReasoningContinuationTopStatus =
+    codexReasoningContinuationStatusStats.find((row) => row.attempt_count > 0) ?? null;
 
   return (
     <div className="space-y-6">
@@ -1940,8 +2552,9 @@ export function CliManagerCodexTab({
                     <div className="min-w-0">
                       <div className="text-sm font-semibold text-foreground">降智拦截</div>
                       <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        命中指定的 <span className="font-mono">reasoning_tokens</span>{" "}
-                        时，不把结果直接回给 Codex，而是在当前 provider 上继续重试，并且不计入熔断。
+                        支持按 <span className="font-mono">reasoning_tokens</span> 或{" "}
+                        <span className="font-mono">final-answer-only high/xhigh</span>{" "}
+                        特征拦截；命中后在当前 provider 上继续重试，并且不计入熔断。
                       </div>
                       <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
                         当前统计：{codexReasoningGuardStatsRangeLabel}，
@@ -1954,8 +2567,8 @@ export function CliManagerCodexTab({
                         variant="secondary"
                         size="sm"
                         className="gap-2"
+                        aria-label="查看降智拦截详情"
                         onClick={() => {
-                          setCodexReasoningGuardDetailsTab("rules");
                           setCodexReasoningGuardDetailsOpen(true);
                         }}
                       >
@@ -1975,7 +2588,7 @@ export function CliManagerCodexTab({
                     </div>
                   </div>
 
-                  <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                     <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                       <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                         命中请求数
@@ -2010,24 +2623,23 @@ export function CliManagerCodexTab({
                         {codexReasoningGuardStats?.normal_request_count ?? 0}
                       </div>
                     </div>
-                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
-                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
-                        模型规则
-                      </div>
-                      <div className="mt-1 text-2xl font-semibold text-foreground">
-                        {appSettings.codex_reasoning_guard_model_rules.length}
-                      </div>
-                      <div className="mt-1 text-[11px] text-muted-foreground">按模型精确匹配</div>
-                    </div>
                   </div>
 
                   <div className="grid gap-2 rounded-lg border border-border/70 bg-secondary/80 p-3 text-xs text-muted-foreground dark:border-border dark:bg-secondary/80">
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
-                      <span>全局默认规则</span>
+                      <span>当前模板</span>
                       <span className="font-mono text-secondary-foreground">
-                        {formatCodexReasoningGuardRuleLabel(
-                          appSettings.codex_reasoning_guard_compare_mode,
-                          appSettings.codex_reasoning_guard_reasoning_equals
+                        {resolveCodexReasoningGuardTemplateOption(
+                          appSettings.codex_reasoning_guard_active_template_id,
+                          appSettings.codex_reasoning_guard_custom_templates
+                        )?.name ?? CODEX_REASONING_GUARD_BUILTIN_TEMPLATES[0].name}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>规则模式</span>
+                      <span className="font-mono text-secondary-foreground">
+                        {formatCodexReasoningGuardRuleModeLabel(
+                          appSettings.codex_reasoning_guard_rule_mode
                         )}
                       </span>
                     </div>
@@ -2073,12 +2685,239 @@ export function CliManagerCodexTab({
                 </div>
               </div>
             ) : null}
+            {appSettings ? (
+              <div className="rounded-xl border border-border/80 bg-white/80 p-4 dark:border-border dark:bg-card/20">
+                <div className="flex flex-col gap-4">
+                  <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-foreground">继续思考补救</div>
+                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                        独立于降智拦截开关生效；用于 Codex Responses 流式响应的{" "}
+                        <span className="font-mono">reasoning.encrypted_content</span> 续写补救。
+                      </div>
+                      <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                        优先级：续写补救会先尝试修复疑似截断的成功响应；修复成功后不再触发普通降智拦截。修复失败或不适用时，再按降智拦截规则处理。
+                      </div>
+                      <div className="mt-2 text-[11px] leading-relaxed text-muted-foreground">
+                        当前统计：{codexReasoningContinuationStatsRangeLabel}，
+                        {codexReasoningContinuationStatsRangeDescription}
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap items-center gap-2 self-start">
+                      {renderCodexReasoningContinuationStatsRangeControls("", {
+                        ariaLabel: "继续思考补救统计时间范围",
+                        dateInputLabelPrefix: "继续思考补救统计",
+                        scope: "continuationOverview",
+                      })}
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        className="gap-2"
+                        aria-label="查看继续思考补救详情"
+                        onClick={() => {
+                          setCodexReasoningContinuationDetailsOpen(true);
+                        }}
+                      >
+                        <BarChart3 className="h-3.5 w-3.5" />
+                        详情
+                      </Button>
+                      <Switch
+                        aria-label="切换 Codex 继续思考补救"
+                        checked={codexReasoningGuardContinuationRepairEnabled}
+                        onCheckedChange={(checked) =>
+                          void saveCodexReasoningGuardContinuationEnabled(checked)
+                        }
+                        disabled={reasoningGuardControlsDisabled}
+                      />
+                    </div>
+                  </div>
+
+                  <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        触发请求
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningContinuationStatsLoading
+                          ? "..."
+                          : String(
+                              codexReasoningContinuationStats?.continuation_triggered_request_count ??
+                                0
+                            )}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        补救触发数
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningContinuationStatsLoading
+                          ? "..."
+                          : String(
+                              codexReasoningContinuationStats?.continuation_triggered_attempt_count ??
+                                0
+                            )}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        修复成功
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningContinuationStatsLoading
+                          ? "..."
+                          : String(
+                              codexReasoningContinuationStats?.continuation_repaired_request_count ??
+                                0
+                            )}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        修复率
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningContinuationStatsLoading
+                          ? "..."
+                          : formatCodexReasoningGuardHitRate(
+                              codexReasoningContinuationStats?.continuation_repair_rate
+                            )}
+                      </div>
+                      <div className="mt-1 text-[11px] text-muted-foreground">
+                        请求{" "}
+                        {codexReasoningContinuationStats?.continuation_repaired_request_count ?? 0}{" "}
+                        /{" "}
+                        {codexReasoningContinuationStats?.continuation_triggered_request_count ?? 0}
+                      </div>
+                    </div>
+                    <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                        平均续写轮数
+                      </div>
+                      <div className="mt-1 text-2xl font-semibold text-foreground">
+                        {codexReasoningContinuationStatsLoading
+                          ? "..."
+                          : formatCodexReasoningGuardDecimal(
+                              codexReasoningContinuationStats?.continuation_average_sent_rounds
+                            )}
+                      </div>
+                    </div>
+                  </div>
+
+                  <div className="grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto]">
+                    <label className="text-xs font-medium text-secondary-foreground">
+                      <span className="block">最大续写轮数</span>
+                      <Input
+                        type="number"
+                        min={1}
+                        max={MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS}
+                        step={1}
+                        value={codexReasoningGuardContinuationMaxRoundsText}
+                        onChange={(e) => {
+                          setCodexReasoningGuardContinuationMaxRoundsText(e.currentTarget.value);
+                          setCodexReasoningGuardContinuationError(null);
+                        }}
+                        placeholder={String(DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS)}
+                        className={cn(
+                          "mt-3 font-mono text-xs",
+                          codexReasoningGuardContinuationError &&
+                            "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                        )}
+                        disabled={reasoningGuardControlsDisabled}
+                      />
+                    </label>
+                    <label className="text-xs font-medium text-secondary-foreground">
+                      <span className="block">最大 output tokens</span>
+                      <Input
+                        type="number"
+                        min={0}
+                        max={MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS}
+                        step={1}
+                        value={codexReasoningGuardContinuationMaxOutputTokensText}
+                        onChange={(e) => {
+                          setCodexReasoningGuardContinuationMaxOutputTokensText(
+                            e.currentTarget.value
+                          );
+                          setCodexReasoningGuardContinuationError(null);
+                        }}
+                        placeholder={String(
+                          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+                        )}
+                        className={cn(
+                          "mt-3 font-mono text-xs",
+                          codexReasoningGuardContinuationError &&
+                            "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
+                        )}
+                        disabled={reasoningGuardControlsDisabled}
+                      />
+                    </label>
+                    <div className="flex items-end">
+                      <Button
+                        size="sm"
+                        className="gap-2"
+                        onClick={() => void saveCodexReasoningGuardContinuationSettings()}
+                        disabled={reasoningGuardControlsDisabled}
+                      >
+                        <Settings className="h-3.5 w-3.5" />
+                        保存补救
+                      </Button>
+                    </div>
+                  </div>
+
+                  <div
+                    className={cn(
+                      "text-[11px] leading-relaxed",
+                      codexReasoningGuardContinuationError
+                        ? "text-rose-600 dark:text-rose-400"
+                        : "text-muted-foreground"
+                    )}
+                  >
+                    {codexReasoningGuardContinuationError ??
+                      `默认 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS} 轮；output tokens 为 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS} 时不设额外上限。`}
+                  </div>
+
+                  <div className="grid gap-2 rounded-lg border border-border/70 bg-secondary/80 p-3 text-xs text-muted-foreground dark:border-border dark:bg-secondary/80">
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>独立状态</span>
+                      <span className="font-mono text-secondary-foreground">
+                        {codexReasoningGuardContinuationRepairEnabled ? "on" : "off"}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>续写上限</span>
+                      <span className="font-mono text-secondary-foreground">
+                        {`rounds=${
+                          appSettings?.codex_reasoning_guard_continuation_max_rounds ??
+                          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
+                        } / output=${
+                          appSettings?.codex_reasoning_guard_continuation_max_output_tokens ??
+                          DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS
+                        }`}
+                      </span>
+                    </div>
+                    <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
+                      <span>主要状态</span>
+                      <span className="text-secondary-foreground">
+                        {codexReasoningContinuationTopStatus
+                          ? `${formatCodexReasoningContinuationStatusLabel(
+                              codexReasoningContinuationTopStatus.status
+                            )} · ${codexReasoningContinuationTopStatus.attempt_count}`
+                          : "暂无补救记录"}
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+            ) : null}
             <Dialog
               open={codexReasoningGuardDetailsOpen}
               onOpenChange={(next) => {
                 setCodexReasoningGuardDetailsOpen(next);
                 if (!next) {
-                  syncCodexReasoningGuardDrafts(appSettings);
+                  setCodexReasoningGuardStatsRangePopoverScope((current) =>
+                    current === "details" ? null : current
+                  );
+                  syncCodexReasoningGuardDrafts(appSettings, { includeContinuation: false });
                 }
               }}
               title="降智拦截详情"
@@ -2086,7 +2925,7 @@ export function CliManagerCodexTab({
               className="max-w-5xl"
             >
               <div className="space-y-4">
-                <div className="grid grid-cols-2 gap-3 xl:grid-cols-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-4">
                   <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
                     <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
                       命中请求数
@@ -2163,85 +3002,547 @@ export function CliManagerCodexTab({
                     </span>
                     <span className="ml-2">{codexReasoningGuardStatsRangeDescription}</span>
                   </div>
-                  <div className="shrink-0">{renderCodexReasoningGuardStatsRangeControls("")}</div>
+                  <div className="shrink-0">
+                    {renderCodexReasoningGuardStatsRangeControls("", {
+                      popoverPortalled: false,
+                      scope: "details",
+                    })}
+                  </div>
                 </div>
 
                 {codexReasoningGuardDetailsTab === "rules" ? (
                   <div className="space-y-4">
                     <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
-                      <div className="text-sm font-semibold text-foreground">全局回退规则</div>
-                      <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                        只有在当前请求模型没有精确匹配到模型规则时，才会回落到这里。
-                      </div>
-                      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_220px]">
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">降智命中标签</span>
-                          <Input
-                            aria-label="降智命中标签"
-                            value={codexReasoningGuardHitLabelText}
-                            onChange={(e) =>
-                              setCodexReasoningGuardHitLabelText(e.currentTarget.value)
+                      <div className="flex flex-col gap-3 md:flex-row md:items-start md:justify-between">
+                        <div>
+                          <div className="text-sm font-semibold text-foreground">规则模板</div>
+                          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
+                            当前请求开始时会固定读取一次 active
+                            模板；进行中的请求不会被这里的草稿改动影响。
+                          </div>
+                        </div>
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={addCodexReasoningGuardCustomTemplate}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardCustomTemplates.length >=
+                                MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES
                             }
-                            placeholder="降智命中"
-                            className="mt-3 text-xs"
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                          <span className="mt-2 block text-[11px] font-normal leading-relaxed text-muted-foreground">
-                            只影响请求记录和详情里的降智命中标签前缀；命中次数和规则后缀仍自动拼接。
-                          </span>
-                        </label>
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            新建模板
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={copySelectedCodexReasoningGuardTemplate}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardCustomTemplates.length >=
+                                MAX_CODEX_REASONING_GUARD_CUSTOM_TEMPLATES
+                            }
+                          >
+                            <FileJson className="h-3.5 w-3.5" />
+                            复制为自定义
+                          </Button>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            aria-label="删除模板"
+                            onClick={deleteSelectedCodexReasoningGuardTemplate}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardSelectedTemplate.readOnly
+                            }
+                          >
+                            <Trash2 className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </div>
+
+                      <div className="mt-4 grid gap-3 lg:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
                         <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">reasoning_tokens 规则值</span>
-                          <Input
-                            value={codexReasoningGuardValuesText}
-                            onChange={(e) => {
-                              setCodexReasoningGuardValuesText(e.currentTarget.value);
-                              if (codexReasoningGuardValuesError) {
-                                const parsed = parseCodexReasoningGuardValues(
-                                  e.currentTarget.value
-                                );
-                                setCodexReasoningGuardValuesError(
-                                  parsed.ok ? null : parsed.message
-                                );
-                              }
-                            }}
-                            placeholder={DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.join(", ")}
-                            className={cn(
-                              "mt-3 font-mono text-xs",
-                              codexReasoningGuardValuesError &&
-                                "border-rose-300 focus-visible:ring-rose-200 dark:border-rose-700"
-                            )}
-                            disabled={reasoningGuardControlsDisabled}
-                          />
-                        </label>
-                        <label className="text-xs font-medium text-secondary-foreground">
-                          <span className="block">比较方式</span>
+                          <span className="block">active 模板</span>
                           <Select
-                            value={codexReasoningGuardCompareMode}
-                            onChange={(e) => {
-                              setCodexReasoningGuardCompareMode(
-                                e.currentTarget.value as CodexReasoningGuardCompareMode
-                              );
-                              setCodexReasoningGuardValuesError(null);
-                            }}
+                            aria-label="规则模板"
+                            value={codexReasoningGuardSelectedTemplate.id}
+                            onChange={(e) =>
+                              selectCodexReasoningGuardTemplate(e.currentTarget.value)
+                            }
                             disabled={reasoningGuardControlsDisabled}
                             className="mt-3 font-mono text-xs"
                           >
-                            <option value="equals">等于 (==)</option>
-                            <option value="less_than_or_equal">小于等于 (&lt;=)</option>
+                            {codexReasoningGuardTemplateOptions.map((template) => (
+                              <option key={template.id} value={template.id}>
+                                {template.source === "custom" ? "custom" : template.source}:{" "}
+                                {template.name}
+                              </option>
+                            ))}
                           </Select>
                         </label>
+                        <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-xs leading-relaxed text-muted-foreground">
+                          <div className="font-medium text-secondary-foreground">
+                            {codexReasoningGuardSelectedTemplate.name}
+                          </div>
+                          <div className="mt-1">
+                            {codexReasoningGuardSelectedTemplate.description || "无描述"}
+                          </div>
+                          <div className="mt-2 font-mono text-[11px]">
+                            {codexReasoningGuardSelectedTemplate.id}
+                          </div>
+                        </div>
                       </div>
-                      <div
-                        className={cn(
-                          "mt-2 text-[11px] leading-relaxed",
-                          codexReasoningGuardValuesError
-                            ? "text-rose-600 dark:text-rose-400"
-                            : "text-muted-foreground"
+
+                      <label className="mt-4 block text-xs font-medium text-secondary-foreground">
+                        <span className="block">降智命中标签</span>
+                        <Input
+                          aria-label="降智命中标签"
+                          value={codexReasoningGuardHitLabelText}
+                          onChange={(e) =>
+                            setCodexReasoningGuardHitLabelText(e.currentTarget.value)
+                          }
+                          placeholder="降智命中"
+                          className="mt-3 text-xs"
+                          disabled={reasoningGuardControlsDisabled}
+                        />
+                      </label>
+
+                      <div className="mt-4 space-y-4">
+                        {codexReasoningGuardSelectedTemplate.readOnly ? (
+                          <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-xs leading-relaxed text-muted-foreground">
+                            内置模板只读，复制为自定义模板后可编辑规则。
+                          </div>
+                        ) : (
+                          <div className="grid gap-3 lg:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)]">
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">模板 ID</span>
+                              <Input
+                                aria-label="模板 ID"
+                                value={codexReasoningGuardSelectedTemplate.id}
+                                onChange={(e) =>
+                                  updateSelectedCodexReasoningGuardTemplate({
+                                    id: e.currentTarget.value,
+                                  })
+                                }
+                                className="mt-3 font-mono text-xs"
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                            <label className="text-xs font-medium text-secondary-foreground">
+                              <span className="block">模板名称</span>
+                              <Input
+                                aria-label="模板名称"
+                                value={codexReasoningGuardSelectedTemplate.name}
+                                onChange={(e) =>
+                                  updateSelectedCodexReasoningGuardTemplate({
+                                    name: e.currentTarget.value,
+                                  })
+                                }
+                                className="mt-3 text-xs"
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                            <label className="text-xs font-medium text-secondary-foreground lg:col-span-2">
+                              <span className="block">模板描述</span>
+                              <Textarea
+                                aria-label="模板描述"
+                                value={codexReasoningGuardSelectedTemplate.description}
+                                onChange={(e) =>
+                                  updateSelectedCodexReasoningGuardTemplate({
+                                    description: e.currentTarget.value,
+                                  })
+                                }
+                                className="mt-3 min-h-20 text-xs"
+                                disabled={reasoningGuardControlsDisabled}
+                              />
+                            </label>
+                          </div>
                         )}
-                      >
-                        {codexReasoningGuardValuesError ??
-                          codexReasoningGuardCompareModeHelperText(codexReasoningGuardCompareMode)}
+
+                        <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
+                          <div className="text-sm font-semibold text-foreground">模板规则</div>
+                          <Button
+                            variant="secondary"
+                            size="sm"
+                            className="gap-2"
+                            onClick={addCodexReasoningGuardTemplateRule}
+                            disabled={
+                              reasoningGuardControlsDisabled ||
+                              codexReasoningGuardSelectedTemplate.readOnly ||
+                              codexReasoningGuardSelectedTemplate.rules.length >=
+                                MAX_CODEX_REASONING_GUARD_TEMPLATE_RULES
+                            }
+                          >
+                            <Plus className="h-3.5 w-3.5" />
+                            新增规则
+                          </Button>
+                        </div>
+
+                        <div className="space-y-3">
+                          {codexReasoningGuardSelectedTemplate.rules.map((rule, ruleIndex) => (
+                            <div
+                              key={`${rule.id || "rule"}-${ruleIndex}`}
+                              className="rounded-lg border border-border/70 bg-background/70 p-3"
+                            >
+                              <div className="grid gap-3 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_150px_120px_160px_auto]">
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">规则 ID</span>
+                                  <Input
+                                    value={rule.id}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        id: e.currentTarget.value,
+                                      })
+                                    }
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  />
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">规则名称</span>
+                                  <Input
+                                    value={rule.name}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        name: e.currentTarget.value,
+                                      })
+                                    }
+                                    className="mt-3 text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  />
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">动作</span>
+                                  <Select
+                                    value={rule.action}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        action: e.currentTarget
+                                          .value as CodexReasoningGuardTemplateRule["action"],
+                                      })
+                                    }
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  >
+                                    <option value="intercept">intercept</option>
+                                    <option value="no_intercept">no_intercept</option>
+                                  </Select>
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">逻辑</span>
+                                  <Select
+                                    value={rule.logic}
+                                    onChange={(e) =>
+                                      updateSelectedCodexReasoningGuardTemplateRule(ruleIndex, {
+                                        logic: e.currentTarget
+                                          .value as CodexReasoningGuardTemplateRule["logic"],
+                                      })
+                                    }
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  >
+                                    <option value="and">AND</option>
+                                    <option value="or">OR</option>
+                                  </Select>
+                                </label>
+                                <label className="text-xs font-medium text-secondary-foreground">
+                                  <span className="block">token 匹配</span>
+                                  <Input
+                                    value={
+                                      rule.reasoning_tokens == null
+                                        ? ""
+                                        : String(rule.reasoning_tokens)
+                                    }
+                                    onChange={(e) => {
+                                      updateSelectedCodexReasoningGuardTemplateRuleToken(
+                                        ruleIndex,
+                                        e.currentTarget.value
+                                      );
+                                    }}
+                                    placeholder="空为 wildcard"
+                                    className="mt-3 font-mono text-xs"
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  />
+                                </label>
+                                <div className="flex items-end gap-1">
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`上移规则 ${ruleIndex + 1}`}
+                                    onClick={() =>
+                                      moveCodexReasoningGuardTemplateRule(ruleIndex, -1)
+                                    }
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      ruleIndex === 0
+                                    }
+                                  >
+                                    ↑
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`下移规则 ${ruleIndex + 1}`}
+                                    onClick={() =>
+                                      moveCodexReasoningGuardTemplateRule(ruleIndex, 1)
+                                    }
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      ruleIndex ===
+                                        codexReasoningGuardSelectedTemplate.rules.length - 1
+                                    }
+                                  >
+                                    ↓
+                                  </Button>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    aria-label={`删除规则 ${ruleIndex + 1}`}
+                                    onClick={() => removeCodexReasoningGuardTemplateRule(ruleIndex)}
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly
+                                    }
+                                  >
+                                    <Trash2 className="h-3.5 w-3.5" />
+                                  </Button>
+                                </div>
+                              </div>
+
+                              <div className="mt-4 space-y-2">
+                                <div className="flex items-center justify-between gap-3">
+                                  <div className="text-xs font-medium text-secondary-foreground">
+                                    过滤条件
+                                  </div>
+                                  <Button
+                                    variant="secondary"
+                                    size="sm"
+                                    className="gap-2"
+                                    onClick={() => addCodexReasoningGuardTemplateFilter(ruleIndex)}
+                                    disabled={
+                                      reasoningGuardControlsDisabled ||
+                                      codexReasoningGuardSelectedTemplate.readOnly ||
+                                      rule.filters.length >=
+                                        MAX_CODEX_REASONING_GUARD_TEMPLATE_RULE_FILTERS
+                                    }
+                                  >
+                                    <Plus className="h-3.5 w-3.5" />
+                                    新增条件
+                                  </Button>
+                                </div>
+                                {rule.filters.length === 0 ? (
+                                  <div className="rounded-md border border-dashed border-border/70 px-3 py-2 text-xs text-muted-foreground">
+                                    无过滤条件。
+                                  </div>
+                                ) : (
+                                  rule.filters.map((filter, filterIndex) => {
+                                    const kind = codexReasoningGuardFilterKind(filter.field);
+                                    const operators = codexReasoningGuardFilterOperators(
+                                      filter.field
+                                    );
+                                    return (
+                                      <div
+                                        key={`${filter.id || "filter"}-${filterIndex}`}
+                                        className="grid gap-2 rounded-md border border-border/70 bg-secondary/40 p-2 xl:grid-cols-[minmax(0,0.8fr)_minmax(0,1fr)_160px_minmax(0,1fr)_auto]"
+                                      >
+                                        <Input
+                                          aria-label={`条件 ID ${filterIndex + 1}`}
+                                          value={filter.id}
+                                          onChange={(e) =>
+                                            updateCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex,
+                                              { id: e.currentTarget.value }
+                                            )
+                                          }
+                                          className="font-mono text-xs"
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        />
+                                        <Select
+                                          aria-label={`条件字段 ${filterIndex + 1}`}
+                                          value={filter.field}
+                                          onChange={(e) =>
+                                            updateCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex,
+                                              {
+                                                field: e.currentTarget
+                                                  .value as CodexReasoningGuardTemplateFilterField,
+                                              }
+                                            )
+                                          }
+                                          className="font-mono text-xs"
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        >
+                                          {CODEX_REASONING_GUARD_FILTER_FIELD_OPTIONS.map(
+                                            (option) => (
+                                              <option key={option.value} value={option.value}>
+                                                {option.label}
+                                              </option>
+                                            )
+                                          )}
+                                        </Select>
+                                        <Select
+                                          aria-label={`条件操作符 ${filterIndex + 1}`}
+                                          value={filter.operator}
+                                          onChange={(e) =>
+                                            updateCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex,
+                                              {
+                                                operator: e.currentTarget
+                                                  .value as CodexReasoningGuardTemplateFilterOperator,
+                                              }
+                                            )
+                                          }
+                                          className="font-mono text-xs"
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        >
+                                          {operators.map((operator) => (
+                                            <option key={operator} value={operator}>
+                                              {operator}
+                                            </option>
+                                          ))}
+                                        </Select>
+                                        {kind === "boolean" ? (
+                                          <Select
+                                            aria-label={`条件值 ${filterIndex + 1}`}
+                                            value={filter.bool_value ? "true" : "false"}
+                                            onChange={(e) =>
+                                              updateCodexReasoningGuardTemplateFilter(
+                                                ruleIndex,
+                                                filterIndex,
+                                                { bool_value: e.currentTarget.value === "true" }
+                                              )
+                                            }
+                                            className="font-mono text-xs"
+                                            disabled={
+                                              reasoningGuardControlsDisabled ||
+                                              codexReasoningGuardSelectedTemplate.readOnly
+                                            }
+                                          >
+                                            <option value="true">true</option>
+                                            <option value="false">false</option>
+                                          </Select>
+                                        ) : (
+                                          <Input
+                                            aria-label={`条件值 ${filterIndex + 1}`}
+                                            value={
+                                              kind === "number"
+                                                ? String(filter.number_value ?? "")
+                                                : filter.operator === "in" ||
+                                                    filter.operator === "not_in"
+                                                  ? filter.string_values.join(", ")
+                                                  : (filter.string_value ?? "")
+                                            }
+                                            onChange={(e) => {
+                                              const raw = e.currentTarget.value;
+                                              if (kind === "number") {
+                                                updateCodexReasoningGuardTemplateFilter(
+                                                  ruleIndex,
+                                                  filterIndex,
+                                                  {
+                                                    number_value:
+                                                      raw.trim() === "" ? null : Number(raw),
+                                                  }
+                                                );
+                                              } else if (
+                                                filter.operator === "in" ||
+                                                filter.operator === "not_in"
+                                              ) {
+                                                updateCodexReasoningGuardTemplateFilter(
+                                                  ruleIndex,
+                                                  filterIndex,
+                                                  {
+                                                    string_values: raw
+                                                      .split(",")
+                                                      .map((item) => item.trim())
+                                                      .filter(Boolean),
+                                                  }
+                                                );
+                                              } else {
+                                                updateCodexReasoningGuardTemplateFilter(
+                                                  ruleIndex,
+                                                  filterIndex,
+                                                  { string_value: raw }
+                                                );
+                                              }
+                                            }}
+                                            className="font-mono text-xs"
+                                            disabled={
+                                              reasoningGuardControlsDisabled ||
+                                              codexReasoningGuardSelectedTemplate.readOnly
+                                            }
+                                          />
+                                        )}
+                                        <Button
+                                          variant="secondary"
+                                          size="sm"
+                                          aria-label={`删除条件 ${filterIndex + 1}`}
+                                          onClick={() =>
+                                            removeCodexReasoningGuardTemplateFilter(
+                                              ruleIndex,
+                                              filterIndex
+                                            )
+                                          }
+                                          disabled={
+                                            reasoningGuardControlsDisabled ||
+                                            codexReasoningGuardSelectedTemplate.readOnly
+                                          }
+                                        >
+                                          <Trash2 className="h-3.5 w-3.5" />
+                                        </Button>
+                                      </div>
+                                    );
+                                  })
+                                )}
+                              </div>
+                            </div>
+                          ))}
+                        </div>
+
+                        <div
+                          className={cn(
+                            "text-[11px] leading-relaxed",
+                            codexReasoningGuardTemplateError
+                              ? "text-rose-600 dark:text-rose-400"
+                              : "text-muted-foreground"
+                          )}
+                        >
+                          {codexReasoningGuardTemplateError ??
+                            "保存时会校验模板 ID、规则、wildcard、过滤字段和值类型。"}
+                        </div>
                       </div>
                     </div>
 
@@ -2475,120 +3776,7 @@ export function CliManagerCodexTab({
                         {codexReasoningGuardBudgetError ??
                           `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`}
                       </div>
-                    </div>
-
-                    <div className="rounded-lg border border-border/70 bg-secondary/60 p-4">
-                      <div className="flex flex-col gap-3 md:flex-row md:items-center md:justify-between">
-                        <div>
-                          <div className="text-sm font-semibold text-foreground">模型规则</div>
-                          <div className="mt-1 text-xs leading-relaxed text-muted-foreground">
-                            这里按 <span className="font-mono">requested_model</span>{" "}
-                            精确匹配；没匹配到的请求，才会走上面的全局回退规则。
-                          </div>
-                        </div>
-                        <Button
-                          variant="secondary"
-                          size="sm"
-                          className="gap-2"
-                          onClick={addCodexReasoningGuardModelRuleDraft}
-                          disabled={
-                            reasoningGuardControlsDisabled ||
-                            codexReasoningGuardModelRuleDrafts.length >=
-                              MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN
-                          }
-                        >
-                          <Plus className="h-3.5 w-3.5" />
-                          新增模型规则
-                        </Button>
-                      </div>
-
-                      <div className="mt-4 space-y-3">
-                        {codexReasoningGuardModelRuleDrafts.length === 0 ? (
-                          <div className="rounded-lg border border-dashed border-border/70 bg-background/60 px-4 py-5 text-center text-xs text-muted-foreground">
-                            暂无模型规则，当前所有 Codex 请求都会回落到全局默认规则。
-                          </div>
-                        ) : (
-                          codexReasoningGuardModelRuleDrafts.map((draft, index) => (
-                            <div
-                              key={`${draft.requestedModel || "rule"}-${index}`}
-                              className="rounded-lg border border-border/70 bg-background/80 p-3"
-                            >
-                              <div className="grid gap-3 xl:grid-cols-[minmax(0,1.3fr)_220px_minmax(0,1fr)_auto]">
-                                <label className="text-xs font-medium text-secondary-foreground">
-                                  <span className="block">模型名</span>
-                                  <Input
-                                    value={draft.requestedModel}
-                                    onChange={(e) =>
-                                      updateCodexReasoningGuardModelRuleDraft(index, {
-                                        requestedModel: e.currentTarget.value,
-                                      })
-                                    }
-                                    placeholder="例如：gpt-5-codex"
-                                    className="mt-3 font-mono text-xs"
-                                    disabled={reasoningGuardControlsDisabled}
-                                  />
-                                </label>
-                                <label className="text-xs font-medium text-secondary-foreground">
-                                  <span className="block">比较方式</span>
-                                  <Select
-                                    value={draft.compareMode}
-                                    onChange={(e) =>
-                                      updateCodexReasoningGuardModelRuleDraft(index, {
-                                        compareMode: e.currentTarget
-                                          .value as CodexReasoningGuardCompareMode,
-                                      })
-                                    }
-                                    disabled={reasoningGuardControlsDisabled}
-                                    className="mt-3 font-mono text-xs"
-                                  >
-                                    <option value="equals">等于 (==)</option>
-                                    <option value="less_than_or_equal">小于等于 (&lt;=)</option>
-                                  </Select>
-                                </label>
-                                <label className="text-xs font-medium text-secondary-foreground">
-                                  <span className="block">reasoning_tokens 规则值</span>
-                                  <Input
-                                    value={draft.valuesText}
-                                    onChange={(e) =>
-                                      updateCodexReasoningGuardModelRuleDraft(index, {
-                                        valuesText: e.currentTarget.value,
-                                      })
-                                    }
-                                    placeholder="516"
-                                    className="mt-3 font-mono text-xs"
-                                    disabled={reasoningGuardControlsDisabled}
-                                  />
-                                </label>
-                                <div className="flex items-end">
-                                  <Button
-                                    variant="secondary"
-                                    size="sm"
-                                    aria-label={`删除模型规则 ${index + 1}`}
-                                    onClick={() => removeCodexReasoningGuardModelRuleDraft(index)}
-                                    disabled={reasoningGuardControlsDisabled}
-                                  >
-                                    <Trash2 className="h-3.5 w-3.5" />
-                                  </Button>
-                                </div>
-                              </div>
-                              {codexReasoningGuardModelRuleErrors[index] ? (
-                                <div className="mt-2 text-[11px] text-rose-600 dark:text-rose-400">
-                                  {codexReasoningGuardModelRuleErrors[index]}
-                                </div>
-                              ) : (
-                                <div className="mt-2 text-[11px] text-muted-foreground">
-                                  {codexReasoningGuardCompareModeHelperText(draft.compareMode)}
-                                </div>
-                              )}
-                            </div>
-                          ))
-                        )}
-                      </div>
-
-                      <div className="mt-4 flex items-center justify-between gap-3">
-                        <div className="text-[11px] text-muted-foreground">
-                          最多支持 {MAX_CODEX_REASONING_GUARD_MODEL_RULES_LEN} 条模型规则。
-                        </div>
+                      <div className="mt-4 flex justify-end">
                         <Button
                           size="sm"
                           className="gap-2"
@@ -2656,41 +3844,169 @@ export function CliManagerCodexTab({
                                 <th className="px-3 py-2 font-medium">正常请求</th>
                                 <th className="px-3 py-2 font-medium">命中率</th>
                                 <th className="px-3 py-2 font-medium">命中次数</th>
-                                <th className="px-3 py-2 font-medium">当前规则</th>
-                                <th className="px-3 py-2 font-medium">规则来源</th>
                               </tr>
                             </thead>
                             <tbody className="divide-y divide-border bg-background/80">
-                              {codexReasoningGuardModelStats.map((row) => {
-                                const ruleInfo = resolveCodexReasoningGuardRuleForModel(
-                                  appSettings,
-                                  row.requested_model
-                                );
-                                return (
-                                  <tr key={row.requested_model}>
-                                    <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
-                                      {row.requested_model}
-                                    </td>
-                                    <td className="px-3 py-2">{row.hit_request_count}</td>
-                                    <td className="px-3 py-2">{row.normal_request_count}</td>
-                                    <td className="px-3 py-2">
-                                      {formatCodexReasoningGuardHitRate(row.hit_rate)}
-                                    </td>
-                                    <td className="px-3 py-2">{row.hit_attempt_count}</td>
-                                    <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
-                                      {ruleInfo.label}
-                                    </td>
-                                    <td className="px-3 py-2 text-muted-foreground">
-                                      {ruleInfo.sourceLabel}
-                                    </td>
-                                  </tr>
-                                );
-                              })}
+                              {codexReasoningGuardModelStats.map((row) => (
+                                <tr key={row.requested_model}>
+                                  <td className="px-3 py-2 font-mono text-xs text-secondary-foreground">
+                                    {row.requested_model}
+                                  </td>
+                                  <td className="px-3 py-2">{row.hit_request_count}</td>
+                                  <td className="px-3 py-2">{row.normal_request_count}</td>
+                                  <td className="px-3 py-2">
+                                    {formatCodexReasoningGuardHitRate(row.hit_rate)}
+                                  </td>
+                                  <td className="px-3 py-2">{row.hit_attempt_count}</td>
+                                </tr>
+                              ))}
                             </tbody>
                           </table>
                         </div>
                       </div>
                     )}
+                  </div>
+                )}
+              </div>
+            </Dialog>
+            <Dialog
+              open={codexReasoningContinuationDetailsOpen}
+              onOpenChange={(next) => {
+                setCodexReasoningContinuationDetailsOpen(next);
+                if (!next) {
+                  setCodexReasoningGuardStatsRangePopoverScope((current) =>
+                    current === "continuationDetails" ? null : current
+                  );
+                  syncCodexReasoningGuardDrafts(appSettings, { includeGuard: false });
+                }
+              }}
+              title="继续思考补救详情"
+              description="独立统计续写补救触发、修复成功率和状态分布；不受降智拦截开关控制。"
+              className="max-w-5xl"
+            >
+              <div className="space-y-4">
+                <div className="grid grid-cols-2 gap-3 lg:grid-cols-5">
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      触发请求
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningContinuationStatsLoading
+                        ? "..."
+                        : String(
+                            codexReasoningContinuationStats?.continuation_triggered_request_count ??
+                              0
+                          )}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      补救触发数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningContinuationStatsLoading
+                        ? "..."
+                        : String(
+                            codexReasoningContinuationStats?.continuation_triggered_attempt_count ??
+                              0
+                          )}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      修复成功
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningContinuationStatsLoading
+                        ? "..."
+                        : String(
+                            codexReasoningContinuationStats?.continuation_repaired_request_count ??
+                              0
+                          )}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      修复率
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningContinuationStatsLoading
+                        ? "..."
+                        : formatCodexReasoningGuardHitRate(
+                            codexReasoningContinuationStats?.continuation_repair_rate
+                          )}
+                    </div>
+                  </div>
+                  <div className="rounded-lg border border-border/70 bg-secondary/70 p-3">
+                    <div className="text-[11px] uppercase tracking-wide text-muted-foreground">
+                      平均续写轮数
+                    </div>
+                    <div className="mt-1 text-2xl font-semibold text-foreground">
+                      {codexReasoningContinuationStatsLoading
+                        ? "..."
+                        : formatCodexReasoningGuardDecimal(
+                            codexReasoningContinuationStats?.continuation_average_sent_rounds
+                          )}
+                    </div>
+                  </div>
+                </div>
+
+                <div className="flex flex-col gap-2 rounded-lg border border-border/70 bg-secondary/60 p-3 text-xs text-muted-foreground md:flex-row md:items-center md:justify-between">
+                  <div>
+                    <span className="font-medium text-secondary-foreground">
+                      {codexReasoningContinuationStatsRangeLabel}
+                    </span>
+                    <span className="ml-2">{codexReasoningContinuationStatsRangeDescription}</span>
+                  </div>
+                  <div className="shrink-0">
+                    {renderCodexReasoningContinuationStatsRangeControls("", {
+                      ariaLabel: "继续思考补救统计时间范围",
+                      dateInputLabelPrefix: "继续思考补救统计",
+                      popoverPortalled: false,
+                      scope: "continuationDetails",
+                    })}
+                  </div>
+                </div>
+
+                <div className="rounded-lg border border-border/70 bg-secondary/60 p-4 text-xs leading-relaxed text-muted-foreground">
+                  优先级：续写补救先于普通降智拦截。状态为“已修复”的响应会直接返回修复后的流；其他状态才进入后续降智预算或规则处理。
+                </div>
+
+                {codexReasoningContinuationStatusStats.length === 0 ? (
+                  <div className="rounded-lg border border-dashed border-border/70 bg-background/60 px-4 py-5 text-center text-xs text-muted-foreground">
+                    还没有可展示的继续思考补救记录。
+                  </div>
+                ) : (
+                  <div className="overflow-x-auto rounded-lg border border-border/70">
+                    <table className="min-w-full divide-y divide-border text-sm">
+                      <thead className="bg-secondary/50 text-left text-xs uppercase tracking-wide text-muted-foreground">
+                        <tr>
+                          <th className="px-3 py-2 font-medium">状态</th>
+                          <th className="px-3 py-2 font-medium">触发请求</th>
+                          <th className="px-3 py-2 font-medium">触发次数</th>
+                          <th className="px-3 py-2 font-medium">平均续写轮数</th>
+                        </tr>
+                      </thead>
+                      <tbody className="divide-y divide-border bg-background/80">
+                        {codexReasoningContinuationStatusStats.map((row) => (
+                          <tr key={row.status}>
+                            <td className="px-3 py-2">
+                              <div className="font-medium text-secondary-foreground">
+                                {formatCodexReasoningContinuationStatusLabel(row.status)}
+                              </div>
+                              <div className="font-mono text-[11px] text-muted-foreground">
+                                {row.status}
+                              </div>
+                            </td>
+                            <td className="px-3 py-2">{row.request_count}</td>
+                            <td className="px-3 py-2">{row.attempt_count}</td>
+                            <td className="px-3 py-2">
+                              {formatCodexReasoningGuardDecimal(row.average_sent_rounds)}
+                            </td>
+                          </tr>
+                        ))}
+                      </tbody>
+                    </table>
                   </div>
                 )}
               </div>

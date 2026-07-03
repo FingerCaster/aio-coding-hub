@@ -1,4 +1,4 @@
-import { cleanup, render } from "@testing-library/react";
+import { cleanup, render, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /* ------------------------------------------------------------------ */
@@ -83,6 +83,10 @@ import { CodeEditor } from "../CodeEditor";
 /*  Tests                                                             */
 /* ------------------------------------------------------------------ */
 
+async function waitForEditorCreated(times = 1) {
+  await waitFor(() => expect(MockEditorState.create).toHaveBeenCalledTimes(times));
+}
+
 describe("ui/CodeEditor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -110,9 +114,10 @@ describe("ui/CodeEditor", () => {
 
   /* --- EditorView lifecycle --------------------------------------- */
 
-  it("creates EditorView on mount and destroys on unmount", () => {
+  it("creates EditorView on mount and destroys on unmount", async () => {
     const { unmount } = render(<CodeEditor value="test" />);
 
+    await waitForEditorCreated();
     expect(MockEditorState.create).toHaveBeenCalledTimes(1);
     expect(MockEditorState.create).toHaveBeenCalledWith(expect.objectContaining({ doc: "test" }));
 
@@ -123,32 +128,37 @@ describe("ui/CodeEditor", () => {
 
   /* --- Language extensions ---------------------------------------- */
 
-  it("uses toml language extension when language='toml'", () => {
+  it("uses toml language extension when language='toml'", async () => {
     render(<CodeEditor value="" language="toml" />);
+    await waitForEditorCreated();
     expect(mockStreamLanguageDefine).toHaveBeenCalledWith(mockTomlMode);
   });
 
-  it("uses empty array (no language) when language='text' (default)", () => {
+  it("uses empty array (no language) when language='text' (default)", async () => {
     render(<CodeEditor value="" />);
+    await waitForEditorCreated();
     expect(mockStreamLanguageDefine).not.toHaveBeenCalled();
   });
 
   /* --- Placeholder ------------------------------------------------ */
 
-  it("applies placeholder extension when placeholder is provided and not readOnly", () => {
+  it("applies placeholder extension when placeholder is provided and not readOnly", async () => {
     render(<CodeEditor value="" placeholder="Type here..." />);
+    await waitForEditorCreated();
     expect(mockPlaceholder).toHaveBeenCalledWith("Type here...");
   });
 
-  it("does NOT apply placeholder when readOnly", () => {
+  it("does NOT apply placeholder when readOnly", async () => {
     render(<CodeEditor value="" placeholder="Type here..." readOnly />);
+    await waitForEditorCreated();
     expect(mockPlaceholder).not.toHaveBeenCalled();
   });
 
   /* --- ReadOnly behaviour ----------------------------------------- */
 
-  it("applies readOnly cursor theme when readOnly=true", () => {
+  it("applies readOnly cursor theme when readOnly=true", async () => {
     render(<CodeEditor value="" readOnly />);
+    await waitForEditorCreated();
 
     // readOnly=true triggers EditorView.theme for cursor hiding.
     // EditorView.theme is called for sizing theme + readOnly theme = at least 2 calls.
@@ -159,33 +169,38 @@ describe("ui/CodeEditor", () => {
     expect(hasReadOnlyCursorTheme).toBe(true);
   });
 
-  it("registers updateListener when not readOnly", () => {
+  it("registers updateListener when not readOnly", async () => {
     render(<CodeEditor value="" />);
+    await waitForEditorCreated();
     expect(MockEditorView.updateListener.of).toHaveBeenCalledTimes(1);
     expect(MockEditorView.updateListener.of).toHaveBeenCalledWith(expect.any(Function));
   });
 
-  it("does NOT register updateListener when readOnly", () => {
+  it("does NOT register updateListener when readOnly", async () => {
     render(<CodeEditor value="" readOnly />);
+    await waitForEditorCreated();
     expect(MockEditorView.updateListener.of).not.toHaveBeenCalled();
   });
 
   /* --- readOnly.of ------------------------------------------------ */
 
-  it("calls EditorState.readOnly.of with the readOnly prop value", () => {
+  it("calls EditorState.readOnly.of with the readOnly prop value", async () => {
     const { unmount } = render(<CodeEditor value="" readOnly />);
+    await waitForEditorCreated();
     expect(MockEditorState.readOnly.of).toHaveBeenCalledWith(true);
     unmount();
 
     vi.clearAllMocks();
     render(<CodeEditor value="" />);
+    await waitForEditorCreated();
     expect(MockEditorState.readOnly.of).toHaveBeenCalledWith(false);
   });
 
   /* --- Value sync (second useEffect) ------------------------------ */
 
-  it("dispatches value changes when value prop updates", () => {
+  it("dispatches value changes when value prop updates", async () => {
     const { rerender } = render(<CodeEditor value="initial" />);
+    await waitForEditorCreated();
 
     // After first render, dispatch should not have been called
     // (value matches what was passed to EditorState.create)
@@ -194,7 +209,7 @@ describe("ui/CodeEditor", () => {
     // Rerender with new value
     rerender(<CodeEditor value="updated" />);
 
-    expect(dispatchMock).toHaveBeenCalledTimes(1);
+    await waitFor(() => expect(dispatchMock).toHaveBeenCalledTimes(1));
     expect(dispatchMock).toHaveBeenCalledWith({
       changes: {
         from: 0,
@@ -204,8 +219,9 @@ describe("ui/CodeEditor", () => {
     });
   });
 
-  it("skips dispatch when value matches current doc", () => {
+  it("skips dispatch when value matches current doc", async () => {
     const { rerender } = render(<CodeEditor value="same" />);
+    await waitForEditorCreated();
     expect(dispatchMock).not.toHaveBeenCalled();
 
     // Rerender with the same value
@@ -215,29 +231,33 @@ describe("ui/CodeEditor", () => {
 
   /* --- Height prop ------------------------------------------------ */
 
-  it("converts numeric height to px string", () => {
+  it("converts numeric height to px string", async () => {
     render(<CodeEditor value="" height={500} />);
+    await waitForEditorCreated();
     const themeCalls = MockEditorView.theme.mock.calls;
     const sizingCall = themeCalls.find((call: any) => call[0]["&"]?.height === "500px");
     expect(sizingCall).toBeDefined();
   });
 
-  it("uses string height as-is", () => {
+  it("uses string height as-is", async () => {
     render(<CodeEditor value="" height="80vh" />);
+    await waitForEditorCreated();
     const themeCalls = MockEditorView.theme.mock.calls;
     const sizingCall = themeCalls.find((call: any) => call[0]["&"]?.height === "80vh");
     expect(sizingCall).toBeDefined();
   });
 
-  it("falls back to minHeight when height is undefined", () => {
+  it("falls back to minHeight when height is undefined", async () => {
     render(<CodeEditor value="" minHeight="400px" />);
+    await waitForEditorCreated();
     const themeCalls = MockEditorView.theme.mock.calls;
     const sizingCall = themeCalls.find((call: any) => call[0]["&"]?.minHeight === "400px");
     expect(sizingCall).toBeDefined();
   });
 
-  it("uses default minHeight of 280px when neither height nor minHeight specified", () => {
+  it("uses default minHeight of 280px when neither height nor minHeight specified", async () => {
     render(<CodeEditor value="" />);
+    await waitForEditorCreated();
     const themeCalls = MockEditorView.theme.mock.calls;
     const sizingCall = themeCalls.find((call: any) => call[0]["&"]?.minHeight === "280px");
     expect(sizingCall).toBeDefined();
@@ -245,9 +265,10 @@ describe("ui/CodeEditor", () => {
 
   /* --- onChange callback via updateListener ----------------------- */
 
-  it("updateListener callback invokes onChange when doc changes", () => {
+  it("updateListener callback invokes onChange when doc changes", async () => {
     const onChange = vi.fn();
     render(<CodeEditor value="" onChange={onChange} />);
+    await waitForEditorCreated();
 
     // Get the listener callback passed to updateListener.of
     const calls = (MockEditorView.updateListener.of as any).mock.calls;
@@ -261,9 +282,10 @@ describe("ui/CodeEditor", () => {
     expect(onChange).toHaveBeenCalledWith("new content");
   });
 
-  it("updateListener callback does NOT invoke onChange when doc did not change", () => {
+  it("updateListener callback does NOT invoke onChange when doc did not change", async () => {
     const onChange = vi.fn();
     render(<CodeEditor value="" onChange={onChange} />);
+    await waitForEditorCreated();
 
     const calls = (MockEditorView.updateListener.of as any).mock.calls;
     const listenerCallback = calls[0][0] as (update: any) => void;
@@ -277,23 +299,27 @@ describe("ui/CodeEditor", () => {
 
   /* --- Editor recreation on dependency changes -------------------- */
 
-  it("recreates EditorView when language prop changes", () => {
+  it("recreates EditorView when language prop changes", async () => {
     const { rerender } = render(<CodeEditor value="" language="text" />);
+    await waitForEditorCreated();
     expect(MockEditorState.create).toHaveBeenCalledTimes(1);
     expect(destroyMock).not.toHaveBeenCalled();
 
     rerender(<CodeEditor value="" language="toml" />);
     // old view destroyed, new one created
     expect(destroyMock).toHaveBeenCalledTimes(1);
+    await waitForEditorCreated(2);
     expect(MockEditorState.create).toHaveBeenCalledTimes(2);
   });
 
-  it("recreates EditorView when readOnly prop changes", () => {
+  it("recreates EditorView when readOnly prop changes", async () => {
     const { rerender } = render(<CodeEditor value="" />);
+    await waitForEditorCreated();
     expect(MockEditorState.create).toHaveBeenCalledTimes(1);
 
     rerender(<CodeEditor value="" readOnly />);
     expect(destroyMock).toHaveBeenCalledTimes(1);
+    await waitForEditorCreated(2);
     expect(MockEditorState.create).toHaveBeenCalledTimes(2);
   });
 });

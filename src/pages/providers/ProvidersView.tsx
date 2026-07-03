@@ -75,7 +75,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
     selectRouteDraft,
     addProviderToCurrentRoute,
     removeProviderFromCurrentRoute,
-    setModeProviderEnabled,
+    setRouteProviderEnabled,
     handleRouteDragEnd,
     createSortMode,
     renameSortMode,
@@ -475,8 +475,10 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                           const providerLabel = provider?.name?.trim()
                             ? provider.name
                             : `未知 Provider #${provider?.id ?? row.provider_id}`;
-                          const routeRowEnabled = getRouteRowEnabled(row);
-                          const showModeProviderSwitch = routeDraftSelection.kind === "mode";
+                          const routeRowEnabled =
+                            routeDraftSelection.kind === "default"
+                              ? (provider?.enabled ?? false)
+                              : getRouteRowEnabled(row);
                           return (
                             <SortableProviderOrderItem
                               key={row.provider_id}
@@ -484,27 +486,23 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                               providerId={row.provider_id}
                               index={index}
                               disabled={routeSaving}
+                              showProviderDisabledBadge={false}
                               trailing={
                                 <div className="flex shrink-0 items-center gap-2">
-                                  {showModeProviderSwitch ? (
-                                    <div
-                                      className="flex shrink-0 items-center gap-1.5"
-                                      onPointerDown={(event) => event.stopPropagation()}
-                                    >
-                                      <span className="text-[11px] text-muted-foreground">
-                                        {routeRowEnabled ? "启用" : "关闭"}
-                                      </span>
-                                      <Switch
-                                        checked={routeRowEnabled}
-                                        onCheckedChange={(checked) =>
-                                          void setModeProviderEnabled(row.provider_id, checked)
-                                        }
-                                        size="sm"
-                                        disabled={routeSaving}
-                                        aria-label={`${providerLabel} 在模板中启用`}
-                                      />
-                                    </div>
-                                  ) : null}
+                                  <div
+                                    className="flex shrink-0 items-center"
+                                    onPointerDown={(event) => event.stopPropagation()}
+                                  >
+                                    <Switch
+                                      checked={routeRowEnabled}
+                                      onCheckedChange={(checked) =>
+                                        void setRouteProviderEnabled(row.provider_id, checked)
+                                      }
+                                      size="sm"
+                                      disabled={routeSaving || provider == null}
+                                      aria-label={`${providerLabel} 在调用顺序中启用`}
+                                    />
+                                  </div>
                                   <Button
                                     variant="secondary"
                                     size="sm"

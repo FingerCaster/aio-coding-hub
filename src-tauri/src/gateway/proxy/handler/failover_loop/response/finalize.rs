@@ -122,7 +122,13 @@ pub(super) async fn all_providers_unavailable<R: tauri::Runtime>(
     let duration_ms = started.elapsed().as_millis();
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {
-            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            deps: RequestEndDeps::new(
+                &state.app,
+                &state.db,
+                &state.log_tx,
+                &state.plugin_pipeline,
+                &state.active_requests,
+            ),
             trace_id: trace_id.as_str(),
             cli_key: cli_key.as_str(),
             method: method_hint.as_str(),
@@ -259,7 +265,13 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
     let duration_ms = started.elapsed().as_millis();
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {
-            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            deps: RequestEndDeps::new(
+                &state.app,
+                &state.db,
+                &state.log_tx,
+                &state.plugin_pipeline,
+                &state.active_requests,
+            ),
             trace_id: trace_id.as_str(),
             cli_key: cli_key.as_str(),
             method: method_hint.as_str(),
@@ -356,7 +368,13 @@ pub(super) async fn terminal_bridge_error<R: tauri::Runtime>(
     let duration_ms = started.elapsed().as_millis();
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {
-            deps: RequestEndDeps::new(&state.app, &state.db, &state.log_tx, &state.plugin_pipeline),
+            deps: RequestEndDeps::new(
+                &state.app,
+                &state.db,
+                &state.log_tx,
+                &state.plugin_pipeline,
+                &state.active_requests,
+            ),
             trace_id: trace_id.as_str(),
             cli_key: cli_key.as_str(),
             method: method_hint.as_str(),

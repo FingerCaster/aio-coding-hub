@@ -1,5 +1,6 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import type { QueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useState } from "react";
 import {
   defaultRouteProvidersList,
   defaultRouteProvidersSetOrder,
@@ -381,10 +382,17 @@ export function useProviderDuplicateMutation() {
 }
 
 export function useProviderClaudeTerminalLaunchCommandMutation() {
-  return useMutation({
-    mutationFn: (input: { providerId: number }) =>
-      providerClaudeTerminalLaunchCommand(input.providerId),
-  });
+  const [isPending, setIsPending] = useState(false);
+  const mutateAsync = useCallback(async (input: { providerId: number }) => {
+    setIsPending(true);
+    try {
+      return await providerClaudeTerminalLaunchCommand(input.providerId);
+    } finally {
+      setIsPending(false);
+    }
+  }, []);
+
+  return useMemo(() => ({ isPending, mutateAsync }), [isPending, mutateAsync]);
 }
 
 export function useOAuthLimitsQuery(providerId: number, enabled: boolean) {
@@ -404,7 +412,13 @@ export function useOAuthLimitsQuery(providerId: number, enabled: boolean) {
 }
 
 export function useProviderTestAvailabilityMutation() {
+  const queryClient = useQueryClient();
+
   return useMutation<ProviderAvailabilityResult | null, Error, { providerId: number }>({
     mutationFn: (input) => providerTestAvailability(input.providerId),
+    onSuccess: (result) => {
+      if (!result) return;
+      queryClient.invalidateQueries({ queryKey: gatewayKeys.circuits() });
+    },
   });
 }

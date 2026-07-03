@@ -54,13 +54,19 @@ function selectTerminalSpecialSettingsJson(
   return trace.special_settings_json ?? summary?.special_settings_json ?? null;
 }
 
+export type TraceRequestLogMergeOptions = {
+  inProgress?: boolean;
+};
+
 export function mergeTraceWithRequestLog(
   trace: TraceSession,
-  requestLog: RequestLogTraceMergeSource | undefined
+  requestLog: RequestLogTraceMergeSource | undefined,
+  options: TraceRequestLogMergeOptions = {}
 ): TraceSession {
   if (!requestLog) return trace;
 
-  const requestLogInProgress = isPersistedRequestLogInProgress(requestLog);
+  const requestLogInProgress =
+    options.inProgress === true || isPersistedRequestLogInProgress(requestLog);
   const requestLogTsMs = requestLogCreatedAtMs(requestLog);
   const claudeModelMapping =
     trace.claude_model_mapping ??

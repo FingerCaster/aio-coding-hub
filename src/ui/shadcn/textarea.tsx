@@ -1,14 +1,10 @@
-import { forwardRef } from "react";
 import { cn } from "@/ui/shadcn/utils";
 
-export type TextareaProps = React.TextareaHTMLAttributes<HTMLTextAreaElement> & {
+export type TextareaProps = React.ComponentPropsWithRef<"textarea"> & {
   mono?: boolean;
 };
 
-export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function Textarea(
-  { className, mono, ...props },
-  ref
-) {
+export function Textarea({ className, mono, ref, ...props }: TextareaProps) {
   return (
     <textarea
       ref={ref}
@@ -23,4 +19,4 @@ export const Textarea = forwardRef<HTMLTextAreaElement, TextareaProps>(function 
       {...props}
     />
   );
-});
+}

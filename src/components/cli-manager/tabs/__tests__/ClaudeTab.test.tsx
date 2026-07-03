@@ -560,4 +560,137 @@ describe("components/cli-manager/tabs/ClaudeTab", () => {
     expect(screen.getByText("添加 Hook")).toBeInTheDocument();
     expect(toast).toHaveBeenCalledWith("保存 Hooks 失败：请稍后重试");
   });
+
+  it("edits hook commands with per-hook timeout and deletes groups", async () => {
+    const mutateAsync = vi.fn().mockResolvedValue(undefined);
+    vi.mocked(useCliManagerClaudeHooksQuery).mockReturnValue({
+      data: {
+        settings_path: "/home/user/.claude/settings.json",
+        groups: [
+          {
+            event: "PreToolUse",
+            matcher: "Edit|Write",
+            hooks: [
+              { hook_type: "command", command: "echo first", timeout: 5 },
+              { hook_type: "command", command: "echo second", timeout: null },
+            ],
+          },
+          {
+            event: "Notification",
+            matcher: "",
+            hooks: [{ hook_type: "command", command: "echo notify", timeout: null }],
+          },
+        ],
+      },
+      error: null,
+      isError: false,
+      isLoading: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useCliManagerClaudeHooksSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync,
+    } as any);
+
+    render(
+      <CliManagerClaudeTab
+        claudeAvailable="available"
+        claudeLoading={false}
+        claudeInfo={createClaudeInfo()}
+        claudeSettingsLoading={false}
+        claudeSettingsSaving={false}
+        claudeSettings={createClaudeSettings()}
+        providers={null}
+        refreshClaude={vi.fn()}
+        openClaudeConfigDir={vi.fn()}
+        persistClaudeSettings={vi.fn()}
+      />
+    );
+
+    expect(screen.getByText("Edit|Write")).toBeInTheDocument();
+    expect(screen.getByText("(5s)")).toBeInTheDocument();
+
+    fireEvent.click(screen.getAllByTitle("编辑此命令")[0]);
+    fireEvent.change(screen.getByPlaceholderText("要执行的 shell 命令"), {
+      target: { value: " echo edited " },
+    });
+    fireEvent.change(screen.getByPlaceholderText("例如 30"), {
+      target: { value: "12s" },
+    });
+    expect(screen.getByPlaceholderText("例如 30")).toHaveValue("12");
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenCalledWith({
+        groups: [
+          {
+            event: "PreToolUse",
+            matcher: "Edit|Write",
+            hooks: [
+              { hook_type: "command", command: "echo edited", timeout: 12 },
+              { hook_type: "command", command: "echo second", timeout: null },
+            ],
+          },
+          {
+            event: "Notification",
+            matcher: "",
+            hooks: [{ hook_type: "command", command: "echo notify", timeout: null }],
+          },
+        ],
+      });
+    });
+    expect(toast).toHaveBeenCalledWith("已保存 Hooks 配置");
+
+    fireEvent.click(screen.getAllByTitle("删除")[0]);
+    expect(screen.getByText("确认删除 Hook")).toBeInTheDocument();
+    expect(screen.getByText(/matcher: Edit\|Write/)).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "确认删除" }));
+
+    await waitFor(() => {
+      expect(mutateAsync).toHaveBeenLastCalledWith({
+        groups: [
+          {
+            event: "Notification",
+            matcher: "",
+            hooks: [{ hook_type: "command", command: "echo notify", timeout: null }],
+          },
+        ],
+      });
+    });
+  });
+
+  it("validates hook timeout before saving", async () => {
+    const mutateAsync = vi.fn();
+    vi.mocked(useCliManagerClaudeHooksSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync,
+    } as any);
+
+    render(
+      <CliManagerClaudeTab
+        claudeAvailable="available"
+        claudeLoading={false}
+        claudeInfo={createClaudeInfo()}
+        claudeSettingsLoading={false}
+        claudeSettingsSaving={false}
+        claudeSettings={createClaudeSettings()}
+        providers={null}
+        refreshClaude={vi.fn()}
+        openClaudeConfigDir={vi.fn()}
+        persistClaudeSettings={vi.fn()}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /添加/ }));
+    fireEvent.change(screen.getByPlaceholderText("要执行的 shell 命令"), {
+      target: { value: "echo invalid timeout" },
+    });
+    fireEvent.change(screen.getByPlaceholderText("例如 30"), {
+      target: { value: String(Number.MAX_SAFE_INTEGER + 1) },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存" }));
+
+    expect(toast).toHaveBeenCalledWith("超时必须为非负安全整数");
+    expect(mutateAsync).not.toHaveBeenCalled();
+  });
 });

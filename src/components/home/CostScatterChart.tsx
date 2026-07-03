@@ -1,20 +1,18 @@
 // Usage:
 // - Extracted from HomeCostPanel. Renders the cost vs duration scatter chart with CLI legend.
 
-import { useMemo } from "react";
+import { Suspense, useMemo } from "react";
 import {
+  CartesianGrid,
+  LabelList,
   ResponsiveContainer,
-  ScatterChart,
   Scatter,
+  ScatterChart,
+  Tooltip,
   XAxis,
   YAxis,
   ZAxis,
-  Tooltip,
-  CartesianGrid,
-  LabelList,
-} from "recharts";
-import type { TooltipProps } from "recharts";
-import type { ValueType, NameType } from "recharts/types/component/DefaultTooltipContent";
+} from "../charts/lazyRecharts";
 import { cliShortLabel } from "../../constants/clis";
 import { Card } from "../../ui/Card";
 import { cn } from "../../utils/cn";
@@ -41,6 +39,60 @@ const SCATTER_COLORS: Record<CliKey, string> = {
   gemini: CHART_COLORS.success,
 };
 
+const CLI_ORDER: CliKey[] = ["claude", "codex", "gemini"];
+
+type ChartTooltipProps = {
+  active?: boolean;
+  payload?: Array<{ payload?: unknown }>;
+};
+
+function CostScatterTooltip({
+  active,
+  payload,
+  isDark,
+  tooltipStyle,
+}: ChartTooltipProps & {
+  isDark: boolean;
+  tooltipStyle: ReturnType<typeof getTooltipStyle>;
+}) {
+  if (!active || !payload || payload.length === 0) return null;
+
+  const point = payload[0]?.payload as ScatterPoint | undefined;
+  if (!point) return null;
+
+  const meta = point.meta;
+  const cliLabel = cliShortLabel(meta.cli_key);
+  const providerRaw = meta.provider_name?.trim() ? meta.provider_name.trim() : "Unknown";
+  const modelRaw = meta.model?.trim() ? meta.model.trim() : "Unknown";
+  const providerText = providerRaw === "Unknown" ? "未知" : providerRaw;
+  const modelText = modelRaw === "Unknown" ? "未知" : modelRaw;
+  const requests = Number.isFinite(meta.requests_success) ? Math.max(0, meta.requests_success) : 0;
+  const avgCostUsd = requests > 0 ? meta.total_cost_usd / requests : null;
+  const avgDurationMs = requests > 0 ? meta.total_duration_ms / requests : null;
+
+  return (
+    <div style={{ ...tooltipStyle, minWidth: 200 }}>
+      <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
+        {cliLabel} · {providerText} · {modelText}
+      </div>
+      <div style={{ fontSize: 12, color: isDark ? "#94a3b8" : "#64748b" }}>
+        总成本：{formatUsd(meta.total_cost_usd)}
+      </div>
+      <div style={{ fontSize: 12, color: isDark ? "#94a3b8" : "#64748b" }}>
+        总耗时：{formatDurationMs(meta.total_duration_ms)}
+      </div>
+      <div style={{ fontSize: 12, color: isDark ? "#94a3b8" : "#64748b" }}>
+        请求数：{formatInteger(requests)}
+      </div>
+      <div style={{ fontSize: 12, color: isDark ? "#cbd5e1" : "#94a3b8" }}>
+        {avgCostUsd == null
+          ? "均值：—"
+          : `均值：${formatUsd(avgCostUsd)} / ${formatDurationMs(avgDurationMs ?? 0)}`}
+      </div>
+    </div>
+  );
+}
+
 // Internal scatter chart renderer
 function ScatterChartInner({ data, isDark }: { data: ScatterPoint[]; isDark: boolean }) {
   const axisStyle = useMemo(() => getAxisStyle(isDark), [isDark]);
@@ -59,97 +111,57 @@ function ScatterChartInner({ data, isDark }: { data: ScatterPoint[]; isDark: boo
     return grouped;
   }, [data]);
 
-  const CustomTooltip = ({ active, payload }: TooltipProps<ValueType, NameType>) => {
-    if (!active || !payload || payload.length === 0) return null;
-
-    const point = payload[0]?.payload as ScatterPoint | undefined;
-    if (!point) return null;
-
-    const meta = point.meta;
-    const cliLabel = cliShortLabel(meta.cli_key);
-    const providerRaw = meta.provider_name?.trim() ? meta.provider_name.trim() : "Unknown";
-    const modelRaw = meta.model?.trim() ? meta.model.trim() : "Unknown";
-    const providerText = providerRaw === "Unknown" ? "未知" : providerRaw;
-    const modelText = modelRaw === "Unknown" ? "未知" : modelRaw;
-    const requests = Number.isFinite(meta.requests_success)
-      ? Math.max(0, meta.requests_success)
-      : 0;
-    const avgCostUsd = requests > 0 ? meta.total_cost_usd / requests : null;
-    const avgDurationMs = requests > 0 ? meta.total_duration_ms / requests : null;
-
-    return (
-      <div style={{ ...tooltipStyle, minWidth: 200 }}>
-        <div style={{ fontSize: 12, fontWeight: 600, marginBottom: 4 }}>
-          {cliLabel} · {providerText} · {modelText}
-        </div>
-        <div style={{ fontSize: 11, color: isDark ? "#94a3b8" : "#64748b" }}>
-          总成本：{formatUsd(meta.total_cost_usd)}
-        </div>
-        <div style={{ fontSize: 11, color: isDark ? "#94a3b8" : "#64748b" }}>
-          总耗时：{formatDurationMs(meta.total_duration_ms)}
-        </div>
-        <div style={{ fontSize: 11, color: isDark ? "#94a3b8" : "#64748b" }}>
-          请求数：{formatInteger(requests)}
-        </div>
-        <div style={{ fontSize: 11, color: isDark ? "#cbd5e1" : "#94a3b8" }}>
-          {avgCostUsd == null
-            ? "均值：—"
-            : `均值：${formatUsd(avgCostUsd)} / ${formatDurationMs(avgDurationMs ?? 0)}`}
-        </div>
-      </div>
-    );
-  };
-
-  const cliOrder: CliKey[] = ["claude", "codex", "gemini"];
-  const activeClis = cliOrder.filter((cli) => byCliData[cli].length > 0);
+  const activeClis = CLI_ORDER.filter((cli) => byCliData[cli].length > 0);
 
   return (
-    <ResponsiveContainer width="100%" height="100%">
-      <ScatterChart margin={{ left: 0, right: 16, top: 8, bottom: 4 }}>
-        <CartesianGrid
-          stroke={isDark ? "rgba(100, 150, 255, 0.1)" : "rgba(15,23,42,0.08)"}
-          strokeDasharray="3 3"
-        />
-        <XAxis
-          type="number"
-          dataKey="x"
-          name="Cost"
-          axisLine={{ stroke: axisLineStroke }}
-          tickLine={false}
-          tick={{ ...axisStyle }}
-          tickFormatter={formatUsd}
-        />
-        <YAxis
-          type="number"
-          dataKey="y"
-          name="Duration"
-          axisLine={false}
-          tickLine={false}
-          tick={{ ...axisStyle }}
-          tickFormatter={formatDurationMsShort}
-          width={56}
-        />
-        <ZAxis type="number" dataKey="z" range={[60, 400]} />
-        <Tooltip content={<CustomTooltip />} />
-        {activeClis.map((cli) => (
-          <Scatter
-            key={cli}
-            name={cliShortLabel(cli)}
-            data={byCliData[cli]}
-            fill={SCATTER_COLORS[cli]}
-            fillOpacity={0.85}
-            animationDuration={CHART_ANIMATION.animationDuration}
-          >
-            <LabelList
-              dataKey="shortLabel"
-              position="right"
-              offset={6}
-              style={{ fontSize: 9, fill: isDark ? "#cbd5e1" : "#94a3b8", fontWeight: 500 }}
-            />
-          </Scatter>
-        ))}
-      </ScatterChart>
-    </ResponsiveContainer>
+    <Suspense fallback={<div className="h-full w-full" />}>
+      <ResponsiveContainer width="100%" height="100%">
+        <ScatterChart margin={{ left: 0, right: 16, top: 8, bottom: 4 }}>
+          <CartesianGrid
+            stroke={isDark ? "rgba(100, 150, 255, 0.1)" : "rgba(15,23,42,0.08)"}
+            strokeDasharray="3 3"
+          />
+          <XAxis
+            type="number"
+            dataKey="x"
+            name="Cost"
+            axisLine={{ stroke: axisLineStroke }}
+            tickLine={false}
+            tick={{ ...axisStyle }}
+            tickFormatter={formatUsd}
+          />
+          <YAxis
+            type="number"
+            dataKey="y"
+            name="Duration"
+            axisLine={false}
+            tickLine={false}
+            tick={{ ...axisStyle }}
+            tickFormatter={formatDurationMsShort}
+            width={56}
+          />
+          <ZAxis type="number" dataKey="z" range={[60, 400]} />
+          <Tooltip content={<CostScatterTooltip isDark={isDark} tooltipStyle={tooltipStyle} />} />
+          {activeClis.map((cli) => (
+            <Scatter
+              key={cli}
+              name={cliShortLabel(cli)}
+              data={byCliData[cli]}
+              fill={SCATTER_COLORS[cli]}
+              fillOpacity={0.85}
+              animationDuration={CHART_ANIMATION.animationDuration}
+            >
+              <LabelList
+                dataKey="shortLabel"
+                position="right"
+                offset={6}
+                style={{ fontSize: 12, fill: isDark ? "#cbd5e1" : "#94a3b8", fontWeight: 500 }}
+              />
+            </Scatter>
+          ))}
+        </ScatterChart>
+      </ResponsiveContainer>
+    </Suspense>
   );
 }
 

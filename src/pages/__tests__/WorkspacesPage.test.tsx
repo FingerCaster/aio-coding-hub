@@ -72,6 +72,16 @@ function renderWithProviders(element: ReactElement) {
   );
 }
 
+function getWorkspaceSelectButton(name: string) {
+  return screen.getByRole("button", { name: `选择工作区 ${name}` });
+}
+
+function getWorkspaceCard(name: string) {
+  const card = getWorkspaceSelectButton(name).parentElement;
+  if (!card) throw new Error(`${name} workspace card not found`);
+  return card;
+}
+
 describe("pages/WorkspacesPage", () => {
   it("renders empty state and toasts when workspaces query fails", async () => {
     vi.mocked(toast).mockClear();
@@ -187,12 +197,7 @@ describe("pages/WorkspacesPage", () => {
 
     // Filter list
     fireEvent.change(screen.getByLabelText("搜索工作区"), { target: { value: "W2" } });
-    const w2Card = screen
-      .getAllByRole("button")
-      .find((el) => el.getAttribute("tabindex") === "0" && el.textContent?.includes("W2")) as
-      | HTMLElement
-      | undefined;
-    if (!w2Card) throw new Error("W2 workspace card not found");
+    const w2Card = getWorkspaceCard("W2");
     expect(within(w2Card).getByRole("button", { name: "对比切换" })).toBeInTheDocument();
 
     // Create workspace (duplicate blocked, then create blank)
@@ -339,12 +344,7 @@ describe("pages/WorkspacesPage", () => {
 
     renderWithProviders(<WorkspacesPage />);
 
-    const codexCard = screen
-      .getAllByRole("button")
-      .find(
-        (el) => el.getAttribute("tabindex") === "0" && el.getAttribute("aria-current") === "true"
-      ) as HTMLElement | undefined;
-    if (!codexCard) throw new Error("Active workspace card not found");
+    const codexCard = getWorkspaceCard("CodexW");
     expect(within(codexCard).queryByRole("button", { name: "对比切换" })).not.toBeInTheDocument();
 
     // active workspace => mcp tab has no non-active hint
@@ -353,12 +353,7 @@ describe("pages/WorkspacesPage", () => {
       screen.queryByText("非当前工作区：启用/停用仅写入数据库，不会同步到 CLI。")
     ).not.toBeInTheDocument();
 
-    const geminiCard = screen
-      .getAllByRole("button")
-      .find((el) => el.getAttribute("tabindex") === "0" && el.textContent?.includes("GeminiW")) as
-      | HTMLElement
-      | undefined;
-    if (!geminiCard) throw new Error("Gemini workspace card not found");
+    const geminiCard = getWorkspaceCard("GeminiW");
     fireEvent.click(within(geminiCard).getByRole("button", { name: "对比切换" }));
     const dialog = within(screen.getByRole("dialog"));
 
@@ -447,25 +442,15 @@ describe("pages/WorkspacesPage", () => {
     await waitFor(() => expect(screen.getAllByText("W2").length).toBeGreaterThan(0));
 
     // cover workspace card click + keydown handlers
-    const w2Card = screen
-      .getAllByRole("button")
-      .find((el) => el.getAttribute("tabindex") === "0" && el.textContent?.includes("W2")) as
-      | HTMLElement
-      | undefined;
-    if (!w2Card) throw new Error("W2 workspace card not found");
-    fireEvent.click(w2Card);
+    const w2Card = getWorkspaceCard("W2");
+    fireEvent.click(getWorkspaceSelectButton("W2"));
     expect(screen.getByText("非当前")).toBeInTheDocument();
 
-    const w1Card = screen
-      .getAllByRole("button")
-      .find((el) => el.getAttribute("tabindex") === "0" && el.textContent?.includes("W1")) as
-      | HTMLElement
-      | undefined;
-    if (!w1Card) throw new Error("W1 workspace card not found");
-    fireEvent.keyDown(w1Card, { key: "Enter" });
+    const w1SelectButton = getWorkspaceSelectButton("W1");
+    fireEvent.keyDown(w1SelectButton, { key: "Enter" });
     await waitFor(() => expect(screen.queryByText("非当前")).not.toBeInTheDocument());
 
-    fireEvent.keyDown(w2Card, { key: " " });
+    fireEvent.keyDown(getWorkspaceSelectButton("W2"), { key: " " });
     await waitFor(() => expect(screen.getByText("非当前")).toBeInTheDocument());
 
     // overview loading -> stats missing -> stats present

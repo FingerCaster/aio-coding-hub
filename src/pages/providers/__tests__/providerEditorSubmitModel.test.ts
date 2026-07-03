@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../services/gateway/upstreamRetryPolicy";
-import { DEFAULT_FORM_VALUES } from "../providerEditorUtils";
+import { DEFAULT_FORM_VALUES, deriveCodexBridgeTarget } from "../providerEditorUtils";
 import { buildProviderEditorUpsertInput } from "../providerEditorSubmitModel";
 import type { ProviderEditorPayloadContext } from "../providerEditorActionContext";
 
@@ -172,16 +172,16 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     });
   });
 
-  it("builds codex anthropic messages bridge payload", () => {
+  it("builds codex responses bridge payload", () => {
     const result = buildProviderEditorUpsertInput(
       makeContext({
         cliKey: "codex",
         authMode: "cx2cc",
-        codexBridgeTarget: "anthropic_messages",
-        sourceProviderId: 8,
+        codexBridgeTarget: "openai_responses",
+        sourceProviderId: 9,
         formValues: {
           ...DEFAULT_FORM_VALUES,
-          name: "Codex Messages Bridge",
+          name: "Codex Responses Bridge",
           api_key: "",
         },
       })
@@ -190,8 +190,14 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     expect(result.ok).toBe(true);
     if (!result.ok) return;
 
-    expect(result.value.payload.bridgeType).toBe("codex_to_anthropic_messages");
-    expect(result.value.payload.sourceProviderId).toBe(8);
+    expect(result.value.payload.bridgeType).toBe("codex_to_openai_responses");
+    expect(result.value.payload.sourceProviderId).toBe(9);
+  });
+
+  it("maps legacy codex anthropic messages bridge edits to responses target", () => {
+    expect(deriveCodexBridgeTarget({ bridge_type: "codex_to_anthropic_messages" })).toBe(
+      "openai_responses"
+    );
   });
 
   it("requires source provider for codex bridge payloads", () => {

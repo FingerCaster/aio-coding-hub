@@ -1,7 +1,7 @@
 // Usage: Runtime log console. Shows in-memory app logs (time / level / title) with optional on-demand details.
 // Request log details are persisted separately and should not be displayed here.
 
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from "react";
+import { memo, useCallback, useMemo, useReducer, useRef, useState } from "react";
 import {
   clearConsoleLogs,
   formatConsoleLogDetails,
@@ -71,6 +71,59 @@ function getRowIndicatorClass(entry: ConsoleLogEntry): string | null {
 const ROW_GRID_CLASS = "grid grid-cols-[150px_72px_1fr_20px] gap-2";
 
 const LEVEL_CHIPS: ConsoleLogLevel[] = ["error", "warn", "info", "debug"];
+const ALL_LEVELS = new Set<ConsoleLogLevel>(LEVEL_CHIPS);
+
+type ConsolePageState = {
+  autoScroll: boolean;
+  debugEnabled: boolean;
+  diagnosticsRunning: boolean;
+  showFilters: boolean;
+  searchQuery: string;
+  levelFilter: Set<ConsoleLogLevel>;
+};
+
+type ConsolePageAction =
+  | { type: "setAutoScroll"; value: boolean }
+  | { type: "setDebugEnabled"; value: boolean }
+  | { type: "setDiagnosticsRunning"; value: boolean }
+  | { type: "toggleFilters" }
+  | { type: "setSearchQuery"; value: string }
+  | { type: "toggleLevel"; level: ConsoleLogLevel };
+
+function createConsolePageState(): ConsolePageState {
+  return {
+    autoScroll: true,
+    debugEnabled: getConsoleDebugEnabled(),
+    diagnosticsRunning: false,
+    showFilters: false,
+    searchQuery: "",
+    levelFilter: new Set(ALL_LEVELS),
+  };
+}
+
+function consolePageReducer(state: ConsolePageState, action: ConsolePageAction): ConsolePageState {
+  switch (action.type) {
+    case "setAutoScroll":
+      return { ...state, autoScroll: action.value };
+    case "setDebugEnabled":
+      return { ...state, debugEnabled: action.value };
+    case "setDiagnosticsRunning":
+      return { ...state, diagnosticsRunning: action.value };
+    case "toggleFilters":
+      return { ...state, showFilters: !state.showFilters };
+    case "setSearchQuery":
+      return { ...state, searchQuery: action.value };
+    case "toggleLevel": {
+      const levelFilter = new Set(state.levelFilter);
+      if (levelFilter.has(action.level)) {
+        levelFilter.delete(action.level);
+      } else {
+        levelFilter.add(action.level);
+      }
+      return { ...state, levelFilter };
+    }
+  }
+}
 
 function matchesSearch(entry: ConsoleLogEntry, query: string): boolean {
   if (!query) return true;
@@ -252,16 +305,28 @@ const ConsoleLogRow = memo(function ConsoleLogRow({
 const ESTIMATED_ROW_HEIGHT = 56;
 
 export function ConsolePage() {
-  const logs = useConsoleLogs();
-  const [autoScroll, setAutoScroll] = useState(true);
-  const [debugEnabled, setDebugEnabled] = useState(() => getConsoleDebugEnabled());
-  const [diagnosticsRunning, setDiagnosticsRunning] = useState(false);
-  const [showFilters, setShowFilters] = useState(false);
-  const [searchQuery, setSearchQuery] = useState("");
-  const [levelFilter, setLevelFilter] = useState<Set<ConsoleLogLevel>>(
-    () => new Set(["error", "warn", "info", "debug"])
-  );
   const logsContainerRef = useRef<HTMLDivElement | null>(null);
+  const autoScrollRef = useRef(true);
+  const visibleLogCountRef = useRef(0);
+  const scrollToIndexRef = useRef<((index: number) => void) | null>(null);
+  const scheduleScrollToBottom = useCallback((force = false) => {
+    const scroll = () => {
+      if (!force && !autoScrollRef.current) return;
+      const count = visibleLogCountRef.current;
+      if (count <= 0) return;
+      scrollToIndexRef.current?.(count - 1);
+    };
+
+    if (typeof window !== "undefined" && typeof window.requestAnimationFrame === "function") {
+      window.requestAnimationFrame(scroll);
+      return;
+    }
+    setTimeout(scroll, 0);
+  }, []);
+  const logs = useConsoleLogs(scheduleScrollToBottom);
+  const [state, dispatch] = useReducer(consolePageReducer, undefined, createConsolePageState);
+  const { autoScroll, debugEnabled, diagnosticsRunning, showFilters, searchQuery, levelFilter } =
+    state;
 
   const visibleLogs = useMemo(() => {
     let filtered = debugEnabled ? logs : logs.filter((entry) => entry.level !== "debug");
@@ -287,40 +352,24 @@ export function ConsolePage() {
     estimateSize: () => ESTIMATED_ROW_HEIGHT,
     overscan: 10,
   });
+  scrollToIndexRef.current = (index) => {
+    virtualizer.scrollToIndex(index, { align: "end" });
+  };
+  autoScrollRef.current = autoScroll;
+  visibleLogCountRef.current = visibleLogs.length;
 
   const virtualItems = virtualizer.getVirtualItems();
-
-  // Auto-scroll to bottom when new logs arrive
-  const prevCountRef = useRef(visibleLogs.length);
-  useEffect(() => {
-    if (!autoScroll) {
-      prevCountRef.current = visibleLogs.length;
-      return;
-    }
-    if (visibleLogs.length > 0) {
-      virtualizer.scrollToIndex(visibleLogs.length - 1, { align: "end" });
-    }
-    prevCountRef.current = visibleLogs.length;
-  }, [autoScroll, visibleLogs.length, virtualizer]);
 
   // Detect user scroll to auto-disable/enable auto-scroll
   const handleScroll = useCallback(() => {
     const el = logsContainerRef.current;
     if (!el) return;
     const atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 50;
-    setAutoScroll(atBottom);
+    dispatch({ type: "setAutoScroll", value: atBottom });
   }, []);
 
   const toggleLevel = useCallback((level: ConsoleLogLevel) => {
-    setLevelFilter((prev) => {
-      const next = new Set(prev);
-      if (next.has(level)) {
-        next.delete(level);
-      } else {
-        next.add(level);
-      }
-      return next;
-    });
+    dispatch({ type: "toggleLevel", level });
   }, []);
 
   return (
@@ -332,7 +381,14 @@ export function ConsolePage() {
             <div className="flex flex-wrap items-center gap-3">
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">自动滚动</span>
-                <Switch checked={autoScroll} onCheckedChange={setAutoScroll} size="sm" />
+                <Switch
+                  checked={autoScroll}
+                  onCheckedChange={(next) => {
+                    dispatch({ type: "setAutoScroll", value: next });
+                    if (next) scheduleScrollToBottom(true);
+                  }}
+                  size="sm"
+                />
               </div>
               <div className="flex items-center gap-2">
                 <span className="text-sm text-muted-foreground">调试日志</span>
@@ -340,27 +396,27 @@ export function ConsolePage() {
                   checked={debugEnabled}
                   onCheckedChange={(next) => {
                     setConsoleDebugEnabled(next);
-                    setDebugEnabled(next);
+                    dispatch({ type: "setDebugEnabled", value: next });
                     toast(next ? "已开启调试日志" : "已关闭调试日志");
                   }}
                   size="sm"
                 />
               </div>
-              <Button onClick={() => setShowFilters((v) => !v)} variant="secondary">
+              <Button onClick={() => dispatch({ type: "toggleFilters" })} variant="secondary">
                 <Filter className="h-3.5 w-3.5 mr-1.5" />
                 过滤
               </Button>
               <Button
                 onClick={async () => {
                   if (diagnosticsRunning) return;
-                  setDiagnosticsRunning(true);
+                  dispatch({ type: "setDiagnosticsRunning", value: true });
                   try {
                     await collectAppMemoryDiagnostics();
                     toast("已生成内存诊断日志");
                   } catch {
                     toast("内存诊断失败，请查看错误日志");
                   } finally {
-                    setDiagnosticsRunning(false);
+                    dispatch({ type: "setDiagnosticsRunning", value: false });
                   }
                 }}
                 variant="secondary"
@@ -392,8 +448,9 @@ export function ConsolePage() {
               <input
                 type="text"
                 value={searchQuery}
-                onChange={(e) => setSearchQuery(e.target.value)}
+                onChange={(e) => dispatch({ type: "setSearchQuery", value: e.currentTarget.value })}
                 placeholder="搜索标题、trace_id、错误码..."
+                aria-label="搜索控制台日志"
                 className="h-8 w-full rounded-md border border-border bg-white pl-8 pr-3 text-xs text-secondary-foreground placeholder:text-muted-foreground outline-none focus:border-accent focus:ring-1 focus:ring-accent/30 dark:border-border dark:bg-secondary dark:text-foreground dark:placeholder:text-muted-foreground"
               />
             </div>

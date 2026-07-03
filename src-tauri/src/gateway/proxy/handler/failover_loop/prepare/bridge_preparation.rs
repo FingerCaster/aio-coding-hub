@@ -2,6 +2,7 @@
 
 use super::provider_iterator::SkipReason;
 use super::*;
+use crate::domain::providers::CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE;
 use crate::gateway::proxy::protocol_bridge::{self, BridgeContext};
 
 pub(super) struct BridgePreparationInput<'a, R: tauri::Runtime = tauri::Wry> {
@@ -22,6 +23,8 @@ pub(super) struct BridgePreparationResult {
     pub(super) upstream_query: Option<String>,
     pub(super) upstream_body_bytes: Bytes,
     pub(super) strip_request_content_encoding: bool,
+    pub(super) responses_cache_namespace: Option<String>,
+    pub(super) responses_cache_input: Option<Vec<serde_json::Value>>,
 }
 
 pub(super) enum BridgePreparationOutcome {
@@ -92,7 +95,7 @@ pub(super) async fn prepare<R: tauri::Runtime>(
         }
     };
 
-    let body_val = match parse_request_json(&args.upstream_body_bytes) {
+    let mut body_val = match parse_request_json(&args.upstream_body_bytes) {
         Ok(value) => value,
         Err(reason) => {
             emit_gateway_log(
@@ -107,6 +110,41 @@ pub(super) async fn prepare<R: tauri::Runtime>(
             return BridgePreparationOutcome::Terminal(reason);
         }
     };
+    let mut responses_cache_namespace = None;
+    let mut responses_cache_input = None;
+    if args.bridge_type == CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE {
+        let namespace = protocol_bridge::response_cache::namespace(
+            args.bridge_type,
+            source.id,
+            args.input.session_id.as_deref(),
+            args.input.trace_id.as_str(),
+        );
+        match protocol_bridge::inbound::openai_responses::prepare_responses_bridge_body(
+            body_val, &namespace,
+        ) {
+            Ok((prepared_body, expanded_input)) => {
+                body_val = prepared_body;
+                responses_cache_namespace = Some(namespace);
+                responses_cache_input = Some(expanded_input);
+            }
+            Err(err) => {
+                emit_gateway_log(
+                    &args.input.state.app,
+                    "warn",
+                    "BRIDGE_TRANSLATE_FAILED",
+                    format!(
+                        "[Bridge] request preparation failed bridge={} provider={} err={err}",
+                        args.bridge_type, args.provider_name_base
+                    ),
+                );
+                return BridgePreparationOutcome::Terminal(SkipReason {
+                    error_category: "translation",
+                    error_code: GatewayErrorCode::BridgeUnsupportedFeature.as_str(),
+                    reason: format!("bridge translation failed: {err}"),
+                });
+            }
+        }
+    }
     let requested_model = body_val.get("model").and_then(|m| m.as_str()).unwrap_or("");
     let bridge_ctx = BridgeContext {
         claude_models: args
@@ -131,15 +169,11 @@ pub(super) async fn prepare<R: tauri::Runtime>(
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(false),
         is_chatgpt_backend: false,
+        responses_cache_namespace: responses_cache_namespace.clone(),
+        responses_cache_input: responses_cache_input.clone(),
     };
 
-    let translated = match protocol_bridge::get_bridge(args.bridge_type)
-        .ok_or_else(|| format!("bridge not registered: {}", args.bridge_type))
-        .and_then(|bridge| {
-            bridge
-                .translate_request(body_val, &bridge_ctx)
-                .map_err(|err| err.to_string())
-        }) {
+    let translated = match translate_bridge_request(args.bridge_type, body_val, &bridge_ctx) {
         Ok(translated) => translated,
         Err(err) => {
             emit_gateway_log(
@@ -189,7 +223,23 @@ pub(super) async fn prepare<R: tauri::Runtime>(
         upstream_query: None,
         upstream_body_bytes,
         strip_request_content_encoding: true,
+        responses_cache_namespace,
+        responses_cache_input,
     }))
+}
+
+fn translate_bridge_request(
+    bridge_type: &str,
+    body_val: serde_json::Value,
+    bridge_ctx: &BridgeContext,
+) -> Result<protocol_bridge::bridge::TranslatedRequest, String> {
+    protocol_bridge::get_bridge(bridge_type)
+        .ok_or_else(|| format!("bridge not registered: {bridge_type}"))
+        .and_then(|bridge| {
+            bridge
+                .translate_request(body_val, bridge_ctx)
+                .map_err(|err| err.to_string())
+        })
 }
 
 fn parse_request_json(body: &[u8]) -> Result<serde_json::Value, SkipReason> {
@@ -202,11 +252,35 @@ fn parse_request_json(body: &[u8]) -> Result<serde_json::Value, SkipReason> {
 
 #[cfg(test)]
 mod tests {
-    use super::{parse_request_json, BridgePreparationOutcome, SkipReason};
+    use super::{
+        parse_request_json, translate_bridge_request, BridgePreparationOutcome, SkipReason,
+    };
+    use crate::gateway::proxy::protocol_bridge::BridgeContext;
     use crate::gateway::proxy::GatewayErrorCode;
+    use serde_json::json;
 
     fn terminal_bridge_error(reason: SkipReason) -> BridgePreparationOutcome {
         BridgePreparationOutcome::Terminal(reason)
+    }
+
+    fn codex_responses_ctx() -> BridgeContext {
+        let cx2cc_settings = crate::gateway::proxy::cx2cc::settings::Cx2ccSettings {
+            model_reasoning_effort: Some("medium".to_string()),
+            service_tier: Some("flex".to_string()),
+            disable_response_storage: true,
+            ..Default::default()
+        };
+        BridgeContext {
+            claude_models: Default::default(),
+            model_mapping: Default::default(),
+            cx2cc_settings,
+            requested_model: Some("gpt-5.5".to_string()),
+            mapped_model: None,
+            stream_requested: false,
+            is_chatgpt_backend: false,
+            responses_cache_namespace: None,
+            responses_cache_input: None,
+        }
     }
 
     #[test]
@@ -241,5 +315,48 @@ mod tests {
                 panic!("explicit bridge source failures must not skip/fail over")
             }
         }
+    }
+
+    #[test]
+    fn generic_codex_responses_bridge_preserves_responses_fields() {
+        let ctx = codex_responses_ctx();
+
+        let translated = translate_bridge_request(
+            "codex_to_openai_responses",
+            json!({
+                "model": "gpt-5.5",
+                "input": "Hi",
+                "reasoning": {"effort": "high"},
+                "service_tier": "priority",
+                "store": false
+            }),
+            &ctx,
+        )
+        .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/responses");
+        assert_eq!(translated.body["reasoning"], json!({"effort": "high"}));
+        assert_eq!(translated.body["service_tier"], json!("priority"));
+        assert_eq!(translated.body["store"], json!(false));
+    }
+
+    #[test]
+    fn generic_codex_responses_bridge_injects_configured_responses_fields() {
+        let ctx = codex_responses_ctx();
+
+        let translated = translate_bridge_request(
+            "codex_to_openai_responses",
+            json!({
+                "model": "gpt-5.5",
+                "input": "Hi"
+            }),
+            &ctx,
+        )
+        .unwrap();
+
+        assert_eq!(translated.target_path, "/v1/responses");
+        assert_eq!(translated.body["reasoning"], json!({"effort": "medium"}));
+        assert_eq!(translated.body["service_tier"], json!("flex"));
+        assert_eq!(translated.body["store"], json!(false));
     }
 }

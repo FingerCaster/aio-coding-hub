@@ -62,6 +62,10 @@ mod send_timeout;
 mod upstream_retry_policy;
 
 // --- response/ : upstream response handling & finalization ---
+#[path = "response/codex_reasoning_continuation.rs"]
+mod codex_reasoning_continuation;
+#[path = "response/codex_reasoning_features.rs"]
+mod codex_reasoning_features;
 #[path = "response/codex_reasoning_guard.rs"]
 mod codex_reasoning_guard;
 #[path = "response/finalize.rs"]
@@ -134,8 +138,9 @@ use crate::gateway::events::{
 };
 use crate::gateway::response_fixer;
 use crate::gateway::streams::{
-    spawn_usage_sse_relay_body, FirstChunkStream, GunzipStream, MaybePluginChunkStream,
-    TimingOnlyTeeStream, UsageBodyBufferTeeStream, UsageSseTeeStream,
+    apply_plugin_chunk_hooks, is_plugin_stream_error_chunk, spawn_usage_sse_relay_body,
+    FirstChunkStream, GunzipStream, MaybePluginChunkStream, TimingOnlyTeeStream,
+    UsageBodyBufferTeeStream, UsageSseTeeStream,
 };
 use crate::gateway::thinking_signature_rectifier;
 use crate::gateway::util::{
@@ -172,10 +177,9 @@ fn current_codex_reasoning_guard_model<'a, R: tauri::Runtime>(
         .or(input.requested_model.as_deref())
 }
 
-fn apply_codex_reasoning_guard_model_fallback<R: tauri::Runtime>(
+fn rewrite_prepared_requested_model<R: tauri::Runtime>(
     input: &RequestContext<R>,
     prepared: &mut provider_iterator::PreparedProvider,
-    retry_state: &mut attempt_executor::RetryLoopState,
     next_model: &str,
 ) -> bool {
     let location = input
@@ -235,10 +239,50 @@ fn apply_codex_reasoning_guard_model_fallback<R: tauri::Runtime>(
         changed = true;
     }
 
+    changed
+}
+
+fn sync_codex_prepared_active_requested_model<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    prepared: &mut provider_iterator::PreparedProvider,
+    active_requested_model: Option<&str>,
+) {
+    if input.cli_key != "codex" {
+        return;
+    }
+
+    let Some(active_requested_model) = active_requested_model
+        .map(str::trim)
+        .filter(|model| !model.is_empty())
+    else {
+        prepared.active_requested_model = None;
+        return;
+    };
+
+    if prepared.active_requested_model.as_deref() == Some(active_requested_model) {
+        return;
+    }
+
+    if rewrite_prepared_requested_model(input, prepared, active_requested_model) {
+        prepared.active_requested_model = Some(active_requested_model.to_string());
+    }
+}
+
+fn apply_codex_reasoning_guard_model_fallback<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    prepared: &mut provider_iterator::PreparedProvider,
+    retry_state: &mut attempt_executor::RetryLoopState,
+    next_model: &str,
+) -> bool {
+    if !rewrite_prepared_requested_model(input, prepared, next_model) {
+        return false;
+    }
+
     retry_state.codex_reasoning_guard_current_model = Some(next_model.to_string());
+    prepared.active_requested_model = Some(next_model.to_string());
     retry_state.codex_reasoning_guard_hits = 0;
     retry_state.allow_next_retry_beyond_max_attempts = true;
-    changed
+    true
 }
 
 /// Main failover loop: iterate providers, retry attempts, handle responses.
@@ -283,9 +327,12 @@ where
         upstream_request_timeout_non_streaming: input.upstream_request_timeout_non_streaming,
         verbose_provider_error: input.verbose_provider_error,
         codex_reasoning_guard_enabled: input.codex_reasoning_guard_enabled,
+        codex_reasoning_guard_rule_mode: input.codex_reasoning_guard_rule_mode,
         codex_reasoning_guard_compare_mode: input.codex_reasoning_guard_compare_mode,
         codex_reasoning_guard_reasoning_equals: &input.codex_reasoning_guard_reasoning_equals,
         codex_reasoning_guard_model_rules: &input.codex_reasoning_guard_model_rules,
+        codex_reasoning_guard_active_template_id: &input.codex_reasoning_guard_active_template_id,
+        codex_reasoning_guard_custom_templates: &input.codex_reasoning_guard_custom_templates,
         codex_reasoning_guard_immediate_retry_budget: input
             .codex_reasoning_guard_immediate_retry_budget,
         codex_reasoning_guard_delayed_retry_budget: input
@@ -299,6 +346,12 @@ where
         codex_reasoning_guard_concurrent_max_attempts: input
             .codex_reasoning_guard_concurrent_max_attempts,
         codex_reasoning_guard_model_fallbacks: &input.codex_reasoning_guard_model_fallbacks,
+        codex_reasoning_guard_continuation_repair_enabled: input
+            .codex_reasoning_guard_continuation_repair_enabled,
+        codex_reasoning_guard_continuation_max_rounds: input
+            .codex_reasoning_guard_continuation_max_rounds,
+        codex_reasoning_guard_continuation_max_output_tokens: input
+            .codex_reasoning_guard_continuation_max_output_tokens,
         enable_response_fixer: input.enable_response_fixer,
         response_fixer_stream_config: input.response_fixer_stream_config,
         response_fixer_non_stream_config: input.response_fixer_non_stream_config,
@@ -306,6 +359,7 @@ where
     });
 
     let mut run_state = FailoverRunState::new();
+    run_state.active_requested_model = input.requested_model.clone();
 
     let max_providers_to_try = (input.max_providers_to_try as usize).max(1);
     let mut counters = provider_iterator::IterationCounters::new();
@@ -350,7 +404,10 @@ where
                     created_at_ms,
                     created_at,
                     session_id: owned.session_id,
-                    requested_model: owned.requested_model,
+                    requested_model: run_state
+                        .active_requested_model
+                        .clone()
+                        .or(owned.requested_model),
                     special_settings: owned.special_settings,
                     verbose_provider_error: input.verbose_provider_error,
                     error_category: reason.error_category,
@@ -361,6 +418,11 @@ where
             }
         };
 
+        sync_codex_prepared_active_requested_model(
+            &input,
+            &mut prepared,
+            run_state.active_requested_model.as_deref(),
+        );
         let mut circuit_snapshot = prepared.circuit_snapshot.clone();
 
         if let Some(resp) = retry_engine::run_retry_loop(
@@ -371,6 +433,7 @@ where
                 &mut run_state.attempts,
                 &mut run_state.failed_provider_ids,
                 &mut run_state.last_outcome,
+                &mut run_state.active_requested_model,
                 &mut circuit_snapshot,
                 &mut abort_guard,
             ),
@@ -400,7 +463,10 @@ where
             created_at_ms,
             created_at,
             session_id: owned.session_id,
-            requested_model: owned.requested_model,
+            requested_model: run_state
+                .active_requested_model
+                .clone()
+                .or(owned.requested_model),
             special_settings: owned.special_settings,
             verbose_provider_error: input.verbose_provider_error,
             earliest_available_unix: counters.earliest_available_unix,
@@ -431,7 +497,7 @@ where
         created_at_ms,
         created_at,
         session_id: owned.session_id,
-        requested_model: owned.requested_model,
+        requested_model: run_state.active_requested_model.or(owned.requested_model),
         special_settings: owned.special_settings,
         verbose_provider_error: input.verbose_provider_error,
     })

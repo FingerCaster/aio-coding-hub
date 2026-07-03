@@ -838,4 +838,165 @@ describe("components/cli-manager/WslSettingsCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "切换" }));
     expect(settingsSetMutation.mutateAsync).not.toHaveBeenCalled();
   });
+
+  it("confirms localhost listen-mode switch from desktop event", async () => {
+    const settingsSetMutation = { isPending: false, mutateAsync: vi.fn().mockResolvedValue({}) };
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(settingsSetMutation as any);
+    vi.mocked(useAppAboutQuery).mockReturnValue({ data: { os: "windows" } } as any);
+    vi.mocked(useWslOverviewQuery).mockReturnValue({
+      data: { detection: { detected: true, distros: ["Ubuntu"] }, hostIp: null, statusRows: [] },
+      isFetched: true,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useWslConfigureClientsMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+
+    render(
+      <WslSettingsCard
+        available={true}
+        saving={false}
+        settings={
+          {
+            gateway_listen_mode: "localhost",
+            wsl_auto_config: true,
+            wsl_target_cli: { claude: true, codex: true, gemini: true },
+            wsl_host_address_mode: "auto",
+            wsl_custom_host_address: "127.0.0.1",
+            preferred_port: 37123,
+            auto_start: false,
+            log_retention_days: 7,
+            failover_max_attempts_per_provider: 5,
+            failover_max_providers_to_try: 5,
+          } as any
+        }
+      />
+    );
+
+    await waitFor(() => {
+      expect(tauriListen).toHaveBeenCalledWith("wsl:localhost_switch_prompt", expect.any(Function));
+    });
+
+    emitTauriEvent("wsl:localhost_switch_prompt", {});
+    expect(await screen.findByText("检测到 WSL 环境")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "切换" }));
+
+    await waitFor(() => {
+      expect(settingsSetMutation.mutateAsync).toHaveBeenCalledWith({
+        gateway_listen_mode: "wsl_auto",
+      });
+    });
+    expect(toast).toHaveBeenCalledWith('已切换到"WSL 自动检测"模式');
+  });
+
+  it("rolls back WSL address updates when settings persistence fails", async () => {
+    const settingsSetMutation = { isPending: false, mutateAsync: vi.fn() };
+    settingsSetMutation.mutateAsync.mockRejectedValueOnce(new Error("no"));
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(settingsSetMutation as any);
+    vi.mocked(useAppAboutQuery).mockReturnValue({ data: { os: "windows" } } as any);
+    vi.mocked(useWslOverviewQuery).mockReturnValue({
+      data: {
+        detection: { detected: true, distros: ["Ubuntu"] },
+        hostIp: "172.20.0.1",
+        statusRows: [],
+      },
+      isFetched: true,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useWslConfigureClientsMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+
+    const settings = {
+      gateway_listen_mode: "wsl_auto",
+      wsl_auto_config: false,
+      wsl_target_cli: { claude: true, codex: false, gemini: false },
+      codex_home_mode: "follow_codex_home",
+      codex_home_override: "",
+      wsl_host_address_mode: "custom",
+      wsl_custom_host_address: "127.0.0.1",
+      preferred_port: 37123,
+      auto_start: false,
+      log_retention_days: 7,
+      failover_max_attempts_per_provider: 5,
+      failover_max_providers_to_try: 5,
+    } as any;
+
+    render(<WslSettingsCard available={true} saving={false} settings={settings} />);
+
+    fireEvent.click(screen.getByText("高级选项（地址兜底）"));
+    const input = screen.getByDisplayValue("127.0.0.1");
+    fireEvent.change(input, { target: { value: "172.20.0.77" } });
+    fireEvent.blur(input);
+
+    await waitFor(() => {
+      expect(toast).toHaveBeenCalledWith("更新失败：请稍后重试");
+    });
+    expect(settingsSetMutation.mutateAsync).toHaveBeenCalledWith({
+      wsl_host_address_mode: "custom",
+      wsl_custom_host_address: "172.20.0.77",
+    });
+  });
+
+  it("persists auto-config switch and handles failures", async () => {
+    const settingsSetMutation = { isPending: false, mutateAsync: vi.fn() };
+    settingsSetMutation.mutateAsync
+      .mockResolvedValueOnce({})
+      .mockRejectedValueOnce(new Error("no"));
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(settingsSetMutation as any);
+    vi.mocked(useAppAboutQuery).mockReturnValue({ data: { os: "windows" } } as any);
+    vi.mocked(useWslOverviewQuery).mockReturnValue({
+      data: { detection: { detected: true, distros: ["Ubuntu"] }, hostIp: null, statusRows: [] },
+      isFetched: true,
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useWslConfigureClientsMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync: vi.fn(),
+    } as any);
+
+    render(
+      <WslSettingsCard
+        available={true}
+        saving={false}
+        settings={
+          {
+            gateway_listen_mode: "wsl_auto",
+            wsl_auto_config: false,
+            wsl_target_cli: { claude: true, codex: false, gemini: false },
+            codex_home_mode: "custom",
+            codex_home_override: "D:\\Work\\.codex",
+            wsl_host_address_mode: "auto",
+            wsl_custom_host_address: "127.0.0.1",
+            preferred_port: 37123,
+            auto_start: false,
+            log_retention_days: 7,
+            failover_max_attempts_per_provider: 5,
+            failover_max_providers_to_try: 5,
+          } as any
+        }
+      />
+    );
+
+    expect(screen.getByText(/当前未启用 Codex 的 WSL 自动同步/)).toBeInTheDocument();
+    expect(screen.getByText(/使用自定义位置/)).toBeInTheDocument();
+
+    const autoConfigSwitch = screen.getAllByRole("switch")[0];
+    fireEvent.click(autoConfigSwitch);
+    await waitFor(() => {
+      expect(settingsSetMutation.mutateAsync).toHaveBeenCalledWith({ wsl_auto_config: true });
+    });
+    expect(toast).toHaveBeenCalledWith("已保存");
+
+    vi.mocked(toast).mockClear();
+    fireEvent.click(autoConfigSwitch);
+    await waitFor(() => {
+      expect(toast).toHaveBeenCalledWith("更新失败：请稍后重试");
+    });
+  });
 });

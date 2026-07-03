@@ -38,10 +38,14 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) upstream_request_timeout_non_streaming: Option<Duration>,
     pub(super) verbose_provider_error: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: &'a [i64],
     pub(super) codex_reasoning_guard_model_rules:
         &'a [crate::settings::CodexReasoningGuardModelRule],
+    pub(super) codex_reasoning_guard_active_template_id: &'a str,
+    pub(super) codex_reasoning_guard_custom_templates:
+        &'a [crate::settings::CodexReasoningGuardRuleTemplate],
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -52,6 +56,9 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
+    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -81,10 +88,14 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) upstream_request_timeout_non_streaming: Option<Duration>,
     pub(super) verbose_provider_error: bool,
     pub(super) codex_reasoning_guard_enabled: bool,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     pub(super) codex_reasoning_guard_reasoning_equals: &'a [i64],
     pub(super) codex_reasoning_guard_model_rules:
         &'a [crate::settings::CodexReasoningGuardModelRule],
+    pub(super) codex_reasoning_guard_active_template_id: &'a str,
+    pub(super) codex_reasoning_guard_custom_templates:
+        &'a [crate::settings::CodexReasoningGuardRuleTemplate],
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -95,6 +106,9 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
+    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -134,9 +148,12 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             upstream_request_timeout_non_streaming: args.upstream_request_timeout_non_streaming,
             verbose_provider_error: args.verbose_provider_error,
             codex_reasoning_guard_enabled: args.codex_reasoning_guard_enabled,
+            codex_reasoning_guard_rule_mode: args.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: args.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: args.codex_reasoning_guard_reasoning_equals,
             codex_reasoning_guard_model_rules: args.codex_reasoning_guard_model_rules,
+            codex_reasoning_guard_active_template_id: args.codex_reasoning_guard_active_template_id,
+            codex_reasoning_guard_custom_templates: args.codex_reasoning_guard_custom_templates,
             codex_reasoning_guard_immediate_retry_budget: args
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: args
@@ -150,6 +167,12 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             codex_reasoning_guard_concurrent_max_attempts: args
                 .codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks: args.codex_reasoning_guard_model_fallbacks,
+            codex_reasoning_guard_continuation_repair_enabled: args
+                .codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds: args
+                .codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens: args
+                .codex_reasoning_guard_continuation_max_output_tokens,
             enable_response_fixer: args.enable_response_fixer,
             response_fixer_stream_config: args.response_fixer_stream_config,
             response_fixer_non_stream_config: args.response_fixer_non_stream_config,
@@ -186,10 +209,10 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) upstream_stream_idle_timeout: Option<Duration>,
     pub(super) upstream_request_timeout_non_streaming: Option<Duration>,
     pub(super) codex_reasoning_guard_enabled: bool,
-    pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
-    pub(super) codex_reasoning_guard_reasoning_equals: Vec<i64>,
-    pub(super) codex_reasoning_guard_model_rules:
-        Vec<crate::settings::CodexReasoningGuardModelRule>,
+    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
+    pub(super) codex_reasoning_guard_active_template_id: String,
+    pub(super) codex_reasoning_guard_custom_templates:
+        Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
     pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
     pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
@@ -200,6 +223,9 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
+    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
+    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
+    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -230,11 +256,13 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             upstream_stream_idle_timeout: ctx.upstream_stream_idle_timeout,
             upstream_request_timeout_non_streaming: ctx.upstream_request_timeout_non_streaming,
             codex_reasoning_guard_enabled: ctx.codex_reasoning_guard_enabled,
-            codex_reasoning_guard_compare_mode: ctx.codex_reasoning_guard_compare_mode,
-            codex_reasoning_guard_reasoning_equals: ctx
-                .codex_reasoning_guard_reasoning_equals
+            codex_reasoning_guard_rule_mode: ctx.codex_reasoning_guard_rule_mode,
+            codex_reasoning_guard_active_template_id: ctx
+                .codex_reasoning_guard_active_template_id
+                .to_string(),
+            codex_reasoning_guard_custom_templates: ctx
+                .codex_reasoning_guard_custom_templates
                 .to_vec(),
-            codex_reasoning_guard_model_rules: ctx.codex_reasoning_guard_model_rules.to_vec(),
             codex_reasoning_guard_immediate_retry_budget: ctx
                 .codex_reasoning_guard_immediate_retry_budget,
             codex_reasoning_guard_delayed_retry_budget: ctx
@@ -250,6 +278,12 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             codex_reasoning_guard_model_fallbacks: ctx
                 .codex_reasoning_guard_model_fallbacks
                 .to_vec(),
+            codex_reasoning_guard_continuation_repair_enabled: ctx
+                .codex_reasoning_guard_continuation_repair_enabled,
+            codex_reasoning_guard_continuation_max_rounds: ctx
+                .codex_reasoning_guard_continuation_max_rounds,
+            codex_reasoning_guard_continuation_max_output_tokens: ctx
+                .codex_reasoning_guard_continuation_max_output_tokens,
             enable_response_fixer: ctx.enable_response_fixer,
             response_fixer_stream_config: ctx.response_fixer_stream_config,
             response_fixer_non_stream_config: ctx.response_fixer_non_stream_config,
@@ -263,6 +297,7 @@ pub(super) struct ProviderCtx<'a> {
     pub(super) provider_id: i64,
     pub(super) provider_name_base: &'a String,
     pub(super) provider_base_url_base: &'a String,
+    pub(super) active_requested_model: Option<&'a str>,
     pub(super) auth_mode: &'a str,
     pub(super) provider_index: u32,
     pub(super) session_reuse: Option<bool>,
@@ -276,6 +311,7 @@ pub(super) struct ProviderCtxOwned {
     pub(super) provider_id: i64,
     pub(super) provider_name_base: String,
     pub(super) provider_base_url_base: String,
+    pub(super) active_requested_model: Option<String>,
     pub(super) auth_mode: String,
     pub(super) provider_index: u32,
     pub(super) session_reuse: Option<bool>,
@@ -290,6 +326,7 @@ impl<'a> From<ProviderCtx<'a>> for ProviderCtxOwned {
             provider_id: ctx.provider_id,
             provider_name_base: ctx.provider_name_base.clone(),
             provider_base_url_base: ctx.provider_base_url_base.clone(),
+            active_requested_model: ctx.active_requested_model.map(str::to_string),
             auth_mode: ctx.auth_mode.to_string(),
             provider_index: ctx.provider_index,
             session_reuse: ctx.session_reuse,
@@ -335,7 +372,11 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         attempt_started,
         attempts: attempts.to_vec(),
         attempts_json,
-        requested_model: ctx.requested_model.clone(),
+        requested_model: provider_ctx
+            .active_requested_model
+            .as_ref()
+            .cloned()
+            .or_else(|| ctx.requested_model.clone()),
         created_at_ms: ctx.created_at_ms,
         created_at: ctx.created_at,
         provider_cooldown_secs: ctx.provider_cooldown_secs,
@@ -345,6 +386,14 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         auth_mode: provider_ctx.auth_mode.clone(),
         fake_200_detected: false,
         fake_200_quota_exhausted: false,
+        activity: Arc::new(Mutex::new(
+            crate::gateway::streams::StreamActivityTracker::new(
+                &ctx.trace_id,
+                &ctx.cli_key,
+                ctx.created_at_ms,
+            ),
+        )),
+        active_requests: ctx.state.active_requests.clone(),
     }
 }
 
@@ -358,6 +407,8 @@ pub(super) struct AttemptCtx<'a> {
     pub(super) gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<&'a str>,
+    pub(super) responses_cache_namespace: Option<&'a str>,
+    pub(super) responses_cache_input: Option<&'a [serde_json::Value]>,
     pub(super) anthropic_stream_requested: bool,
 }
 
@@ -365,6 +416,7 @@ pub(super) struct LoopState<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) attempts: &'a mut Vec<FailoverAttempt>,
     pub(super) failed_provider_ids: &'a mut HashSet<i64>,
     pub(super) last_outcome: &'a mut Option<AttemptOutcome>,
+    pub(super) active_requested_model: &'a mut Option<String>,
     pub(super) circuit_snapshot: &'a mut circuit_breaker::CircuitSnapshot,
     pub(super) abort_guard: &'a mut RequestAbortGuard<R>,
 }
@@ -388,6 +440,7 @@ pub(super) struct FailoverRunState {
     pub(super) attempts: Vec<FailoverAttempt>,
     pub(super) failed_provider_ids: HashSet<i64>,
     pub(super) last_outcome: Option<AttemptOutcome>,
+    pub(super) active_requested_model: Option<String>,
 }
 
 impl FailoverRunState {
@@ -396,6 +449,7 @@ impl FailoverRunState {
             attempts: Vec::new(),
             failed_provider_ids: HashSet::new(),
             last_outcome: None,
+            active_requested_model: None,
         }
     }
 }
@@ -405,6 +459,7 @@ impl<'a, R: tauri::Runtime> LoopState<'a, R> {
         attempts: &'a mut Vec<FailoverAttempt>,
         failed_provider_ids: &'a mut HashSet<i64>,
         last_outcome: &'a mut Option<AttemptOutcome>,
+        active_requested_model: &'a mut Option<String>,
         circuit_snapshot: &'a mut circuit_breaker::CircuitSnapshot,
         abort_guard: &'a mut RequestAbortGuard<R>,
     ) -> Self {
@@ -412,6 +467,7 @@ impl<'a, R: tauri::Runtime> LoopState<'a, R> {
             attempts,
             failed_provider_ids,
             last_outcome,
+            active_requested_model,
             circuit_snapshot,
             abort_guard,
         }
@@ -426,6 +482,7 @@ impl<'a, R: tauri::Runtime> LoopState<'a, R> {
             attempts: self.attempts,
             failed_provider_ids: self.failed_provider_ids,
             last_outcome: self.last_outcome,
+            active_requested_model: self.active_requested_model,
             circuit_snapshot: self.circuit_snapshot,
             abort_guard: self.abort_guard,
         }

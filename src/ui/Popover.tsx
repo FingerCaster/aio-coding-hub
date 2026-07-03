@@ -11,6 +11,7 @@ export type PopoverProps = {
   align?: "start" | "center" | "end";
   className?: string;
   contentClassName?: string;
+  portalled?: boolean;
 };
 
 export function Popover({
@@ -22,6 +23,7 @@ export function Popover({
   align = "end",
   className,
   contentClassName,
+  portalled = true,
 }: PopoverProps) {
   const [internalOpen, setInternalOpen] = useState(false);
 
@@ -43,7 +45,12 @@ export function Popover({
           {trigger}
         </button>
       </PopoverTrigger>
-      <PopoverContent side={placement} align={align} className={contentClassName}>
+      <PopoverContent
+        side={placement}
+        align={align}
+        className={contentClassName}
+        portalled={portalled}
+      >
         {children}
       </PopoverContent>
     </PopoverRoot>

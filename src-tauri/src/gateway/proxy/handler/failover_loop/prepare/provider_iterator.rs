@@ -26,13 +26,17 @@ pub(super) struct PreparedProvider {
     pub(super) upstream_forwarded_path: String,
     pub(super) upstream_query: Option<String>,
     pub(super) upstream_body_bytes: Bytes,
+    pub(super) active_requested_model: Option<String>,
     pub(super) strip_request_content_encoding: bool,
     pub(super) request_body_mutated_before_attempt: bool,
     pub(super) gemini_oauth_response_mode: Option<GeminiOAuthResponseMode>,
     pub(super) use_codex_chatgpt_backend: bool,
+    pub(super) codex_reasoning_continuation_request_eligible: bool,
     pub(super) codex_chatgpt_account_id: Option<String>,
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<String>,
+    pub(super) responses_cache_namespace: Option<String>,
+    pub(super) responses_cache_input: Option<Vec<serde_json::Value>>,
     pub(super) bridge_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
@@ -231,6 +235,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     // --- CX2CC translation ---
     let mut cx2cc_active = false;
     let mut active_bridge_type: Option<String> = None;
+    let mut responses_cache_namespace: Option<String> = None;
+    let mut responses_cache_input: Option<Vec<serde_json::Value>> = None;
     let mut bridge_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_codex_session_id: Option<String> = None;
@@ -298,6 +304,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
                 upstream_query = result.upstream_query;
                 upstream_body_bytes = result.upstream_body_bytes;
                 strip_request_content_encoding = result.strip_request_content_encoding;
+                responses_cache_namespace = result.responses_cache_namespace;
+                responses_cache_input = result.responses_cache_input;
             }
             bridge_preparation::BridgePreparationOutcome::Terminal(reason) => {
                 provider_checks::skip_with_reason(
@@ -328,6 +336,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         provider_id,
         provider_name_base: &provider_name_base,
         provider_base_url_base: &provider_base_url_base,
+        active_requested_model: input.requested_model.as_deref(),
         auth_mode: provider.auth_mode.as_str(),
         provider_index,
         session_reuse,
@@ -375,6 +384,24 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         );
     }
 
+    let include_outcome = codex_reasoning_continuation::ensure_encrypted_reasoning_include(
+        codex_reasoning_continuation::IncludeMergeInput {
+            repair_enabled: input.codex_reasoning_guard_continuation_repair_enabled,
+            cli_key: &input.cli_key,
+            upstream_forwarded_path: &upstream_forwarded_path,
+            body: upstream_body_bytes.as_ref(),
+            active_bridge_type: active_bridge_type.as_deref(),
+            oauth_adapter_present: oauth_adapter.is_some(),
+            gemini_oauth_response_mode_present: gemini_oauth_response_mode.is_some(),
+            use_codex_chatgpt_backend,
+        },
+    );
+    let codex_reasoning_continuation_request_eligible = include_outcome.eligible;
+    if include_outcome.changed {
+        upstream_body_bytes = include_outcome.body;
+        strip_request_content_encoding = true;
+    }
+
     let request_body_mutated_before_attempt = input.request_body_state.is_mutated()
         || upstream_body_bytes != input.request_body_state.decoded_clone()
         || strip_request_content_encoding;
@@ -393,13 +420,17 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         upstream_forwarded_path,
         upstream_query,
         upstream_body_bytes,
+        active_requested_model: input.requested_model.clone(),
         strip_request_content_encoding,
         request_body_mutated_before_attempt,
         gemini_oauth_response_mode,
         use_codex_chatgpt_backend,
+        codex_reasoning_continuation_request_eligible,
         codex_chatgpt_account_id,
         cx2cc_active,
         active_bridge_type,
+        responses_cache_namespace,
+        responses_cache_input,
         bridge_source,
         cx2cc_source,
         cx2cc_codex_session_id,

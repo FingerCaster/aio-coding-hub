@@ -8,7 +8,7 @@ import { useGatewayCircuitByProviderId } from "../../query/gateway";
 import {
   buildAvailabilityTimeline,
   type AvailabilityTimelineData,
-} from "../../components/usage/UsageAvailabilityPanel";
+} from "../../components/usage/usageAvailabilityTimeline";
 
 const CLIS: CliKey[] = ["claude", "codex", "gemini"];
 const REQUEST_LOGS_LIMIT = 2000;

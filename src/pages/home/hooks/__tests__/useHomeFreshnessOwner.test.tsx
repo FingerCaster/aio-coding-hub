@@ -77,7 +77,7 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
     vi.useRealTimers();
   });
 
-  it("waits for foreground-active state before refreshing after foreground events", async () => {
+  it("waits for foreground-active state before refreshing from foreground events", async () => {
     vi.useFakeTimers();
     const refreshRequestLogs = vi.fn().mockResolvedValue(null);
     let foregroundArgs: { onForeground: () => void } | null = null;
@@ -115,6 +115,10 @@ describe("pages/home/hooks/useHomeFreshnessOwner", () => {
     view.rerender({
       overviewActive: true,
       foregroundActive: true,
+    });
+
+    act(() => {
+      foregroundArgs?.onForeground();
     });
 
     await act(async () => {

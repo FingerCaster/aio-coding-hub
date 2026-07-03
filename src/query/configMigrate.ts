@@ -1,4 +1,5 @@
 import { useMutation, useQueryClient } from "@tanstack/react-query";
+import { useCallback, useMemo, useState } from "react";
 import {
   configExport,
   configImport,
@@ -17,26 +18,18 @@ import {
   wslKeys,
 } from "./keys";
 
-async function invalidateImportedConfigQueries(queryClient: ReturnType<typeof useQueryClient>) {
-  await Promise.all([
-    queryClient.invalidateQueries({ queryKey: settingsKeys.all }),
-    queryClient.invalidateQueries({ queryKey: gatewayKeys.all }),
-    queryClient.invalidateQueries({ queryKey: providersKeys.all }),
-    queryClient.invalidateQueries({ queryKey: sortModesKeys.all }),
-    queryClient.invalidateQueries({ queryKey: workspacesKeys.all }),
-    queryClient.invalidateQueries({ queryKey: promptsKeys.all }),
-    queryClient.invalidateQueries({ queryKey: mcpKeys.all }),
-    queryClient.invalidateQueries({ queryKey: skillsKeys.all }),
-    queryClient.invalidateQueries({ queryKey: wslKeys.all }),
-    queryClient.invalidateQueries({ queryKey: cliProxyKeys.all }),
-  ]);
-}
-
 export function useConfigExportMutation() {
-  return useMutation({
-    mutationFn: (input: { filePath: string }) =>
-      configExport(normalizeConfigMigrateFilePath(input.filePath)),
-  });
+  const [isPending, setIsPending] = useState(false);
+  const mutateAsync = useCallback(async (input: { filePath: string }) => {
+    setIsPending(true);
+    try {
+      return await configExport(normalizeConfigMigrateFilePath(input.filePath));
+    } finally {
+      setIsPending(false);
+    }
+  }, []);
+
+  return useMemo(() => ({ isPending, mutateAsync }), [isPending, mutateAsync]);
 }
 
 export function useConfigImportMutation() {
@@ -47,7 +40,18 @@ export function useConfigImportMutation() {
       configImport(normalizeConfigMigrateFilePath(input.filePath)),
     onSuccess: async (result) => {
       if (!result) return;
-      await invalidateImportedConfigQueries(queryClient);
+      await Promise.all([
+        queryClient.invalidateQueries({ queryKey: settingsKeys.all }),
+        queryClient.invalidateQueries({ queryKey: gatewayKeys.all }),
+        queryClient.invalidateQueries({ queryKey: providersKeys.all }),
+        queryClient.invalidateQueries({ queryKey: sortModesKeys.all }),
+        queryClient.invalidateQueries({ queryKey: workspacesKeys.all }),
+        queryClient.invalidateQueries({ queryKey: promptsKeys.all }),
+        queryClient.invalidateQueries({ queryKey: mcpKeys.all }),
+        queryClient.invalidateQueries({ queryKey: skillsKeys.all }),
+        queryClient.invalidateQueries({ queryKey: wslKeys.all }),
+        queryClient.invalidateQueries({ queryKey: cliProxyKeys.all }),
+      ]);
     },
   });
 }

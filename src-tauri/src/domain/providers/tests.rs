@@ -160,6 +160,25 @@ fn get_source_provider_for_gateway_allows_cross_cli_codex_bridge_sources() {
 }
 
 #[test]
+fn get_source_provider_for_gateway_allows_disabled_source_for_codex_bridge() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers-disabled-source.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut source_params = default_provider_params("Disabled Codex source");
+    source_params.cli_key = "codex".to_string();
+    source_params.enabled = false;
+    let source = upsert(&db, source_params).expect("insert codex source");
+
+    let (resolved, cli_key) =
+        get_source_provider_for_gateway(&db, source.id, CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE)
+            .expect("codex responses bridge source");
+
+    assert_eq!(resolved.id, source.id);
+    assert_eq!(cli_key, "codex");
+}
+
+#[test]
 fn get_source_provider_for_gateway_keeps_cx2cc_codex_source_requirement() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db_path = temp.path().join("providers.sqlite3");
@@ -171,6 +190,22 @@ fn get_source_provider_for_gateway_keeps_cx2cc_codex_source_requirement() {
 
     let err = get_source_provider_for_gateway(&db, claude_source.id, CX2CC_BRIDGE_TYPE)
         .expect_err("cx2cc should still reject non-codex source");
+    assert!(err.to_string().contains("source provider not found"));
+}
+
+#[test]
+fn get_source_provider_for_gateway_keeps_cx2cc_source_enabled_requirement() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let db_path = temp.path().join("providers-cx2cc-disabled-source.sqlite3");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut source_params = default_provider_params("Disabled Codex source");
+    source_params.cli_key = "codex".to_string();
+    source_params.enabled = false;
+    let source = upsert(&db, source_params).expect("insert codex source");
+
+    let err = get_source_provider_for_gateway(&db, source.id, CX2CC_BRIDGE_TYPE)
+        .expect_err("cx2cc should still reject disabled source");
     assert!(err.to_string().contains("source provider not found"));
 }
 
@@ -513,6 +548,7 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         source_provider_id: None,
         bridge_type: None,
         stream_idle_timeout_seconds: None,
+        extension_values: None,
         upstream_retry_policy_override: None,
         upstream_retry_policy_override_specified: false,
     }
@@ -767,6 +803,7 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             bridge_type: None,
             stream_idle_timeout_seconds: None,
             model_mapping: None,
+            extension_values: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         },

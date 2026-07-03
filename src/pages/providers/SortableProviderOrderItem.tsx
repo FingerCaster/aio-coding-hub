@@ -1,4 +1,4 @@
-import { memo, type HTMLAttributes, type ReactNode } from "react";
+import { memo, useMemo, type HTMLAttributes, type ReactNode } from "react";
 import { GripVertical } from "lucide-react";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
@@ -10,19 +10,22 @@ export type ProviderOrderItemProps = {
   providerId?: number;
   index: number;
   trailing?: ReactNode;
+  children?: ReactNode;
   className?: string;
   dragProps?: HTMLAttributes<HTMLDivElement>;
   showProviderDisabledBadge?: boolean;
 };
 
-export const ProviderOrderItem = memo(function ProviderOrderItem({
+const ProviderOrderItem = memo(function ProviderOrderItem({
   provider,
   providerId,
   trailing = null,
+  children = null,
   className,
   dragProps,
   showProviderDisabledBadge = true,
 }: ProviderOrderItemProps) {
+  const trailingContent = trailing ?? children;
   const label = provider?.name?.trim()
     ? provider.name
     : `未知 Provider #${provider?.id ?? providerId ?? "?"}`;
@@ -52,7 +55,7 @@ export const ProviderOrderItem = memo(function ProviderOrderItem({
           关闭
         </span>
       ) : null}
-      {trailing}
+      {trailingContent}
     </div>
   );
 });
@@ -69,6 +72,7 @@ export const SortableProviderOrderItem = memo(function SortableProviderOrderItem
   providerId,
   index,
   trailing = null,
+  children = null,
   showProviderDisabledBadge = true,
   disabled = false,
 }: SortableProviderOrderItemProps) {
@@ -81,6 +85,10 @@ export const SortableProviderOrderItem = memo(function SortableProviderOrderItem
     transform: CSS.Transform.toString(transform),
     transition,
   };
+  const dragProps = useMemo(
+    () => (disabled ? undefined : { ...attributes, ...listeners }),
+    [attributes, disabled, listeners]
+  );
 
   return (
     <div ref={setNodeRef} style={style}>
@@ -94,8 +102,10 @@ export const SortableProviderOrderItem = memo(function SortableProviderOrderItem
           isDragging && "z-10 scale-[1.02] opacity-95 shadow-lg ring-2 ring-ring/30",
           disabled && "opacity-70"
         )}
-        dragProps={disabled ? undefined : { ...attributes, ...listeners }}
-      />
+        dragProps={dragProps}
+      >
+        {children}
+      </ProviderOrderItem>
     </div>
   );
 });

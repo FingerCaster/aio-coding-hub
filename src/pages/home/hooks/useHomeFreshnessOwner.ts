@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef } from "react";
+import { useCallback, useEffect } from "react";
 import { gatewayEventNames } from "../../../constants/gatewayEvents";
 import { useCoalescedAsyncRefresh } from "../../../hooks/useCoalescedAsyncRefresh";
 import { useWindowForeground } from "../../../hooks/useWindowForeground";
@@ -31,23 +31,19 @@ export function useHomeFreshnessOwner({
 }: UseHomeFreshnessOwnerOptions) {
   const active = overviewActive && foregroundActive;
   const refreshWindowMs = resolveRequestLogsRefreshWindowMs(requestLogsRefreshWindowMs);
-  const previousActiveRef = useRef(active);
-  const {
-    clearQueued: clearQueuedRefresh,
-    flush: flushRequestLogs,
-    schedule: scheduleRequestLogsRefresh,
-  } = useCoalescedAsyncRefresh<RefreshSource, unknown>({
-    enabled: active,
-    delayMs: refreshWindowMs,
-    task: () => onRefreshRequestLogs(),
-    onError: (error, source) => {
-      logToConsole("warn", "首页请求记录刷新失败", {
-        source,
-        error: String(error),
-      });
-      return { error };
-    },
-  });
+  const { flush: flushRequestLogs, schedule: scheduleRequestLogsRefresh } =
+    useCoalescedAsyncRefresh<RefreshSource, unknown>({
+      enabled: active,
+      delayMs: refreshWindowMs,
+      task: () => onRefreshRequestLogs(),
+      onError: (error, source) => {
+        logToConsole("warn", "首页请求记录刷新失败", {
+          source,
+          error: String(error),
+        });
+        return { error };
+      },
+    });
 
   const refreshRequestLogsNow = useCallback(() => {
     return flushRequestLogs("manual") ?? Promise.resolve(null);
@@ -60,19 +56,6 @@ export function useHomeFreshnessOwner({
       scheduleRequestLogsRefresh("foreground");
     },
   });
-
-  useEffect(() => {
-    const wasActive = previousActiveRef.current;
-    previousActiveRef.current = active;
-    if (!active) {
-      clearQueuedRefresh();
-      return;
-    }
-
-    if (!wasActive) {
-      scheduleRequestLogsRefresh("foreground");
-    }
-  }, [active, clearQueuedRefresh, scheduleRequestLogsRefresh]);
 
   useEffect(() => {
     if (!active) {

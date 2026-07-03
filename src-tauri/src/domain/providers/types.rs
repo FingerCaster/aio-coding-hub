@@ -8,6 +8,7 @@ pub(super) const DEFAULT_PRIORITY: i64 = 100;
 pub(super) const MAX_MODEL_NAME_LEN: usize = 200;
 pub(crate) const CX2CC_BRIDGE_TYPE: &str = "cx2cc";
 pub(crate) const CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE: &str = "codex_to_openai_chat";
+pub(crate) const CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE: &str = "codex_to_openai_responses";
 pub(crate) const CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE: &str = "codex_to_anthropic_messages";
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
@@ -57,7 +58,9 @@ pub(crate) fn is_cx2cc_bridge(bridge_type: Option<&str>) -> bool {
 pub(crate) fn is_codex_bridge_type(bridge_type: &str) -> bool {
     matches!(
         bridge_type,
-        CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE | CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
+        CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE
+            | CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE
+            | CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE
     )
 }
 
@@ -99,6 +102,7 @@ pub struct ProviderUpsertParams {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Option<Vec<ProviderExtensionValuesInput>>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub upstream_retry_policy_override_specified: bool,
 }
@@ -253,6 +257,23 @@ impl ProviderBaseUrlMode {
     }
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderExtensionValues {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub values: serde_json::Value,
+    pub updated_at: i64,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, specta::Type, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderExtensionValuesInput {
+    pub plugin_id: String,
+    pub namespace: String,
+    pub values: serde_json::Value,
+}
+
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ProviderSummary {
     pub id: i64,
@@ -285,6 +306,7 @@ pub struct ProviderSummary {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub api_key_configured: bool,
 }
@@ -316,6 +338,7 @@ pub(crate) struct ProviderForGateway {
     #[allow(dead_code)] // Will be read when failover_loop uses bridge_type for dispatch.
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
+    pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
 }
 

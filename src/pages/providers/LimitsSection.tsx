@@ -104,9 +104,9 @@ export function LimitsSection(props: { form: UseProviderEditorFormReturn }) {
               <div className="min-w-0 flex-1 space-y-4">
                 <div className="grid gap-4 sm:grid-cols-2">
                   <div>
-                    <label className="text-sm font-medium text-secondary-foreground">
+                    <div className="text-sm font-medium text-secondary-foreground">
                       每日重置模式
-                    </label>
+                    </div>
                     <p className="mb-2 text-xs text-muted-foreground">rolling 为过去 24 小时窗口</p>
                     <RadioButtonGroup<DailyResetMode>
                       items={[
@@ -122,7 +122,10 @@ export function LimitsSection(props: { form: UseProviderEditorFormReturn }) {
                     />
                   </div>
                   <div>
-                    <label className="text-sm font-medium text-secondary-foreground">
+                    <label
+                      htmlFor="provider-daily-reset-time"
+                      className="text-sm font-medium text-secondary-foreground"
+                    >
                       每日重置时间
                     </label>
                     <p className="mb-2 text-xs text-muted-foreground">
@@ -131,6 +134,7 @@ export function LimitsSection(props: { form: UseProviderEditorFormReturn }) {
                         : "rolling 模式下忽略"}
                     </p>
                     <Input
+                      id="provider-daily-reset-time"
                       type="time"
                       step="1"
                       disabled={saving || dailyResetMode !== "fixed"}

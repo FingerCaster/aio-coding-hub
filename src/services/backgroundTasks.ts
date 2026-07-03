@@ -21,6 +21,7 @@ type RegisteredTask = BackgroundTaskDefinition & {
   pendingPromise: Promise<void> | null;
   pendingContext: BackgroundTaskRunContext | null;
   intervalHandle: ReturnType<typeof setInterval> | null;
+  visibilityTriggerSet: Set<string>;
 };
 
 const tasks = new Map<string, RegisteredTask>();
@@ -66,6 +67,7 @@ export function registerBackgroundTask(definition: BackgroundTaskDefinition) {
     pendingPromise: existing?.pendingPromise ?? null,
     pendingContext: existing?.pendingContext ?? null,
     intervalHandle: null,
+    visibilityTriggerSet: new Set(definition.visibilityTriggers ?? []),
   };
 
   tasks.set(definition.taskId, task);
@@ -171,7 +173,7 @@ export async function runBackgroundTask(
 export async function emitBackgroundTaskVisibilityTrigger(triggerId: string) {
   const runs: Array<Promise<void> | undefined> = [];
   for (const task of tasks.values()) {
-    if (task.visibilityTriggers?.includes(triggerId)) {
+    if (task.visibilityTriggerSet.has(triggerId)) {
       runs.push(runBackgroundTask(task.taskId, { trigger: "visibility" }));
     }
   }

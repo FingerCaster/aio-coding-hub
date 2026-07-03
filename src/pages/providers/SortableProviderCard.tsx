@@ -1,8 +1,11 @@
 import {
+  cloneElement,
+  isValidElement,
   memo,
   type ButtonHTMLAttributes,
   type HTMLAttributes,
   type MouseEvent as ReactMouseEvent,
+  type ReactElement,
   type ReactNode,
 } from "react";
 import { useMemo, useState } from "react";
@@ -28,7 +31,6 @@ import { openDesktopUrl } from "../../services/desktop/opener";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
 import { ConfirmDialog } from "../../ui/ConfirmDialog";
-import { Switch } from "../../ui/Switch";
 import { useNowUnix } from "../../hooks/useNowUnix";
 import { cn } from "../../utils/cn";
 import { formatCountdownSeconds, formatUnixSeconds, formatUsdRaw } from "../../utils/formatters";
@@ -78,7 +80,7 @@ function providerTagClassName(tag: string) {
   return "shrink-0 rounded-full bg-secondary px-2 py-0.5 text-[10px] text-muted-foreground dark:bg-secondary dark:text-secondary-foreground";
 }
 
-function renderProviderNote(note: string) {
+function ProviderNote({ note }: { note: string }) {
   const nodes: ReactNode[] = [];
   let lastIndex = 0;
 
@@ -116,7 +118,16 @@ function renderProviderNote(note: string) {
     nodes.push(note.slice(lastIndex));
   }
 
-  return nodes.length > 0 ? nodes : [note];
+  return <>{nodes.length > 0 ? nodes : note}</>;
+}
+
+function EdgeAction({ children }: { children: ReactNode }) {
+  if (!isValidElement(children)) return <>{children}</>;
+
+  const element = children as ReactElement<{ className?: string }>;
+  return cloneElement(element, {
+    className: cn(element.props.className, "w-full justify-center"),
+  });
 }
 
 export type SortableProviderCardProps = {
@@ -124,9 +135,9 @@ export type SortableProviderCardProps = {
   sourceProviderName?: string | null;
   sourceProvider?: ProviderSummary | null;
   trailing?: ReactNode;
+  children?: ReactNode;
   circuit: GatewayProviderCircuitStatus | null;
   circuitResetting: boolean;
-  onToggleEnabled: (provider: ProviderSummary) => void;
   onResetCircuit: (provider: ProviderSummary) => void;
   onCopyTerminalLaunchCommand?: (provider: ProviderSummary) => void;
   terminalLaunchCopying?: boolean;
@@ -134,6 +145,7 @@ export type SortableProviderCardProps = {
   testAvailabilityLoading?: boolean;
   onDuplicate?: (provider: ProviderSummary) => void;
   duplicateLoading?: boolean;
+  onToggleEnabled?: (provider: ProviderSummary) => void;
   onEdit: (provider: ProviderSummary) => void;
   onDelete: (provider: ProviderSummary) => void;
 };
@@ -143,14 +155,14 @@ type ProviderCardProps = SortableProviderCardProps & {
   dragHandleProps?: ButtonHTMLAttributes<HTMLButtonElement>;
 } & HTMLAttributes<HTMLDivElement>;
 
-export const ProviderCard = memo(function ProviderCard({
+const ProviderCard = memo(function ProviderCard({
   provider,
   sourceProviderName = null,
   sourceProvider = null,
   trailing = null,
+  children = null,
   circuit,
   circuitResetting,
-  onToggleEnabled,
   onResetCircuit,
   onCopyTerminalLaunchCommand,
   terminalLaunchCopying = false,
@@ -158,12 +170,14 @@ export const ProviderCard = memo(function ProviderCard({
   testAvailabilityLoading = false,
   onDuplicate,
   duplicateLoading = false,
+  onToggleEnabled,
   onEdit,
   onDelete,
   className,
   dragHandleProps,
   ...cardProps
 }: ProviderCardProps) {
+  const trailingContent = trailing ?? children;
   const claudeModelMappings = getConfiguredClaudeModelMappings(provider.claude_models);
   const claudeModelsCount = claudeModelMappings.length;
   const hasClaudeModels = claudeModelsCount > 0;
@@ -219,15 +233,19 @@ export const ProviderCard = memo(function ProviderCard({
   const bridgeBadgeLabel =
     provider.bridge_type === "codex_to_openai_chat"
       ? "Chat"
-      : provider.bridge_type === "codex_to_anthropic_messages"
-        ? "Messages"
-        : "CX2CC";
+      : provider.bridge_type === "codex_to_openai_responses"
+        ? "Responses"
+        : provider.bridge_type === "codex_to_anthropic_messages"
+          ? "Messages"
+          : "CX2CC";
   const bridgeTitle =
     provider.bridge_type === "codex_to_openai_chat"
       ? "Codex → Chat Completions"
-      : provider.bridge_type === "codex_to_anthropic_messages"
-        ? "Codex → Anthropic Messages"
-        : "CX2CC 转译模式";
+      : provider.bridge_type === "codex_to_openai_responses"
+        ? "Codex → Responses"
+        : provider.bridge_type === "codex_to_anthropic_messages"
+          ? "Codex → Anthropic Messages"
+          : "CX2CC 转译模式";
   const visibleTags = provider.tags ?? [];
   const resetCreditCount =
     isOAuth && provider.cli_key === "codex"
@@ -262,12 +280,12 @@ export const ProviderCard = memo(function ProviderCard({
       <Card
         padding="sm"
         className={cn(
-          "rounded-lg sm:rounded-xl flex flex-col gap-2 transition-shadow duration-200 sm:flex-row sm:items-center sm:justify-between",
+          "rounded-lg sm:rounded-xl flex flex-col gap-2 transition-shadow duration-200 sm:flex-row sm:items-stretch sm:justify-between",
           className
         )}
         {...cardProps}
       >
-        <div className="flex min-w-0 items-center gap-3">
+        <div className="flex min-w-0 items-center gap-3 sm:flex-1">
           {dragHandleProps ? (
             <button
               type="button"
@@ -454,104 +472,124 @@ export const ProviderCard = memo(function ProviderCard({
                 title={provider.note}
                 onPointerDown={(e) => e.stopPropagation()}
               >
-                {renderProviderNote(provider.note)}
+                <ProviderNote note={provider.note} />
               </div>
             ) : null}
           </div>
         </div>
 
-        <div className="flex flex-col items-end gap-2" onPointerDown={(e) => e.stopPropagation()}>
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {isUnavailable ? (
+        <div
+          className="flex shrink-0 flex-col items-stretch gap-2 sm:flex-row sm:items-stretch sm:justify-end"
+          onPointerDown={(e) => e.stopPropagation()}
+        >
+          <div
+            data-provider-card-management-actions="true"
+            className="flex flex-col items-end gap-2"
+          >
+            <div className="flex flex-wrap items-center justify-end gap-2">
+              {isUnavailable ? (
+                <Button
+                  onClick={() => onResetCircuit(provider)}
+                  variant="secondary"
+                  size="md"
+                  className="h-9"
+                  disabled={circuitResetting}
+                >
+                  {circuitResetting ? "处理中…" : "解除熔断"}
+                </Button>
+              ) : null}
+
+              {onToggleEnabled ? (
+                <Button
+                  onClick={() => onToggleEnabled(provider)}
+                  variant="secondary"
+                  size="md"
+                  className="h-9"
+                  title={provider.enabled ? "禁用" : "启用"}
+                >
+                  {provider.enabled ? "禁用" : "启用"}
+                </Button>
+              ) : null}
+
               <Button
-                onClick={() => onResetCircuit(provider)}
+                onClick={() => onEdit(provider)}
                 variant="secondary"
                 size="md"
                 className="h-9"
-                disabled={circuitResetting}
+                title="编辑"
               >
-                {circuitResetting ? "处理中…" : "解除熔断"}
+                <Pencil className="h-4 w-4" />
+                编辑
               </Button>
-            ) : null}
+            </div>
 
-            <Button
-              onClick={() => onEdit(provider)}
-              variant="secondary"
-              size="md"
-              className="h-9"
-              title="编辑"
+            <div
+              data-provider-card-secondary-actions="true"
+              className="flex flex-wrap items-center justify-end gap-2"
             >
-              <Pencil className="h-4 w-4" />
-              编辑
-            </Button>
+              {onCopyTerminalLaunchCommand ? (
+                <Button
+                  onClick={() => onCopyTerminalLaunchCommand(provider)}
+                  variant="secondary"
+                  size="sm"
+                  className="px-2 py-1 text-[11px] gap-1.5"
+                  disabled={terminalLaunchCopying}
+                  title="复制终端启动命令"
+                >
+                  <Terminal className="h-3.5 w-3.5" />
+                  {terminalLaunchCopying ? "复制中…" : "终端启动"}
+                </Button>
+              ) : null}
 
-            <div className="inline-flex h-9 items-center gap-2 rounded-lg border border-border bg-white px-3 text-sm shadow-sm dark:border-border dark:bg-secondary">
-              <span className="text-sm font-medium text-secondary-foreground">
-                {provider.enabled ? "已启用" : "已关闭"}
-              </span>
-              <Switch
-                checked={provider.enabled}
-                onCheckedChange={() => onToggleEnabled(provider)}
-              />
+              {onTestAvailability ? (
+                <Button
+                  onClick={() => onTestAvailability(provider)}
+                  variant="secondary"
+                  size="sm"
+                  className="px-2 py-1 text-[11px] gap-1.5"
+                  disabled={testAvailabilityLoading}
+                  title="测试供应商可用性"
+                >
+                  <Zap className="h-3.5 w-3.5" />
+                  {testAvailabilityLoading ? "测试中…" : "测试"}
+                </Button>
+              ) : null}
+
+              {onDuplicate ? (
+                <Button
+                  onClick={() => onDuplicate(provider)}
+                  variant="secondary"
+                  size="sm"
+                  className="px-2 py-1 text-[11px] gap-1.5"
+                  disabled={duplicateLoading}
+                  title="复制"
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                  {duplicateLoading ? "复制中…" : "复制"}
+                </Button>
+              ) : null}
+
+              <Button
+                onClick={() => onDelete(provider)}
+                variant="danger"
+                size="sm"
+                className="px-2 py-1 text-[11px] gap-1.5"
+                title="删除"
+              >
+                <Trash2 className="h-3.5 w-3.5" />
+                删除
+              </Button>
             </div>
           </div>
 
-          <div className="flex flex-wrap items-center justify-end gap-2">
-            {onCopyTerminalLaunchCommand ? (
-              <Button
-                onClick={() => onCopyTerminalLaunchCommand(provider)}
-                variant="secondary"
-                size="sm"
-                className="px-2 py-1 text-[11px] gap-1.5"
-                disabled={terminalLaunchCopying}
-                title="复制终端启动命令"
-              >
-                <Terminal className="h-3.5 w-3.5" />
-                {terminalLaunchCopying ? "复制中…" : "终端启动"}
-              </Button>
-            ) : null}
-
-            {trailing}
-
-            {onTestAvailability ? (
-              <Button
-                onClick={() => onTestAvailability(provider)}
-                variant="secondary"
-                size="sm"
-                className="px-2 py-1 text-[11px] gap-1.5"
-                disabled={testAvailabilityLoading}
-                title="测试供应商可用性"
-              >
-                <Zap className="h-3.5 w-3.5" />
-                {testAvailabilityLoading ? "测试中…" : "测试"}
-              </Button>
-            ) : null}
-
-            {onDuplicate ? (
-              <Button
-                onClick={() => onDuplicate(provider)}
-                variant="secondary"
-                size="sm"
-                className="px-2 py-1 text-[11px] gap-1.5"
-                disabled={duplicateLoading}
-                title="复制"
-              >
-                <Copy className="h-3.5 w-3.5" />
-                {duplicateLoading ? "复制中…" : "复制"}
-              </Button>
-            ) : null}
-
-            <Button
-              onClick={() => onDelete(provider)}
-              variant="danger"
-              size="sm"
-              className="px-2 py-1 text-[11px] gap-1.5"
-              title="删除"
+          {trailingContent ? (
+            <div
+              data-provider-card-edge-action="true"
+              className="flex w-16 shrink-0 items-center justify-end border-t border-border pt-2 sm:border-l sm:border-t-0 sm:pl-3 sm:pt-0"
             >
-              <Trash2 className="h-3.5 w-3.5" />
-              删除
-            </Button>
-          </div>
+              <EdgeAction>{trailingContent}</EdgeAction>
+            </div>
+          ) : null}
         </div>
       </Card>
       <ConfirmDialog
@@ -586,13 +624,14 @@ export const SortableProviderCard = memo(function SortableProviderCard(
     transform: CSS.Transform.toString(transform),
     transition,
   };
+  const dragHandleProps = useMemo(() => ({ ...attributes, ...listeners }), [attributes, listeners]);
 
   return (
     <div ref={setNodeRef} style={style} className="relative">
       <ProviderCard
         {...props}
         className={cn(isDragging && "z-10 scale-[1.02] shadow-lg ring-2 ring-accent/30")}
-        dragHandleProps={{ ...attributes, ...listeners }}
+        dragHandleProps={dragHandleProps}
       />
     </div>
   );

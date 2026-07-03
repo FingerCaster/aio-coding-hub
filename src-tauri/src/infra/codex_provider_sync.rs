@@ -406,7 +406,7 @@ fn codex_app_is_running_from_ps() -> AppResult<bool> {
     }
 
     let text = String::from_utf8_lossy(&output.stdout);
-    Ok(text.lines().any(|line| process_name_is_codex_app(line)))
+    Ok(text.lines().any(process_name_is_codex_app))
 }
 
 #[cfg(not(windows))]

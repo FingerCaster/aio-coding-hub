@@ -57,12 +57,23 @@ export function subscribeNowMs(intervalMs: number, listener: ClockListener) {
 }
 
 export function useNowMs(enabled: boolean, intervalMs = 250): number {
-  const [nowMs, setNowMs] = useState(() => Date.now());
+  const [clockState, setClockState] = useState(() => ({
+    enabled,
+    intervalMs,
+    nowMs: Date.now(),
+  }));
+  let nowMs = clockState.nowMs;
+
+  if (clockState.enabled !== enabled || clockState.intervalMs !== intervalMs) {
+    nowMs = enabled ? Date.now() : clockState.nowMs;
+    setClockState({ enabled, intervalMs, nowMs });
+  }
 
   useEffect(() => {
     if (!enabled) return;
-    setNowMs(Date.now());
-    return subscribeNowMs(intervalMs, setNowMs);
+    return subscribeNowMs(intervalMs, (nextNowMs) => {
+      setClockState({ enabled: true, intervalMs, nowMs: nextNowMs });
+    });
   }, [enabled, intervalMs]);
 
   return nowMs;
