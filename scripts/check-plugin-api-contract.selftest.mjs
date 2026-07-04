@@ -76,9 +76,11 @@ function makeRoot(name) {
   mkdirSync(join(root, "src/services"), { recursive: true });
   mkdirSync(join(root, "src/query"), { recursive: true });
   mkdirSync(join(root, "src/generated"), { recursive: true });
+  mkdirSync(join(root, ".github/workflows"), { recursive: true });
   mkdirSync(join(root, "src-tauri/src/app/plugins"), { recursive: true });
   mkdirSync(join(root, "src-tauri/src/domain"), { recursive: true });
   mkdirSync(join(root, "src-tauri/src/gateway/plugins"), { recursive: true });
+  writeFileSync(join(root, ".github/workflows/ci.yml"), "name: fixture\njobs: {}\n");
   writeFileSync(
     join(root, "src/generated/bindings.ts"),
     'export type PluginRuntime = { kind: "extensionHost"; language: string };\n'
@@ -281,6 +283,10 @@ function writePassingScaffold(root) {
         "log.redact",
         "network.fetch",
       ].join(" "),
+      'DEFAULT_HOOK_TIMEOUT_MS: u64 = 150',
+      'DEFAULT_FAILURE_POLICY: &str = "fail-open"',
+      "timeout_ms: DEFAULT_HOOK_TIMEOUT_MS",
+      "default_failure_policy: DEFAULT_FAILURE_POLICY",
     ].join("\n")
   );
   writeFileSync(
@@ -319,7 +325,7 @@ function writePassingScaffold(root) {
   );
   writeFileSync(
     join(root, "src-tauri/src/gateway/plugins/pipeline.rs"),
-    "Duration::from_millis(150) FailurePolicy::FailOpen"
+    "Duration::from_millis(DEFAULT_HOOK_TIMEOUT_MS) FailurePolicy::FailOpen"
   );
   writeFileSync(
     join(root, "docs/plugin-manifest-v1.md"),
