@@ -58,8 +58,6 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
-    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
-    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
@@ -110,8 +108,6 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
-    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
-    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
@@ -173,10 +169,6 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             codex_reasoning_guard_concurrent_max_attempts: args
                 .codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks: args.codex_reasoning_guard_model_fallbacks,
-            codex_reasoning_guard_continuation_repair_enabled: args
-                .codex_reasoning_guard_continuation_repair_enabled,
-            codex_reasoning_guard_continuation_max_rounds: args
-                .codex_reasoning_guard_continuation_max_rounds,
             codex_reasoning_guard_continuation_max_output_tokens: args
                 .codex_reasoning_guard_continuation_max_output_tokens,
             enable_response_fixer: args.enable_response_fixer,
@@ -231,10 +223,6 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
-    #[allow(dead_code)]
-    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
-    #[allow(dead_code)]
-    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
@@ -290,10 +278,6 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             codex_reasoning_guard_model_fallbacks: ctx
                 .codex_reasoning_guard_model_fallbacks
                 .to_vec(),
-            codex_reasoning_guard_continuation_repair_enabled: ctx
-                .codex_reasoning_guard_continuation_repair_enabled,
-            codex_reasoning_guard_continuation_max_rounds: ctx
-                .codex_reasoning_guard_continuation_max_rounds,
             codex_reasoning_guard_continuation_max_output_tokens: ctx
                 .codex_reasoning_guard_continuation_max_output_tokens,
             enable_response_fixer: ctx.enable_response_fixer,

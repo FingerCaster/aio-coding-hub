@@ -5723,7 +5723,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_continuation_include_disabled_forwards_stream_body_unchanged() {
+    async fn codex_continuation_include_retry_strategy_forwards_stream_body_unchanged() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -5733,19 +5733,20 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_continuation_repair_enabled = false;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider;
         disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
 
         let db_dir = tempfile::tempdir().expect("db dir");
-        let db = db::init_for_tests(&db_dir.path().join("codex-cont-include-disabled.sqlite"))
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-include-retry.sqlite"))
             .expect("init test db");
         let (upstream_base_url, captured_rx, upstream_task) =
             spawn_capturing_raw_upstream(r#"{"id":"stub-ok","object":"response","output":[]}"#)
                 .await;
-        insert_codex_provider_with_priority(&db, "Include Disabled Stub", upstream_base_url, 0);
+        insert_codex_provider_with_priority(&db, "Include Retry Stub", upstream_base_url, 0);
 
         let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
         let router = build_router(gateway_state(app_handle, db, log_tx));
@@ -5773,7 +5774,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_continuation_include_enabled_appends_without_duplication() {
+    async fn codex_continuation_include_strategy_ignores_legacy_boolean() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -5783,7 +5784,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_continuation_repair_enabled = true;
+        app_settings.codex_reasoning_guard_continuation_repair_enabled = false;
         disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
@@ -5826,7 +5827,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_continuation_repair_reuses_prepared_send_and_avoids_guard_hit() {
+    async fn codex_continuation_repair_records_unified_guard_hit() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -5836,9 +5837,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_continuation_repair_enabled = true;
-        app_settings.codex_reasoning_guard_continuation_max_rounds = 3;
-        app_settings.codex_reasoning_guard_immediate_retry_budget = 0;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
         app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         disable_upstream_retry_policy(&mut app_settings);
@@ -5948,8 +5947,135 @@ mod tests {
             feature_entry.get("reasoningTokens").and_then(Value::as_i64),
             Some(518)
         );
-        assert!(!special_settings.iter().any(|entry| {
+        assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
+                && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
+                    == Some("continuation_repair")
+                && entry.get("guardStrategyOutcome").and_then(Value::as_str)
+                    == Some("continuation_repaired")
+                && entry.get("continuationSentRounds").and_then(Value::as_u64) == Some(1)
+        }));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_uses_immediate_budget_not_legacy_max_rounds() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 2;
+        app_settings.codex_reasoning_guard_continuation_max_rounds = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-immediate-budget.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_1\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-budget-1\",\"status\":\"completed\",\"model\":\"gpt-cont-budget\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_2\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_2\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-budget-2\",\"status\":\"completed\",\"model\":\"gpt-cont-budget\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":1034}}}}\n\n"
+        );
+        let third_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final after second continuation\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-budget-3\",\"status\":\"completed\",\"model\":\"gpt-cont-budget\",\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse, third_sse]).await;
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Continuation Budget", upstream_base_url, 0);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-budget","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "response body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("final after second continuation"));
+        assert!(body_text.contains("resp-budget-3"));
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+        let _third = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("third captured request")
+            .expect("third request");
+        let no_more = tokio::time::timeout(Duration::from_millis(100), captured_rx.recv()).await;
+        assert!(
+            matches!(no_more, Ok(None) | Err(_)),
+            "immediate retry budget should allow exactly two continuation follow-ups"
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        let special_settings = parse_special_settings(&log);
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                && entry.get("status").and_then(Value::as_str) == Some("repaired")
+                && entry.get("sentRounds").and_then(Value::as_u64) == Some(2)
+        }));
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
+                && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
+                    == Some("continuation_repair")
+                && entry.get("guardStrategyOutcome").and_then(Value::as_str)
+                    == Some("continuation_repaired")
+                && entry.get("continuationSentRounds").and_then(Value::as_u64) == Some(2)
         }));
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
@@ -5978,10 +6104,8 @@ mod tests {
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
         app_settings.codex_reasoning_guard_enabled = true;
-        app_settings.codex_reasoning_guard_continuation_repair_enabled = true;
-        app_settings.codex_reasoning_guard_continuation_max_rounds = 3;
         app_settings.codex_reasoning_guard_continuation_max_output_tokens = 12;
-        app_settings.codex_reasoning_guard_immediate_retry_budget = 0;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 3;
         app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
@@ -6064,7 +6188,11 @@ mod tests {
         }));
         assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
-                && entry.get("ruleSource").and_then(Value::as_str) == Some("continuation_repair")
+                && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
+                    == Some("continuation_repair")
+                && entry.get("guardStrategyOutcome").and_then(Value::as_str)
+                    == Some("capped_max_output_tokens")
+                && entry.get("continuationSentRounds").and_then(Value::as_u64) == Some(1)
         }));
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
@@ -6092,8 +6220,7 @@ mod tests {
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.codex_reasoning_guard_continuation_repair_enabled = true;
-        app_settings.codex_reasoning_guard_immediate_retry_budget = 0;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
         app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
@@ -6154,7 +6281,11 @@ mod tests {
         }));
         assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
-                && entry.get("ruleSource").and_then(Value::as_str) == Some("continuation_repair")
+                && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
+                    == Some("continuation_repair")
+                && entry.get("guardStrategyOutcome").and_then(Value::as_str)
+                    == Some("missing_encrypted")
+                && entry.get("continuationSentRounds").and_then(Value::as_u64) == Some(0)
         }));
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
@@ -6172,8 +6303,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_continuation_still_matched_ignores_template_no_intercept_and_uses_one_guard_hit()
-    {
+    async fn codex_continuation_still_matched_uses_one_guard_hit() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -6184,30 +6314,11 @@ mod tests {
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
         app_settings.codex_reasoning_guard_enabled = true;
-        app_settings.codex_reasoning_guard_continuation_repair_enabled = true;
-        app_settings.codex_reasoning_guard_continuation_max_rounds = 1;
-        app_settings.codex_reasoning_guard_immediate_retry_budget = 0;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
         app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
         app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
         app_settings.codex_reasoning_guard_exhausted_action =
             settings::CodexReasoningGuardExhaustedAction::ReturnError;
-        app_settings.codex_reasoning_guard_active_template_id =
-            "no-intercept-continuation-test".to_string();
-        app_settings.codex_reasoning_guard_custom_templates =
-            vec![settings::CodexReasoningGuardRuleTemplate {
-                id: "no-intercept-continuation-test".to_string(),
-                name: "No intercept continuation test".to_string(),
-                description: String::new(),
-                rules: vec![settings::CodexReasoningGuardTemplateRule {
-                    id: "allow-all".to_string(),
-                    name: "Allow all".to_string(),
-                    reasoning_tokens: None,
-                    reasoning_tokens_formula: None,
-                    action: settings::CodexReasoningGuardTemplateRuleAction::NoIntercept,
-                    logic: settings::CodexReasoningGuardTemplateRuleLogic::And,
-                    filters: Vec::new(),
-                }],
-            }];
         disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
@@ -6290,7 +6401,11 @@ mod tests {
         }));
         assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
-                && entry.get("ruleSource").and_then(Value::as_str) == Some("continuation_repair")
+                && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
+                    == Some("continuation_repair")
+                && entry.get("guardStrategyOutcome").and_then(Value::as_str)
+                    == Some("still_matched")
+                && entry.get("continuationSentRounds").and_then(Value::as_u64) == Some(1)
         }));
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");

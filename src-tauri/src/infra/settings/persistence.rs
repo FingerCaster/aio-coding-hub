@@ -1194,7 +1194,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_settings_migrates_duplicate_legacy_equals_without_invalid_template() {
+    fn repair_settings_unifies_duplicate_legacy_equals_without_invalid_template() {
         let json = r#"{
             "schema_version": 45,
             "codex_reasoning_guard_rule_mode": "reasoning_tokens",
@@ -1210,15 +1210,12 @@ mod tests {
         validate_bounds(&settings).unwrap();
         assert_eq!(
             settings.codex_reasoning_guard_active_template_id,
-            "custom-legacy-reasoning-tokens"
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
         );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
         assert_eq!(
-            settings.codex_reasoning_guard_custom_templates[0]
-                .rules
-                .iter()
-                .filter_map(|rule| rule.reasoning_tokens)
-                .collect::<Vec<_>>(),
-            vec![777, 888]
+            settings.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
         );
     }
 

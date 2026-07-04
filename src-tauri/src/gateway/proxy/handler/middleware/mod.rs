@@ -160,10 +160,6 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             codex_reasoning_guard_concurrent_max_attempts: rs
                 .codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks: rs.codex_reasoning_guard_model_fallbacks,
-            codex_reasoning_guard_continuation_repair_enabled: rs
-                .codex_reasoning_guard_continuation_repair_enabled,
-            codex_reasoning_guard_continuation_max_rounds: rs
-                .codex_reasoning_guard_continuation_max_rounds,
             codex_reasoning_guard_continuation_max_output_tokens: rs
                 .codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider: rs.max_attempts_per_provider,

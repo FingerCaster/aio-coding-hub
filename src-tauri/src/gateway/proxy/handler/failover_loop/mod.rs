@@ -347,10 +347,6 @@ where
         codex_reasoning_guard_concurrent_max_attempts: input
             .codex_reasoning_guard_concurrent_max_attempts,
         codex_reasoning_guard_model_fallbacks: &input.codex_reasoning_guard_model_fallbacks,
-        codex_reasoning_guard_continuation_repair_enabled: input
-            .codex_reasoning_guard_continuation_repair_enabled,
-        codex_reasoning_guard_continuation_max_rounds: input
-            .codex_reasoning_guard_continuation_max_rounds,
         codex_reasoning_guard_continuation_max_output_tokens: input
             .codex_reasoning_guard_continuation_max_output_tokens,
         enable_response_fixer: input.enable_response_fixer,

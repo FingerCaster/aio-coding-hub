@@ -78,7 +78,7 @@ pub(super) fn is_truncation_continuation_pattern(tokens: Option<i64>) -> bool {
     let Some(tokens) = tokens else {
         return false;
     };
-    tokens >= 516 && (tokens + 2) % 518 == 0
+    tokens >= 516 && tokens.checked_add(2).is_some_and(|value| value % 518 == 0)
 }
 
 pub(super) fn request_reasoning_enabled(body: &[u8]) -> bool {
@@ -656,6 +656,7 @@ mod tests {
         for tokens in [0, 300, 517, 1035] {
             assert!(!is_truncation_continuation_pattern(Some(tokens)));
         }
+        assert!(!is_truncation_continuation_pattern(Some(i64::MAX)));
         assert!(!is_truncation_continuation_pattern(None));
     }
 

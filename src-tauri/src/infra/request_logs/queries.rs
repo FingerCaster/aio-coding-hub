@@ -655,6 +655,8 @@ WITH codex_requests AS (
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
+-- Unified guard hits include continuation_repair strategy records; each matched
+-- attempt counts once whether the strategy retried or repaired the stream.
 guard_hit_attempts AS (
   SELECT
     codex_requests.id AS request_id,
@@ -905,6 +907,8 @@ WITH codex_requests AS (
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
+-- Unified guard hits include continuation_repair strategy records; each matched
+-- attempt counts once whether the strategy retried or repaired the stream.
 guard_hit_attempts AS (
   SELECT
     request_logs.id AS request_id,
@@ -1038,6 +1042,8 @@ WITH codex_requests AS (
   FROM request_logs
   WHERE cli_key = 'codex'{time_filter}
 ),
+-- Unified guard hits include continuation_repair strategy records; each matched
+-- attempt counts once whether the strategy retried or repaired the stream.
 guard_hit_attempts AS (
   SELECT
     codex_requests.id AS request_id,

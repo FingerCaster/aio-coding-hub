@@ -60,8 +60,6 @@ pub(super) struct RequestContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
-    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
-    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,
@@ -165,10 +163,6 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_model_fallbacks: self
                 .codex_reasoning_guard_model_fallbacks
                 .clone(),
-            codex_reasoning_guard_continuation_repair_enabled: self
-                .codex_reasoning_guard_continuation_repair_enabled,
-            codex_reasoning_guard_continuation_max_rounds: self
-                .codex_reasoning_guard_continuation_max_rounds,
             codex_reasoning_guard_continuation_max_output_tokens: self
                 .codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider: self.max_attempts_per_provider,
@@ -239,8 +233,6 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_concurrent_interval_ms,
             codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks,
-            codex_reasoning_guard_continuation_repair_enabled,
-            codex_reasoning_guard_continuation_max_rounds,
             codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider,
             max_providers_to_try,
@@ -343,8 +335,6 @@ impl<R: tauri::Runtime> RequestContext<R> {
             codex_reasoning_guard_concurrent_interval_ms,
             codex_reasoning_guard_concurrent_max_attempts,
             codex_reasoning_guard_model_fallbacks,
-            codex_reasoning_guard_continuation_repair_enabled,
-            codex_reasoning_guard_continuation_max_rounds,
             codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider,
             max_providers_to_try,
@@ -470,8 +460,6 @@ pub(super) struct RequestContextParts<R: tauri::Runtime = tauri::Wry> {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
-    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
-    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) max_attempts_per_provider: u32,
     pub(super) max_providers_to_try: u32,

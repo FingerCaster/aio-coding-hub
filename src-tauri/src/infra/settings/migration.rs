@@ -1646,6 +1646,10 @@ fn migrate_unify_codex_reasoning_guard(
     settings.codex_reasoning_guard_compare_mode = CodexReasoningGuardCompareMode::Equals;
     settings.codex_reasoning_guard_reasoning_equals =
         DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS.to_vec();
+    // Schema 48 intentionally replaces the pre-unification guard rule surface
+    // with the 518*n-2 continuation-repair template. Older custom templates
+    // and model rules used incompatible legacy semantics, so they are reset
+    // only for users that have not already reached this schema.
     settings.codex_reasoning_guard_model_rules.clear();
     settings.codex_reasoning_guard_active_template_id =
         CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID.to_string();
@@ -2530,6 +2534,106 @@ mod tests {
     }
 
     #[test]
+    fn migrate_unify_codex_reasoning_guard_resets_legacy_rules_before_schema_48() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_CONTINUATION_REPAIR,
+            codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh,
+            codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode::LessThanOrEqual,
+            codex_reasoning_guard_reasoning_equals: vec![700],
+            codex_reasoning_guard_active_template_id: "custom-old".to_string(),
+            codex_reasoning_guard_custom_templates: vec![CodexReasoningGuardRuleTemplate {
+                id: "custom-old".to_string(),
+                name: "Old custom".to_string(),
+                description: "legacy custom rule".to_string(),
+                rules: vec![CodexReasoningGuardTemplateRule {
+                    id: "rule-old".to_string(),
+                    name: "Old <=700".to_string(),
+                    reasoning_tokens: Some(700),
+                    ..Default::default()
+                }],
+            }],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-old".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![700],
+            }],
+            codex_reasoning_guard_post_match_strategy:
+                CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
+            codex_reasoning_guard_exhausted_action:
+                CodexReasoningGuardExhaustedAction::SwitchProvider,
+            ..Default::default()
+        };
+
+        assert!(migrate_unify_codex_reasoning_guard(&mut s, true));
+
+        assert_eq!(s.schema_version, SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD);
+        assert_eq!(
+            s.codex_reasoning_guard_rule_mode,
+            CodexReasoningGuardRuleMode::ReasoningTokens
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_compare_mode,
+            CodexReasoningGuardCompareMode::Equals
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+        );
+        assert!(s.codex_reasoning_guard_model_rules.is_empty());
+        assert_eq!(
+            s.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(s.codex_reasoning_guard_custom_templates.is_empty());
+        assert_eq!(
+            s.codex_reasoning_guard_post_match_strategy,
+            CodexReasoningGuardPostMatchStrategy::ContinuationRepair
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::ReturnError
+        );
+    }
+
+    #[test]
+    fn migrate_unify_codex_reasoning_guard_does_not_overwrite_schema_48_settings() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD,
+            codex_reasoning_guard_active_template_id: "custom-current".to_string(),
+            codex_reasoning_guard_custom_templates: vec![CodexReasoningGuardRuleTemplate {
+                id: "custom-current".to_string(),
+                name: "Current custom".to_string(),
+                description: "user edited after upgrade".to_string(),
+                ..Default::default()
+            }],
+            codex_reasoning_guard_model_rules: vec![CodexReasoningGuardModelRule {
+                requested_model: "gpt-current".to_string(),
+                compare_mode: CodexReasoningGuardCompareMode::Equals,
+                reasoning_equals: vec![1552],
+            }],
+            codex_reasoning_guard_post_match_strategy:
+                CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
+            codex_reasoning_guard_exhausted_action:
+                CodexReasoningGuardExhaustedAction::SwitchProvider,
+            ..Default::default()
+        };
+
+        assert!(!migrate_unify_codex_reasoning_guard(&mut s, true));
+
+        assert_eq!(s.codex_reasoning_guard_active_template_id, "custom-current");
+        assert_eq!(s.codex_reasoning_guard_custom_templates.len(), 1);
+        assert_eq!(s.codex_reasoning_guard_model_rules.len(), 1);
+        assert_eq!(
+            s.codex_reasoning_guard_post_match_strategy,
+            CodexReasoningGuardPostMatchStrategy::RetrySameProvider
+        );
+        assert_eq!(
+            s.codex_reasoning_guard_exhausted_action,
+            CodexReasoningGuardExhaustedAction::SwitchProvider
+        );
+    }
+
+    #[test]
     fn migrate_add_codex_reasoning_guard_rule_templates_maps_feature_mode_template() {
         let mut s = AppSettings {
             schema_version: SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_MODE,
@@ -2935,7 +3039,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_settings_repairs_schema_46_global_lte_with_exact_model_rule() {
+    fn repair_settings_unifies_schema_46_global_lte_with_exact_model_rule() {
         let raw = serde_json::json!({
             "schema_version": SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
             "codex_reasoning_guard_active_template_id": CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID,
@@ -2954,18 +3058,19 @@ mod tests {
 
         assert!(repair_settings(&mut settings, true, &raw).unwrap());
         assert_eq!(
-            settings.codex_reasoning_guard_active_template_id,
-            "custom-legacy-reasoning-tokens"
+            settings.schema_version,
+            SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD
         );
-        let template = &settings.codex_reasoning_guard_custom_templates[0];
-        assert!(template
-            .rules
-            .iter()
-            .any(|rule| rule.reasoning_tokens == Some(256)));
-        assert!(template
-            .rules
-            .iter()
-            .any(|rule| rule.reasoning_tokens.is_none()));
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+        assert!(settings.codex_reasoning_guard_model_rules.is_empty());
+        assert_eq!(
+            settings.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+        );
     }
 
     #[test]
@@ -3202,7 +3307,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_settings_repairs_schema_46_legacy_rule_template_selection() {
+    fn repair_settings_unifies_schema_46_legacy_rule_template_selection() {
         let raw = serde_json::json!({
             "schema_version": SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
             "codex_reasoning_guard_active_template_id": CODEX_REASONING_GUARD_TEMPLATE_LEGACY_COMPATIBILITY_ID,
@@ -3214,16 +3319,18 @@ mod tests {
 
         assert!(repair_settings(&mut settings, true, &raw).unwrap());
         assert_eq!(
-            settings.codex_reasoning_guard_active_template_id,
-            "custom-legacy-reasoning-tokens"
+            settings.schema_version,
+            SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD
         );
-        let template = &settings.codex_reasoning_guard_custom_templates[0];
-        assert_eq!(template.rules.len(), 1);
-        assert!(template.rules[0].filters.iter().any(|filter| {
-            filter.field == CodexReasoningGuardTemplateFilterField::ReasoningTokens
-                && filter.operator == CodexReasoningGuardTemplateFilterOperator::LessThanOrEqual
-                && filter.number_value == Some(700.0)
-        }));
+        assert_eq!(
+            settings.codex_reasoning_guard_active_template_id,
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
+        );
+        assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+        assert_eq!(
+            settings.codex_reasoning_guard_reasoning_equals,
+            DEFAULT_CODEX_REASONING_GUARD_REASONING_EQUALS
+        );
     }
 
     #[test]
@@ -3248,7 +3355,7 @@ mod tests {
     }
 
     #[test]
-    fn repair_rule_template_selection_preserves_current_schema_builtin_legacy_selection() {
+    fn repair_settings_unifies_schema_46_builtin_legacy_selection() {
         let raw = serde_json::json!({
             "schema_version": SCHEMA_VERSION_ADD_CODEX_REASONING_GUARD_RULE_TEMPLATES,
             "codex_reasoning_guard_active_template_id": CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID,
@@ -3267,10 +3374,15 @@ mod tests {
 
         assert!(repair_settings(&mut settings, true, &raw).unwrap());
         assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD
+        );
+        assert_eq!(
             settings.codex_reasoning_guard_active_template_id,
-            CODEX_REASONING_GUARD_TEMPLATE_LEGACY_REASONING_TOKENS_ID
+            CODEX_REASONING_GUARD_TEMPLATE_REASONING_TOKENS_518N_MINUS_2_ID
         );
         assert!(settings.codex_reasoning_guard_custom_templates.is_empty());
+        assert!(settings.codex_reasoning_guard_model_rules.is_empty());
     }
 
     #[test]

@@ -196,9 +196,6 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             codex_reasoning_guard_concurrent_interval_ms: 0,
             codex_reasoning_guard_concurrent_max_attempts: 0,
             codex_reasoning_guard_model_fallbacks: &self.empty_model_fallbacks,
-            codex_reasoning_guard_continuation_repair_enabled: false,
-            codex_reasoning_guard_continuation_max_rounds:
-                crate::settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
             codex_reasoning_guard_continuation_max_output_tokens:
                 crate::settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS,
             enable_response_fixer: false,

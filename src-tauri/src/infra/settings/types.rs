@@ -393,8 +393,12 @@ pub struct AppSettings {
     pub codex_reasoning_guard_concurrent_max_attempts: u32,
     #[serde(default)]
     pub codex_reasoning_guard_model_fallbacks: Vec<String>,
+    // Legacy field kept for settings compatibility. Since schema 48, runtime
+    // behavior ignores this value and uses codex_reasoning_guard_post_match_strategy.
     #[serde(default)]
     pub codex_reasoning_guard_continuation_repair_enabled: bool,
+    // Legacy setting kept for settings compatibility. Continuation repair rounds
+    // now use codex_reasoning_guard_immediate_retry_budget.
     #[serde(default = "default_codex_reasoning_guard_continuation_max_rounds")]
     pub codex_reasoning_guard_continuation_max_rounds: u32,
     #[serde(default = "default_codex_reasoning_guard_continuation_max_output_tokens")]

@@ -38,8 +38,6 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
     pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
     pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
-    pub(super) codex_reasoning_guard_continuation_repair_enabled: bool,
-    pub(super) codex_reasoning_guard_continuation_max_rounds: u32,
     pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_claude_metadata_user_id_injection: bool,
     pub(super) max_attempts_per_provider: u32,
@@ -189,12 +187,6 @@ pub(super) fn handler_runtime_settings(
         codex_reasoning_guard_model_fallbacks: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_model_fallbacks.clone())
             .unwrap_or_default(),
-        codex_reasoning_guard_continuation_repair_enabled: settings_cfg
-            .map(|cfg| cfg.codex_reasoning_guard_continuation_repair_enabled)
-            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_REPAIR_ENABLED),
-        codex_reasoning_guard_continuation_max_rounds: settings_cfg
-            .map(|cfg| cfg.codex_reasoning_guard_continuation_max_rounds)
-            .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS),
         codex_reasoning_guard_continuation_max_output_tokens: settings_cfg
             .map(|cfg| cfg.codex_reasoning_guard_continuation_max_output_tokens)
             .unwrap_or(settings::DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS),
@@ -244,8 +236,6 @@ mod tests {
             codex_reasoning_guard_model_fallbacks: vec!["gpt-5.4".to_string()],
             codex_reasoning_guard_post_match_strategy:
                 settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider,
-            codex_reasoning_guard_continuation_repair_enabled: true,
-            codex_reasoning_guard_continuation_max_rounds: 4,
             codex_reasoning_guard_continuation_max_output_tokens: 12_345,
             codex_reasoning_guard_backoff_after_hits: 99,
             codex_reasoning_guard_backoff_ms: 60_000,
@@ -280,8 +270,6 @@ mod tests {
             runtime.codex_reasoning_guard_post_match_strategy,
             settings::CodexReasoningGuardPostMatchStrategy::RetrySameProvider
         );
-        assert!(runtime.codex_reasoning_guard_continuation_repair_enabled);
-        assert_eq!(runtime.codex_reasoning_guard_continuation_max_rounds, 4);
         assert_eq!(
             runtime.codex_reasoning_guard_continuation_max_output_tokens,
             12_345
@@ -301,8 +289,6 @@ mod tests {
                 reasoning_equals: vec![516],
             }],
             codex_reasoning_guard_model_fallbacks: vec!["gpt-5.4".to_string()],
-            codex_reasoning_guard_continuation_repair_enabled: true,
-            codex_reasoning_guard_continuation_max_rounds: 4,
             codex_reasoning_guard_continuation_max_output_tokens: 8_000,
             ..Default::default()
         };
@@ -315,8 +301,6 @@ mod tests {
         settings.codex_reasoning_guard_reasoning_equals = vec![1024];
         settings.codex_reasoning_guard_model_rules.clear();
         settings.codex_reasoning_guard_model_fallbacks = vec!["gpt-5.3-codex".to_string()];
-        settings.codex_reasoning_guard_continuation_repair_enabled = false;
-        settings.codex_reasoning_guard_continuation_max_rounds = 1;
         settings.codex_reasoning_guard_continuation_max_output_tokens = 0;
 
         assert_eq!(
@@ -337,8 +321,6 @@ mod tests {
             runtime.codex_reasoning_guard_model_fallbacks,
             vec!["gpt-5.4".to_string()]
         );
-        assert!(runtime.codex_reasoning_guard_continuation_repair_enabled);
-        assert_eq!(runtime.codex_reasoning_guard_continuation_max_rounds, 4);
         assert_eq!(
             runtime.codex_reasoning_guard_continuation_max_output_tokens,
             8_000
