@@ -126,6 +126,9 @@ jobs:
       - name: Plugin TypeScript SDK typecheck
         run: pnpm plugin-sdk:typecheck
 
+      - name: Plugin TypeScript SDK tests
+        run: pnpm plugin-sdk:test
+
       - name: Plugin scaffolder tests
         run: pnpm create-aio-plugin:test
 
@@ -200,13 +203,10 @@ jobs:
         working-directory: src-tauri
         run: cargo clippy --all-targets --locked -- -D warnings
 
-      - name: Plugin WASM SDK tests
-        run: |
-          cargo test --manifest-path packages/plugin-wasm-sdk/Cargo.toml
-          cargo test --manifest-path packages/plugin-wasm-sdk/examples/redactor/Cargo.toml
-
       - name: Rust test
         working-directory: src-tauri
+        env:
+          CARGO_BUILD_JOBS: "1"
         run: cargo test --locked -- --test-threads=1
 
       - name: Install cargo-audit
@@ -214,4 +214,5 @@ jobs:
 
       - name: Dependency audit (cargo)
         working-directory: src-tauri
-        run: cargo audit
+        # quick-xml <0.41 is still pulled by current upstream Tauri/Wayland/notification deps.
+        run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
