@@ -306,7 +306,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getByTitle("Codex / gpt-future-unknown")).toBeInTheDocument();
   });
 
-  it("hides passive Codex reasoning features and renders continuation repair tags in list rows", () => {
+  it("hides passive Codex reasoning features and renders reasoning guard tags in list rows", () => {
     render(
       <MemoryRouter>
         <HomeRequestLogsPanel
@@ -382,8 +382,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.queryByText("候选特征")).not.toBeInTheDocument();
     expect(screen.queryByText("压缩豁免")).not.toBeInTheDocument();
     expect(screen.queryByText("观察信号")).not.toBeInTheDocument();
-    expect(screen.queryByText(/降智命中/)).not.toBeInTheDocument();
-    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(screen.getByText("降智命中 reasoning_tokens == 518*n-2")).toBeInTheDocument();
   });
 
   it("renders mixed reasoning guard and continuation repair audit semantics in list rows", () => {
@@ -444,11 +443,10 @@ describe("components/home/HomeRequestLogsPanel", () => {
       </MemoryRouter>
     );
 
-    expect(screen.getByText("降智命中 <= 516")).toBeInTheDocument();
-    expect(screen.getByText("思考补救成功")).toBeInTheDocument();
+    expect(screen.getByText("降智命中 2 reasoning_tokens == 518*n-2")).toBeInTheDocument();
     expect(
       screen.getByText(
-        "本次请求命中了 Codex 降智拦截（规则 <= 516），继续重试；同时触发 2 次思考补救，1 次补救失败后使用预算重试，最终补救成功。"
+        "本次请求命中了 2 次 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），继续重试。"
       )
     ).toBeInTheDocument();
   });

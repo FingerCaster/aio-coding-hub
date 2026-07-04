@@ -438,12 +438,14 @@ fn evaluate_template(
         apply_template_evidence(
             &mut matched,
             &template,
-            "builtin-final-answer-only-high-xhigh",
-            CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_NAME,
-            None,
-            None,
-            Vec::new(),
-            CodexReasoningGuardTemplateRuleAction::Intercept,
+            TemplateEvidence {
+                rule_id: "builtin-final-answer-only-high-xhigh",
+                rule_name: CODEX_REASONING_GUARD_TEMPLATE_FINAL_ANSWER_ONLY_HIGH_XHIGH_NAME,
+                rule_token: None,
+                rule_formula: None,
+                matched_filter_ids: Vec::new(),
+                action: CodexReasoningGuardTemplateRuleAction::Intercept,
+            },
         );
         return Some(CodexReasoningGuardEvaluationDecision {
             action: CodexReasoningGuardTemplateRuleAction::Intercept,
@@ -502,20 +504,22 @@ fn evaluate_template(
     apply_template_evidence(
         &mut matched,
         &template,
-        if rule_id.is_empty() {
-            "unnamed-rule"
-        } else {
-            rule_id
+        TemplateEvidence {
+            rule_id: if rule_id.is_empty() {
+                "unnamed-rule"
+            } else {
+                rule_id
+            },
+            rule_name: if rule_name.is_empty() {
+                rule_id
+            } else {
+                rule_name
+            },
+            rule_token: rule.reasoning_tokens,
+            rule_formula: rule.reasoning_tokens_formula,
+            matched_filter_ids,
+            action: rule.action,
         },
-        if rule_name.is_empty() {
-            rule_id
-        } else {
-            rule_name
-        },
-        rule.reasoning_tokens,
-        rule.reasoning_tokens_formula,
-        matched_filter_ids,
-        rule.action,
     );
 
     Some(CodexReasoningGuardEvaluationDecision {
@@ -543,25 +547,29 @@ fn template_rule_condition_matches(
     true
 }
 
-fn apply_template_evidence(
-    matched: &mut CodexReasoningGuardMatch,
-    template: &ResolvedGuardTemplate,
-    rule_id: &str,
-    rule_name: &str,
+struct TemplateEvidence<'a> {
+    rule_id: &'a str,
+    rule_name: &'a str,
     rule_token: Option<i64>,
     rule_formula: Option<CodexReasoningGuardTemplateRuleFormula>,
     matched_filter_ids: Vec<String>,
     action: CodexReasoningGuardTemplateRuleAction,
+}
+
+fn apply_template_evidence(
+    matched: &mut CodexReasoningGuardMatch,
+    template: &ResolvedGuardTemplate,
+    evidence: TemplateEvidence<'_>,
 ) {
     matched.rule_source = template.source;
     matched.template_id = Some(template.id.clone());
     matched.template_name = Some(template.name.clone());
-    matched.rule_id = Some(rule_id.to_string());
-    matched.rule_name = Some(rule_name.to_string());
-    matched.rule_token = rule_token;
-    matched.rule_formula = rule_formula;
-    matched.matched_filter_ids = matched_filter_ids;
-    matched.rule_action = action;
+    matched.rule_id = Some(evidence.rule_id.to_string());
+    matched.rule_name = Some(evidence.rule_name.to_string());
+    matched.rule_token = evidence.rule_token;
+    matched.rule_formula = evidence.rule_formula;
+    matched.matched_filter_ids = evidence.matched_filter_ids;
+    matched.rule_action = evidence.action;
 }
 
 fn matched_template_rule_value(

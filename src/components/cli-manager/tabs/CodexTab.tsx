@@ -8,7 +8,6 @@ import {
   useState,
   type ReactNode,
 } from "react";
-import { confirm as confirmDialog } from "@tauri-apps/plugin-dialog";
 import {
   cliManagerCodexConfigTomlValidate,
   type CodexConfigPatch,
@@ -68,6 +67,7 @@ import {
 } from "../../../utils/localDate";
 import { isWindowsRuntime } from "../../../utils/platform";
 import { cn } from "../../../utils/cn";
+import { confirmDesktopDialog } from "../../../services/desktop/confirm";
 import { useCliManagerCodexReasoningGuardStatsQuery } from "../../../query/cliManager";
 import { CliVersionBadge } from "../CliVersionBadge";
 import { Button } from "../../../ui/Button";
@@ -1431,7 +1431,7 @@ export function CliManagerCodexTab({
 
   async function saveSandboxMode(next: string) {
     if (next === "danger-full-access") {
-      const ok = await confirmDialog(
+      const ok = await confirmDesktopDialog(
         "你选择了 danger-full-access（危险：完全访问）。确认要继续吗？"
       );
       if (!ok) {

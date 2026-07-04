@@ -117,7 +117,7 @@ describe("services/settings/settings", () => {
       gatewayListenMode: "localhost",
       wslTargetCli: { claude: true, codex: true, gemini: true },
       codexOauthCompatibleProxyMode: true,
-      codexReasoningGuardActiveTemplateId: "builtin-legacy-reasoning-tokens",
+      codexReasoningGuardActiveTemplateId: "builtin-reasoning-tokens-518n-minus-2",
       codexReasoningGuardCustomTemplates: [],
       cx2CcFallbackModelMain: "gpt-5.4",
       upstreamProxyPassword: { mode: "clear" },

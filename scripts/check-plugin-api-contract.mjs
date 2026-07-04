@@ -370,12 +370,7 @@ if (contract) {
     "WASM runtime dependency"
   );
   const packageJson = readText("package.json");
-  requireNotIncludes(
-    "package.json",
-    packageJson,
-    ["plugin-wasm-sdk:test"],
-    "WASM SDK script"
-  );
+  requireNotIncludes("package.json", packageJson, ["plugin-wasm-sdk:test"], "WASM SDK script");
   const ciWorkflow = readText(".github/workflows/ci.yml");
   const legacyWasmSdkCiReference =
     ciWorkflow.includes("cargo test --manifest-path packages/plugin-wasm-sdk/Cargo.toml") &&
@@ -392,7 +387,12 @@ if (contract) {
   requireNotIncludes(
     "src/services/plugins.ts",
     pluginService,
-    ["pluginGrantPermissions", "pluginRevokePermission", "plugin_grant_permissions", "plugin_revoke_permission"],
+    [
+      "pluginGrantPermissions",
+      "pluginRevokePermission",
+      "plugin_grant_permissions",
+      "plugin_revoke_permission",
+    ],
     "manual permission frontend service wrapper"
   );
   const pluginQuery = readText("src/query/plugins.ts");

@@ -42,7 +42,13 @@ function withContractDefaults(value) {
       ...(value.extensionHostContract ?? {}),
     },
     capabilities: mergeUnique(
-      ["gateway.hooks", "protocol.bridge", "commands.execute", "provider.extensionValues", "privacy.redact"],
+      [
+        "gateway.hooks",
+        "protocol.bridge",
+        "commands.execute",
+        "provider.extensionValues",
+        "privacy.redact",
+      ],
       value.capabilities
     ),
     contributionPoints: mergeUnique(
@@ -83,11 +89,14 @@ function makeRoot(name) {
   );
   writeFileSync(
     join(root, "src-tauri/Cargo.toml"),
-    "[dependencies]\nrquickjs = \"0.12.0\"\n[dev-dependencies]\ntempfile = \"3\"\n"
+    '[dependencies]\nrquickjs = "0.12.0"\n[dev-dependencies]\ntempfile = "3"\n'
   );
-  writeFileSync(join(root, "package.json"), "{ \"scripts\": {} }\n");
+  writeFileSync(join(root, "package.json"), '{ "scripts": {} }\n');
   writeFileSync(join(root, "src/services/plugins.ts"), "export function pluginEnable() {}\n");
-  writeFileSync(join(root, "src/query/plugins.ts"), "export function usePluginEnableMutation() {}\n");
+  writeFileSync(
+    join(root, "src/query/plugins.ts"),
+    "export function usePluginEnableMutation() {}\n"
+  );
   return root;
 }
 

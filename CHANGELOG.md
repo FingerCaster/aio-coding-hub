@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.60.16](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.15...aio-coding-hub-v0.60.16) (2026-07-04)
+
+
+### Features
+
+* unify Codex reasoning guard ([9918684](https://github.com/FingerCaster/aio-coding-hub/commit/99186846e232056437830f18b21e63b3f038bf35))
+
+
+### Bug Fixes
+
+* clarify unified reasoning guard legacy paths ([d219fd3](https://github.com/FingerCaster/aio-coding-hub/commit/d219fd365fae11765c2393c7b6123bafba4d8bb6))
+* repair request logs schema and dialog ACL ([476c4b1](https://github.com/FingerCaster/aio-coding-hub/commit/476c4b124d97d48b4867d5df7deea61e7d327a4b))
+* satisfy release validation after reasoning guard merge ([d6f68f5](https://github.com/FingerCaster/aio-coding-hub/commit/d6f68f5e7c9ea7e2cd0c3c6ca34f148f519e8bcc))
+
 ## [0.60.15](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.14...aio-coding-hub-v0.60.15) (2026-07-03)
 
 

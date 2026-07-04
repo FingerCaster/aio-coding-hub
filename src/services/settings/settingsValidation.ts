@@ -1038,7 +1038,7 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   }
 
   const continuationRoundsMessage = validateIntegerRange(
-    "Codex 继续思考补救最大轮数",
+    "Codex 思考续写最大轮数",
     input.codexReasoningGuardContinuationMaxRounds,
     MIN_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS,
     MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_ROUNDS
@@ -1046,7 +1046,7 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   if (continuationRoundsMessage) return continuationRoundsMessage;
 
   const continuationOutputTokensMessage = validateIntegerRange(
-    "Codex 继续思考补救最大 output tokens",
+    "Codex 思考续写最大 output tokens",
     input.codexReasoningGuardContinuationMaxOutputTokens,
     0,
     MAX_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS

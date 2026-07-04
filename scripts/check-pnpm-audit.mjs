@@ -14,6 +14,26 @@ const logger = {
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(scriptDir);
 const BLOCKING_SEVERITIES = Object.freeze(["high", "critical"]);
+const pnpmCommand = process.platform === "win32" ? "pnpm.cmd" : "pnpm";
+const auditRegistry = process.env.PNPM_AUDIT_REGISTRY?.trim() || "https://registry.npmjs.org/";
+const auditArgs = [
+  "audit",
+  "--prod",
+  "--audit-level=high",
+  "--json",
+  `--registry=${auditRegistry}`,
+];
+
+function pnpmAuditCommand() {
+  if (process.platform !== "win32") {
+    return { command: pnpmCommand, args: auditArgs };
+  }
+
+  return {
+    command: process.env.ComSpec || "cmd.exe",
+    args: ["/d", "/s", "/c", pnpmCommand, ...auditArgs],
+  };
+}
 
 function parseAuditPayload(stdout, stderr) {
   const combinedOutput = [stdout, stderr].filter(Boolean).join("\n").trim();
@@ -119,7 +139,8 @@ function main() {
   logger.info("[pnpm-audit] 开始执行依赖审计...");
 
   // 1.1 运行 pnpm audit，并捕获 stdout / stderr 供后续解析
-  const result = spawnSync("pnpm", ["audit", "--prod", "--audit-level=high", "--json"], {
+  const auditCommand = pnpmAuditCommand();
+  const result = spawnSync(auditCommand.command, auditCommand.args, {
     cwd: repoRoot,
     encoding: "utf8",
     env: process.env,

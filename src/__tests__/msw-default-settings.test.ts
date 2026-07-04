@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 47,
+      schema_version: 48,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -28,8 +28,9 @@ describe("MSW defaults", () => {
       codex_reasoning_guard_compare_mode: "equals",
       codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
       codex_reasoning_guard_model_rules: [],
-      codex_reasoning_guard_active_template_id: "builtin-legacy-reasoning-tokens",
+      codex_reasoning_guard_active_template_id: "builtin-reasoning-tokens-518n-minus-2",
       codex_reasoning_guard_custom_templates: [],
+      codex_reasoning_guard_post_match_strategy: "continuation_repair",
       codex_reasoning_guard_immediate_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_budget: 5,
       codex_reasoning_guard_delayed_retry_ms: 1000,
