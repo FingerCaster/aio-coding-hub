@@ -11,7 +11,7 @@ import {
   useRequestLogDetailQuery,
   useRequestLogsListAllQuery,
 } from "../../query/requestLogs";
-import type { TraceSession } from "../../services/gateway/traceStore";
+import type { TraceSession, TraceSummary } from "../../services/gateway/traceStore";
 
 const traceStoreState = vi.hoisted(() => ({
   traces: [] as TraceSession[],
@@ -32,6 +32,9 @@ vi.mock("../../components/home/HomeRequestLogsPanel", () => ({
     <div data-testid="home-request-logs-panel">
       count:{requestLogs.length}|summary:{summaryTextOverride ?? ""}|empty:{emptyStateTitle ?? ""}
       <span data-testid="home-request-logs-traces-count">{traces.length}</span>
+      <span data-testid="home-request-logs-trace-ids">
+        {traces.map((trace) => trace.trace_id).join(",")}
+      </span>
     </div>
   ),
 }));
@@ -64,6 +67,75 @@ function renderWithProviders(element: ReactElement) {
       <MemoryRouter>{element}</MemoryRouter>
     </QueryClientProvider>
   );
+}
+
+type TraceFixture = Omit<Partial<TraceSession>, "trace_id" | "summary"> & {
+  trace_id: string;
+  summary?: Partial<TraceSummary>;
+};
+
+function createTrace({
+  trace_id,
+  cli_key = "claude",
+  method = "POST",
+  path = "/v1/messages",
+  summary,
+  ...overrides
+}: TraceFixture): TraceSession {
+  const trace: TraceSession = {
+    trace_id,
+    cli_key,
+    method,
+    path,
+    query: null,
+    requested_model: "test-model",
+    first_seen_ms: Date.now() - 1000,
+    last_seen_ms: Date.now(),
+    attempts: [],
+    ...overrides,
+  };
+
+  if (summary) {
+    const traceSummary: TraceSummary = {
+      trace_id,
+      cli_key,
+      method,
+      path,
+      query: trace.query,
+      requested_model: trace.requested_model,
+      status: 200,
+      error_category: null,
+      error_code: null,
+      duration_ms: 100,
+      attempts: [],
+    };
+    Object.assign(traceSummary, summary);
+    trace.summary = traceSummary;
+  }
+
+  return trace;
+}
+
+function mockRequestLogQueries(data: unknown[] = []) {
+  vi.mocked(useRequestLogsListAllQuery).mockReturnValue({
+    data,
+    isLoading: false,
+    isFetching: false,
+    refetch: vi.fn(),
+  } as any);
+  vi.mocked(useRequestLogDetailQuery).mockReturnValue({ data: null, isFetching: false } as any);
+  vi.mocked(useRequestAttemptLogsByTraceIdQuery).mockReturnValue({
+    data: [],
+    isFetching: false,
+  } as any);
+}
+
+function traceIds() {
+  return screen.getByTestId("home-request-logs-trace-ids");
+}
+
+function expectTraceIds(expected: string[]) {
+  expect(traceIds().textContent?.trim()).toBe(expected.join(","));
 }
 
 describe("pages/LogsPage", () => {
@@ -121,35 +193,91 @@ describe("pages/LogsPage", () => {
 
   it("passes live traces through to the request logs panel", () => {
     setTauriRuntime();
-    traceStoreState.traces = [
-      {
-        trace_id: "trace-live",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        requested_model: "claude-3-7-sonnet",
-        first_seen_ms: Date.now() - 1000,
-        last_seen_ms: Date.now(),
-        attempts: [],
-      },
-    ];
-
-    vi.mocked(useRequestLogsListAllQuery).mockReturnValue({
-      data: [],
-      isLoading: false,
-      isFetching: false,
-      refetch: vi.fn(),
-    } as any);
-    vi.mocked(useRequestLogDetailQuery).mockReturnValue({ data: null, isFetching: false } as any);
-    vi.mocked(useRequestAttemptLogsByTraceIdQuery).mockReturnValue({
-      data: [],
-      isFetching: false,
-    } as any);
+    traceStoreState.traces = [createTrace({ trace_id: "trace-live" })];
+    mockRequestLogQueries();
 
     renderWithProviders(<LogsPage />);
 
     expect(screen.getByTestId("home-request-logs-traces-count")).toHaveTextContent("1");
+    expectTraceIds(["trace-live"]);
+  });
+
+  it("filters live traces by selected CLI tab", () => {
+    setTauriRuntime();
+    traceStoreState.traces = [
+      createTrace({ trace_id: "trace-claude", cli_key: "claude" }),
+      createTrace({ trace_id: "trace-codex", cli_key: "codex" }),
+    ];
+    mockRequestLogQueries();
+
+    renderWithProviders(<LogsPage />);
+
+    expectTraceIds(["trace-claude", "trace-codex"]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Claude" }));
+    expectTraceIds(["trace-claude"]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    expectTraceIds(["trace-codex"]);
+
+    fireEvent.click(screen.getByRole("tab", { name: "全部" }));
+    expectTraceIds(["trace-claude", "trace-codex"]);
+  });
+
+  it("filters completed traces by status expression and hides in-progress traces", () => {
+    setTauriRuntime();
+    traceStoreState.traces = [
+      createTrace({ trace_id: "trace-ok", summary: { status: 200 } }),
+      createTrace({ trace_id: "trace-timeout", summary: { status: 524 } }),
+      createTrace({ trace_id: "trace-live" }),
+    ];
+    mockRequestLogQueries();
+
+    renderWithProviders(<LogsPage />);
+
+    fireEvent.change(screen.getByPlaceholderText("例：499 / 524 / !200 / >=400"), {
+      target: { value: "524" },
+    });
+    expectTraceIds(["trace-timeout"]);
+  });
+
+  it("filters completed traces by error code and hides in-progress traces", () => {
+    setTauriRuntime();
+    traceStoreState.traces = [
+      createTrace({
+        trace_id: "trace-timeout",
+        summary: { error_code: "GW_UPSTREAM_TIMEOUT" },
+      }),
+      createTrace({
+        trace_id: "trace-aborted",
+        summary: { error_code: "GW_ABORTED" },
+      }),
+      createTrace({ trace_id: "trace-live" }),
+    ];
+    mockRequestLogQueries();
+
+    renderWithProviders(<LogsPage />);
+
+    fireEvent.change(screen.getByPlaceholderText("例：GW_UPSTREAM_TIMEOUT"), {
+      target: { value: "GW_UPSTREAM_TIMEOUT" },
+    });
+    expectTraceIds(["trace-timeout"]);
+  });
+
+  it("filters in-progress traces by path", () => {
+    setTauriRuntime();
+    traceStoreState.traces = [
+      createTrace({ trace_id: "trace-messages", method: "POST", path: "/v1/messages" }),
+      createTrace({ trace_id: "trace-health", method: "GET", path: "/health" }),
+    ];
+    mockRequestLogQueries();
+
+    renderWithProviders(<LogsPage />);
+
+    fireEvent.change(screen.getByPlaceholderText("例：/v1/messages"), {
+      target: { value: "/v1/messages" },
+    });
+    expectTraceIds(["trace-messages"]);
   });
 
   it("filters logs by status expression", () => {

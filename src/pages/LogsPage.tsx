@@ -172,6 +172,27 @@ export function LogsPage() {
       return true;
     });
   }, [activeRequests, cliKey, errorCodeFilter, pathFilter, statusPredicate]);
+  const filteredTraces = useMemo(() => {
+    const errorNeedle = errorCodeFilter.trim().toLowerCase();
+    const pathNeedle = pathFilter.trim().toLowerCase();
+
+    return traces.filter((trace) => {
+      if (cliKey !== "all" && trace.cli_key !== cliKey) return false;
+      if (statusPredicate) {
+        if (!trace.summary) return false;
+        if (!statusPredicate(trace.summary.status)) return false;
+      }
+      if (errorNeedle) {
+        const raw = (trace.summary?.error_code ?? "").toLowerCase();
+        if (!raw.includes(errorNeedle)) return false;
+      }
+      if (pathNeedle) {
+        const haystack = `${trace.method} ${trace.path}`.toLowerCase();
+        if (!haystack.includes(pathNeedle)) return false;
+      }
+      return true;
+    });
+  }, [cliKey, errorCodeFilter, pathFilter, statusPredicate, traces]);
   const logsSummaryText =
     requestLogsAvailable === false
       ? undefined
@@ -297,7 +318,7 @@ export function LogsPage() {
         summaryTextOverride={logsSummaryText}
         compactModeOverride={false}
         emptyStateTitle={activeFilterCount > 0 ? "没有符合筛选条件的代理记录" : "当前没有代理记录"}
-        traces={traces}
+        traces={filteredTraces}
         activeRequests={filteredActiveRequests}
         requestLogs={filteredLogs}
         requestLogsLoading={requestLogsLoading}
