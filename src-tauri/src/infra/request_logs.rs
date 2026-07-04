@@ -408,7 +408,16 @@ pub fn purge_expired(db: &db::Db, retention_days: u32, now_unix: i64) -> AppResu
         let conn = db.open_connection()?;
         let affected = conn
             .execute(
-                "DELETE FROM request_logs WHERE created_at > 0 AND created_at < ?1 LIMIT ?2",
+                r#"
+DELETE FROM request_logs
+WHERE id IN (
+  SELECT id
+  FROM request_logs
+  WHERE created_at > 0 AND created_at < ?1
+  ORDER BY created_at ASC, id ASC
+  LIMIT ?2
+)
+"#,
                 params![cutoff, RETENTION_PURGE_BATCH_SIZE as i64],
             )
             .map_err(|e| db_err!("failed to purge expired request_logs: {e}"))?;
@@ -934,10 +943,11 @@ GROUP BY cli_key, session_id
 #[cfg(test)]
 mod tests {
     use super::{
-        insert_batch_once, parse_cx2cc_cost_basis, reconcile_unresolved_pending, touch_activity,
-        try_acquire_write_through_permit, writer_loop, InsertBatchCache, RequestLogInsert,
-        RequestLogReconcileReason, COST_MULTIPLIER_CACHE_MAX_ENTRIES,
-        EFFECTIVE_COST_MULTIPLIER_SQL, MODEL_PRICE_CACHE_MAX_ENTRIES, WRITE_BATCH_MAX,
+        insert_batch_once, parse_cx2cc_cost_basis, purge_expired, reconcile_unresolved_pending,
+        touch_activity, try_acquire_write_through_permit, writer_loop, InsertBatchCache,
+        RequestLogInsert, RequestLogReconcileReason, COST_MULTIPLIER_CACHE_MAX_ENTRIES,
+        EFFECTIVE_COST_MULTIPLIER_SQL, MODEL_PRICE_CACHE_MAX_ENTRIES, RETENTION_PURGE_BATCH_SIZE,
+        WRITE_BATCH_MAX,
     };
     use rusqlite::{params, Connection};
     use std::sync::Arc;
@@ -990,6 +1000,16 @@ mod tests {
         let conn = db.open_connection().expect("open connection");
         conn.query_row("SELECT COUNT(1) FROM request_logs", [], |row| row.get(0))
             .expect("count request logs")
+    }
+
+    fn request_log_exists(db: &crate::db::Db, trace_id: &str) -> bool {
+        let conn = db.open_connection().expect("open connection");
+        conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM request_logs WHERE trace_id = ?1)",
+            params![trace_id],
+            |row| row.get::<_, bool>(0),
+        )
+        .expect("check request log exists")
     }
 
     fn insert_request_log_row(
@@ -1101,6 +1121,72 @@ WHERE trace_id = ?1
         drop(first);
         assert!(try_acquire_write_through_permit(limiter).is_some());
         drop(second);
+    }
+
+    #[test]
+    fn purge_expired_is_disabled_when_retention_days_is_zero() {
+        let (_app, db, _dir) = init_test_db();
+        insert_request_log_row(&db, "trace-old", Some(200), None, 10, 1_000);
+
+        let deleted = purge_expired(&db, 0, 200_000).expect("purge disabled");
+
+        assert_eq!(deleted, 0);
+        assert!(request_log_exists(&db, "trace-old"));
+    }
+
+    #[test]
+    fn purge_expired_deletes_only_rows_older_than_cutoff() {
+        let (_app, db, _dir) = init_test_db();
+        let day = 24 * 60 * 60;
+        let now = 200_000;
+        let cutoff = now - day;
+        insert_request_log_row(&db, "trace-unknown-time", Some(200), None, 10, 0);
+        insert_request_log_row(
+            &db,
+            "trace-expired",
+            Some(200),
+            None,
+            10,
+            (cutoff - 1) * 1000,
+        );
+        insert_request_log_row(&db, "trace-at-cutoff", Some(200), None, 10, cutoff * 1000);
+        insert_request_log_row(&db, "trace-new", Some(200), None, 10, (cutoff + 1) * 1000);
+
+        let deleted = purge_expired(&db, 1, now).expect("purge expired rows");
+
+        assert_eq!(deleted, 1);
+        assert_eq!(count_request_logs(&db), 3);
+        assert!(!request_log_exists(&db, "trace-expired"));
+        assert!(request_log_exists(&db, "trace-unknown-time"));
+        assert!(request_log_exists(&db, "trace-at-cutoff"));
+        assert!(request_log_exists(&db, "trace-new"));
+    }
+
+    #[test]
+    fn purge_expired_batches_until_no_expired_rows_remain() {
+        let (_app, db, _dir) = init_test_db();
+        let day = 24 * 60 * 60;
+        let now = 200_000;
+        let cutoff = now - day;
+        let expired_count = RETENTION_PURGE_BATCH_SIZE + 2;
+
+        for idx in 0..expired_count {
+            insert_request_log_row(
+                &db,
+                &format!("trace-expired-{idx}"),
+                Some(200),
+                None,
+                10,
+                (cutoff - 1) * 1000,
+            );
+        }
+        insert_request_log_row(&db, "trace-new", Some(200), None, 10, (cutoff + 1) * 1000);
+
+        let deleted = purge_expired(&db, 1, now).expect("purge expired rows in batches");
+
+        assert_eq!(deleted, expired_count as u64);
+        assert_eq!(count_request_logs(&db), 1);
+        assert!(request_log_exists(&db, "trace-new"));
     }
 
     #[test]
