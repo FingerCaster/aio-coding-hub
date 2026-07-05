@@ -1,5 +1,19 @@
 # Changelog
 
+## [0.60.17](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.16...aio-coding-hub-v0.60.17) (2026-07-05)
+
+
+### Features
+
+* merge upstream main through 0.60.6 with WebView watchdog recovery, gateway event contracts, request-log retention, usage cache-rate semantics, and release pipeline updates ([6855df8](https://github.com/FingerCaster/aio-coding-hub/commit/6855df8441af73965164b148535c05ceb9085839))
+
+
+### Bug Fixes
+
+* preserve fork release identity and manual release gates after upstream reconciliation ([5e1e71e](https://github.com/FingerCaster/aio-coding-hub/commit/5e1e71e0ccd59c1272d89225609f33add608c015))
+* make request log retention purge portable ([72f825d](https://github.com/FingerCaster/aio-coding-hub/commit/72f825d35e9f6368c86f5431dac5b56de57151f0))
+* clean provider validation review findings ([fb47fe2](https://github.com/FingerCaster/aio-coding-hub/commit/fb47fe223d38412eefe890a945adb7aa728324dd))
+
 ## [0.60.16](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.15...aio-coding-hub-v0.60.16) (2026-07-04)
 
 
