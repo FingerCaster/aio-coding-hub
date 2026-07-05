@@ -98,6 +98,9 @@ pub(super) fn gate_provider<R: tauri::Runtime>(
                 cooldown_until: snap.cooldown_until,
                 reason,
                 ts: now_unix,
+                // Non-transition skip event: no trigger-failure attribution.
+                trigger_error_code: None,
+                first_byte_timeout_secs: None,
             },
         );
     }

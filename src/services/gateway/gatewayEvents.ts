@@ -2,6 +2,7 @@ import { GatewayErrorCodes } from "../../constants/gatewayErrorCodes";
 import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../../constants/gatewayEvents";
 import { computeOutputTokensPerSecond as computeOutputTokensPerSecondRaw } from "../../utils/formatters";
 import { logToConsole, shouldLogToConsole } from "../consoleLog";
+import { maybeSendCircuitBreakerNotice } from "./circuitNotice";
 import { subscribeGatewayEvent } from "./gatewayEventBus";
 import { ingestTraceAttempt, ingestTraceRequest, ingestTraceStart } from "./traceStore";
 import { ingestCacheAnomalyRequest, ingestCacheAnomalyRequestStart } from "./cacheAnomalyMonitor";
@@ -111,6 +112,10 @@ export type GatewayCircuitEvent = {
   cooldown_until?: number | null;
   reason: string;
   ts: number;
+  // 触发失败归因（触发熔断的错误码 + 生效的首字节超时秒数）。
+  // 旧后端事件无这两个字段（optional 降级）。
+  trigger_error_code?: string | null;
+  first_byte_timeout_secs?: number | null;
 };
 
 function normalizeLogLevel(level: unknown): "debug" | "info" | "warn" | "error" {
@@ -528,7 +533,9 @@ export function isGatewayCircuitEvent(payload: unknown): payload is GatewayCircu
     isNullableNumber(payload.open_until) &&
     isNullableNumber(payload.cooldown_until) &&
     isStringWithin(payload.reason, EVENT_SHORT_TEXT_MAX_LENGTH) &&
-    isNumber(payload.ts)
+    isNumber(payload.ts) &&
+    isNullableStringWithin(payload.trigger_error_code, EVENT_SHORT_TEXT_MAX_LENGTH) &&
+    isNullableNumber(payload.first_byte_timeout_secs)
   );
 }
 
@@ -712,6 +719,9 @@ export async function listenGatewayEvents(): Promise<() => void> {
       isGatewayCircuitEvent
     );
     if (!payload) return;
+
+    // 状态跃迁时按开关发送系统通知（内部含 prev != next 与开关判断）。
+    void maybeSendCircuitBreakerNotice(payload);
 
     const prevNormalized = normalizeCircuitState(payload.prev_state);
     const nextNormalized = normalizeCircuitState(payload.next_state);

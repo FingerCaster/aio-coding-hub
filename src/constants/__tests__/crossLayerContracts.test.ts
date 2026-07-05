@@ -6,6 +6,7 @@ import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../gatewayEvents";
 import { GatewayErrorCodes } from "../gatewayErrorCodes";
 import { HOME_USAGE_PERIOD_VALUES } from "../homeUsagePeriods";
 import { MAX_MODEL_NAME_LEN } from "../../schemas/providerEditorDialog";
+import { DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE } from "../../services/gateway/circuitNotice";
 import { MAX_ATTEMPTS_PER_TRACE } from "../../services/gateway/traceLimits";
 import { SETTINGS_VALIDATION_LIMITS } from "../../services/settings/settingsValidation";
 import { getSettingsState, resetMswState } from "../../test/msw/state";
@@ -242,6 +243,14 @@ describe("cross-layer contracts", () => {
       expect(frontendValue, `persistence.rs: ${rustAnchor}`).toBe(1);
       expect(settingsPersistenceSource, rustAnchor).toContain(rustAnchor);
     }
+  });
+
+  it("keeps the circuit-breaker notice fallback default aligned with Rust", () => {
+    // circuitNotice.ts uses this before the settings snapshot arrives; a Rust
+    // default flip without a frontend update must turn this red.
+    expect(
+      extractRustBoolConst(settingsDefaultsSource, "DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE")
+    ).toBe(DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE);
   });
 
   it("keeps the default gateway port aligned with Rust", () => {

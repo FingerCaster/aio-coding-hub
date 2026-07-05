@@ -135,29 +135,9 @@ impl GatewayErrorCode {
     }
 }
 
-/// Chinese short label for a gateway error code, used in circuit-breaker
-/// notice bodies. Unmapped codes fall back to the raw code string.
-/// NOTE: semantics aligned with `getGatewayErrorShortLabel` in
-/// `src/constants/gatewayErrorCodes.ts` (maintained separately per language).
-pub(in crate::gateway) fn short_label_zh(code: &str) -> &str {
-    match GatewayErrorCode::from_str(code) {
-        Some(GatewayErrorCode::UpstreamTimeout) => "上游超时",
-        Some(GatewayErrorCode::UpstreamConnectFailed) => "连接失败",
-        Some(GatewayErrorCode::Upstream5xx) => "上游5XX",
-        Some(GatewayErrorCode::Upstream4xx) => "上游4XX",
-        Some(GatewayErrorCode::UpstreamReadError) => "读取错误",
-        Some(GatewayErrorCode::UpstreamBodyReadError) => "响应体读取失败",
-        Some(GatewayErrorCode::StreamError) => "流错误",
-        Some(GatewayErrorCode::StreamIdleTimeout) => "流空闲超时",
-        Some(GatewayErrorCode::ProviderRateLimited) => "供应商限额",
-        Some(GatewayErrorCode::Fake200) => "假200",
-        _ => code,
-    }
-}
-
 #[cfg(test)]
 mod tests {
-    use super::{short_label_zh, GatewayErrorCode};
+    use super::GatewayErrorCode;
 
     const ALL_CODES: &[GatewayErrorCode] = &[
         GatewayErrorCode::AllProvidersUnavailable,
@@ -208,24 +188,6 @@ mod tests {
     #[test]
     fn unknown_code_returns_none() {
         assert_eq!(GatewayErrorCode::from_str("GW_UNKNOWN"), None);
-    }
-
-    #[test]
-    fn short_label_zh_maps_common_codes() {
-        assert_eq!(short_label_zh("GW_UPSTREAM_TIMEOUT"), "上游超时");
-        assert_eq!(short_label_zh("GW_UPSTREAM_5XX"), "上游5XX");
-        assert_eq!(short_label_zh("GW_UPSTREAM_CONNECT_FAILED"), "连接失败");
-        assert_eq!(short_label_zh("GW_STREAM_IDLE_TIMEOUT"), "流空闲超时");
-    }
-
-    #[test]
-    fn short_label_zh_falls_back_to_raw_code() {
-        // Known variant without a mapped label.
-        assert_eq!(short_label_zh("GW_INTERNAL_ERROR"), "GW_INTERNAL_ERROR");
-        // Completely unknown code. Deliberately not GW_-prefixed: the
-        // crossLayerContracts.test.ts scraper treats every GW_ literal in
-        // this file as a real error code.
-        assert_eq!(short_label_zh("UNKNOWN_FAKE_CODE"), "UNKNOWN_FAKE_CODE");
     }
 
     #[test]

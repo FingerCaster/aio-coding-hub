@@ -78,6 +78,11 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(isGatewayCircuitEvent(circuitFixture)).toBe(true);
   });
 
+  it("accepts gateway:circuit payloads without trigger attribution fields (legacy backend)", () => {
+    const { trigger_error_code: _code, first_byte_timeout_secs: _secs, ...legacy } = circuitFixture;
+    expect(isGatewayCircuitEvent(legacy)).toBe(true);
+  });
+
   it("accepts the gateway:log fixture", () => {
     expect(isGatewayLogEvent(logFixture)).toBe(true);
   });

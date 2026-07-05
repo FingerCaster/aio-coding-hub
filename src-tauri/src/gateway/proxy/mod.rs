@@ -27,7 +27,7 @@ mod types;
 pub(in crate::gateway) mod upstream_client_error_rules;
 
 pub(super) use caches::{ProviderBaseUrlPingCache, RecentErrorCache};
-pub(super) use error_code::{short_label_zh, GatewayErrorCode};
+pub(super) use error_code::GatewayErrorCode;
 pub(in crate::gateway) use fake_200::is_fake_200_non_stream_body;
 pub(in crate::gateway) use logging::spawn_enqueue_request_log_with_backpressure;
 pub(super) use types::ErrorCategory;

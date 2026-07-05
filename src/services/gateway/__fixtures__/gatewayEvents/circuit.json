@@ -11,5 +11,7 @@
   "open_until": 1750001800,
   "cooldown_until": null,
   "reason": "FAILURE_THRESHOLD_REACHED",
-  "ts": 1750000000
+  "ts": 1750000000,
+  "trigger_error_code": "GW_UPSTREAM_TIMEOUT",
+  "first_byte_timeout_secs": 300
 }
