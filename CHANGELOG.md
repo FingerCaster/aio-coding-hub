@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.60.18](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.17...aio-coding-hub-v0.60.18) (2026-07-05)
+
+
+### Features
+
+* **providers:** add account usage display ([6396d35](https://github.com/FingerCaster/aio-coding-hub/commit/6396d35a84ed7fe2babac99d93105014e1012911))
+
+
+### Bug Fixes
+
+* repair codex continuation response contract ([d508a4e](https://github.com/FingerCaster/aio-coding-hub/commit/d508a4eae5e64a22d06c048967b5bd1c94e2bba3))
+
 ## [0.60.17](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.16...aio-coding-hub-v0.60.17) (2026-07-05)
 
 
