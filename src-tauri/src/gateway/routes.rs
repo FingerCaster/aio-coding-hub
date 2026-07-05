@@ -5855,6 +5855,10 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-1\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
         );
         let second_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-cont-2\",\"status\":\"in_progress\",\"model\":\"gpt-cont\"}}\n\n",
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"output_index\":0,\"delta\":\"final after continuation\"}\n\n",
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final after continuation\"}]}}\n\n",
             "event: response.completed\n",
@@ -5888,6 +5892,7 @@ mod tests {
             String::from_utf8_lossy(&body)
         );
         let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("response.output_text.delta"));
         assert!(body_text.contains("final after continuation"));
         assert!(body_text.contains("resp-cont-2"));
 
@@ -5931,12 +5936,118 @@ mod tests {
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(200));
         assert_eq!(log.error_code, None);
+        assert_eq!(log.output_tokens, Some(13));
+        let logged_usage: Value = serde_json::from_str(
+            log.usage_json
+                .as_deref()
+                .expect("provider repair usage json"),
+        )
+        .expect("usage json");
+        assert_eq!(
+            logged_usage.get("output_tokens").and_then(Value::as_i64),
+            Some(13)
+        );
+        assert_eq!(
+            logged_usage
+                .pointer("/output_tokens_details/reasoning_tokens")
+                .and_then(Value::as_i64),
+            Some(518)
+        );
         let special_settings = parse_special_settings(&log);
-        assert!(special_settings.iter().any(|entry| {
-            entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
-                && entry.get("status").and_then(Value::as_str) == Some("repaired")
-                && entry.get("sentRounds").and_then(Value::as_u64) == Some(1)
-        }));
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("repaired")
+            })
+            .expect("continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("clientContractVersion")
+                .and_then(Value::as_str),
+            Some("bplus_protocol_reconstruction_v8")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("reconstructionStatus")
+                .and_then(Value::as_str),
+            Some("final_full_passthrough")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("visibleAssemblyKind")
+                .and_then(Value::as_str),
+            Some("empty_prior")
+        );
+        assert_eq!(
+            continuation_entry.get("sentRounds").and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            continuation_entry
+                .get("canonicalResponseId")
+                .and_then(Value::as_str),
+            Some("resp-cont-2")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("canonicalResponseIdContinuity")
+                .and_then(Value::as_str),
+            Some("not_validated")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("downstreamHeadersCommittedDuringRepair")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            continuation_entry
+                .pointer("/clientUsage/output_tokens")
+                .and_then(Value::as_i64),
+            Some(3)
+        );
+        assert_eq!(
+            continuation_entry
+                .pointer("/clientUsage/output_tokens_details/reasoning_tokens")
+                .and_then(Value::as_i64),
+            Some(2)
+        );
+        assert_eq!(
+            continuation_entry
+                .pointer("/providerRepairUsage/output_tokens")
+                .and_then(Value::as_i64),
+            Some(13)
+        );
+        assert_eq!(
+            continuation_entry
+                .pointer("/providerRepairUsage/output_tokens_details/reasoning_tokens")
+                .and_then(Value::as_i64),
+            Some(518)
+        );
+        let rounds = continuation_entry
+            .get("rounds")
+            .and_then(Value::as_array)
+            .expect("round trace");
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(
+            rounds[0]
+                .get("hasVisibleClientOutput")
+                .and_then(Value::as_bool),
+            Some(false)
+        );
+        assert_eq!(
+            rounds[1]
+                .get("hasVisibleClientOutput")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            continuation_entry
+                .pointer("/repairWallClockBudget/capVsThresholdInvariant")
+                .and_then(Value::as_str),
+            Some("passed")
+        );
         let feature_entry = special_settings
             .iter()
             .find(|entry| {
@@ -5945,7 +6056,7 @@ mod tests {
             .expect("post-repair feature sample");
         assert_eq!(
             feature_entry.get("reasoningTokens").and_then(Value::as_i64),
-            Some(518)
+            Some(2)
         );
         assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
@@ -5965,6 +6076,117 @@ mod tests {
         assert_eq!(
             attempts[0].get("outcome").and_then(Value::as_str),
             Some("success")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_distinct_visible_rounds_fall_back_without_exposing_partial_text() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-distinct-unsafe.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_1\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_early\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"early visible answer\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-distinct-1\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-distinct-2\",\"status\":\"in_progress\",\"model\":\"gpt-cont\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_final\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"different final answer\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-distinct-2\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse]).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Continuation Distinct Unsafe",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(!body_text.contains("early visible answer"));
+        assert!(!body_text.contains("different final answer"));
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let special_settings = parse_special_settings(&log);
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                && entry.get("status").and_then(Value::as_str) == Some("failed")
+                && entry.get("failureKind").and_then(Value::as_str) == Some("bplus_reconstruction")
+                && entry
+                    .get("reason")
+                    .and_then(Value::as_str)
+                    .is_some_and(|reason| reason.contains("non-prefix"))
+        }));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
         );
 
         upstream_task.abort();
@@ -6006,6 +6228,8 @@ mod tests {
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-budget-2\",\"status\":\"completed\",\"model\":\"gpt-cont-budget\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":1034}}}}\n\n"
         );
         let third_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-budget-3\",\"status\":\"in_progress\",\"model\":\"gpt-cont-budget\"}}\n\n",
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final after second continuation\"}]}}\n\n",
             "event: response.completed\n",

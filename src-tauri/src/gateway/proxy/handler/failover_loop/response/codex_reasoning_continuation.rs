@@ -1,10 +1,26 @@
 //! Usage: Native Codex Responses continuation repair helpers.
 
 use axum::body::Bytes;
-use serde_json::{Map, Value};
+use serde_json::{json, Map, Value};
+use std::collections::BTreeMap;
 
 pub(super) const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_content";
 pub(super) const CONTINUATION_MARKER_TEXT: &str = "Continue thinking...";
+pub(super) const BPLUS_CLIENT_CONTRACT_VERSION: &str = "bplus_protocol_reconstruction_v8";
+pub(super) const BPLUS_CLEAN_APPEND_ENABLED: bool = false;
+pub(super) const REPAIR_PRECOMMIT_WALL_CLOCK_CAP_MS: u64 = 30_000;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) struct SupportedRepairPathThreshold {
+    pub(super) name: &'static str,
+    pub(super) response_header_or_ttfb_timeout_ms: u64,
+}
+
+pub(super) const SUPPORTED_REPAIR_PATH_THRESHOLDS: &[SupportedRepairPathThreshold] =
+    &[SupportedRepairPathThreshold {
+        name: "native_codex_responses_gateway_buffered",
+        response_header_or_ttfb_timeout_ms: 60_000,
+    }];
 
 pub(super) struct IncludeMergeInput<'a> {
     pub(super) repair_enabled: bool,
@@ -166,6 +182,1202 @@ pub(super) fn output_tokens(response: &Value) -> u64 {
         .unwrap_or(0)
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ContinuationRepairRoundKind {
+    Initial,
+    Continuation,
+}
+
+impl ContinuationRepairRoundKind {
+    fn as_str(self) -> &'static str {
+        match self {
+            ContinuationRepairRoundKind::Initial => "initial",
+            ContinuationRepairRoundKind::Continuation => "continuation",
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ContinuationRepairRound {
+    pub(super) kind: ContinuationRepairRoundKind,
+    pub(super) raw_sse: Bytes,
+    pub(super) aggregated: Value,
+    pub(super) duration_ms: Option<u128>,
+}
+
+impl ContinuationRepairRound {
+    pub(super) fn new(
+        kind: ContinuationRepairRoundKind,
+        raw_sse: Bytes,
+        aggregated: Value,
+        duration_ms: Option<u128>,
+    ) -> Self {
+        Self {
+            kind,
+            raw_sse,
+            aggregated,
+            duration_ms,
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ContinuationReconstruction {
+    pub(super) client_raw: Bytes,
+    pub(super) client_usage: crate::usage::UsageExtract,
+    pub(super) provider_repair_usage: crate::usage::UsageExtract,
+    pub(super) round_trace: Vec<Value>,
+    pub(super) reconstruction_status: &'static str,
+    pub(super) visible_assembly_kind: &'static str,
+    pub(super) canonical_response_id: String,
+    pub(super) canonical_response_id_continuity: &'static str,
+    pub(super) aggregate_raw_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+struct RoundVisibility {
+    has_visible_client_output: bool,
+    assistant_message_text: Option<String>,
+    visible_text_len: usize,
+    visible_text_hash: Option<String>,
+    has_tool_call: bool,
+    has_reasoning: bool,
+    has_commentary_marker: bool,
+    non_visible_reasoning_count: usize,
+    non_visible_commentary_count: usize,
+    unsafe_reason: Option<&'static str>,
+}
+
+pub(super) fn minimum_supported_response_header_or_ttfb_timeout_ms(
+    thresholds: &[SupportedRepairPathThreshold],
+) -> Option<SupportedRepairPathThreshold> {
+    thresholds
+        .iter()
+        .copied()
+        .min_by_key(|entry| entry.response_header_or_ttfb_timeout_ms)
+}
+
+pub(super) fn repair_precommit_wall_clock_cap_ms() -> u64 {
+    REPAIR_PRECOMMIT_WALL_CLOCK_CAP_MS
+}
+
+pub(super) fn repair_precommit_cap_invariant_holds(
+    cap_ms: u64,
+    thresholds: &[SupportedRepairPathThreshold],
+) -> bool {
+    minimum_supported_response_header_or_ttfb_timeout_ms(thresholds)
+        .is_some_and(|minimum| cap_ms < minimum.response_header_or_ttfb_timeout_ms)
+}
+
+pub(super) fn repair_wall_clock_budget_json(max_rounds: u32, round_timeout_ms: u64) -> Value {
+    let minimum =
+        minimum_supported_response_header_or_ttfb_timeout_ms(SUPPORTED_REPAIR_PATH_THRESHOLDS);
+    json!({
+        "configuredMaxRounds": max_rounds,
+        "roundTimeoutMs": round_timeout_ms,
+        "computedMaxRawRepairTimeMs": round_timeout_ms.saturating_mul(max_rounds as u64),
+        "preCommitWallClockCapMs": repair_precommit_wall_clock_cap_ms(),
+        "testedDownstreamPaths": SUPPORTED_REPAIR_PATH_THRESHOLDS.iter().map(|entry| {
+            json!({
+                "name": entry.name,
+                "responseHeaderOrTtfbTimeoutMs": entry.response_header_or_ttfb_timeout_ms,
+            })
+        }).collect::<Vec<_>>(),
+        "minimumTestedThresholdMs": minimum.map(|entry| entry.response_header_or_ttfb_timeout_ms),
+        "minimumTestedThresholdPath": minimum.map(|entry| entry.name),
+        "capVsThresholdInvariant": if repair_precommit_cap_invariant_holds(
+            repair_precommit_wall_clock_cap_ms(),
+            SUPPORTED_REPAIR_PATH_THRESHOLDS,
+        ) {
+            "passed"
+        } else {
+            "failed"
+        },
+        "aggregatePeakRetainedRawBufferCapBytes": 20 * 1024 * 1024,
+        "residualRisk": "real_upstream_transcript_continuity_not_validated",
+    })
+}
+
+pub(super) fn reconstruct_bplus_client_sse(
+    rounds: &[ContinuationRepairRound],
+    aggregate_cap_bytes: usize,
+) -> Result<ContinuationReconstruction, String> {
+    if rounds.len() < 2 {
+        return Err("continuation repair requires at least one continuation round".to_string());
+    }
+    let aggregate_raw_bytes = rounds
+        .iter()
+        .try_fold(0usize, |total, round| {
+            total.checked_add(round.raw_sse.len())
+        })
+        .ok_or_else(|| "aggregate repair raw bytes overflowed".to_string())?;
+    if aggregate_raw_bytes > aggregate_cap_bytes {
+        return Err(format!(
+            "aggregate repair raw bytes exceeded cap ({aggregate_raw_bytes} > {aggregate_cap_bytes})"
+        ));
+    }
+
+    let final_round = rounds
+        .last()
+        .ok_or_else(|| "missing final continuation round".to_string())?;
+    let final_response_id = final_round
+        .aggregated
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "missing final response id".to_string())?
+        .to_string();
+
+    let visibility = rounds
+        .iter()
+        .map(|round| classify_round_visibility(&round.aggregated))
+        .collect::<Vec<_>>();
+    let final_visibility = visibility
+        .last()
+        .ok_or_else(|| "missing final visibility".to_string())?;
+
+    let visible_assembly_kind = select_visible_assembly_kind(&visibility)?;
+    if visible_assembly_kind == "clean_append_disabled" && !BPLUS_CLEAN_APPEND_ENABLED {
+        return Err("clean append is disabled without Phase 0 samples".to_string());
+    }
+
+    if !final_visibility.has_visible_client_output
+        && !final_visibility.has_tool_call
+        && final_visibility.unsafe_reason.is_none()
+    {
+        return Err("final round has no client-visible output".to_string());
+    }
+    validate_final_round_for_passthrough(rounds, &visibility)?;
+
+    let provider_repair_usage = provider_usage_from_rounds(rounds)?;
+    let final_usage =
+        crate::usage::parse_usage_from_json_or_sse_bytes("codex", final_round.raw_sse.as_ref())
+            .ok_or_else(|| "final client usage missing".to_string())?;
+    let first_usage =
+        crate::usage::parse_usage_from_json_or_sse_bytes("codex", rounds[0].raw_sse.as_ref())
+            .ok_or_else(|| "initial client usage missing".to_string())?;
+    let client_usage = client_usage_from_rounds(&first_usage, &final_usage);
+
+    let remaining_reconstructed_bytes = aggregate_cap_bytes
+        .checked_sub(aggregate_raw_bytes)
+        .ok_or_else(|| "aggregate repair raw bytes exceeded cap".to_string())?;
+    let client_raw = patch_terminal_completed_usage(
+        &final_round.raw_sse,
+        &client_usage,
+        remaining_reconstructed_bytes,
+    )?;
+    let reconstructed_total = aggregate_raw_bytes
+        .checked_add(client_raw.len())
+        .ok_or_else(|| "aggregate repair reconstructed bytes overflowed".to_string())?;
+    if reconstructed_total > aggregate_cap_bytes {
+        return Err(format!(
+            "aggregate repair raw/reconstructed bytes exceeded cap ({reconstructed_total} > {aggregate_cap_bytes})"
+        ));
+    }
+    let reparsed_client_usage =
+        crate::usage::parse_usage_from_json_or_sse_bytes("codex", client_raw.as_ref())
+            .ok_or_else(|| "patched client usage missing".to_string())?;
+    if reparsed_client_usage.usage_json != client_usage.usage_json {
+        return Err("patched terminal usage does not match client usage".to_string());
+    }
+
+    Ok(ContinuationReconstruction {
+        client_raw,
+        client_usage,
+        provider_repair_usage,
+        round_trace: build_round_trace(rounds, &visibility),
+        reconstruction_status: "final_full_passthrough",
+        visible_assembly_kind,
+        canonical_response_id: final_response_id,
+        canonical_response_id_continuity: "not_validated",
+        aggregate_raw_bytes: reconstructed_total,
+    })
+}
+
+fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'static str, String> {
+    let Some(final_visibility) = visibility.last() else {
+        return Err("missing final visibility".to_string());
+    };
+    if let Some(reason) = final_visibility.unsafe_reason {
+        return Err(format!("final round unsafe: {reason}"));
+    }
+
+    for round in visibility.iter().take(visibility.len().saturating_sub(1)) {
+        if round.has_tool_call {
+            return Err("non-final tool/function call is unsafe".to_string());
+        }
+        if let Some(reason) = round.unsafe_reason {
+            return Err(format!("non-final visible payload is unsafe: {reason}"));
+        }
+    }
+    if final_visibility.has_tool_call {
+        if visibility
+            .iter()
+            .take(visibility.len().saturating_sub(1))
+            .any(|round| round.has_visible_client_output)
+        {
+            return Err(
+                "non-final visible output is unsafe before final tool/function call".to_string(),
+            );
+        }
+        return Ok("final_tool_call");
+    }
+
+    let non_final_visible = visibility
+        .iter()
+        .take(visibility.len().saturating_sub(1))
+        .filter(|round| round.has_visible_client_output)
+        .collect::<Vec<_>>();
+    if non_final_visible.is_empty() {
+        return Ok("empty_prior");
+    }
+
+    let visible_texts = visibility
+        .iter()
+        .filter_map(|round| round.assistant_message_text.as_deref())
+        .map(normalize_visible_message_text)
+        .filter(|text| !text.is_empty())
+        .collect::<Vec<_>>();
+    if visible_texts.len() < 2 {
+        return Err("visible comparison missing final assistant message text".to_string());
+    }
+    let Some(final_text) = visible_texts.last() else {
+        return Err("missing final visible text".to_string());
+    };
+    if visible_texts.iter().all(|text| text == final_text) {
+        return Ok("exact_duplicate");
+    }
+    let mut saw_strict_prefix = false;
+    for pair in visible_texts.windows(2) {
+        let previous = &pair[0];
+        let next = &pair[1];
+        if previous == next {
+            continue;
+        }
+        if next.starts_with(previous) {
+            saw_strict_prefix = true;
+            continue;
+        }
+        return Err("visible text chain is distinct or non-prefix".to_string());
+    }
+    if saw_strict_prefix {
+        Ok("final_superset")
+    } else {
+        Err("visible text chain did not prove a safe branch".to_string())
+    }
+}
+
+fn classify_round_visibility(response: &Value) -> RoundVisibility {
+    let mut visible_text_parts = Vec::new();
+    let mut has_visible_client_output = false;
+    let mut has_tool_call = false;
+    let mut has_reasoning = false;
+    let mut has_commentary_marker = false;
+    let mut non_visible_reasoning_count = 0usize;
+    let mut non_visible_commentary_count = 0usize;
+    let mut unsafe_reason = None;
+
+    for item in response
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        let item_type = item.get("type").and_then(Value::as_str).unwrap_or("");
+        match item_type {
+            "reasoning" => {
+                has_reasoning = true;
+                non_visible_reasoning_count = non_visible_reasoning_count.saturating_add(1);
+                if reasoning_item_has_visible_payload(item) {
+                    has_visible_client_output = true;
+                    unsafe_reason.get_or_insert("reasoning_visible_payload");
+                }
+            }
+            "function_call" | "tool_call" => {
+                has_tool_call = true;
+                if let Err(reason) = validate_final_tool_call_item(item) {
+                    unsafe_reason.get_or_insert(reason);
+                }
+            }
+            "message" => {
+                if item.get("phase").and_then(Value::as_str) == Some("commentary") {
+                    if item_contains_text(item, CONTINUATION_MARKER_TEXT) {
+                        has_commentary_marker = true;
+                        non_visible_commentary_count =
+                            non_visible_commentary_count.saturating_add(1);
+                    } else {
+                        has_visible_client_output = true;
+                        unsafe_reason.get_or_insert("commentary_message_visible");
+                    }
+                    continue;
+                }
+                if item
+                    .get("role")
+                    .and_then(Value::as_str)
+                    .is_some_and(|role| role != "assistant")
+                {
+                    has_visible_client_output = true;
+                    unsafe_reason.get_or_insert("non_assistant_message_visible");
+                    continue;
+                }
+                match visible_message_output_text(item) {
+                    Ok(Some(text)) => {
+                        has_visible_client_output = true;
+                        visible_text_parts.push(text);
+                    }
+                    Ok(None) => {
+                        has_visible_client_output = true;
+                        unsafe_reason.get_or_insert("message_without_output_text");
+                    }
+                    Err(reason) => {
+                        has_visible_client_output = true;
+                        unsafe_reason.get_or_insert(reason);
+                    }
+                }
+            }
+            "refusal" | "output_text" => {
+                has_visible_client_output = true;
+                unsafe_reason.get_or_insert("non_message_visible_payload");
+            }
+            "" => {
+                has_visible_client_output = true;
+                unsafe_reason.get_or_insert("missing_output_item_type");
+            }
+            _ => {
+                has_visible_client_output = true;
+                unsafe_reason.get_or_insert("unknown_visible_output_item");
+            }
+        }
+    }
+
+    let assistant_message_text = if unsafe_reason.is_none() && !visible_text_parts.is_empty() {
+        Some(visible_text_parts.join(""))
+    } else {
+        None
+    };
+    let visible_text_len = assistant_message_text
+        .as_ref()
+        .map(|text| text.chars().count())
+        .unwrap_or(0);
+    let visible_text_hash = assistant_message_text
+        .as_ref()
+        .map(|text| stable_visible_text_hash(text));
+
+    RoundVisibility {
+        has_visible_client_output,
+        assistant_message_text,
+        visible_text_len,
+        visible_text_hash,
+        has_tool_call,
+        has_reasoning,
+        has_commentary_marker,
+        non_visible_reasoning_count,
+        non_visible_commentary_count,
+        unsafe_reason,
+    }
+}
+
+fn validate_final_round_for_passthrough(
+    rounds: &[ContinuationRepairRound],
+    visibility: &[RoundVisibility],
+) -> Result<(), String> {
+    let final_round = rounds
+        .last()
+        .ok_or_else(|| "missing final continuation round".to_string())?;
+    let final_visibility = visibility
+        .last()
+        .ok_or_else(|| "missing final visibility".to_string())?;
+    validate_final_raw_for_passthrough(final_round, final_visibility)?;
+    if final_visibility.unsafe_reason == Some("commentary_message_visible")
+        || final_visibility.has_commentary_marker
+    {
+        return Err("final output contains commentary marker or visible commentary".to_string());
+    }
+    if let Some(reason) = final_visibility.unsafe_reason {
+        return Err(format!("final output is unsafe: {reason}"));
+    }
+    reject_echoed_prior_reasoning(rounds)?;
+    validate_final_tool_calls(final_round)?;
+    Ok(())
+}
+
+fn validate_final_raw_for_passthrough(
+    round: &ContinuationRepairRound,
+    final_visibility: &RoundVisibility,
+) -> Result<(), String> {
+    let raw_text = std::str::from_utf8(round.raw_sse.as_ref())
+        .map_err(|err| format!("final raw SSE is not utf-8: {err}"))?;
+    if raw_text.contains(CONTINUATION_MARKER_TEXT) {
+        return Err("final raw contains synthetic continuation marker".to_string());
+    }
+
+    let mut cursor = 0usize;
+    let mut created_count = 0usize;
+    let mut completed_count = 0usize;
+    let mut created_id: Option<String> = None;
+    let mut completed_id: Option<String> = None;
+    let mut raw_visible = FinalRawVisibleStream::default();
+    while let Some(relative_end) =
+        crate::gateway::proxy::sse::find_sse_event_end(&round.raw_sse[cursor..])
+    {
+        let event_end = cursor + relative_end;
+        let frame = &round.raw_sse[cursor..event_end];
+        cursor = event_end;
+        let frame_text =
+            std::str::from_utf8(frame).map_err(|err| format!("invalid final SSE frame: {err}"))?;
+        let parsed = crate::gateway::proxy::sse::parse_sse_frame(frame_text);
+        if completed_count > 0 {
+            if let Some((event_name, _)) = parsed {
+                return Err(format!(
+                    "final raw has semantic event after response.completed: {event_name}"
+                ));
+            }
+            if !sse_frame_is_nonsemantic_after_completed(frame_text) {
+                return Err(
+                    "final raw has unparseable SSE frame after response.completed".to_string(),
+                );
+            }
+            continue;
+        }
+        let Some((event_name, data)) = parsed else {
+            if sse_frame_is_comment_only(frame_text) {
+                continue;
+            }
+            return Err(
+                "final raw has unparseable SSE frame before response.completed".to_string(),
+            );
+        };
+        validate_pre_completed_final_raw_event(&event_name, &data)?;
+        raw_visible.record_event(&event_name, &data)?;
+        match event_name.as_str() {
+            "response.created" => {
+                created_count = created_count.saturating_add(1);
+                let response = data.get("response").unwrap_or(&data);
+                let id = response
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "final created response missing id".to_string())?;
+                created_id = Some(id.to_string());
+            }
+            "response.completed" => {
+                completed_count = completed_count.saturating_add(1);
+                let response = data.get("response").unwrap_or(&data);
+                let id = response
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .filter(|value| !value.trim().is_empty())
+                    .ok_or_else(|| "final completed response missing id".to_string())?;
+                completed_id = Some(id.to_string());
+            }
+            "response.failed" | "response.incomplete" | "error" => {
+                return Err(format!("final raw has unsafe terminal event: {event_name}"));
+            }
+            _ => {}
+        }
+    }
+    if !round.raw_sse[cursor..].iter().all(u8::is_ascii_whitespace) {
+        return Err("final raw has trailing partial SSE data".to_string());
+    }
+    if created_count != 1 {
+        return Err(format!(
+            "final raw must contain exactly one response.created event, found {created_count}"
+        ));
+    }
+    if completed_count != 1 {
+        return Err(format!(
+            "final raw must contain exactly one response.completed event, found {completed_count}"
+        ));
+    }
+    if created_id != completed_id {
+        return Err("final response.created id does not match response.completed id".to_string());
+    }
+    raw_visible.validate_against_final_output(round, final_visibility)?;
+
+    Ok(())
+}
+
+#[derive(Default)]
+struct FinalRawVisibleStream {
+    output_text_delta: String,
+    saw_output_text_delta: bool,
+    output_text_done: Vec<String>,
+    content_part_done: Vec<String>,
+    function_call_argument_delta: BTreeMap<String, String>,
+    function_call_argument_done: Vec<(String, String)>,
+}
+
+impl FinalRawVisibleStream {
+    fn record_event(&mut self, event_name: &str, data: &Value) -> Result<(), String> {
+        match event_name {
+            "response.output_text.delta" => {
+                let delta = data
+                    .get("delta")
+                    .and_then(Value::as_str)
+                    .ok_or_else(|| "final raw output_text.delta missing delta".to_string())?;
+                self.saw_output_text_delta = true;
+                self.output_text_delta.push_str(delta);
+            }
+            "response.output_text.done" => {
+                if let Some(text) = data.get("text").and_then(Value::as_str) {
+                    self.output_text_done.push(text.to_string());
+                }
+            }
+            "response.content_part.added" => {
+                if content_part_visible_text(data)?.is_some_and(|text| !text.is_empty()) {
+                    return Err("final raw content_part.added contains visible text".to_string());
+                }
+            }
+            "response.content_part.done" => {
+                if let Some(text) = content_part_visible_text(data)? {
+                    self.content_part_done.push(text.to_string());
+                }
+            }
+            "response.function_call_arguments.delta" => {
+                let key = function_call_event_key(data).ok_or_else(|| {
+                    "final raw function_call_arguments.delta missing call key".to_string()
+                })?;
+                let delta = data.get("delta").and_then(Value::as_str).ok_or_else(|| {
+                    "final raw function_call_arguments.delta missing delta".to_string()
+                })?;
+                self.function_call_argument_delta
+                    .entry(key)
+                    .or_default()
+                    .push_str(delta);
+            }
+            "response.function_call_arguments.done" => {
+                let key = function_call_event_key(data).ok_or_else(|| {
+                    "final raw function_call_arguments.done missing call key".to_string()
+                })?;
+                let arguments = data
+                    .get("arguments")
+                    .and_then(argument_value_to_string)
+                    .ok_or_else(|| {
+                        "final raw function_call_arguments.done missing arguments".to_string()
+                    })?;
+                self.function_call_argument_done.push((key, arguments));
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn validate_against_final_output(
+        &self,
+        round: &ContinuationRepairRound,
+        final_visibility: &RoundVisibility,
+    ) -> Result<(), String> {
+        let final_text = final_visibility.assistant_message_text.as_deref();
+        if self.saw_output_text_delta {
+            let expected = final_text.ok_or_else(|| {
+                "final raw output_text.delta exists without final visible message".to_string()
+            })?;
+            if self.output_text_delta != expected {
+                return Err(
+                    "final raw output_text.delta does not match final visible message".to_string(),
+                );
+            }
+        }
+        let expected = final_text;
+        validate_visible_done_texts("output_text.done", &self.output_text_done, expected)?;
+        validate_visible_done_texts("content_part.done", &self.content_part_done, expected)?;
+
+        for text in self
+            .output_text_done
+            .iter()
+            .chain(self.content_part_done.iter())
+        {
+            if text.is_empty() {
+                return Err("final raw visible done event contains empty text".to_string());
+            }
+        }
+
+        for (key, arguments) in &self.function_call_argument_delta {
+            let expected = final_tool_call_arguments_for_key(round, key)?;
+            if arguments != &expected {
+                return Err(
+                    "final raw function_call_arguments.delta does not match final tool call"
+                        .to_string(),
+                );
+            }
+        }
+        for (key, arguments) in &self.function_call_argument_done {
+            let expected = final_tool_call_arguments_for_key(round, key)?;
+            if arguments != &expected {
+                return Err(
+                    "final raw function_call_arguments.done does not match final tool call"
+                        .to_string(),
+                );
+            }
+        }
+
+        Ok(())
+    }
+}
+
+fn validate_visible_done_texts(
+    event_kind: &str,
+    texts: &[String],
+    expected: Option<&str>,
+) -> Result<(), String> {
+    if texts.is_empty() {
+        return Ok(());
+    }
+    let expected = expected
+        .ok_or_else(|| format!("final raw {event_kind} exists without final visible message"))?;
+    let joined = texts.join("");
+    if joined != expected {
+        return Err(format!(
+            "final raw {event_kind} does not match final visible message"
+        ));
+    }
+    Ok(())
+}
+
+fn content_part_visible_text(data: &Value) -> Result<Option<&str>, String> {
+    let Some(part) = data
+        .get("part")
+        .or_else(|| data.get("content_part"))
+        .or_else(|| data.get("content"))
+    else {
+        return Ok(None);
+    };
+    let part_type = part.get("type").and_then(Value::as_str);
+    if part_type == Some("refusal")
+        || part
+            .get("refusal")
+            .and_then(Value::as_str)
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err("final raw content_part contains refusal text".to_string());
+    }
+    if matches!(part_type, Some("output_text" | "text")) {
+        return Ok(part.get("text").and_then(Value::as_str));
+    }
+    Ok(None)
+}
+
+fn function_call_event_key(data: &Value) -> Option<String> {
+    data.get("item_id")
+        .or_else(|| data.get("call_id"))
+        .or_else(|| data.get("id"))
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .map(str::to_string)
+        .or_else(|| {
+            data.get("output_index")
+                .and_then(Value::as_u64)
+                .map(|index| format!("output_index:{index}"))
+        })
+}
+
+fn final_tool_call_arguments_for_key(
+    round: &ContinuationRepairRound,
+    key: &str,
+) -> Result<String, String> {
+    for (index, item) in round
+        .aggregated
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .enumerate()
+    {
+        if !matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "tool_call")
+        ) {
+            continue;
+        }
+        let key_matches = item
+            .get("id")
+            .or_else(|| item.get("call_id"))
+            .and_then(Value::as_str)
+            == Some(key)
+            || item.get("call_id").and_then(Value::as_str) == Some(key)
+            || key == format!("output_index:{index}");
+        if key_matches {
+            return item
+                .get("arguments")
+                .and_then(argument_value_to_string)
+                .ok_or_else(|| "final tool call missing arguments".to_string());
+        }
+    }
+    Err("final raw function_call_arguments event has no matching final tool call".to_string())
+}
+
+fn argument_value_to_string(value: &Value) -> Option<String> {
+    match value {
+        Value::String(text) => Some(text.clone()),
+        Value::Object(_) | Value::Array(_) | Value::Null => serde_json::to_string(value).ok(),
+        _ => None,
+    }
+}
+
+fn validate_pre_completed_final_raw_event(event_name: &str, data: &Value) -> Result<(), String> {
+    if sse_event_name_has_internal_payload(event_name) || value_contains_internal_payload_key(data)
+    {
+        return Err(format!(
+            "final raw has unsafe pre-completed event: {event_name}"
+        ));
+    }
+    if !is_allowed_pre_completed_final_raw_event(event_name) {
+        return Err(format!(
+            "final raw has unknown pre-completed event: {event_name}"
+        ));
+    }
+    Ok(())
+}
+
+fn is_allowed_pre_completed_final_raw_event(event_name: &str) -> bool {
+    matches!(
+        event_name,
+        "response.created"
+            | "response.in_progress"
+            | "response.output_item.added"
+            | "response.output_item.done"
+            | "response.content_part.added"
+            | "response.content_part.done"
+            | "response.output_text.delta"
+            | "response.output_text.done"
+            | "response.function_call_arguments.delta"
+            | "response.function_call_arguments.done"
+            | "response.completed"
+            | "response.failed"
+            | "response.incomplete"
+            | "error"
+    )
+}
+
+fn sse_event_name_has_internal_payload(event_name: &str) -> bool {
+    event_name
+        .split(['.', '_', '-'])
+        .any(|part| matches!(part, "reasoning" | "summary" | "commentary"))
+        || event_name.contains("encrypted_content")
+}
+
+fn value_contains_internal_payload_key(value: &Value) -> bool {
+    match value {
+        Value::Array(items) => items.iter().any(value_contains_internal_payload_key),
+        Value::Object(object) => object.iter().any(|(key, value)| {
+            sse_payload_key_is_internal(key)
+                || sse_payload_value_is_internal_marker(key, value)
+                || value_contains_internal_payload_key(value)
+        }),
+        _ => false,
+    }
+}
+
+fn sse_payload_key_is_internal(key: &str) -> bool {
+    let key = key.to_ascii_lowercase();
+    key == "encrypted_content"
+        || (key.contains("reasoning") && key != "reasoning_tokens")
+        || key.contains("summary")
+        || key.contains("commentary")
+}
+
+fn sse_payload_value_is_internal_marker(key: &str, value: &Value) -> bool {
+    if !matches!(key, "type" | "phase" | "channel") {
+        return false;
+    }
+    value
+        .as_str()
+        .is_some_and(sse_event_name_has_internal_payload)
+}
+
+fn validate_final_tool_calls(round: &ContinuationRepairRound) -> Result<(), String> {
+    for item in round
+        .aggregated
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+    {
+        if matches!(
+            item.get("type").and_then(Value::as_str),
+            Some("function_call" | "tool_call")
+        ) {
+            if let Err(reason) = validate_final_tool_call_item(item) {
+                return Err(format!(
+                    "final tool/function call is not self-contained: {reason}"
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
+fn reject_echoed_prior_reasoning(rounds: &[ContinuationRepairRound]) -> Result<(), String> {
+    let Some(final_round) = rounds.last() else {
+        return Ok(());
+    };
+    let prior_reasoning = rounds
+        .iter()
+        .take(rounds.len().saturating_sub(1))
+        .flat_map(reasoning_identity_parts)
+        .collect::<Vec<_>>();
+    if prior_reasoning.is_empty() {
+        return Ok(());
+    }
+    for value in reasoning_identity_parts(final_round) {
+        if prior_reasoning.iter().any(|prior| prior == &value) {
+            return Err("final output echoes prior-round reasoning state".to_string());
+        }
+    }
+    Ok(())
+}
+
+fn reasoning_identity_parts(round: &ContinuationRepairRound) -> Vec<String> {
+    round
+        .aggregated
+        .get("output")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("reasoning"))
+        .flat_map(|item| {
+            [
+                item.get("id").and_then(Value::as_str),
+                item.get("encrypted_content").and_then(Value::as_str),
+            ]
+            .into_iter()
+            .flatten()
+            .filter(|value| !value.trim().is_empty())
+            .map(str::to_string)
+            .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+fn reasoning_item_has_visible_payload(item: &Value) -> bool {
+    let Some(object) = item.as_object() else {
+        return false;
+    };
+    object.iter().any(|(key, value)| {
+        reasoning_visible_payload_key(key) && reasoning_visible_payload_value(value)
+    })
+}
+
+fn reasoning_visible_payload_key(key: &str) -> bool {
+    if matches!(key, "encrypted_content" | "id" | "type" | "status") {
+        return false;
+    }
+    matches!(
+        key,
+        "summary" | "content" | "text" | "output_text" | "message" | "messages" | "refusal"
+    ) || key.contains("summary")
+        || key.contains("text")
+        || key.contains("message")
+        || key.contains("refusal")
+        || (key.contains("content") && key != "encrypted_content")
+}
+
+fn reasoning_visible_payload_value(value: &Value) -> bool {
+    match value {
+        Value::Null => false,
+        Value::Bool(_) | Value::Number(_) => true,
+        Value::String(text) => !text.trim().is_empty(),
+        Value::Array(items) => {
+            !items.is_empty() && items.iter().any(reasoning_visible_payload_value)
+        }
+        Value::Object(object) => {
+            !object.is_empty()
+                && object.iter().any(|(key, value)| {
+                    reasoning_visible_payload_key(key) || reasoning_visible_payload_value(value)
+                })
+        }
+    }
+}
+
+fn validate_final_tool_call_item(item: &Value) -> Result<(), &'static str> {
+    if non_empty_item_str(item, "id").is_none() {
+        return Err("missing_tool_call_id");
+    }
+    if non_empty_item_str(item, "call_id").is_none() {
+        return Err("missing_tool_call_call_id");
+    }
+    if non_empty_item_str(item, "name").is_none() {
+        return Err("missing_tool_call_name");
+    }
+    let Some(arguments) = item.get("arguments") else {
+        return Err("invalid_tool_call_arguments");
+    };
+    match arguments {
+        Value::String(text) if serde_json::from_str::<Value>(text).is_ok() => Ok(()),
+        Value::Object(_) | Value::Array(_) | Value::Null => Ok(()),
+        _ => Err("invalid_tool_call_arguments"),
+    }
+}
+
+fn non_empty_item_str<'a>(item: &'a Value, key: &str) -> Option<&'a str> {
+    item.get(key)
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn sse_frame_is_nonsemantic_after_completed(frame: &str) -> bool {
+    sse_frame_is_comment_or_done(frame)
+}
+
+fn sse_frame_is_comment_only(frame: &str) -> bool {
+    for line in frame.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        return false;
+    }
+    true
+}
+
+fn sse_frame_is_comment_or_done(frame: &str) -> bool {
+    for line in frame.lines() {
+        let line = line.trim_end_matches('\r');
+        if line.is_empty() || line.starts_with(':') {
+            continue;
+        }
+        if let Some(rest) = line.strip_prefix("data:") {
+            if rest.trim_start() == "[DONE]" {
+                continue;
+            }
+            return false;
+        }
+        if line.starts_with("event:") {
+            return false;
+        }
+        return false;
+    }
+    true
+}
+
+fn item_contains_text(item: &Value, needle: &str) -> bool {
+    item.get("content")
+        .and_then(Value::as_array)
+        .into_iter()
+        .flatten()
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .any(|text| text.contains(needle))
+}
+
+fn stable_visible_text_hash(text: &str) -> String {
+    let mut hash = 0xcbf29ce484222325u64;
+    for byte in text.as_bytes() {
+        hash ^= u64::from(*byte);
+        hash = hash.wrapping_mul(0x100000001b3);
+    }
+    format!("{hash:016x}")
+}
+
+fn build_round_trace(
+    rounds: &[ContinuationRepairRound],
+    visibility: &[RoundVisibility],
+) -> Vec<Value> {
+    rounds
+        .iter()
+        .zip(visibility.iter())
+        .enumerate()
+        .map(|(index, (round, visible))| {
+            let usage =
+                crate::usage::parse_usage_from_json_or_sse_bytes("codex", round.raw_sse.as_ref());
+            let reasoning =
+                super::codex_reasoning_features::extract_reasoning_tokens(&round.aggregated);
+            json!({
+                "index": index,
+                "kind": round.kind.as_str(),
+                "responseId": round.aggregated.get("id").and_then(Value::as_str),
+                "terminalKind": "completed",
+                "status": round.aggregated.get("status").and_then(Value::as_str),
+                "reasoningTokens": reasoning.map(|value| value.reasoning_tokens),
+                "reasoningTokensPointer": reasoning.map(|value| value.pointer),
+                "outputTokens": output_tokens(&round.aggregated),
+                "usage": usage.as_ref().and_then(|usage| {
+                    serde_json::from_str::<Value>(&usage.usage_json).ok()
+                }),
+                "byteCount": round.raw_sse.len(),
+                "durationMs": round.duration_ms.map(|value| value.min(u128::from(u64::MAX)) as u64),
+                "hasVisibleClientOutput": visible.has_visible_client_output,
+                "visibleTextLen": visible.visible_text_len,
+                "visibleTextHash": visible.visible_text_hash,
+                "hasToolCall": visible.has_tool_call,
+                "hasReasoning": visible.has_reasoning,
+                "hasCommentaryMarker": visible.has_commentary_marker,
+                "nonVisibleReasoningCount": visible.non_visible_reasoning_count,
+                "nonVisibleCommentaryCount": visible.non_visible_commentary_count,
+                "unsafeReason": visible.unsafe_reason,
+            })
+        })
+        .collect()
+}
+
+fn provider_usage_from_rounds(
+    rounds: &[ContinuationRepairRound],
+) -> Result<crate::usage::UsageExtract, String> {
+    let mut total = crate::usage::UsageMetrics::default();
+    for (index, round) in rounds.iter().enumerate() {
+        let usage =
+            crate::usage::parse_usage_from_json_or_sse_bytes("codex", round.raw_sse.as_ref())
+                .ok_or_else(|| format!("provider repair usage missing for round {index}"))?;
+        add_usage_metrics(&mut total, &usage.metrics);
+    }
+    Ok(usage_extract_from_metrics(total))
+}
+
+fn client_usage_from_rounds(
+    first_usage: &crate::usage::UsageExtract,
+    final_usage: &crate::usage::UsageExtract,
+) -> crate::usage::UsageExtract {
+    let mut metrics = final_usage.metrics.clone();
+    metrics.input_tokens = first_usage.metrics.input_tokens;
+    metrics.cache_read_input_tokens = first_usage.metrics.cache_read_input_tokens;
+    metrics.cache_creation_input_tokens = first_usage.metrics.cache_creation_input_tokens;
+    metrics.cache_creation_5m_input_tokens = first_usage.metrics.cache_creation_5m_input_tokens;
+    metrics.cache_creation_1h_input_tokens = first_usage.metrics.cache_creation_1h_input_tokens;
+    metrics.total_tokens = match (metrics.input_tokens, metrics.output_tokens) {
+        (Some(input), Some(output)) => Some(input.saturating_add(output)),
+        _ => None,
+    };
+    usage_extract_from_metrics(metrics)
+}
+
+fn add_usage_metrics(total: &mut crate::usage::UsageMetrics, next: &crate::usage::UsageMetrics) {
+    total.input_tokens = add_optional_i64(total.input_tokens, next.input_tokens);
+    total.output_tokens = add_optional_i64(total.output_tokens, next.output_tokens);
+    total.total_tokens = add_optional_i64(total.total_tokens, next.total_tokens);
+    total.reasoning_tokens = add_optional_i64(total.reasoning_tokens, next.reasoning_tokens);
+    total.cache_read_input_tokens =
+        add_optional_i64(total.cache_read_input_tokens, next.cache_read_input_tokens);
+    total.cache_creation_input_tokens = add_optional_i64(
+        total.cache_creation_input_tokens,
+        next.cache_creation_input_tokens,
+    );
+    total.cache_creation_5m_input_tokens = add_optional_i64(
+        total.cache_creation_5m_input_tokens,
+        next.cache_creation_5m_input_tokens,
+    );
+    total.cache_creation_1h_input_tokens = add_optional_i64(
+        total.cache_creation_1h_input_tokens,
+        next.cache_creation_1h_input_tokens,
+    );
+}
+
+fn add_optional_i64(left: Option<i64>, right: Option<i64>) -> Option<i64> {
+    match (left, right) {
+        (Some(left), Some(right)) => Some(left.saturating_add(right)),
+        (Some(left), None) => Some(left),
+        (None, Some(right)) => Some(right),
+        (None, None) => None,
+    }
+}
+
+fn usage_extract_from_metrics(metrics: crate::usage::UsageMetrics) -> crate::usage::UsageExtract {
+    let mut obj = Map::new();
+    if let Some(value) = metrics.input_tokens {
+        obj.insert("input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = metrics.output_tokens {
+        obj.insert("output_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = metrics.total_tokens {
+        obj.insert("total_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = metrics.reasoning_tokens {
+        obj.insert(
+            "output_tokens_details".to_string(),
+            json!({"reasoning_tokens": value}),
+        );
+    }
+    if let Some(value) = metrics.cache_read_input_tokens {
+        obj.insert("cache_read_input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = metrics.cache_creation_input_tokens {
+        obj.insert("cache_creation_input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = metrics.cache_creation_5m_input_tokens {
+        obj.insert("cache_creation_5m_input_tokens".to_string(), json!(value));
+    }
+    if let Some(value) = metrics.cache_creation_1h_input_tokens {
+        obj.insert("cache_creation_1h_input_tokens".to_string(), json!(value));
+    }
+    crate::usage::UsageExtract {
+        usage_json: Value::Object(obj).to_string(),
+        metrics,
+    }
+}
+
+fn patch_terminal_completed_usage(
+    raw: &Bytes,
+    client_usage: &crate::usage::UsageExtract,
+    max_output_bytes: usize,
+) -> Result<Bytes, String> {
+    let usage_value = serde_json::from_str::<Value>(&client_usage.usage_json)
+        .map_err(|err| format!("invalid client usage json: {err}"))?;
+    let mut cursor = 0usize;
+    let mut output = Vec::with_capacity(raw.len().min(max_output_bytes));
+    let mut patched_completed = 0usize;
+
+    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
+        let event_end = cursor + relative_end;
+        let frame = &raw[cursor..event_end];
+        cursor = event_end;
+        let frame_text =
+            std::str::from_utf8(frame).map_err(|err| format!("invalid SSE frame: {err}"))?;
+        if let Some((event_name, mut data)) =
+            crate::gateway::proxy::sse::parse_sse_frame(frame_text)
+        {
+            if event_name == "response.completed" {
+                let response = if data.get("response").is_some_and(Value::is_object) {
+                    data.get_mut("response")
+                        .expect("response checked as present")
+                } else {
+                    &mut data
+                };
+                let response_obj = response
+                    .as_object_mut()
+                    .ok_or_else(|| "response.completed payload is not an object".to_string())?;
+                response_obj.insert("usage".to_string(), usage_value.clone());
+                let data = serde_json::to_string(&data)
+                    .map_err(|err| format!("failed to encode patched completed event: {err}"))?;
+                extend_with_cap(&mut output, b"event: ", max_output_bytes)?;
+                extend_with_cap(&mut output, event_name.as_bytes(), max_output_bytes)?;
+                extend_with_cap(&mut output, b"\n", max_output_bytes)?;
+                extend_with_cap(&mut output, b"data: ", max_output_bytes)?;
+                extend_with_cap(&mut output, data.as_bytes(), max_output_bytes)?;
+                extend_with_cap(&mut output, b"\n\n", max_output_bytes)?;
+                patched_completed = patched_completed.saturating_add(1);
+                continue;
+            }
+        }
+        extend_with_cap(&mut output, frame, max_output_bytes)?;
+    }
+    extend_with_cap(&mut output, &raw[cursor..], max_output_bytes)?;
+
+    if patched_completed != 1 {
+        return Err(format!(
+            "expected one patched response.completed event, patched {patched_completed}"
+        ));
+    }
+    Ok(Bytes::from(output))
+}
+
+fn extend_with_cap(
+    output: &mut Vec<u8>,
+    bytes: &[u8],
+    max_output_bytes: usize,
+) -> Result<(), String> {
+    let next_len = output
+        .len()
+        .checked_add(bytes.len())
+        .ok_or_else(|| "patched client SSE size overflowed".to_string())?;
+    if next_len > max_output_bytes {
+        return Err(format!(
+            "patched client SSE exceeded reconstruction cap ({next_len} > {max_output_bytes})"
+        ));
+    }
+    output.extend_from_slice(bytes);
+    Ok(())
+}
+
+#[cfg(test)]
 pub(super) fn fold_responses_to_sse(responses: &[Value]) -> Result<Bytes, String> {
     let Some(last) = responses.last() else {
         return Err("cannot fold empty continuation response list".to_string());
@@ -264,6 +1476,7 @@ fn include_items_contain_encrypted_reasoning(items: &[Value]) -> bool {
         .any(|item| item == ENCRYPTED_REASONING_INCLUDE)
 }
 
+#[cfg(test)]
 fn merged_output_items(responses: &[Value]) -> Vec<Value> {
     let mut output = Vec::new();
     for response in responses {
@@ -271,12 +1484,27 @@ fn merged_output_items(responses: &[Value]) -> Vec<Value> {
             continue;
         };
         for item in items {
+            if visible_message_output_text(item).ok().flatten().is_some() {
+                continue;
+            }
             upsert_output_item(&mut output, item.clone());
+        }
+    }
+    if let Some(items) = responses
+        .last()
+        .and_then(|response| response.get("output"))
+        .and_then(Value::as_array)
+    {
+        for item in items {
+            if visible_message_output_text(item).ok().flatten().is_some() {
+                output.push(item.clone());
+            }
         }
     }
     output
 }
 
+#[cfg(test)]
 fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
     let item_id = item.get("id").and_then(Value::as_str);
     if let Some(item_id) = item_id {
@@ -288,17 +1516,20 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
             return;
         }
     }
-    if let Some(item_text) = visible_message_output_text(&item) {
+    if let Some(item_text) = visible_message_output_text(&item).ok().flatten() {
         if let Some((index, relationship)) = output
             .iter()
             .enumerate()
             .filter_map(|(index, candidate)| {
-                visible_message_output_text(candidate).map(|candidate_text| {
-                    (
-                        index,
-                        message_text_relationship(candidate_text.as_str(), item_text.as_str()),
-                    )
-                })
+                visible_message_output_text(candidate)
+                    .ok()
+                    .flatten()
+                    .map(|candidate_text| {
+                        (
+                            index,
+                            message_text_relationship(candidate_text.as_str(), item_text.as_str()),
+                        )
+                    })
             })
             .find(|(_, relationship)| *relationship != MessageTextRelationship::Distinct)
         {
@@ -313,6 +1544,7 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
     output.push(item);
 }
 
+#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MessageTextRelationship {
     Distinct,
@@ -320,6 +1552,7 @@ enum MessageTextRelationship {
     ReplaceExisting,
 }
 
+#[cfg(test)]
 fn message_text_relationship(existing: &str, next: &str) -> MessageTextRelationship {
     let existing = normalize_visible_message_text(existing);
     let next = normalize_visible_message_text(next);
@@ -339,31 +1572,40 @@ fn normalize_visible_message_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
 }
 
-fn visible_message_output_text(item: &Value) -> Option<String> {
+fn visible_message_output_text(item: &Value) -> Result<Option<String>, &'static str> {
     if item.get("type").and_then(Value::as_str) != Some("message") {
-        return None;
+        return Ok(None);
     }
     if item
         .get("role")
         .and_then(Value::as_str)
         .is_some_and(|role| role != "assistant")
     {
-        return None;
+        return Ok(None);
     }
     if item.get("phase").and_then(Value::as_str) == Some("commentary") {
-        return None;
+        return Ok(None);
     }
-    let text = item
-        .get("content")
-        .and_then(Value::as_array)?
-        .iter()
-        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
-        .filter_map(|content| content.get("text").and_then(Value::as_str))
-        .collect::<Vec<_>>()
-        .join("");
-    (!text.is_empty()).then_some(text)
+    let Some(content) = item.get("content").and_then(Value::as_array) else {
+        return Ok(None);
+    };
+    if content.is_empty() {
+        return Ok(None);
+    }
+    let mut text = String::new();
+    for part in content {
+        if part.get("type").and_then(Value::as_str) != Some("output_text") {
+            return Err("mixed_message_visible_payload");
+        }
+        let Some(part_text) = part.get("text").and_then(Value::as_str) else {
+            return Err("message_without_output_text");
+        };
+        text.push_str(part_text);
+    }
+    Ok((!text.is_empty()).then_some(text))
 }
 
+#[cfg(test)]
 fn summed_usage(responses: &[Value]) -> Option<Value> {
     let mut total = Value::Object(Map::new());
     let mut saw_usage = false;
@@ -380,6 +1622,7 @@ fn summed_usage(responses: &[Value]) -> Option<Value> {
     saw_usage.then_some(total)
 }
 
+#[cfg(test)]
 fn merge_usage_value(total: &mut Value, next: &Value) {
     match next {
         Value::Object(next_object) => {
@@ -412,6 +1655,7 @@ fn merge_usage_value(total: &mut Value, next: &Value) {
     }
 }
 
+#[cfg(test)]
 fn zero_like(value: &Value) -> Value {
     match value {
         Value::Object(_) => Value::Object(Map::new()),
@@ -420,6 +1664,7 @@ fn zero_like(value: &Value) -> Value {
     }
 }
 
+#[cfg(test)]
 fn push_sse_event(raw: &mut String, event: &str, data: Value) -> Result<(), String> {
     let data = serde_json::to_string(&data)
         .map_err(|err| format!("failed to encode continuation SSE event: {err}"))?;
@@ -463,6 +1708,164 @@ mod tests {
             .as_array()
             .expect("output array")
             .clone()
+    }
+
+    fn sse_round(id: Option<&str>, output: Vec<Value>, usage: Value) -> Bytes {
+        let mut raw = String::new();
+        if let Some(id) = id {
+            push_sse_event(
+                &mut raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": id, "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+        }
+        for (index, item) in output.iter().enumerate() {
+            push_sse_event(
+                &mut raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": item,
+                }),
+            )
+            .expect("item");
+        }
+        let mut response = json!({
+            "status": "completed",
+            "model": "gpt-cont",
+            "usage": usage,
+        });
+        if let Some(id) = id {
+            response["id"] = json!(id);
+        }
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": response,
+            }),
+        )
+        .expect("completed");
+        Bytes::from(raw)
+    }
+
+    fn sse_round_without_usage(id: &str, output: Vec<Value>) -> Bytes {
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": id, "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        for (index, item) in output.iter().enumerate() {
+            push_sse_event(
+                &mut raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": item,
+                }),
+            )
+            .expect("item");
+        }
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": id,
+                    "status": "completed",
+                    "model": "gpt-cont",
+                },
+            }),
+        )
+        .expect("completed");
+        Bytes::from(raw)
+    }
+
+    fn sse_round_with_delta(id: &str, output: Vec<Value>, delta: &str, usage: Value) -> Bytes {
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": id, "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_text.delta",
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": delta}),
+        )
+        .expect("delta");
+        for (index, item) in output.iter().enumerate() {
+            push_sse_event(
+                &mut raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "output_index": index,
+                    "item": item,
+                }),
+            )
+            .expect("item");
+        }
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": id,
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage,
+                },
+            }),
+        )
+        .expect("completed");
+        Bytes::from(raw)
+    }
+
+    fn repair_round(kind: ContinuationRepairRoundKind, raw: Bytes) -> ContinuationRepairRound {
+        let aggregated = crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref())
+            .expect("aggregate round");
+        ContinuationRepairRound::new(kind, raw, aggregated, Some(1))
+    }
+
+    fn message(id: &str, text: &str) -> Value {
+        json!({
+            "id": id,
+            "type": "message",
+            "role": "assistant",
+            "content": [{"type": "output_text", "text": text}]
+        })
+    }
+
+    fn reasoning(id: &str, encrypted: &str) -> Value {
+        json!({"id": id, "type": "reasoning", "encrypted_content": encrypted})
+    }
+
+    fn usage(input: i64, output: i64, reasoning: i64) -> Value {
+        json!({
+            "input_tokens": input,
+            "output_tokens": output,
+            "total_tokens": input + output,
+            "output_tokens_details": {"reasoning_tokens": reasoning},
+        })
     }
 
     fn merge_body_with_path(path: &str, body: Value) -> IncludeMergeOutcome {
@@ -693,6 +2096,1486 @@ mod tests {
     }
 
     #[test]
+    fn empty_prior_final_full_passthrough_preserves_final_visible_text_and_delta_frames() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(100, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round_with_delta(
+                "resp_2",
+                vec![message("msg_1", "final after continuation")],
+                "final after continuation",
+                usage(200, 3, 2),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_full_passthrough"
+        );
+        assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
+        assert_eq!(reconstructed.canonical_response_id, "resp_2");
+        assert!(body.contains("response.output_text.delta"));
+        assert!(body.contains("final after continuation"));
+        assert!(!body.contains("resp_1"));
+        assert_eq!(reconstructed.client_usage.metrics.input_tokens, Some(100));
+        assert_eq!(reconstructed.client_usage.metrics.output_tokens, Some(3));
+        assert_eq!(reconstructed.client_usage.metrics.total_tokens, Some(103));
+        assert_eq!(
+            reconstructed.provider_repair_usage.metrics.input_tokens,
+            Some(300)
+        );
+        assert_eq!(
+            reconstructed.provider_repair_usage.metrics.output_tokens,
+            Some(13)
+        );
+        assert_eq!(
+            reconstructed.provider_repair_usage.metrics.reasoning_tokens,
+            Some(518)
+        );
+        let reparsed = crate::usage::parse_usage_from_json_or_sse_bytes(
+            "codex",
+            reconstructed.client_raw.as_ref(),
+        )
+        .expect("client usage");
+        assert_eq!(reparsed.usage_json, reconstructed.client_usage.usage_json);
+    }
+
+    #[test]
+    fn final_raw_extra_output_text_delta_before_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_text.delta",
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": "stale visible text"}),
+        )
+        .expect("delta");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("output_text.delta does not match"));
+    }
+
+    #[test]
+    fn final_superset_strict_prefix_returns_final_text_only() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![message("msg_1", "答案是 21。")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", "答案是 21。最少取出 21 个糖果。")],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(reconstructed.visible_assembly_kind, "final_superset");
+        assert!(!body.contains("msg_1"));
+        assert!(body.contains("msg_2"));
+    }
+
+    #[test]
+    fn exact_duplicate_returns_one_visible_copy() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![message("msg_1", "同一答案")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", "同一答案")],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(reconstructed.visible_assembly_kind, "exact_duplicate");
+        assert!(!body.contains("msg_1"));
+        assert!(body.contains("msg_2"));
+    }
+
+    #[test]
+    fn distinct_visible_messages_are_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![message("msg_1", "答案是 21。")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", "还需要说明最坏情况的抽取策略。")],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-prefix") || err.contains("distinct"));
+    }
+
+    #[test]
+    fn quoted_or_non_prefix_containment_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![message("msg_1", "答案是 21。")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message(
+                    "msg_2",
+                    "你前面说“答案是 21。”，这里还要补充最坏情况证明。",
+                )],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-prefix") || err.contains("distinct"));
+    }
+
+    #[test]
+    fn prior_refusal_blocks_final_only_branch() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![json!({"id": "ref_1", "type": "refusal", "refusal": "no"})],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non_message_visible_payload"));
+    }
+
+    #[test]
+    fn unknown_visible_result_item_blocks_final_only_branch() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![json!({"id": "unknown_1", "type": "future_visible", "text": "maybe"})],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unknown_visible_output_item"));
+    }
+
+    #[test]
+    fn mixed_assistant_message_payload_is_unsafe_in_non_final_round() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![json!({
+                    "id": "msg_mixed",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [
+                        {"type": "output_text", "text": "partial answer"},
+                        {"type": "refusal", "refusal": "hidden visible branch"}
+                    ]
+                })],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("mixed_message_visible_payload"));
+    }
+
+    #[test]
+    fn reasoning_summary_payload_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![json!({
+                    "id": "rs_summary",
+                    "type": "reasoning",
+                    "encrypted_content": "enc_1",
+                    "summary": [{"type": "summary_text", "text": "visible reasoning"}]
+                })],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("reasoning_visible_payload"));
+    }
+
+    #[test]
+    fn final_round_echoed_prior_reasoning_identity_is_unsafe() {
+        for final_reasoning in [
+            reasoning("rs_1", "enc_fresh"),
+            reasoning("rs_fresh", "enc_1"),
+        ] {
+            let first = repair_round(
+                ContinuationRepairRoundKind::Initial,
+                sse_round(
+                    Some("resp_1"),
+                    vec![reasoning("rs_1", "enc_1")],
+                    usage(1, 10, 516),
+                ),
+            );
+            let mut second = repair_round(
+                ContinuationRepairRoundKind::Continuation,
+                sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+            );
+            second
+                .aggregated
+                .as_object_mut()
+                .expect("aggregated object")
+                .insert(
+                    "output".to_string(),
+                    Value::Array(vec![final_reasoning, message("msg_2", "ok")]),
+                );
+
+            let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect_err("unsafe");
+            assert!(err.contains("echoes prior-round reasoning state"));
+        }
+    }
+
+    #[test]
+    fn non_final_tool_call_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![json!({
+                    "id": "call_1",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_1",
+                    "arguments": "{}"
+                })],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final tool/function call"));
+    }
+
+    #[test]
+    fn final_tool_call_with_empty_prior_passes_when_arguments_are_valid_json() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![json!({
+                    "id": "call_2",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_2",
+                    "arguments": "{\"query\":\"ok\"}"
+                })],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(reconstructed.visible_assembly_kind, "final_tool_call");
+        assert!(body.contains("\"id\":\"call_2\""));
+        assert!(!body.contains("\"id\":\"rs_1\""));
+    }
+
+    #[test]
+    fn final_tool_call_argument_delta_must_match_final_arguments() {
+        for (delta, should_pass) in [
+            ("{\"query\":\"ok\"}", true),
+            ("{\"query\":\"stale\"}", false),
+        ] {
+            let first = repair_round(
+                ContinuationRepairRoundKind::Initial,
+                sse_round(
+                    Some("resp_1"),
+                    vec![reasoning("rs_1", "enc_1")],
+                    usage(1, 10, 516),
+                ),
+            );
+            let mut raw = String::new();
+            push_sse_event(
+                &mut raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+            push_sse_event(
+                &mut raw,
+                "response.function_call_arguments.delta",
+                json!({
+                    "type": "response.function_call_arguments.delta",
+                    "item_id": "call_2",
+                    "delta": delta,
+                }),
+            )
+            .expect("arguments delta");
+            push_sse_event(
+                &mut raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": {
+                        "id": "call_2",
+                        "type": "function_call",
+                        "name": "lookup",
+                        "call_id": "call_2",
+                        "arguments": "{\"query\":\"ok\"}",
+                    },
+                }),
+            )
+            .expect("item");
+            push_sse_event(
+                &mut raw,
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_2",
+                        "status": "completed",
+                        "model": "gpt-cont",
+                        "usage": usage(1, 3, 2),
+                    },
+                }),
+            )
+            .expect("completed");
+            let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+            let result = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024);
+
+            if should_pass {
+                assert!(result.is_ok(), "matching argument delta should pass");
+            } else {
+                let err = result.expect_err("stale argument delta should fail");
+                assert!(err.contains("function_call_arguments.delta does not match"));
+            }
+        }
+    }
+
+    #[test]
+    fn final_tool_call_does_not_bypass_non_final_visible_output() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![message("msg_early", "early visible answer")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![json!({
+                    "id": "call_2",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_2",
+                    "arguments": "{}"
+                })],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final visible output"));
+    }
+
+    #[test]
+    fn final_tool_call_requires_valid_self_contained_arguments() {
+        for item in [
+            json!({
+                "id": "call_invalid",
+                "type": "function_call",
+                "name": "lookup",
+                "call_id": "call_invalid",
+                "arguments": "{\"query\":"
+            }),
+            json!({
+                "id": "call_missing",
+                "type": "function_call",
+                "name": "lookup",
+                "call_id": "call_missing"
+            }),
+            json!({
+                "type": "function_call",
+                "name": "lookup",
+                "call_id": "call_missing_id",
+                "arguments": "{}"
+            }),
+            json!({
+                "id": "call_missing_call_id",
+                "type": "function_call",
+                "name": "lookup",
+                "arguments": "{}"
+            }),
+            json!({
+                "id": "call_missing_name",
+                "type": "function_call",
+                "call_id": "call_missing_name",
+                "arguments": "{}"
+            }),
+        ] {
+            let first = repair_round(
+                ContinuationRepairRoundKind::Initial,
+                sse_round(
+                    Some("resp_1"),
+                    vec![reasoning("rs_1", "enc_1")],
+                    usage(1, 10, 516),
+                ),
+            );
+            let second = repair_round(
+                ContinuationRepairRoundKind::Continuation,
+                sse_round(Some("resp_2"), vec![item], usage(1, 3, 2)),
+            );
+
+            let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect_err("unsafe");
+            assert!(err.contains("tool_call"));
+        }
+    }
+
+    #[test]
+    fn missing_final_response_id_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(None, vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("missing final response id"));
+    }
+
+    #[test]
+    fn final_raw_with_internal_marker_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", CONTINUATION_MARKER_TEXT)],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("synthetic continuation marker"));
+    }
+
+    #[test]
+    fn final_raw_missing_created_event_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("response.created"));
+    }
+
+    #[test]
+    fn final_raw_created_completed_id_mismatch_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_created", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_completed",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("does not match"));
+    }
+
+    #[test]
+    fn final_raw_event_after_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        push_sse_event(
+            &mut raw,
+            "response.output_text.delta",
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": "late"}),
+        )
+        .expect("late delta");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("after response.completed"));
+    }
+
+    #[test]
+    fn final_raw_reasoning_summary_delta_before_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.reasoning_summary_text.delta",
+            json!({
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "hidden chain summary",
+            }),
+        )
+        .expect("reasoning delta");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unsafe pre-completed event"));
+        assert!(err.contains("response.reasoning_summary_text.delta"));
+    }
+
+    #[test]
+    fn final_raw_done_before_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        raw.push_str("data: [DONE]\n\n");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unparseable SSE frame before response.completed"));
+    }
+
+    #[test]
+    fn final_raw_multi_part_done_texts_match_joined_final_visible_text() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let final_message = json!({
+            "id": "msg_2",
+            "type": "message",
+            "content": [
+                {"type": "output_text", "text": "hello "},
+                {"type": "output_text", "text": "world"}
+            ],
+        });
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_text.delta",
+            json!({"type": "response.output_text.delta", "output_index": 0, "delta": "hello world"}),
+        )
+        .expect("delta");
+        for (index, text) in ["hello ", "world"].into_iter().enumerate() {
+            push_sse_event(
+                &mut raw,
+                "response.content_part.done",
+                json!({
+                    "type": "response.content_part.done",
+                    "output_index": 0,
+                    "content_index": index,
+                    "part": {"type": "output_text", "text": text},
+                }),
+            )
+            .expect("content part done");
+        }
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": final_message,
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
+    }
+
+    #[test]
+    fn final_raw_stale_content_part_done_text_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.content_part.done",
+            json!({
+                "type": "response.content_part.done",
+                "output_index": 0,
+                "content_index": 0,
+                "part": {"type": "output_text", "text": "stale "},
+            }),
+        )
+        .expect("content part done");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": message("msg_2", "fresh"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("content_part.done does not match final visible message"));
+    }
+
+    #[test]
+    fn final_raw_unknown_event_before_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.future_visible.delta",
+            json!({"type": "response.future_visible.delta", "delta": "maybe visible"}),
+        )
+        .expect("future event");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unknown pre-completed event"));
+        assert!(err.contains("response.future_visible.delta"));
+    }
+
+    #[test]
+    fn final_raw_unparseable_data_before_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        raw.push_str("event: response.output_text.delta\ndata: {not-json}\n\n");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unparseable SSE frame before response.completed"));
+    }
+
+    #[test]
+    fn final_raw_unparseable_data_after_completed_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        raw.push_str("data: {not-json}\n\n");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("unparseable SSE frame after response.completed"));
+    }
+
+    #[test]
+    fn final_raw_done_after_completed_remains_nonsemantic() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        raw.push_str(": keepalive\n\n");
+        raw.push_str("data: [DONE]\n\n");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+        assert!(body.contains("data: [DONE]"));
+    }
+
+    #[test]
+    fn final_raw_matching_function_call_argument_delta_passes() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.function_call_arguments.delta",
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "call_2",
+                "delta": "{\"query\":\"ok\"}",
+            }),
+        )
+        .expect("arguments delta");
+        push_sse_event(
+            &mut raw,
+            "response.function_call_arguments.done",
+            json!({
+                "type": "response.function_call_arguments.done",
+                "item_id": "call_2",
+                "arguments": "{\"query\":\"ok\"}",
+            }),
+        )
+        .expect("arguments done");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "call_2",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_2",
+                    "arguments": "{\"query\":\"ok\"}",
+                },
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        assert_eq!(reconstructed.visible_assembly_kind, "final_tool_call");
+    }
+
+    #[test]
+    fn final_raw_mismatched_function_call_argument_delta_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.function_call_arguments.delta",
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "call_2",
+                "delta": "{\"query\":\"stale\"}",
+            }),
+        )
+        .expect("arguments delta");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": {
+                    "id": "call_2",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_2",
+                    "arguments": "{\"query\":\"ok\"}",
+                },
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("function_call_arguments.delta does not match"));
+    }
+
+    #[test]
+    fn provider_repair_usage_requires_every_round_usage() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round_without_usage("resp_1", vec![reasoning("rs_1", "enc_1")]),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("provider repair usage missing for round 0"));
+    }
+
+    #[test]
+    fn provider_repair_usage_requires_final_round_usage() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round_without_usage("resp_2", vec![message("msg_2", "ok")]),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("provider repair usage missing for round 1"));
+    }
+
+    #[test]
+    fn aggregate_retained_bytes_cap_is_enforced() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err = reconstruct_bplus_client_sse(&[first, second], 16).expect_err("cap");
+        assert!(err.contains("aggregate repair raw bytes exceeded cap"));
+    }
+
+    #[test]
+    fn aggregate_retained_plus_reconstructed_client_bytes_cap_is_enforced() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+        let cap = first
+            .raw_sse
+            .len()
+            .saturating_add(second.raw_sse.len())
+            .saturating_add(8);
+
+        let err = reconstruct_bplus_client_sse(&[first, second], cap).expect_err("cap");
+        assert!(err.contains("patched client SSE exceeded reconstruction cap"));
+    }
+
+    #[test]
+    fn precommit_cap_uses_registry_derived_minimum() {
+        let base = [
+            SupportedRepairPathThreshold {
+                name: "desktop",
+                response_header_or_ttfb_timeout_ms: 60_000,
+            },
+            SupportedRepairPathThreshold {
+                name: "proxy",
+                response_header_or_ttfb_timeout_ms: 45_000,
+            },
+        ];
+        let minimum =
+            minimum_supported_response_header_or_ttfb_timeout_ms(&base).expect("minimum threshold");
+        assert_eq!(minimum.name, "proxy");
+        assert!(repair_precommit_cap_invariant_holds(30_000, &base));
+
+        let remeasured = [
+            SupportedRepairPathThreshold {
+                name: "desktop",
+                response_header_or_ttfb_timeout_ms: 60_000,
+            },
+            SupportedRepairPathThreshold {
+                name: "proxy",
+                response_header_or_ttfb_timeout_ms: 25_000,
+            },
+        ];
+        assert!(!repair_precommit_cap_invariant_holds(30_000, &remeasured));
+
+        let removed_proxy = [SupportedRepairPathThreshold {
+            name: "desktop",
+            response_header_or_ttfb_timeout_ms: 60_000,
+        }];
+        assert_eq!(
+            minimum_supported_response_header_or_ttfb_timeout_ms(&removed_proxy)
+                .expect("minimum")
+                .name,
+            "desktop"
+        );
+    }
+
+    #[test]
     fn folded_sse_contains_single_completed_response_with_merged_output_and_usage() {
         let first = json!({
             "id": "resp_1",
@@ -794,7 +3677,7 @@ mod tests {
     }
 
     #[test]
-    fn folded_sse_preserves_distinct_visible_message_text_across_rounds() {
+    fn folded_sse_keeps_only_final_distinct_visible_message_text_across_rounds() {
         let first = json!({
             "id": "resp_1",
             "status": "completed",
@@ -818,13 +3701,13 @@ mod tests {
             .filter(|item| item["type"] == "message")
             .collect();
 
-        assert_eq!(messages.len(), 2);
-        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
+        assert_eq!(messages.len(), 1);
+        assert!(!messages.iter().any(|item| item["id"] == "msg_first"));
         assert!(messages.iter().any(|item| item["id"] == "msg_second"));
     }
 
     #[test]
-    fn folded_sse_preserves_quoted_visible_message_text_across_rounds() {
+    fn folded_sse_keeps_only_final_quoted_visible_message_text_across_rounds() {
         let first = json!({
             "id": "resp_1",
             "status": "completed",
@@ -848,8 +3731,8 @@ mod tests {
             .filter(|item| item["type"] == "message")
             .collect();
 
-        assert_eq!(messages.len(), 2);
-        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
+        assert_eq!(messages.len(), 1);
+        assert!(!messages.iter().any(|item| item["id"] == "msg_first"));
         assert!(messages.iter().any(|item| item["id"] == "msg_second"));
     }
 
@@ -968,8 +3851,8 @@ mod tests {
             .filter(|item| item["type"] == "message")
             .collect();
 
-        assert_eq!(messages.len(), 2);
-        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
+        assert_eq!(messages.len(), 1);
+        assert!(!messages.iter().any(|item| item["id"] == "msg_first"));
         assert!(messages.iter().any(|item| item["id"] == "msg_second"));
     }
 }
