@@ -86,11 +86,14 @@ describe("services/gateway/circuitNotice buildCircuitNoticeContent", () => {
   });
 
   it("旧后端事件（无触发字段）正文与旧版 Rust 文案一致", () => {
-    const legacy = circuitEvent();
-    delete legacy.trigger_error_code;
-    delete legacy.first_byte_timeout_secs;
+    // 生成类型里这两个字段必填；解构剔除后断言（旧后端 payload 运行时确实缺字段）。
+    const {
+      trigger_error_code: _triggerErrorCode,
+      first_byte_timeout_secs: _firstByteTimeoutSecs,
+      ...legacy
+    } = circuitEvent();
 
-    const content = buildCircuitNoticeContent(legacy);
+    const content = buildCircuitNoticeContent(legacy as GatewayCircuitEvent);
 
     expect(content?.level).toBe("warning");
     expect(content?.title).toBe("熔断触发：Provider A");

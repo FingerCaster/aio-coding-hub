@@ -266,7 +266,16 @@ pub(crate) fn export_typescript_bindings(output_path: &str) -> Result<(), String
         };
     }
 
-    let builder = generated_command_registry!(collect_exported_commands);
+    // Gateway event payload types (gateway:* wire contract). Registered on the
+    // export builder only; runtime emit paths are untouched (no tauri_specta
+    // Event mechanism, event names stay guarded by constants + contract tests).
+    let builder = generated_command_registry!(collect_exported_commands)
+        .typ::<crate::gateway::events::GatewayRequestEvent>()
+        .typ::<crate::gateway::events::GatewayRequestStartEvent>()
+        .typ::<crate::gateway::events::GatewayRequestSignalEvent>()
+        .typ::<crate::gateway::events::GatewayAttemptEvent>()
+        .typ::<crate::gateway::events::GatewayLogEvent>()
+        .typ::<crate::gateway::events::GatewayCircuitEvent>();
 
     builder
         .export(

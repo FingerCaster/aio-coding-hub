@@ -134,9 +134,13 @@ function mergeTraceWithRequestLog(
   const mergedSummary: NonNullable<TraceSession["summary"]> = {
     trace_id: trace.trace_id,
     cli_key: trace.cli_key,
+    session_id: summary?.session_id ?? trace.session_id ?? requestLog.session_id ?? null,
     method: trace.method,
     path: trace.path,
     query: trace.query,
+    requested_model:
+      summary?.requested_model ?? trace.requested_model ?? requestLog.requested_model ?? null,
+    claude_model_mapping: summary?.claude_model_mapping ?? claudeModelMapping ?? null,
     status: summary?.status ?? requestLog.status ?? null,
     error_category: summary?.error_category ?? null,
     error_code: summary?.error_code ?? requestLog.error_code ?? null,

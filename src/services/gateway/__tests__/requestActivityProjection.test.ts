@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import type { RequestLogSummary } from "../requestLogs";
-import type { TraceSession } from "../traceStore";
+import type { TraceSession, TraceSummary } from "../traceStore";
 import { buildRequestActivityProjection } from "../requestActivityProjection";
 
 function activeRequest(overrides: Record<string, unknown> = {}) {
@@ -57,6 +57,34 @@ function log(overrides: Partial<RequestLogSummary> = {}): RequestLogSummary {
     ...overrides,
     is_interrupted: isInterrupted,
   } as RequestLogSummary;
+}
+
+// 事件类型来自生成 bindings（可空字段必填），工厂函数补默认值避免用例手写全量字段。
+function summaryOf(traceId: string): TraceSummary {
+  return {
+    trace_id: traceId,
+    cli_key: "claude",
+    session_id: null,
+    method: "POST",
+    path: "/v1/messages",
+    query: null,
+    requested_model: null,
+    status: 200,
+    error_category: null,
+    error_code: null,
+    duration_ms: 500,
+    ttfb_ms: null,
+    attempts: [],
+    input_tokens: null,
+    output_tokens: null,
+    total_tokens: null,
+    cache_read_input_tokens: null,
+    cache_creation_input_tokens: null,
+    cache_creation_5m_input_tokens: null,
+    cache_creation_1h_input_tokens: null,
+    effective_input_tokens: null,
+    claude_model_mapping: null,
+  };
 }
 
 function trace(overrides: Partial<TraceSession> = {}): TraceSession {
@@ -172,19 +200,7 @@ describe("services/gateway/requestActivityProjection", () => {
     const completedTrace = trace({
       trace_id: "completed",
       last_seen_ms: 1_700_000_000_000,
-      summary: {
-        trace_id: "completed",
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 500,
-        ttfb_ms: null,
-        attempts: [],
-      } as TraceSession["summary"],
+      summary: summaryOf("completed"),
     });
     const completedLog = log({ trace_id: "completed", status: 200, duration_ms: 500 });
 
@@ -347,20 +363,7 @@ describe("services/gateway/requestActivityProjection", () => {
 
   it("never evicts in-progress cards in favor of completed exiting cards at the card limit", () => {
     const nowMs = 1_700_000_500_000;
-    const summary = (traceId: string) =>
-      ({
-        trace_id: traceId,
-        cli_key: "claude",
-        method: "POST",
-        path: "/v1/messages",
-        query: null,
-        status: 200,
-        error_category: null,
-        error_code: null,
-        duration_ms: 500,
-        ttfb_ms: null,
-        attempts: [],
-      }) as TraceSession["summary"];
+    const summary = summaryOf;
     const projection = buildRequestActivityProjection({
       requestLogs: [],
       activeRequests: [

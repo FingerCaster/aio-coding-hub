@@ -8,114 +8,40 @@ import { ingestTraceAttempt, ingestTraceRequest, ingestTraceStart } from "./trac
 import { ingestCacheAnomalyRequest, ingestCacheAnomalyRequestStart } from "./cacheAnomalyMonitor";
 import type { ClaudeModelMapping } from "./claudeModelMapping";
 import { MAX_ATTEMPTS_PER_TRACE } from "./traceLimits";
+import type {
+  FailoverAttempt,
+  GatewayAttemptEvent,
+  GatewayCircuitEvent,
+  GatewayLogEvent,
+  GatewayRequestEvent as GeneratedGatewayRequestEvent,
+  GatewayRequestSignalEvent as GeneratedGatewayRequestSignalEvent,
+  GatewayRequestStartEvent,
+} from "../../generated/bindings";
 
 export type { ClaudeModelMapping } from "./claudeModelMapping";
 
-export type GatewayAttempt = {
-  provider_id: number;
-  provider_name: string;
-  base_url: string;
-  outcome: string;
-  status: number | null;
-};
+// 事件 payload 类型以生成 bindings 为唯一基准（Rust 改字段 → 前端 typecheck 翻红）。
+// 运行时 guard/normalizer 保留：payload 仍需运行时校验，类型基准为生成类型。
+export type {
+  GatewayAttemptEvent,
+  GatewayCircuitEvent,
+  GatewayLogEvent,
+  GatewayRequestStartEvent,
+} from "../../generated/bindings";
 
-export type GatewayRequestEvent = {
-  trace_id: string;
-  cli_key: string;
-  session_id?: string | null;
-  method: string;
-  path: string;
-  query: string | null;
-  requested_model?: string | null;
-  status: number | null;
-  error_category: string | null;
-  error_code: string | null;
-  duration_ms: number;
-  ttfb_ms?: number | null;
+// normalizeGatewayAttempt 仅保留核心字段，attempts 收窄为 FailoverAttempt 的子集。
+export type GatewayAttempt = Pick<
+  FailoverAttempt,
+  "provider_id" | "provider_name" | "base_url" | "outcome" | "status"
+>;
+
+export type GatewayRequestEvent = Omit<GeneratedGatewayRequestEvent, "attempts"> & {
   attempts: GatewayAttempt[];
-  input_tokens?: number | null;
-  output_tokens?: number | null;
-  total_tokens?: number | null;
-  cache_read_input_tokens?: number | null;
-  cache_creation_input_tokens?: number | null;
-  cache_creation_5m_input_tokens?: number | null;
-  cache_creation_1h_input_tokens?: number | null;
-  // Backend-computed (single source of truth); never re-derive on the frontend.
-  effective_input_tokens?: number | null;
-  claude_model_mapping?: ClaudeModelMapping | null;
 };
 
-export type GatewayRequestStartEvent = {
-  trace_id: string;
-  cli_key: string;
-  session_id?: string | null;
-  method: string;
-  path: string;
-  query: string | null;
-  requested_model?: string | null;
-  ts: number;
-};
-
-export type GatewayRequestSignalEvent = {
-  trace_id: string;
-  cli_key: string;
-  session_id?: string | null;
-  requested_model?: string | null;
+// phase 在 Rust 侧是 &'static str（生成为 string），由运行时 normalizer 收窄为字面量联合。
+export type GatewayRequestSignalEvent = Omit<GeneratedGatewayRequestSignalEvent, "phase"> & {
   phase: "start" | "complete";
-  ts: number;
-};
-
-export type GatewayAttemptEvent = {
-  trace_id: string;
-  cli_key: string;
-  session_id?: string | null;
-  method: string;
-  path: string;
-  query: string | null;
-  requested_model?: string | null;
-  attempt_index: number;
-  provider_id: number;
-  session_reuse?: boolean | null;
-  provider_name: string;
-  base_url: string;
-  outcome: string;
-  status: number | null;
-  attempt_started_ms: number;
-  attempt_duration_ms: number;
-  circuit_state_before?: string | null;
-  circuit_state_after?: string | null;
-  circuit_failure_count?: number | null;
-  circuit_failure_threshold?: number | null;
-  claude_model_mapping?: ClaudeModelMapping | null;
-};
-
-export type GatewayLogEvent = {
-  level: string;
-  error_code: string;
-  message: string;
-  requested_port: number;
-  bound_port: number;
-  base_url: string;
-};
-
-export type GatewayCircuitEvent = {
-  trace_id: string;
-  cli_key: string;
-  provider_id: number;
-  provider_name: string;
-  base_url: string;
-  prev_state: string;
-  next_state: string;
-  failure_count: number;
-  failure_threshold: number;
-  open_until: number | null;
-  cooldown_until?: number | null;
-  reason: string;
-  ts: number;
-  // 触发失败归因（触发熔断的错误码 + 生效的首字节超时秒数）。
-  // 旧后端事件无这两个字段（optional 降级）。
-  trigger_error_code?: string | null;
-  first_byte_timeout_secs?: number | null;
 };
 
 function normalizeLogLevel(level: unknown): "debug" | "info" | "warn" | "error" {
@@ -338,11 +264,12 @@ export function normalizeGatewayRequestStartEvent(
   return {
     trace_id: payload.trace_id,
     cli_key: payload.cli_key,
-    session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH),
+    session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH) ?? null,
     method: truncateString(payload.method, EVENT_METHOD_MAX_LENGTH),
     path: truncateString(payload.path, EVENT_PATH_MAX_LENGTH),
     query: truncateNullableString(payload.query, EVENT_QUERY_MAX_LENGTH) ?? null,
-    requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+    requested_model:
+      truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
     ts: payload.ts,
   };
 }
@@ -375,8 +302,9 @@ export function normalizeGatewayRequestSignalEvent(
   return {
     trace_id: payload.trace_id,
     cli_key: payload.cli_key,
-    session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH),
-    requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+    session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH) ?? null,
+    requested_model:
+      truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
     phase: payload.phase,
     ts: payload.ts,
   };
@@ -413,31 +341,28 @@ export function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEv
   return {
     trace_id: payload.trace_id,
     cli_key: payload.cli_key,
-    session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH),
+    session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH) ?? null,
     method: truncateString(payload.method, EVENT_METHOD_MAX_LENGTH),
     path: truncateString(payload.path, EVENT_PATH_MAX_LENGTH),
     query: truncateNullableString(payload.query, EVENT_QUERY_MAX_LENGTH) ?? null,
-    requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+    requested_model:
+      truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
     attempt_index: payload.attempt_index,
     provider_id: payload.provider_id,
-    session_reuse: payload.session_reuse,
+    session_reuse: payload.session_reuse ?? null,
     provider_name: truncateString(payload.provider_name, EVENT_SHORT_TEXT_MAX_LENGTH),
     base_url: truncateString(payload.base_url, EVENT_URL_MAX_LENGTH),
     outcome: truncateString(payload.outcome, EVENT_STATE_MAX_LENGTH),
     status: payload.status ?? null,
     attempt_started_ms: payload.attempt_started_ms,
     attempt_duration_ms: payload.attempt_duration_ms,
-    circuit_state_before: truncateNullableString(
-      payload.circuit_state_before,
-      EVENT_STATE_MAX_LENGTH
-    ),
-    circuit_state_after: truncateNullableString(
-      payload.circuit_state_after,
-      EVENT_STATE_MAX_LENGTH
-    ),
-    circuit_failure_count: payload.circuit_failure_count,
-    circuit_failure_threshold: payload.circuit_failure_threshold,
-    claude_model_mapping: payload.claude_model_mapping,
+    circuit_state_before:
+      truncateNullableString(payload.circuit_state_before, EVENT_STATE_MAX_LENGTH) ?? null,
+    circuit_state_after:
+      truncateNullableString(payload.circuit_state_after, EVENT_STATE_MAX_LENGTH) ?? null,
+    circuit_failure_count: payload.circuit_failure_count ?? null,
+    circuit_failure_threshold: payload.circuit_failure_threshold ?? null,
+    claude_model_mapping: payload.claude_model_mapping ?? null,
   };
 }
 
@@ -479,27 +404,28 @@ export function normalizeGatewayRequestEvent(payload: unknown): GatewayRequestEv
     return {
       trace_id: payload.trace_id,
       cli_key: payload.cli_key,
-      session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH),
+      session_id: truncateNullableString(payload.session_id, EVENT_ID_MAX_LENGTH) ?? null,
       method: truncateString(payload.method, EVENT_METHOD_MAX_LENGTH),
       path: truncateString(payload.path, EVENT_PATH_MAX_LENGTH),
       query: truncateNullableString(payload.query, EVENT_QUERY_MAX_LENGTH) ?? null,
-      requested_model: truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH),
+      requested_model:
+        truncateNullableString(payload.requested_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
       status: payload.status ?? null,
       error_category:
         truncateNullableString(payload.error_category, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
       error_code: truncateNullableString(payload.error_code, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
       duration_ms: payload.duration_ms,
-      ttfb_ms: payload.ttfb_ms,
+      ttfb_ms: payload.ttfb_ms ?? null,
       attempts: validAttempts,
-      input_tokens: payload.input_tokens,
-      output_tokens: payload.output_tokens,
-      total_tokens: payload.total_tokens,
-      cache_read_input_tokens: payload.cache_read_input_tokens,
-      cache_creation_input_tokens: payload.cache_creation_input_tokens,
-      cache_creation_5m_input_tokens: payload.cache_creation_5m_input_tokens,
-      cache_creation_1h_input_tokens: payload.cache_creation_1h_input_tokens,
-      effective_input_tokens: payload.effective_input_tokens,
-      claude_model_mapping: payload.claude_model_mapping,
+      input_tokens: payload.input_tokens ?? null,
+      output_tokens: payload.output_tokens ?? null,
+      total_tokens: payload.total_tokens ?? null,
+      cache_read_input_tokens: payload.cache_read_input_tokens ?? null,
+      cache_creation_input_tokens: payload.cache_creation_input_tokens ?? null,
+      cache_creation_5m_input_tokens: payload.cache_creation_5m_input_tokens ?? null,
+      cache_creation_1h_input_tokens: payload.cache_creation_1h_input_tokens ?? null,
+      effective_input_tokens: payload.effective_input_tokens ?? null,
+      claude_model_mapping: payload.claude_model_mapping ?? null,
     };
   }
 

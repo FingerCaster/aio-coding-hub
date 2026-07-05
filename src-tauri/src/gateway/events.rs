@@ -69,7 +69,7 @@ pub(in crate::gateway) mod decision_chain {
     }
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Clone, specta::Type)]
 pub(super) struct FailoverAttempt {
     pub(super) provider_id: i64,
     pub(super) provider_name: String,
@@ -110,7 +110,7 @@ pub(super) struct FailoverAttempt {
     pub(super) timeout_secs: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Clone, PartialEq, Eq)]
+#[derive(Debug, Serialize, Clone, PartialEq, Eq, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(super) struct ClaudeModelMapping {
     pub(super) requested_model: String,
@@ -121,8 +121,8 @@ pub(super) struct ClaudeModelMapping {
     pub(super) applied: bool,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GatewayRequestEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayRequestEvent {
     trace_id: String,
     cli_key: String,
     session_id: Option<String>,
@@ -149,8 +149,8 @@ struct GatewayRequestEvent {
     claude_model_mapping: Option<ClaudeModelMapping>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GatewayRequestStartEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayRequestStartEvent {
     trace_id: String,
     cli_key: String,
     session_id: Option<String>,
@@ -161,8 +161,8 @@ struct GatewayRequestStartEvent {
     ts: i64,
 }
 
-#[derive(Debug, Serialize, Clone)]
-struct GatewayRequestSignalEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayRequestSignalEvent {
     trace_id: String,
     cli_key: String,
     session_id: Option<String>,
@@ -171,8 +171,8 @@ struct GatewayRequestSignalEvent {
     ts: i64,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub(super) struct GatewayAttemptEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayAttemptEvent {
     pub(super) trace_id: String,
     pub(super) cli_key: String,
     pub(super) session_id: Option<String>,
@@ -196,8 +196,8 @@ pub(super) struct GatewayAttemptEvent {
     pub(super) claude_model_mapping: Option<ClaudeModelMapping>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub(super) struct GatewayCircuitEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayCircuitEvent {
     pub(super) trace_id: String,
     pub(super) cli_key: String,
     pub(super) provider_id: i64,
@@ -219,8 +219,8 @@ pub(super) struct GatewayCircuitEvent {
     pub(super) first_byte_timeout_secs: Option<u32>,
 }
 
-#[derive(Debug, Serialize, Clone)]
-pub(super) struct GatewayLogEvent {
+#[derive(Debug, Serialize, Clone, specta::Type)]
+pub(crate) struct GatewayLogEvent {
     pub(super) level: &'static str,
     pub(super) error_code: &'static str,
     pub(super) message: String,
