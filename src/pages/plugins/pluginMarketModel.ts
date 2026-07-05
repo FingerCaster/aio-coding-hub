@@ -221,12 +221,15 @@ function getFeaturedState(
 }
 
 function getListingState(listing: PluginMarketListing, installed: boolean): CardStateDetails {
-  if (listing.installBlockReason === "reserved_official_namespace") {
+  if (
+    listing.installBlockReason === "reserved_official_namespace" ||
+    listing.installBlockReason === "reserved_core_namespace"
+  ) {
     return {
       state: "reservedOfficial",
       action: "unavailable",
       actionLabel: "不可安装",
-      disabledReason: "官方命名空间只能通过内置官方插件安装",
+      disabledReason: "内置命名空间只能通过内置插件安装",
     };
   }
 

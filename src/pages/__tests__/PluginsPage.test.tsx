@@ -995,7 +995,7 @@ describe("pages/PluginsPage", () => {
 
     const advancedListing = await screen.findByText("Privacy Filter Advanced");
     const card = advancedListing.closest("article") as HTMLElement;
-    expect(within(card).getByText("官方命名空间只能通过内置官方插件安装")).toBeInTheDocument();
+    expect(within(card).getByText("内置命名空间只能通过内置插件安装")).toBeInTheDocument();
     expect(within(card).getByRole("button", { name: "不可安装" })).toBeDisabled();
     expect(installRemoteMutation.mutateAsync).not.toHaveBeenCalled();
     expect(installOfficialMutation.mutateAsync).not.toHaveBeenCalled();

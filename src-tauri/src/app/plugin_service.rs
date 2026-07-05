@@ -456,7 +456,7 @@ pub(crate) fn install_plugin_manifest(
     host_version: &str,
 ) -> AppResult<PluginDetail> {
     validate_manifest_for_source(&manifest, install_source, host_version)?;
-    validate_reserved_official_source(&manifest, install_source)?;
+    validate_reserved_builtin_source(&manifest, install_source)?;
     let plugin_id = manifest.id.clone();
     let detail = repository::insert_plugin(
         db,
@@ -994,7 +994,7 @@ fn build_install_preview(
             app_error_message(&error),
         ));
     }
-    if let Err(error) = validate_reserved_official_source(manifest, source) {
+    if let Err(error) = validate_reserved_builtin_source(manifest, source) {
         blocking_reasons.push(lifecycle_notice(
             "error",
             error.code(),
@@ -1100,7 +1100,7 @@ fn build_update_diff(
             app_error_message(&error),
         ));
     }
-    if let Err(error) = validate_reserved_official_source(manifest, PluginInstallSource::Local) {
+    if let Err(error) = validate_reserved_builtin_source(manifest, PluginInstallSource::Local) {
         blocking_reasons.push(lifecycle_notice(
             "error",
             error.code(),
@@ -2074,7 +2074,7 @@ fn validate_local_package_install(
     host_version: &str,
     policy: &LocalPackageInstallPolicy,
 ) -> AppResult<PackageTrust> {
-    validate_reserved_official_source(&extracted.manifest, policy.install_source)?;
+    validate_reserved_builtin_source(&extracted.manifest, policy.install_source)?;
     validate_manifest(&extracted.manifest, host_version)?;
     let trust = verify_local_package(extracted, policy)?;
     enforce_unsigned_install_policy(&extracted.manifest, policy, trust)?;
@@ -2126,17 +2126,23 @@ fn install_audit_details(
     details
 }
 
-fn validate_reserved_official_source(
+fn validate_reserved_builtin_source(
     manifest: &PluginManifest,
     install_source: PluginInstallSource,
 ) -> AppResult<()> {
-    if manifest.id.starts_with("official.") && install_source != PluginInstallSource::Official {
+    if is_reserved_builtin_plugin_id(&manifest.id)
+        && install_source != PluginInstallSource::Official
+    {
         return Err(AppError::new(
-            "PLUGIN_RESERVED_OFFICIAL_ID",
-            "official plugin ids are reserved for built-in official plugins",
+            "PLUGIN_RESERVED_BUILTIN_ID",
+            "official and core plugin ids are reserved for built-in plugins",
         ));
     }
     Ok(())
+}
+
+fn is_reserved_builtin_plugin_id(plugin_id: &str) -> bool {
+    plugin_id.starts_with("official.") || plugin_id.starts_with("core.")
 }
 
 pub(crate) fn enable_plugin(
@@ -4912,8 +4918,35 @@ INSERT INTO plugins (
         )
         .unwrap_err();
 
-        assert!(err.to_string().starts_with("PLUGIN_RESERVED_OFFICIAL_ID:"));
+        assert!(err.to_string().starts_with("PLUGIN_RESERVED_BUILTIN_ID:"));
         assert!(repository::get_plugin(&db, "official.privacy-filter").is_err());
+    }
+
+    #[test]
+    fn plugin_local_install_rejects_reserved_core_provider_account_usage_package() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let package_path = dir
+            .path()
+            .join("fake-core-provider-account-usage.aio-plugin");
+        let manifest = local_package_manifest("core.provider-account-usage", "1.0.0");
+        write_local_package(&package_path, manifest);
+
+        let err = install_plugin_from_local_package_with_policy(
+            &db,
+            &package_path,
+            &dir.path().join("plugins/cache"),
+            &dir.path().join("plugins/installed"),
+            env!("CARGO_PKG_VERSION"),
+            LocalPackageInstallPolicy {
+                developer_mode: true,
+                ..LocalPackageInstallPolicy::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(err.to_string().starts_with("PLUGIN_RESERVED_BUILTIN_ID:"));
+        assert!(repository::get_plugin(&db, "core.provider-account-usage").is_err());
     }
 
     #[test]

@@ -9,6 +9,7 @@ import {
   providerDuplicate,
   providerDelete,
   providerOAuthStatus,
+  providerAccountUsageFetch,
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
   providerSetEnabled,
@@ -17,6 +18,7 @@ import {
   providerTestAvailability,
   type CliKey,
   type OAuthLimitsResult,
+  type ProviderAccountUsageResult,
   type ProviderOAuthResetCodexQuotaResult,
   type ProviderAvailabilityResult,
   type ProviderRouteRow,
@@ -25,10 +27,11 @@ import {
   validateProviderCliKey,
   validateProviderId,
 } from "../services/providers/providers";
+import { isProviderAccountUsageConfigured } from "../services/providers/providerAccountUsageConfig";
 import { logToConsole } from "../services/consoleLog";
 import { gatewayCircuitResetProvider } from "../services/gateway/gateway";
 import { formatUnknownError } from "../utils/errors";
-import { gatewayKeys, oauthLimitsKeys, providersKeys } from "./keys";
+import { gatewayKeys, oauthLimitsKeys, providerAccountUsageKeys, providersKeys } from "./keys";
 
 export function useProvidersListQuery(cliKey: CliKey, options?: { enabled?: boolean }) {
   const normalizedCliKey = validateProviderCliKey(cliKey);
@@ -136,6 +139,27 @@ export async function refreshProviderOAuthLimits(
   return next;
 }
 
+export function readProviderAccountUsageCache(
+  queryClient: QueryClient,
+  providerId: number
+): ProviderAccountUsageResult | null {
+  const normalizedProviderId = validateProviderId(providerId);
+  const state = queryClient.getQueryState<ProviderAccountUsageResult>(
+    providerAccountUsageKeys.detail(normalizedProviderId)
+  );
+  return state?.data ?? null;
+}
+
+export async function refreshProviderAccountUsage(
+  queryClient: QueryClient,
+  providerId: number
+): Promise<ProviderAccountUsageResult | null> {
+  const normalizedProviderId = validateProviderId(providerId);
+  const next = await providerAccountUsageFetch(normalizedProviderId);
+  queryClient.setQueryData(providerAccountUsageKeys.detail(normalizedProviderId), next);
+  return next;
+}
+
 export async function resetProviderOAuthCodexQuota(
   queryClient: QueryClient,
   providerId: number,
@@ -209,6 +233,7 @@ export function useProviderUpsertMutation() {
         }
       );
 
+      queryClient.removeQueries({ queryKey: providerAccountUsageKeys.detail(saved.id) });
       void queryClient.invalidateQueries({ queryKey: providersKeys.list(saved.cli_key) });
       void queryClient.invalidateQueries({ queryKey: gatewayKeys.circuitStatus(saved.cli_key) });
     },
@@ -229,6 +254,7 @@ export function useProviderDeleteMutation() {
         if (!prev) return prev;
         return prev.filter((row) => row.id !== input.providerId);
       });
+      queryClient.removeQueries({ queryKey: providerAccountUsageKeys.detail(input.providerId) });
     },
   });
 }
@@ -408,6 +434,22 @@ export function useOAuthLimitsQuery(providerId: number, enabled: boolean) {
     enabled,
     staleTime: 180_000,
     refetchInterval: 180_000,
+  });
+}
+
+export function useProviderAccountUsageQuery(provider: ProviderSummary, enabled = true) {
+  const normalizedProviderId = validateProviderId(provider.id);
+  const configured = isProviderAccountUsageConfigured(provider);
+
+  return useQuery({
+    queryKey: providerAccountUsageKeys.detail(normalizedProviderId),
+    queryFn: () => providerAccountUsageFetch(normalizedProviderId),
+    enabled: false,
+    staleTime: Infinity,
+    retry: false,
+    meta: {
+      configured: enabled && configured,
+    },
   });
 }
 

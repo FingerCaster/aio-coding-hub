@@ -10,6 +10,7 @@ import {
   providerDuplicate,
   providerOAuthCancelDeviceFlow,
   providerOAuthDisconnect,
+  providerAccountUsageFetch,
   providerOAuthFetchLimits,
   providerOAuthPollDeviceFlow,
   providerOAuthRefresh,
@@ -53,6 +54,7 @@ vi.mock("../../../generated/bindings", async () => {
       providerOauthRefresh: vi.fn(),
       providerOauthDisconnect: vi.fn(),
       providerOauthStatus: vi.fn(),
+      providerAccountUsageFetch: vi.fn(),
       providerOauthFetchLimits: vi.fn(),
       providerOauthResetCodexQuota: vi.fn(),
       providerTestAvailability: vi.fn(),
@@ -738,6 +740,43 @@ describe("services/providers/providers", () => {
       reset_credit_available_count: 3,
     });
     expect(commands.providerOauthFetchLimits).toHaveBeenCalledWith(50);
+  });
+
+  it("providerAccountUsageFetch uses generated ipc", async () => {
+    vi.mocked(commands.providerAccountUsageFetch).mockResolvedValueOnce({
+      status: "ok",
+      data: {
+        adapter_kind: "sub2api",
+        status: "available",
+        freshness: "fresh",
+        plan_name: "Pro",
+        balance: 12.5,
+        used: null,
+        total: null,
+        unit: "USD",
+        unit_note: null,
+        daily_used: 1,
+        daily_total: 10,
+        weekly_used: null,
+        weekly_total: null,
+        monthly_used: null,
+        monthly_total: null,
+        expires_at: null,
+        last_fetched_at: 1_700_000_000,
+        message: null,
+      },
+    });
+
+    const result = await providerAccountUsageFetch(52);
+
+    expect(result?.status).toBe("available");
+    expect(result?.balance).toBe(12.5);
+    expect(commands.providerAccountUsageFetch).toHaveBeenCalledWith(52);
+    expect(logToConsole).not.toHaveBeenCalledWith(
+      expect.anything(),
+      expect.anything(),
+      expect.objectContaining({ apiKey: expect.anything() })
+    );
   });
 
   it("providerOAuthResetCodexQuota uses risky confirm resource scoped to provider", async () => {

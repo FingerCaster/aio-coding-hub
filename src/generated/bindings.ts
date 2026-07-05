@@ -853,6 +853,19 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async providerAccountUsageFetch(
+    providerId: number
+  ): Promise<Result<ProviderAccountUsageResult, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_account_usage_fetch", { providerId }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async providerOauthResetCodexQuota(
     providerId: number,
     confirm: RiskyIpcConfirm | null
@@ -3408,6 +3421,36 @@ export type ProtocolBridgeContribution = {
 };
 export type ProtocolContribution = { protocolId: string; direction: ProtocolDirection };
 export type ProtocolDirection = "inbound" | "outbound" | "both";
+export type ProviderAccountUsageAdapterKind = "sub2api" | "newapi";
+export type ProviderAccountUsageFreshness = "not_fetched" | "fresh";
+export type ProviderAccountUsageResult = {
+  adapter_kind: ProviderAccountUsageAdapterKind | null;
+  status: ProviderAccountUsageStatus;
+  freshness: ProviderAccountUsageFreshness;
+  plan_name: string | null;
+  balance: number | null;
+  used: number | null;
+  total: number | null;
+  unit: string | null;
+  unit_note: string | null;
+  daily_used: number | null;
+  daily_total: number | null;
+  weekly_used: number | null;
+  weekly_total: number | null;
+  monthly_used: number | null;
+  monthly_total: number | null;
+  expires_at: number | null;
+  last_fetched_at: number | null;
+  message: string | null;
+};
+export type ProviderAccountUsageStatus =
+  | "unsupported"
+  | "configuration_required"
+  | "available"
+  | "zero_balance"
+  | "expired"
+  | "auth_failed"
+  | "query_failed";
 export type ProviderAuthMode = "api_key" | "oauth";
 export type ProviderAvailabilityResult = {
   ok: boolean;

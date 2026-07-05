@@ -555,6 +555,40 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
 }
 
 #[test]
+fn upsert_seeds_provider_account_usage_extension_owner_without_visible_plugin() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_account_usage_extension.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut params = default_provider_params("account-usage-extension-owner");
+    params.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+        namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+        values: serde_json::json!({ "adapterKind": "sub2api" }),
+    }]);
+
+    let saved = upsert(&db, params).expect("save provider with account usage config");
+
+    assert_eq!(saved.extension_values.len(), 1);
+    assert_eq!(
+        saved.extension_values[0].plugin_id,
+        crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+    );
+    assert_eq!(
+        saved.extension_values[0].namespace,
+        crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+    );
+    assert_eq!(saved.extension_values[0].values["adapterKind"], "sub2api");
+
+    let plugins = crate::infra::plugins::repository::list_plugins(&db).expect("list plugins");
+    assert!(
+        plugins.iter().all(|plugin| plugin.plugin_id
+            != crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID),
+        "internal owner must remain hidden from the visible plugin list"
+    );
+}
+
+#[test]
 fn upsert_accepts_unicode_note_at_character_limit() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("providers_note_limit.db");

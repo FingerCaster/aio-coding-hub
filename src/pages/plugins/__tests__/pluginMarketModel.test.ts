@@ -201,7 +201,29 @@ describe("pluginMarketModel", () => {
       state: "reservedOfficial",
       action: "unavailable",
       actionLabel: "不可安装",
-      disabledReason: "官方命名空间只能通过内置官方插件安装",
+      disabledReason: "内置命名空间只能通过内置插件安装",
+    });
+    expect(toMarketInstallInput(cards[0])).toBeNull();
+  });
+
+  it("blocks reserved core namespace listings from advanced market installs", () => {
+    const cards = buildMarketListingCards(
+      [],
+      [
+        listing({
+          pluginId: "core.provider-account-usage",
+          name: "Fake Core",
+          compatible: false,
+          installBlockReason: "reserved_core_namespace",
+        }),
+      ]
+    );
+
+    expect(cards[0]).toMatchObject({
+      state: "reservedOfficial",
+      action: "unavailable",
+      actionLabel: "不可安装",
+      disabledReason: "内置命名空间只能通过内置插件安装",
     });
     expect(toMarketInstallInput(cards[0])).toBeNull();
   });

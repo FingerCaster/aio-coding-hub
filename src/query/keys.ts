@@ -23,6 +23,12 @@ export const oauthLimitsKeys = {
   detail: (providerId: number) => [...oauthLimitsAllKey, providerId] as const,
 };
 
+const providerAccountUsageAllKey = ["providerAccountUsage"] as const;
+export const providerAccountUsageKeys = {
+  all: providerAccountUsageAllKey,
+  detail: (providerId: number) => [...providerAccountUsageAllKey, providerId] as const,
+};
+
 const providersAllKey = ["providers"] as const;
 export const providersKeys = {
   all: providersAllKey,

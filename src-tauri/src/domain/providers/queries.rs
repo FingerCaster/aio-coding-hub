@@ -1370,6 +1370,10 @@ INSERT INTO providers(
             })?;
 
             let id = tx.last_insert_rowid();
+            crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
+                &tx,
+                extension_values.as_deref(),
+            )?;
             replace_extension_values(&tx, id, extension_values.as_deref())?;
             tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
             Ok(get_by_id(&conn, id)?)
@@ -1609,6 +1613,10 @@ WHERE id = ?27
                 other => db_err!("failed to update provider: {other}"),
             })?;
 
+            crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
+                &tx,
+                extension_values.as_deref(),
+            )?;
             replace_extension_values(&tx, id, extension_values.as_deref())?;
             tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
 

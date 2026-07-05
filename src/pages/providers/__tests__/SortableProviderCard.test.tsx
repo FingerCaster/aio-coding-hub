@@ -3,10 +3,12 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { tauriOpenUrl } from "../../../test/mocks/tauri";
 import { SortableProviderCard, type SortableProviderCardProps } from "../SortableProviderCard";
 import {
+  providerAccountUsageFetch,
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
   type ProviderSummary,
 } from "../../../services/providers/providers";
+import { gatewayCircuitResetProvider } from "../../../services/gateway/gateway";
 import { createTestQueryClient, createQueryWrapper } from "../../../test/utils/reactQuery";
 
 const sortablePointerDownMock = vi.hoisted(() => vi.fn());
@@ -16,7 +18,12 @@ vi.mock("../../../services/providers/providers", async () => {
   const actual = await vi.importActual<typeof import("../../../services/providers/providers")>(
     "../../../services/providers/providers"
   );
-  return { ...actual, providerOAuthFetchLimits: vi.fn(), providerOAuthResetCodexQuota: vi.fn() };
+  return {
+    ...actual,
+    providerAccountUsageFetch: vi.fn(),
+    providerOAuthFetchLimits: vi.fn(),
+    providerOAuthResetCodexQuota: vi.fn(),
+  };
 });
 
 vi.mock("../../../services/gateway/gateway", async () => {
@@ -117,6 +124,66 @@ describe("pages/providers/SortableProviderCard", () => {
     fireEvent.pointerDown(dragHandle);
 
     expect(sortablePointerDownMock).toHaveBeenCalledTimes(1);
+  });
+
+  it("renders configured account usage and refreshes without resetting gateway circuit", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "sub2api",
+      status: "available",
+      freshness: "fresh",
+      plan_name: "Pro",
+      balance: 12.5,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: 1,
+      daily_total: 10,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    renderCard({
+      id: 9,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "sub2api" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    const refresh = screen.getByRole("button", { name: /账户: 未刷新/ });
+    fireEvent.click(refresh);
+
+    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledWith(9));
+    expect(await screen.findByText(/账户: 可用 · Pro · 余额 12.5 USD/)).toBeInTheDocument();
+    expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
+    expect(providerOAuthFetchLimits).not.toHaveBeenCalled();
+  });
+
+  it("does not render account usage for unsupported provider config", () => {
+    renderCard({
+      auth_mode: "oauth",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    expect(screen.queryByText(/账户:/)).not.toBeInTheDocument();
   });
 
   it("renders OAuth badge with email", () => {

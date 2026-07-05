@@ -27,6 +27,7 @@ import {
   type ProviderSummary,
 } from "../../services/providers/providers";
 import { OAuthQuotaUsageInline } from "../../components/providers/OAuthQuotaUsageInline";
+import { ProviderAccountUsageInline } from "../../components/providers/ProviderAccountUsageInline";
 import { openDesktopUrl } from "../../services/desktop/opener";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
@@ -300,7 +301,7 @@ const ProviderCard = memo(function ProviderCard({
           <div className="min-w-0 flex-1">
             <div className="flex min-w-0 items-center gap-2">
               <div className="truncate text-base font-semibold">{provider.name}</div>
-              {isUnavailable ? (
+              {isUnavailable && (
                 <span
                   className="shrink-0 rounded-full bg-rose-50 px-2 py-0.5 font-mono text-[10px] text-rose-700 dark:bg-rose-900/30 dark:text-rose-400"
                   title={
@@ -311,7 +312,7 @@ const ProviderCard = memo(function ProviderCard({
                 >
                   熔断{unavailableCountdown ? ` ${unavailableCountdown}` : ""}
                 </span>
-              ) : null}
+              )}
             </div>
             <div className="mt-1 flex min-w-0 flex-wrap items-center gap-2">
               {isOAuth ? (
@@ -372,7 +373,7 @@ const ProviderCard = memo(function ProviderCard({
                   </span>
                 </>
               )}
-              {isBridge && provider.cost_multiplier !== 0 ? (
+              {isBridge && provider.cost_multiplier !== 0 && (
                 <span
                   className={cn(
                     "shrink-0 rounded-full px-2 py-0.5 font-mono text-[10px]",
@@ -382,7 +383,7 @@ const ProviderCard = memo(function ProviderCard({
                 >
                   x{provider.cost_multiplier.toFixed(2)}
                 </span>
-              ) : null}
+              )}
               {provider.cli_key === "claude" && hasClaudeModels ? (
                 <span
                   className="shrink-0 rounded-full bg-sky-50 px-2 py-0.5 font-mono text-[10px] text-sky-700 dark:bg-sky-900/30 dark:text-sky-400"
@@ -457,14 +458,23 @@ const ProviderCard = memo(function ProviderCard({
                     {bridgeRouteLabel}
                   </span>
                 </>
-              ) : apiKeyDetailsVisible ? (
-                <span
-                  className="truncate font-mono text-xs text-muted-foreground cursor-default"
-                  title={provider.base_urls.join("\n")}
-                >
-                  {providerBaseUrlSummary(provider)}
-                </span>
-              ) : null}
+              ) : (
+                <>
+                  {apiKeyDetailsVisible ? (
+                    <span
+                      className="truncate font-mono text-xs text-muted-foreground cursor-default"
+                      title={provider.base_urls.join("\n")}
+                    >
+                      {providerBaseUrlSummary(provider)}
+                    </span>
+                  ) : null}
+                  <ProviderAccountUsageInline
+                    provider={provider}
+                    className="contents"
+                    segmentClassName="cursor-pointer"
+                  />
+                </>
+              )}
             </div>
             {provider.note ? (
               <div

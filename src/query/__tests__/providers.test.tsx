@@ -5,6 +5,7 @@ import {
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
   providerOAuthStatus,
+  providerAccountUsageFetch,
   providerClaudeTerminalLaunchCommand,
   providerDelete,
   providerDuplicate,
@@ -18,9 +19,12 @@ import { gatewayCircuitResetProvider } from "../../services/gateway/gateway";
 import {
   fetchProviderOAuthStatus,
   readProviderOAuthLimitsCache,
+  readProviderAccountUsageCache,
+  refreshProviderAccountUsage,
   refreshProviderOAuthLimits,
   resetProviderOAuthCodexQuota,
   useOAuthLimitsQuery,
+  useProviderAccountUsageQuery,
   useProviderClaudeTerminalLaunchCommandMutation,
   useProviderDeleteMutation,
   useProviderDuplicateMutation,
@@ -31,7 +35,7 @@ import {
   useProvidersListQuery,
   useProvidersReorderMutation,
 } from "../providers";
-import { gatewayKeys, oauthLimitsKeys, providersKeys } from "../keys";
+import { gatewayKeys, oauthLimitsKeys, providerAccountUsageKeys, providersKeys } from "../keys";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
 
@@ -43,6 +47,7 @@ vi.mock("../../services/providers/providers", async () => {
     ...actual,
     providersList: vi.fn(),
     providerOAuthStatus: vi.fn(),
+    providerAccountUsageFetch: vi.fn(),
     providerOAuthFetchLimits: vi.fn(),
     providerOAuthResetCodexQuota: vi.fn(),
     providerUpsert: vi.fn(),
@@ -279,6 +284,62 @@ describe("query/providers", () => {
     );
   });
 
+  it("keeps provider account usage manual and scoped to its own cache", async () => {
+    setTauriRuntime();
+
+    const accountUsage = {
+      adapter_kind: "newapi" as const,
+      status: "available" as const,
+      freshness: "fresh" as const,
+      plan_name: null,
+      balance: 1,
+      used: 2,
+      total: 3,
+      unit: "USD",
+      unit_note: "NewAPI quota uses the default 500000 quota-per-USD divisor.",
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    };
+    vi.mocked(providerAccountUsageFetch).mockResolvedValue(accountUsage);
+
+    const client = createTestQueryClient();
+    const provider = makeProvider({
+      id: 12,
+      cli_key: "codex",
+      name: "NewAPI",
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi" },
+          updatedAt: 1,
+        },
+      ],
+    });
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(providerAccountUsageFetch).not.toHaveBeenCalled();
+    expect(readProviderAccountUsageCache(client, 12)).toBeNull();
+
+    await expect(refreshProviderAccountUsage(client, 12)).resolves.toEqual(accountUsage);
+
+    expect(providerAccountUsageFetch).toHaveBeenCalledWith(12);
+    expect(client.getQueryData(providerAccountUsageKeys.detail(12))).toEqual(accountUsage);
+    expect(readProviderAccountUsageCache(client, 12)).toEqual(accountUsage);
+    expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
+  });
+
   it("active OAuth limits refresh resets circuit after every successful refresh", async () => {
     setTauriRuntime();
 
@@ -466,6 +527,26 @@ describe("query/providers", () => {
 
     const client = createTestQueryClient();
     client.setQueryData(providersKeys.list("claude"), [existing]);
+    client.setQueryData(providerAccountUsageKeys.detail(1), {
+      adapter_kind: "sub2api",
+      status: "available",
+      freshness: "fresh",
+      plan_name: "old",
+      balance: 9,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1,
+      message: null,
+    });
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const wrapper = createQueryWrapper(client);
 
@@ -492,6 +573,7 @@ describe("query/providers", () => {
     });
 
     expect(client.getQueryData(providersKeys.list("claude"))).toEqual([saved]);
+    expect(client.getQueryData(providerAccountUsageKeys.detail(1))).toBeUndefined();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: providersKeys.list("claude") });
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: gatewayKeys.circuitStatus("claude"),
@@ -558,6 +640,26 @@ describe("query/providers", () => {
 
     const client = createTestQueryClient();
     client.setQueryData(providersKeys.list("claude"), providers);
+    client.setQueryData(providerAccountUsageKeys.detail(1), {
+      adapter_kind: "sub2api",
+      status: "available",
+      freshness: "fresh",
+      plan_name: null,
+      balance: 1,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1,
+      message: null,
+    });
     const wrapper = createQueryWrapper(client);
 
     const { result } = renderHook(() => useProviderDeleteMutation(), { wrapper });
@@ -567,6 +669,7 @@ describe("query/providers", () => {
 
     expect(providerDelete).toHaveBeenCalledWith(1, { clearUsageStats: false });
     expect(client.getQueryData(providersKeys.list("claude"))).toEqual([providers[1]]);
+    expect(client.getQueryData(providerAccountUsageKeys.detail(1))).toBeUndefined();
     expect(client.getQueryData(providersKeys.list(" claude " as never))).toBeUndefined();
   });
 

@@ -6,7 +6,7 @@ mod validation;
 
 pub use types::{
     ClaudeModels, DailyResetMode, ModelMapping, ProviderAuthMode, ProviderBaseUrlMode,
-    ProviderExtensionValuesInput, ProviderSummary, ProviderUpsertParams,
+    ProviderExtensionValues, ProviderExtensionValuesInput, ProviderSummary, ProviderUpsertParams,
 };
 
 #[allow(unused_imports)]

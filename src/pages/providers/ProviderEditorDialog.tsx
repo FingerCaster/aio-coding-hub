@@ -16,6 +16,7 @@ import { OAuthSection } from "./OAuthSection";
 import { Cx2ccSection } from "./Cx2ccSection";
 import { CodexBridgeSection } from "./CodexBridgeSection";
 import { ApiKeySection } from "./ApiKeySection";
+import { ProviderAccountUsageSection } from "./ProviderAccountUsageSection";
 import { LimitsSection } from "./LimitsSection";
 import { ClaudeModelSection } from "./ClaudeModelSection";
 import { RetryPolicyFields } from "../../components/gateway/RetryPolicyFields";
@@ -99,6 +100,8 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
         ) : (
           <ApiKeySection form={f} />
         )}
+
+        <ProviderAccountUsageSection form={f} />
 
         <ContributionSlot
           slotId="providers.editor.sections"

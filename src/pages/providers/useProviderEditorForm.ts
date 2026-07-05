@@ -49,6 +49,12 @@ import {
 import { runProviderEditorSave } from "./providerEditorSaveRunner";
 import { useProviderEditorEffects } from "./useProviderEditorEffects";
 import { providerOAuthCancelDeviceFlow } from "../../services/providers/providers";
+import {
+  mergeProviderAccountUsageExtensionValues,
+  readProviderAccountUsageConfig,
+  type ProviderAccountUsageAdapterKind,
+  type ProviderAccountUsageConfig,
+} from "../../services/providers/providerAccountUsageConfig";
 import { logToConsole } from "../../services/consoleLog";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../services/gateway/upstreamRetryPolicy";
 import { useContributionsForSlot } from "../../plugins/contributions/useActiveContributions";
@@ -156,6 +162,10 @@ type ExtensionValuesState = {
   valuesByContributionKey: Record<string, ContributionValues>;
 };
 
+type AccountUsageState = ProviderAccountUsageConfig & {
+  resetKey: string;
+};
+
 function buildExtensionValuesResetKey({
   open,
   mode,
@@ -198,6 +208,26 @@ function buildExtensionValuesState({
             providerEditorContributions,
             mode === "edit" ? existingExtensionValues : []
           ),
+  };
+}
+
+function buildAccountUsageState({
+  resetKey,
+  mode,
+  existingExtensionValues,
+}: {
+  resetKey: string;
+  mode: ProviderEditorDialogProps["mode"];
+  existingExtensionValues: StoredProviderExtensionValues[];
+}): AccountUsageState {
+  const config =
+    resetKey === "closed" || mode !== "edit"
+      ? { adapterKind: "disabled" as const, newApiUserId: "" }
+      : readProviderAccountUsageConfig(existingExtensionValues);
+
+  return {
+    resetKey,
+    ...config,
   };
 }
 
@@ -398,7 +428,15 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       existingExtensionValues,
     })
   );
+  const [accountUsageState, setAccountUsageState] = useState<AccountUsageState>(() =>
+    buildAccountUsageState({
+      resetKey: extensionValuesResetKey,
+      mode,
+      existingExtensionValues,
+    })
+  );
   let effectiveExtensionValuesState = extensionValuesState;
+  let effectiveAccountUsageState = accountUsageState;
 
   if (extensionValuesState.resetKey !== extensionValuesResetKey) {
     effectiveExtensionValuesState = buildExtensionValuesState({
@@ -409,7 +447,17 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     });
     setExtensionValuesState(effectiveExtensionValuesState);
   }
+  if (accountUsageState.resetKey !== extensionValuesResetKey) {
+    effectiveAccountUsageState = buildAccountUsageState({
+      resetKey: extensionValuesResetKey,
+      mode,
+      existingExtensionValues,
+    });
+    setAccountUsageState(effectiveAccountUsageState);
+  }
   const extensionValuesByContributionKey = effectiveExtensionValuesState.valuesByContributionKey;
+  const accountUsageAdapterKind = effectiveAccountUsageState.adapterKind;
+  const accountUsageNewApiUserId = effectiveAccountUsageState.newApiUserId;
 
   const setExtensionValue = useCallback(
     (contribution: ActiveUiContribution, fieldKey: string, value: JsonValue) => {
@@ -427,6 +475,21 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     },
     []
   );
+
+  const setAccountUsageAdapterKind = useCallback((adapterKind: ProviderAccountUsageAdapterKind) => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      adapterKind,
+      newApiUserId: adapterKind === "newapi" ? prev.newApiUserId : "",
+    }));
+  }, []);
+
+  const setAccountUsageNewApiUserId = useCallback((newApiUserId: string) => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      newApiUserId,
+    }));
+  }, []);
 
   const refreshOauthStatus = useCallback(
     (providerId?: number | null) => {
@@ -567,11 +630,18 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       sourceProviderId,
       selectedCx2ccSourceProvider,
       formValues: form.getValues(),
-      extensionValues: buildExtensionValuesInput(
-        providerEditorContributions,
-        extensionValuesByContributionKey,
-        mode === "edit" ? existingExtensionValues : []
-      ),
+      extensionValues: mergeProviderAccountUsageExtensionValues({
+        rows: buildExtensionValuesInput(
+          providerEditorContributions,
+          extensionValuesByContributionKey,
+          mode === "edit" ? existingExtensionValues : []
+        ),
+        existingRows: mode === "edit" ? existingExtensionValues : [],
+        config: {
+          adapterKind: authMode === "api_key" ? accountUsageAdapterKind : "disabled",
+          newApiUserId: accountUsageNewApiUserId,
+        },
+      }),
     }),
     [
       mode,
@@ -596,6 +666,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       providerEditorContributions,
       extensionValuesByContributionKey,
       existingExtensionValues,
+      accountUsageAdapterKind,
+      accountUsageNewApiUserId,
     ]
   );
 
@@ -778,6 +850,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     codexBridgeSourceProviders,
     extensionValuesByContributionKey,
     setExtensionValue,
+    accountUsageAdapterKind,
+    setAccountUsageAdapterKind,
+    accountUsageNewApiUserId,
+    setAccountUsageNewApiUserId,
     save: () => runProviderEditorSave(buildSaveContext()),
     copyApiKey: () => copyApiKeyAction(buildCopyApiKeyContext()),
     handleOAuthLogin: () => oauthLoginAction(buildOAuthContext()),

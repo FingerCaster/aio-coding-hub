@@ -13,6 +13,7 @@ pub(crate) mod mcp;
 pub(crate) mod plugin_contributions;
 pub(crate) mod plugins;
 pub(crate) mod prompts;
+pub(crate) mod provider_account_usage;
 pub(crate) mod provider_availability;
 pub(crate) mod provider_limit_usage;
 pub(crate) mod provider_oauth_limits;

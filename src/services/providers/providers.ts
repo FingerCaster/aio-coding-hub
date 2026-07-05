@@ -4,6 +4,7 @@ import {
   type DailyResetMode as GeneratedDailyResetMode,
   type ModelMapping as GeneratedModelMapping,
   type ProviderAuthMode as GeneratedProviderAuthMode,
+  type ProviderAccountUsageResult,
   type ProviderAvailabilityResult,
   type ProviderBaseUrlMode as GeneratedProviderBaseUrlMode,
   type ProviderExtensionValuesInput,
@@ -36,6 +37,7 @@ import { createRiskyIpcConfirm } from "../ipcConfirm";
 
 export type {
   ProviderAvailabilityResult,
+  ProviderAccountUsageResult,
   ProviderExtensionValuesInput,
   GeneratedProviderOAuthDeviceCodePollResult as ProviderOAuthDeviceCodePollResult,
   GeneratedProviderOAuthDeviceCodeStartResult as ProviderOAuthDeviceCodeStartResult,
@@ -575,6 +577,22 @@ export async function providerOAuthFetchLimits(
     invoke: () =>
       commands.providerOauthFetchLimits(normalizedProviderId) as Promise<
         GeneratedCommandResult<OAuthLimitsResult>
+      >,
+  });
+}
+
+export async function providerAccountUsageFetch(
+  providerId: number
+): Promise<ProviderAccountUsageResult | null> {
+  const normalizedProviderId = validateProviderId(providerId);
+
+  return invokeGeneratedIpc<ProviderAccountUsageResult>({
+    title: "读取账户用量失败",
+    cmd: "provider_account_usage_fetch",
+    args: { providerId: normalizedProviderId },
+    invoke: () =>
+      commands.providerAccountUsageFetch(normalizedProviderId) as Promise<
+        GeneratedCommandResult<ProviderAccountUsageResult>
       >,
   });
 }
