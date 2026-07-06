@@ -50,8 +50,10 @@ import { runProviderEditorSave } from "./providerEditorSaveRunner";
 import { useProviderEditorEffects } from "./useProviderEditorEffects";
 import { providerOAuthCancelDeviceFlow } from "../../services/providers/providers";
 import {
+  PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
   mergeProviderAccountUsageExtensionValues,
   readProviderAccountUsageConfig,
+  normalizeProviderAccountUsageRefreshIntervalSeconds,
   type ProviderAccountUsageAdapterKind,
   type ProviderAccountUsageConfig,
 } from "../../services/providers/providerAccountUsageConfig";
@@ -222,7 +224,12 @@ function buildAccountUsageState({
 }): AccountUsageState {
   const config =
     resetKey === "closed" || mode !== "edit"
-      ? { adapterKind: "disabled" as const, newApiUserId: "" }
+      ? {
+          adapterKind: "disabled" as const,
+          newApiUserId: "",
+          timedRefreshEnabled: true,
+          refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
+        }
       : readProviderAccountUsageConfig(existingExtensionValues);
 
   return {
@@ -458,6 +465,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const extensionValuesByContributionKey = effectiveExtensionValuesState.valuesByContributionKey;
   const accountUsageAdapterKind = effectiveAccountUsageState.adapterKind;
   const accountUsageNewApiUserId = effectiveAccountUsageState.newApiUserId;
+  const accountUsageTimedRefreshEnabled = effectiveAccountUsageState.timedRefreshEnabled;
+  const accountUsageRefreshIntervalSeconds = effectiveAccountUsageState.refreshIntervalSeconds;
 
   const setExtensionValue = useCallback(
     (contribution: ActiveUiContribution, fieldKey: string, value: JsonValue) => {
@@ -488,6 +497,20 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setAccountUsageState((prev) => ({
       ...prev,
       newApiUserId,
+    }));
+  }, []);
+
+  const setAccountUsageTimedRefreshEnabled = useCallback((timedRefreshEnabled: boolean) => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      timedRefreshEnabled,
+    }));
+  }, []);
+
+  const setAccountUsageRefreshIntervalSeconds = useCallback((refreshIntervalSeconds: number) => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      refreshIntervalSeconds,
     }));
   }, []);
 
@@ -640,6 +663,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
         config: {
           adapterKind: authMode === "api_key" ? accountUsageAdapterKind : "disabled",
           newApiUserId: accountUsageNewApiUserId,
+          timedRefreshEnabled: accountUsageTimedRefreshEnabled,
+          refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
+            accountUsageRefreshIntervalSeconds
+          ),
         },
       }),
     }),
@@ -668,6 +695,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       existingExtensionValues,
       accountUsageAdapterKind,
       accountUsageNewApiUserId,
+      accountUsageTimedRefreshEnabled,
+      accountUsageRefreshIntervalSeconds,
     ]
   );
 
@@ -854,6 +883,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setAccountUsageAdapterKind,
     accountUsageNewApiUserId,
     setAccountUsageNewApiUserId,
+    accountUsageTimedRefreshEnabled,
+    setAccountUsageTimedRefreshEnabled,
+    accountUsageRefreshIntervalSeconds,
+    setAccountUsageRefreshIntervalSeconds,
     save: () => runProviderEditorSave(buildSaveContext()),
     copyApiKey: () => copyApiKeyAction(buildCopyApiKeyContext()),
     handleOAuthLogin: () => oauthLoginAction(buildOAuthContext()),

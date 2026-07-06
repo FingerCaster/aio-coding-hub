@@ -2,17 +2,24 @@ import type { ProviderExtensionValuesInput, ProviderSummary } from "./providers"
 
 export const PROVIDER_ACCOUNT_USAGE_PLUGIN_ID = "core.provider-account-usage";
 export const PROVIDER_ACCOUNT_USAGE_NAMESPACE = "accountUsage";
+export const PROVIDER_ACCOUNT_USAGE_MIN_REFRESH_INTERVAL_SECONDS = 60;
+export const PROVIDER_ACCOUNT_USAGE_MAX_REFRESH_INTERVAL_SECONDS = 300;
+export const PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS = 300;
 
 export type ProviderAccountUsageAdapterKind = "disabled" | "sub2api" | "newapi";
 
 export type ProviderAccountUsageConfig = {
   adapterKind: ProviderAccountUsageAdapterKind;
   newApiUserId: string;
+  timedRefreshEnabled: boolean;
+  refreshIntervalSeconds: number;
 };
 
 const DEFAULT_CONFIG: ProviderAccountUsageConfig = {
   adapterKind: "disabled",
   newApiUserId: "",
+  timedRefreshEnabled: true,
+  refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -27,6 +34,20 @@ export function isProviderAccountUsageAdapterKind(
   value: unknown
 ): value is ProviderAccountUsageAdapterKind {
   return value === "disabled" || value === "sub2api" || value === "newapi";
+}
+
+export function normalizeProviderAccountUsageRefreshIntervalSeconds(value: unknown): number {
+  const numeric =
+    typeof value === "number"
+      ? value
+      : typeof value === "string" && value.trim()
+        ? Number(value)
+        : PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS;
+  if (!Number.isFinite(numeric)) return PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS;
+  return Math.min(
+    PROVIDER_ACCOUNT_USAGE_MAX_REFRESH_INTERVAL_SECONDS,
+    Math.max(PROVIDER_ACCOUNT_USAGE_MIN_REFRESH_INTERVAL_SECONDS, Math.round(numeric))
+  );
 }
 
 export function readProviderAccountUsageConfig(
@@ -45,10 +66,17 @@ export function readProviderAccountUsageConfig(
     : "disabled";
   const newApiUserId =
     typeof row.values.newApiUserId === "string" ? row.values.newApiUserId.trim() : "";
+  const timedRefreshEnabled =
+    typeof row.values.timedRefreshEnabled === "boolean" ? row.values.timedRefreshEnabled : true;
+  const refreshIntervalSeconds = normalizeProviderAccountUsageRefreshIntervalSeconds(
+    row.values.refreshIntervalSeconds
+  );
 
   return {
     adapterKind,
     newApiUserId: adapterKind === "newapi" ? newApiUserId : "",
+    timedRefreshEnabled,
+    refreshIntervalSeconds,
   };
 }
 
@@ -89,8 +117,12 @@ export function mergeProviderAccountUsageExtensionValues({
     return withoutAccountUsage.length > 0 ? withoutAccountUsage : [];
   }
 
-  const values: Record<string, string> = {
+  const values: Record<string, string | number | boolean> = {
     adapterKind: config.adapterKind,
+    timedRefreshEnabled: config.timedRefreshEnabled,
+    refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
+      config.refreshIntervalSeconds
+    ),
   };
   const newApiUserId = config.newApiUserId.trim();
   if (config.adapterKind === "newapi" && newApiUserId) {

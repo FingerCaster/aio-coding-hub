@@ -1,11 +1,17 @@
 import { FormField } from "../../ui/FormField";
 import { Input } from "../../ui/Input";
+import { Switch } from "../../ui/Switch";
 import { RadioButtonGroup } from "./RadioButtonGroup";
 import type { UseProviderEditorFormReturn } from "./useProviderEditorForm";
-import type { ProviderAccountUsageAdapterKind } from "../../services/providers/providerAccountUsageConfig";
+import {
+  PROVIDER_ACCOUNT_USAGE_MAX_REFRESH_INTERVAL_SECONDS,
+  PROVIDER_ACCOUNT_USAGE_MIN_REFRESH_INTERVAL_SECONDS,
+  type ProviderAccountUsageAdapterKind,
+} from "../../services/providers/providerAccountUsageConfig";
 
 export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorFormReturn }) {
   if (form.authMode !== "api_key") return null;
+  const accountUsageEnabled = form.accountUsageAdapterKind !== "disabled";
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
@@ -34,6 +40,39 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
             disabled={form.saving}
           />
         </FormField>
+      ) : null}
+
+      {accountUsageEnabled ? (
+        <>
+          <FormField label="定时刷新">
+            <div className="flex h-10 items-center justify-between gap-3 rounded-lg border border-line bg-surface-inset px-3">
+              <span className="text-sm text-foreground">启用</span>
+              <Switch
+                size="sm"
+                checked={form.accountUsageTimedRefreshEnabled}
+                onCheckedChange={(next) => form.setAccountUsageTimedRefreshEnabled(next)}
+                disabled={form.saving}
+                aria-label="定时刷新账户用量"
+              />
+            </div>
+          </FormField>
+
+          <FormField label="刷新间隔（秒）" hint="60-300s">
+            <Input
+              type="number"
+              min={PROVIDER_ACCOUNT_USAGE_MIN_REFRESH_INTERVAL_SECONDS}
+              max={PROVIDER_ACCOUNT_USAGE_MAX_REFRESH_INTERVAL_SECONDS}
+              step={1}
+              inputMode="numeric"
+              value={form.accountUsageRefreshIntervalSeconds}
+              onChange={(event) => {
+                const next = event.currentTarget.valueAsNumber;
+                if (Number.isFinite(next)) form.setAccountUsageRefreshIntervalSeconds(next);
+              }}
+              disabled={form.saving || !form.accountUsageTimedRefreshEnabled}
+            />
+          </FormField>
+        </>
       ) : null}
     </div>
   );

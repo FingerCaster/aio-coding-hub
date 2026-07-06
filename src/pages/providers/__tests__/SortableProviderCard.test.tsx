@@ -126,7 +126,7 @@ describe("pages/providers/SortableProviderCard", () => {
     expect(sortablePointerDownMock).toHaveBeenCalledTimes(1);
   });
 
-  it("renders configured account usage and refreshes without resetting gateway circuit", async () => {
+  it("auto-fetches configured account usage without resetting gateway circuit", async () => {
     vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
       adapter_kind: "sub2api",
       status: "available",
@@ -161,9 +161,6 @@ describe("pages/providers/SortableProviderCard", () => {
         },
       ],
     });
-
-    const refresh = screen.getByRole("button", { name: /账户: 未刷新/ });
-    fireEvent.click(refresh);
 
     await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledWith(9));
     expect(await screen.findByText(/账户: 可用 · Pro · 余额 12.5 USD/)).toBeInTheDocument();
@@ -207,8 +204,6 @@ describe("pages/providers/SortableProviderCard", () => {
         },
       ],
     });
-
-    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
 
     expect(
       await screen.findByText("账户: 可用 · CodeX Air 订阅 · 余额 130 USD")
@@ -263,8 +258,6 @@ describe("pages/providers/SortableProviderCard", () => {
       ],
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
-
     expect(
       await screen.findByText("账户: 可用 · Super Ultra · 套餐剩余 42.0 USD · 余额 0.00 USD")
     ).toBeInTheDocument();
@@ -307,8 +300,6 @@ describe("pages/providers/SortableProviderCard", () => {
       ],
     });
 
-    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
-
     expect(await screen.findByText("账户: 无可用额度 · 余额 0.00 USD")).toBeInTheDocument();
     expect(screen.queryByText(/账户: 余额 0/)).not.toBeInTheDocument();
   });
@@ -348,8 +339,6 @@ describe("pages/providers/SortableProviderCard", () => {
         },
       ],
     });
-
-    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
 
     expect(await screen.findByText("账户: 可用 · 余额 1.00 USD")).toBeInTheDocument();
     expect(screen.getByText("已用 2.00/3.00 USD")).toBeInTheDocument();

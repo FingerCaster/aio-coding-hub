@@ -284,8 +284,9 @@ describe("query/providers", () => {
     );
   });
 
-  it("keeps provider account usage manual and scoped to its own cache", async () => {
+  it("auto-fetches provider account usage and keeps manual refresh scoped to its own cache", async () => {
     setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
 
     const accountUsage = {
       adapter_kind: "newapi" as const,
@@ -329,16 +330,165 @@ describe("query/providers", () => {
 
     const { result } = renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
 
-    expect(result.current.fetchStatus).toBe("idle");
-    expect(providerAccountUsageFetch).not.toHaveBeenCalled();
-    expect(readProviderAccountUsageCache(client, 12)).toBeNull();
+    await waitFor(() => {
+      expect(result.current.data).toEqual(accountUsage);
+    });
 
-    await expect(refreshProviderAccountUsage(client, 12)).resolves.toEqual(accountUsage);
-
+    expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1);
     expect(providerAccountUsageFetch).toHaveBeenCalledWith(12);
     expect(client.getQueryData(providerAccountUsageKeys.detail(12))).toEqual(accountUsage);
     expect(readProviderAccountUsageCache(client, 12)).toEqual(accountUsage);
+
+    const refreshedAccountUsage = { ...accountUsage, balance: 4 };
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce(refreshedAccountUsage);
+    await expect(refreshProviderAccountUsage(client, 12)).resolves.toEqual(refreshedAccountUsage);
+
+    expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+    expect(client.getQueryData(providerAccountUsageKeys.detail(12))).toEqual(refreshedAccountUsage);
+    expect(readProviderAccountUsageCache(client, 12)).toEqual(refreshedAccountUsage);
     expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
+  });
+
+  it("auto-fetches initial account usage even when timed refresh is disabled", async () => {
+    setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
+
+    const accountUsage = {
+      adapter_kind: "newapi" as const,
+      status: "available" as const,
+      freshness: "fresh" as const,
+      plan_name: null,
+      balance: 1,
+      plan_remaining: null,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    };
+    vi.mocked(providerAccountUsageFetch).mockResolvedValue(accountUsage);
+
+    const client = createTestQueryClient();
+    const provider = makeProvider({
+      id: 13,
+      cli_key: "codex",
+      name: "NewAPI",
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: {
+            adapterKind: "newapi",
+            timedRefreshEnabled: false,
+            refreshIntervalSeconds: 60,
+          },
+          updatedAt: 1,
+        },
+      ],
+    });
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.data).toEqual(accountUsage);
+    });
+
+    const query = client.getQueryCache().find({ queryKey: providerAccountUsageKeys.detail(13) });
+    expect((query?.options as { refetchInterval?: unknown }).refetchInterval).toBe(false);
+  });
+
+  it("does not auto-fetch provider account usage for disabled providers", async () => {
+    setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
+
+    const client = createTestQueryClient();
+    const provider = makeProvider({
+      id: 14,
+      cli_key: "codex",
+      name: "Disabled NewAPI",
+      enabled: false,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi" },
+          updatedAt: 1,
+        },
+      ],
+    });
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
+    await act(async () => {
+      await Promise.resolve();
+    });
+
+    expect(result.current.fetchStatus).toBe("idle");
+    expect(providerAccountUsageFetch).not.toHaveBeenCalled();
+    expect(readProviderAccountUsageCache(client, 14)).toBeNull();
+  });
+
+  it("uses configured account usage polling interval when timed refresh is enabled", () => {
+    setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
+    vi.mocked(providerAccountUsageFetch).mockResolvedValue({
+      adapter_kind: "newapi",
+      status: "available",
+      freshness: "fresh",
+      plan_name: null,
+      balance: 1,
+      plan_remaining: null,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    const client = createTestQueryClient();
+    const provider = makeProvider({
+      id: 15,
+      cli_key: "codex",
+      name: "Polling NewAPI",
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: {
+            adapterKind: "newapi",
+            timedRefreshEnabled: true,
+            refreshIntervalSeconds: 60,
+          },
+          updatedAt: 1,
+        },
+      ],
+    });
+    const wrapper = createQueryWrapper(client);
+
+    renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
+
+    const query = client.getQueryCache().find({ queryKey: providerAccountUsageKeys.detail(15) });
+    expect((query?.options as { refetchInterval?: unknown }).refetchInterval).toBe(60_000);
   });
 
   it("active OAuth limits refresh resets circuit after every successful refresh", async () => {

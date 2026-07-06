@@ -27,7 +27,10 @@ import {
   validateProviderCliKey,
   validateProviderId,
 } from "../services/providers/providers";
-import { isProviderAccountUsageConfigured } from "../services/providers/providerAccountUsageConfig";
+import {
+  isProviderAccountUsageConfigured,
+  readProviderAccountUsageConfig,
+} from "../services/providers/providerAccountUsageConfig";
 import { logToConsole } from "../services/consoleLog";
 import { gatewayCircuitResetProvider } from "../services/gateway/gateway";
 import { formatUnknownError } from "../utils/errors";
@@ -440,12 +443,17 @@ export function useOAuthLimitsQuery(providerId: number, enabled: boolean) {
 export function useProviderAccountUsageQuery(provider: ProviderSummary, enabled = true) {
   const normalizedProviderId = validateProviderId(provider.id);
   const configured = isProviderAccountUsageConfigured(provider);
+  const config = readProviderAccountUsageConfig(provider.extension_values);
+  const autoFetchEnabled = enabled && provider.enabled && configured;
+  const refetchInterval =
+    autoFetchEnabled && config.timedRefreshEnabled ? config.refreshIntervalSeconds * 1000 : false;
 
   return useQuery({
     queryKey: providerAccountUsageKeys.detail(normalizedProviderId),
     queryFn: () => providerAccountUsageFetch(normalizedProviderId),
-    enabled: false,
+    enabled: autoFetchEnabled,
     staleTime: Infinity,
+    refetchInterval,
     retry: false,
     meta: {
       configured: enabled && configured,
