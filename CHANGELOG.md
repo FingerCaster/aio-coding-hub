@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.19](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.18...aio-coding-hub-v0.60.19) (2026-07-06)
+
+
+### Bug Fixes
+
+* **codex:** restore continuation repair timeout policy ([4dc3401](https://github.com/FingerCaster/aio-coding-hub/commit/4dc3401d785e8a2887253e98e59c7998d9cb49d5))
+* **providers:** compact account usage display ([bda1fad](https://github.com/FingerCaster/aio-coding-hub/commit/bda1fadb61a7b8af0838f5196776e755ccca1a1f))
+
 ## [0.60.18](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.17...aio-coding-hub-v0.60.18) (2026-07-05)
 
 
