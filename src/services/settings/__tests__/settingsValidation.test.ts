@@ -79,6 +79,24 @@ describe("services/settings/settingsValidation", () => {
     ).toContain("Codex 降智拦截规则模式仅支持");
   });
 
+  it("validates Codex reasoning guard post-match strategy", () => {
+    expect(
+      validateSettingsSetInput({
+        codexReasoningGuardPostMatchStrategy: "continuation_repair",
+      })
+    ).toBeNull();
+    expect(
+      validateSettingsSetInput({
+        codexReasoningGuardPostMatchStrategy: "continuation_repair_experimental",
+      })
+    ).toBeNull();
+    expect(
+      validateSettingsSetInput({
+        codexReasoningGuardPostMatchStrategy: "unknown_strategy" as never,
+      })
+    ).toContain("Codex 降智拦截命中后策略仅支持");
+  });
+
   it("validates Codex reasoning guard custom rule templates", () => {
     const validTemplate = {
       id: "custom-fast-token",

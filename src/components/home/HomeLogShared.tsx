@@ -65,6 +65,10 @@ export function hasCodexReasoningGuardSpecialSetting(
   return resolveCodexReasoningGuardSummary(specialSettingsJson).count > 0;
 }
 
+function isCodexReasoningContinuationStrategy(value: string | null | undefined): boolean {
+  return value === "continuation_repair" || value === "continuation_repair_experimental";
+}
+
 function formatCodexReasoningGuardActionText(summary: {
   latestActionTaken: string | null;
   latestDelayMs: number | null;
@@ -73,7 +77,7 @@ function formatCodexReasoningGuardActionText(summary: {
   latestContinuationSentRounds?: number | null;
 }): string {
   if (
-    summary.latestPostMatchStrategy === "continuation_repair" &&
+    isCodexReasoningContinuationStrategy(summary.latestPostMatchStrategy) &&
     (summary.latestStrategyOutcome === "continuation_repaired" ||
       summary.latestStrategyOutcome === "repaired")
   ) {
@@ -83,7 +87,7 @@ function formatCodexReasoningGuardActionText(summary: {
         : ""
     }`;
   }
-  if (summary.latestPostMatchStrategy === "continuation_repair") {
+  if (isCodexReasoningContinuationStrategy(summary.latestPostMatchStrategy)) {
     const status = formatCodexReasoningContinuationStatus(summary.latestStrategyOutcome);
     return summary.latestStrategyOutcome ? `思考续写后${status}` : "思考续写";
   }

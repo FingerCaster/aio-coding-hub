@@ -130,6 +130,20 @@ pub enum CodexReasoningGuardPostMatchStrategy {
     RetrySameProvider,
     #[default]
     ContinuationRepair,
+    ContinuationRepairExperimental,
+}
+
+impl CodexReasoningGuardPostMatchStrategy {
+    pub fn is_continuation_repair(self) -> bool {
+        matches!(
+            self,
+            Self::ContinuationRepair | Self::ContinuationRepairExperimental
+        )
+    }
+
+    pub fn is_experimental_continuation_repair(self) -> bool {
+        matches!(self, Self::ContinuationRepairExperimental)
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]

@@ -313,10 +313,8 @@ pub(super) fn make_state_from_bytes(
             ("", "model") => state.model = parse_string(&raw_value),
             ("", "approval_policy") => state.approval_policy = parse_string(&raw_value),
             ("", "sandbox_mode") => state.sandbox_mode = parse_string(&raw_value),
-            ("sandbox", "mode") => {
-                if state.sandbox_mode.is_none() {
-                    state.sandbox_mode = parse_string(&raw_value);
-                }
+            ("sandbox", "mode") if state.sandbox_mode.is_none() => {
+                state.sandbox_mode = parse_string(&raw_value);
             }
             ("", "model_reasoning_effort") => {
                 state.model_reasoning_effort = parse_string(&raw_value)

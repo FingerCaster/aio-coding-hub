@@ -1047,6 +1047,9 @@ pub(super) fn post_match_strategy_label(
     match strategy {
         CodexReasoningGuardPostMatchStrategy::RetrySameProvider => "retry_same_provider",
         CodexReasoningGuardPostMatchStrategy::ContinuationRepair => "continuation_repair",
+        CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental => {
+            "continuation_repair_experimental"
+        }
     }
 }
 

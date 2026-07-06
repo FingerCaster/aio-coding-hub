@@ -545,10 +545,10 @@ fn has_codex_meaningful_output(data: &Value) -> bool {
         Some("response.function_call_arguments.delta") if non_empty_string(data.get("delta")) => {
             return true;
         }
-        Some("response.output_text.done" | "response.refusal.done") => {
-            if non_empty_string(data.get("text")) || non_empty_string(data.get("refusal")) {
-                return true;
-            }
+        Some("response.output_text.done" | "response.refusal.done")
+            if non_empty_string(data.get("text")) || non_empty_string(data.get("refusal")) =>
+        {
+            return true;
         }
         _ => {}
     }

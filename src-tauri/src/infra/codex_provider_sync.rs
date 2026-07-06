@@ -991,14 +991,11 @@ fn apply_global_state_change(change: &GlobalStateChange) -> AppResult<()> {
         Some(Some(bytes)) => {
             let _ = write_file_atomic_if_changed(&change.bak_path, bytes)?;
         }
-        Some(None) => {
-            if change.bak_path.exists() {
-                fs::remove_file(&change.bak_path).map_err(|e| {
-                    format!("failed to remove bak {}: {e}", change.bak_path.display())
-                })?;
-            }
+        Some(None) if change.bak_path.exists() => {
+            fs::remove_file(&change.bak_path)
+                .map_err(|e| format!("failed to remove bak {}: {e}", change.bak_path.display()))?;
         }
-        None => {}
+        Some(None) | None => {}
     }
     Ok(())
 }

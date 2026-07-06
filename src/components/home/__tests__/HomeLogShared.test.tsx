@@ -339,6 +339,28 @@ describe("components/home/HomeLogShared", () => {
     );
     expect(mixedReasoningGuardAndContinuation.reasoningTokens).toBe(516);
 
+    const experimentalContinuationRepair = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: JSON.stringify([
+        {
+          type: "codex_reasoning_guard",
+          matchedRuleName: "reasoning_tokens == 518*n-2",
+          reasoningTokens: 516,
+          guardPostMatchStrategy: "continuation_repair_experimental",
+          guardStrategyOutcome: "continuation_repaired",
+          continuationSentRounds: 2,
+        },
+      ]),
+    });
+    expect(experimentalContinuationRepair.tags.map((tag) => tag.label)).toEqual([
+      "降智命中 reasoning_tokens == 518*n-2",
+    ]);
+    expect(experimentalContinuationRepair.summary).toBe(
+      "本次请求命中了 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），思考续写成功（2 次）。"
+    );
+
     const clientAbort = buildRequestLogAuditMeta({
       cli_key: "claude",
       path: "/v1/messages",

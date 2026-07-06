@@ -243,6 +243,36 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(resolveCodexReasoningContinuationSummary("bad-json").count).toBe(0);
   });
 
+  it("counts experimental Codex reasoning continuation repair guard records", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "codex_reasoning_guard",
+        ruleSource: "continuation_repair",
+        matchedRuleName: "reasoning_tokens == 518*n-2",
+        reasoningTokens: 516,
+        guardPostMatchStrategy: "continuation_repair_experimental",
+        guardStrategyOutcome: "continuation_repaired",
+        continuationSentRounds: 2,
+      },
+    ]);
+
+    expect(resolveCodexReasoningGuardSummary(specialSettings)).toMatchObject({
+      count: 1,
+      latestPostMatchStrategy: "continuation_repair_experimental",
+      latestStrategyOutcome: "continuation_repaired",
+      latestContinuationSentRounds: 2,
+    });
+    expect(resolveCodexReasoningContinuationSummary(specialSettings)).toMatchObject({
+      count: 1,
+      repairedCount: 1,
+      nonRepairedCount: 0,
+      continuationRepairGuardCount: 1,
+      latestStatus: "repaired",
+      latestSentRounds: 2,
+      totalSentRounds: 2,
+    });
+  });
+
   it("resolves Codex reasoning guard summary with latest rule label", () => {
     expect(
       resolveCodexReasoningGuardSummary(

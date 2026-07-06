@@ -280,6 +280,11 @@ function normalizeSpecialSettingToken(value: unknown): string | null {
   return token ? token : null;
 }
 
+function isCodexReasoningContinuationStrategy(value: unknown): boolean {
+  const strategy = normalizeSpecialSettingToken(value);
+  return strategy === "continuation_repair" || strategy === "continuation_repair_experimental";
+}
+
 export function resolveCodexReasoningGuardSummary(
   specialSettingsJson: string | null | undefined
 ): CodexReasoningGuardSummary {
@@ -380,7 +385,7 @@ export function resolveCodexReasoningContinuationSummary(
   const hasUnifiedContinuationRecords = settings.some(
     (setting) =>
       setting.type === "codex_reasoning_guard" &&
-      normalizeSpecialSettingToken(setting.guardPostMatchStrategy) === "continuation_repair" &&
+      isCodexReasoningContinuationStrategy(setting.guardPostMatchStrategy) &&
       normalizeSpecialSettingToken(setting.guardStrategyOutcome) != null
   );
   let count = 0;
@@ -398,7 +403,7 @@ export function resolveCodexReasoningContinuationSummary(
     const guardPostMatchStrategy = normalizeSpecialSettingToken(setting.guardPostMatchStrategy);
     if (
       setting.type === "codex_reasoning_guard" &&
-      guardPostMatchStrategy === "continuation_repair"
+      isCodexReasoningContinuationStrategy(guardPostMatchStrategy)
     ) {
       continuationRepairGuardCount += 1;
       const outcome = normalizeSpecialSettingToken(setting.guardStrategyOutcome);

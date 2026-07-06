@@ -1249,8 +1249,9 @@ where
                         retry_index,
                         matched,
                     );
-                } else if common.codex_reasoning_guard_post_match_strategy
-                    == crate::settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepair
+                } else if common
+                    .codex_reasoning_guard_post_match_strategy
+                    .is_continuation_repair()
                 {
                     let budget_decision = codex_reasoning_guard::continuation_exhausted_decision(
                         retry_state.codex_reasoning_guard_hits,

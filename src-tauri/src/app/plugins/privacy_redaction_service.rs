@@ -391,10 +391,8 @@ fn redact_message_content_part(
         return;
     };
     match map.get("type").and_then(Value::as_str) {
-        Some("tool_result") => {
-            if scopes.tool_results {
-                redact_tool_result_content(map.get_mut("content"), filter, options, matched);
-            }
+        Some("tool_result") if scopes.tool_results => {
+            redact_tool_result_content(map.get_mut("content"), filter, options, matched);
         }
         Some("text") if scopes.message_content_enabled(role) => {
             if let Some(text) = map.get_mut("text") {
@@ -438,10 +436,8 @@ fn redact_responses_input_item(
         return;
     };
     match map.get("type").and_then(Value::as_str) {
-        Some("function_call_output") => {
-            if scopes.tool_results {
-                redact_tool_result_content(map.get_mut("output"), filter, options, matched);
-            }
+        Some("function_call_output") if scopes.tool_results => {
+            redact_tool_result_content(map.get_mut("output"), filter, options, matched);
         }
         Some("message") | None => {
             let role = map.get("role").and_then(Value::as_str).map(str::to_string);

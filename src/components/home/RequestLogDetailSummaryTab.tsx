@@ -231,6 +231,7 @@ function formatCodexReasoningHitSource(value: string | null | undefined) {
 
 function formatCodexReasoningPostMatchStrategy(value: string | null | undefined) {
   if (value === "continuation_repair") return "思考续写";
+  if (value === "continuation_repair_experimental") return "思考续写（实验）";
   if (value === "retry_same_provider") return "自动重试";
   return value || "—";
 }

@@ -2571,7 +2571,10 @@ export type CodexReasoningGuardModelStat = {
   hit_attempt_count: number;
   hit_rate: number;
 };
-export type CodexReasoningGuardPostMatchStrategy = "retry_same_provider" | "continuation_repair";
+export type CodexReasoningGuardPostMatchStrategy =
+  | "retry_same_provider"
+  | "continuation_repair"
+  | "continuation_repair_experimental";
 export type CodexReasoningGuardRetryPolicy = "single" | "concurrent";
 export type CodexReasoningGuardRuleMode = "reasoning_tokens" | "final_answer_only_high_xhigh";
 export type CodexReasoningGuardRuleTemplate = {

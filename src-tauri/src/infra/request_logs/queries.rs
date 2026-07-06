@@ -742,7 +742,7 @@ unified_continuation_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
-    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) = 'continuation_repair'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) IN ('continuation_repair', 'continuation_repair_experimental')
     AND NULLIF(TRIM(COALESCE(json_extract(special.value, '$.guardStrategyOutcome'), '')), '') IS NOT NULL
 ),
 legacy_continuation_attempts AS (
@@ -1215,7 +1215,7 @@ unified_continuation_attempts AS (
   JOIN request_logs ON request_logs.id = codex_requests.id
   JOIN json_each(request_logs.special_settings_json) AS special
   WHERE json_extract(special.value, '$.type') = 'codex_reasoning_guard'
-    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) = 'continuation_repair'
+    AND LOWER(TRIM(COALESCE(json_extract(special.value, '$.guardPostMatchStrategy'), ''))) IN ('continuation_repair', 'continuation_repair_experimental')
     AND NULLIF(TRIM(COALESCE(json_extract(special.value, '$.guardStrategyOutcome'), '')), '') IS NOT NULL
 ),
 legacy_continuation_attempts AS (
@@ -1928,16 +1928,25 @@ INSERT INTO request_logs (
             Some("gpt-5-mini-codex"),
             None,
         );
+        seed_codex_request_log_with_special_settings(
+            &conn,
+            5,
+            "trace-continuation-experimental-repaired",
+            Some("gpt-5-codex"),
+            Some(
+                r#"[{"type":"codex_reasoning_continuation","status":"repaired","sentRounds":2,"clientContractVersion":"bplus_protocol_reconstruction_v8"},{"type":"codex_reasoning_guard","ruleSource":"template_builtin","hitSource":"reasoning_tokens","guardPostMatchStrategy":"continuation_repair_experimental","guardStrategyOutcome":"continuation_repaired","continuationSentRounds":2,"matchedRuleName":"reasoning_tokens == 518*n-2"}]"#,
+            ),
+        );
         drop(conn);
 
         let stats = codex_reasoning_guard_stats(&db, None, None).unwrap();
 
-        assert_eq!(stats.total_request_count, 4);
-        assert_eq!(stats.hit_request_count, 3);
-        assert_eq!(stats.hit_attempt_count, 4);
-        assert_eq!(stats.token_hit_attempt_count, 4);
+        assert_eq!(stats.total_request_count, 5);
+        assert_eq!(stats.hit_request_count, 4);
+        assert_eq!(stats.hit_attempt_count, 5);
+        assert_eq!(stats.token_hit_attempt_count, 5);
         assert_eq!(stats.feature_hit_attempt_count, 0);
-        assert_eq!(stats.reasoning_token_hit_request_count, 3);
+        assert_eq!(stats.reasoning_token_hit_request_count, 4);
         assert_eq!(stats.final_answer_only_high_xhigh_hit_request_count, 0);
         assert_eq!(stats.normal_request_count, 1);
         let codex_model = stats
@@ -1945,8 +1954,8 @@ INSERT INTO request_logs (
             .iter()
             .find(|row| row.requested_model == "gpt-5-codex")
             .expect("gpt-5-codex model stats");
-        assert_eq!(codex_model.hit_request_count, 2);
-        assert_eq!(codex_model.hit_attempt_count, 3);
+        assert_eq!(codex_model.hit_request_count, 3);
+        assert_eq!(codex_model.hit_attempt_count, 4);
         let mini_model = stats
             .by_model
             .iter()
@@ -1954,22 +1963,22 @@ INSERT INTO request_logs (
             .expect("gpt-5-mini-codex model stats");
         assert_eq!(mini_model.hit_request_count, 1);
         assert_eq!(mini_model.hit_attempt_count, 1);
-        assert_eq!(stats.continuation_triggered_request_count, 3);
-        assert_eq!(stats.continuation_triggered_attempt_count, 4);
-        assert_eq!(stats.continuation_repaired_request_count, 1);
-        assert_eq!(stats.continuation_repaired_attempt_count, 1);
+        assert_eq!(stats.continuation_triggered_request_count, 4);
+        assert_eq!(stats.continuation_triggered_attempt_count, 5);
+        assert_eq!(stats.continuation_repaired_request_count, 2);
+        assert_eq!(stats.continuation_repaired_attempt_count, 2);
         assert_eq!(stats.continuation_non_repaired_attempt_count, 3);
-        assert!((stats.continuation_repair_rate - (1.0 / 3.0)).abs() < f64::EPSILON);
-        assert!((stats.continuation_average_sent_rounds - 1.5).abs() < f64::EPSILON);
+        assert!((stats.continuation_repair_rate - 0.5).abs() < f64::EPSILON);
+        assert!((stats.continuation_average_sent_rounds - 1.6).abs() < f64::EPSILON);
 
         let repaired = stats
             .continuation_by_status
             .iter()
             .find(|row| row.status == "repaired")
             .expect("repaired continuation stat");
-        assert_eq!(repaired.request_count, 1);
-        assert_eq!(repaired.attempt_count, 1);
-        assert!((repaired.average_sent_rounds - 1.0).abs() < f64::EPSILON);
+        assert_eq!(repaired.request_count, 2);
+        assert_eq!(repaired.attempt_count, 2);
+        assert!((repaired.average_sent_rounds - 1.5).abs() < f64::EPSILON);
 
         let still_matched = stats
             .continuation_by_status

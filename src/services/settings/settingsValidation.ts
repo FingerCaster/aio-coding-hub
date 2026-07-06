@@ -1007,9 +1007,10 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   if (input.codexReasoningGuardPostMatchStrategy != null) {
     if (
       input.codexReasoningGuardPostMatchStrategy !== "retry_same_provider" &&
-      input.codexReasoningGuardPostMatchStrategy !== "continuation_repair"
+      input.codexReasoningGuardPostMatchStrategy !== "continuation_repair" &&
+      input.codexReasoningGuardPostMatchStrategy !== "continuation_repair_experimental"
     ) {
-      return "Codex 降智拦截命中后策略仅支持 retry_same_provider 或 continuation_repair";
+      return "Codex 降智拦截命中后策略仅支持 retry_same_provider、continuation_repair 或 continuation_repair_experimental";
     }
   }
 

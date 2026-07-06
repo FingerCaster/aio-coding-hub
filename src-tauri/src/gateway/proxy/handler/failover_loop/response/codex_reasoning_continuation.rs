@@ -8,19 +8,6 @@ pub(super) const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_conten
 pub(super) const CONTINUATION_MARKER_TEXT: &str = "Continue thinking...";
 pub(super) const BPLUS_CLIENT_CONTRACT_VERSION: &str = "bplus_protocol_reconstruction_v8";
 pub(super) const BPLUS_CLEAN_APPEND_ENABLED: bool = false;
-pub(super) const REPAIR_PRECOMMIT_WALL_CLOCK_CAP_MS: u64 = 30_000;
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct SupportedRepairPathThreshold {
-    pub(super) name: &'static str,
-    pub(super) response_header_or_ttfb_timeout_ms: u64,
-}
-
-pub(super) const SUPPORTED_REPAIR_PATH_THRESHOLDS: &[SupportedRepairPathThreshold] =
-    &[SupportedRepairPathThreshold {
-        name: "native_codex_responses_gateway_buffered",
-        response_header_or_ttfb_timeout_ms: 60_000,
-    }];
 
 pub(super) struct IncludeMergeInput<'a> {
     pub(super) repair_enabled: bool,
@@ -246,56 +233,6 @@ struct RoundVisibility {
     non_visible_reasoning_count: usize,
     non_visible_commentary_count: usize,
     unsafe_reason: Option<&'static str>,
-}
-
-pub(super) fn minimum_supported_response_header_or_ttfb_timeout_ms(
-    thresholds: &[SupportedRepairPathThreshold],
-) -> Option<SupportedRepairPathThreshold> {
-    thresholds
-        .iter()
-        .copied()
-        .min_by_key(|entry| entry.response_header_or_ttfb_timeout_ms)
-}
-
-pub(super) fn repair_precommit_wall_clock_cap_ms() -> u64 {
-    REPAIR_PRECOMMIT_WALL_CLOCK_CAP_MS
-}
-
-pub(super) fn repair_precommit_cap_invariant_holds(
-    cap_ms: u64,
-    thresholds: &[SupportedRepairPathThreshold],
-) -> bool {
-    minimum_supported_response_header_or_ttfb_timeout_ms(thresholds)
-        .is_some_and(|minimum| cap_ms < minimum.response_header_or_ttfb_timeout_ms)
-}
-
-pub(super) fn repair_wall_clock_budget_json(max_rounds: u32, round_timeout_ms: u64) -> Value {
-    let minimum =
-        minimum_supported_response_header_or_ttfb_timeout_ms(SUPPORTED_REPAIR_PATH_THRESHOLDS);
-    json!({
-        "configuredMaxRounds": max_rounds,
-        "roundTimeoutMs": round_timeout_ms,
-        "computedMaxRawRepairTimeMs": round_timeout_ms.saturating_mul(max_rounds as u64),
-        "preCommitWallClockCapMs": repair_precommit_wall_clock_cap_ms(),
-        "testedDownstreamPaths": SUPPORTED_REPAIR_PATH_THRESHOLDS.iter().map(|entry| {
-            json!({
-                "name": entry.name,
-                "responseHeaderOrTtfbTimeoutMs": entry.response_header_or_ttfb_timeout_ms,
-            })
-        }).collect::<Vec<_>>(),
-        "minimumTestedThresholdMs": minimum.map(|entry| entry.response_header_or_ttfb_timeout_ms),
-        "minimumTestedThresholdPath": minimum.map(|entry| entry.name),
-        "capVsThresholdInvariant": if repair_precommit_cap_invariant_holds(
-            repair_precommit_wall_clock_cap_ms(),
-            SUPPORTED_REPAIR_PATH_THRESHOLDS,
-        ) {
-            "passed"
-        } else {
-            "failed"
-        },
-        "aggregatePeakRetainedRawBufferCapBytes": 20 * 1024 * 1024,
-        "residualRisk": "real_upstream_transcript_continuity_not_validated",
-    })
 }
 
 pub(super) fn reconstruct_bplus_client_sse(
@@ -723,10 +660,10 @@ impl FinalRawVisibleStream {
                     self.output_text_done.push(text.to_string());
                 }
             }
-            "response.content_part.added" => {
-                if content_part_visible_text(data)?.is_some_and(|text| !text.is_empty()) {
-                    return Err("final raw content_part.added contains visible text".to_string());
-                }
+            "response.content_part.added"
+                if content_part_visible_text(data)?.is_some_and(|text| !text.is_empty()) =>
+            {
+                return Err("final raw content_part.added contains visible text".to_string());
             }
             "response.content_part.done" => {
                 if let Some(text) = content_part_visible_text(data)? {
@@ -1377,7 +1314,6 @@ fn extend_with_cap(
     Ok(())
 }
 
-#[cfg(test)]
 pub(super) fn fold_responses_to_sse(responses: &[Value]) -> Result<Bytes, String> {
     let Some(last) = responses.last() else {
         return Err("cannot fold empty continuation response list".to_string());
@@ -1476,7 +1412,6 @@ fn include_items_contain_encrypted_reasoning(items: &[Value]) -> bool {
         .any(|item| item == ENCRYPTED_REASONING_INCLUDE)
 }
 
-#[cfg(test)]
 fn merged_output_items(responses: &[Value]) -> Vec<Value> {
     let mut output = Vec::new();
     for response in responses {
@@ -1484,27 +1419,12 @@ fn merged_output_items(responses: &[Value]) -> Vec<Value> {
             continue;
         };
         for item in items {
-            if visible_message_output_text(item).ok().flatten().is_some() {
-                continue;
-            }
             upsert_output_item(&mut output, item.clone());
-        }
-    }
-    if let Some(items) = responses
-        .last()
-        .and_then(|response| response.get("output"))
-        .and_then(Value::as_array)
-    {
-        for item in items {
-            if visible_message_output_text(item).ok().flatten().is_some() {
-                output.push(item.clone());
-            }
         }
     }
     output
 }
 
-#[cfg(test)]
 fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
     let item_id = item.get("id").and_then(Value::as_str);
     if let Some(item_id) = item_id {
@@ -1516,20 +1436,17 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
             return;
         }
     }
-    if let Some(item_text) = visible_message_output_text(&item).ok().flatten() {
+    if let Some(item_text) = folded_visible_message_output_text(&item) {
         if let Some((index, relationship)) = output
             .iter()
             .enumerate()
             .filter_map(|(index, candidate)| {
-                visible_message_output_text(candidate)
-                    .ok()
-                    .flatten()
-                    .map(|candidate_text| {
-                        (
-                            index,
-                            message_text_relationship(candidate_text.as_str(), item_text.as_str()),
-                        )
-                    })
+                folded_visible_message_output_text(candidate).map(|candidate_text| {
+                    (
+                        index,
+                        message_text_relationship(candidate_text.as_str(), item_text.as_str()),
+                    )
+                })
             })
             .find(|(_, relationship)| *relationship != MessageTextRelationship::Distinct)
         {
@@ -1544,7 +1461,6 @@ fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
     output.push(item);
 }
 
-#[cfg(test)]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum MessageTextRelationship {
     Distinct,
@@ -1552,7 +1468,6 @@ enum MessageTextRelationship {
     ReplaceExisting,
 }
 
-#[cfg(test)]
 fn message_text_relationship(existing: &str, next: &str) -> MessageTextRelationship {
     let existing = normalize_visible_message_text(existing);
     let next = normalize_visible_message_text(next);
@@ -1570,6 +1485,31 @@ fn message_text_relationship(existing: &str, next: &str) -> MessageTextRelations
 
 fn normalize_visible_message_text(value: &str) -> String {
     value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn folded_visible_message_output_text(item: &Value) -> Option<String> {
+    if item.get("type").and_then(Value::as_str) != Some("message") {
+        return None;
+    }
+    if item
+        .get("role")
+        .and_then(Value::as_str)
+        .is_some_and(|role| role != "assistant")
+    {
+        return None;
+    }
+    if item.get("phase").and_then(Value::as_str) == Some("commentary") {
+        return None;
+    }
+    let text = item
+        .get("content")
+        .and_then(Value::as_array)?
+        .iter()
+        .filter(|content| content.get("type").and_then(Value::as_str) == Some("output_text"))
+        .filter_map(|content| content.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>()
+        .join("");
+    (!text.is_empty()).then_some(text)
 }
 
 fn visible_message_output_text(item: &Value) -> Result<Option<String>, &'static str> {
@@ -1605,7 +1545,6 @@ fn visible_message_output_text(item: &Value) -> Result<Option<String>, &'static 
     Ok((!text.is_empty()).then_some(text))
 }
 
-#[cfg(test)]
 fn summed_usage(responses: &[Value]) -> Option<Value> {
     let mut total = Value::Object(Map::new());
     let mut saw_usage = false;
@@ -1622,7 +1561,6 @@ fn summed_usage(responses: &[Value]) -> Option<Value> {
     saw_usage.then_some(total)
 }
 
-#[cfg(test)]
 fn merge_usage_value(total: &mut Value, next: &Value) {
     match next {
         Value::Object(next_object) => {
@@ -1655,7 +1593,6 @@ fn merge_usage_value(total: &mut Value, next: &Value) {
     }
 }
 
-#[cfg(test)]
 fn zero_like(value: &Value) -> Value {
     match value {
         Value::Object(_) => Value::Object(Map::new()),
@@ -1664,7 +1601,6 @@ fn zero_like(value: &Value) -> Value {
     }
 }
 
-#[cfg(test)]
 fn push_sse_event(raw: &mut String, event: &str, data: Value) -> Result<(), String> {
     let data = serde_json::to_string(&data)
         .map_err(|err| format!("failed to encode continuation SSE event: {err}"))?;
@@ -3535,47 +3471,6 @@ mod tests {
     }
 
     #[test]
-    fn precommit_cap_uses_registry_derived_minimum() {
-        let base = [
-            SupportedRepairPathThreshold {
-                name: "desktop",
-                response_header_or_ttfb_timeout_ms: 60_000,
-            },
-            SupportedRepairPathThreshold {
-                name: "proxy",
-                response_header_or_ttfb_timeout_ms: 45_000,
-            },
-        ];
-        let minimum =
-            minimum_supported_response_header_or_ttfb_timeout_ms(&base).expect("minimum threshold");
-        assert_eq!(minimum.name, "proxy");
-        assert!(repair_precommit_cap_invariant_holds(30_000, &base));
-
-        let remeasured = [
-            SupportedRepairPathThreshold {
-                name: "desktop",
-                response_header_or_ttfb_timeout_ms: 60_000,
-            },
-            SupportedRepairPathThreshold {
-                name: "proxy",
-                response_header_or_ttfb_timeout_ms: 25_000,
-            },
-        ];
-        assert!(!repair_precommit_cap_invariant_holds(30_000, &remeasured));
-
-        let removed_proxy = [SupportedRepairPathThreshold {
-            name: "desktop",
-            response_header_or_ttfb_timeout_ms: 60_000,
-        }];
-        assert_eq!(
-            minimum_supported_response_header_or_ttfb_timeout_ms(&removed_proxy)
-                .expect("minimum")
-                .name,
-            "desktop"
-        );
-    }
-
-    #[test]
     fn folded_sse_contains_single_completed_response_with_merged_output_and_usage() {
         let first = json!({
             "id": "resp_1",
@@ -3677,7 +3572,7 @@ mod tests {
     }
 
     #[test]
-    fn folded_sse_keeps_only_final_distinct_visible_message_text_across_rounds() {
+    fn folded_sse_preserves_distinct_visible_message_text_across_rounds() {
         let first = json!({
             "id": "resp_1",
             "status": "completed",
@@ -3701,13 +3596,13 @@ mod tests {
             .filter(|item| item["type"] == "message")
             .collect();
 
-        assert_eq!(messages.len(), 1);
-        assert!(!messages.iter().any(|item| item["id"] == "msg_first"));
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
         assert!(messages.iter().any(|item| item["id"] == "msg_second"));
     }
 
     #[test]
-    fn folded_sse_keeps_only_final_quoted_visible_message_text_across_rounds() {
+    fn folded_sse_preserves_quoted_non_prefix_visible_message_text_across_rounds() {
         let first = json!({
             "id": "resp_1",
             "status": "completed",
@@ -3731,8 +3626,8 @@ mod tests {
             .filter(|item| item["type"] == "message")
             .collect();
 
-        assert_eq!(messages.len(), 1);
-        assert!(!messages.iter().any(|item| item["id"] == "msg_first"));
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
         assert!(messages.iter().any(|item| item["id"] == "msg_second"));
     }
 
@@ -3821,7 +3716,7 @@ mod tests {
     }
 
     #[test]
-    fn folded_sse_compares_all_visible_output_text_segments() {
+    fn folded_sse_preserves_distinct_multi_segment_visible_messages() {
         let first = json!({
             "id": "resp_1",
             "status": "completed",
@@ -3851,8 +3746,40 @@ mod tests {
             .filter(|item| item["type"] == "message")
             .collect();
 
-        assert_eq!(messages.len(), 1);
-        assert!(!messages.iter().any(|item| item["id"] == "msg_first"));
+        assert_eq!(messages.len(), 2);
+        assert!(messages.iter().any(|item| item["id"] == "msg_first"));
         assert!(messages.iter().any(|item| item["id"] == "msg_second"));
+    }
+
+    #[test]
+    fn folded_sse_preserves_mixed_message_and_refusal_items_without_bplus_fail_closed() {
+        let first = json!({
+            "id": "resp_1",
+            "status": "completed",
+            "output": [
+                {"id": "msg_mixed", "type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "partial visible answer"},
+                    {"type": "refusal", "refusal": "hidden refusal branch"}
+                ]},
+                {"id": "refusal_item", "type": "refusal", "refusal": "visible refusal item"}
+            ],
+            "usage": {"output_tokens": 10, "output_tokens_details": {"reasoning_tokens": 516}}
+        });
+        let second = json!({
+            "id": "resp_2",
+            "status": "completed",
+            "output": [
+                {"id": "msg_final", "type": "message", "role": "assistant", "content": [
+                    {"type": "output_text", "text": "final visible answer"}
+                ]}
+            ],
+            "usage": {"output_tokens": 3, "output_tokens_details": {"reasoning_tokens": 2}}
+        });
+
+        let output = folded_output_items(&[first, second]);
+
+        assert!(output.iter().any(|item| item["id"] == "msg_mixed"));
+        assert!(output.iter().any(|item| item["id"] == "refusal_item"));
+        assert!(output.iter().any(|item| item["id"] == "msg_final"));
     }
 }

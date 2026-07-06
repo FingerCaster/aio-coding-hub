@@ -422,6 +422,39 @@ describe("home/RequestLogDetailDialog", () => {
     expectMetricValue("续写轮数", "2");
   });
 
+  it("shows experimental Codex reasoning continuation repair as a guard post-match strategy", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "gpt-5.5",
+        status: 200,
+        error_code: null,
+        special_settings_json: JSON.stringify([
+          {
+            type: "codex_reasoning_guard",
+            matchedRuleName: "reasoning_tokens == 518*n-2",
+            reasoningTokens: 516,
+            guardPostMatchStrategy: "continuation_repair_experimental",
+            guardStrategyOutcome: "continuation_repaired",
+            continuationSentRounds: 2,
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(
+      screen.getByText(
+        "本次请求命中了 Codex 降智拦截（规则 reasoning_tokens == 518*n-2），思考续写成功（2 次）。"
+      )
+    ).toBeInTheDocument();
+    expectMetricValue("命中后策略", "思考续写（实验）");
+    expectMetricValue("策略结果", "已修复");
+    expectMetricValue("续写轮数", "2");
+  });
+
   it("shows mixed Codex reasoning guard and continuation repair details together", () => {
     setRequestLogQueryState({
       selectedLog: createSelectedLog({

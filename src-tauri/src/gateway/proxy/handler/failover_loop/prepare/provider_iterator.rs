@@ -391,8 +391,9 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     let include_outcome = codex_reasoning_continuation::ensure_encrypted_reasoning_include(
         codex_reasoning_continuation::IncludeMergeInput {
             repair_enabled: input.codex_reasoning_guard_enabled
-                && input.codex_reasoning_guard_post_match_strategy
-                    == crate::settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepair,
+                && input
+                    .codex_reasoning_guard_post_match_strategy
+                    .is_continuation_repair(),
             cli_key: &input.cli_key,
             upstream_forwarded_path: &upstream_forwarded_path,
             body: upstream_body_bytes.as_ref(),

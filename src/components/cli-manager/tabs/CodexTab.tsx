@@ -307,7 +307,13 @@ function formatCodexReasoningGuardRetryPolicyLabel(policy: CodexReasoningGuardRe
 function formatCodexReasoningGuardPostMatchStrategyLabel(
   strategy: CodexReasoningGuardPostMatchStrategy
 ) {
-  return strategy === "continuation_repair" ? "思考续写" : "自动重试";
+  if (strategy === "continuation_repair") return "思考续写";
+  if (strategy === "continuation_repair_experimental") return "思考续写（实验）";
+  return "自动重试";
+}
+
+function isCodexReasoningGuardContinuationStrategy(strategy: CodexReasoningGuardPostMatchStrategy) {
+  return strategy === "continuation_repair" || strategy === "continuation_repair_experimental";
 }
 
 function formatCodexReasoningGuardModelFallbacks(models: string[] | null | undefined) {
@@ -1867,7 +1873,7 @@ export function CliManagerCodexTab({
 
     const parsedImmediateBudget = parseCodexReasoningGuardInteger(
       codexReasoningGuardImmediateBudgetText,
-      codexReasoningGuardPostMatchStrategy === "continuation_repair"
+      isCodexReasoningGuardContinuationStrategy(codexReasoningGuardPostMatchStrategy)
         ? "思考续写次数"
         : "立即重试预算",
       MAX_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET
@@ -2003,8 +2009,9 @@ export function CliManagerCodexTab({
       codex_reasoning_guard_concurrent_interval_ms: parsedConcurrentIntervalMs.value,
       codex_reasoning_guard_concurrent_max_attempts: parsedConcurrentMaxAttempts.value,
       codex_reasoning_guard_model_fallbacks: parsedFallbackModels.models,
-      codex_reasoning_guard_continuation_repair_enabled:
-        codexReasoningGuardPostMatchStrategy === "continuation_repair",
+      codex_reasoning_guard_continuation_repair_enabled: isCodexReasoningGuardContinuationStrategy(
+        codexReasoningGuardPostMatchStrategy
+      ),
       codex_reasoning_guard_continuation_max_output_tokens: parsedContinuationMaxOutputTokens.value,
     });
     if (!saved) {
@@ -2551,8 +2558,9 @@ export function CliManagerCodexTab({
                     <div className="flex flex-col gap-1 md:flex-row md:items-center md:justify-between">
                       <span>Guard 策略</span>
                       <span className="font-mono text-secondary-foreground">
-                        {appSettings.codex_reasoning_guard_post_match_strategy ===
-                        "continuation_repair"
+                        {isCodexReasoningGuardContinuationStrategy(
+                          appSettings.codex_reasoning_guard_post_match_strategy
+                        )
                           ? `${formatCodexReasoningGuardPostMatchStrategyLabel(
                               appSettings.codex_reasoning_guard_post_match_strategy
                             )} / ${appSettings.codex_reasoning_guard_immediate_retry_budget} / ${formatCodexReasoningGuardExhaustedActionLabel(
@@ -3263,12 +3271,20 @@ export function CliManagerCodexTab({
                             className="mt-3 font-mono text-xs"
                           >
                             <option value="continuation_repair">思考续写</option>
+                            <option value="continuation_repair_experimental">
+                              思考续写（实验）
+                            </option>
                             <option value="retry_same_provider">自动重试</option>
                           </Select>
                         </label>
                         <div className="rounded-lg border border-border/70 bg-background/60 p-3 text-[11px] leading-relaxed text-muted-foreground">
-                          {codexReasoningGuardPostMatchStrategy === "continuation_repair"
-                            ? "命中后使用当前次数预算发送 continuation；不使用等待重试和并发重试。"
+                          {isCodexReasoningGuardContinuationStrategy(
+                            codexReasoningGuardPostMatchStrategy
+                          )
+                            ? codexReasoningGuardPostMatchStrategy ===
+                              "continuation_repair_experimental"
+                              ? "命中后使用当前次数预算发送 continuation，并启用实验 B+ 协议重建。"
+                              : "命中后使用当前次数预算发送 continuation，并使用稳定折叠输出。"
                             : "命中后按立即预算、等待预算和并发设置重试同一 provider。"}
                         </div>
                       </div>
@@ -3300,7 +3316,9 @@ export function CliManagerCodexTab({
                       <div className="mt-4 grid gap-3 lg:grid-cols-4">
                         <label className="text-xs font-medium text-secondary-foreground">
                           <span className="block">
-                            {codexReasoningGuardPostMatchStrategy === "continuation_repair"
+                            {isCodexReasoningGuardContinuationStrategy(
+                              codexReasoningGuardPostMatchStrategy
+                            )
                               ? "思考续写次数"
                               : "立即重试次数"}
                           </span>
@@ -3325,7 +3343,9 @@ export function CliManagerCodexTab({
                             disabled={reasoningGuardControlsDisabled}
                           />
                         </label>
-                        {codexReasoningGuardPostMatchStrategy === "continuation_repair" ? (
+                        {isCodexReasoningGuardContinuationStrategy(
+                          codexReasoningGuardPostMatchStrategy
+                        ) ? (
                           <label className="text-xs font-medium text-secondary-foreground">
                             <span className="block">最大 output tokens</span>
                             <Input
@@ -3535,7 +3555,9 @@ export function CliManagerCodexTab({
                       >
                         {codexReasoningGuardBudgetError ??
                           codexReasoningGuardContinuationError ??
-                          (codexReasoningGuardPostMatchStrategy === "continuation_repair"
+                          (isCodexReasoningGuardContinuationStrategy(
+                            codexReasoningGuardPostMatchStrategy
+                          )
                             ? `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次思考续写；output tokens 为 ${DEFAULT_CODEX_REASONING_GUARD_CONTINUATION_MAX_OUTPUT_TOKENS} 时不设额外上限。`
                             : `默认 ${DEFAULT_CODEX_REASONING_GUARD_IMMEDIATE_RETRY_BUDGET} 次立即重试 + ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_BUDGET} 次等待 ${DEFAULT_CODEX_REASONING_GUARD_DELAYED_RETRY_MS}ms，耗尽后返回 GW_CODEX_REASONING_GUARD。`)}
                       </div>

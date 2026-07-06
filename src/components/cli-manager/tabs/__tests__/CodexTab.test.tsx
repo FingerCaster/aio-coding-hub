@@ -1075,6 +1075,55 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     );
   });
 
+  it("saves Codex reasoning guard experimental continuation repair settings", () => {
+    const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
+
+    render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={{
+          config_path: "/home/user/.codex/config.toml",
+          exists: true,
+          toml: 'approval_policy = "on-request"\\n',
+        }}
+        appSettings={createAppSettings()}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexReasoningGuardSettings={persistCodexReasoningGuardSettings}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看降智拦截详情" }));
+    const dialog = screen.getByRole("dialog");
+    const strategySelect = within(dialog).getByLabelText("命中后策略");
+    expect(within(dialog).getByRole("option", { name: "思考续写" })).toBeInTheDocument();
+    expect(within(dialog).getByRole("option", { name: "思考续写（实验）" })).toBeInTheDocument();
+    fireEvent.change(strategySelect, {
+      target: { value: "continuation_repair_experimental" },
+    });
+    fireEvent.change(within(dialog).getByLabelText("思考续写次数"), {
+      target: { value: "4" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    expect(persistCodexReasoningGuardSettings).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex_reasoning_guard_continuation_repair_enabled: true,
+        codex_reasoning_guard_post_match_strategy: "continuation_repair_experimental",
+        codex_reasoning_guard_immediate_retry_budget: 4,
+      })
+    );
+  });
+
   it("renders saved Codex continuation repair strategy without using unsaved output cap drafts", () => {
     const persistCodexReasoningGuardSettings = vi.fn().mockResolvedValue(true);
 

@@ -743,7 +743,8 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     }
     match settings.codex_reasoning_guard_post_match_strategy {
         CodexReasoningGuardPostMatchStrategy::RetrySameProvider
-        | CodexReasoningGuardPostMatchStrategy::ContinuationRepair => {}
+        | CodexReasoningGuardPostMatchStrategy::ContinuationRepair
+        | CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental => {}
     }
     match settings.codex_reasoning_guard_retry_policy {
         CodexReasoningGuardRetryPolicy::Single | CodexReasoningGuardRetryPolicy::Concurrent => {}
