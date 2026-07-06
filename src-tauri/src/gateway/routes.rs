@@ -636,6 +636,63 @@ mod tests {
         (format!("http://{addr}"), rx, task)
     }
 
+    async fn spawn_sequence_then_keepalive_capturing_sse_upstream(
+        first_body: &'static str,
+        keepalive_interval: Duration,
+    ) -> (
+        String,
+        tokio::sync::mpsc::Receiver<CapturedRawRequest>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind sequence keepalive sse upstream stub");
+        let addr = listener
+            .local_addr()
+            .expect("sequence keepalive sse upstream addr");
+        let (tx, rx) = tokio::sync::mpsc::channel(2);
+        let task = tokio::spawn(async move {
+            let Ok((mut first_socket, _)) = listener.accept().await else {
+                return;
+            };
+            let first_request =
+                split_raw_http_request(read_complete_http_request_bytes(&mut first_socket).await);
+            let _ = tx.send(first_request).await;
+            let first_response = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                first_body.len(),
+                first_body
+            );
+            let _ = first_socket.write_all(first_response.as_bytes()).await;
+            let _ = first_socket.shutdown().await;
+
+            let Ok((mut second_socket, _)) = listener.accept().await else {
+                return;
+            };
+            let second_request =
+                split_raw_http_request(read_complete_http_request_bytes(&mut second_socket).await);
+            let _ = tx.send(second_request).await;
+            let headers = concat!(
+                "HTTP/1.1 200 OK\r\n",
+                "content-type: text/event-stream; charset=utf-8\r\n",
+                "transfer-encoding: chunked\r\n",
+                "connection: keep-alive\r\n",
+                "\r\n"
+            );
+            let _ = second_socket.write_all(headers.as_bytes()).await;
+            loop {
+                let chunk = ": keepalive\n\n";
+                let encoded = format!("{:X}\r\n{}\r\n", chunk.len(), chunk);
+                if second_socket.write_all(encoded.as_bytes()).await.is_err() {
+                    break;
+                }
+                tokio::time::sleep(keepalive_interval).await;
+            }
+        });
+
+        (format!("http://{addr}"), rx, task)
+    }
+
     async fn spawn_stalling_sse_upstream(
         first_chunk: &'static str,
     ) -> (String, tokio::task::JoinHandle<()>) {
@@ -765,6 +822,24 @@ mod tests {
 
     fn insert_codex_provider(db: &db::Db, base_url: String) -> i64 {
         insert_codex_provider_with_priority(db, "Timeout Stub", base_url, 0)
+    }
+
+    fn insert_codex_provider_with_stream_idle_timeout(
+        db: &db::Db,
+        name: &str,
+        base_url: String,
+        priority: i64,
+        stream_idle_timeout_seconds: u32,
+    ) -> i64 {
+        let provider_id = insert_codex_provider_with_priority(db, name, base_url, priority);
+        db.open_connection()
+            .expect("open test db")
+            .execute(
+                "UPDATE providers SET stream_idle_timeout_seconds = ?1 WHERE id = ?2",
+                rusqlite::params![stream_idle_timeout_seconds, provider_id],
+            )
+            .expect("override provider stream idle timeout in test fixture");
+        provider_id
     }
 
     fn disable_upstream_retry_policy(settings: &mut settings::AppSettings) {
@@ -961,6 +1036,9 @@ mod tests {
             "nonVisiblePolicy",
             "phase0SampleAudit",
             "timing",
+            "timeoutPolicy",
+            "timeoutSource",
+            "fallbackAction",
             "repairWallClockBudget",
             "downstreamHeadersCommittedDuringRepair",
             "aggregateRawBytes",
@@ -6152,12 +6230,68 @@ mod tests {
             continuation_entry
                 .get("canonicalResponseIdContinuity")
                 .and_then(Value::as_str),
-            Some("not_validated")
+            Some("final_raw_response_id_validated")
         );
         assert!(
             continuation_entry.get("repairWallClockBudget").is_none(),
             "experimental continuation logs must not expose a private wall-clock cap budget"
         );
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("none")
+        );
+        assert!(
+            continuation_entry
+                .get("timeoutSource")
+                .is_some_and(Value::is_null),
+            "successful continuation should not record a timeout source"
+        );
+        let timeout_policy = continuation_entry
+            .get("timeoutPolicy")
+            .and_then(Value::as_object)
+            .expect("experimental timeout policy diagnostics");
+        assert_eq!(
+            timeout_policy.get("source").and_then(Value::as_str),
+            Some("global_upstream_timeout_settings")
+        );
+        assert_eq!(
+            timeout_policy
+                .get("firstByteTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(30)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSource")
+                .and_then(Value::as_str),
+            Some("global")
+        );
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSource")
+                .and_then(Value::as_str),
+            Some("global")
+        );
+        assert!(timeout_policy
+            .get("privateRoundTimeoutSeconds")
+            .is_some_and(Value::is_null));
+        assert!(timeout_policy
+            .get("privateRepairWallClockCapSeconds")
+            .is_some_and(Value::is_null));
         let timing = continuation_entry
             .get("timing")
             .and_then(Value::as_object)
@@ -6446,23 +6580,966 @@ mod tests {
         assert_eq!(log.status, Some(502));
         assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
         let special_settings = parse_special_settings(&log);
-        assert!(special_settings.iter().any(|entry| {
-            entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
-                && entry.get("clientContractVersion").and_then(Value::as_str)
-                    == Some("bplus_protocol_reconstruction_v8")
-                && entry.get("status").and_then(Value::as_str) == Some("failed")
-                && entry.get("failureKind").and_then(Value::as_str) == Some("bplus_reconstruction")
-                && entry
-                    .get("reason")
-                    .and_then(Value::as_str)
-                    .is_some_and(|reason| reason.contains("non-prefix"))
-        }));
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("failed")
+            })
+            .expect("failed continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("clientContractVersion")
+                .and_then(Value::as_str),
+            Some("bplus_protocol_reconstruction_v8")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("failureKind")
+                .and_then(Value::as_str),
+            Some("bplus_reconstruction")
+        );
+        assert!(continuation_entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("non-prefix")));
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("existing_guard_failover_or_exhausted")
+        );
+        assert!(
+            continuation_entry
+                .get("timeoutSource")
+                .is_some_and(Value::is_null),
+            "non-timeout failure should not record a timeout source"
+        );
+        let timeout_policy = continuation_entry
+            .get("timeoutPolicy")
+            .and_then(Value::as_object)
+            .expect("experimental timeout policy diagnostics");
+        assert_eq!(
+            timeout_policy
+                .get("firstByteTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(30)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(300)
+        );
+        let rounds = continuation_entry
+            .get("rounds")
+            .and_then(Value::as_array)
+            .expect("sanitized failure round trace");
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(
+            rounds[0].get("visibleTextLen").and_then(Value::as_u64),
+            Some("early visible answer".len() as u64)
+        );
+        assert!(rounds[0].get("visibleTextHash").is_some());
+        assert_eq!(
+            rounds[1].get("visibleTextLen").and_then(Value::as_u64),
+            Some("different final answer".len() as u64)
+        );
+        assert!(continuation_entry
+            .get("aggregateRawBytes")
+            .and_then(Value::as_u64)
+            .is_some_and(|value| value > 0));
         assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
                 && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
                     == Some("continuation_repair_experimental")
                 && entry.get("guardStrategyOutcome").and_then(Value::as_str) == Some("failed")
         }));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_repair_experimental_tool_call_failure_fails_closed_without_raw_leak(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-tool-failed.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_tool_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_tool_secret\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_partial\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"partial answer before tool failure\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-tool-1\",\"status\":\"completed\",\"model\":\"gpt-cont-tool\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-tool-2\",\"status\":\"in_progress\",\"model\":\"gpt-cont-tool\"}}\n\n",
+            "event: response.function_call_arguments.delta\n",
+            "data: {\"type\":\"response.function_call_arguments.delta\",\"item_id\":\"call_tool_1\",\"delta\":\"{\\\"message\\\":\\\"Tool call failed\\\",\\\"secret\\\":\\\"raw-tool-arg-42\\\"}\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"call_tool_1\",\"type\":\"function_call\",\"name\":\"lookup\",\"call_id\":\"call_tool_1\",\"arguments\":\"{\\\"message\\\":\\\"Tool call failed\\\",\\\"secret\\\":\\\"raw-tool-arg-42\\\"}\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-tool-2\",\"status\":\"completed\",\"model\":\"gpt-cont-tool\",\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse]).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Continuation Tool Failure",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-tool","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let special_settings_raw = log
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json");
+        for forbidden in [
+            "Tool call failed",
+            "partial answer before tool failure",
+            "raw-tool-arg-42",
+            "enc_tool_secret",
+            "encrypted_content",
+            "event: response",
+            "response.function_call_arguments.delta",
+            "data: {",
+        ] {
+            assert!(
+                !body_text.contains(forbidden),
+                "client response leaked forbidden fragment {forbidden}: {body_text}"
+            );
+            assert!(
+                !special_settings_raw.contains(forbidden),
+                "special settings leaked forbidden fragment {forbidden}: {special_settings_raw}"
+            );
+        }
+
+        let special_settings = parse_special_settings(&log);
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("failed")
+            })
+            .expect("failed continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("failureKind")
+                .and_then(Value::as_str),
+            Some("bplus_reconstruction")
+        );
+        assert!(continuation_entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("tool/function call")));
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("existing_guard_failover_or_exhausted")
+        );
+        let timeout_policy = continuation_entry
+            .get("timeoutPolicy")
+            .and_then(Value::as_object)
+            .expect("experimental timeout policy diagnostics");
+        assert_eq!(
+            timeout_policy
+                .get("firstByteTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(30)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(300)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(300)
+        );
+        let rounds = continuation_entry
+            .get("rounds")
+            .and_then(Value::as_array)
+            .expect("sanitized failure round trace");
+        assert_eq!(rounds.len(), 2);
+        assert_eq!(
+            rounds[0].get("visibleTextLen").and_then(Value::as_u64),
+            Some("partial answer before tool failure".len() as u64)
+        );
+        assert!(rounds[0].get("visibleTextHash").is_some());
+        assert_eq!(
+            rounds[1].get("hasToolCall").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            rounds[1].get("visibleTextLen").and_then(Value::as_u64),
+            Some(0)
+        );
+        assert!(special_settings.iter().any(|entry| {
+            entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
+                && entry.get("guardPostMatchStrategy").and_then(Value::as_str)
+                    == Some("continuation_repair_experimental")
+                && entry.get("guardStrategyOutcome").and_then(Value::as_str) == Some("failed")
+        }));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_repair_experimental_aggregation_failure_sanitizes_raw_error_message(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-aggregate-error.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_agg_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_agg_secret\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-agg-1\",\"status\":\"completed\",\"model\":\"gpt-cont-agg\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-agg-2\",\"error\":{\"message\":\"Tool call failed raw-agg-secret-42\"}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse]).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Continuation Aggregate Error",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-agg","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let special_settings_raw = log
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json");
+        for forbidden in [
+            "Tool call failed",
+            "raw-agg-secret-42",
+            "enc_agg_secret",
+            "encrypted_content",
+            "response.failed",
+            "event: response",
+            "data: {",
+        ] {
+            assert!(
+                !body_text.contains(forbidden),
+                "client response leaked forbidden fragment {forbidden}: {body_text}"
+            );
+            assert!(
+                !special_settings_raw.contains(forbidden),
+                "special settings leaked forbidden fragment {forbidden}: {special_settings_raw}"
+            );
+        }
+
+        let special_settings = parse_special_settings(&log);
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("failed")
+            })
+            .expect("failed continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("failureKind")
+                .and_then(Value::as_str),
+            Some("aggregate")
+        );
+        assert_eq!(
+            continuation_entry.get("reason").and_then(Value::as_str),
+            Some("failed_to_aggregate_continuation_event_stream")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("existing_guard_failover_or_exhausted")
+        );
+        assert_eq!(
+            continuation_entry.get("sentRounds").and_then(Value::as_u64),
+            Some(0)
+        );
+        let rounds = continuation_entry
+            .get("rounds")
+            .and_then(Value::as_array)
+            .expect("sanitized failure round trace");
+        assert_eq!(rounds.len(), 1);
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_repair_experimental_unknown_raw_event_sanitizes_event_name() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-unknown-raw-event.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_unknown_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_unknown_secret\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-unknown-1\",\"status\":\"completed\",\"model\":\"gpt-cont-unknown\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-unknown-2\",\"status\":\"in_progress\",\"model\":\"gpt-cont-unknown\"}}\n\n",
+            "event: response.secret_route_event_name_abc.delta\n",
+            "data: {\"type\":\"response.secret_route_event_name_abc.delta\",\"delta\":\"raw-route-unknown-event-secret-42\"}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_unknown_final\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final text should not leak after unknown raw event\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-unknown-2\",\"status\":\"completed\",\"model\":\"gpt-cont-unknown\",\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse]).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Continuation Unknown Raw Event",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-unknown","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let special_settings_raw = log
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json");
+        for forbidden in [
+            "response.secret_route_event_name_abc.delta",
+            "raw-route-unknown-event-secret-42",
+            "final text should not leak after unknown raw event",
+            "enc_unknown_secret",
+            "encrypted_content",
+            "event: response",
+            "data: {",
+        ] {
+            assert!(
+                !body_text.contains(forbidden),
+                "client response leaked forbidden fragment {forbidden}: {body_text}"
+            );
+            assert!(
+                !special_settings_raw.contains(forbidden),
+                "special settings leaked forbidden fragment {forbidden}: {special_settings_raw}"
+            );
+        }
+
+        let special_settings = parse_special_settings(&log);
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("failed")
+            })
+            .expect("failed continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("failureKind")
+                .and_then(Value::as_str),
+            Some("bplus_reconstruction")
+        );
+        assert!(continuation_entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("unknown pre-completed event")));
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("existing_guard_failover_or_exhausted")
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_repair_experimental_keepalive_only_followup_hits_terminal_event_timeout(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-keepalive-timeout.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_keepalive_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_keepalive_secret\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-keepalive-1\",\"status\":\"completed\",\"model\":\"gpt-cont-keepalive\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_then_keepalive_capturing_sse_upstream(
+                first_sse,
+                Duration::from_millis(100),
+            )
+            .await;
+        let provider_id = insert_codex_provider_with_stream_idle_timeout(
+            &db,
+            "Continuation Keepalive Timeout",
+            upstream_base_url,
+            0,
+            1,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-keepalive","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = tokio::time::timeout(Duration::from_secs(3), router.oneshot(request))
+            .await
+            .expect("continuation should fail closed before outer timeout")
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let special_settings_raw = log
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json");
+        for forbidden in [
+            "enc_keepalive_secret",
+            "encrypted_content",
+            ": keepalive",
+            "event: response",
+            "data: {",
+        ] {
+            assert!(
+                !body_text.contains(forbidden),
+                "client response leaked forbidden fragment {forbidden}: {body_text}"
+            );
+            assert!(
+                !special_settings_raw.contains(forbidden),
+                "special settings leaked forbidden fragment {forbidden}: {special_settings_raw}"
+            );
+        }
+
+        let special_settings = parse_special_settings(&log);
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("failed")
+            })
+            .expect("failed continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("failureKind")
+                .and_then(Value::as_str),
+            Some("upstream_stream")
+        );
+        assert!(continuation_entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("terminal event timeout")));
+        assert_eq!(
+            continuation_entry
+                .get("timeoutSource")
+                .and_then(Value::as_str),
+            Some("terminal_event")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("existing_guard_failover_or_exhausted")
+        );
+        assert_eq!(
+            continuation_entry.get("sentRounds").and_then(Value::as_u64),
+            Some(0)
+        );
+        let timeout_policy = continuation_entry
+            .get("timeoutPolicy")
+            .and_then(Value::as_object)
+            .expect("experimental timeout policy diagnostics");
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSource")
+                .and_then(Value::as_str),
+            Some("provider")
+        );
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSeconds")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSource")
+                .and_then(Value::as_str),
+            Some("provider")
+        );
+        let rounds = continuation_entry
+            .get("rounds")
+            .and_then(Value::as_array)
+            .expect("sanitized failure round trace");
+        assert_eq!(rounds.len(), 1);
+        assert_eq!(
+            rounds[0].get("hasReasoning").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            rounds[0].get("visibleTextLen").and_then(Value::as_u64),
+            Some(0)
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("codex_reasoning_guard_exhausted")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_continuation_repair_experimental_disabled_stream_timeout_fails_closed() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.upstream_stream_idle_timeout_seconds = 0;
+        app_settings.codex_reasoning_guard_immediate_retry_budget = 1;
+        app_settings.codex_reasoning_guard_delayed_retry_budget = 0;
+        app_settings.codex_reasoning_guard_delayed_retry_ms = 0;
+        app_settings.codex_reasoning_guard_exhausted_action =
+            settings::CodexReasoningGuardExhaustedAction::ReturnError;
+        app_settings.codex_reasoning_guard_post_match_strategy =
+            settings::CodexReasoningGuardPostMatchStrategy::ContinuationRepairExperimental;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("codex-cont-disabled-timeout.sqlite"))
+            .expect("init test db");
+        let first_sse = concat!(
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_disabled_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_disabled_secret\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-disabled-1\",\"status\":\"completed\",\"model\":\"gpt-cont-disabled\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+        );
+        let second_sse = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-disabled-2\",\"status\":\"in_progress\",\"model\":\"gpt-cont-disabled\"}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_disabled\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final text should not leak with disabled timeout\"}]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-disabled-2\",\"status\":\"completed\",\"model\":\"gpt-cont-disabled\",\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+        );
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse]).await;
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Continuation Disabled Timeout",
+            upstream_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-cont-disabled","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = tokio::time::timeout(Duration::from_secs(2), router.oneshot(request))
+            .await
+            .expect("continuation should fail closed before outer timeout")
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_CODEX_REASONING_GUARD")
+        );
+
+        let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first captured request")
+            .expect("first request");
+        let _second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second captured request")
+            .expect("second request");
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_CODEX_REASONING_GUARD"));
+        let special_settings_raw = log
+            .special_settings_json
+            .as_deref()
+            .expect("special settings json");
+        for forbidden in [
+            "enc_disabled_secret",
+            "encrypted_content",
+            "final text should not leak",
+            "event: response",
+            "data: {",
+        ] {
+            assert!(
+                !body_text.contains(forbidden),
+                "client response leaked forbidden fragment {forbidden}: {body_text}"
+            );
+            assert!(
+                !special_settings_raw.contains(forbidden),
+                "special settings leaked forbidden fragment {forbidden}: {special_settings_raw}"
+            );
+        }
+
+        let special_settings = parse_special_settings(&log);
+        let continuation_entry = special_settings
+            .iter()
+            .find(|entry| {
+                entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_continuation")
+                    && entry.get("status").and_then(Value::as_str) == Some("failed")
+            })
+            .expect("failed continuation setting");
+        assert_eq!(
+            continuation_entry
+                .get("failureKind")
+                .and_then(Value::as_str),
+            Some("upstream_stream")
+        );
+        assert!(continuation_entry
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("terminal event timeout disabled")));
+        assert_eq!(
+            continuation_entry
+                .get("timeoutSource")
+                .and_then(Value::as_str),
+            Some("terminal_event_disabled")
+        );
+        let timeout_policy = continuation_entry
+            .get("timeoutPolicy")
+            .and_then(Value::as_object)
+            .expect("experimental timeout policy diagnostics");
+        assert!(timeout_policy
+            .get("streamIdleTimeoutSeconds")
+            .is_some_and(Value::is_null));
+        assert_eq!(
+            timeout_policy
+                .get("streamIdleTimeoutSource")
+                .and_then(Value::as_str),
+            Some("global")
+        );
+        assert!(timeout_policy
+            .get("terminalEventTimeoutSeconds")
+            .is_some_and(Value::is_null));
+        assert_eq!(
+            timeout_policy
+                .get("terminalEventTimeoutSource")
+                .and_then(Value::as_str),
+            Some("global")
+        );
+        assert_eq!(
+            continuation_entry
+                .get("fallbackAction")
+                .and_then(Value::as_str),
+            Some("existing_guard_failover_or_exhausted")
+        );
+        assert_eq!(
+            continuation_entry.get("sentRounds").and_then(Value::as_u64),
+            Some(0)
+        );
+        let rounds = continuation_entry
+            .get("rounds")
+            .and_then(Value::as_array)
+            .expect("sanitized failure round trace");
+        assert_eq!(rounds.len(), 1);
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
         assert_eq!(attempts.len(), 1);

@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 pub(super) const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_content";
 pub(super) const CONTINUATION_MARKER_TEXT: &str = "Continue thinking...";
 pub(super) const BPLUS_CLIENT_CONTRACT_VERSION: &str = "bplus_protocol_reconstruction_v8";
+pub(super) const BPLUS_RESPONSE_ID_CONTINUITY: &str = "final_raw_response_id_validated";
 pub(super) const BPLUS_CLEAN_APPEND_ENABLED: bool = false;
 
 pub(super) struct IncludeMergeInput<'a> {
@@ -253,7 +254,6 @@ pub(super) fn reconstruct_bplus_client_sse(
             "aggregate repair raw bytes exceeded cap ({aggregate_raw_bytes} > {aggregate_cap_bytes})"
         ));
     }
-
     let final_round = rounds
         .last()
         .ok_or_else(|| "missing final continuation round".to_string())?;
@@ -269,6 +269,20 @@ pub(super) fn reconstruct_bplus_client_sse(
         .iter()
         .map(|round| classify_round_visibility(&round.aggregated))
         .collect::<Vec<_>>();
+    for (index, (round, round_visibility)) in rounds.iter().zip(visibility.iter()).enumerate() {
+        if let Err(reason) = validate_raw_round_for_reconstruction(
+            round,
+            round_visibility,
+            index == rounds.len().saturating_sub(1),
+        ) {
+            let raw_kind = if is_raw_tool_or_function_reason(&reason) {
+                "raw tool/function call"
+            } else {
+                "raw event-stream"
+            };
+            return Err(format!("round {index} {raw_kind} is unsafe: {reason}"));
+        }
+    }
     let final_visibility = visibility
         .last()
         .ok_or_else(|| "missing final visibility".to_string())?;
@@ -326,7 +340,7 @@ pub(super) fn reconstruct_bplus_client_sse(
         reconstruction_status: "final_full_passthrough",
         visible_assembly_kind,
         canonical_response_id: final_response_id,
-        canonical_response_id_continuity: "not_validated",
+        canonical_response_id_continuity: BPLUS_RESPONSE_ID_CONTINUITY,
         aggregate_raw_bytes: reconstructed_total,
     })
 }
@@ -348,16 +362,9 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
         }
     }
     if final_visibility.has_tool_call {
-        if visibility
-            .iter()
-            .take(visibility.len().saturating_sub(1))
-            .any(|round| round.has_visible_client_output)
-        {
-            return Err(
-                "non-final visible output is unsafe before final tool/function call".to_string(),
-            );
-        }
-        return Ok("final_tool_call");
+        return Err(
+            "final tool/function call is unsafe in experimental continuation repair".to_string(),
+        );
     }
 
     let non_final_visible = visibility
@@ -404,6 +411,29 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
     }
 }
 
+fn is_responses_native_tool_call_item(item: &Value) -> bool {
+    is_replayable_responses_tool_call_item(item) || is_non_replayable_native_tool_call_item(item)
+}
+
+fn is_replayable_responses_tool_call_item(item: &Value) -> bool {
+    crate::gateway::proxy::protocol_bridge::response_cache::is_tool_call_context_item(item)
+}
+
+fn is_responses_native_tool_output_item(item: &Value) -> bool {
+    crate::gateway::proxy::protocol_bridge::response_cache::is_tool_output_item(item)
+}
+
+fn is_non_replayable_native_tool_call_item(item: &Value) -> bool {
+    matches!(
+        item.get("type").and_then(Value::as_str),
+        Some("image_generation_call" | "web_search_call")
+    )
+}
+
+fn is_responses_native_tool_context_item(item: &Value) -> bool {
+    is_responses_native_tool_call_item(item) || is_responses_native_tool_output_item(item)
+}
+
 fn classify_round_visibility(response: &Value) -> RoundVisibility {
     let mut visible_text_parts = Vec::new();
     let mut has_visible_client_output = false;
@@ -430,9 +460,13 @@ fn classify_round_visibility(response: &Value) -> RoundVisibility {
                     unsafe_reason.get_or_insert("reasoning_visible_payload");
                 }
             }
-            "function_call" | "tool_call" => {
+            _ if is_responses_native_tool_context_item(item) => {
                 has_tool_call = true;
-                if let Err(reason) = validate_final_tool_call_item(item) {
+                if is_responses_native_tool_output_item(item) {
+                    unsafe_reason.get_or_insert("tool_output_item");
+                } else if is_non_replayable_native_tool_call_item(item) {
+                    unsafe_reason.get_or_insert("native_tool_call_item");
+                } else if let Err(reason) = validate_final_tool_call_item(item) {
                     unsafe_reason.get_or_insert(reason);
                 }
             }
@@ -564,10 +598,8 @@ fn validate_final_raw_for_passthrough(
             std::str::from_utf8(frame).map_err(|err| format!("invalid final SSE frame: {err}"))?;
         let parsed = crate::gateway::proxy::sse::parse_sse_frame(frame_text);
         if completed_count > 0 {
-            if let Some((event_name, _)) = parsed {
-                return Err(format!(
-                    "final raw has semantic event after response.completed: {event_name}"
-                ));
+            if parsed.is_some() {
+                return Err("final raw has semantic event after response.completed".to_string());
             }
             if !sse_frame_is_nonsemantic_after_completed(frame_text) {
                 return Err(
@@ -585,7 +617,16 @@ fn validate_final_raw_for_passthrough(
             );
         };
         validate_pre_completed_final_raw_event(&event_name, &data)?;
-        raw_visible.record_event(&event_name, &data)?;
+        validate_lifecycle_output_payload(&event_name, &data, round)?;
+        if event_name == "response.output_item.added" {
+            let item = data.get("item").unwrap_or(&data);
+            if raw_output_item_added_is_visible_or_unknown(item) {
+                return Err(
+                    "final raw output_item.added contains visible or unknown payload".to_string(),
+                );
+            }
+        }
+        raw_visible.record_event(&event_name, &data, "final raw")?;
         match event_name.as_str() {
             "response.created" => {
                 created_count = created_count.saturating_add(1);
@@ -608,7 +649,7 @@ fn validate_final_raw_for_passthrough(
                 completed_id = Some(id.to_string());
             }
             "response.failed" | "response.incomplete" | "error" => {
-                return Err(format!("final raw has unsafe terminal event: {event_name}"));
+                return Err("final raw has unsafe terminal event".to_string());
             }
             _ => {}
         }
@@ -629,6 +670,15 @@ fn validate_final_raw_for_passthrough(
     if created_id != completed_id {
         return Err("final response.created id does not match response.completed id".to_string());
     }
+    let aggregated_id = round
+        .aggregated
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "final aggregated response missing id".to_string())?;
+    if created_id.as_deref() != Some(aggregated_id) {
+        return Err("final raw response id does not match aggregated response id".to_string());
+    }
     raw_visible.validate_against_final_output(round, final_visibility)?;
 
     Ok(())
@@ -645,13 +695,18 @@ struct FinalRawVisibleStream {
 }
 
 impl FinalRawVisibleStream {
-    fn record_event(&mut self, event_name: &str, data: &Value) -> Result<(), String> {
+    fn record_event(
+        &mut self,
+        event_name: &str,
+        data: &Value,
+        raw_label: &str,
+    ) -> Result<(), String> {
         match event_name {
             "response.output_text.delta" => {
                 let delta = data
                     .get("delta")
                     .and_then(Value::as_str)
-                    .ok_or_else(|| "final raw output_text.delta missing delta".to_string())?;
+                    .ok_or_else(|| format!("{raw_label} output_text.delta missing delta"))?;
                 self.saw_output_text_delta = true;
                 self.output_text_delta.push_str(delta);
             }
@@ -661,12 +716,15 @@ impl FinalRawVisibleStream {
                 }
             }
             "response.content_part.added"
-                if content_part_visible_text(data)?.is_some_and(|text| !text.is_empty()) =>
+                if content_part_visible_text(data, raw_label)?
+                    .is_some_and(|text| !text.is_empty()) =>
             {
-                return Err("final raw content_part.added contains visible text".to_string());
+                return Err(format!(
+                    "{raw_label} content_part.added contains visible text"
+                ));
             }
             "response.content_part.done" => {
-                if let Some(text) = content_part_visible_text(data)? {
+                if let Some(text) = content_part_visible_text(data, raw_label)? {
                     self.content_part_done.push(text.to_string());
                 }
             }
@@ -704,20 +762,46 @@ impl FinalRawVisibleStream {
         round: &ContinuationRepairRound,
         final_visibility: &RoundVisibility,
     ) -> Result<(), String> {
-        let final_text = final_visibility.assistant_message_text.as_deref();
+        self.validate_against_output(round, final_visibility, "final raw")
+    }
+
+    fn validate_against_output(
+        &self,
+        round: &ContinuationRepairRound,
+        visibility: &RoundVisibility,
+        raw_label: &str,
+    ) -> Result<(), String> {
+        let final_text = visibility.assistant_message_text.as_deref();
+        let visible_label = if raw_label == "final raw" {
+            "final visible message"
+        } else {
+            "visible message"
+        };
         if self.saw_output_text_delta {
             let expected = final_text.ok_or_else(|| {
-                "final raw output_text.delta exists without final visible message".to_string()
+                format!("{raw_label} output_text.delta exists without {visible_label}")
             })?;
             if self.output_text_delta != expected {
-                return Err(
-                    "final raw output_text.delta does not match final visible message".to_string(),
-                );
+                return Err(format!(
+                    "{raw_label} output_text.delta does not match {visible_label}"
+                ));
             }
         }
         let expected = final_text;
-        validate_visible_done_texts("output_text.done", &self.output_text_done, expected)?;
-        validate_visible_done_texts("content_part.done", &self.content_part_done, expected)?;
+        validate_visible_done_texts(
+            "output_text.done",
+            &self.output_text_done,
+            expected,
+            raw_label,
+            visible_label,
+        )?;
+        validate_visible_done_texts(
+            "content_part.done",
+            &self.content_part_done,
+            expected,
+            raw_label,
+            visible_label,
+        )?;
 
         for text in self
             .output_text_done
@@ -725,7 +809,9 @@ impl FinalRawVisibleStream {
             .chain(self.content_part_done.iter())
         {
             if text.is_empty() {
-                return Err("final raw visible done event contains empty text".to_string());
+                return Err(format!(
+                    "{raw_label} visible done event contains empty text"
+                ));
             }
         }
 
@@ -756,22 +842,27 @@ fn validate_visible_done_texts(
     event_kind: &str,
     texts: &[String],
     expected: Option<&str>,
+    raw_label: &str,
+    visible_label: &str,
 ) -> Result<(), String> {
     if texts.is_empty() {
         return Ok(());
     }
     let expected = expected
-        .ok_or_else(|| format!("final raw {event_kind} exists without final visible message"))?;
+        .ok_or_else(|| format!("{raw_label} {event_kind} exists without {visible_label}"))?;
     let joined = texts.join("");
     if joined != expected {
         return Err(format!(
-            "final raw {event_kind} does not match final visible message"
+            "{raw_label} {event_kind} does not match {visible_label}"
         ));
     }
     Ok(())
 }
 
-fn content_part_visible_text(data: &Value) -> Result<Option<&str>, String> {
+fn content_part_visible_text<'a>(
+    data: &'a Value,
+    raw_label: &str,
+) -> Result<Option<&'a str>, String> {
     let Some(part) = data
         .get("part")
         .or_else(|| data.get("content_part"))
@@ -786,7 +877,7 @@ fn content_part_visible_text(data: &Value) -> Result<Option<&str>, String> {
             .and_then(Value::as_str)
             .is_some_and(|value| !value.trim().is_empty())
     {
-        return Err("final raw content_part contains refusal text".to_string());
+        return Err(format!("{raw_label} content_part contains refusal text"));
     }
     if matches!(part_type, Some("output_text" | "text")) {
         return Ok(part.get("text").and_then(Value::as_str));
@@ -820,10 +911,7 @@ fn final_tool_call_arguments_for_key(
         .flatten()
         .enumerate()
     {
-        if !matches!(
-            item.get("type").and_then(Value::as_str),
-            Some("function_call" | "tool_call")
-        ) {
+        if !is_replayable_responses_tool_call_item(item) {
             continue;
         }
         let key_matches = item
@@ -854,14 +942,10 @@ fn argument_value_to_string(value: &Value) -> Option<String> {
 fn validate_pre_completed_final_raw_event(event_name: &str, data: &Value) -> Result<(), String> {
     if sse_event_name_has_internal_payload(event_name) || value_contains_internal_payload_key(data)
     {
-        return Err(format!(
-            "final raw has unsafe pre-completed event: {event_name}"
-        ));
+        return Err("final raw has unsafe pre-completed event".to_string());
     }
     if !is_allowed_pre_completed_final_raw_event(event_name) {
-        return Err(format!(
-            "final raw has unknown pre-completed event: {event_name}"
-        ));
+        return Err("final raw has unknown pre-completed event".to_string());
     }
     Ok(())
 }
@@ -930,15 +1014,20 @@ fn validate_final_tool_calls(round: &ContinuationRepairRound) -> Result<(), Stri
         .into_iter()
         .flatten()
     {
-        if matches!(
-            item.get("type").and_then(Value::as_str),
-            Some("function_call" | "tool_call")
-        ) {
-            if let Err(reason) = validate_final_tool_call_item(item) {
-                return Err(format!(
-                    "final tool/function call is not self-contained: {reason}"
-                ));
-            }
+        if is_responses_native_tool_output_item(item) {
+            return Err(
+                "final tool/function call is not self-contained: tool_output_item".to_string(),
+            );
+        }
+        if is_non_replayable_native_tool_call_item(item) {
+            return Err(
+                "final tool/function call is not self-contained: native_tool_call_item".to_string(),
+            );
+        }
+        if is_replayable_responses_tool_call_item(item) {
+            validate_final_tool_call_item(item).map_err(|reason| {
+                format!("final tool/function call is not self-contained: {reason}")
+            })?;
         }
     }
     Ok(())
@@ -1146,6 +1235,14 @@ fn build_round_trace(
         .collect()
 }
 
+pub(super) fn sanitized_round_trace(rounds: &[ContinuationRepairRound]) -> Vec<Value> {
+    let visibility = rounds
+        .iter()
+        .map(|round| classify_round_visibility(&round.aggregated))
+        .collect::<Vec<_>>();
+    build_round_trace(rounds, &visibility)
+}
+
 fn provider_usage_from_rounds(
     rounds: &[ContinuationRepairRound],
 ) -> Result<crate::usage::UsageExtract, String> {
@@ -1294,6 +1391,248 @@ fn patch_terminal_completed_usage(
         ));
     }
     Ok(Bytes::from(output))
+}
+
+fn validate_raw_round_for_reconstruction(
+    round: &ContinuationRepairRound,
+    visibility: &RoundVisibility,
+    is_final: bool,
+) -> Result<(), String> {
+    if is_final {
+        return validate_raw_round_tool_events(round.raw_sse.as_ref()).map_err(str::to_string);
+    }
+
+    let mut cursor = 0usize;
+    let mut created_count = 0usize;
+    let mut completed_count = 0usize;
+    let mut created_id: Option<String> = None;
+    let mut completed_id: Option<String> = None;
+    let mut raw_visible = FinalRawVisibleStream::default();
+    while let Some(relative_end) =
+        crate::gateway::proxy::sse::find_sse_event_end(&round.raw_sse[cursor..])
+    {
+        let event_end = cursor + relative_end;
+        let frame = &round.raw_sse[cursor..event_end];
+        cursor = event_end;
+        let frame_text = std::str::from_utf8(frame).map_err(|_| "invalid_sse_utf8")?;
+        let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame_text)
+        else {
+            if sse_frame_is_comment_only(frame_text) {
+                continue;
+            }
+            if completed_count > 0 && sse_frame_is_nonsemantic_after_completed(frame_text) {
+                continue;
+            }
+            return Err("unparseable_sse_frame".to_string());
+        };
+        if completed_count > 0 {
+            return Err("semantic_event_after_completed".to_string());
+        }
+        if !is_allowed_pre_completed_final_raw_event(&event_name) {
+            return Err("unknown_pre_completed_event".to_string());
+        }
+        validate_lifecycle_output_payload(&event_name, &data, round)?;
+        if matches!(
+            event_name.as_str(),
+            "response.failed" | "response.incomplete" | "error"
+        ) {
+            return Err("terminal_error_event".to_string());
+        }
+        match event_name.as_str() {
+            "response.created" => {
+                created_count = created_count.saturating_add(1);
+                let id = lifecycle_response_id(&data)
+                    .ok_or_else(|| "non-final created response missing id".to_string())?;
+                created_id = Some(id.to_string());
+            }
+            "response.completed" => {
+                completed_count = completed_count.saturating_add(1);
+                let id = lifecycle_response_id(&data)
+                    .ok_or_else(|| "non-final completed response missing id".to_string())?;
+                completed_id = Some(id.to_string());
+            }
+            _ => {}
+        }
+        if event_name.starts_with("response.function_call_arguments.") {
+            return Err("function_call_arguments_event".to_string());
+        }
+        if matches!(
+            event_name.as_str(),
+            "response.output_item.added" | "response.output_item.done"
+        ) {
+            let item = data.get("item").unwrap_or(&data);
+            if is_responses_native_tool_context_item(item) {
+                return Err("output_item_tool_call_event".to_string());
+            }
+            if event_name == "response.output_item.added"
+                && raw_output_item_added_is_visible_or_unknown(item)
+            {
+                return Err("output_item_added_visible_or_unknown".to_string());
+            }
+        }
+        raw_visible.record_event(&event_name, &data, "non-final raw")?;
+    }
+    if !round.raw_sse[cursor..].iter().all(u8::is_ascii_whitespace) {
+        return Err("trailing_partial_sse_data".to_string());
+    }
+    if created_count > 1 {
+        return Err(format!(
+            "non-final raw must contain at most one response.created event, found {created_count}"
+        ));
+    }
+    if completed_count != 1 {
+        return Err(format!(
+            "non-final raw must contain exactly one response.completed event, found {completed_count}"
+        ));
+    }
+    if created_id.is_some() && created_id != completed_id {
+        return Err(
+            "non-final response.created id does not match response.completed id".to_string(),
+        );
+    }
+    let aggregated_id = round
+        .aggregated
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+        .ok_or_else(|| "non-final aggregated response missing id".to_string())?;
+    if completed_id.as_deref() != Some(aggregated_id) {
+        return Err("non-final raw response id does not match aggregated response id".to_string());
+    }
+    raw_visible.validate_against_output(round, visibility, "non-final raw")?;
+    Ok(())
+}
+
+fn validate_raw_round_tool_events(raw: &[u8]) -> Result<(), &'static str> {
+    let mut cursor = 0usize;
+    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
+        let event_end = cursor + relative_end;
+        let frame = &raw[cursor..event_end];
+        cursor = event_end;
+        let frame_text = std::str::from_utf8(frame).map_err(|_| "invalid_sse_utf8")?;
+        let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame_text)
+        else {
+            continue;
+        };
+        if event_name.starts_with("response.function_call_arguments.") {
+            return Err("function_call_arguments_event");
+        }
+        if matches!(
+            event_name.as_str(),
+            "response.output_item.added" | "response.output_item.done"
+        ) {
+            let item = data.get("item").unwrap_or(&data);
+            if is_responses_native_tool_context_item(item) {
+                return Err("output_item_tool_call_event");
+            }
+        }
+    }
+    if !raw[cursor..].iter().all(u8::is_ascii_whitespace) {
+        return Err("trailing_partial_sse_data");
+    }
+    Ok(())
+}
+
+fn validate_lifecycle_output_payload(
+    event_name: &str,
+    data: &Value,
+    round: &ContinuationRepairRound,
+) -> Result<(), String> {
+    if !matches!(
+        event_name,
+        "response.created" | "response.in_progress" | "response.completed"
+    ) {
+        return Ok(());
+    }
+    let response_output = data
+        .get("response")
+        .and_then(|response| response.get("output"));
+    let top_level_output = data.get("output");
+    if response_output.is_none() && top_level_output.is_none() {
+        return Ok(());
+    }
+
+    let response_items = lifecycle_output_items(event_name, "response", response_output)?;
+    let top_level_items = lifecycle_output_items(event_name, "top_level", top_level_output)?;
+    if let (Some(response_items), Some(top_level_items)) = (response_items, top_level_items) {
+        if response_items != top_level_items {
+            return Err(format!("{event_name}_duplicate_output_mismatch"));
+        }
+    }
+
+    let raw_items = response_items
+        .filter(|items| !items.is_empty())
+        .or_else(|| top_level_items.filter(|items| !items.is_empty()));
+    let Some(raw_items) = raw_items else {
+        return Ok(());
+    };
+    let Some(aggregated_items) = round.aggregated.get("output").and_then(Value::as_array) else {
+        return Err(format!("{event_name}_output_without_aggregated_output"));
+    };
+    if raw_items != aggregated_items {
+        return Err(format!("{event_name}_output_mismatch"));
+    }
+    Ok(())
+}
+
+fn lifecycle_output_items<'a>(
+    event_name: &str,
+    location: &str,
+    output: Option<&'a Value>,
+) -> Result<Option<&'a Vec<Value>>, String> {
+    let Some(output) = output else {
+        return Ok(None);
+    };
+    output
+        .as_array()
+        .map(Some)
+        .ok_or_else(|| format!("{event_name}_{location}_output_not_array"))
+}
+
+fn lifecycle_response_id(data: &Value) -> Option<&str> {
+    data.get("response")
+        .unwrap_or(data)
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|value| !value.trim().is_empty())
+}
+
+fn raw_output_item_added_is_visible_or_unknown(item: &Value) -> bool {
+    !raw_output_item_added_is_strict_metadata_only(item)
+}
+
+fn raw_output_item_added_is_strict_metadata_only(item: &Value) -> bool {
+    let Some(object) = item.as_object() else {
+        return false;
+    };
+    if object.len() != 5 {
+        return false;
+    }
+    object
+        .get("id")
+        .and_then(Value::as_str)
+        .is_some_and(|text| !text.trim().is_empty())
+        && object.get("type").and_then(Value::as_str) == Some("message")
+        && object
+            .get("status")
+            .and_then(Value::as_str)
+            .is_some_and(raw_output_item_added_metadata_status_is_allowed)
+        && object.get("role").and_then(Value::as_str) == Some("assistant")
+        && object
+            .get("content")
+            .and_then(Value::as_array)
+            .is_some_and(Vec::is_empty)
+}
+
+fn raw_output_item_added_metadata_status_is_allowed(status: &str) -> bool {
+    status == "in_progress"
+}
+
+fn is_raw_tool_or_function_reason(reason: &str) -> bool {
+    reason.contains("tool")
+        || reason.contains("function_call")
+        || reason.contains("native_tool")
+        || reason.contains("arguments")
 }
 
 fn extend_with_cap(
@@ -1782,6 +2121,16 @@ mod tests {
         ContinuationRepairRound::new(kind, raw, aggregated, Some(1))
     }
 
+    fn assert_tool_call_fail_closed(err: &str) {
+        assert!(
+            err.contains("raw tool/function call")
+                || err.contains("non-final tool/function call")
+                || err.contains("final tool/function call")
+                || err.contains("final round unsafe"),
+            "unexpected error: {err}"
+        );
+    }
+
     fn message(id: &str, text: &str) -> Value {
         json!({
             "id": id,
@@ -2061,6 +2410,10 @@ mod tests {
         );
         assert_eq!(reconstructed.visible_assembly_kind, "empty_prior");
         assert_eq!(reconstructed.canonical_response_id, "resp_2");
+        assert_eq!(
+            reconstructed.canonical_response_id_continuity,
+            BPLUS_RESPONSE_ID_CONTINUITY
+        );
         assert!(body.contains("response.output_text.delta"));
         assert!(body.contains("final after continuation"));
         assert!(!body.contains("resp_1"));
@@ -2399,11 +2752,794 @@ mod tests {
 
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("non-final tool/function call"));
+        assert_tool_call_fail_closed(&err);
     }
 
     #[test]
-    fn final_tool_call_with_empty_prior_passes_when_arguments_are_valid_json() {
+    fn non_final_raw_function_call_argument_delta_is_unsafe_even_without_output_item() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("reasoning");
+        push_sse_event(
+            &mut first_raw,
+            "response.function_call_arguments.delta",
+            json!({
+                "type": "response.function_call_arguments.delta",
+                "item_id": "call_hidden",
+                "delta": "{\"message\":\"Tool call failed\"}",
+            }),
+        )
+        .expect("arguments delta");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw tool/function call"));
+        assert!(err.contains("function_call_arguments_event"));
+        assert!(!err.contains("Tool call failed"));
+    }
+
+    #[test]
+    fn non_final_raw_output_item_added_tool_context_is_unsafe_even_without_done_item() {
+        for (item, forbidden) in [
+            (
+                json!({
+                    "id": "call_hidden",
+                    "type": "function_call",
+                    "name": "lookup",
+                    "call_id": "call_hidden",
+                    "arguments": "{\"secret\":\"raw-tool-arg-42\"}",
+                }),
+                "raw-tool-arg-42",
+            ),
+            (
+                json!({
+                    "id": "call_mcp_hidden",
+                    "type": "mcp_tool_call",
+                    "name": "read",
+                    "call_id": "call_mcp_hidden",
+                    "arguments": "{\"secret\":\"raw-mcp-arg-84\"}",
+                }),
+                "raw-mcp-arg-84",
+            ),
+            (
+                json!({
+                    "type": "custom_tool_call_output",
+                    "call_id": "call_custom_hidden",
+                    "output": "raw-custom-output-secret-126",
+                }),
+                "raw-custom-output-secret-126",
+            ),
+            (
+                json!({
+                    "type": "tool_search_output",
+                    "call_id": "call_search_hidden",
+                    "output": "raw-search-output-secret-168",
+                }),
+                "raw-search-output-secret-168",
+            ),
+            (
+                json!({
+                    "id": "call_web_hidden",
+                    "type": "web_search_call",
+                    "status": "completed",
+                    "query": "raw-web-query-secret-210",
+                }),
+                "raw-web-query-secret-210",
+            ),
+            (
+                json!({
+                    "id": "call_image_hidden",
+                    "type": "image_generation_call",
+                    "status": "completed",
+                    "prompt": "raw-image-prompt-secret-252",
+                }),
+                "raw-image-prompt-secret-252",
+            ),
+        ] {
+            let mut first_raw = String::new();
+            push_sse_event(
+                &mut first_raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+            push_sse_event(
+                &mut first_raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": reasoning("rs_1", "enc_1"),
+                }),
+            )
+            .expect("reasoning");
+            push_sse_event(
+                &mut first_raw,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": item,
+                }),
+            )
+            .expect("tool added");
+            push_sse_event(
+                &mut first_raw,
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_1",
+                        "status": "completed",
+                        "model": "gpt-cont",
+                        "usage": usage(1, 10, 516),
+                    },
+                }),
+            )
+            .expect("completed");
+            let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+            let second = repair_round(
+                ContinuationRepairRoundKind::Continuation,
+                sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+            );
+
+            let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect_err("unsafe");
+            assert!(err.contains("raw tool/function call"));
+            assert!(err.contains("output_item_tool_call_event"));
+            assert!(!err.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn non_final_raw_visible_delta_matching_aggregated_output_can_reconstruct() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round_with_delta(
+                "resp_1",
+                vec![message("msg_1", "prefix")],
+                "prefix",
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", "prefix plus final")],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+
+        assert_eq!(reconstructed.visible_assembly_kind, "final_superset");
+    }
+
+    #[test]
+    fn non_final_raw_visible_delta_without_aggregated_output_is_unsafe() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_text.delta",
+            json!({
+                "type": "response.output_text.delta",
+                "output_index": 0,
+                "delta": "raw-lost-visible-secret-294",
+            }),
+        )
+        .expect("delta");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("output_text.delta exists without visible message"));
+        assert!(!err.contains("raw-lost-visible-secret-294"));
+    }
+
+    #[test]
+    fn non_final_raw_visible_delta_mismatching_aggregated_output_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round_with_delta(
+                "resp_1",
+                vec![message("msg_1", "aggregated visible")],
+                "raw-mismatched-visible-secret-336",
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", "aggregated visible plus final")],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("output_text.delta does not match visible message"));
+        assert!(!err.contains("raw-mismatched-visible-secret-336"));
+    }
+
+    #[test]
+    fn non_final_raw_unknown_semantic_event_is_unsafe_without_payload_leak() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.secret_raw_event_name_abc.delta",
+            json!({
+                "type": "response.secret_raw_event_name_abc.delta",
+                "delta": "raw-unknown-semantic-secret-378",
+            }),
+        )
+        .expect("unknown");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("unknown_pre_completed_event"));
+        assert!(!err.contains("response.secret_raw_event_name_abc.delta"));
+        assert!(!err.contains("raw-unknown-semantic-secret-378"));
+    }
+
+    #[test]
+    fn non_final_raw_output_item_added_visible_message_is_unsafe_without_payload_leak() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": message("msg_hidden", "raw-added-visible-secret-420"),
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("output_item_added_visible_or_unknown"));
+        assert!(!err.contains("raw-added-visible-secret-420"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_output_visible_payload_is_unsafe_without_payload_leak() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [message("msg_hidden", "raw-completed-visible-secret-462")],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("response.completed_output_mismatch"));
+        assert!(!err.contains("raw-completed-visible-secret-462"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_output_tool_payload_is_unsafe_without_payload_leak() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [{
+                        "type": "tool_search_output",
+                        "call_id": "call_search_hidden",
+                        "output": "raw-completed-tool-secret-504",
+                    }],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("response.completed_output_mismatch"));
+        assert!(!err.contains("raw-completed-tool-secret-504"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_output_tool_payload_matching_aggregated_still_fails_closed() {
+        let tool_item = json!({
+            "id": "call_hidden",
+            "type": "function_call",
+            "name": "lookup",
+            "call_id": "call_hidden",
+            "arguments": "{\"secret\":\"raw-completed-tool-secret-505\"}",
+        });
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [tool_item.clone()],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let mut first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        first.aggregated["output"] = json!([tool_item]);
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final tool/function call"));
+        assert!(!err.contains("raw-completed-tool-secret-505"));
+    }
+
+    #[test]
+    fn non_final_raw_created_completed_id_mismatch_is_unsafe() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {
+                    "id": "resp_created",
+                    "status": "in_progress",
+                    "model": "gpt-cont",
+                },
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": reasoning("rs_1", "enc_1"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_completed",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final response.created id does not match response.completed id"));
+    }
+
+    #[test]
+    fn non_final_raw_response_id_must_match_aggregated_response_id() {
+        let mut first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        first.aggregated["id"] = json!("resp_tampered");
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("non-final raw response id does not match aggregated response id"));
+    }
+
+    #[test]
+    fn non_final_lifecycle_top_level_output_is_audited_without_payload_leak() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_1", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "output": [message("msg_hidden", "raw-top-level-visible-secret-588")],
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [],
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("raw event-stream"));
+        assert!(err.contains("response.completed_duplicate_output_mismatch"));
+        assert!(!err.contains("raw-top-level-visible-secret-588"));
+    }
+
+    #[test]
+    fn non_final_empty_lifecycle_output_does_not_override_output_item_done() {
+        let mut first_raw = String::new();
+        push_sse_event(
+            &mut first_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {
+                    "id": "resp_1",
+                    "status": "in_progress",
+                    "model": "gpt-cont",
+                    "output": [],
+                }
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut first_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": message("msg_1", "prefix"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut first_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_1",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 10, 516),
+                },
+            }),
+        )
+        .expect("completed");
+        let first = repair_round(ContinuationRepairRoundKind::Initial, Bytes::from(first_raw));
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![message("msg_2", "prefix plus final")],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+        assert_eq!(reconstructed.visible_assembly_kind, "final_superset");
+    }
+
+    #[test]
+    fn final_lifecycle_output_must_match_output_item_done_without_payload_leak() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut second_raw = String::new();
+        push_sse_event(
+            &mut second_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut second_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": message("msg_2", "safe final"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut second_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [message("msg_hidden", "raw-final-completed-secret-546")],
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            Bytes::from(second_raw),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("response.completed_output_mismatch"));
+        assert!(!err.contains("raw-final-completed-secret-546"));
+    }
+
+    #[test]
+    fn final_lifecycle_top_level_output_is_audited_without_payload_leak() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut second_raw = String::new();
+        push_sse_event(
+            &mut second_raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut second_raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "output_index": 0,
+                "item": message("msg_2", "safe final"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut second_raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "output": [message("msg_hidden", "raw-final-top-level-secret-630")],
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [message("msg_2", "safe final")],
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            Bytes::from(second_raw),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("response.completed_duplicate_output_mismatch"));
+        assert!(!err.contains("raw-final-top-level-secret-630"));
+    }
+
+    #[test]
+    fn final_tool_call_with_empty_prior_is_unsafe_even_with_valid_arguments() {
         let first = repair_round(
             ContinuationRepairRoundKind::Initial,
             sse_round(
@@ -2427,21 +3563,14 @@ mod tests {
             ),
         );
 
-        let reconstructed =
-            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
-        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
-
-        assert_eq!(reconstructed.visible_assembly_kind, "final_tool_call");
-        assert!(body.contains("\"id\":\"call_2\""));
-        assert!(!body.contains("\"id\":\"rs_1\""));
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert_tool_call_fail_closed(&err);
     }
 
     #[test]
-    fn final_tool_call_argument_delta_must_match_final_arguments() {
-        for (delta, should_pass) in [
-            ("{\"query\":\"ok\"}", true),
-            ("{\"query\":\"stale\"}", false),
-        ] {
+    fn final_tool_call_argument_delta_is_unsafe_even_when_matching() {
+        for delta in ["{\"query\":\"ok\"}", "{\"query\":\"stale\"}"] {
             let first = repair_round(
                 ContinuationRepairRoundKind::Initial,
                 sse_round(
@@ -2502,12 +3631,8 @@ mod tests {
             let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
             let result = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024);
 
-            if should_pass {
-                assert!(result.is_ok(), "matching argument delta should pass");
-            } else {
-                let err = result.expect_err("stale argument delta should fail");
-                assert!(err.contains("function_call_arguments.delta does not match"));
-            }
+            let err = result.expect_err("final tool/function call should fail closed");
+            assert_tool_call_fail_closed(&err);
         }
     }
 
@@ -2538,11 +3663,11 @@ mod tests {
 
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("non-final visible output"));
+        assert_tool_call_fail_closed(&err);
     }
 
     #[test]
-    fn final_tool_call_requires_valid_self_contained_arguments() {
+    fn final_tool_call_is_unsafe_before_argument_shape_is_trusted() {
         for item in [
             json!({
                 "id": "call_invalid",
@@ -2591,7 +3716,7 @@ mod tests {
 
             let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
                 .expect_err("unsafe");
-            assert!(err.contains("tool_call"));
+            assert_tool_call_fail_closed(&err);
         }
     }
 
@@ -2613,6 +3738,27 @@ mod tests {
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
         assert!(err.contains("missing final response id"));
+    }
+
+    #[test]
+    fn final_raw_response_id_must_match_aggregated_response_id() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
+        );
+        second.aggregated["id"] = json!("resp_tampered");
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("final raw response id does not match aggregated response id"));
     }
 
     #[test]
@@ -2843,7 +3989,323 @@ mod tests {
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
         assert!(err.contains("unsafe pre-completed event"));
-        assert!(err.contains("response.reasoning_summary_text.delta"));
+        assert!(!err.contains("response.reasoning_summary_text.delta"));
+        assert!(!err.contains("hidden chain summary"));
+    }
+
+    #[test]
+    fn final_raw_output_item_added_visible_message_is_unsafe_without_payload_leak() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": message("msg_2", "raw-final-added-visible-secret-587"),
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert!(err.contains("final raw output_item.added contains visible or unknown payload"));
+        assert!(!err.contains("raw-final-added-visible-secret-587"));
+    }
+
+    #[test]
+    fn final_raw_output_item_added_empty_message_metadata_can_passthrough() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1")],
+                usage(1, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.added",
+            json!({
+                "type": "response.output_item.added",
+                "item": {
+                    "id": "msg_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "status": "in_progress",
+                    "content": [],
+                },
+            }),
+        )
+        .expect("added");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_2", "ok"),
+            }),
+        )
+        .expect("item");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "usage": usage(1, 3, 2),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+            .expect("metadata-only added item is safe");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+        assert!(body.contains("response.output_item.added"));
+        assert!(body.contains("ok"));
+    }
+
+    #[test]
+    fn final_raw_output_item_added_input_payloads_are_unsafe_without_payload_leak() {
+        for (item, forbidden) in [
+            (
+                json!({
+                    "id": "input_text_1",
+                    "type": "input_text",
+                    "text": "raw-final-input-text-secret-631",
+                }),
+                "raw-final-input-text-secret-631",
+            ),
+            (
+                json!({
+                    "id": "input_image_1",
+                    "type": "input_image",
+                    "image_url": "https://example.invalid/raw-final-input-image-secret-672.png",
+                }),
+                "raw-final-input-image-secret-672",
+            ),
+        ] {
+            let first = repair_round(
+                ContinuationRepairRoundKind::Initial,
+                sse_round(
+                    Some("resp_1"),
+                    vec![reasoning("rs_1", "enc_1")],
+                    usage(1, 10, 516),
+                ),
+            );
+            let mut raw = String::new();
+            push_sse_event(
+                &mut raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+            push_sse_event(
+                &mut raw,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": item,
+                }),
+            )
+            .expect("added");
+            push_sse_event(
+                &mut raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": message("msg_2", "ok"),
+                }),
+            )
+            .expect("item");
+            push_sse_event(
+                &mut raw,
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_2",
+                        "status": "completed",
+                        "model": "gpt-cont",
+                        "usage": usage(1, 3, 2),
+                    },
+                }),
+            )
+            .expect("completed");
+            let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+            let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect_err("unsafe");
+            assert!(err.contains("final raw output_item.added contains visible or unknown payload"));
+            assert!(!err.contains(forbidden));
+        }
+    }
+
+    #[test]
+    fn final_raw_output_item_added_malformed_metadata_is_unsafe() {
+        for item in [
+            json!({
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [],
+            }),
+            json!({
+                "id": "msg_missing_status",
+                "type": "message",
+                "role": "assistant",
+                "content": [],
+            }),
+            json!({
+                "id": "msg_missing_role",
+                "type": "message",
+                "status": "in_progress",
+                "content": [],
+            }),
+            json!({
+                "id": "msg_missing_content",
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+            }),
+            json!({
+                "id": "msg_wrong_role",
+                "type": "message",
+                "role": "user",
+                "status": "in_progress",
+                "content": [],
+            }),
+            json!({
+                "id": "msg_unknown_status",
+                "type": "message",
+                "role": "assistant",
+                "status": "completed",
+                "content": [],
+            }),
+            json!({
+                "id": "msg_extra",
+                "type": "message",
+                "role": "assistant",
+                "status": "in_progress",
+                "content": [],
+                "metadata": {"trace": "raw-final-added-extra-secret-713"},
+            }),
+        ] {
+            let first = repair_round(
+                ContinuationRepairRoundKind::Initial,
+                sse_round(
+                    Some("resp_1"),
+                    vec![reasoning("rs_1", "enc_1")],
+                    usage(1, 10, 516),
+                ),
+            );
+            let mut raw = String::new();
+            push_sse_event(
+                &mut raw,
+                "response.created",
+                json!({
+                    "type": "response.created",
+                    "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+                }),
+            )
+            .expect("created");
+            push_sse_event(
+                &mut raw,
+                "response.output_item.added",
+                json!({
+                    "type": "response.output_item.added",
+                    "item": item,
+                }),
+            )
+            .expect("added");
+            push_sse_event(
+                &mut raw,
+                "response.output_item.done",
+                json!({
+                    "type": "response.output_item.done",
+                    "item": message("msg_2", "ok"),
+                }),
+            )
+            .expect("item");
+            push_sse_event(
+                &mut raw,
+                "response.completed",
+                json!({
+                    "type": "response.completed",
+                    "response": {
+                        "id": "resp_2",
+                        "status": "completed",
+                        "model": "gpt-cont",
+                        "usage": usage(1, 3, 2),
+                    },
+                }),
+            )
+            .expect("completed");
+            let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+            let err = reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024)
+                .expect_err("unsafe");
+            assert!(err.contains("final raw output_item.added contains visible or unknown payload"));
+            assert!(!err.contains("raw-final-added-extra-secret-713"));
+        }
     }
 
     #[test]
@@ -3059,8 +4521,11 @@ mod tests {
         .expect("created");
         push_sse_event(
             &mut raw,
-            "response.future_visible.delta",
-            json!({"type": "response.future_visible.delta", "delta": "maybe visible"}),
+            "response.secret_final_raw_event_name_abc.delta",
+            json!({
+                "type": "response.secret_final_raw_event_name_abc.delta",
+                "delta": "raw-final-unknown-secret-612",
+            }),
         )
         .expect("future event");
         push_sse_event(
@@ -3091,7 +4556,8 @@ mod tests {
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
         assert!(err.contains("unknown pre-completed event"));
-        assert!(err.contains("response.future_visible.delta"));
+        assert!(!err.contains("response.secret_final_raw_event_name_abc.delta"));
+        assert!(!err.contains("raw-final-unknown-secret-612"));
     }
 
     #[test]
@@ -3250,7 +4716,7 @@ mod tests {
     }
 
     #[test]
-    fn final_raw_matching_function_call_argument_delta_passes() {
+    fn final_raw_matching_function_call_argument_delta_is_unsafe() {
         let first = repair_round(
             ContinuationRepairRoundKind::Initial,
             sse_round(
@@ -3320,9 +4786,9 @@ mod tests {
         .expect("completed");
         let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
 
-        let reconstructed =
-            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
-        assert_eq!(reconstructed.visible_assembly_kind, "final_tool_call");
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert_tool_call_fail_closed(&err);
     }
 
     #[test]
@@ -3388,7 +4854,7 @@ mod tests {
 
         let err =
             reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("function_call_arguments.delta does not match"));
+        assert_tool_call_fail_closed(&err);
     }
 
     #[test]

@@ -53,6 +53,32 @@ fn stream_transport_decision(
     )
 }
 
+#[derive(Clone, Copy)]
+struct EffectiveStreamIdleTimeout {
+    duration: Option<Duration>,
+    seconds: Option<u32>,
+    source: &'static str,
+}
+
+fn resolve_effective_stream_idle_timeout(
+    provider_seconds: Option<u32>,
+    global_timeout: Option<Duration>,
+) -> EffectiveStreamIdleTimeout {
+    if let Some(seconds) = provider_seconds.filter(|seconds| *seconds > 0) {
+        return EffectiveStreamIdleTimeout {
+            duration: Some(Duration::from_secs(seconds as u64)),
+            seconds: Some(seconds),
+            source: "provider",
+        };
+    }
+
+    EffectiveStreamIdleTimeout {
+        duration: global_timeout,
+        seconds: global_timeout.map(|timeout| timeout.as_secs().min(u64::from(u32::MAX)) as u32),
+        source: "global",
+    }
+}
+
 fn is_codex_responses_event_stream_path(cli_key: &str, path: &str) -> bool {
     cli_key == "codex"
         && matches!(
@@ -254,6 +280,29 @@ impl ContinuationRepairOutcome {
         }
     }
 
+    #[allow(clippy::too_many_arguments)]
+    fn terminal_with_kind_and_trace(
+        status: ContinuationRepairStatus,
+        token: Option<codex_reasoning_features::ExtractedReasoningTokens>,
+        sent_rounds: u32,
+        failure_kind: impl Into<Option<&'static str>>,
+        reason: impl Into<Option<String>>,
+        rounds: &[codex_reasoning_continuation::ContinuationRepairRound],
+        aggregate_raw_bytes: usize,
+        repair_elapsed_ms: Option<u128>,
+        cumulative_elapsed_ms: Option<u128>,
+        round_durations_ms: &[u128],
+    ) -> Self {
+        let mut outcome =
+            Self::terminal_with_kind(status, token, sent_rounds, failure_kind, reason);
+        outcome.round_trace = codex_reasoning_continuation::sanitized_round_trace(rounds);
+        outcome.aggregate_raw_bytes = aggregate_raw_bytes;
+        outcome.repair_elapsed_ms = repair_elapsed_ms;
+        outcome.cumulative_elapsed_ms = cumulative_elapsed_ms;
+        outcome.round_durations_ms = round_durations_ms.to_vec();
+        outcome
+    }
+
     fn repaired_bplus(
         reconstruction: codex_reasoning_continuation::ContinuationReconstruction,
         token: Option<codex_reasoning_features::ExtractedReasoningTokens>,
@@ -362,8 +411,25 @@ where
         Some(0),
     )];
     let mut aggregate_raw_bytes = rounds[0].raw_sse.len();
+    let mut round_durations_ms = Vec::new();
+    macro_rules! terminal_with_trace {
+        ($status:expr, $token:expr, $sent_rounds:expr, $failure_kind:expr, $reason:expr $(,)?) => {
+            ContinuationRepairOutcome::terminal_with_kind_and_trace(
+                $status,
+                $token,
+                $sent_rounds,
+                $failure_kind,
+                $reason,
+                &rounds,
+                aggregate_raw_bytes,
+                Some(repair_started.elapsed().as_millis()),
+                Some(attempt_started.elapsed().as_millis()),
+                &round_durations_ms,
+            )
+        };
+    }
     if aggregate_raw_bytes > MAX_NON_SSE_BODY_BYTES {
-        return ContinuationRepairOutcome::terminal_with_kind(
+        return terminal_with_trace!(
             ContinuationRepairStatus::Failed,
             current_token,
             0,
@@ -377,7 +443,6 @@ where
     let mut replay_tail = Vec::new();
     let mut sent_rounds = 0u32;
     let mut cumulative_output_tokens = codex_reasoning_continuation::output_tokens(&current);
-    let mut round_durations_ms = Vec::new();
 
     loop {
         current_token = codex_reasoning_features::extract_reasoning_tokens(&current);
@@ -397,7 +462,7 @@ where
                         attempt_started.elapsed().as_millis(),
                         round_durations_ms,
                     ),
-                    Err(err) => ContinuationRepairOutcome::terminal_with_kind(
+                    Err(err) => terminal_with_trace!(
                         ContinuationRepairStatus::Failed,
                         current_token,
                         sent_rounds,
@@ -421,7 +486,7 @@ where
                     attempt_started.elapsed().as_millis(),
                     round_durations_ms,
                 ),
-                Err(err) => ContinuationRepairOutcome::terminal_with_kind(
+                Err(err) => terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -431,26 +496,29 @@ where
             };
         }
         if max_output_tokens > 0 && cumulative_output_tokens >= max_output_tokens as u64 {
-            return ContinuationRepairOutcome::terminal(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::CappedMaxOutputTokens,
                 current_token,
                 sent_rounds,
+                ContinuationRepairStatus::CappedMaxOutputTokens.default_failure_kind(),
                 Some("continuation max output token cap reached".to_string()),
             );
         }
         if sent_rounds >= max_rounds {
-            return ContinuationRepairOutcome::terminal(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::StillMatched,
                 current_token,
                 sent_rounds,
+                ContinuationRepairStatus::StillMatched.default_failure_kind(),
                 Some("continuation still matched after max rounds".to_string()),
             );
         }
         if !codex_reasoning_continuation::latest_reasoning_has_encrypted_content(&current) {
-            return ContinuationRepairOutcome::terminal(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::MissingEncrypted,
                 current_token,
                 sent_rounds,
+                ContinuationRepairStatus::MissingEncrypted.default_failure_kind(),
                 Some("continuation round matched but encrypted reasoning was missing".to_string()),
             );
         }
@@ -462,7 +530,7 @@ where
         ) {
             Ok(payload) => payload,
             Err(err) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -491,7 +559,7 @@ where
         let resp = match send_outcome {
             PreparedSendOutcome::Response(resp, _) => resp,
             PreparedSendOutcome::Timeout(_) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -500,7 +568,7 @@ where
                 );
             }
             PreparedSendOutcome::ReqwestError(err, _) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -509,7 +577,7 @@ where
                 );
             }
             PreparedSendOutcome::UrlBuildFailed(err) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -518,7 +586,7 @@ where
                 );
             }
             PreparedSendOutcome::OAuthInjectFailed(_) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -527,7 +595,7 @@ where
                 );
             }
             PreparedSendOutcome::PluginBlocked(reason) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -538,7 +606,7 @@ where
         };
 
         if !resp.status().is_success() {
-            return ContinuationRepairOutcome::terminal_with_kind(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::Failed,
                 current_token,
                 sent_rounds,
@@ -551,7 +619,7 @@ where
         }
         let mut headers = resp.headers().clone();
         if !is_event_stream(&headers) {
-            return ContinuationRepairOutcome::terminal_with_kind(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::Failed,
                 current_token,
                 sent_rounds,
@@ -566,13 +634,12 @@ where
             enable_response_fixer,
             response_fixer_stream_config,
             ctx.special_settings,
-            continuation_round_timeout(),
         )
         .await
         {
             Ok(raw) => raw,
             Err(err) => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -582,7 +649,7 @@ where
             }
         };
         if raw.is_empty() {
-            return ContinuationRepairOutcome::terminal_with_kind(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::Failed,
                 current_token,
                 sent_rounds,
@@ -594,7 +661,7 @@ where
         aggregate_raw_bytes = match aggregate_raw_bytes.checked_add(raw.len()) {
             Some(total) => total,
             None => {
-                return ContinuationRepairOutcome::terminal_with_kind(
+                return terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
                     sent_rounds,
@@ -604,7 +671,7 @@ where
             }
         };
         if aggregate_raw_bytes > MAX_NON_SSE_BODY_BYTES {
-            return ContinuationRepairOutcome::terminal_with_kind(
+            return terminal_with_trace!(
                 ContinuationRepairStatus::Failed,
                 current_token,
                 sent_rounds,
@@ -618,15 +685,13 @@ where
         let aggregated =
             match crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref()) {
                 Ok(value) => value,
-                Err(err) => {
-                    return ContinuationRepairOutcome::terminal_with_kind(
+                Err(_) => {
+                    return terminal_with_trace!(
                         ContinuationRepairStatus::Failed,
                         current_token,
                         sent_rounds,
                         Some("aggregate"),
-                        Some(format!(
-                            "failed to aggregate continuation event-stream: {err}"
-                        )),
+                        Some("failed_to_aggregate_continuation_event_stream".to_string()),
                     );
                 }
             };
@@ -651,14 +716,12 @@ async fn read_buffered_event_stream_body(
     enable_response_fixer: bool,
     response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     special_settings: &std::sync::Arc<std::sync::Mutex<Vec<serde_json::Value>>>,
-    round_timeout: Duration,
 ) -> Result<Bytes, String> {
     let mut body_stream = resp.bytes_stream();
-    let raw = read_buffered_event_stream_chunks_with_round_timeout(
+    let raw = read_buffered_event_stream_chunks(
         &mut body_stream,
         upstream_stream_idle_timeout,
         !has_non_identity_content_encoding(response_headers),
-        round_timeout,
     )
     .await?;
 
@@ -680,7 +743,6 @@ async fn read_buffered_event_stream_body(
     }
 }
 
-#[cfg(test)]
 async fn read_buffered_event_stream_chunks<S, E>(
     stream: &mut S,
     upstream_stream_idle_timeout: Option<Duration>,
@@ -690,59 +752,30 @@ where
     S: Stream<Item = Result<Bytes, E>> + Unpin,
     E: Display,
 {
-    read_buffered_event_stream_chunks_with_round_timeout(
-        stream,
-        upstream_stream_idle_timeout,
-        detect_terminal_events,
-        continuation_round_timeout(),
-    )
-    .await
-}
-
-async fn read_buffered_event_stream_chunks_with_round_timeout<S, E>(
-    stream: &mut S,
-    upstream_stream_idle_timeout: Option<Duration>,
-    detect_terminal_events: bool,
-    round_timeout: Duration,
-) -> Result<Bytes, String>
-where
-    S: Stream<Item = Result<Bytes, E>> + Unpin,
-    E: Display,
-{
+    let Some(body_timeout) = upstream_stream_idle_timeout else {
+        return Err("continuation event-stream terminal event timeout disabled".to_string());
+    };
     let mut raw = Vec::new();
     let mut terminal_scan_cursor = 0usize;
-    let round_started = Instant::now();
+    let started = Instant::now();
     loop {
-        let Some(round_remaining) = continuation_round_remaining(round_started, round_timeout)
-        else {
-            return Err("continuation event-stream round timeout".to_string());
+        let Some(remaining) = body_timeout.checked_sub(started.elapsed()) else {
+            return Err("continuation event-stream terminal event timeout".to_string());
         };
-        let next_chunk = match upstream_stream_idle_timeout {
-            Some(timeout) => {
-                match tokio::time::timeout(timeout.min(round_remaining), stream_next(stream)).await
-                {
-                    Ok(Some(Ok(chunk))) => Some(chunk),
-                    Ok(Some(Err(err))) => {
-                        return Err(format!("failed to read continuation event-stream: {err}"));
-                    }
-                    Ok(None) => None,
-                    Err(_) => {
-                        if continuation_round_remaining(round_started, round_timeout).is_none() {
-                            return Err("continuation event-stream round timeout".to_string());
-                        }
-                        return Err("continuation event-stream idle timeout".to_string());
-                    }
-                }
-            }
-            None => match tokio::time::timeout(round_remaining, stream_next(stream)).await {
+        let next_chunk =
+            match tokio::time::timeout(remaining.min(body_timeout), stream_next(stream)).await {
                 Ok(Some(Ok(chunk))) => Some(chunk),
                 Ok(Some(Err(err))) => {
                     return Err(format!("failed to read continuation event-stream: {err}"));
                 }
                 Ok(None) => None,
-                Err(_) => return Err("continuation event-stream round timeout".to_string()),
-            },
-        };
+                Err(_) => {
+                    if body_timeout.checked_sub(started.elapsed()).is_none() {
+                        return Err("continuation event-stream terminal event timeout".to_string());
+                    }
+                    return Err("continuation event-stream idle timeout".to_string());
+                }
+            };
         let Some(chunk) = next_chunk else {
             break;
         };
@@ -770,14 +803,6 @@ where
     poll_fn(|cx| Pin::new(&mut *stream).poll_next(cx)).await
 }
 
-fn continuation_round_timeout() -> Duration {
-    Duration::from_secs(300)
-}
-
-fn continuation_round_remaining(started: Instant, timeout: Duration) -> Option<Duration> {
-    timeout.checked_sub(started.elapsed())
-}
-
 fn buffered_event_stream_has_terminal_event(
     raw: &[u8],
     cursor: &mut usize,
@@ -801,6 +826,48 @@ struct ContinuationSpecialSettingContext<'a> {
     post_match_strategy: crate::settings::CodexReasoningGuardPostMatchStrategy,
     max_rounds: u32,
     max_output_tokens: u32,
+    upstream_first_byte_timeout_secs: Option<u32>,
+    upstream_stream_idle_timeout_secs: Option<u32>,
+    upstream_stream_idle_timeout_source: &'static str,
+}
+
+fn continuation_timeout_source(outcome: &ContinuationRepairOutcome) -> Option<&'static str> {
+    match outcome.failure_kind {
+        Some("upstream_timeout") => Some("first_byte"),
+        Some("upstream_stream")
+            if outcome
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("terminal event timeout disabled")) =>
+        {
+            Some("terminal_event_disabled")
+        }
+        Some("upstream_stream")
+            if outcome
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("terminal event timeout")) =>
+        {
+            Some("terminal_event")
+        }
+        Some("upstream_stream")
+            if outcome
+                .reason
+                .as_deref()
+                .is_some_and(|reason| reason.contains("idle timeout")) =>
+        {
+            Some("stream_idle")
+        }
+        _ => None,
+    }
+}
+
+fn continuation_fallback_action(status: ContinuationRepairStatus) -> &'static str {
+    match status {
+        ContinuationRepairStatus::Repaired => "none",
+        ContinuationRepairStatus::NotApplicable => "not_applicable",
+        _ => "existing_guard_failover_or_exhausted",
+    }
 }
 
 fn push_continuation_special_setting(
@@ -852,6 +919,27 @@ fn push_continuation_special_setting(
                         .map(|value| Value::from((*value).min(u128::from(u64::MAX)) as u64))
                         .collect::<Vec<_>>(),
             }),
+        );
+        object.insert(
+            "timeoutPolicy".to_string(),
+            serde_json::json!({
+                "source": "global_upstream_timeout_settings",
+                "firstByteTimeoutSeconds": context.upstream_first_byte_timeout_secs,
+                "streamIdleTimeoutSeconds": context.upstream_stream_idle_timeout_secs,
+                "streamIdleTimeoutSource": context.upstream_stream_idle_timeout_source,
+                "terminalEventTimeoutSeconds": context.upstream_stream_idle_timeout_secs,
+                "terminalEventTimeoutSource": context.upstream_stream_idle_timeout_source,
+                "privateRoundTimeoutSeconds": Value::Null,
+                "privateRepairWallClockCapSeconds": Value::Null,
+            }),
+        );
+        object.insert(
+            "timeoutSource".to_string(),
+            serde_json::to_value(continuation_timeout_source(outcome)).unwrap_or(Value::Null),
+        );
+        object.insert(
+            "fallbackAction".to_string(),
+            Value::String(continuation_fallback_action(outcome.status).to_string()),
         );
         object.insert(
             "downstreamHeadersCommittedDuringRepair".to_string(),
@@ -942,7 +1030,7 @@ fn push_continuation_special_setting(
             "phase0SampleAudit".to_string(),
             serde_json::json!({
                 "cleanAppendEnabled": codex_reasoning_continuation::BPLUS_CLEAN_APPEND_ENABLED,
-                "realUpstreamTranscriptContinuity": "not_validated",
+                "realUpstreamTranscriptContinuity": codex_reasoning_continuation::BPLUS_RESPONSE_ID_CONTINUITY,
             }),
         );
     }
@@ -1148,17 +1236,11 @@ where
     let started = common.started;
     let upstream_first_byte_timeout_secs = common.upstream_first_byte_timeout_secs;
     let upstream_first_byte_timeout = common.upstream_first_byte_timeout;
-    // Per-provider idle timeout overrides the global setting if configured.
-    let upstream_stream_idle_timeout = provider_ctx_owned
-        .stream_idle_timeout_seconds
-        .and_then(|secs| {
-            if secs > 0 {
-                Some(Duration::from_secs(secs as u64))
-            } else {
-                None
-            }
-        })
-        .or(common.upstream_stream_idle_timeout);
+    let effective_stream_idle_timeout = resolve_effective_stream_idle_timeout(
+        provider_ctx_owned.stream_idle_timeout_seconds,
+        common.upstream_stream_idle_timeout,
+    );
+    let upstream_stream_idle_timeout = effective_stream_idle_timeout.duration;
     let enable_response_fixer = common.enable_response_fixer;
     let response_fixer_stream_config = common.response_fixer_stream_config;
     let provider_max_attempts = provider_ctx_owned.provider_max_attempts;
@@ -1865,6 +1947,12 @@ where
                             max_rounds: common.codex_reasoning_guard_immediate_retry_budget,
                             max_output_tokens: common
                                 .codex_reasoning_guard_continuation_max_output_tokens,
+                            upstream_first_byte_timeout_secs: upstream_first_byte_timeout
+                                .map(|_| upstream_first_byte_timeout_secs),
+                            upstream_stream_idle_timeout_secs: effective_stream_idle_timeout
+                                .seconds,
+                            upstream_stream_idle_timeout_source: effective_stream_idle_timeout
+                                .source,
                         },
                         &continuation_outcome,
                     );
@@ -2843,9 +2931,9 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        buffered_event_stream_has_terminal_event, continuation_round_timeout,
-        read_buffered_event_stream_chunks, read_buffered_event_stream_chunks_with_round_timeout,
-        resolve_requested_model_for_log, should_buffer_native_codex_responses_for_empty_detection,
+        buffered_event_stream_has_terminal_event, read_buffered_event_stream_chunks,
+        resolve_effective_stream_idle_timeout, resolve_requested_model_for_log,
+        should_buffer_native_codex_responses_for_empty_detection,
         should_buffer_native_codex_responses_for_reasoning_guard,
     };
     use axum::body::Bytes;
@@ -2854,7 +2942,7 @@ mod tests {
     use std::future::Future;
     use std::pin::Pin;
     use std::task::{Context, Poll};
-    use std::time::{Duration, Instant};
+    use std::time::Duration;
 
     struct SequenceThenPendingStream {
         chunks: VecDeque<Result<Bytes, &'static str>>,
@@ -2989,6 +3077,29 @@ mod tests {
     }
 
     #[test]
+    fn effective_stream_idle_timeout_uses_one_policy_for_execution_and_diagnostics() {
+        let provider_override =
+            resolve_effective_stream_idle_timeout(Some(90), Some(Duration::from_secs(300)));
+        assert_eq!(provider_override.duration, Some(Duration::from_secs(90)));
+        assert_eq!(provider_override.seconds, Some(90));
+        assert_eq!(provider_override.source, "provider");
+
+        let provider_zero_inherits_global =
+            resolve_effective_stream_idle_timeout(Some(0), Some(Duration::from_secs(300)));
+        assert_eq!(
+            provider_zero_inherits_global.duration,
+            Some(Duration::from_secs(300))
+        );
+        assert_eq!(provider_zero_inherits_global.seconds, Some(300));
+        assert_eq!(provider_zero_inherits_global.source, "global");
+
+        let disabled_global = resolve_effective_stream_idle_timeout(None, None);
+        assert_eq!(disabled_global.duration, None);
+        assert_eq!(disabled_global.seconds, None);
+        assert_eq!(disabled_global.source, "global");
+    }
+
+    #[test]
     fn continuation_terminal_scan_stops_after_complete_terminal_frame() {
         let mut raw = Vec::new();
         let mut cursor = 0usize;
@@ -3015,11 +3126,6 @@ mod tests {
         raw.extend_from_slice(b"NE]\n\n: keepalive\n\n");
         assert!(buffered_event_stream_has_terminal_event(&raw, &mut cursor).unwrap());
         assert_eq!(cursor, "data: [DONE]\n\n".len());
-    }
-
-    #[test]
-    fn continuation_round_timeout_uses_independent_default_budget() {
-        assert_eq!(continuation_round_timeout(), Duration::from_secs(300));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3065,21 +3171,29 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn continuation_reader_round_timeout_limits_keepalive_only_streams() {
+    async fn continuation_reader_uses_configured_terminal_event_timeout_without_private_default() {
         let mut stream = DelayedKeepaliveStream::new(Duration::from_millis(2));
-        let started = Instant::now();
 
-        let err = read_buffered_event_stream_chunks_with_round_timeout(
-            &mut stream,
-            Some(Duration::from_millis(20)),
-            true,
-            Duration::from_millis(20),
-        )
-        .await
-        .expect_err("keepalive-only stream should hit round timeout");
+        let err =
+            read_buffered_event_stream_chunks(&mut stream, Some(Duration::from_millis(20)), true)
+                .await
+                .expect_err("keepalive-only stream should hit configured terminal event timeout");
 
-        assert_eq!(err, "continuation event-stream round timeout");
-        assert!(started.elapsed() < Duration::from_secs(1));
+        assert_eq!(err, "continuation event-stream terminal event timeout");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn continuation_reader_fails_closed_when_stream_timeout_is_disabled() {
+        let mut stream = DelayedKeepaliveStream::new(Duration::from_millis(2));
+
+        let err = read_buffered_event_stream_chunks(&mut stream, None, true)
+            .await
+            .expect_err("disabled stream timeout should fail closed in continuation repair");
+
+        assert_eq!(
+            err,
+            "continuation event-stream terminal event timeout disabled"
+        );
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -3087,15 +3201,11 @@ mod tests {
         let mut stream =
             SequenceThenPendingStream::new(vec![Ok(Bytes::from_static(&[0x1f, 0x8b, 0x08, 0x00]))]);
 
-        let err = read_buffered_event_stream_chunks_with_round_timeout(
-            &mut stream,
-            Some(Duration::from_millis(20)),
-            false,
-            Duration::from_millis(20),
-        )
-        .await
-        .expect_err("encoded stream without EOF should hit round timeout");
+        let err =
+            read_buffered_event_stream_chunks(&mut stream, Some(Duration::from_millis(20)), false)
+                .await
+                .expect_err("encoded stream without EOF should hit terminal event timeout");
 
-        assert_eq!(err, "continuation event-stream round timeout");
+        assert_eq!(err, "continuation event-stream terminal event timeout");
     }
 }
