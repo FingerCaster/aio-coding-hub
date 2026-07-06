@@ -3432,6 +3432,7 @@ export type ProviderAccountUsageResult = {
   freshness: ProviderAccountUsageFreshness;
   plan_name: string | null;
   balance: number | null;
+  plan_remaining: number | null;
   used: number | null;
   total: number | null;
   unit: string | null;

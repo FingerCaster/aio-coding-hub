@@ -751,6 +751,7 @@ describe("services/providers/providers", () => {
         freshness: "fresh",
         plan_name: "Pro",
         balance: 12.5,
+        plan_remaining: null,
         used: null,
         total: null,
         unit: "USD",

@@ -59,7 +59,7 @@ function statusLabel(status: ProviderAccountUsageResult["status"]) {
     case "available":
       return "可用";
     case "zero_balance":
-      return "余额 0";
+      return "无可用额度";
     case "expired":
       return "已过期";
     case "auth_failed":
@@ -104,6 +104,7 @@ function buildUsageDisplay(result: ProviderAccountUsageResult | null) {
   const unit = result.unit;
   const parts = [statusLabel(result.status)];
   const balance = formatAmount(result.balance, unit);
+  const planRemaining = formatAmount(result.plan_remaining, unit);
   const metrics = [
     buildUsageMetric("已用", result.used, result.total, unit, {
       usedOnlyLabel: "已用",
@@ -115,6 +116,7 @@ function buildUsageDisplay(result: ProviderAccountUsageResult | null) {
   ].filter((metric): metric is string => Boolean(metric));
 
   if (result.plan_name) parts.push(result.plan_name);
+  if (planRemaining) parts.push(`套餐剩余 ${planRemaining}`);
   if (balance) parts.push(`余额 ${balance}`);
   if (result.message && parts.length === 1) parts.push(result.message);
 

@@ -133,6 +133,7 @@ describe("pages/providers/SortableProviderCard", () => {
       freshness: "fresh",
       plan_name: "Pro",
       balance: 12.5,
+      plan_remaining: null,
       used: null,
       total: null,
       unit: "USD",
@@ -178,6 +179,7 @@ describe("pages/providers/SortableProviderCard", () => {
       freshness: "fresh",
       plan_name: "CodeX Air 订阅",
       balance: 130,
+      plan_remaining: null,
       used: null,
       total: null,
       unit: "USD",
@@ -225,6 +227,92 @@ describe("pages/providers/SortableProviderCard", () => {
     );
   });
 
+  it("renders mixed package and balance account usage without flattening plan allowance", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "sub2api",
+      status: "available",
+      freshness: "fresh",
+      plan_name: "Super Ultra",
+      balance: 0,
+      plan_remaining: 42,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    renderCard({
+      id: 12,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "sub2api" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
+
+    expect(
+      await screen.findByText("账户: 可用 · Super Ultra · 套餐剩余 42.0 USD · 余额 0.00 USD")
+    ).toBeInTheDocument();
+    expect(screen.queryByText(/账户: 可用 · Super Ultra · 余额 42.0 USD/)).not.toBeInTheDocument();
+  });
+
+  it("renders zero balance status as no available quota", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "sub2api",
+      status: "zero_balance",
+      freshness: "fresh",
+      plan_name: null,
+      balance: 0,
+      plan_remaining: null,
+      used: null,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    renderCard({
+      id: 13,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "sub2api" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    fireEvent.click(screen.getByRole("button", { name: /账户: 未刷新/ }));
+
+    expect(await screen.findByText("账户: 无可用额度 · 余额 0.00 USD")).toBeInTheDocument();
+    expect(screen.queryByText(/账户: 余额 0/)).not.toBeInTheDocument();
+  });
+
   it("renders balance-only account usage without a subscription label", async () => {
     vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
       adapter_kind: "newapi",
@@ -232,6 +320,7 @@ describe("pages/providers/SortableProviderCard", () => {
       freshness: "fresh",
       plan_name: null,
       balance: 1,
+      plan_remaining: null,
       used: 2,
       total: 3,
       unit: "USD",

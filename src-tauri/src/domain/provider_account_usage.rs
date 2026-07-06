@@ -54,6 +54,7 @@ pub(crate) struct ProviderAccountUsageResult {
     pub freshness: ProviderAccountUsageFreshness,
     pub plan_name: Option<String>,
     pub balance: Option<f64>,
+    pub plan_remaining: Option<f64>,
     pub used: Option<f64>,
     pub total: Option<f64>,
     pub unit: Option<String>,
@@ -81,6 +82,7 @@ impl ProviderAccountUsageResult {
             freshness: ProviderAccountUsageFreshness::NotFetched,
             plan_name: None,
             balance: None,
+            plan_remaining: None,
             used: None,
             total: None,
             unit: None,
@@ -108,6 +110,7 @@ impl ProviderAccountUsageResult {
             freshness: ProviderAccountUsageFreshness::Fresh,
             plan_name: None,
             balance: None,
+            plan_remaining: None,
             used: None,
             total: None,
             unit: None,
@@ -353,9 +356,18 @@ fn parse_sub2api_response(
     now_unix: i64,
 ) -> ProviderAccountUsageResult {
     let is_valid = body.get("isValid").and_then(Value::as_bool);
-    let balance = number_at(body, &["remaining"]);
+    let root_balance = number_at(body, &["balance"]);
+    let remaining = number_at(body, &["remaining"]);
+    let explicit_plan_remaining = number_at(body, &["plan_remaining", "planRemaining"]);
+    let plan_remaining = explicit_plan_remaining;
+    let balance = if root_balance.is_some() || plan_remaining.is_none() {
+        root_balance.or(remaining)
+    } else {
+        None
+    };
     let subscription = body.get("subscription").unwrap_or(&Value::Null);
-    let plan_name = string_at(body, &["planName", "plan_name"]);
+    let plan_name =
+        subscription_plan_name(body).or_else(|| string_at(body, &["planName", "plan_name"]));
     let daily_used = number_at(subscription, &["daily_usage_usd", "dailyUsageUsd"]);
     let daily_total = number_at(subscription, &["daily_limit_usd", "dailyLimitUsd"]);
     let weekly_used = number_at(subscription, &["weekly_usage_usd", "weeklyUsageUsd"]);
@@ -368,6 +380,7 @@ fn parse_sub2api_response(
 
     if is_valid.is_none()
         && balance.is_none()
+        && plan_remaining.is_none()
         && plan_name.is_none()
         && expires_at.is_none()
         && daily_used.is_none()
@@ -386,7 +399,8 @@ fn parse_sub2api_response(
         return result;
     }
 
-    let status = status_from_account_parts(is_valid, balance, expires_at, now_unix);
+    let status =
+        status_from_account_parts(is_valid, &[balance, plan_remaining], expires_at, now_unix);
     let mut result = ProviderAccountUsageResult::fetched(
         ProviderAccountUsageAdapterKind::Sub2api,
         status,
@@ -394,6 +408,7 @@ fn parse_sub2api_response(
     );
     result.plan_name = plan_name;
     result.balance = balance;
+    result.plan_remaining = plan_remaining;
     result.unit = Some("USD".to_string());
     result.daily_used = daily_used;
     result.daily_total = daily_total;
@@ -435,7 +450,7 @@ fn parse_newapi_response(
         &["expired_time", "expiredTime", "expires_at", "expiresAt"],
     )
     .and_then(parse_timestamp_value);
-    let status = status_from_account_parts(None, Some(balance), expires_at, now_unix);
+    let status = status_from_account_parts(None, &[Some(balance)], expires_at, now_unix);
 
     let mut result = ProviderAccountUsageResult::fetched(
         ProviderAccountUsageAdapterKind::Newapi,
@@ -454,7 +469,7 @@ fn parse_newapi_response(
 
 fn status_from_account_parts(
     is_valid: Option<bool>,
-    balance: Option<f64>,
+    spendable_amounts: &[Option<f64>],
     expires_at: Option<i64>,
     now_unix: i64,
 ) -> ProviderAccountUsageStatus {
@@ -464,7 +479,16 @@ fn status_from_account_parts(
     if expires_at.is_some_and(|expires_at| expires_at <= now_unix) {
         return ProviderAccountUsageStatus::Expired;
     }
-    if balance.is_some_and(|balance| balance <= 0.0) {
+    let mut has_known_amount = false;
+    let mut has_positive_amount = false;
+    for amount in spendable_amounts.iter().flatten() {
+        has_known_amount = true;
+        if *amount > 0.0 {
+            has_positive_amount = true;
+            break;
+        }
+    }
+    if has_known_amount && !has_positive_amount {
         return ProviderAccountUsageStatus::ZeroBalance;
     }
     ProviderAccountUsageStatus::Available
@@ -484,6 +508,61 @@ fn string_at(value: &Value, keys: &[&str]) -> Option<String> {
 
 fn number_at(value: &Value, keys: &[&str]) -> Option<f64> {
     value_at(value, keys).and_then(number_from_value)
+}
+
+fn subscription_plan_name(body: &Value) -> Option<String> {
+    let array_name = body
+        .get("subscriptions")
+        .and_then(Value::as_array)
+        .and_then(|subscriptions| {
+            subscriptions
+                .iter()
+                .find(|subscription| subscription_is_current(subscription))
+                .and_then(|subscription| string_at(subscription, &["planName", "plan_name"]))
+                .or_else(|| unique_subscription_plan_name(subscriptions))
+        });
+
+    array_name.or_else(|| {
+        body.get("subscription")
+            .and_then(|subscription| string_at(subscription, &["planName", "plan_name"]))
+    })
+}
+
+fn subscription_is_current(subscription: &Value) -> bool {
+    let current_keys = ["active", "isActive", "current", "isCurrent", "enabled"];
+    if current_keys
+        .iter()
+        .any(|key| subscription.get(*key).and_then(Value::as_bool) == Some(true))
+    {
+        return true;
+    }
+
+    string_at(subscription, &["status", "state"]).is_some_and(|status| {
+        matches!(
+            status.to_ascii_lowercase().as_str(),
+            "active" | "current" | "enabled" | "valid"
+        )
+    })
+}
+
+fn unique_subscription_plan_name(subscriptions: &[Value]) -> Option<String> {
+    let mut unique_name: Option<String> = None;
+    for subscription in subscriptions {
+        let Some(name) = string_at(subscription, &["planName", "plan_name"]) else {
+            continue;
+        };
+        if unique_name
+            .as_deref()
+            .is_some_and(|existing| existing == name)
+        {
+            continue;
+        }
+        if unique_name.is_some() {
+            return None;
+        }
+        unique_name = Some(name);
+    }
+    unique_name
 }
 
 fn number_from_value(value: &Value) -> Option<f64> {
@@ -568,10 +647,155 @@ mod tests {
         assert_eq!(result.status, ProviderAccountUsageStatus::Available);
         assert_eq!(result.plan_name.as_deref(), Some("Pro"));
         assert_eq!(result.balance, Some(12.5));
+        assert_eq!(result.plan_remaining, None);
         assert_eq!(result.daily_used, Some(1.25));
         assert_eq!(result.weekly_total, Some(70.0));
         assert_eq!(result.monthly_total, Some(300.0));
         assert_eq!(result.expires_at, Some(1_893_456_000));
+    }
+
+    #[test]
+    fn sub2api_mixed_balance_and_package_payload_keeps_amounts_separate() {
+        let body = json!({
+            "isValid": true,
+            "planName": "套餐+余额",
+            "balance": 0,
+            "remaining": 42,
+            "plan_remaining": 42,
+            "subscriptions": [
+                {
+                    "planName": "Starter",
+                    "active": false
+                },
+                {
+                    "planName": "Super Ultra",
+                    "active": true,
+                    "remaining": 12,
+                    "todayRemaining": 6
+                }
+            ]
+        });
+
+        let result = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &body,
+            100,
+            1_800_000_000,
+        );
+
+        assert_eq!(result.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(result.plan_name.as_deref(), Some("Super Ultra"));
+        assert_eq!(result.balance, Some(0.0));
+        assert_eq!(result.plan_remaining, Some(42.0));
+    }
+
+    #[test]
+    fn sub2api_mixed_payload_status_priority_preserves_auth_and_expiry() {
+        let invalid = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &json!({
+                "isValid": false,
+                "balance": 0,
+                "plan_remaining": 42,
+                "remaining": 42
+            }),
+            100,
+            1_800_000_000,
+        );
+        let expired = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &json!({
+                "isValid": true,
+                "balance": 0,
+                "plan_remaining": 42,
+                "remaining": 42,
+                "expires_at": 1_700_000_000
+            }),
+            100,
+            1_800_000_000,
+        );
+
+        assert_eq!(invalid.status, ProviderAccountUsageStatus::AuthFailed);
+        assert_eq!(expired.status, ProviderAccountUsageStatus::Expired);
+    }
+
+    #[test]
+    fn sub2api_mixed_payload_zero_balance_requires_no_positive_spendable_amounts() {
+        let result = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &json!({
+                "isValid": true,
+                "balance": 0,
+                "plan_remaining": 0,
+                "remaining": 0
+            }),
+            100,
+            1_800_000_000,
+        );
+
+        assert_eq!(result.status, ProviderAccountUsageStatus::ZeroBalance);
+        assert_eq!(result.balance, Some(0.0));
+        assert_eq!(result.plan_remaining, Some(0.0));
+    }
+
+    #[test]
+    fn sub2api_does_not_promote_ambiguous_remaining_to_plan_allowance() {
+        let result = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &json!({
+                "isValid": true,
+                "balance": 0,
+                "remaining": 42
+            }),
+            100,
+            1_800_000_000,
+        );
+
+        assert_eq!(result.status, ProviderAccountUsageStatus::ZeroBalance);
+        assert_eq!(result.balance, Some(0.0));
+        assert_eq!(result.plan_remaining, None);
+    }
+
+    #[test]
+    fn sub2api_explicit_plan_remaining_without_cash_balance_does_not_duplicate_remaining() {
+        let result = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &json!({
+                "isValid": true,
+                "remaining": 42,
+                "plan_remaining": 42
+            }),
+            100,
+            1_800_000_000,
+        );
+
+        assert_eq!(result.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(result.balance, None);
+        assert_eq!(result.plan_remaining, Some(42.0));
+    }
+
+    #[test]
+    fn sub2api_multiple_subscription_names_without_selector_falls_back_to_root_plan() {
+        let result = parse_account_usage_response(
+            ProviderAccountUsageAdapterKind::Sub2api,
+            &json!({
+                "isValid": true,
+                "planName": "套餐+余额",
+                "balance": 3,
+                "plan_remaining": 42,
+                "subscriptions": [
+                    { "planName": "Starter" },
+                    { "planName": "Super Ultra" }
+                ]
+            }),
+            100,
+            1_800_000_000,
+        );
+
+        assert_eq!(result.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(result.plan_name.as_deref(), Some("套餐+余额"));
+        assert_eq!(result.balance, Some(3.0));
+        assert_eq!(result.plan_remaining, Some(42.0));
     }
 
     #[test]
@@ -592,6 +816,7 @@ mod tests {
         assert_eq!(result.status, ProviderAccountUsageStatus::AuthFailed);
         assert_eq!(result.plan_name.as_deref(), Some("Expired"));
         assert_eq!(result.balance, Some(8.0));
+        assert_eq!(result.plan_remaining, None);
     }
 
     #[test]
