@@ -389,6 +389,13 @@ fn app_is_terminating(app: &tauri::AppHandle) -> bool {
 }
 
 pub(crate) fn install(app: &tauri::AppHandle) {
+    if heartbeat_watchdog_disabled_for_dev() {
+        tracing::warn!(
+            "WebView heartbeat watchdog disabled by AIO_CODING_HUB_DISABLE_HEARTBEAT_WATCHDOG"
+        );
+        return;
+    }
+
     tracing::info!(
         interval_s = HEARTBEAT_INTERVAL.as_secs(),
         timeout_s = PONG_TIMEOUT.as_secs(),
@@ -427,6 +434,19 @@ pub(crate) fn install(app: &tauri::AppHandle) {
             check_and_recover_if_needed(&app).await;
         }
     });
+}
+
+#[cfg(debug_assertions)]
+fn heartbeat_watchdog_disabled_for_dev() -> bool {
+    std::env::var("AIO_CODING_HUB_DISABLE_HEARTBEAT_WATCHDOG")
+        .ok()
+        .map(|value| value.trim().to_ascii_lowercase())
+        .is_some_and(|value| matches!(value.as_str(), "1" | "true" | "yes" | "on"))
+}
+
+#[cfg(not(debug_assertions))]
+fn heartbeat_watchdog_disabled_for_dev() -> bool {
+    false
 }
 
 /// Called whenever the main window is shown or focused (tray click, dock icon,

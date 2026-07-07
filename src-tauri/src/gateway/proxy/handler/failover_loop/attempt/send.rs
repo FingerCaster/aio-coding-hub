@@ -17,6 +17,25 @@ pub(super) async fn send_upstream<R: tauri::Runtime>(
     headers: HeaderMap,
     body: Bytes,
 ) -> SendResult {
+    send_upstream_with_first_byte_timeout(
+        ctx,
+        method,
+        url,
+        headers,
+        body,
+        ctx.upstream_first_byte_timeout,
+    )
+    .await
+}
+
+pub(super) async fn send_upstream_with_first_byte_timeout<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    method: Method,
+    url: reqwest::Url,
+    headers: HeaderMap,
+    body: Bytes,
+    first_byte_timeout: Option<std::time::Duration>,
+) -> SendResult {
     let client = ctx.state.client();
     let send = client
         .request(method, url)
@@ -24,7 +43,7 @@ pub(super) async fn send_upstream<R: tauri::Runtime>(
         .body(body)
         .send();
 
-    if let Some(timeout) = ctx.upstream_first_byte_timeout {
+    if let Some(timeout) = first_byte_timeout {
         match tokio::time::timeout(timeout, send).await {
             Ok(Ok(resp)) => SendResult::Ok(resp),
             Ok(Err(err)) => SendResult::Err(err),

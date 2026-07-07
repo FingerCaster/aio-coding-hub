@@ -6,7 +6,14 @@ use std::collections::BTreeMap;
 
 pub(super) const ENCRYPTED_REASONING_INCLUDE: &str = "reasoning.encrypted_content";
 pub(super) const CONTINUATION_MARKER_TEXT: &str = "Continue thinking. Preserve any prior assistant-visible answer verbatim as a prefix. If the prior answer is already complete, repeat it exactly; do not rewrite, summarize, or produce an alternative wording.";
-const EXPERIMENTAL_CONTINUATION_REASONING_EFFORT: &str = "low";
+const EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT: &str = "Continue solving from the original user prompt. Treat any prior assistant-visible draft in this repair as untrusted and not delivered to the user. Recompute from scratch, check the final answer against the original constraints, and return one concise final answer. Do not use tools. Do not preserve, quote, or summarize prior drafts; use a short direct derivation instead of extended hidden deliberation.";
+const EXPERIMENTAL_CONTINUATION_RETRY_PREFIX: &str =
+    "Previous experimental repair attempts still ended at the hidden truncation boundary";
+const SYNTHETIC_CONTINUATION_MARKERS: [&str; 3] = [
+    CONTINUATION_MARKER_TEXT,
+    EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT,
+    EXPERIMENTAL_CONTINUATION_RETRY_PREFIX,
+];
 pub(super) const BPLUS_CLIENT_CONTRACT_VERSION: &str = "bplus_protocol_reconstruction_v8";
 pub(super) const BPLUS_RESPONSE_ID_CONTINUITY: &str = "final_raw_response_id_validated";
 pub(super) const BPLUS_CLEAN_APPEND_ENABLED: bool = false;
@@ -112,11 +119,11 @@ impl ContinuationReplayPolicy {
     }
 
     pub(super) fn auto_add_encrypted_reasoning_include(self) -> bool {
-        matches!(self, Self::StableEncryptedReplay)
+        true
     }
 
     pub(super) fn requires_encrypted_reasoning(self) -> bool {
-        matches!(self, Self::StableEncryptedReplay)
+        true
     }
 
     pub(super) fn is_experimental(self) -> bool {
@@ -135,6 +142,7 @@ impl ContinuationReplayPolicy {
         stable_tail: &mut Vec<Value>,
         current: &Value,
         raw_sse: &[u8],
+        sent_rounds: u32,
     ) -> Vec<Value> {
         match self {
             Self::StableEncryptedReplay => {
@@ -143,9 +151,12 @@ impl ContinuationReplayPolicy {
                 stable_tail.clone()
             }
             Self::ExperimentalSafeReplay => {
-                stable_tail.extend(experimental_safe_replay_output_items(current));
-                stable_tail.extend(experimental_safe_replay_raw_lifecycle_output_items(raw_sse));
-                stable_tail.push(experimental_continuation_instruction_item());
+                let _ = raw_sse;
+                append_unique_experimental_replay_items(stable_tail, reasoning_items(current));
+                stable_tail.push(experimental_continuation_instruction_item(
+                    sent_rounds,
+                    Some(current),
+                ));
                 stable_tail.clone()
             }
         }
@@ -210,7 +221,6 @@ pub(super) fn build_continuation_payload(
             );
         }
         ContinuationPayloadMode::ExperimentalSafeReplay => {
-            remove_continuation_encrypted_include(object);
             apply_experimental_safe_payload_options(object);
         }
     }
@@ -231,23 +241,35 @@ fn experimental_continuation_input_items(base_body: &[u8], replay_tail: &[Value]
         })
         .unwrap_or_default()
         .into_iter()
-        .filter_map(sanitize_responses_input_item_for_continuation_replay)
+        .filter_map(|item| sanitize_responses_input_item_for_continuation_replay(item, false))
         .collect::<Vec<_>>();
     input_items.extend(
         replay_tail
             .iter()
             .cloned()
-            .filter_map(sanitize_responses_input_item_for_continuation_replay),
+            .filter_map(|item| sanitize_responses_input_item_for_continuation_replay(item, true)),
     );
     input_items
 }
 
-fn sanitize_responses_input_item_for_continuation_replay(item: Value) -> Option<Value> {
+fn sanitize_responses_input_item_for_continuation_replay(
+    item: Value,
+    allow_encrypted_reasoning: bool,
+) -> Option<Value> {
     let normalized = normalize_responses_input_item_for_continuation(item)?;
     if normalized.get("type").and_then(Value::as_str) == Some("reasoning") {
+        if allow_encrypted_reasoning && reasoning_item_has_encrypted_content(&normalized) {
+            return Some(normalized);
+        }
         return None;
     }
     Some(strip_encrypted_content(normalized))
+}
+
+fn reasoning_item_has_encrypted_content(item: &Value) -> bool {
+    item.get("encrypted_content")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty())
 }
 
 fn normalize_responses_input_item_for_continuation(item: Value) -> Option<Value> {
@@ -343,6 +365,19 @@ fn dedupe_experimental_replay_items(items: Vec<Value>) -> Vec<Value> {
     deduped
 }
 
+fn append_unique_experimental_replay_items(target: &mut Vec<Value>, items: Vec<Value>) {
+    let mut seen = target
+        .iter()
+        .filter_map(|item| serde_json::to_string(item).ok())
+        .collect::<std::collections::BTreeSet<_>>();
+    for item in items {
+        let key = serde_json::to_string(&item).unwrap_or_default();
+        if seen.insert(key) {
+            target.push(item);
+        }
+    }
+}
+
 fn sanitize_response_output_item_for_experimental_replay(item: Value) -> Option<Value> {
     let normalized = normalize_responses_input_item_for_continuation(item)?;
     let item_type = normalized.get("type").and_then(Value::as_str);
@@ -368,28 +403,11 @@ fn sanitize_response_output_item_for_experimental_replay(item: Value) -> Option<
     }
 }
 
-fn remove_continuation_encrypted_include(object: &mut Map<String, Value>) {
-    let Some(include) = object.get_mut("include") else {
-        return;
-    };
-    match include {
-        Value::Array(items) => {
-            items.retain(|item| item.as_str() != Some(ENCRYPTED_REASONING_INCLUDE));
-            if items.is_empty() {
-                object.remove("include");
-            }
-        }
-        Value::String(value) if value.trim() == ENCRYPTED_REASONING_INCLUDE => {
-            object.remove("include");
-        }
-        _ => {}
-    }
-}
-
 fn apply_experimental_safe_payload_options(object: &mut Map<String, Value>) {
-    object.insert(
-        "reasoning".to_string(),
-        json!({ "effort": EXPERIMENTAL_CONTINUATION_REASONING_EFFORT }),
+    merge_include_value(
+        object
+            .entry("include".to_string())
+            .or_insert(Value::Array(Vec::new())),
     );
     object.remove("tools");
     object.remove("tool_choice");
@@ -427,11 +445,31 @@ pub(super) fn commentary_marker_item() -> Value {
     })
 }
 
-fn experimental_continuation_instruction_item() -> Value {
+fn experimental_continuation_instruction_text(sent_rounds: u32, current: Option<&Value>) -> String {
+    if sent_rounds == 0 {
+        return EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT.to_string();
+    }
+    let token_detail = current
+        .and_then(super::codex_reasoning_features::extract_reasoning_tokens)
+        .map(|token| {
+            format!(
+                "; the last hidden reasoning token count was {}",
+                token.reasoning_tokens
+            )
+        })
+        .unwrap_or_default();
+    format!(
+        "{EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT}\n\n{EXPERIMENTAL_CONTINUATION_RETRY_PREFIX}{token_detail}. None of those attempts were delivered to the user. For repair attempt {}, deliberately change strategy: stop exploring alternatives, avoid repeating the same hidden reasoning path, and answer from the original prompt with the shortest complete proof you can.",
+        sent_rounds.saturating_add(1)
+    )
+}
+
+fn experimental_continuation_instruction_item(sent_rounds: u32, current: Option<&Value>) -> Value {
     serde_json::json!({
         "type": "message",
-        "role": "user",
-        "content": CONTINUATION_MARKER_TEXT,
+        "role": "assistant",
+        "content": [{"type": "output_text", "text": experimental_continuation_instruction_text(sent_rounds, current)}],
+        "phase": "commentary",
     })
 }
 
@@ -696,6 +734,7 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
     if visible_texts.iter().all(|text| text == final_text) {
         return Ok("exact_duplicate");
     }
+    let replacement_allowed = intercepted_prior_visible_can_be_replaced(&visibility);
     let mut saw_strict_prefix = false;
     for pair in visible_texts.windows(2) {
         let previous = &pair[0];
@@ -707,6 +746,9 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
             saw_strict_prefix = true;
             continue;
         }
+        if replacement_allowed {
+            return Ok("intercepted_prior_replaced");
+        }
         return Err(visible_text_chain_mismatch_reason(
             visibility, previous, next,
         ));
@@ -716,6 +758,54 @@ fn select_visible_assembly_kind(visibility: &[RoundVisibility]) -> Result<&'stat
     } else {
         Err("visible text chain did not prove a safe branch".to_string())
     }
+}
+
+fn intercepted_prior_visible_can_be_replaced(visibility: &[RoundVisibility]) -> bool {
+    let Some(final_visibility) = visibility.last() else {
+        return false;
+    };
+    let Some(final_text) = final_visibility
+        .assistant_message_text
+        .as_deref()
+        .map(normalize_visible_message_text)
+        .filter(|text| !text.is_empty())
+    else {
+        return false;
+    };
+    if final_visibility.has_tool_call || final_visibility.has_commentary_marker {
+        return false;
+    }
+    if let Some(reason) = final_visibility.unsafe_reason {
+        if !final_unsafe_reason_can_be_sanitized(final_visibility, reason) {
+            return false;
+        }
+    }
+
+    let mut saw_replaceable_prior = false;
+    for round in visibility.iter().take(visibility.len().saturating_sub(1)) {
+        if round.has_tool_call {
+            return false;
+        }
+        if let Some(reason) = round.unsafe_reason {
+            if !non_final_unsafe_reason_can_be_suppressed(reason) {
+                return false;
+            }
+        }
+        let Some(prior_text) = round
+            .assistant_message_text
+            .as_deref()
+            .map(normalize_visible_message_text)
+            .filter(|text| !text.is_empty())
+        else {
+            continue;
+        };
+        if final_text.contains(&prior_text) && !final_text.starts_with(&prior_text) {
+            return false;
+        }
+        saw_replaceable_prior = true;
+    }
+
+    saw_replaceable_prior
 }
 
 fn visible_text_chain_mismatch_reason(
@@ -969,7 +1059,7 @@ fn classify_round_visibility(response: &Value) -> RoundVisibility {
             }
             "message" => {
                 if item.get("phase").and_then(Value::as_str) == Some("commentary") {
-                    if item_contains_text(item, CONTINUATION_MARKER_TEXT) {
+                    if item_contains_synthetic_continuation_marker(item) {
                         has_commentary_marker = true;
                         non_visible_commentary_count =
                             non_visible_commentary_count.saturating_add(1);
@@ -1125,8 +1215,14 @@ fn build_sanitized_final_client_sse(
         "\"type\":\"reasoning\"",
         "\"summary\"",
         "\"commentary\"",
-        CONTINUATION_MARKER_TEXT,
     ] {
+        if raw_text.contains(forbidden) {
+            return Err(format!(
+                "sanitized client SSE retained forbidden marker: {forbidden}"
+            ));
+        }
+    }
+    for forbidden in SYNTHETIC_CONTINUATION_MARKERS {
         if raw_text.contains(forbidden) {
             return Err(format!(
                 "sanitized client SSE retained forbidden marker: {forbidden}"
@@ -1144,16 +1240,25 @@ fn sanitized_final_output_items(
     output_items.extend(experimental_safe_replay_raw_lifecycle_output_items(
         final_round.raw_sse.as_ref(),
     ));
+    let expected = final_visibility
+        .assistant_message_text
+        .as_deref()
+        .ok_or_else(|| "sanitized final output missing assistant message text".to_string())?;
+    let expected_normalized = normalize_visible_message_text(expected);
+    let output_items = output_items
+        .into_iter()
+        .filter(|item| {
+            folded_visible_message_output_text(item)
+                .map(|text| normalize_visible_message_text(&text) == expected_normalized)
+                .unwrap_or(false)
+        })
+        .collect::<Vec<_>>();
     let merged = merged_output_items(&[json!({ "output": output_items })]);
     let text = merged
         .iter()
         .filter_map(folded_visible_message_output_text)
         .collect::<Vec<_>>()
         .join("");
-    let expected = final_visibility
-        .assistant_message_text
-        .as_deref()
-        .ok_or_else(|| "sanitized final output missing assistant message text".to_string())?;
     if normalize_visible_message_text(&text) != normalize_visible_message_text(expected) {
         return Err("sanitized final output text does not match final visibility".to_string());
     }
@@ -1169,8 +1274,10 @@ fn validate_final_raw_for_sanitized_rebuild(
 ) -> Result<(), String> {
     let raw_text = std::str::from_utf8(round.raw_sse.as_ref())
         .map_err(|err| format!("final raw SSE is not utf-8: {err}"))?;
-    if raw_text.contains(CONTINUATION_MARKER_TEXT) {
-        return Err("final raw contains synthetic continuation marker".to_string());
+    for marker in SYNTHETIC_CONTINUATION_MARKERS {
+        if raw_text.contains(marker) {
+            return Err("final raw contains synthetic continuation marker".to_string());
+        }
     }
 
     let mut cursor = 0usize;
@@ -1411,8 +1518,10 @@ fn validate_final_raw_for_passthrough(
 ) -> Result<(), String> {
     let raw_text = std::str::from_utf8(round.raw_sse.as_ref())
         .map_err(|err| format!("final raw SSE is not utf-8: {err}"))?;
-    if raw_text.contains(CONTINUATION_MARKER_TEXT) {
-        return Err("final raw contains synthetic continuation marker".to_string());
+    for marker in SYNTHETIC_CONTINUATION_MARKERS {
+        if raw_text.contains(marker) {
+            return Err("final raw contains synthetic continuation marker".to_string());
+        }
     }
 
     let mut cursor = 0usize;
@@ -2189,6 +2298,12 @@ fn item_contains_text(item: &Value, needle: &str) -> bool {
         .flatten()
         .filter_map(|content| content.get("text").and_then(Value::as_str))
         .any(|text| text.contains(needle))
+}
+
+fn item_contains_synthetic_continuation_marker(item: &Value) -> bool {
+    SYNTHETIC_CONTINUATION_MARKERS
+        .iter()
+        .any(|marker| item_contains_text(item, marker))
 }
 
 fn stable_visible_text_hash(text: &str) -> String {
@@ -3680,7 +3795,7 @@ mod tests {
         .unwrap();
         let replay_tail = vec![
             json!({"id": "rs_hit", "type": "reasoning", "encrypted_content": "hit_secret"}),
-            commentary_marker_item(),
+            experimental_continuation_instruction_item(0, None),
         ];
 
         let body = build_continuation_payload(
@@ -3693,32 +3808,39 @@ mod tests {
 
         assert_eq!(value.get("previous_response_id"), None);
         assert_eq!(value["stream"], json!(true));
-        assert_eq!(
-            value["reasoning"],
-            json!({"effort": EXPERIMENTAL_CONTINUATION_REASONING_EFFORT})
-        );
+        assert_eq!(value["reasoning"], json!({"effort": "high"}));
         assert_eq!(value.get("tools"), None);
         assert_eq!(value.get("tool_choice"), None);
         assert_eq!(value.get("parallel_tool_calls"), None);
-        assert_eq!(value["include"], json!(["foo"]));
+        assert_eq!(
+            value["include"],
+            json!(["foo", ENCRYPTED_REASONING_INCLUDE])
+        );
         let input = value["input"].as_array().unwrap();
-        assert_eq!(input.len(), 3);
+        assert_eq!(input.len(), 4);
         assert_eq!(input[0], json!({"role": "user", "content": "hello"}));
         assert_eq!(
             input[1],
             json!({"type": "message", "role": "user", "content": "plain prompt"})
         );
-        assert_eq!(input[2]["phase"], "commentary");
+        assert_eq!(
+            input[2],
+            json!({"id": "rs_hit", "type": "reasoning", "encrypted_content": "hit_secret"})
+        );
+        assert_eq!(input[3]["role"], "assistant");
+        assert_eq!(input[3]["phase"], "commentary");
+        assert!(item_contains_text(
+            &input[3],
+            EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT
+        ));
         let payload_text = serde_json::to_string(&value).unwrap();
-        assert!(!payload_text.contains("encrypted_content"));
-        assert!(!payload_text.contains("hit_secret"));
-        assert!(!input
-            .iter()
-            .any(|item| item.get("type").and_then(Value::as_str) == Some("reasoning")));
+        assert!(!payload_text.contains("input_secret"));
+        assert!(!payload_text.contains("input_reasoning_secret"));
+        assert!(payload_text.contains("hit_secret"));
     }
 
     #[test]
-    fn experimental_safe_replay_tail_accumulates_safe_assistant_output() {
+    fn experimental_safe_replay_tail_drops_prior_assistant_output() {
         let mut replay_tail = Vec::new();
         let first = json!({
             "output": [
@@ -3744,66 +3866,85 @@ mod tests {
             &mut replay_tail,
             &first,
             &[],
+            0,
         );
 
         assert_eq!(first_tail.len(), 2);
+        assert_eq!(first_tail[0]["type"], "reasoning");
         assert_eq!(
             first_tail[0]
-                .pointer("/content/0/text")
+                .get("encrypted_content")
                 .and_then(Value::as_str),
-            Some("partial ")
+            Some("enc_1")
         );
-        assert_eq!(first_tail[1]["role"], "user");
-        assert_eq!(
-            first_tail[1].get("content").and_then(Value::as_str),
-            Some(CONTINUATION_MARKER_TEXT)
-        );
+        assert_eq!(first_tail[1]["role"], "assistant");
+        assert_eq!(first_tail[1]["phase"], "commentary");
+        assert!(item_contains_text(
+            &first_tail[1],
+            EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT
+        ));
         let first_tail_text = serde_json::to_string(&first_tail).unwrap();
-        assert!(!first_tail_text.contains("encrypted_content"));
+        assert!(!first_tail_text.contains("partial "));
+        assert!(!first_tail_text.contains("msg_secret"));
         assert!(!first_tail_text.contains("function_call"));
-        assert!(!first_tail_text.contains("reasoning"));
 
         let second = json!({
-            "output": [{
-                "id": "msg_2",
-                "type": "message",
-                "role": "assistant",
-                "content": [{"type": "output_text", "text": "partial more "}]
-            }]
+            "usage": {"output_tokens_details": {"reasoning_tokens": 516}},
+            "output": [
+                {"id": "rs_2", "type": "reasoning", "encrypted_content": "enc_2"},
+                {
+                    "id": "msg_2",
+                    "type": "message",
+                    "role": "assistant",
+                    "content": [{"type": "output_text", "text": "partial more "}]
+                }
+            ]
         });
         let second_tail = ContinuationReplayPolicy::ExperimentalSafeReplay.next_replay_tail(
             &mut replay_tail,
             &second,
             &[],
+            1,
         );
 
         assert_eq!(second_tail.len(), 4);
+        assert_eq!(second_tail[0]["type"], "reasoning");
         assert_eq!(
             second_tail[0]
-                .pointer("/content/0/text")
+                .get("encrypted_content")
                 .and_then(Value::as_str),
-            Some("partial ")
+            Some("enc_1")
         );
-        assert_eq!(second_tail[1]["role"], "user");
-        assert_eq!(
-            second_tail[1].get("content").and_then(Value::as_str),
-            Some(CONTINUATION_MARKER_TEXT)
-        );
+        assert_eq!(second_tail[2]["type"], "reasoning");
         assert_eq!(
             second_tail[2]
-                .pointer("/content/0/text")
+                .get("encrypted_content")
                 .and_then(Value::as_str),
-            Some("partial more ")
+            Some("enc_2")
         );
-        assert_eq!(second_tail[3]["role"], "user");
-        assert_eq!(
-            second_tail[3].get("content").and_then(Value::as_str),
-            Some(CONTINUATION_MARKER_TEXT)
+        assert_eq!(second_tail[3]["role"], "assistant");
+        assert_eq!(second_tail[3]["phase"], "commentary");
+        let second_instruction = second_tail[3]
+            .get("content")
+            .and_then(Value::as_array)
+            .and_then(|content| content.first())
+            .and_then(|content| content.get("text"))
+            .and_then(Value::as_str)
+            .expect("instruction");
+        assert!(second_instruction.contains(EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT));
+        assert!(second_instruction.contains(EXPERIMENTAL_CONTINUATION_RETRY_PREFIX));
+        assert!(second_instruction.contains("516"));
+        assert_ne!(
+            first_tail[1].get("content").and_then(Value::as_str),
+            Some(second_instruction)
         );
+        let second_tail_text = serde_json::to_string(&second_tail).unwrap();
+        assert!(!second_tail_text.contains("partial "));
+        assert!(!second_tail_text.contains("partial more "));
     }
 
     #[test]
-    fn experimental_safe_replay_tail_uses_raw_lifecycle_assistant_output() {
+    fn experimental_safe_replay_tail_drops_raw_lifecycle_assistant_output() {
         let mut raw = String::new();
         push_sse_event(
             &mut raw,
@@ -3831,19 +3972,18 @@ mod tests {
             &mut replay_tail,
             &json!({"output": []}),
             raw.as_bytes(),
+            0,
         );
 
-        assert_eq!(tail.len(), 2);
-        assert_eq!(
-            tail[0].pointer("/content/0/text").and_then(Value::as_str),
-            Some("raw lifecycle answer")
-        );
-        assert_eq!(tail[1]["role"], "user");
-        assert_eq!(
-            tail[1].get("content").and_then(Value::as_str),
-            Some(CONTINUATION_MARKER_TEXT)
-        );
+        assert_eq!(tail.len(), 1);
+        assert_eq!(tail[0]["role"], "assistant");
+        assert_eq!(tail[0]["phase"], "commentary");
+        assert!(item_contains_text(
+            &tail[0],
+            EXPERIMENTAL_CONTINUATION_INSTRUCTION_TEXT
+        ));
         let tail_text = serde_json::to_string(&tail).unwrap();
+        assert!(!tail_text.contains("raw lifecycle answer"));
         assert!(!tail_text.contains("encrypted_content"));
         assert!(!tail_text.contains("raw-message-secret"));
     }
@@ -3958,6 +4098,79 @@ mod tests {
         )
         .expect("client usage");
         assert_eq!(reparsed.usage_json, reconstructed.client_usage.usage_json);
+    }
+
+    #[test]
+    fn final_sanitized_rebuild_uses_final_visibility_message_only() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![reasoning("rs_1", "enc_1"), message("msg_1", "答案是 15。")],
+                usage(100, 10, 516),
+            ),
+        );
+        let mut raw = String::new();
+        push_sse_event(
+            &mut raw,
+            "response.created",
+            json!({
+                "type": "response.created",
+                "response": {"id": "resp_2", "status": "in_progress", "model": "gpt-cont"}
+            }),
+        )
+        .expect("created");
+        push_sse_event(
+            &mut raw,
+            "response.reasoning_summary_text.delta",
+            json!({
+                "type": "response.reasoning_summary_text.delta",
+                "delta": "hidden final reasoning",
+            }),
+        )
+        .expect("reasoning delta");
+        push_sse_event(
+            &mut raw,
+            "response.output_item.done",
+            json!({
+                "type": "response.output_item.done",
+                "item": message("msg_draft", "答案是 20。"),
+            }),
+        )
+        .expect("draft");
+        push_sse_event(
+            &mut raw,
+            "response.completed",
+            json!({
+                "type": "response.completed",
+                "response": {
+                    "id": "resp_2",
+                    "status": "completed",
+                    "model": "gpt-cont",
+                    "output": [message("msg_final", "答案是 21。")],
+                    "usage": usage(100, 30, 20),
+                },
+            }),
+        )
+        .expect("completed");
+        let second = repair_round(ContinuationRepairRoundKind::Continuation, Bytes::from(raw));
+
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("reconstruct");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+
+        assert_eq!(
+            reconstructed.reconstruction_status,
+            "final_sanitized_rebuild"
+        );
+        assert_eq!(
+            reconstructed.visible_assembly_kind,
+            "intercepted_prior_replaced"
+        );
+        assert!(body.contains("答案是 21。"));
+        assert!(!body.contains("答案是 15。"));
+        assert!(!body.contains("答案是 20。"));
+        assert!(!body.contains("hidden final reasoning"));
     }
 
     #[test]
@@ -4222,12 +4435,12 @@ mod tests {
     }
 
     #[test]
-    fn distinct_visible_messages_are_unsafe() {
+    fn intercepted_distinct_visible_messages_can_be_replaced_by_final() {
         let first = repair_round(
             ContinuationRepairRoundKind::Initial,
             sse_round(
                 Some("resp_1"),
-                vec![message("msg_1", "答案是 21。")],
+                vec![message("msg_1", "答案是 15。")],
                 usage(1, 10, 516),
             ),
         );
@@ -4235,14 +4448,23 @@ mod tests {
             ContinuationRepairRoundKind::Continuation,
             sse_round(
                 Some("resp_2"),
-                vec![message("msg_2", "还需要说明最坏情况的抽取策略。")],
+                vec![message("msg_2", "答案是 21。")],
                 usage(1, 3, 2),
             ),
         );
 
-        let err =
-            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("non-prefix") || err.contains("distinct"));
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+        let body = std::str::from_utf8(reconstructed.client_raw.as_ref()).expect("utf8");
+
+        assert_eq!(
+            reconstructed.visible_assembly_kind,
+            "intercepted_prior_replaced"
+        );
+        assert!(!body.contains("msg_1"));
+        assert!(!body.contains("答案是 15。"));
+        assert!(body.contains("msg_2"));
+        assert!(body.contains("答案是 21。"));
     }
 
     #[test]
@@ -5305,7 +5527,7 @@ mod tests {
     }
 
     #[test]
-    fn non_final_lifecycle_output_visible_payload_is_unsafe_without_payload_leak() {
+    fn non_final_lifecycle_output_visible_payload_can_be_replaced_without_payload_leak() {
         let mut first_raw = String::new();
         push_sse_event(
             &mut first_raw,
@@ -5337,10 +5559,16 @@ mod tests {
             sse_round(Some("resp_2"), vec![message("msg_2", "ok")], usage(1, 3, 2)),
         );
 
-        let err =
-            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
-        assert!(err.contains("visible text chain is distinct or non-prefix"));
-        assert!(!err.contains("raw-completed-visible-secret-462"));
+        let reconstructed =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect("safe");
+        let body = String::from_utf8_lossy(&reconstructed.client_raw);
+
+        assert_eq!(
+            reconstructed.visible_assembly_kind,
+            "intercepted_prior_replaced"
+        );
+        assert!(body.contains("ok"));
+        assert!(!body.contains("raw-completed-visible-secret-462"));
     }
 
     #[test]
@@ -5922,6 +6150,39 @@ mod tests {
                     "call_id": "call_2",
                     "arguments": "{}"
                 })],
+                usage(1, 3, 2),
+            ),
+        );
+
+        let err =
+            reconstruct_bplus_client_sse(&[first, second], 20 * 1024 * 1024).expect_err("unsafe");
+        assert_tool_call_fail_closed(&err);
+    }
+
+    #[test]
+    fn final_tool_call_with_replaced_visible_text_is_unsafe() {
+        let first = repair_round(
+            ContinuationRepairRoundKind::Initial,
+            sse_round(
+                Some("resp_1"),
+                vec![message("msg_early", "答案是 15。")],
+                usage(1, 10, 516),
+            ),
+        );
+        let second = repair_round(
+            ContinuationRepairRoundKind::Continuation,
+            sse_round(
+                Some("resp_2"),
+                vec![
+                    message("msg_2", "答案是 21。"),
+                    json!({
+                        "id": "call_2",
+                        "type": "function_call",
+                        "name": "lookup",
+                        "call_id": "call_2",
+                        "arguments": "{}"
+                    }),
+                ],
                 usage(1, 3, 2),
             ),
         );

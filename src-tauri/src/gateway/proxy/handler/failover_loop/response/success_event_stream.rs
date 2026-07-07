@@ -377,6 +377,7 @@ async fn run_codex_reasoning_continuation_repair<R>(
     first_raw: Bytes,
     first_aggregated: &Value,
     post_match_strategy: crate::settings::CodexReasoningGuardPostMatchStrategy,
+    upstream_first_byte_timeout: Option<Duration>,
     upstream_stream_idle_timeout: Option<Duration>,
     enable_response_fixer: bool,
     response_fixer_stream_config: response_fixer::ResponseFixerConfig,
@@ -559,8 +560,12 @@ where
             .last()
             .map(|round| round.raw_sse.as_ref())
             .unwrap_or_default();
-        let replay_tail_for_payload =
-            replay_policy.next_replay_tail(&mut replay_tail, &current, current_raw_sse);
+        let replay_tail_for_payload = replay_policy.next_replay_tail(
+            &mut replay_tail,
+            &current,
+            current_raw_sse,
+            sent_rounds,
+        );
         let payload = match codex_reasoning_continuation::build_continuation_payload(
             prepared.upstream_body_bytes.as_ref(),
             &replay_tail_for_payload,
@@ -591,6 +596,7 @@ where
             retry_state,
             retry_index,
             attempt_index,
+            upstream_first_byte_timeout,
             None,
         )
         .await;
@@ -723,13 +729,22 @@ where
         let aggregated =
             match crate::gateway::proxy::sse::aggregate_responses_event_stream(raw.as_ref()) {
                 Ok(value) => value,
-                Err(_) => {
+                Err(err)
+                    if replay_policy.is_experimental()
+                        && continuation_aggregate_error_can_continue(&err) =>
+                {
+                    aggregate_raw_bytes = aggregate_raw_bytes.saturating_sub(raw.len());
+                    sent_rounds = sent_rounds.saturating_add(1);
+                    round_durations_ms.push(round_duration_ms);
+                    continue;
+                }
+                Err(err) => {
                     return terminal_with_trace!(
                         ContinuationRepairStatus::Failed,
                         current_token,
                         sent_rounds,
                         Some("aggregate"),
-                        Some("failed_to_aggregate_continuation_event_stream".to_string()),
+                        Some(sanitized_continuation_aggregate_failure_reason(&err)),
                     );
                 }
             };
@@ -754,6 +769,19 @@ fn bplus_reconstruction_error_can_continue(reason: &str) -> bool {
             | "final round unsafe: reasoning_visible_payload"
             | "final output is unsafe: reasoning_visible_payload"
     )
+}
+
+fn continuation_aggregate_error_can_continue(reason: &str) -> bool {
+    matches!(
+        reason,
+        "missing response.created/response.completed"
+            | "missing response.completed"
+            | "responses stream ended with [DONE] before response.completed"
+    )
+}
+
+fn sanitized_continuation_aggregate_failure_reason(_reason: &str) -> String {
+    "failed_to_aggregate_continuation_event_stream".to_string()
 }
 
 async fn read_buffered_event_stream_body(
@@ -1994,6 +2022,7 @@ where
                             raw.clone(),
                             &aggregated,
                             common.codex_reasoning_guard_post_match_strategy,
+                            upstream_first_byte_timeout,
                             upstream_stream_idle_timeout,
                             enable_response_fixer,
                             response_fixer_stream_config,

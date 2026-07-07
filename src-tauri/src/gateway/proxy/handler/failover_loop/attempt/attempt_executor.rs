@@ -142,6 +142,7 @@ where
         retry_state,
         retry_index,
         attempt_index,
+        ctx.upstream_first_byte_timeout,
         Some(loop_state.abort_guard),
     )
     .await
@@ -192,6 +193,7 @@ pub(super) async fn send_prepared_upstream<R>(
     retry_state: &mut RetryLoopState,
     retry_index: u32,
     attempt_index: u32,
+    first_byte_timeout: Option<std::time::Duration>,
     abort_guard: Option<&mut RequestAbortGuard<R>>,
 ) -> PreparedSendOutcome
 where
@@ -343,8 +345,15 @@ where
         attempt_started: Instant::now(),
     };
 
-    let send_result =
-        send::send_upstream(ctx, input.req_method.clone(), url, headers, upstream_body).await;
+    let send_result = send::send_upstream_with_first_byte_timeout(
+        ctx,
+        input.req_method.clone(),
+        url,
+        headers,
+        upstream_body,
+        first_byte_timeout,
+    )
+    .await;
 
     match send_result {
         send::SendResult::Ok(resp) => PreparedSendOutcome::Response(resp, timing),
