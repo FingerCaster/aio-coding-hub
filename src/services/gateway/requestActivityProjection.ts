@@ -223,10 +223,18 @@ export function buildRequestActivityProjection({
   realtimeCardLimit,
   realtimeCandidateLimit,
 }: BuildRequestActivityProjectionInput): RequestActivityProjection {
+  const terminalLogTraceIds = new Set<string>();
+  for (const log of requestLogs) {
+    const traceId = normalizeTraceId(log.trace_id);
+    if (traceId && isPersistedRequestLogTerminal(log)) {
+      terminalLogTraceIds.add(traceId);
+    }
+  }
+
   const activeByTraceId = new Map<string, ActiveRequestSnapshotItem>();
   for (const activeRequest of activeRequests) {
     const traceId = normalizeTraceId(activeRequest.trace_id);
-    if (!traceId || activeByTraceId.has(traceId)) continue;
+    if (!traceId || activeByTraceId.has(traceId) || terminalLogTraceIds.has(traceId)) continue;
     activeByTraceId.set(traceId, activeRequest);
   }
 

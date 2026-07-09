@@ -455,6 +455,40 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.requestRows).toHaveLength(0);
   });
 
+  it("does not let a stale active snapshot override a persisted terminal request log", () => {
+    const nowMs = 1_700_000_900_000;
+    const projection = buildRequestActivityProjection({
+      requestLogs: [
+        log({
+          trace_id: "completed-with-stale-active",
+          status: 200,
+          error_code: null,
+          created_at_ms: nowMs - 132 * 60_000,
+          duration_ms: 12_345,
+        }),
+      ],
+      activeRequests: [
+        activeRequest({
+          trace_id: "completed-with-stale-active",
+          created_at_ms: nowMs - 132 * 60_000,
+          last_activity_ms: nowMs - 131 * 60_000,
+        }),
+      ],
+      traces: [],
+      nowMs,
+      realtimeCardLimit: 5,
+      realtimeCandidateLimit: 20,
+    });
+
+    expect(projection.hasPending).toBe(false);
+    expect(projection.realtimeCards).toHaveLength(0);
+    expect(projection.requestRows.map((row) => row.log.trace_id)).toEqual([
+      "completed-with-stale-active",
+    ]);
+    expect(projection.requestRows[0]?.activityState).toBe("completed");
+    expect(projection.requestRows[0]?.activeRequest).toBeNull();
+  });
+
   it("orders active rows first and interrupted audit rows after terminal history", () => {
     const nowMs = 1_700_001_000_000;
     const projection = buildRequestActivityProjection({

@@ -24,7 +24,7 @@ use costing::{has_any_cost_usage, is_success_status, usage_for_cost};
 mod queries;
 pub use queries::{
     codex_reasoning_guard_stats, get_by_id, get_by_trace_id, list_after_id, list_after_id_all,
-    list_recent, list_recent_all,
+    list_recent, list_recent_all, terminal_trace_ids,
 };
 use queries::{final_provider_from_attempts, parse_attempts, validate_cli_key};
 

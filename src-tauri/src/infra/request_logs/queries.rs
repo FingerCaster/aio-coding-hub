@@ -4,7 +4,7 @@ use crate::db;
 use crate::shared::error::db_err;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use serde::Deserialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use super::costing::cost_usd_from_femto;
 use super::{
@@ -638,6 +638,43 @@ pub fn get_by_trace_id(
         attach_source_provider_info_to_detail(&conn, detail)?;
     }
     Ok(item)
+}
+
+pub fn terminal_trace_ids(
+    db: &db::Db,
+    trace_ids: &[String],
+) -> crate::shared::error::AppResult<HashSet<String>> {
+    const SQLITE_PARAM_CHUNK: usize = 900;
+
+    let mut terminal = HashSet::new();
+    if trace_ids.is_empty() {
+        return Ok(terminal);
+    }
+
+    let conn = db.open_connection()?;
+    for chunk in trace_ids.chunks(SQLITE_PARAM_CHUNK) {
+        let placeholders = std::iter::repeat_n("?", chunk.len())
+            .collect::<Vec<_>>()
+            .join(",");
+        let sql = format!(
+            "SELECT trace_id FROM request_logs \
+             WHERE trace_id IN ({placeholders}) \
+             AND (status IS NOT NULL OR error_code IS NOT NULL)"
+        );
+        let mut stmt = conn
+            .prepare(&sql)
+            .map_err(|e| db_err!("failed to prepare terminal trace query: {e}"))?;
+        let rows = stmt
+            .query_map(params_from_iter(chunk.iter().map(String::as_str)), |row| {
+                row.get::<_, String>(0)
+            })
+            .map_err(|e| db_err!("failed to query terminal traces: {e}"))?;
+        for row in rows {
+            terminal.insert(row.map_err(|e| db_err!("failed to read terminal trace: {e}"))?);
+        }
+    }
+
+    Ok(terminal)
 }
 
 pub fn codex_reasoning_guard_stats(
@@ -1302,7 +1339,7 @@ mod tests {
     use super::{
         codex_reasoning_guard_stats, final_provider_from_attempts, get_by_id, get_by_trace_id,
         list_after_id_all, list_recent, list_recent_all, load_source_provider_info_map,
-        parse_attempts, route_from_attempts, start_provider_from_attempts,
+        parse_attempts, route_from_attempts, start_provider_from_attempts, terminal_trace_ids,
     };
     use crate::db;
     use rusqlite::Connection;
@@ -1565,6 +1602,45 @@ INSERT INTO providers (id, name, source_provider_id, bridge_type) VALUES (12, 'C
             after.iter().map(|item| item.id).collect::<Vec<_>>(),
             vec![3]
         );
+    }
+
+    #[test]
+    fn terminal_trace_ids_returns_only_persisted_terminal_logs() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-logs.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_request_log(&conn, 1, "trace-status-terminal", "codex", "/v1/responses");
+        seed_request_log(&conn, 2, "trace-error-terminal", "codex", "/v1/responses");
+        seed_request_log(&conn, 3, "trace-pending", "codex", "/v1/responses");
+        conn.execute(
+            "UPDATE request_logs SET status = NULL, error_code = 'GW_REQUEST_ABORTED' WHERE trace_id = ?1",
+            rusqlite::params!["trace-error-terminal"],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE request_logs SET status = NULL, error_code = NULL WHERE trace_id = ?1",
+            rusqlite::params!["trace-pending"],
+        )
+        .unwrap();
+        drop(conn);
+
+        let terminal = terminal_trace_ids(
+            &db,
+            &[
+                "trace-status-terminal".to_string(),
+                "trace-error-terminal".to_string(),
+                "trace-pending".to_string(),
+                "trace-missing".to_string(),
+            ],
+        )
+        .unwrap();
+
+        assert!(terminal.contains("trace-status-terminal"));
+        assert!(terminal.contains("trace-error-terminal"));
+        assert!(!terminal.contains("trace-pending"));
+        assert!(!terminal.contains("trace-missing"));
     }
 
     #[test]
