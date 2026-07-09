@@ -1,5 +1,25 @@
 # Changelog
 
+## [0.60.21](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.20...aio-coding-hub-v0.60.21) (2026-07-09)
+
+
+### Features
+
+* **ui:** 增加用量总耗时展示 ([#334](https://github.com/FingerCaster/aio-coding-hub/issues/334)) ([5a67eb2](https://github.com/FingerCaster/aio-coding-hub/commit/5a67eb2a2e0048204a56d0396c171bdc24aed525))
+
+
+### Bug Fixes
+
+* **codex:** reload raw config from disk ([8b9731b](https://github.com/FingerCaster/aio-coding-hub/commit/8b9731be7734ac518a4ff252f520a34d3c8d7772))
+* **gateway:** ignore terminal stale active requests ([012d70f](https://github.com/FingerCaster/aio-coding-hub/commit/012d70f3ac323b29eb6ab17634d60c5737dc1005))
+* **plugins:** stabilize extension host process CI ([ea4001a](https://github.com/FingerCaster/aio-coding-hub/commit/ea4001a5e7ff92f6e204322b3340d0427d014632))
+* **settings:** serialize settings writes ([3f54494](https://github.com/FingerCaster/aio-coding-hub/commit/3f54494d0b8230fca05534c4c97d5d82f44bb35d))
+
+
+### Styles
+
+* format release validation files ([5b2b722](https://github.com/FingerCaster/aio-coding-hub/commit/5b2b7227c4232d3627a36aa64cbc5bb28ae192ed))
+
 ## [0.60.20](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.19...aio-coding-hub-v0.60.20) (2026-07-09)
 
 
