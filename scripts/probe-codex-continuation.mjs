@@ -223,9 +223,7 @@ function parseResponseText(contentType, raw) {
   } catch {
     return {
       text: raw.trim(),
-      guardCode: raw.includes("GW_CODEX_REASONING_GUARD")
-        ? "GW_CODEX_REASONING_GUARD"
-        : null,
+      guardCode: raw.includes("GW_CODEX_REASONING_GUARD") ? "GW_CODEX_REASONING_GUARD" : null,
     };
   }
 }
@@ -251,7 +249,10 @@ function extractFinalNumber(text) {
     }
   }
 
-  const paragraphs = text.trim().split(/\n{1,}/).filter(Boolean);
+  const paragraphs = text
+    .trim()
+    .split(/\n{1,}/)
+    .filter(Boolean);
   const lastParagraph = paragraphs.at(-1) ?? text;
   const trailingNumbers = [...lastParagraph.matchAll(/\d+/g)].map((match) => Number(match[0]));
   const uniqueTrailing = [...new Set(trailingNumbers)];
