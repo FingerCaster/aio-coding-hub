@@ -1421,6 +1421,20 @@ export function CliManagerCodexTab({
     };
   }, [tomlDraft, tomlDirty, tomlAdvancedOpen, tomlEditEnabled, validateToml]);
 
+  async function reloadTomlDraft() {
+    if (tomlBusy || tomlEditEnabled) return;
+    if (validateTimerRef.current) {
+      window.clearTimeout(validateTimerRef.current);
+      validateTimerRef.current = null;
+    }
+
+    validateSeqRef.current += 1;
+    setTomlDirty(false);
+    setTomlValidating(false);
+    setTomlValidation(null);
+    await refreshCodex();
+  }
+
   async function saveTomlDraft() {
     if (tomlBusy) return;
     const result = await validateToml(tomlDraft);
@@ -4109,11 +4123,7 @@ export function CliManagerCodexTab({
                           type="button"
                           size="sm"
                           variant="ghost"
-                          onClick={() => {
-                            setTomlDraft(codexConfigToml?.toml ?? "");
-                            setTomlDirty(false);
-                            setTomlValidation(null);
-                          }}
+                          onClick={() => void reloadTomlDraft()}
                           disabled={tomlBusy || tomlEditEnabled}
                         >
                           重新加载

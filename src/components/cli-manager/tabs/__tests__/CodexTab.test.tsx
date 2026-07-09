@@ -2330,6 +2330,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
   it("validates, cancels, reloads, and saves raw config.toml edits", async () => {
     const persistCodexConfigToml = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true);
+    const refreshCodex = vi.fn().mockResolvedValue(undefined);
     vi.mocked(cliManagerCodexConfigTomlValidate)
       .mockResolvedValueOnce({ ok: true, error: null })
       .mockResolvedValueOnce({
@@ -2355,7 +2356,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
           exists: true,
           toml: 'model = "gpt-5"\n',
         }}
-        refreshCodex={vi.fn()}
+        refreshCodex={refreshCodex}
         openCodexConfigDir={vi.fn()}
         persistCodexConfig={vi.fn()}
         persistCodexConfigToml={persistCodexConfigToml}
@@ -2369,6 +2370,7 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     ).toBeInTheDocument();
 
     fireEvent.click(reloadButton);
+    await waitFor(() => expect(refreshCodex).toHaveBeenCalledTimes(1));
     expect(screen.getByLabelText("mock-code-editor")).toHaveValue('model = "gpt-5"\n');
 
     fireEvent.click(screen.getByRole("button", { name: "编辑" }));
