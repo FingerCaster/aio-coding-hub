@@ -5903,7 +5903,7 @@ mod tests {
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_1\"}}\n\n",
             "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-1\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-1\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"input_tokens\":100,\"output_tokens\":10,\"total_tokens\":110,\"input_tokens_details\":{\"cached_tokens\":20},\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
         );
         let second_sse = concat!(
             "event: response.created\n",
@@ -5913,7 +5913,7 @@ mod tests {
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_1\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"final after continuation\"}]}}\n\n",
             "event: response.completed\n",
-            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-2\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"output_tokens\":3,\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-cont-2\",\"status\":\"completed\",\"model\":\"gpt-cont\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"total_tokens\":10,\"input_tokens_details\":{\"cached_tokens\":1},\"output_tokens_details\":{\"reasoning_tokens\":2}}}}\n\n"
         );
         let (upstream_base_url, mut captured_rx, upstream_task) =
             spawn_sequence_capturing_sse_upstream(vec![first_sse, second_sse]).await;
@@ -5949,6 +5949,17 @@ mod tests {
         assert!(!body_text.contains("event: response.output_text.delta"));
         assert!(body_text.contains("final after continuation"));
         assert!(body_text.contains("resp-cont-2"));
+        assert!(!body_text.contains("resp-cont-1"));
+        assert!(!body_text.contains("\"type\":\"reasoning\""));
+        assert!(!body_text.contains("encrypted_content"));
+        assert!(!body_text.contains("enc_1"));
+        let client_usage = crate::usage::parse_usage_from_json_or_sse_bytes("codex", body.as_ref())
+            .expect("client folded usage");
+        assert_eq!(client_usage.metrics.input_tokens, Some(7));
+        assert_eq!(client_usage.metrics.output_tokens, Some(3));
+        assert_eq!(client_usage.metrics.total_tokens, Some(10));
+        assert_eq!(client_usage.metrics.cache_read_input_tokens, Some(1));
+        assert_eq!(client_usage.metrics.reasoning_tokens, Some(2));
 
         let first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
             .await
@@ -6002,6 +6013,20 @@ mod tests {
             Some(13)
         );
         assert_eq!(
+            logged_usage.get("input_tokens").and_then(Value::as_i64),
+            Some(107)
+        );
+        assert_eq!(
+            logged_usage.get("total_tokens").and_then(Value::as_i64),
+            Some(120)
+        );
+        assert_eq!(
+            logged_usage
+                .get("cache_read_input_tokens")
+                .and_then(Value::as_i64),
+            Some(21)
+        );
+        assert_eq!(
             logged_usage
                 .pointer("/output_tokens_details/reasoning_tokens")
                 .and_then(Value::as_i64),
@@ -6029,7 +6054,7 @@ mod tests {
             .expect("post-repair feature sample");
         assert_eq!(
             feature_entry.get("reasoningTokens").and_then(Value::as_i64),
-            Some(518)
+            Some(2)
         );
         assert!(special_settings.iter().any(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("codex_reasoning_guard")
@@ -6187,7 +6212,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_continuation_repair_folded_preserves_distinct_visible_text() {
+    async fn codex_continuation_repair_folded_drops_intermediate_visible_text() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -6215,6 +6240,8 @@ mod tests {
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"rs_1\",\"type\":\"reasoning\",\"encrypted_content\":\"enc_1\"}}\n\n",
             "event: response.output_item.done\n",
             "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"msg_early\",\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"early visible answer\"}]}}\n\n",
+            "event: response.output_item.done\n",
+            "data: {\"type\":\"response.output_item.done\",\"item\":{\"id\":\"call_early\",\"type\":\"function_call\",\"name\":\"lookup\",\"call_id\":\"call_1\",\"arguments\":\"{}\"}}\n\n",
             "event: response.completed\n",
             "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-folded-distinct-1\",\"status\":\"completed\",\"model\":\"gpt-cont-folded\",\"usage\":{\"output_tokens\":10,\"output_tokens_details\":{\"reasoning_tokens\":516}}}}\n\n"
         );
@@ -6258,8 +6285,16 @@ mod tests {
             String::from_utf8_lossy(&body)
         );
         let body_text = String::from_utf8_lossy(&body);
-        assert!(body_text.contains("early visible answer"));
         assert!(body_text.contains("different final answer"));
+        assert!(body_text.contains("resp-folded-distinct-2"));
+        assert!(!body_text.contains("early visible answer"));
+        assert!(!body_text.contains("resp-folded-distinct-1"));
+        assert!(!body_text.contains("msg_early"));
+        assert!(!body_text.contains("call_early"));
+        assert!(!body_text.contains("function_call"));
+        assert!(!body_text.contains("\"type\":\"reasoning\""));
+        assert!(!body_text.contains("encrypted_content"));
+        assert!(!body_text.contains("enc_1"));
 
         let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
             .await
@@ -6388,6 +6423,12 @@ mod tests {
         let body_text = String::from_utf8_lossy(&body);
         assert!(body_text.contains("final after second continuation"));
         assert!(body_text.contains("resp-budget-3"));
+        assert!(!body_text.contains("resp-budget-1"));
+        assert!(!body_text.contains("resp-budget-2"));
+        assert!(!body_text.contains("\"type\":\"reasoning\""));
+        assert!(!body_text.contains("encrypted_content"));
+        assert!(!body_text.contains("enc_1"));
+        assert!(!body_text.contains("enc_2"));
 
         let _first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
             .await

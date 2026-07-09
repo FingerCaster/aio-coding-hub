@@ -300,6 +300,8 @@ impl ContinuationRepairOutcome {
     #[allow(clippy::too_many_arguments)]
     fn repaired_folded(
         client_raw: Bytes,
+        client_usage: Option<usage::UsageExtract>,
+        provider_repair_usage: Option<usage::UsageExtract>,
         token: Option<codex_reasoning_features::ExtractedReasoningTokens>,
         sent_rounds: u32,
         rounds: &[codex_reasoning_continuation::ContinuationRepairRound],
@@ -311,8 +313,8 @@ impl ContinuationRepairOutcome {
         Self {
             status: ContinuationRepairStatus::Repaired,
             client_raw: Some(client_raw),
-            client_usage: None,
-            provider_repair_usage: None,
+            client_usage,
+            provider_repair_usage,
             round_trace: codex_reasoning_continuation::reconstruction_round_trace(rounds),
             aggregate_raw_bytes,
             repair_elapsed_ms: Some(repair_elapsed_ms),
@@ -428,16 +430,24 @@ where
                 .map(|round| round.aggregated.clone())
                 .collect::<Vec<_>>();
             return match codex_reasoning_continuation::fold_responses_to_sse(&responses) {
-                Ok(raw) => ContinuationRepairOutcome::repaired_folded(
-                    raw,
-                    current_token,
-                    sent_rounds,
-                    &rounds,
-                    aggregate_raw_bytes,
-                    repair_started.elapsed().as_millis(),
-                    attempt_started.elapsed().as_millis(),
-                    round_durations_ms,
-                ),
+                Ok(raw) => {
+                    let client_usage =
+                        usage::parse_usage_from_json_or_sse_bytes("codex", raw.as_ref());
+                    let provider_repair_usage =
+                        codex_reasoning_continuation::summed_provider_repair_usage(&responses);
+                    ContinuationRepairOutcome::repaired_folded(
+                        raw,
+                        client_usage,
+                        provider_repair_usage,
+                        current_token,
+                        sent_rounds,
+                        &rounds,
+                        aggregate_raw_bytes,
+                        repair_started.elapsed().as_millis(),
+                        attempt_started.elapsed().as_millis(),
+                        round_durations_ms,
+                    )
+                }
                 Err(err) => terminal_with_trace!(
                     ContinuationRepairStatus::Failed,
                     current_token,
