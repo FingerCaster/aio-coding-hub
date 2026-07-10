@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.22](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.21...aio-coding-hub-v0.60.22) (2026-07-10)
+
+
+### Bug Fixes
+
+* **codex:** stream responses when guard disabled ([0dbfcf9](https://github.com/FingerCaster/aio-coding-hub/commit/0dbfcf9b9ccedcf56f4a910f2ed0ab9ba4ca6a51))
+
 ## [0.60.21](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.20...aio-coding-hub-v0.60.21) (2026-07-09)
 
 
