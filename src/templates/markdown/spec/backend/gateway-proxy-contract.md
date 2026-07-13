@@ -278,18 +278,89 @@ New/important `special_settings_json` markers include:
 
 Never include secrets (API keys, bearer tokens, refresh tokens) in any of these surfaces.
 
-`model_route_mapping` records Codex requested-vs-returned model routing only when
-the requested route and observed/inferred returned route differ. It includes
-`requestedModel`, `requestedReasoningEffort`, `requestedReasoningEffortSource`,
-`actualModel`, `actualReasoningEffort`, `actualReasoningEffortSource`,
-`modelMismatch`, `effortMismatch`, `providerId`, and `providerName`. All response
-paths must observe the upstream route before protocol bridge, response fixer,
-or plugin mutation. When the upstream explicitly returns a reasoning effort,
-it must be marked with `actualReasoningEffortSource: "response"`. Otherwise,
-the actual effort may be inferred from known model defaults only when the
-request also relied on its model default; that inference must be marked with
-`actualReasoningEffortSource: "model_default"`. If the request used an explicit
-effort override and the response omits effort, the actual effort remains unknown.
+### Codex Model Route Mapping
+
+#### 1. Scope / Trigger
+
+- Trigger: a successful Codex response exposes an upstream model that differs
+  from the effective requested model, or exposes a different known reasoning effort.
+- Scope: native, bridged, streaming, and non-streaming Codex response paths.
+- Non-Codex requests must not generate `model_route_mapping`; existing
+  `claude_model_mapping` remains the authoritative Claude mapping contract.
+
+#### 2. Signatures
+
+- Backend input: `ModelRouteSettingInput { cli_key, requested_model,
+  actual_model, actual_reasoning_effort, special_settings, provider_id,
+  provider_name }`.
+- Backend builder: `build_model_route_mapping_setting(...) -> Option<Value>`.
+- Streaming metadata: `SseUsageTracker::best_effort_route() ->
+  (Option<String>, Option<String>)`.
+- Frontend resolver: `resolveModelRouteMappingFromSpecialSettings(
+  specialSettingsJson, finalProviderId?) -> ModelRouteMapping | null`.
+
+#### 3. Contracts
+
+- Observe the upstream model and effort before protocol bridge, response fixer,
+  or plugin mutation. Transformed downstream payloads are not evidence of the
+  upstream route.
+- Persist `requestedModel`, `requestedReasoningEffort`,
+  `requestedReasoningEffortSource`, `actualModel`, `actualReasoningEffort`,
+  `actualReasoningEffortSource`, `modelMismatch`, `effortMismatch`, `mismatch`,
+  `providerId`, and `providerName`.
+- Use the active failover/reasoning-guard requested model, not a stale model from
+  an earlier attempt.
+- Explicit upstream effort uses source `response`. Infer a returned model default
+  only when the request also relied on a model default, using source
+  `model_default`. An explicit request effort plus an omitted response effort
+  leaves the actual effort unknown.
+- Retain at most one mapping in shared special settings, prioritize it when event
+  payloads are bounded, and keep truncation output valid JSON.
+- UI resolution with `finalProviderId` must reject mappings owned by another
+  provider instead of falling back to stale failover data.
+
+#### 4. Validation & Error Matrix
+
+- Non-Codex CLI -> no mapping.
+- Missing or empty requested/actual model -> no mapping.
+- Same model and no known effort mismatch -> no mapping.
+- Unknown returned effort -> record a model mismatch only; do not invent an
+  effort mismatch.
+- Upstream metadata split across SSE chunks or lacking a final blank line ->
+  finalize the bounded tracker and use the parsed route.
+- Metadata present only after bridge/plugin mutation -> ignore it.
+- Provider id does not match the terminal provider -> frontend resolver returns
+  `null`.
+- Model/provider text over 200 characters -> truncate on UTF-8 character
+  boundaries before persistence.
+
+#### 5. Good / Base / Bad Cases
+
+- Good: request `gpt-5.5/high`, upstream returns `gpt-5.4-mini/low`; persist one
+  mapping for the terminal provider and render the requested-to-actual route.
+- Base: request and upstream both resolve to `gpt-5.5/medium`; persist no mapping.
+- Bad: a bridge rewrites `gpt-5.4-mini` to `gpt-5.5`, then route detection reads
+  the rewritten body and reports no mismatch.
+
+#### 6. Tests Required
+
+- Unit-test model/effort normalization, default inference, unknown efforts,
+  Codex-only gating, and UTF-8 bounds.
+- Test streaming metadata split across chunks, unterminated tails, read errors,
+  and outer-stream drop ordering.
+- Test that bridge/plugin rewrites cannot hide or inject the observed route.
+- Test special-settings entry/encoded-size caps preserve valid JSON and keep the
+  mapping first.
+- Test request-log, realtime-card, and detail UI use the terminal provider and
+  visibly distinguish model-only, effort-only, and combined mismatches.
+
+#### 7. Wrong vs Correct
+
+Wrong: parse the body after bridge or plugin hooks and treat its model as the
+upstream model.
+
+Correct: observe raw upstream chunks first, carry the bounded route metadata to
+request finalization, then persist and render only the terminal provider mapping.
 
 ### Provider Gates, Skipped Attempts, and Terminal Logs
 
