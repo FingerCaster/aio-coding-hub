@@ -1,5 +1,17 @@
 # Changelog
 
+## [0.60.25](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.24...aio-coding-hub-v0.60.25) (2026-07-14)
+
+
+### Features
+
+* **gateway:** detect requested versus returned model routing mismatches ([d975b68](https://github.com/FingerCaster/aio-coding-hub/commit/d975b686a5ac47f87af5b61ffa83de4bf24907e8))
+
+
+### Bug Fixes
+
+* **gateway:** harden model route detection across bridged and streamed responses ([ace4f22](https://github.com/FingerCaster/aio-coding-hub/commit/ace4f22ac0e9588c03b16523124c378fcbdd2ec0))
+
 ## [0.60.24](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.23...aio-coding-hub-v0.60.24) (2026-07-13)
 
 
