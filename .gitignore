@@ -44,7 +44,6 @@ AGENTS.md
 coverage*/
 .vitest-reports/
 .cursor/
-.trellis/
 .agents/
 .serena/
 .superpowers/
