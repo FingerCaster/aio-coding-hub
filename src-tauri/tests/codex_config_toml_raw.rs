@@ -38,6 +38,32 @@ approval_policy = "nope"
 }
 
 #[test]
+fn codex_config_toml_raw_set_rejects_invalid_reviewer_without_writing() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let path =
+        aio_coding_hub_lib::test_support::codex_config_toml_path(&handle).expect("codex path");
+
+    std::fs::create_dir_all(path.parent().expect("parent")).expect("create codex dir");
+    let initial = "approvals_reviewer = \"user\"\nother = \"keep\"\n";
+    std::fs::write(&path, initial).expect("write initial");
+
+    for invalid in [
+        "approvals_reviewer = \"\"\n",
+        "approvals_reviewer = \" user \"\n",
+        "approvals_reviewer = 1\n",
+        "approvals_reviewer = \"future_reviewer\"\n",
+    ] {
+        aio_coding_hub_lib::test_support::codex_config_toml_raw_set(&handle, invalid.to_string())
+            .expect_err("invalid reviewer should fail");
+        assert_eq!(
+            std::fs::read_to_string(&path).expect("read after failed write"),
+            initial
+        );
+    }
+}
+
+#[test]
 fn codex_config_get_rejects_oversized_config_toml() {
     let app = support::TestApp::new();
     let handle = app.handle();

@@ -234,6 +234,7 @@ pub(super) fn make_state_from_bytes(
 
         model: None,
         approval_policy: None,
+        approvals_reviewer: None,
         sandbox_mode: None,
         model_reasoning_effort: None,
         plan_mode_reasoning_effort: None,
@@ -312,6 +313,7 @@ pub(super) fn make_state_from_bytes(
         match (table, key.as_str()) {
             ("", "model") => state.model = parse_string(&raw_value),
             ("", "approval_policy") => state.approval_policy = parse_string(&raw_value),
+            ("", "approvals_reviewer") => state.approvals_reviewer = parse_string(&raw_value),
             ("", "sandbox_mode") => state.sandbox_mode = parse_string(&raw_value),
             ("sandbox", "mode") if state.sandbox_mode.is_none() => {
                 state.sandbox_mode = parse_string(&raw_value);
@@ -414,6 +416,34 @@ pub(super) fn validate_root_string_enum(
     })
 }
 
+fn validate_root_exact_string_enum(
+    table: &toml::value::Table,
+    key: &str,
+    allowed: &[&str],
+) -> Option<CodexConfigTomlValidationError> {
+    let value = table.get(key)?;
+    let raw = match value.as_str() {
+        Some(value) => value,
+        None => {
+            return Some(CodexConfigTomlValidationError {
+                message: format!("invalid {key}: expected string"),
+                line: None,
+                column: None,
+            });
+        }
+    };
+
+    if is_allowed_value(raw, allowed) {
+        return None;
+    }
+
+    Some(CodexConfigTomlValidationError {
+        message: format!("invalid {key}={raw} (allowed: {})", allowed.join(", ")),
+        line: None,
+        column: None,
+    })
+}
+
 pub(super) fn validate_root_non_empty_string(
     table: &toml::value::Table,
     key: &str,
@@ -469,6 +499,17 @@ pub(super) fn validate_codex_config_toml_raw(input: &str) -> CodexConfigTomlVali
                 table,
                 "approval_policy",
                 &["untrusted", "on-failure", "on-request", "never"],
+            ) {
+                return CodexConfigTomlValidationResult {
+                    ok: false,
+                    error: Some(err),
+                };
+            }
+
+            if let Some(err) = validate_root_exact_string_enum(
+                table,
+                "approvals_reviewer",
+                &["user", "auto_review"],
             ) {
                 return CodexConfigTomlValidationResult {
                     ok: false,

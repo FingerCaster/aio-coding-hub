@@ -4,6 +4,7 @@ fn empty_patch() -> CodexConfigPatch {
     CodexConfigPatch {
         model: None,
         approval_policy: None,
+        approvals_reviewer: None,
         sandbox_mode: None,
         model_reasoning_effort: None,
         plan_mode_reasoning_effort: None,
@@ -489,6 +490,77 @@ fn patch_writes_ultra_model_reasoning_effort() {
 }
 
 #[test]
+fn parse_reads_supported_and_unknown_approvals_reviewer_values() {
+    for reviewer in ["user", "auto_review", "future_reviewer"] {
+        let input = format!("approvals_reviewer = \"{reviewer}\"\n");
+        let state = make_test_state(&input).expect("make_test_state");
+        assert_eq!(state.approvals_reviewer.as_deref(), Some(reviewer));
+    }
+}
+
+#[test]
+fn patch_writes_and_removes_approvals_reviewer() {
+    for reviewer in ["user", "auto_review"] {
+        let out = patch_config_toml(
+            Some(b"other = \"keep\"\n".to_vec()),
+            CodexConfigPatch {
+                approvals_reviewer: Some(reviewer.to_string()),
+                ..empty_patch()
+            },
+        )
+        .expect("supported reviewer should be writable");
+        let text = String::from_utf8(out).expect("utf8");
+        assert!(
+            text.contains(&format!("approvals_reviewer = \"{reviewer}\"")),
+            "{text}"
+        );
+        assert_eq!(text.matches("approvals_reviewer =").count(), 1, "{text}");
+        assert!(text.contains("other = \"keep\""), "{text}");
+    }
+
+    let out = patch_config_toml(
+        Some(b"approvals_reviewer = \"user\"\nother = \"keep\"\n".to_vec()),
+        CodexConfigPatch {
+            approvals_reviewer: Some(String::new()),
+            ..empty_patch()
+        },
+    )
+    .expect("empty reviewer should delete the key");
+    let text = String::from_utf8(out).expect("utf8");
+    assert!(!text.contains("approvals_reviewer"), "{text}");
+    assert!(text.contains("other = \"keep\""), "{text}");
+}
+
+#[test]
+fn patch_rejects_unknown_approvals_reviewer_without_touching_existing_value() {
+    let input = b"approvals_reviewer = \"future_reviewer\"\nother = \"keep\"\n".to_vec();
+    let err = patch_config_toml(
+        Some(input.clone()),
+        CodexConfigPatch {
+            approvals_reviewer: Some("unsupported".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect_err("unknown reviewer patch should fail");
+    assert!(err.to_string().contains("approvals_reviewer"), "{err}");
+
+    let out = patch_config_toml(
+        Some(input),
+        CodexConfigPatch {
+            model: Some("gpt-5".to_string()),
+            ..empty_patch()
+        },
+    )
+    .expect("unrelated patch should preserve an unknown reviewer");
+    let text = String::from_utf8(out).expect("utf8");
+    assert!(
+        text.contains("approvals_reviewer = \"future_reviewer\""),
+        "{text}"
+    );
+    assert!(text.contains("model = \"gpt-5\""), "{text}");
+}
+
+#[test]
 fn patch_accepts_catalog_declared_minimal_model_reasoning_effort() {
     let current = b"model_reasoning_effort = \"high\"\n".to_vec();
     let out = codex_config_next_bytes(
@@ -542,6 +614,30 @@ fn validate_raw_rejects_invalid_enum_values() {
     let err = out.error.expect("error");
     assert!(err.message.contains("approval_policy"), "{err:?}");
     assert!(err.message.contains("allowed:"), "{err:?}");
+}
+
+#[test]
+fn validate_raw_enforces_approvals_reviewer_enum_and_non_empty_string() {
+    for reviewer in ["user", "auto_review"] {
+        let out = validate_codex_config_toml_raw(&format!("approvals_reviewer = \"{reviewer}\""));
+        assert!(out.ok, "{reviewer}: {out:?}");
+    }
+
+    for input in [
+        "approvals_reviewer = \"\"",
+        "approvals_reviewer = \" user \"",
+        "approvals_reviewer = 1",
+        "approvals_reviewer = \"future_reviewer\"",
+    ] {
+        let out = validate_codex_config_toml_raw(input);
+        assert!(!out.ok, "{input}: {out:?}");
+        assert!(
+            out.error
+                .as_ref()
+                .is_some_and(|error| error.message.contains("approvals_reviewer")),
+            "{input}: {out:?}"
+        );
+    }
 }
 
 #[test]

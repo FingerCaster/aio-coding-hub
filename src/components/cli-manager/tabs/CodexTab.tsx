@@ -88,9 +88,14 @@ import {
   ultraConflictText,
   type ReasoningOptionView,
 } from "./codexModelCapabilities";
+import {
+  classifyCodexApprovalReviewer,
+  type CodexApprovalReviewerPresentation,
+} from "./codexApprovalReviewer";
 import { useCodexModelMigration } from "./useCodexModelMigration";
 import {
   AlertTriangle,
+  ArrowRight,
   BarChart3,
   Calendar,
   CheckCircle2,
@@ -1515,6 +1520,11 @@ function CodexBasicConfigSection({
   updateCodexDraft: UpdateCodexDraft;
   persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
 }) {
+  const approvalReviewerPresentation = classifyCodexApprovalReviewer(
+    codexConfig.approvals_reviewer,
+    codexConfig.approval_policy
+  );
+
   return (
     <div className="rounded-lg border border-border bg-white dark:bg-secondary p-5">
       <h3 className="text-sm font-semibold text-foreground flex items-center gap-2 mb-3">
@@ -1607,6 +1617,38 @@ function CodexBasicConfigSection({
             <option value="on-request">请求时（on-request）</option>
             <option value="never">从不询问（never）</option>
           </Select>
+        </SettingItem>
+
+        <SettingItem
+          label="审批者 (approvals_reviewer)"
+          subtitle="决定符合条件的审批请求由你处理，还是交给独立 reviewer 评估；不会扩大沙箱权限。"
+        >
+          <div className="w-[360px] max-w-full space-y-2">
+            <Select
+              aria-label="审批者 (approvals_reviewer)"
+              value={codexConfig.approvals_reviewer ?? ""}
+              onChange={(e) =>
+                void persistCodexConfig({ approvals_reviewer: e.currentTarget.value })
+              }
+              disabled={saving}
+              className="w-full font-mono"
+            >
+              <option value="">默认（不设置）</option>
+              <option value="user">由我审批（user）</option>
+              <option value="auto_review">替我审批（auto_review）</option>
+              {approvalReviewerPresentation.unknownReviewer !== null ? (
+                <option value={approvalReviewerPresentation.unknownReviewer}>
+                  不支持的当前值（{approvalReviewerPresentation.unknownReviewer}）
+                </option>
+              ) : null}
+            </Select>
+            <CodexApprovalReviewerNotice
+              presentation={approvalReviewerPresentation}
+              approvalPolicy={codexConfig.approval_policy}
+              saving={saving}
+              persistCodexConfig={persistCodexConfig}
+            />
+          </div>
         </SettingItem>
 
         <SettingItem
@@ -1752,6 +1794,73 @@ function CodexBasicConfigSection({
             disabled={saving}
           />
         </SettingItem>
+      </div>
+    </div>
+  );
+}
+
+function CodexApprovalReviewerNotice({
+  presentation,
+  approvalPolicy,
+  saving,
+  persistCodexConfig,
+}: {
+  presentation: CodexApprovalReviewerPresentation;
+  approvalPolicy: string | null;
+  saving: boolean;
+  persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
+}) {
+  if (presentation.notice === "none") return null;
+
+  if (presentation.notice === "auto-review-inherited-policy") {
+    return (
+      <div className="text-left text-[11px] leading-relaxed text-muted-foreground">
+        当前 approval_policy 未显式设置，是否会产生可供 auto-review 处理的审批请求取决于上层配置。
+      </div>
+    );
+  }
+
+  let message: ReactNode;
+  if (presentation.notice === "unknown-reviewer") {
+    message = (
+      <>
+        当前值
+        <span className="mx-1 break-all font-mono">{presentation.unknownReviewer}</span>
+        不受支持；在你明确选择前会原样保留。
+      </>
+    );
+  } else if (presentation.notice === "user-never") {
+    message = "当前 approval_policy=never 不会产生需要你处理的审批请求。";
+  } else if (approvalPolicy === "never") {
+    message = "当前 approval_policy=never 不会产生审批请求，替我审批不会生效。";
+  } else {
+    message = (
+      <>
+        当前 approval_policy=
+        <span className="break-all font-mono">{approvalPolicy}</span> 不支持
+        auto-review，替我审批不会生效。
+      </>
+    );
+  }
+
+  return (
+    <div className="flex items-start gap-2 text-left text-[11px] leading-relaxed text-amber-700 dark:text-amber-400">
+      <AlertTriangle className="mt-0.5 h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+      <div className="min-w-0 flex-1">
+        <div>{message}</div>
+        {presentation.canSwitchToOnRequest ? (
+          <Button
+            type="button"
+            size="sm"
+            variant="ghost"
+            className="mt-1 h-7 gap-1 px-2 text-[11px]"
+            onClick={() => void persistCodexConfig({ approval_policy: "on-request" })}
+            disabled={saving}
+          >
+            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            切换为 on-request
+          </Button>
+        ) : null}
       </div>
     </div>
   );

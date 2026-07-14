@@ -136,6 +136,7 @@ describe("cli-manager tabs (coverage)", () => {
             exists: true,
             model: "gpt-5.4",
             approval_policy: "never",
+            approvals_reviewer: null,
             sandbox_mode: "workspace-write",
             model_reasoning_effort: "medium",
             plan_mode_reasoning_effort: "high",

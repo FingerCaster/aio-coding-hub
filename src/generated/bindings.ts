@@ -2419,6 +2419,7 @@ export type CliVersionCheck = {
 export type CodexConfigPatch = {
   model: string | null;
   approval_policy: string | null;
+  approvals_reviewer: string | null;
   sandbox_mode: string | null;
   model_reasoning_effort: string | null;
   plan_mode_reasoning_effort: string | null;
@@ -2449,6 +2450,7 @@ export type CodexConfigState = {
   exists: boolean;
   model: string | null;
   approval_policy: string | null;
+  approvals_reviewer: string | null;
   sandbox_mode: string | null;
   model_reasoning_effort: string | null;
   plan_mode_reasoning_effort: string | null;

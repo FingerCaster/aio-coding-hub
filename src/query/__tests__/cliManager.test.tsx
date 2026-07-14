@@ -166,6 +166,7 @@ function makeCodexConfigState(overrides: Partial<CodexConfigState> = {}): CodexC
     exists: true,
     model: null,
     approval_policy: null,
+    approvals_reviewer: null,
     sandbox_mode: null,
     model_reasoning_effort: null,
     plan_mode_reasoning_effort: null,

@@ -40,6 +40,7 @@ function makeConfig(overrides: Partial<CodexConfigState> = {}): CodexConfigState
     exists: true,
     model: "gpt-5.6-sol",
     approval_policy: "on-request",
+    approvals_reviewer: null,
     sandbox_mode: "workspace-write",
     model_reasoning_effort: "ultra",
     plan_mode_reasoning_effort: null,

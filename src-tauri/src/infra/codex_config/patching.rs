@@ -633,6 +633,11 @@ pub(super) fn patch_config_toml(
         &["untrusted", "on-failure", "on-request", "never"],
     )?;
     validate_enum_or_empty(
+        "approvals_reviewer",
+        patch.approvals_reviewer.as_deref().unwrap_or(""),
+        &["user", "auto_review"],
+    )?;
+    validate_enum_or_empty(
         "sandbox_mode",
         patch.sandbox_mode.as_deref().unwrap_or(""),
         &["read-only", "workspace-write", "danger-full-access"],
@@ -687,6 +692,14 @@ pub(super) fn patch_config_toml(
         upsert_root_key(
             &mut lines,
             "approval_policy",
+            (!trimmed.is_empty()).then(|| toml_string_literal(trimmed)),
+        );
+    }
+    if let Some(raw) = patch.approvals_reviewer.as_deref() {
+        let trimmed = raw.trim();
+        upsert_root_key(
+            &mut lines,
+            "approvals_reviewer",
             (!trimmed.is_empty()).then(|| toml_string_literal(trimmed)),
         );
     }

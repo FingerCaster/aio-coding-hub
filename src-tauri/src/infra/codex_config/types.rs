@@ -15,6 +15,7 @@ pub struct CodexConfigState {
 
     pub model: Option<String>,
     pub approval_policy: Option<String>,
+    pub approvals_reviewer: Option<String>,
     pub sandbox_mode: Option<String>,
     pub model_reasoning_effort: Option<String>,
     pub plan_mode_reasoning_effort: Option<String>,
@@ -52,6 +53,7 @@ pub(super) struct CodexConfigStateMeta {
 pub struct CodexConfigPatch {
     pub model: Option<String>,
     pub approval_policy: Option<String>,
+    pub approvals_reviewer: Option<String>,
     pub sandbox_mode: Option<String>,
     pub model_reasoning_effort: Option<String>,
     pub plan_mode_reasoning_effort: Option<String>,

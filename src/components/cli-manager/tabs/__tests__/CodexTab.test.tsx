@@ -70,6 +70,7 @@ function createCodexConfig(overrides: Partial<any> = {}) {
     exists: true,
     model: "gpt-5-codex",
     approval_policy: "on-request",
+    approvals_reviewer: null,
     sandbox_mode: "workspace-write",
     sandbox_workspace_write_network_access: null,
     model_reasoning_effort: "medium",
@@ -200,6 +201,41 @@ function createCodexModelCatalog(models = [createCodexModel()]) {
     },
     models,
   };
+}
+
+function renderApprovalReviewerSettings({
+  reviewer = null,
+  policy = "on-request",
+  saving = false,
+  persistCodexConfig = vi.fn().mockResolvedValue(null),
+}: {
+  reviewer?: string | null;
+  policy?: string | null;
+  saving?: boolean;
+  persistCodexConfig?: ReturnType<typeof vi.fn>;
+} = {}) {
+  render(
+    <CliManagerCodexTab
+      codexAvailable="available"
+      codexLoading={false}
+      codexConfigLoading={false}
+      codexConfigSaving={saving}
+      codexConfigTomlLoading={false}
+      codexConfigTomlSaving={false}
+      codexInfo={createCodexInfo()}
+      codexConfig={createCodexConfig({
+        approvals_reviewer: reviewer,
+        approval_policy: policy,
+      })}
+      codexConfigToml={null}
+      refreshCodex={vi.fn()}
+      openCodexConfigDir={vi.fn()}
+      persistCodexConfig={persistCodexConfig}
+      persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+    />
+  );
+
+  return persistCodexConfig;
 }
 
 describe("components/cli-manager/tabs/CodexTab", () => {
@@ -369,6 +405,131 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     // Exercise remaining toggle handlers for function/branch coverage.
     for (const sw of screen.getAllByRole("switch")) fireEvent.click(sw);
+  });
+
+  it("renders and persists the three approvals reviewer choices without confirmation", () => {
+    const persistCodexConfig = renderApprovalReviewerSettings();
+    const reviewerSelect = screen.getByRole("combobox", {
+      name: "审批者 (approvals_reviewer)",
+    });
+
+    expect(
+      within(reviewerSelect)
+        .getAllByRole("option")
+        .map((option) => option.textContent)
+    ).toEqual(["默认（不设置）", "由我审批（user）", "替我审批（auto_review）"]);
+
+    fireEvent.change(reviewerSelect, { target: { value: "auto_review" } });
+    fireEvent.change(reviewerSelect, { target: { value: "user" } });
+    fireEvent.change(reviewerSelect, { target: { value: "" } });
+
+    expect(persistCodexConfig).toHaveBeenNthCalledWith(1, {
+      approvals_reviewer: "auto_review",
+    });
+    expect(persistCodexConfig).toHaveBeenNthCalledWith(2, { approvals_reviewer: "user" });
+    expect(persistCodexConfig).toHaveBeenNthCalledWith(3, { approvals_reviewer: "" });
+    expect(confirm).not.toHaveBeenCalled();
+  });
+
+  it("renders an unknown reviewer verbatim and leaves it out of policy patches", () => {
+    const persistCodexConfig = renderApprovalReviewerSettings({
+      reviewer: "future_reviewer",
+      policy: "on-request",
+    });
+    const reviewerSelect = screen.getByRole("combobox", {
+      name: "审批者 (approvals_reviewer)",
+    });
+
+    expect(reviewerSelect).toHaveValue("future_reviewer");
+    expect(
+      within(reviewerSelect).getByRole("option", {
+        name: "不支持的当前值（future_reviewer）",
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByText(/在你明确选择前会原样保留/)).toBeInTheDocument();
+
+    const approvalItem =
+      screen.getByText("审批策略 (approval_policy)").parentElement?.parentElement;
+    const approvalSelect = within(approvalItem as HTMLElement).getByRole("combobox");
+    fireEvent.change(approvalSelect, { target: { value: "never" } });
+    expect(persistCodexConfig).toHaveBeenCalledWith({ approval_policy: "never" });
+    expect(persistCodexConfig).not.toHaveBeenCalledWith(
+      expect.objectContaining({ approvals_reviewer: expect.anything() })
+    );
+  });
+
+  it.each([
+    ["auto_review", "never", "替我审批不会生效"],
+    ["auto_review", "untrusted", "不支持 auto-review"],
+    ["auto_review", "on-failure", "不支持 auto-review"],
+    ["user", "never", "不会产生需要你处理的审批请求"],
+  ])("offers an explicit policy switch for reviewer=%s policy=%s", (reviewer, policy, copy) => {
+    const persistCodexConfig = renderApprovalReviewerSettings({ reviewer, policy });
+
+    expect(screen.getByText(new RegExp(copy))).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "切换为 on-request" }));
+    expect(persistCodexConfig).toHaveBeenCalledWith({ approval_policy: "on-request" });
+    expect(persistCodexConfig).toHaveBeenCalledTimes(1);
+  });
+
+  it("uses neutral inherited-policy copy and hides actions for active auto-review", () => {
+    const { rerender } = render(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig({
+          approvals_reviewer: "auto_review",
+          approval_policy: null,
+        })}
+        codexConfigToml={null}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    expect(screen.getByText(/取决于上层配置/)).toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "切换为 on-request" })).not.toBeInTheDocument();
+
+    rerender(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig({
+          approvals_reviewer: "auto_review",
+          approval_policy: "on-request",
+        })}
+        codexConfigToml={null}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+      />
+    );
+
+    expect(screen.queryByText(/取决于上层配置/)).not.toBeInTheDocument();
+    expect(screen.queryByRole("button", { name: "切换为 on-request" })).not.toBeInTheDocument();
+  });
+
+  it("disables the policy switch while Codex config is saving", () => {
+    renderApprovalReviewerSettings({
+      reviewer: "auto_review",
+      policy: "never",
+      saving: true,
+    });
+
+    expect(screen.getByRole("button", { name: "切换为 on-request" })).toBeDisabled();
   });
 
   it("toggles Codex OAuth compatible proxy mode from app settings", () => {

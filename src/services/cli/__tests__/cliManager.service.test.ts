@@ -82,6 +82,7 @@ function makeCodexConfigState(overrides: Partial<CodexConfigState> = {}): CodexC
     exists: true,
     model: "gpt-5",
     approval_policy: null,
+    approvals_reviewer: null,
     sandbox_mode: null,
     model_reasoning_effort: null,
     plan_mode_reasoning_effort: null,
@@ -296,8 +297,15 @@ describe("services/cli/cliManager", () => {
       expect.objectContaining({ model: "gpt-5" })
     );
     const ordinaryPatch = vi.mocked(commands.cliManagerCodexConfigSet).mock.calls[0]?.[0];
+    expect(ordinaryPatch).toHaveProperty("approvals_reviewer", null);
     expect(ordinaryPatch).not.toHaveProperty("model_context_window");
     expect(ordinaryPatch).not.toHaveProperty("model_auto_compact_token_limit");
+
+    vi.mocked(commands.cliManagerCodexConfigSet).mockClear();
+    await cliManagerCodexConfigSet({ approvals_reviewer: "auto_review" });
+    expect(commands.cliManagerCodexConfigSet).toHaveBeenCalledWith(
+      expect.objectContaining({ approvals_reviewer: "auto_review" })
+    );
 
     vi.mocked(commands.cliManagerCodexConfigSet).mockClear();
     await cliManagerCodexConfigSet({
