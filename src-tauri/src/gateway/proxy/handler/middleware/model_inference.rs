@@ -62,9 +62,17 @@ impl ModelInferenceMiddleware {
         if is_large_body_missing_model(ctx.body_bytes.len(), ctx.requested_model.as_deref()) {
             let contract = early_error_contract(EarlyErrorKind::LargeBodyMissingModel);
             let message = large_body_missing_model_message(ctx.body_bytes.len());
+            let special_settings_json =
+                crate::gateway::response_fixer::special_settings_json(&ctx.special_settings);
             let log_ctx = build_early_error_log_ctx(&ctx);
-            let resp =
-                respond_early_error_with_spawn(&log_ctx, contract, message, None, None, None);
+            let resp = respond_early_error_with_spawn(
+                &log_ctx,
+                contract,
+                message,
+                special_settings_json,
+                None,
+                None,
+            );
             return MiddlewareAction::ShortCircuit(resp);
         }
 
