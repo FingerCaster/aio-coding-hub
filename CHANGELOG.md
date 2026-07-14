@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.26](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.25...aio-coding-hub-v0.60.26) (2026-07-14)
+
+
+### Features
+
+* **codex:** add approvals reviewer setting ([aa8f4ef](https://github.com/FingerCaster/aio-coding-hub/commit/aa8f4efa562cfa2d19352e76053def6d7b5920dc))
+
 ## [0.60.25](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.24...aio-coding-hub-v0.60.25) (2026-07-14)
 
 
