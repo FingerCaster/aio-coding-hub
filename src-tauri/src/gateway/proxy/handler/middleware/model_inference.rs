@@ -41,6 +41,7 @@ impl ModelInferenceMiddleware {
 
         ctx.observe_request = compute_observe_request(
             &ctx.cli_key,
+            &ctx.req_method,
             &ctx.forwarded_path,
             &ctx.headers,
             ctx.introspection_json.as_ref(),

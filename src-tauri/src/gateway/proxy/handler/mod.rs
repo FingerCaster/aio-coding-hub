@@ -5,9 +5,9 @@
 //! short-circuits with a Response.
 
 use super::abort_guard::RequestAbortGuard;
-use super::is_claude_count_tokens_request;
 use super::logging::enqueue_request_log_placeholder;
 use super::request_context::RequestContext;
+use super::{is_claude_count_tokens_request, is_codex_model_discovery_request};
 
 use crate::gateway::active_requests::ActiveRequestStart;
 use crate::gateway::events::{emit_gateway_debug_log_lazy, emit_request_start_event};
@@ -155,6 +155,8 @@ where
     let method_hint = method.to_string();
     let query = req.uri().query().map(str::to_string);
     let is_claude_count_tokens = is_claude_count_tokens_request(&cli_key, &forwarded_path);
+    let is_codex_model_discovery =
+        is_codex_model_discovery_request(&cli_key, &method, &forwarded_path);
 
     let (headers, body) = {
         let (parts, b) = req.into_parts();
@@ -176,6 +178,7 @@ where
         created_at_ms,
         created_at,
         is_claude_count_tokens,
+        is_codex_model_discovery,
         request_body: Some(body),
         headers,
         body_bytes: Bytes::new(),
@@ -184,7 +187,7 @@ where
         observe_request: false,
         strip_request_content_encoding_seed: false,
         special_settings: new_special_settings(),
-        provider_health_neutral: false,
+        provider_health_neutral: is_codex_model_discovery,
         requested_model: None,
         requested_model_location: None,
         is_compact_request: false,
@@ -448,6 +451,7 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             created_at: 1_700_000_000,
             is_claude_count_tokens: false,
+            is_codex_model_discovery: false,
             request_body: Some(Body::empty()),
             headers: HeaderMap::new(),
             body_bytes: Bytes::new(),
@@ -510,6 +514,7 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             created_at: 1_700_000_000,
             is_claude_count_tokens: false,
+            is_codex_model_discovery: false,
             request_body: Some(Body::empty()),
             headers: HeaderMap::new(),
             body_bytes: Bytes::new(),
@@ -563,6 +568,7 @@ mod tests {
             created_at_ms: 1_700_000_000_000,
             created_at: 1_700_000_000,
             is_claude_count_tokens: false,
+            is_codex_model_discovery: false,
             request_body: Some(Body::empty()),
             headers: HeaderMap::new(),
             body_bytes: Bytes::new(),
@@ -890,7 +896,7 @@ mod tests {
 
     #[test]
     fn handler_runtime_settings_defaults_match_expected() {
-        let runtime = handler_runtime_settings(None, false);
+        let runtime = handler_runtime_settings(None, false, false);
 
         assert!(runtime.verbose_provider_error);
         assert!(!runtime.intercept_warmup);
@@ -923,7 +929,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = handler_runtime_settings(Some(&cfg), true);
+        let runtime = handler_runtime_settings(Some(&cfg), true, false);
 
         assert!(!runtime.enable_thinking_signature_rectifier);
         assert_eq!(runtime.max_attempts_per_provider, 1);
@@ -933,6 +939,21 @@ mod tests {
             runtime.cx2cc_settings.service_tier.as_deref(),
             Some("priority")
         );
+    }
+
+    #[test]
+    fn handler_runtime_settings_limits_codex_model_discovery_per_provider_only() {
+        let cfg = settings::AppSettings {
+            failover_max_attempts_per_provider: 9,
+            failover_max_providers_to_try: 7,
+            ..Default::default()
+        };
+
+        let runtime = handler_runtime_settings(Some(&cfg), false, true);
+
+        assert_eq!(runtime.max_attempts_per_provider, 1);
+        assert_eq!(runtime.max_providers_to_try, 7);
+        assert!(runtime.enable_thinking_signature_rectifier);
     }
 
     #[test]

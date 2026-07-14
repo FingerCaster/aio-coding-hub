@@ -1550,15 +1550,22 @@ mod tests {
     fn should_not_observe_non_messages_claude_request_end() {
         assert!(!super::super::should_observe_request(
             "claude",
+            &axum::http::Method::POST,
             "/v1/messages/count_tokens"
         ));
-        assert!(!super::super::should_observe_request("claude", "/v1/other"));
+        assert!(!super::super::should_observe_request(
+            "claude",
+            &axum::http::Method::POST,
+            "/v1/other"
+        ));
         assert!(super::super::should_observe_request(
             "claude",
+            &axum::http::Method::POST,
             "/v1/messages"
         ));
         assert!(super::super::should_observe_request(
             "codex",
+            &axum::http::Method::POST,
             "/v1/messages/count_tokens"
         ));
     }

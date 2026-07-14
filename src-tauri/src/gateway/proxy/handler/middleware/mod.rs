@@ -69,6 +69,7 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) created_at_ms: i64,
     pub(super) created_at: i64,
     pub(super) is_claude_count_tokens: bool,
+    pub(super) is_codex_model_discovery: bool,
 
     // -- mutable request data (enriched by middlewares) --
     pub(super) request_body: Option<Body>,
@@ -145,6 +146,7 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             strip_request_content_encoding_seed: self.strip_request_content_encoding_seed,
             special_settings: self.special_settings,
             provider_health_neutral: self.provider_health_neutral,
+            is_codex_model_discovery: self.is_codex_model_discovery,
             provider_base_url_ping_cache_ttl_seconds: rs.provider_base_url_ping_cache_ttl_seconds,
             verbose_provider_error: rs.verbose_provider_error,
             enable_codex_session_id_completion: rs.enable_codex_session_id_completion,
