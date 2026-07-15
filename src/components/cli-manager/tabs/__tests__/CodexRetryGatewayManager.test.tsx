@@ -411,6 +411,19 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
 
   it("retries recovery and only uninstalls after explicit data-removal confirmation", async () => {
     const user = userEvent.setup();
+    statusQuery.data = createCodexRetryGatewayStatus({
+      desired_enabled: false,
+      runtime_phase: "disabled",
+      route_mode: "direct_aio",
+      process_status: {
+        phase: "stopped",
+        owned: false,
+        healthy: false,
+        process_id: null,
+        listener: null,
+      },
+      details_available: false,
+    });
     renderManager();
 
     await user.click(screen.getByRole("button", { name: "重试恢复" }));
@@ -426,6 +439,18 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
         confirmedDataRemoval: true,
       });
     });
+  });
+
+  it("requires the gateway to be disabled and stopped before offering uninstall", async () => {
+    const user = userEvent.setup();
+    renderManager();
+
+    const uninstallButton = screen.getByRole("button", { name: "卸载并清理" });
+    expect(uninstallButton).toBeDisabled();
+    expect(screen.getByText(/请先停用拦截网关/)).toBeInTheDocument();
+    await user.click(uninstallButton);
+    expect(screen.queryByRole("dialog", { name: "卸载 Codex 外部网关" })).not.toBeInTheDocument();
+    expect(mutations.uninstall.mutateAsync).not.toHaveBeenCalled();
   });
 
   it("creates bridge sessions on entry and refresh, replacing a same-generation URL", async () => {

@@ -9,11 +9,12 @@ use crate::infra::codex_retry_gateway::util::now_unix_ms;
 use crate::infra::codex_retry_gateway::{
     CodexRetryGatewayDetailsSession, CodexRetryGatewayLifecycleCallback,
     CodexRetryGatewayRouteCallbackReason, CodexRetryGatewayRouteCallbackRequest,
+    CodexRetryGatewayStatus, CodexRouteMode,
 };
 use crate::shared::error::{AppError, AppResult};
 use axum::body::{to_bytes, Body};
 use axum::extract::{OriginalUri, Path as AxumPath, State};
-use axum::http::header::{COOKIE, LOCATION, SET_COOKIE};
+use axum::http::header::{COOKIE, LOCATION, ORIGIN, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode};
 use axum::routing::{any, get};
 use axum::Router;
@@ -27,7 +28,7 @@ use tokio::sync::{oneshot, Mutex, RwLock};
 const BRIDGE_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const BRIDGE_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const BRIDGE_SESSION_TTL_MS: u64 = 15 * 60 * 1000;
-const BRIDGE_COOKIE_NAME: &str = "aio_codex_retry_gateway_session";
+const BRIDGE_COOKIE_NAME_PREFIX: &str = "aio_codex_retry_gateway_session";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BridgeRuntimeHandle {
@@ -61,6 +62,8 @@ struct BridgeRuntimeInner {
 }
 
 struct BridgeRuntimeState {
+    base_origin: String,
+    cookie_name: String,
     paths: RwLock<CodexRetryGatewayManagerPaths>,
     callback: RwLock<Arc<dyn CodexRetryGatewayLifecycleCallback>>,
     sessions: RwLock<HashMap<String, BridgeSessionState>>,
@@ -142,22 +145,6 @@ async fn ensure_bridge_runtime(
         return Ok(inner.handle.clone());
     }
 
-    let state = Arc::new(BridgeRuntimeState {
-        paths: RwLock::new(paths),
-        callback: RwLock::new(callback),
-        sessions: RwLock::new(HashMap::new()),
-        client: Client::builder()
-            .no_proxy()
-            .timeout(Duration::from_secs(15))
-            .build()
-            .map_err(|err| {
-                AppError::new(
-                    "CODEX_RETRY_GATEWAY_HTTP_CLIENT_FAILED",
-                    format!("failed to build bridge HTTP client: {err}"),
-                )
-            })?,
-    });
-
     let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
         .await
         .map_err(|err| {
@@ -173,6 +160,23 @@ async fn ensure_bridge_runtime(
         )
     })?;
     let base_origin = format!("http://127.0.0.1:{}", addr.port());
+    let state = Arc::new(BridgeRuntimeState {
+        base_origin: base_origin.clone(),
+        cookie_name: bridge_cookie_name(addr.port()),
+        paths: RwLock::new(paths),
+        callback: RwLock::new(callback),
+        sessions: RwLock::new(HashMap::new()),
+        client: Client::builder()
+            .no_proxy()
+            .timeout(Duration::from_secs(15))
+            .build()
+            .map_err(|err| {
+                AppError::new(
+                    "CODEX_RETRY_GATEWAY_HTTP_CLIENT_FAILED",
+                    format!("failed to build bridge HTTP client: {err}"),
+                )
+            })?,
+    });
     let handle = BridgeRuntimeHandle {
         base_origin: base_origin.clone(),
     };
@@ -209,7 +213,8 @@ async fn launch_session(
                 .body(Body::empty())
                 .unwrap_or_else(|_| Response::new(Body::empty()));
             if let Ok(value) = HeaderValue::from_str(&format!(
-                "{BRIDGE_COOKIE_NAME}={session_id}; HttpOnly; SameSite=Strict; Path=/"
+                "{}={session_id}; HttpOnly; SameSite=Strict; Path=/",
+                state.cookie_name
             )) {
                 response.headers_mut().insert(SET_COOKIE, value);
             }
@@ -235,8 +240,14 @@ async fn proxy_request(
     if !path_allowed(&method, &path) {
         return error_response(StatusCode::NOT_FOUND, "path is not allowlisted");
     }
+    if !request_origin_allowed(&method, &headers, &state.base_origin) {
+        return error_response(
+            StatusCode::FORBIDDEN,
+            "state-changing bridge requests require the exact bridge origin",
+        );
+    }
 
-    let Some(session_id) = read_session_cookie(&headers) else {
+    let Some(session_id) = read_session_cookie(&headers, &state.cookie_name) else {
         return error_response(StatusCode::UNAUTHORIZED, "bridge session cookie is missing");
     };
     let validated = match validate_session(&state, &session_id).await {
@@ -306,12 +317,173 @@ async fn proxy_request(
         }
         Err(error) => return error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
     };
+    let should_overlay_status = response_requires_status_overlay(&method, &path, status);
+    let bytes = if should_overlay_status {
+        let callback = state.callback.read().await.clone();
+        let authoritative = match callback.current_gateway_status().await {
+            Ok(status) => status,
+            Err(error) => {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("AIO authoritative gateway status is unavailable: {error}"),
+                )
+            }
+        };
+        if authoritative.generation != validated.generation {
+            return error_response(
+                StatusCode::GONE,
+                "bridge session generation changed while reading status",
+            );
+        }
+        match overlay_authoritative_status(&bytes, &validated.record, &authoritative) {
+            Ok(bytes) => bytes,
+            Err(error) => return error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
+        }
+    } else {
+        bytes
+    };
     let mut builder = Response::builder().status(status);
     if let Some(headers_mut) = builder.headers_mut() {
         copy_response_headers(&upstream_headers, headers_mut);
     }
     builder.body(Body::from(bytes)).unwrap_or_else(|_| {
         error_response(StatusCode::BAD_GATEWAY, "failed to build bridge response")
+    })
+}
+
+fn request_origin_allowed(method: &Method, headers: &HeaderMap, base_origin: &str) -> bool {
+    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+        return true;
+    }
+    headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| origin == base_origin)
+}
+
+fn response_requires_status_overlay(method: &Method, path: &str, status: StatusCode) -> bool {
+    status.is_success()
+        && ((path == "/__codex_retry_gateway/api/status" && method == Method::GET)
+            || (path == "/__codex_retry_gateway/api/config" && method == Method::POST))
+}
+
+fn overlay_authoritative_status(
+    bytes: &[u8],
+    record: &CodexRetryGatewayManagedProcessRecord,
+    status: &CodexRetryGatewayStatus,
+) -> AppResult<Vec<u8>> {
+    let mut value: Value = serde_json::from_slice(bytes).map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_BRIDGE_STATUS_INVALID",
+            format!("failed to parse external status response: {err}"),
+        )
+    })?;
+    let object = value.as_object_mut().ok_or_else(|| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_BRIDGE_STATUS_INVALID",
+            "external status response must be an object",
+        )
+    })?;
+    let config = object
+        .entry("config".to_string())
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            AppError::new(
+                "CODEX_RETRY_GATEWAY_BRIDGE_STATUS_INVALID",
+                "external status config must be an object",
+            )
+        })?;
+    config.insert(
+        "listen_host".to_string(),
+        Value::String(DEFAULT_LISTEN_HOST.to_string()),
+    );
+    config.insert(
+        "upstream_base_url".to_string(),
+        Value::String(record.upstream_base_url.clone()),
+    );
+    config.insert(
+        "health_path".to_string(),
+        Value::String(DEFAULT_HEALTH_PATH.to_string()),
+    );
+    if let Ok(listener) = reqwest::Url::parse(&record.listener) {
+        if let Some(port) = listener.port_or_known_default() {
+            config.insert("listen_port".to_string(), Value::from(port));
+            object.insert(
+                "listen".to_string(),
+                Value::String(format!("{DEFAULT_LISTEN_HOST}:{port}")),
+            );
+        }
+    }
+
+    let external_state = object
+        .entry("state".to_string())
+        .or_insert_with(|| Value::Object(Default::default()))
+        .as_object_mut()
+        .ok_or_else(|| {
+            AppError::new(
+                "CODEX_RETRY_GATEWAY_BRIDGE_STATUS_INVALID",
+                "external status state must be an object",
+            )
+        })?;
+    external_state.insert("process_id".to_string(), Value::from(record.pid));
+    external_state.insert(
+        "original_base_url".to_string(),
+        Value::String(record.upstream_base_url.clone()),
+    );
+    external_state.insert(
+        "gateway_base_url".to_string(),
+        Value::String(record.listener.clone()),
+    );
+    external_state.insert(
+        "aio_instance_nonce".to_string(),
+        Value::String(record.instance_nonce.clone()),
+    );
+    external_state.insert(
+        "provider_name".to_string(),
+        Value::String(record.provider_name.clone()),
+    );
+    match status.route_mode {
+        CodexRouteMode::Guarded => {
+            external_state.insert(
+                "codex_current_base_url".to_string(),
+                Value::String(format!("{}/v1", record.listener.trim_end_matches('/'))),
+            );
+        }
+        CodexRouteMode::DirectAio => {
+            external_state.insert(
+                "codex_current_base_url".to_string(),
+                Value::String(record.upstream_base_url.clone()),
+            );
+        }
+        CodexRouteMode::Unproxied => {}
+    }
+
+    object.insert("process_id".to_string(), Value::from(record.pid));
+    object.insert(
+        "aio".to_string(),
+        serde_json::json!({
+            "managed": true,
+            "generation": status.generation,
+            "desired_enabled": status.desired_enabled,
+            "runtime_phase": status.runtime_phase,
+            "route_mode": status.route_mode,
+            "cli_proxy_enabled": status.cli_proxy_enabled,
+            "cli_proxy_applied": status.cli_proxy_applied,
+            "selected_commit": status.selected_commit,
+            "active_commit": status.active_commit,
+            "previous_commit": status.previous_commit,
+            "source_commit": record.source_commit,
+            "provider_name": record.provider_name,
+            "listener": record.listener,
+            "upstream_base_url": record.upstream_base_url,
+        }),
+    );
+    serde_json::to_vec(&value).map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_BRIDGE_STATUS_INVALID",
+            format!("failed to serialize overlaid status response: {err}"),
+        )
     })
 }
 
@@ -419,11 +591,15 @@ async fn validate_session(
     })
 }
 
-fn read_session_cookie(headers: &HeaderMap) -> Option<String> {
+fn bridge_cookie_name(port: u16) -> String {
+    format!("{BRIDGE_COOKIE_NAME_PREFIX}_{port}")
+}
+
+fn read_session_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     let raw = headers.get(COOKIE)?.to_str().ok()?;
     raw.split(';').find_map(|part| {
         let (name, value) = part.trim().split_once('=')?;
-        (name.trim() == BRIDGE_COOKIE_NAME).then(|| value.trim().to_string())
+        (name.trim() == cookie_name).then(|| value.trim().to_string())
     })
 }
 
@@ -641,6 +817,25 @@ mod tests {
         }
     }
 
+    fn managed_record() -> CodexRetryGatewayManagedProcessRecord {
+        CodexRetryGatewayManagedProcessRecord {
+            pid: 1,
+            start_identity: None,
+            started_at_ms: 1,
+            node_executable: "node".to_string(),
+            source_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
+            source_dir_rel: "sources/ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
+            config_path_rel: "runtime/config/config.json".to_string(),
+            state_path_rel: "runtime/state.json".to_string(),
+            log_path_rel: "runtime/logs/gateway.log".to_string(),
+            listener: "http://127.0.0.1:4610".to_string(),
+            upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
+            instance_nonce: "nonce".to_string(),
+            provider_name: crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO
+                .to_string(),
+        }
+    }
+
     #[test]
     fn path_allowlist_matches_documented_bridge_surface() {
         assert!(path_allowed(&Method::GET, "/__codex_retry_gateway/ui"));
@@ -689,28 +884,118 @@ mod tests {
 
     #[test]
     fn protected_config_body_rejects_managed_field_changes() {
-        let record = CodexRetryGatewayManagedProcessRecord {
-            pid: 1,
-            start_identity: None,
-            started_at_ms: 1,
-            node_executable: "node".to_string(),
-            source_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
-            source_dir_rel: "sources/ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
-            config_path_rel: "runtime/config/config.json".to_string(),
-            state_path_rel: "runtime/state.json".to_string(),
-            log_path_rel: "runtime/logs/gateway.log".to_string(),
-            listener: "http://127.0.0.1:4610".to_string(),
-            upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
-            instance_nonce: "nonce".to_string(),
-            provider_name: crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO
-                .to_string(),
-        };
+        let record = managed_record();
         let err = protected_config_body(
             &record,
             br#"{"listen_port":4620,"upstream_base_url":"http://127.0.0.1:1/v1"}"#,
         )
         .expect_err("protected config should reject managed field changes");
         assert!(err.to_string().contains("managed by AIO"));
+    }
+
+    #[test]
+    fn state_changing_requests_require_exact_bridge_origin() {
+        let mut headers = HeaderMap::new();
+        assert!(request_origin_allowed(
+            &Method::GET,
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+        assert!(!request_origin_allowed(
+            &Method::POST,
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+        headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:45101"));
+        assert!(!request_origin_allowed(
+            &Method::POST,
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+        headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:45100"));
+        assert!(request_origin_allowed(
+            &Method::POST,
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+    }
+
+    #[test]
+    fn bridge_session_cookie_name_isolated_by_listener_port() {
+        let first = bridge_cookie_name(45100);
+        let second = bridge_cookie_name(45101);
+        assert_ne!(first, second);
+
+        let mut headers = HeaderMap::new();
+        headers.insert(
+            COOKIE,
+            HeaderValue::from_str(&format!("{first}=first-session; {second}=second-session"))
+                .expect("cookie header"),
+        );
+        assert_eq!(
+            read_session_cookie(&headers, &first).as_deref(),
+            Some("first-session")
+        );
+        assert_eq!(
+            read_session_cookie(&headers, &second).as_deref(),
+            Some("second-session")
+        );
+    }
+
+    #[test]
+    fn successful_status_and_config_responses_receive_aio_overlay() {
+        assert!(response_requires_status_overlay(
+            &Method::GET,
+            "/__codex_retry_gateway/api/status",
+            StatusCode::OK
+        ));
+        assert!(response_requires_status_overlay(
+            &Method::POST,
+            "/__codex_retry_gateway/api/config",
+            StatusCode::OK
+        ));
+        assert!(!response_requires_status_overlay(
+            &Method::POST,
+            "/__codex_retry_gateway/api/config",
+            StatusCode::BAD_REQUEST
+        ));
+    }
+
+    #[test]
+    fn status_overlay_uses_aio_route_provider_and_commit_state() {
+        let record = managed_record();
+        let status = CodexRetryGatewayStatus {
+            generation: 7,
+            desired_enabled: true,
+            runtime_phase:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayRuntimePhase::Guarded,
+            route_mode: CodexRouteMode::Guarded,
+            cli_proxy_enabled: true,
+            cli_proxy_applied: true,
+            selected_commit: record.source_commit.clone(),
+            active_commit: Some(record.source_commit.clone()),
+            ..CodexRetryGatewayStatus::default()
+        };
+        let overlaid = overlay_authoritative_status(
+            br#"{"ok":true,"config":{"upstream_base_url":"stale"},"state":{"provider_name":"stale"}}"#,
+            &record,
+            &status,
+        )
+        .expect("status overlay");
+        let value: Value = serde_json::from_slice(&overlaid).expect("status json");
+
+        assert_eq!(
+            value["config"]["upstream_base_url"],
+            record.upstream_base_url
+        );
+        assert_eq!(value["state"]["provider_name"], record.provider_name);
+        assert_eq!(
+            value["state"]["codex_current_base_url"],
+            "http://127.0.0.1:4610/v1"
+        );
+        assert_eq!(value["aio"]["generation"], 7);
+        assert_eq!(value["aio"]["route_mode"], "guarded");
+        assert_eq!(value["aio"]["source_commit"], record.source_commit);
     }
 
     #[tokio::test]
@@ -730,6 +1015,8 @@ mod tests {
             tempfile::tempdir().unwrap().path().join("gateway"),
         );
         let state = Arc::new(BridgeRuntimeState {
+            base_origin: "http://127.0.0.1:45100".to_string(),
+            cookie_name: bridge_cookie_name(45100),
             paths: RwLock::new(paths),
             callback: RwLock::new(Arc::new(AwaitedRestoreCallback {
                 completed: completed.clone(),

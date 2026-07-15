@@ -1030,6 +1030,67 @@ fn codex_route_transition_helpers_prepare_commit_and_reconcile_pending_state() {
 }
 
 #[test]
+fn sync_enabled_skips_codex_while_provider_sync_recovery_is_pending() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let original_origin = "http://127.0.0.1:37123";
+    let next_origin = "http://127.0.0.1:37124";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "https://api.openai.com/v1"
+"#,
+        r#"{"profile":"local"}"#,
+    );
+    set_enabled(&handle, "codex", true, original_origin).expect("enable codex proxy");
+    let config_path = codex::codex_config_path(&handle).expect("Codex config path");
+    let config_before = std::fs::read(&config_path).expect("read config before pending recovery");
+
+    let codex_home = crate::codex_paths::codex_home_dir(&handle).expect("Codex home");
+    let transaction_root = codex_home.join("tmp/provider-sync-transaction");
+    std::fs::create_dir_all(&transaction_root).expect("create pending transaction root");
+    std::fs::write(
+        transaction_root.join("journal.json"),
+        serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "operation_id": "interrupted-route",
+            "phase": "prepared",
+            "target_provider": "OpenAI",
+            "target_config_sha256": "0000000000000000000000000000000000000000000000000000000000000000",
+            "route": null,
+            "backup_dir_rel": "backups_state/provider-sync/interrupted",
+            "backup_root_existed": true,
+            "snapshots": []
+        }))
+        .expect("serialize pending transaction"),
+    )
+    .expect("write pending transaction");
+
+    let results = sync_enabled(&handle, next_origin, true).expect("sync remains available");
+    let codex = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex result");
+
+    assert!(!codex.ok, "{codex:?}");
+    assert_eq!(
+        codex.error_code.as_deref(),
+        Some("CLI_PROXY_PROVIDER_SYNC_RECOVERY_REQUIRED")
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("read unchanged config"),
+        config_before
+    );
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("Codex manifest");
+    assert_eq!(manifest.base_origin.as_deref(), Some(original_origin));
+}
+
+#[test]
 fn plan_external_enable_reports_cli_proxy_and_provider_sync_requirements() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();

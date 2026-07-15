@@ -2,6 +2,12 @@
 
 use crate::app::cli_proxy_service;
 use crate::app_state::DbInitState;
+use std::future::Future;
+
+async fn run_locked_cli_proxy_mutation<T>(operation: impl Future<Output = T>) -> T {
+    let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
+    operation.await
+}
 
 pub(crate) async fn cli_proxy_set_disabled_impl<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
@@ -41,7 +47,12 @@ pub(crate) async fn cli_proxy_sync_enabled(
     base_origin: String,
     apply_live: Option<bool>,
 ) -> Result<Vec<crate::cli_proxy::CliProxyResult>, String> {
-    cli_proxy_service::cli_proxy_sync_enabled(app, base_origin, apply_live).await
+    run_locked_cli_proxy_mutation(cli_proxy_service::cli_proxy_sync_enabled(
+        app,
+        base_origin,
+        apply_live,
+    ))
+    .await
 }
 
 #[tauri::command]
@@ -49,7 +60,7 @@ pub(crate) async fn cli_proxy_sync_enabled(
 pub(crate) async fn cli_proxy_rebind_codex_home(
     app: tauri::AppHandle,
 ) -> Result<crate::cli_proxy::CliProxyResult, String> {
-    cli_proxy_service::cli_proxy_rebind_codex_home(app).await
+    run_locked_cli_proxy_mutation(cli_proxy_service::cli_proxy_rebind_codex_home(app)).await
 }
 
 #[allow(dead_code)]
@@ -121,4 +132,36 @@ pub(crate) async fn cli_proxy_codex_reconcile_pending_route(
 ) -> Result<crate::cli_proxy::CodexRouteReconcileResult, String> {
     let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
     cli_proxy_service::cli_proxy_codex_reconcile_pending_route(app).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::run_locked_cli_proxy_mutation;
+    use std::sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc,
+    };
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn write_ipc_mutations_wait_for_gateway_lifecycle_lock() {
+        let first_guard = crate::app::gateway_lifecycle_lock::lock().await;
+        let entered = Arc::new(AtomicBool::new(false));
+        let entered_for_task = entered.clone();
+        let task = tokio::spawn(async move {
+            run_locked_cli_proxy_mutation(async move {
+                entered_for_task.store(true, Ordering::SeqCst);
+            })
+            .await;
+        });
+
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert!(!entered.load(Ordering::SeqCst));
+        drop(first_guard);
+        tokio::time::timeout(Duration::from_millis(250), task)
+            .await
+            .expect("mutation should enter after lifecycle lock is released")
+            .expect("mutation task should not panic");
+        assert!(entered.load(Ordering::SeqCst));
+    }
 }

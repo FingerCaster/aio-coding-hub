@@ -1,7 +1,7 @@
 use crate::infra::codex_retry_gateway::bridge::create_bridge_details_session;
 use crate::infra::codex_retry_gateway::managed_state::{
-    read_manager_state, write_manager_state, CodexRetryGatewayManagerPaths,
-    CodexRetryGatewayManagerState,
+    read_manager_state, write_manager_state, CodexRetryGatewayManagedProcessRecord,
+    CodexRetryGatewayManagerPaths, CodexRetryGatewayManagerState,
 };
 use crate::infra::codex_retry_gateway::node::{public_node_error, resolve_node_status};
 use crate::infra::codex_retry_gateway::process::{
@@ -450,10 +450,9 @@ pub(crate) async fn uninstall_runtime<R: tauri::Runtime>(
             "runtime uninstall requires explicit data removal confirmation",
         ));
     }
+    ensure_runtime_uninstall_ready(&status)?;
     let mut settings = crate::settings::read(app)?;
     let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
-    let manager = read_manager_state(&paths)?;
-    let _ = stop_verified_record_for_change(&paths, &manager, "runtime uninstall").await?;
     if paths.root.exists() {
         std::fs::remove_dir_all(&paths.root).map_err(|err| {
             AppError::new(
@@ -472,6 +471,28 @@ pub(crate) async fn uninstall_runtime<R: tauri::Runtime>(
     settings.codex_retry_gateway_node_override.clear();
     crate::settings::write(app, &settings)?;
     current_status(app).await
+}
+
+pub(crate) fn ensure_runtime_uninstall_ready(status: &CodexRetryGatewayStatus) -> AppResult<()> {
+    if status.desired_enabled {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_UNINSTALL_REQUIRES_DISABLED",
+            "disable the managed gateway before uninstalling its data",
+        ));
+    }
+    if status.route_mode == CodexRouteMode::Guarded {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_UNINSTALL_ROUTE_UNSAFE",
+            "managed source cannot be removed while Codex targets the external gateway",
+        ));
+    }
+    if status.process_status.phase != CodexRetryGatewayProcessPhase::Stopped {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_UNINSTALL_PROCESS_ACTIVE",
+            "managed gateway process must be fully stopped before uninstalling its data",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn stop_runtime_for_shutdown<R: tauri::Runtime>(
@@ -710,6 +731,7 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
     let node = resolve_required_node(app, &settings.codex_retry_gateway_node_override)?;
     let selected_commit = normalize_selected_commit(&settings.codex_retry_gateway_selected_commit);
     let provider_name = current_managed_provider_name(app)?;
+    let aio_origin = aio_origin(app, settings);
 
     if let Some(record) = manager.process_record.as_ref() {
         let reconciled =
@@ -720,12 +742,11 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
                 .map(|path| path.display().to_string());
             let source_valid = revalidate_cached_source(paths, &selected_commit)?.is_some();
             if healthy_process_can_be_reused(
-                &process.record.source_commit,
-                &process.record.node_executable,
-                &process.record.provider_name,
+                &process.record,
                 &selected_commit,
                 canonical_node.as_deref(),
                 &provider_name,
+                &aio_origin.url,
                 source_valid,
             ) {
                 return Ok(process.clone());
@@ -762,7 +783,6 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
         .await?
     };
     manager.verified_main_commit = Some(installed.manifest.verified_main_commit.clone());
-    let aio_origin = aio_origin(app, settings);
     start_runtime_process(
         paths,
         &installed,
@@ -779,18 +799,18 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
 }
 
 fn healthy_process_can_be_reused(
-    process_commit: &str,
-    process_node: &str,
-    process_provider_name: &str,
+    process: &CodexRetryGatewayManagedProcessRecord,
     selected_commit: &str,
     canonical_node: Option<&str>,
     provider_name: &str,
+    aio_upstream_base_url: &str,
     source_valid: bool,
 ) -> bool {
     source_valid
-        && process_commit == selected_commit
-        && canonical_node.is_some_and(|path| process_node == path)
-        && process_provider_name == provider_name
+        && process.source_commit == selected_commit
+        && canonical_node.is_some_and(|path| process.node_executable == path)
+        && process.provider_name == provider_name
+        && process.upstream_base_url == aio_upstream_base_url
 }
 
 async fn stop_verified_record_for_change(
@@ -1272,31 +1292,44 @@ mod tests {
     #[test]
     fn healthy_process_reuse_requires_revalidated_source() {
         let commit = CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT;
+        let root = tempfile::tempdir().expect("runtime root");
+        let paths = CodexRetryGatewayManagerPaths::from_root(root.path().join("gateway"));
+        let mut record = managed_record(&paths, "http://127.0.0.1:4610");
         assert!(healthy_process_can_be_reused(
-            commit,
-            "C:/node.exe",
-            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            &record,
             commit,
             Some("C:/node.exe"),
             crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            "http://127.0.0.1:37123/v1",
             true,
         ));
         assert!(!healthy_process_can_be_reused(
-            commit,
-            "C:/node.exe",
-            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            &record,
             commit,
             Some("C:/node.exe"),
             crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            "http://127.0.0.1:37123/v1",
             false,
         ));
+        record.provider_name =
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_OPENAI.to_string();
         assert!(!healthy_process_can_be_reused(
-            commit,
-            "C:/node.exe",
-            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            &record,
             commit,
             Some("C:/node.exe"),
-            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_OPENAI,
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            "http://127.0.0.1:37123/v1",
+            true,
+        ));
+        record.provider_name =
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO.to_string();
+        record.upstream_base_url = "http://127.0.0.1:37124/v1".to_string();
+        assert!(!healthy_process_can_be_reused(
+            &record,
+            commit,
+            Some("C:/node.exe"),
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            "http://127.0.0.1:37123/v1",
             true,
         ));
     }
@@ -1353,7 +1386,32 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn uninstall_fails_without_deleting_data_when_stop_is_unverified() {
+    async fn uninstall_rejects_enabled_state_without_deleting_data() {
+        let ctx = RuntimeTestContext::new();
+        let mut settings = crate::settings::AppSettings::default();
+        settings.codex_retry_gateway_enabled = true;
+        crate::settings::write(&ctx.app, &settings).unwrap();
+        std::fs::create_dir_all(&ctx.paths.root).unwrap();
+        std::fs::write(ctx.paths.root.join("sentinel.txt"), "keep").unwrap();
+
+        let err = uninstall_runtime(
+            &ctx.app,
+            CodexRetryGatewayUninstallRequest {
+                generation: current_status(&ctx.app).await.unwrap().generation,
+                confirmed_data_removal: true,
+            },
+        )
+        .await
+        .expect_err("enabled desired state must block uninstall");
+        assert_eq!(
+            err.code(),
+            "CODEX_RETRY_GATEWAY_UNINSTALL_REQUIRES_DISABLED"
+        );
+        assert!(ctx.paths.root.join("sentinel.txt").exists());
+    }
+
+    #[tokio::test]
+    async fn uninstall_fails_without_deleting_data_when_process_is_not_stopped() {
         let ctx = RuntimeTestContext::new();
         let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
             .await
@@ -1405,7 +1463,7 @@ mod tests {
         });
 
         let mut settings = crate::settings::AppSettings::default();
-        settings.codex_retry_gateway_enabled = true;
+        settings.codex_retry_gateway_enabled = false;
         crate::settings::write(&ctx.app, &settings).unwrap();
         let mut manager = CodexRetryGatewayManagerState::default();
         manager.generation = 3;
@@ -1421,9 +1479,45 @@ mod tests {
             },
         )
         .await
-        .expect_err("ownership mismatch must block uninstall");
-        assert!(err.to_string().contains("verified stop"));
+        .expect_err("non-stopped process state must block uninstall");
+        assert_eq!(err.code(), "CODEX_RETRY_GATEWAY_UNINSTALL_PROCESS_ACTIVE");
         assert!(ctx.paths.root.exists());
         server.abort();
+    }
+
+    #[tokio::test]
+    async fn uninstall_removes_only_disabled_stopped_runtime_data() {
+        let ctx = RuntimeTestContext::new();
+        let mut settings = crate::settings::AppSettings::default();
+        settings.codex_retry_gateway_enabled = false;
+        settings.codex_retry_gateway_selected_commit = "1".repeat(40);
+        settings.codex_retry_gateway_preferred_port = 4620;
+        settings.codex_retry_gateway_node_override = "C:/Tools/node.exe".to_string();
+        crate::settings::write(&ctx.app, &settings).unwrap();
+        std::fs::create_dir_all(&ctx.paths.root).unwrap();
+        std::fs::write(ctx.paths.root.join("sentinel.txt"), "remove").unwrap();
+
+        let result = uninstall_runtime(
+            &ctx.app,
+            CodexRetryGatewayUninstallRequest {
+                generation: current_status(&ctx.app).await.unwrap().generation,
+                confirmed_data_removal: true,
+            },
+        )
+        .await
+        .expect("disabled and stopped runtime should uninstall");
+
+        assert!(!ctx.paths.root.exists());
+        assert!(!result.desired_enabled);
+        let settings = crate::settings::read(&ctx.app).unwrap();
+        assert_eq!(
+            settings.codex_retry_gateway_selected_commit,
+            CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT
+        );
+        assert_eq!(
+            settings.codex_retry_gateway_preferred_port,
+            CODEX_RETRY_GATEWAY_DEFAULT_PORT
+        );
+        assert!(settings.codex_retry_gateway_node_override.is_empty());
     }
 }

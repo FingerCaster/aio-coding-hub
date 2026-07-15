@@ -42,9 +42,9 @@ pub(crate) use process::{
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     apply_selected_commit, build_enable_plan, create_details_session, current_status,
-    install_lifecycle_callback, record_runtime_recovery_failure, require_enable_confirmations,
-    retry_runtime_recovery, rollback_selected_commit, runtime_recovery_due,
-    runtime_update_candidate, set_runtime_enabled, set_runtime_node_override,
+    ensure_runtime_uninstall_ready, install_lifecycle_callback, record_runtime_recovery_failure,
+    require_enable_confirmations, retry_runtime_recovery, rollback_selected_commit,
+    runtime_recovery_due, runtime_update_candidate, set_runtime_enabled, set_runtime_node_override,
     stop_runtime_for_shutdown, uninstall_runtime, validate_selected_commit,
 };
 #[allow(unused_imports)]

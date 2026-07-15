@@ -9,9 +9,9 @@ use crate::infra::codex_retry_gateway::{
     CodexRetryGatewayNodeStatus, CodexRetryGatewayOperationKind,
     CodexRetryGatewayRouteCallbackRequest, CodexRetryGatewaySetEnabledRequest,
     CodexRetryGatewaySetNodeOverrideRequest, CodexRetryGatewayStatus,
-    CodexRetryGatewayUninstallRequest, CodexRetryGatewayUpdateCandidate,
-    CodexRetryGatewayValidateCommitRequest, CodexRouteMode, CODEX_RETRY_GATEWAY_DEFAULT_PORT,
-    CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME,
+    CodexRetryGatewayStatusFuture, CodexRetryGatewayUninstallRequest,
+    CodexRetryGatewayUpdateCandidate, CodexRetryGatewayValidateCommitRequest, CodexRouteMode,
+    CODEX_RETRY_GATEWAY_DEFAULT_PORT, CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME,
 };
 use crate::shared::error::{AppError, AppResult};
 use sha2::{Digest, Sha256};
@@ -58,6 +58,14 @@ impl CodexRetryGatewayLifecycleCallback for AppLifecycleCallback {
             )
             .await?;
             Ok(())
+        })
+    }
+
+    fn current_gateway_status(&self) -> CodexRetryGatewayStatusFuture {
+        let app = self.app.clone();
+        Box::pin(async move {
+            let _lifecycle = super::gateway_lifecycle_lock::lock().await;
+            codex_retry_gateway::current_status(&app).await
         })
     }
 }
@@ -256,45 +264,36 @@ pub(crate) async fn uninstall(
             "runtime uninstall requires explicit data removal confirmation",
         ));
     }
+    codex_retry_gateway::ensure_runtime_uninstall_ready(&before)?;
 
-    if before.cli_proxy_enabled || before.route_mode == CodexRouteMode::Guarded {
-        let aio_origin = ensure_aio_gateway_running_unlocked(app).await?;
-        route_direct_aio_unlocked(
-            app,
-            &aio_origin,
-            false,
-            CodexRetryGatewayOperationKind::Uninstall,
-        )
-        .await?;
-    }
-    let stopped = codex_retry_gateway::set_runtime_enabled(
-        app,
-        CodexRetryGatewaySetEnabledRequest {
-            enabled: false,
-            plan_generation: before.generation,
-            confirmation: Default::default(),
-        },
-    )
-    .await?;
     let route = crate::app::cli_proxy_service::cli_proxy_codex_verify_route(app.clone())
         .await
         .map_err(AppError::from)?;
-    if route.route_mode == CodexRouteMode::Guarded {
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_UNINSTALL_ROUTE_UNSAFE",
-            "managed source cannot be removed while Codex still targets the external gateway",
-        ));
-    }
+    ensure_uninstall_route_safe(&route)?;
     let result = codex_retry_gateway::uninstall_runtime(
         app,
         CodexRetryGatewayUninstallRequest {
-            generation: stopped.generation,
+            generation: before.generation,
             confirmed_data_removal: true,
         },
     )
     .await?;
     emit_status(app, result.clone());
     Ok(result)
+}
+
+fn ensure_uninstall_route_safe(route: &crate::cli_proxy::CodexRouteVerifyResult) -> AppResult<()> {
+    if route.desired_enabled
+        || route.route_mode == CodexRouteMode::Guarded
+        || !route.live_matches_projection
+        || !route.auth_matches_projection
+    {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_UNINSTALL_ROUTE_UNSAFE",
+            "managed source cannot be removed until Codex has a verified non-guarded route",
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn details_session(
@@ -933,6 +932,25 @@ mod tests {
     use super::*;
     use std::sync::Mutex as StdMutex;
 
+    fn uninstall_route(route_mode: CodexRouteMode) -> crate::cli_proxy::CodexRouteVerifyResult {
+        crate::cli_proxy::CodexRouteVerifyResult {
+            generation: 7,
+            cli_proxy_enabled: route_mode != CodexRouteMode::Unproxied,
+            route_mode,
+            desired_enabled: false,
+            aio_origin: Some("http://127.0.0.1:37123".to_string()),
+            guarded_origin: Some("http://127.0.0.1:4610".to_string()),
+            effective_origin: (route_mode == CodexRouteMode::DirectAio)
+                .then(|| "http://127.0.0.1:37123/v1".to_string()),
+            canonical_config_sha256: "a".repeat(64),
+            live_config_sha256: "b".repeat(64),
+            projected_live_config_sha256: "b".repeat(64),
+            auth_projection_managed: route_mode != CodexRouteMode::Unproxied,
+            live_matches_projection: true,
+            auth_matches_projection: true,
+        }
+    }
+
     #[test]
     fn enable_plan_fingerprint_changes_with_route_generation() {
         let route = crate::cli_proxy::CodexExternalEnablePlan {
@@ -1004,5 +1022,23 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(steps.lock().unwrap().as_slice(), ["direct_aio", "stop"]);
+    }
+
+    #[test]
+    fn uninstall_requires_a_verified_non_guarded_route() {
+        assert!(ensure_uninstall_route_safe(&uninstall_route(CodexRouteMode::DirectAio)).is_ok());
+        assert!(ensure_uninstall_route_safe(&uninstall_route(CodexRouteMode::Unproxied)).is_ok());
+
+        let guarded = ensure_uninstall_route_safe(&uninstall_route(CodexRouteMode::Guarded))
+            .expect_err("guarded route must block uninstall");
+        assert_eq!(guarded.code(), "CODEX_RETRY_GATEWAY_UNINSTALL_ROUTE_UNSAFE");
+
+        let mut drifted = uninstall_route(CodexRouteMode::DirectAio);
+        drifted.live_matches_projection = false;
+        assert!(ensure_uninstall_route_safe(&drifted).is_err());
+
+        let mut still_desired = uninstall_route(CodexRouteMode::DirectAio);
+        still_desired.desired_enabled = true;
+        assert!(ensure_uninstall_route_safe(&still_desired).is_err());
     }
 }

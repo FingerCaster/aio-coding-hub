@@ -201,6 +201,7 @@ fn rollback_token_fixture() -> (
         }],
         None,
         None,
+        None,
         false,
     );
     std::fs::write(&path, b"after").expect("write mutated state");
@@ -249,6 +250,7 @@ fn provider_sync_rollback_token_removes_only_the_uncommitted_backup() {
 
     CodexProviderSyncRollback::new(
         Vec::new(),
+        None,
         Some(home.path().to_path_buf()),
         Some(current_backup.clone()),
         false,
@@ -258,4 +260,257 @@ fn provider_sync_rollback_token_removes_only_the_uncommitted_backup() {
 
     assert!(prior_backup.exists());
     assert!(!current_backup.exists());
+}
+
+fn managed_backup_fixture(home: &Path, name: &str) -> PathBuf {
+    let backup = home.join(PROVIDER_SYNC_BACKUP_ROOT).join(name);
+    std::fs::create_dir_all(&backup).expect("create managed backup");
+    std::fs::write(
+        backup.join(PROVIDER_SYNC_MANAGED_BACKUP_MANIFEST),
+        serde_json::to_vec(&serde_json::json!({
+            "managed_by": "Codex provider sync",
+            "created_at": "1",
+        }))
+        .expect("serialize managed backup manifest"),
+    )
+    .expect("write managed backup manifest");
+    backup
+}
+
+#[test]
+fn interrupted_prepared_transaction_restores_every_snapshot_and_stale_lock() {
+    let home = tempfile::tempdir().expect("Codex home");
+    let home = home.path();
+    let existing_paths = [
+        home.join("config.toml"),
+        home.join("config.toml.bak"),
+        home.join("sessions/2026/rollout.jsonl"),
+        home.join("sqlite/codex-dev.db"),
+        home.join("sqlite/codex-dev.db-wal"),
+        home.join("sqlite/codex-dev.db-shm"),
+        home.join(".codex-global-state.json"),
+        home.join(".codex-global-state.json.bak"),
+    ];
+    for (index, path) in existing_paths.iter().enumerate() {
+        std::fs::create_dir_all(path.parent().expect("snapshot parent"))
+            .expect("create snapshot parent");
+        std::fs::write(path, format!("before-{index}")).expect("write original snapshot");
+    }
+    let newly_created = home.join("sessions/2026/new-rollout.jsonl");
+    let mut snapshots = existing_paths
+        .iter()
+        .map(|path| snapshot_path(path).expect("snapshot existing path"))
+        .collect::<Vec<_>>();
+    snapshots.push(snapshot_path(&newly_created).expect("snapshot missing path"));
+    let backup = managed_backup_fixture(home, "interrupted");
+
+    prepare_provider_sync_transaction(
+        home,
+        "route-operation",
+        "OpenAI",
+        &sha256_hex(b"after-config"),
+        Some(CodexProviderSyncRouteContext {
+            operation_id: "route-operation".to_string(),
+            target_generation: 9,
+            target_mode: CodexRouteMode::Guarded,
+            target_live_config_sha256: "target-live-hash".to_string(),
+        }),
+        &backup,
+        false,
+        &snapshots,
+    )
+    .expect("prepare persistent transaction");
+
+    for path in &existing_paths {
+        std::fs::write(path, b"after").expect("mutate snapshot target");
+    }
+    std::fs::write(&newly_created, b"created-after-prepare")
+        .expect("create previously missing target");
+    std::fs::create_dir_all(home.join(PROVIDER_SYNC_LOCK_FILE)).expect("create stale lock");
+    let orphan_staging = home
+        .join("tmp")
+        .join(format!("{PROVIDER_SYNC_TRANSACTION_STAGING_PREFIX}orphan"));
+    std::fs::create_dir_all(&orphan_staging).expect("create orphan staging");
+
+    let outcome = recover_interrupted_provider_sync_from_home(
+        home,
+        Some(&CodexProviderSyncCurrentRoute {
+            generation: 9,
+            mode: CodexRouteMode::Guarded,
+            live_config_sha256: "target-live-hash".to_string(),
+            live_matches_projection: true,
+            auth_matches_projection: true,
+            pending_operation_id: Some("route-operation".to_string()),
+        }),
+        Some(false),
+    )
+    .expect("recover interrupted provider sync");
+
+    assert_eq!(outcome, CodexProviderSyncRecoveryOutcome::Restored);
+    for (index, path) in existing_paths.iter().enumerate() {
+        assert_eq!(
+            std::fs::read(path).expect("read restored snapshot"),
+            format!("before-{index}").as_bytes()
+        );
+    }
+    assert!(!newly_created.exists());
+    assert!(!provider_sync_transaction_root(home).exists());
+    assert!(!home.join(PROVIDER_SYNC_LOCK_FILE).exists());
+    assert!(!orphan_staging.exists());
+    assert!(!home.join(PROVIDER_SYNC_BACKUP_ROOT).exists());
+}
+
+#[test]
+fn interrupted_applied_route_transaction_finalizes_only_when_route_matches() {
+    let home = tempfile::tempdir().expect("Codex home");
+    let home = home.path();
+    let config = home.join("config.toml");
+    std::fs::write(&config, b"before").expect("write original config");
+    let snapshots = vec![snapshot_path(&config).expect("snapshot config")];
+    let backup = managed_backup_fixture(home, "applied");
+    let target = b"after";
+    prepare_provider_sync_transaction(
+        home,
+        "route-operation",
+        "OpenAI",
+        &sha256_hex(target),
+        Some(CodexProviderSyncRouteContext {
+            operation_id: "route-operation".to_string(),
+            target_generation: 10,
+            target_mode: CodexRouteMode::Guarded,
+            target_live_config_sha256: "target-live-hash".to_string(),
+        }),
+        &backup,
+        true,
+        &snapshots,
+    )
+    .expect("prepare transaction");
+    std::fs::write(&config, target).expect("write target config");
+    mark_provider_sync_transaction_applied(home, "route-operation")
+        .expect("mark transaction applied");
+    std::fs::create_dir_all(home.join(PROVIDER_SYNC_LOCK_FILE)).expect("create stale lock");
+
+    let outcome = recover_interrupted_provider_sync_from_home(
+        home,
+        Some(&CodexProviderSyncCurrentRoute {
+            generation: 10,
+            mode: CodexRouteMode::Guarded,
+            live_config_sha256: "target-live-hash".to_string(),
+            live_matches_projection: true,
+            auth_matches_projection: true,
+            pending_operation_id: Some("route-operation".to_string()),
+        }),
+        Some(false),
+    )
+    .expect("finalize applied transaction");
+
+    assert_eq!(outcome, CodexProviderSyncRecoveryOutcome::Finalized);
+    assert_eq!(std::fs::read(&config).expect("read target config"), target);
+    assert!(backup.exists(), "committed user backup must be retained");
+    assert!(!provider_sync_transaction_root(home).exists());
+    assert!(!home.join(PROVIDER_SYNC_LOCK_FILE).exists());
+}
+
+#[test]
+fn interrupted_applied_route_transaction_restores_on_route_mismatch() {
+    let home = tempfile::tempdir().expect("Codex home");
+    let home = home.path();
+    let config = home.join("config.toml");
+    std::fs::write(&config, b"before").expect("write original config");
+    let snapshots = vec![snapshot_path(&config).expect("snapshot config")];
+    let backup = managed_backup_fixture(home, "mismatch");
+    prepare_provider_sync_transaction(
+        home,
+        "route-operation",
+        "OpenAI",
+        &sha256_hex(b"after"),
+        Some(CodexProviderSyncRouteContext {
+            operation_id: "route-operation".to_string(),
+            target_generation: 10,
+            target_mode: CodexRouteMode::Guarded,
+            target_live_config_sha256: "target-live-hash".to_string(),
+        }),
+        &backup,
+        false,
+        &snapshots,
+    )
+    .expect("prepare transaction");
+    std::fs::write(&config, b"after").expect("write target config");
+    mark_provider_sync_transaction_applied(home, "route-operation")
+        .expect("mark transaction applied");
+
+    let outcome = recover_interrupted_provider_sync_from_home(
+        home,
+        Some(&CodexProviderSyncCurrentRoute {
+            generation: 10,
+            mode: CodexRouteMode::Guarded,
+            live_config_sha256: "target-live-hash".to_string(),
+            live_matches_projection: true,
+            auth_matches_projection: true,
+            pending_operation_id: Some("different-route-operation".to_string()),
+        }),
+        Some(false),
+    )
+    .expect("restore mismatched applied transaction");
+
+    assert_eq!(outcome, CodexProviderSyncRecoveryOutcome::Restored);
+    assert_eq!(
+        std::fs::read(&config).expect("read restored config"),
+        b"before"
+    );
+    assert!(!backup.exists());
+}
+
+#[test]
+fn interrupted_transaction_waits_for_codex_to_close_before_restoring() {
+    let home = tempfile::tempdir().expect("Codex home");
+    let home = home.path();
+    let config = home.join("config.toml");
+    std::fs::write(&config, b"before").expect("write original config");
+    let snapshots = vec![snapshot_path(&config).expect("snapshot config")];
+    let backup = managed_backup_fixture(home, "running");
+    prepare_provider_sync_transaction(
+        home,
+        "route-operation",
+        "OpenAI",
+        &sha256_hex(b"after"),
+        None,
+        &backup,
+        false,
+        &snapshots,
+    )
+    .expect("prepare transaction");
+    std::fs::write(&config, b"after").expect("write partial target config");
+    std::fs::create_dir_all(home.join(PROVIDER_SYNC_LOCK_FILE)).expect("create stale lock");
+
+    let error = recover_interrupted_provider_sync_from_home(home, None, Some(true))
+        .expect_err("running Codex must block snapshot restoration");
+
+    assert!(
+        error
+            .to_string()
+            .contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read(&config).expect("read unchanged partial config"),
+        b"after"
+    );
+    assert!(provider_sync_transaction_root(home).exists());
+    assert!(home.join(PROVIDER_SYNC_LOCK_FILE).exists());
+    assert!(backup.exists());
+}
+
+#[test]
+fn startup_recovery_removes_stale_lock_without_a_transaction() {
+    let home = tempfile::tempdir().expect("Codex home");
+    let lock = home.path().join(PROVIDER_SYNC_LOCK_FILE);
+    std::fs::create_dir_all(&lock).expect("create stale lock");
+    std::fs::write(lock.join("owner.json"), b"{}").expect("write stale owner");
+
+    let outcome = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+        .expect("recover stale lock");
+
+    assert_eq!(outcome, CodexProviderSyncRecoveryOutcome::StaleLockRemoved);
+    assert!(!lock.exists());
 }

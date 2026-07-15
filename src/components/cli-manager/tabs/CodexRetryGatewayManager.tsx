@@ -264,6 +264,12 @@ export function CodexRetryGatewayManager({
   const [iframeLoaded, setIframeLoaded] = useState(false);
 
   const status = statusQuery.data ?? null;
+  const uninstallReady = Boolean(
+    status &&
+    !status.desired_enabled &&
+    status.route_mode !== "guarded" &&
+    status.process_status.phase === "stopped"
+  );
   const requirements = useMemo(
     () => (enablePlan ? buildEnableRequirements(enablePlan) : []),
     [enablePlan]
@@ -520,7 +526,7 @@ export function CodexRetryGatewayManager({
   }, [handleMutationError, retryMutation, status]);
 
   const onConfirmUninstall = useCallback(async () => {
-    if (!status) return;
+    if (!status || !uninstallReady) return;
     try {
       await uninstallMutation.mutateAsync({
         generation: status.generation,
@@ -531,7 +537,7 @@ export function CodexRetryGatewayManager({
     } catch (error) {
       handleMutationError("卸载外部网关", error);
     }
-  }, [handleMutationError, status, uninstallMutation]);
+  }, [handleMutationError, status, uninstallMutation, uninstallReady]);
 
   const repoUrl = status ? resolveRepositoryUrl(status.repository) : null;
   const statusTone = status ? formatCodexRetryGatewayTone(status) : "muted";
@@ -887,14 +893,16 @@ export function CodexRetryGatewayManager({
                         variant="secondary"
                         className="gap-2"
                         onClick={() => setUninstallOpen(true)}
-                        disabled={Boolean(managerBusy)}
+                        disabled={Boolean(managerBusy) || !uninstallReady}
                       >
                         <Trash2 className="h-4 w-4" aria-hidden="true" />
                         卸载并清理
                       </Button>
                     </div>
                     <div className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                      “停用”只恢复直连 AIO；“卸载并清理”会移除已管理的外部网关数据与源码缓存。
+                      {uninstallReady
+                        ? "卸载会移除已管理的外部网关数据与源码缓存。"
+                        : "请先停用拦截网关；确认路由已恢复且受管进程完全停止后，才可卸载。"}
                     </div>
                   </div>
                 </div>
@@ -1118,12 +1126,13 @@ export function CodexRetryGatewayManager({
       <ConfirmDialog
         open={uninstallOpen}
         title="卸载 Codex 外部网关"
-        description="会恢复直连 AIO、停止受管进程，并删除 AIO 维护的外部网关数据。"
+        description="仅在外部网关已停用且受管进程已停止时，删除 AIO 维护的外部网关数据。"
         onClose={() => setUninstallOpen(false)}
         onConfirm={() => void onConfirmUninstall()}
         confirmLabel="确认卸载"
         confirmingLabel="卸载中…"
         confirming={uninstallMutation.isPending}
+        disabled={!uninstallReady}
         confirmVariant="danger"
       >
         <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">

@@ -360,11 +360,21 @@ pub(crate) trait CodexRetryGatewayTransitionStore: Send + Sync {
 pub(crate) type CodexRetryGatewayLifecycleFuture =
     Pin<Box<dyn Future<Output = AppResult<()>> + Send + 'static>>;
 
+pub(crate) type CodexRetryGatewayStatusFuture =
+    Pin<Box<dyn Future<Output = AppResult<CodexRetryGatewayStatus>> + Send + 'static>>;
+
 pub(crate) trait CodexRetryGatewayLifecycleCallback: Send + Sync {
     fn request_gateway_disable(
         &self,
         request: CodexRetryGatewayRouteCallbackRequest,
     ) -> CodexRetryGatewayLifecycleFuture;
+
+    fn current_gateway_status(&self) -> CodexRetryGatewayStatusFuture {
+        Box::pin(async {
+            Err("CODEX_RETRY_GATEWAY_BRIDGE_STATUS_UNAVAILABLE: authoritative status callback is unavailable"
+                .into())
+        })
+    }
 }
 
 #[cfg(test)]
