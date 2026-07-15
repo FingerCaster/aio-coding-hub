@@ -26,6 +26,11 @@ describe("layout/AppLayout", () => {
     expect(screen.getByTestId("sidebar")).toBeInTheDocument();
     expect(screen.getByTestId("update-dialog")).toBeInTheDocument();
     expect(document.querySelector("[data-tauri-drag-region]")).toBeInTheDocument();
+    expect(document.querySelector("#main-content")).toHaveClass(
+      "overflow-x-hidden",
+      "px-4",
+      "md:px-8"
+    );
   });
 
   it.each([

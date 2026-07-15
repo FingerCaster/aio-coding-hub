@@ -117,11 +117,10 @@ describe("services/settings/settings", () => {
       gatewayListenMode: "localhost",
       wslTargetCli: { claude: true, codex: true, gemini: true },
       codexOauthCompatibleProxyMode: true,
-      codexReasoningGuardActiveTemplateId: "builtin-reasoning-tokens-518n-minus-2",
-      codexReasoningGuardCustomTemplates: [],
       cx2CcFallbackModelMain: "gpt-5.4",
       upstreamProxyPassword: { mode: "clear" },
     });
+    expect(Object.keys(input).filter((key) => key.includes("ReasoningGuard"))).toEqual([]);
     expect(input).not.toHaveProperty("cx2ccFallbackModelMain");
     expect(input).not.toHaveProperty("codex_oauth_compatible_proxy_mode");
   });

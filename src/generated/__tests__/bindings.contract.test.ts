@@ -36,7 +36,7 @@ function extractGeneratedCommand(source: string, commandName: string) {
 describe("generated/bindings.ts contract", () => {
   it("documents the generated IPC ownership surface", () => {
     expect(bindingsSource).toContain(
-      "NOTE: Generated IPC contract for settings, config migration, desktop, app management, gateway, request-log, CLI update, CLI proxy, provider, WSL, sort-mode, provider-limit, usage, model-price, prompt, workspace, skills, MCP, CLI manager, CLI sessions, Claude validation, notice, and env-conflict command families."
+      "NOTE: Generated IPC contract for settings, config migration, desktop, app management, gateway, Codex retry gateway, request-log, CLI update, CLI proxy, provider, WSL, sort-mode, provider-limit, usage, model-price, prompt, workspace, skills, MCP, CLI manager, CLI sessions, Claude validation, notice, and env-conflict command families."
     );
     expect(bindingsSource).toContain("settings_get");
     expect(bindingsSource).toContain("settings_gateway_rectifier_set");

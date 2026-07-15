@@ -318,7 +318,6 @@ export type CliManagerCodexTabProps = {
   persistCommonSettings?: (
     patch: Partial<AppSettings>
   ) => Promise<AppSettings | null> | AppSettings | null;
-  persistCodexReasoningGuardSettings?: unknown;
   persistCodexHomeSettings?: (
     codexHomeMode: CodexHomeMode,
     codexHomeOverride: string
@@ -2082,12 +2081,13 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
               activeConfigDirSummaryText={controller.activeConfigDirSummaryText}
               openCodexConfigDir={openCodexConfigDir}
             />
-            {showRetryGatewayManager ? (
-              <CodexRetryGatewayManager onOpenDetailsRoute={onOpenGatewayDetailsRoute} />
-            ) : null}
           </div>
         )}
       </Card>
+
+      {codexConfig && showRetryGatewayManager ? (
+        <CodexRetryGatewayManager onOpenDetailsRoute={onOpenGatewayDetailsRoute} />
+      ) : null}
 
       {codexConfig ? (
         <div className="space-y-4">

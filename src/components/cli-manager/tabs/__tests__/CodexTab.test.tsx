@@ -25,6 +25,12 @@ vi.mock("../../../../ui/CodeEditor", () => ({
   ),
 }));
 
+vi.mock("../CodexRetryGatewayManager", () => ({
+  CodexRetryGatewayManager: () => (
+    <section data-testid="mock-codex-retry-gateway">retry gateway manager</section>
+  ),
+}));
+
 vi.mock("../../../../services/cli/cliManager", async () => {
   const actual = await vi.importActual<typeof import("../../../../services/cli/cliManager")>(
     "../../../../services/cli/cliManager"
@@ -393,14 +399,19 @@ describe("components/cli-manager/tabs/CodexTab", () => {
   });
 
   it("does not render legacy Codex reasoning guard controls or statistics", () => {
-    renderTab({
-      appSettings: createAppSettings({ codex_reasoning_guard_enabled: true }),
-    });
+    renderTab();
 
     expect(screen.queryByRole("switch", { name: "切换 Codex 降智拦截" })).not.toBeInTheDocument();
     expect(screen.queryByRole("button", { name: "查看降智拦截详情" })).not.toBeInTheDocument();
     expect(screen.queryByText("命中请求数")).not.toBeInTheDocument();
     expect(screen.queryByLabelText("降智拦截统计时间范围")).not.toBeInTheDocument();
+  });
+
+  it("renders the retry gateway as an unframed sibling instead of nesting it in the Codex card", () => {
+    renderTab({ showRetryGatewayManager: true });
+
+    const gateway = screen.getByTestId("mock-codex-retry-gateway");
+    expect(gateway.closest(".rounded-2xl")).toBeNull();
   });
 
   it("renders unavailable state and keeps a loaded config editable when CLI is unavailable", () => {

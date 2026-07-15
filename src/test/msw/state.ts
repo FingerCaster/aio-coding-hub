@@ -35,7 +35,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 48,
+  schema_version: 49,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -51,29 +51,6 @@ const DEFAULT_SETTINGS: AppSettings = {
   codex_home_override: "",
   codex_oauth_compatible_proxy_mode: false,
   codex_provider_test_model: "gpt-5.4-mini",
-  codex_reasoning_guard_hit_label: "降智命中",
-  codex_reasoning_guard_enabled: true,
-  codex_reasoning_guard_rule_mode: "reasoning_tokens",
-  codex_reasoning_guard_compare_mode: "equals",
-  codex_reasoning_guard_reasoning_equals: [516, 1034, 1552],
-  codex_reasoning_guard_model_rules: [],
-  codex_reasoning_guard_active_template_id: "builtin-reasoning-tokens-518n-minus-2",
-  codex_reasoning_guard_custom_templates: [],
-  codex_reasoning_guard_post_match_strategy: "continuation_repair",
-  codex_reasoning_guard_immediate_retry_budget: 5,
-  codex_reasoning_guard_delayed_retry_budget: 5,
-  codex_reasoning_guard_delayed_retry_ms: 1000,
-  codex_reasoning_guard_exhausted_action: "return_error",
-  codex_reasoning_guard_retry_policy: "single",
-  codex_reasoning_guard_concurrent_max: 5,
-  codex_reasoning_guard_concurrent_interval_ms: 1000,
-  codex_reasoning_guard_concurrent_max_attempts: 10,
-  codex_reasoning_guard_model_fallbacks: [],
-  codex_reasoning_guard_continuation_repair_enabled: false,
-  codex_reasoning_guard_continuation_max_rounds: 3,
-  codex_reasoning_guard_continuation_max_output_tokens: 0,
-  codex_reasoning_guard_backoff_after_hits: 5,
-  codex_reasoning_guard_backoff_ms: 1000,
   auto_start: false,
   start_minimized: false,
   tray_enabled: true,
@@ -149,12 +126,12 @@ const DEFAULT_CODEX_RETRY_GATEWAY_STATUS: CodexRetryGatewayStatus = {
   cli_proxy_enabled: false,
   cli_proxy_applied: false,
   effective_port: null,
-  repository: "FingerCaster/codex-retry-gateway",
-  license: "MIT",
-  selected_commit: "1111111111111111111111111111111111111111",
+  repository: "nonononull/codex-retry-gateway",
+  license: null,
+  selected_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2",
   active_commit: null,
   previous_commit: null,
-  recommended_commit: "1111111111111111111111111111111111111111",
+  recommended_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2",
   trust_state: "aio_reviewed_recommendation",
   node_status: DEFAULT_CODEX_RETRY_GATEWAY_NODE_STATUS,
   process_status: {
@@ -326,7 +303,7 @@ function deriveGatewayEnablePlan(
       codex_must_be_closed: true,
     },
     node_status: clone(status.node_status),
-    preferred_port: 37211,
+    preferred_port: 4610,
     wsl_codex_unprotected: status.wsl_codex_unprotected,
   };
 }
@@ -379,21 +356,21 @@ export function buildCodexRetryGatewaySetEnabledState(
     route_mode: "guarded",
     cli_proxy_enabled: true,
     cli_proxy_applied: true,
-    effective_port: 37211,
+    effective_port: 4610,
     active_commit: current.selected_commit,
     process_status: {
       phase: "healthy",
       owned: true,
       healthy: true,
       process_id: 4242,
-      listener: "127.0.0.1:37211",
+      listener: "http://127.0.0.1:4610",
     },
     details_available: true,
     last_error: null,
     operation_pending: false,
   };
   codexRetryGatewayStatusState = clone(next);
-  syncCodexGatewayCliProxy({ enabled: true, applied: true, baseOrigin: "http://127.0.0.1:37211" });
+  syncCodexGatewayCliProxy({ enabled: true, applied: true, baseOrigin: "http://127.0.0.1:4610" });
   return getCodexRetryGatewayStatusState();
 }
 
@@ -511,7 +488,7 @@ export function buildCodexRetryGatewayRetryState(generation: number): CodexRetry
           owned: true,
           healthy: true,
           process_id: 4242,
-          listener: "127.0.0.1:37211",
+          listener: "http://127.0.0.1:4610",
         }
       : {
           phase: "stopped",
@@ -539,7 +516,7 @@ export function buildCodexRetryGatewayUninstallState(
 
 export function buildCodexRetryGatewayDetailsSessionState(): CodexRetryGatewayDetailsSession {
   const generation = codexRetryGatewayStatusState.generation;
-  const port = codexRetryGatewayStatusState.effective_port ?? 37211;
+  const port = codexRetryGatewayStatusState.effective_port ?? 4610;
   return {
     generation,
     iframe_url: `http://127.0.0.1:${port}/aio-bridge?session=msw-${generation}`,

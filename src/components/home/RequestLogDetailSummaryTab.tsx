@@ -7,7 +7,7 @@ import {
   formatDurationMs,
   formatTokensPerSecond,
   formatUsd,
-  resolveTtfbDisplayMetrics,
+  sanitizeTtfbMs,
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
 import {
@@ -17,7 +17,6 @@ import {
 import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
-  hasCodexReasoningGuardSpecialSetting,
   resolveCacheCreationDisplay,
   resolveRequestLogModelDisplayMeta,
   resolveRequestLogUsageReasoningTokens,
@@ -33,7 +32,6 @@ export type RequestLogDetailSummaryTabProps = {
   displayDurationMs: number;
   isInProgress: boolean;
   attemptCount: number;
-  codexReasoningGuardHitLabel?: string;
 };
 
 export function RequestLogDetailSummaryTab({
@@ -44,9 +42,8 @@ export function RequestLogDetailSummaryTab({
   displayDurationMs,
   isInProgress: _isInProgress,
   attemptCount: _attemptCount,
-  codexReasoningGuardHitLabel,
 }: RequestLogDetailSummaryTabProps) {
-  const auditMeta = buildRequestLogAuditMeta(selectedLog, { codexReasoningGuardHitLabel });
+  const auditMeta = buildRequestLogAuditMeta(selectedLog);
   const usageReasoningTokens = resolveRequestLogUsageReasoningTokens(selectedLog.usage_json);
   const codexReasoningEffort =
     selectedLog.cli_key === "codex"
@@ -64,12 +61,7 @@ export function RequestLogDetailSummaryTab({
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
-  const ttfbMetrics = resolveTtfbDisplayMetrics(
-    selectedLog.ttfb_ms,
-    selectedLog.visible_ttfb_ms ?? null,
-    displayDurationMs,
-    hasCodexReasoningGuardSpecialSetting(selectedLog.special_settings_json)
-  );
+  const ttfbMs = sanitizeTtfbMs(selectedLog.ttfb_ms, displayDurationMs);
   const cacheCreation = resolveCacheCreationDisplay(selectedLog);
 
   return (
@@ -153,31 +145,14 @@ export function RequestLogDetailSummaryTab({
             ) : null}
             <MetricCard label="缓存读取" value={selectedLog.cache_read_input_tokens} />
             <MetricCard label="总耗时" value={formatDurationMs(displayDurationMs)} />
-            <MetricCard
-              label="TTFB"
-              value={
-                ttfbMetrics.providerTtfbMs != null
-                  ? formatDurationMs(ttfbMetrics.providerTtfbMs)
-                  : "—"
-              }
-            />
-            {ttfbMetrics.showVisibleTtfb ? (
-              <MetricCard
-                label="可见首字"
-                value={
-                  ttfbMetrics.visibleTtfbMs != null
-                    ? formatDurationMs(ttfbMetrics.visibleTtfbMs)
-                    : "—"
-                }
-              />
-            ) : null}
+            <MetricCard label="TTFB" value={ttfbMs != null ? formatDurationMs(ttfbMs) : "—"} />
             <MetricCard
               label="速率"
               value={(() => {
                 const rate = computeOutputTokensPerSecond(
                   selectedLog.output_tokens,
                   displayDurationMs,
-                  ttfbMetrics.providerTtfbMs
+                  ttfbMs
                 );
                 return rate != null ? formatTokensPerSecond(rate) : "—";
               })()}

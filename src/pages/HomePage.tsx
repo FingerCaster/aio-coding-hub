@@ -223,11 +223,9 @@ function SortModeConfirmDialog({
 }
 
 function RequestLogDetailDialogSlot({
-  codexReasoningGuardHitLabel,
   selectedLogId,
   onSelectLogId,
 }: {
-  codexReasoningGuardHitLabel: string;
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
 }) {
@@ -252,11 +250,7 @@ function RequestLogDetailDialogSlot({
         </Dialog>
       }
     >
-      <LazyRequestLogDetailDialog
-        selectedLogId={selectedLogId}
-        onSelectLogId={onSelectLogId}
-        codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
-      />
+      <LazyRequestLogDetailDialog selectedLogId={selectedLogId} onSelectLogId={onSelectLogId} />
     </Suspense>
   );
 }
@@ -264,7 +258,6 @@ function RequestLogDetailDialogSlot({
 function HomePageFrame({
   headerActions,
   tabContent,
-  codexReasoningGuardHitLabel,
   pendingSortModeSwitch,
   selectedLogId,
   onCancelSortModeSwitch,
@@ -273,7 +266,6 @@ function HomePageFrame({
 }: {
   headerActions: ReactNode;
   tabContent: ReactNode;
-  codexReasoningGuardHitLabel: string;
   pendingSortModeSwitch: PendingSortModeSwitch;
   selectedLogId: number | null;
   onCancelSortModeSwitch: () => void;
@@ -294,11 +286,7 @@ function HomePageFrame({
         onConfirm={onConfirmSortModeSwitch}
       />
 
-      <RequestLogDetailDialogSlot
-        codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
-        selectedLogId={selectedLogId}
-        onSelectLogId={onSelectLogId}
-      />
+      <RequestLogDetailDialogSlot selectedLogId={selectedLogId} onSelectLogId={onSelectLogId} />
     </div>
   );
 }
@@ -309,8 +297,6 @@ export function HomePage() {
   const showCustomTooltip = true;
   const foregroundActive = useDocumentVisibility();
   const settingsQuery = useSettingsQuery();
-  const codexReasoningGuardHitLabel =
-    settingsQuery.data?.codex_reasoning_guard_hit_label?.trim() || "降智命中";
   const showHomeHeatmap = settingsQuery.data?.show_home_heatmap ?? true;
   const showHomeUsage = settingsQuery.data?.show_home_usage ?? true;
   const showOverviewUsageSection = showHomeHeatmap || showHomeUsage;
@@ -532,7 +518,6 @@ export function HomePage() {
     selectedLogId,
     onSelectLogId: setSelectedLogId,
     personalizedUsageView,
-    codexReasoningGuardHitLabel,
   };
   const headerActions = (
     <HomePageHeaderActions
@@ -559,7 +544,6 @@ export function HomePage() {
     <HomePageFrame
       headerActions={headerActions}
       tabContent={tabContent}
-      codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
       pendingSortModeSwitch={pendingSortModeSwitch}
       selectedLogId={selectedLogId}
       onCancelSortModeSwitch={() => sortMode.setPendingSortModeSwitch(null)}

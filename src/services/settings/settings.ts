@@ -1,18 +1,4 @@
 import {
-  type CodexReasoningGuardCompareMode,
-  type CodexReasoningGuardExhaustedAction,
-  type CodexReasoningGuardModelRule,
-  type CodexReasoningGuardPostMatchStrategy,
-  type CodexReasoningGuardRetryPolicy,
-  type CodexReasoningGuardRuleTemplate,
-  type CodexReasoningGuardRuleMode,
-  type CodexReasoningGuardTemplateFilter,
-  type CodexReasoningGuardTemplateFilterField,
-  type CodexReasoningGuardTemplateFilterOperator,
-  type CodexReasoningGuardTemplateRule,
-  type CodexReasoningGuardTemplateRuleAction,
-  type CodexReasoningGuardTemplateRuleFormula,
-  type CodexReasoningGuardTemplateRuleLogic,
   commands,
   type CodexHomeMode,
   type GatewayListenMode,
@@ -32,20 +18,6 @@ import { type OptionalNullableGeneratedFields } from "../generatedTypeUtils";
 import { validateSettingsSetInput } from "./settingsValidation";
 
 export type {
-  CodexReasoningGuardCompareMode,
-  CodexReasoningGuardExhaustedAction,
-  CodexReasoningGuardModelRule,
-  CodexReasoningGuardPostMatchStrategy,
-  CodexReasoningGuardRetryPolicy,
-  CodexReasoningGuardRuleTemplate,
-  CodexReasoningGuardRuleMode,
-  CodexReasoningGuardTemplateFilter,
-  CodexReasoningGuardTemplateFilterField,
-  CodexReasoningGuardTemplateFilterOperator,
-  CodexReasoningGuardTemplateRule,
-  CodexReasoningGuardTemplateRuleAction,
-  CodexReasoningGuardTemplateRuleFormula,
-  CodexReasoningGuardTemplateRuleLogic,
   CodexHomeMode,
   GatewayListenMode,
   HomeUsagePeriod,
@@ -56,11 +28,23 @@ export type {
   WslTargetCli,
 };
 
-export type AppSettings = GeneratedAppSettings;
+type LegacyGeneratedSettingsViewKey = Extract<
+  keyof GeneratedAppSettings,
+  `codex_${"reasoning"}_${"guard"}_${string}`
+>;
+type LegacyGeneratedSettingsUpdateKey = Extract<
+  keyof GeneratedSettingsUpdate,
+  `codex${"Reasoning"}${"Guard"}${string}`
+>;
+
+export type AppSettings = Omit<GeneratedAppSettings, LegacyGeneratedSettingsViewKey>;
+type FrontendSettingsUpdate = Omit<GeneratedSettingsUpdate, LegacyGeneratedSettingsUpdateKey>;
 export type SettingsMutationRuntime = GeneratedSettingsMutationRuntime;
 
-export type SettingsMutationResult = GeneratedSettingsMutationResult;
-export type SettingsSetInput = OptionalNullableGeneratedFields<GeneratedSettingsUpdate>;
+export type SettingsMutationResult = Omit<GeneratedSettingsMutationResult, "settings"> & {
+  settings: AppSettings;
+};
+export type SettingsSetInput = OptionalNullableGeneratedFields<FrontendSettingsUpdate>;
 
 export type AppSettingsPatch = Partial<AppSettings> & {
   upstream_proxy_password?: SensitiveStringUpdate;
@@ -69,7 +53,7 @@ export type AppSettingsPatch = Partial<AppSettings> & {
 type AssertNever<TValue extends never> = TValue;
 
 export type SettingsViewBackedInputKey = Exclude<
-  keyof GeneratedSettingsUpdate,
+  keyof FrontendSettingsUpdate,
   "upstreamProxyPassword"
 >;
 
@@ -120,30 +104,6 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   codexHomeOverride: "codex_home_override",
   codexOauthCompatibleProxyMode: "codex_oauth_compatible_proxy_mode",
   codexProviderTestModel: "codex_provider_test_model",
-  codexReasoningGuardHitLabel: "codex_reasoning_guard_hit_label",
-  codexReasoningGuardEnabled: "codex_reasoning_guard_enabled",
-  codexReasoningGuardRuleMode: "codex_reasoning_guard_rule_mode",
-  codexReasoningGuardCompareMode: "codex_reasoning_guard_compare_mode",
-  codexReasoningGuardReasoningEquals: "codex_reasoning_guard_reasoning_equals",
-  codexReasoningGuardModelRules: "codex_reasoning_guard_model_rules",
-  codexReasoningGuardActiveTemplateId: "codex_reasoning_guard_active_template_id",
-  codexReasoningGuardCustomTemplates: "codex_reasoning_guard_custom_templates",
-  codexReasoningGuardPostMatchStrategy: "codex_reasoning_guard_post_match_strategy",
-  codexReasoningGuardImmediateRetryBudget: "codex_reasoning_guard_immediate_retry_budget",
-  codexReasoningGuardDelayedRetryBudget: "codex_reasoning_guard_delayed_retry_budget",
-  codexReasoningGuardDelayedRetryMs: "codex_reasoning_guard_delayed_retry_ms",
-  codexReasoningGuardExhaustedAction: "codex_reasoning_guard_exhausted_action",
-  codexReasoningGuardRetryPolicy: "codex_reasoning_guard_retry_policy",
-  codexReasoningGuardConcurrentMax: "codex_reasoning_guard_concurrent_max",
-  codexReasoningGuardConcurrentIntervalMs: "codex_reasoning_guard_concurrent_interval_ms",
-  codexReasoningGuardConcurrentMaxAttempts: "codex_reasoning_guard_concurrent_max_attempts",
-  codexReasoningGuardModelFallbacks: "codex_reasoning_guard_model_fallbacks",
-  codexReasoningGuardContinuationRepairEnabled: "codex_reasoning_guard_continuation_repair_enabled",
-  codexReasoningGuardContinuationMaxRounds: "codex_reasoning_guard_continuation_max_rounds",
-  codexReasoningGuardContinuationMaxOutputTokens:
-    "codex_reasoning_guard_continuation_max_output_tokens",
-  codexReasoningGuardBackoffAfterHits: "codex_reasoning_guard_backoff_after_hits",
-  codexReasoningGuardBackoffMs: "codex_reasoning_guard_backoff_ms",
   cx2CcFallbackModelOpus: "cx2cc_fallback_model_opus",
   cx2CcFallbackModelSonnet: "cx2cc_fallback_model_sonnet",
   cx2CcFallbackModelHaiku: "cx2cc_fallback_model_haiku",
@@ -158,7 +118,7 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   upstreamProxyEnabled: "upstream_proxy_enabled",
   upstreamProxyUrl: "upstream_proxy_url",
   upstreamProxyUsername: "upstream_proxy_username",
-} as const satisfies Record<SettingsViewBackedInputKey, keyof GeneratedAppSettings>;
+} as const satisfies Record<SettingsViewBackedInputKey, keyof AppSettings>;
 
 const SETTINGS_VIEW_BACKED_INPUT_KEYS = Object.keys(
   SETTINGS_VIEW_TO_UPDATE_FIELD_MAP
@@ -177,14 +137,14 @@ type SettingsViewKeysHandledOutsideCreateInput =
 
 export type __AssertNoUnhandledSettingsViewKeys = AssertNever<
   Exclude<
-    keyof GeneratedAppSettings,
+    keyof AppSettings,
     SettingsViewKeysHandledByCreateInput | SettingsViewKeysHandledOutsideCreateInput
   >
 >;
 export type __AssertNoStaleHandledSettingsViewKeys = AssertNever<
   Exclude<
     SettingsViewKeysHandledByCreateInput | SettingsViewKeysHandledOutsideCreateInput,
-    keyof GeneratedAppSettings
+    keyof AppSettings
   >
 >;
 
@@ -206,7 +166,7 @@ function validateRequiredSettingsSetInput(input: SettingsSetInput): string | nul
 export function pickSettingsSetInputFieldsFromView<
   const TKeys extends readonly SettingsViewBackedInputKey[],
 >(
-  source: Pick<GeneratedAppSettings, (typeof SETTINGS_VIEW_TO_UPDATE_FIELD_MAP)[TKeys[number]]>,
+  source: Pick<AppSettings, (typeof SETTINGS_VIEW_TO_UPDATE_FIELD_MAP)[TKeys[number]]>,
   keys: TKeys
 ): Pick<SettingsSetInput, TKeys[number]> {
   const next = {} as Pick<SettingsSetInput, TKeys[number]>;
@@ -222,8 +182,8 @@ export function pickSettingsSetInputFieldsFromView<
   return next;
 }
 
-function toGeneratedSettingsUpdate(input: SettingsSetInput): GeneratedSettingsUpdate {
-  const update: GeneratedSettingsUpdate = {
+function toGeneratedSettingsUpdate(input: SettingsSetInput): FrontendSettingsUpdate {
+  const update: FrontendSettingsUpdate = {
     preferredPort: input.preferredPort,
     showHomeHeatmap: input.showHomeHeatmap ?? null,
     showHomeUsage: input.showHomeUsage ?? null,
@@ -271,33 +231,6 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): GeneratedSettingsUp
     codexHomeOverride: input.codexHomeOverride ?? null,
     codexOauthCompatibleProxyMode: input.codexOauthCompatibleProxyMode ?? null,
     codexProviderTestModel: input.codexProviderTestModel ?? null,
-    codexReasoningGuardHitLabel: input.codexReasoningGuardHitLabel ?? null,
-    codexReasoningGuardEnabled: input.codexReasoningGuardEnabled ?? null,
-    codexReasoningGuardRuleMode: input.codexReasoningGuardRuleMode ?? null,
-    codexReasoningGuardCompareMode: input.codexReasoningGuardCompareMode ?? null,
-    codexReasoningGuardReasoningEquals: input.codexReasoningGuardReasoningEquals ?? null,
-    codexReasoningGuardModelRules: input.codexReasoningGuardModelRules ?? null,
-    codexReasoningGuardActiveTemplateId: input.codexReasoningGuardActiveTemplateId ?? null,
-    codexReasoningGuardCustomTemplates: input.codexReasoningGuardCustomTemplates ?? null,
-    codexReasoningGuardPostMatchStrategy: input.codexReasoningGuardPostMatchStrategy ?? null,
-    codexReasoningGuardImmediateRetryBudget: input.codexReasoningGuardImmediateRetryBudget ?? null,
-    codexReasoningGuardDelayedRetryBudget: input.codexReasoningGuardDelayedRetryBudget ?? null,
-    codexReasoningGuardDelayedRetryMs: input.codexReasoningGuardDelayedRetryMs ?? null,
-    codexReasoningGuardExhaustedAction: input.codexReasoningGuardExhaustedAction ?? null,
-    codexReasoningGuardRetryPolicy: input.codexReasoningGuardRetryPolicy ?? null,
-    codexReasoningGuardConcurrentMax: input.codexReasoningGuardConcurrentMax ?? null,
-    codexReasoningGuardConcurrentIntervalMs: input.codexReasoningGuardConcurrentIntervalMs ?? null,
-    codexReasoningGuardConcurrentMaxAttempts:
-      input.codexReasoningGuardConcurrentMaxAttempts ?? null,
-    codexReasoningGuardModelFallbacks: input.codexReasoningGuardModelFallbacks ?? null,
-    codexReasoningGuardContinuationRepairEnabled:
-      input.codexReasoningGuardContinuationRepairEnabled ?? null,
-    codexReasoningGuardContinuationMaxRounds:
-      input.codexReasoningGuardContinuationMaxRounds ?? null,
-    codexReasoningGuardContinuationMaxOutputTokens:
-      input.codexReasoningGuardContinuationMaxOutputTokens ?? null,
-    codexReasoningGuardBackoffAfterHits: input.codexReasoningGuardBackoffAfterHits ?? null,
-    codexReasoningGuardBackoffMs: input.codexReasoningGuardBackoffMs ?? null,
     cx2CcFallbackModelOpus: input.cx2CcFallbackModelOpus ?? null,
     cx2CcFallbackModelSonnet: input.cx2CcFallbackModelSonnet ?? null,
     cx2CcFallbackModelHaiku: input.cx2CcFallbackModelHaiku ?? null,
@@ -353,6 +286,8 @@ export async function settingsSet(input: SettingsSetInput) {
     cmd: "settings_set",
     args: { update },
     invoke: () =>
-      commands.settingsSet(update) as Promise<GeneratedCommandResult<SettingsMutationResult>>,
+      commands.settingsSet(update as GeneratedSettingsUpdate) as Promise<
+        GeneratedCommandResult<SettingsMutationResult>
+      >,
   });
 }

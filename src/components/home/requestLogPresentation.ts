@@ -16,7 +16,6 @@ import {
   resolveModelRouteMappingFromSpecialSettings,
   parseRequestLogSpecialSettings,
   resolveCodexReasoningEffort,
-  resolveCodexReasoningGuardSummary,
   resolveClaudeModelMappingFromSpecialSettings,
   type ModelRouteMapping,
 } from "../../services/gateway/requestLogSpecialSettings";
@@ -54,7 +53,6 @@ export type RequestLogAuditMeta = {
   summary: string | null;
   tags: RequestLogAuditTag[];
   providerFallbackText: string | null;
-  reasoningTokens: number | null;
 };
 
 export { hasClaudeModelMappingSpecialSetting, resolveClaudeModelMappingFromSpecialSettings };
@@ -63,25 +61,6 @@ export {
   resolveCodexReasoningEffort,
   resolveModelRouteMappingFromSpecialSettings,
 };
-
-export function hasCodexReasoningGuardSpecialSetting(
-  specialSettingsJson: string | null | undefined
-): boolean {
-  return resolveCodexReasoningGuardSummary(specialSettingsJson).count > 0;
-}
-
-export function formatCodexReasoningContinuationStatus(status: string | null | undefined): string {
-  if (status === "continuation_repaired") return "已修复";
-  if (status === "repaired") return "已修复";
-  if (status === "failed") return "补救失败";
-  if (status === "still_matched") return "仍命中";
-  if (status === "missing_encrypted") return "缺少 encrypted";
-  if (status === "capped_max_output_tokens") return "输出上限";
-  if (status === "unsupported") return "不支持";
-  if (status === "unavailable") return "不可用";
-  if (status === "unknown") return "未知状态";
-  return status || "未知状态";
-}
 
 function finiteJsonNumber(value: unknown): number | null {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
@@ -130,17 +109,6 @@ export function resolveRequestLogUsageReasoningTokens(
   } catch {
     return null;
   }
-}
-
-export function hasCodexReasoningGuardRetryAttempt(
-  attempts: Array<{ outcome?: string | null }> | null | undefined
-): boolean {
-  return (
-    attempts?.some((attempt) => {
-      const outcome = attempt.outcome?.trim().toLowerCase();
-      return !!outcome && outcome.includes("codex_reasoning_guard");
-    }) ?? false
-  );
 }
 
 export function formatClaudeModelMappingText(
@@ -339,15 +307,7 @@ function auditTag(label: string, className: string, title?: string): RequestLogA
   return { label, className, title };
 }
 
-type RequestLogAuditMetaOptions = {
-  codexReasoningGuardHitLabel?: string | null;
-};
-
-export function buildRequestLogAuditMeta(
-  log: RequestLogAuditInput,
-  options: RequestLogAuditMetaOptions = {}
-): RequestLogAuditMeta {
-  void options.codexReasoningGuardHitLabel;
+export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogAuditMeta {
   const settings = parseRequestLogSpecialSettings(log.special_settings_json);
   const settingTypes = new Set(settings.flatMap((item) => (item.type ? [item.type] : [])));
   const isWarmupIntercept = settingTypes.has("warmup_intercept");
@@ -359,7 +319,6 @@ export function buildRequestLogAuditMeta(
       settingTypes.has("client_abort"));
   const isAllProvidersUnavailable = log.error_code === GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE;
   const excludedFromStats = !!log.excluded_from_stats;
-  const codexReasoningGuard = resolveCodexReasoningGuardSummary(log.special_settings_json);
   const modelRouteMapping = resolveModelRouteMappingFromSpecialSettings(
     log.special_settings_json,
     log.final_provider_id
@@ -458,7 +417,6 @@ export function buildRequestLogAuditMeta(
         : isAllProvidersUnavailable
           ? "无可用供应商"
           : null,
-    reasoningTokens: codexReasoningGuard.latestReasoningTokens,
   };
 }
 

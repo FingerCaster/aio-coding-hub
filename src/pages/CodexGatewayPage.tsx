@@ -11,7 +11,7 @@ export function CodexGatewayPage() {
     <div className="flex h-full flex-col gap-6 overflow-hidden">
       <PageHeader
         title="Codex 外部网关"
-        subtitle="外层操作只影响受管外部网关；离开此页面不会停止运行中的实例。"
+        subtitle="受管实例状态与本地桥接安全边界"
         actions={
           <>
             <Button type="button" variant="secondary" size="sm" onClick={() => navigate(-1)}>

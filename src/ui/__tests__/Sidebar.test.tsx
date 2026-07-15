@@ -114,6 +114,17 @@ describe("ui/Sidebar", () => {
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
   });
 
+  it("collapses to an accessible icon rail below the desktop breakpoint", () => {
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByRole("complementary")).toHaveClass("w-16", "md:w-[248px]");
+    expect(screen.getByRole("link", { name: "CLI 管理" })).toHaveAttribute("title", "CLI 管理");
+  });
+
   it("switches theme from the sidebar control", () => {
     const setTheme = vi.fn();
     themeRef.current = { theme: "system", resolvedTheme: "light", setTheme };

@@ -18,7 +18,6 @@ import {
   formatUsdCompact,
   formatUsdRaw,
   formatUsdShort,
-  resolveTtfbDisplayMetrics,
   sanitizeTtfbMs,
 } from "../formatters";
 
@@ -53,32 +52,6 @@ describe("utils/formatters", () => {
     expect(sanitizeTtfbMs(10, 10)).toBe(10);
     expect(sanitizeTtfbMs(9, 10)).toBe(9);
     expect(sanitizeTtfbMs(11, 10)).toBeNull();
-  });
-
-  it("resolveTtfbDisplayMetrics only shows visible TTFB for meaningful guard-hit deltas", () => {
-    expect(resolveTtfbDisplayMetrics(120, 240, 300, true)).toEqual({
-      providerTtfbMs: 120,
-      visibleTtfbMs: 240,
-      showVisibleTtfb: true,
-    });
-
-    expect(resolveTtfbDisplayMetrics(180, 180, 300, true)).toEqual({
-      providerTtfbMs: 180,
-      visibleTtfbMs: null,
-      showVisibleTtfb: false,
-    });
-
-    expect(resolveTtfbDisplayMetrics(null, 240, 300, true)).toEqual({
-      providerTtfbMs: 240,
-      visibleTtfbMs: null,
-      showVisibleTtfb: false,
-    });
-
-    expect(resolveTtfbDisplayMetrics(120, 240, 300, false)).toEqual({
-      providerTtfbMs: 120,
-      visibleTtfbMs: null,
-      showVisibleTtfb: false,
-    });
   });
 
   it("formatInteger / percent", () => {

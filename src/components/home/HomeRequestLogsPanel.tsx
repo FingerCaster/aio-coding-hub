@@ -39,13 +39,12 @@ import {
   formatTokensPerSecond,
   formatTokensPerSecondShort,
   formatUsd,
-  resolveTtfbDisplayMetrics,
+  sanitizeTtfbMs,
 } from "../../utils/formatters";
 import {
   buildRequestLogAuditMeta,
   buildRequestRouteMeta,
   computeStatusBadge,
-  hasCodexReasoningGuardSpecialSetting,
   resolveCacheCreationDisplay,
   resolveRequestLogModelDisplayMeta,
 } from "./requestLogPresentation";
@@ -93,7 +92,6 @@ type RequestLogCardProps = {
   showCustomTooltip: boolean;
   onSelectLogId: (id: number | null) => void;
   formatUnixSeconds: (ts: number) => string;
-  codexReasoningGuardHitLabel?: string;
 };
 
 const RequestLogCard = memo(function RequestLogCard({
@@ -105,9 +103,8 @@ const RequestLogCard = memo(function RequestLogCard({
   showCustomTooltip,
   onSelectLogId,
   formatUnixSeconds,
-  codexReasoningGuardHitLabel,
 }: RequestLogCardProps) {
-  const auditMeta = buildRequestLogAuditMeta(log, { codexReasoningGuardHitLabel });
+  const auditMeta = buildRequestLogAuditMeta(log);
   const isInterrupted = activityState === "interrupted";
   const statusBadge = isInterrupted
     ? {
@@ -161,13 +158,7 @@ const RequestLogCard = memo(function RequestLogCard({
     log.cli_key === "codex" && hasCodexSystemRequestSpecialSetting(log.special_settings_json);
   const compactTextClass = compactMode ? "whitespace-normal break-all" : "truncate";
 
-  const ttfbMetrics = resolveTtfbDisplayMetrics(
-    log.ttfb_ms,
-    log.visible_ttfb_ms ?? null,
-    log.duration_ms,
-    hasCodexReasoningGuardSpecialSetting(log.special_settings_json)
-  );
-  const ttfbMs = ttfbMetrics.providerTtfbMs;
+  const ttfbMs = sanitizeTtfbMs(log.ttfb_ms, log.duration_ms);
   const outputTokensPerSecond = computeOutputTokensPerSecond(
     log.output_tokens,
     log.duration_ms,
@@ -408,21 +399,8 @@ const RequestLogCard = memo(function RequestLogCard({
                   <span className="text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/75 select-none shrink-0">
                     首字
                   </span>
-                  <span
-                    className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate"
-                    title={
-                      ttfbMetrics.showVisibleTtfb &&
-                      ttfbMs != null &&
-                      ttfbMetrics.visibleTtfbMs != null
-                        ? `首字 ${formatDurationMs(ttfbMs)} / 可见首字 ${formatDurationMs(ttfbMetrics.visibleTtfbMs)}`
-                        : undefined
-                    }
-                  >
-                    {ttfbMs != null
-                      ? ttfbMetrics.showVisibleTtfb && ttfbMetrics.visibleTtfbMs != null
-                        ? `${formatDurationMs(ttfbMs)} / ${formatDurationMs(ttfbMetrics.visibleTtfbMs)}`
-                        : formatDurationMs(ttfbMs)
-                      : "—"}
+                  <span className="font-mono tabular-nums text-xs font-semibold text-foreground/90 truncate">
+                    {ttfbMs != null ? formatDurationMs(ttfbMs) : "—"}
                   </span>
                 </div>
                 <div
@@ -542,7 +520,6 @@ export type HomeRequestLogsPanelProps = {
 
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
-  codexReasoningGuardHitLabel?: string;
 };
 
 export function HomeRequestLogsPanel({
@@ -561,7 +538,6 @@ export function HomeRequestLogsPanel({
   onRefreshRequestLogs,
   selectedLogId,
   onSelectLogId,
-  codexReasoningGuardHitLabel,
 }: HomeRequestLogsPanelProps) {
   const navigate = useNavigate();
   const resolvedDisplayOptions = {
@@ -756,7 +732,6 @@ export function HomeRequestLogsPanel({
           emptyStateTitle={emptyStateTitle}
           selectedLogId={selectedLogId}
           onSelectLogId={onSelectLogId}
-          codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
         />
       </div>
     </Card>
@@ -777,7 +752,6 @@ type RequestLogsListProps = {
   emptyStateTitle: string;
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
-  codexReasoningGuardHitLabel?: string;
 };
 
 const RequestLogsList = memo(function RequestLogsList({
@@ -793,7 +767,6 @@ const RequestLogsList = memo(function RequestLogsList({
   emptyStateTitle,
   selectedLogId,
   onSelectLogId,
-  codexReasoningGuardHitLabel,
 }: RequestLogsListProps) {
   const scrollRef = useRef<HTMLDivElement>(null);
   const hasRealtimeCards = realtimeCards.length > 0;
@@ -829,7 +802,6 @@ const RequestLogsList = memo(function RequestLogsList({
             showCustomTooltip={showCustomTooltip}
             onSelectLogId={onSelectLogId}
             formatUnixSeconds={formatUnixSeconds}
-            codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
           />
         );
       })}
@@ -900,7 +872,6 @@ const RequestLogsList = memo(function RequestLogsList({
                     showCustomTooltip={showCustomTooltip}
                     onSelectLogId={onSelectLogId}
                     formatUnixSeconds={formatUnixSeconds}
-                    codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
                   />
                 </div>
               );

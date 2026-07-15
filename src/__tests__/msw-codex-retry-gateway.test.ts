@@ -29,6 +29,12 @@ describe("MSW codex retry gateway state", () => {
     expect(enabled.runtime_phase).toBe("guarded");
     expect(enabled.cli_proxy_enabled).toBe(true);
     expect(enabled.details_available).toBe(true);
+    expect(enabled).toMatchObject({
+      effective_port: 4610,
+      repository: "nonononull/codex-retry-gateway",
+      license: null,
+      process_status: { listener: "http://127.0.0.1:4610" },
+    });
   });
 
   it("reflects codex cli proxy disablement back into gateway status", () => {

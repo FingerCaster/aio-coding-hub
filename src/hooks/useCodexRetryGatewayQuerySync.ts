@@ -1,6 +1,6 @@
 import { useEffect, useMemo } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import { gatewayEventNames } from "../constants/gatewayEvents";
+import { CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME } from "../constants/codexRetryGatewayEvents";
 import { logToConsole } from "../services/consoleLog";
 import { subscribeGatewayEvent } from "../services/gateway/gatewayEventBus";
 import { type CodexRetryGatewayStatus } from "../services/cli/codexRetryGateway";
@@ -50,7 +50,7 @@ export function useCodexRetryGatewayQuerySync() {
   useEffect(() => {
     let cancelled = false;
 
-    const statusSub = subscribeGatewayEvent(gatewayEventNames.status, (payload) => {
+    const statusSub = subscribeGatewayEvent(CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME, (payload) => {
       if (cancelled) return;
 
       if (isRetryGatewayStatusPayload(payload)) {

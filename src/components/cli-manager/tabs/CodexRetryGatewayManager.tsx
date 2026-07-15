@@ -13,7 +13,6 @@ import {
   Trash2,
 } from "lucide-react";
 import { toast } from "sonner";
-import { Card } from "../../../ui/Card";
 import { Button } from "../../../ui/Button";
 import { Switch } from "../../../ui/Switch";
 import { Input } from "../../../ui/Input";
@@ -104,11 +103,11 @@ function ReadonlyValue({
   mono?: boolean;
 }) {
   return (
-    <div className="rounded-xl border border-line-subtle bg-surface-inset px-3 py-3">
-      <div className="text-[11px] uppercase tracking-wide text-muted-foreground">{label}</div>
+    <div className="min-w-0 border-l-2 border-line-subtle py-1 pl-3 pr-2">
+      <div className="text-[11px] uppercase tracking-normal text-muted-foreground">{label}</div>
       <div
         className={cn(
-          "mt-1 break-all text-sm font-medium text-foreground",
+          "mt-1 min-w-0 break-all text-sm font-medium text-foreground",
           mono && "font-mono text-xs"
         )}
       >
@@ -130,7 +129,7 @@ function RequirementChecklist({
   const active = requirements.filter((row) => row.required);
   if (active.length === 0) {
     return (
-      <div className="rounded-xl border border-dashed border-line bg-surface-inset px-3 py-3 text-sm text-muted-foreground">
+      <div className="rounded-lg border border-dashed border-line bg-surface-inset px-3 py-3 text-sm text-muted-foreground">
         当前没有额外确认项，确认后会直接执行。
       </div>
     );
@@ -141,7 +140,7 @@ function RequirementChecklist({
       {active.map((row) => (
         <label
           key={row.key}
-          className="flex items-start gap-3 rounded-xl border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-foreground"
+          className="flex items-start gap-3 rounded-lg border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-foreground"
         >
           <input
             type="checkbox"
@@ -240,6 +239,7 @@ export function CodexRetryGatewayManager({
   const uninstallMutation = useCodexRetryGatewayUninstallMutation();
   const detailsSessionMutation = useCodexRetryGatewayCreateDetailsSessionMutation();
   const createDetailsSessionRef = useRef(detailsSessionMutation.mutateAsync);
+  const detailsSessionRequestRef = useRef(0);
 
   const [enablePlan, setEnablePlan] = useState<CodexRetryGatewayEnablePlan | null>(null);
   const [enableDialogOpen, setEnableDialogOpen] = useState(false);
@@ -285,28 +285,43 @@ export function CodexRetryGatewayManager({
   }, [detailsSessionMutation.mutateAsync]);
 
   const refreshDetailsSession = useCallback(async () => {
+    const requestId = detailsSessionRequestRef.current + 1;
+    detailsSessionRequestRef.current = requestId;
     setDetailsSessionError(null);
     setIframeBroken(false);
     setIframeLoaded(false);
     const session = await createDetailsSessionRef.current();
-    setDetailsSession(session);
+    if (detailsSessionRequestRef.current === requestId) {
+      setDetailsSession(session);
+    }
     return session;
   }, []);
 
   useEffect(() => {
     if (!showDetailsFrame || !status?.details_available) {
+      detailsSessionRequestRef.current += 1;
       setDetailsSession(null);
       return;
     }
+    let active = true;
     void refreshDetailsSession().catch((error) => {
+      if (!active) return;
       const formatted = formatActionFailureToast("创建详情会话", error);
       logToConsole("error", "创建 Codex 外部网关详情会话失败", { error: formatted.raw });
       setDetailsSession(null);
       setDetailsSessionError(formatted.toast);
     });
-  }, [refreshDetailsSession, showDetailsFrame, status?.details_available, status?.generation]);
+    return () => {
+      active = false;
+      detailsSessionRequestRef.current += 1;
+    };
+  }, [refreshDetailsSession, showDetailsFrame, status?.details_available]);
 
   const openBrowser = useCallback(async () => {
+    if (!status?.details_available) {
+      toast("管理桥接暂不可用，请刷新状态后重试");
+      return;
+    }
     try {
       const session = detailsSession ?? (await refreshDetailsSession());
       await handleOpenUrl("浏览器入口", session.browser_url);
@@ -315,7 +330,7 @@ export function CodexRetryGatewayManager({
       logToConsole("error", "打开 Codex 外部网关浏览器入口失败", { error: formatted.raw });
       toast(formatted.toast);
     }
-  }, [detailsSession, refreshDetailsSession]);
+  }, [detailsSession, refreshDetailsSession, status?.details_available]);
 
   const handleMutationError = useCallback(
     (action: string, error: unknown, providerSync = false) => {
@@ -451,7 +466,7 @@ export function CodexRetryGatewayManager({
       await applyCommitMutation.mutateAsync({
         planGeneration: status.generation,
         commit: manualValidation.canonical_commit,
-        acceptedUpdate: false,
+        acceptedUpdate: true,
         acceptedUnreviewedCommit:
           manualValidation.trust_state === "official_main_unreviewed" ? manualTrustAccepted : false,
       });
@@ -534,32 +549,37 @@ export function CodexRetryGatewayManager({
       <QueryStateView
         query={statusQuery}
         loading={
-          <Card className="flex items-center gap-3">
+          <div className="flex items-center gap-3 border-y border-line-subtle py-4">
             <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
             <span className="text-sm text-muted-foreground">读取 Codex 外部网关状态…</span>
-          </Card>
+          </div>
         }
         error={
-          <Card className="space-y-3">
-            <div className="flex items-start gap-3 text-sm text-rose-600 dark:text-rose-300">
+          <div className="space-y-3 border-y border-line-subtle py-4">
+            <div className="flex items-start gap-3 break-words text-sm text-rose-600 dark:text-rose-300">
               <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
               <span>{String(statusQuery.error)}</span>
             </div>
             <Button variant="secondary" size="sm" onClick={() => void statusQuery.refetch()}>
               重试
             </Button>
-          </Card>
+          </div>
         }
         isEmpty={(data) => data == null}
         empty={
-          <Card className="text-sm text-muted-foreground">当前还没有 Codex 外部网关状态。</Card>
+          <div className="border-y border-line-subtle py-4 text-sm text-muted-foreground">
+            当前还没有 Codex 外部网关状态。
+          </div>
         }
       >
         {(currentStatus) => (
           <div className="space-y-4">
-            <Card className="space-y-4">
+            <section
+              data-testid="codex-retry-gateway-section"
+              className="space-y-4 border-y border-line-subtle py-4"
+            >
               <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="space-y-2">
+                <div className="min-w-0 space-y-2">
                   <div className="flex flex-wrap items-center gap-2">
                     <div className="flex items-center gap-2 text-base font-semibold text-foreground">
                       {isCodexRetryGatewayProtected(currentStatus) ? (
@@ -641,7 +661,7 @@ export function CodexRetryGatewayManager({
                     variant="secondary"
                     className="gap-2"
                     onClick={() => void openBrowser()}
-                    disabled={Boolean(managerBusy)}
+                    disabled={!currentStatus.details_available || Boolean(managerBusy)}
                   >
                     <ExternalLink className="h-4 w-4" aria-hidden="true" />
                     浏览器打开
@@ -670,20 +690,20 @@ export function CodexRetryGatewayManager({
               </div>
 
               {currentStatus.wsl_codex_unprotected ? (
-                <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">
+                <div className="break-words rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">
                   已检测到 WSL 中的 Codex 仍然直连 AIO。启用外部网关不会保护 WSL 流量。
                 </div>
               ) : null}
 
               {currentStatus.last_error ? (
-                <div className="rounded-xl border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
+                <div className="break-words rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
                   {formatCodexRetryGatewayError(currentStatus.last_error)}
                 </div>
               ) : null}
 
               <div className="grid gap-4 xl:grid-cols-[1.3fr,0.7fr]">
                 <div className="space-y-3">
-                  <div className="rounded-2xl border border-line-subtle bg-surface-inset p-4">
+                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
                     <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <GitBranch className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
                       源码与提交
@@ -717,7 +737,7 @@ export function CodexRetryGatewayManager({
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-line-subtle bg-surface-inset p-4">
+                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
                     <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
                       <HardDriveDownload
                         className="h-4 w-4 text-muted-foreground"
@@ -770,7 +790,7 @@ export function CodexRetryGatewayManager({
                       </div>
 
                       {manualValidation ? (
-                        <div className="rounded-xl border border-line-subtle bg-surface-panel px-3 py-3 text-xs text-muted-foreground">
+                        <div className="min-w-0 break-words rounded-lg border border-line-subtle bg-surface-panel px-3 py-3 text-xs text-muted-foreground">
                           <div className="font-mono text-foreground">
                             规范 SHA：{manualValidation.canonical_commit ?? "—"}
                           </div>
@@ -801,7 +821,7 @@ export function CodexRetryGatewayManager({
                 </div>
 
                 <div className="space-y-3">
-                  <div className="rounded-2xl border border-line-subtle bg-surface-inset p-4">
+                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
                     <div className="text-sm font-semibold text-foreground">Node.js</div>
                     <div className="mt-3 space-y-3">
                       <ReadonlyValue
@@ -820,7 +840,7 @@ export function CodexRetryGatewayManager({
                         }
                       />
                       {currentStatus.node_status.error ? (
-                        <div className="text-xs text-rose-600 dark:text-rose-300">
+                        <div className="break-words text-xs text-rose-600 dark:text-rose-300">
                           {formatCodexRetryGatewayError(currentStatus.node_status.error)}
                         </div>
                       ) : null}
@@ -847,7 +867,7 @@ export function CodexRetryGatewayManager({
                     </div>
                   </div>
 
-                  <div className="rounded-2xl border border-line-subtle bg-surface-inset p-4">
+                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
                     <div className="text-sm font-semibold text-foreground">运行操作</div>
                     <div className="mt-3 flex flex-wrap gap-2">
                       <Button
@@ -879,15 +899,15 @@ export function CodexRetryGatewayManager({
                   </div>
                 </div>
               </div>
-            </Card>
+            </section>
 
             {showDetailsFrame ? (
-              <Card className="space-y-4">
+              <section className="space-y-4 border-b border-line-subtle pb-4">
                 <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div>
+                  <div className="min-w-0">
                     <div className="text-sm font-semibold text-foreground">管理页嵌入</div>
                     <div className="mt-1 text-xs text-muted-foreground">
-                      离开此页面不会停止外部网关；只有上方显式操作才会改变运行状态。
+                      仅限 127.0.0.1 的临时桥接会话
                     </div>
                   </div>
                   <div className="flex flex-wrap gap-2">
@@ -896,7 +916,16 @@ export function CodexRetryGatewayManager({
                       size="sm"
                       variant="secondary"
                       className="gap-2"
-                      onClick={() => void refreshDetailsSession()}
+                      onClick={() => {
+                        void refreshDetailsSession().catch((error) => {
+                          const formatted = formatActionFailureToast("刷新详情会话", error);
+                          logToConsole("error", "刷新 Codex 外部网关详情会话失败", {
+                            error: formatted.raw,
+                          });
+                          setDetailsSession(null);
+                          setDetailsSessionError(formatted.toast);
+                        });
+                      }}
                       disabled={!currentStatus.details_available || Boolean(managerBusy)}
                     >
                       <RefreshCw
@@ -914,7 +943,7 @@ export function CodexRetryGatewayManager({
                       variant="secondary"
                       className="gap-2"
                       onClick={() => void openBrowser()}
-                      disabled={Boolean(managerBusy)}
+                      disabled={!currentStatus.details_available || Boolean(managerBusy)}
                     >
                       <ExternalLink className="h-4 w-4" aria-hidden="true" />
                       浏览器打开
@@ -923,24 +952,24 @@ export function CodexRetryGatewayManager({
                 </div>
 
                 {!currentStatus.details_available ? (
-                  <div className="rounded-xl border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
-                    当前桥接会话不可用。可以稍后重试，或直接在浏览器中打开管理页。
+                  <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
+                    管理桥接暂不可用。请刷新状态；若网关正在恢复，请使用“重试恢复”。
                   </div>
                 ) : detailsSessionError ? (
-                  <div className="rounded-xl border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
+                  <div className="break-words rounded-lg border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
                     {detailsSessionError}
                   </div>
                 ) : iframeBroken || !detailsSession ? (
-                  <div className="rounded-xl border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
+                  <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
                     当前无法嵌入管理页。可先使用“浏览器打开”，或点击“刷新嵌入”重建桥接会话。
                   </div>
                 ) : (
-                  <div className="overflow-hidden rounded-2xl border border-line-subtle bg-black/5">
+                  <div className="min-w-0 overflow-hidden rounded-lg border border-line-subtle bg-black/5">
                     <iframe
-                      key={detailsSession.generation}
+                      key={detailsSession.iframe_url}
                       title="Codex 外部网关管理页"
                       src={detailsSession.iframe_url}
-                      className="h-[70vh] w-full bg-white"
+                      className="h-[70vh] min-h-[420px] max-h-[760px] w-full bg-white"
                       sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
                       onLoad={() => setIframeLoaded(true)}
                       onError={() => {
@@ -950,7 +979,7 @@ export function CodexRetryGatewayManager({
                     />
                   </div>
                 )}
-              </Card>
+              </section>
             ) : null}
           </div>
         )}
@@ -983,7 +1012,7 @@ export function CodexRetryGatewayManager({
                 setRequirementValues((current) => ({ ...current, [key]: checked }))
               }
             />
-            <div className="rounded-xl border border-line-subtle bg-surface-inset px-3 py-3 text-xs text-muted-foreground">
+            <div className="rounded-lg border border-line-subtle bg-surface-inset px-3 py-3 text-xs text-muted-foreground">
               <div>信任状态：{formatCodexRetryGatewayTrustState(enablePlan.trust_state)}</div>
               <div className="mt-1">
                 Node：
@@ -1012,7 +1041,7 @@ export function CodexRetryGatewayManager({
       >
         {updateCandidate ? (
           <div className="space-y-3">
-            <div className="rounded-xl border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-muted-foreground">
+            <div className="break-words rounded-lg border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-muted-foreground">
               <div className="font-mono text-xs text-foreground">{updateCandidate.commit}</div>
               <div className="mt-1">
                 官方主线：{updateCandidate.official_main_commit}，领先提交数：
@@ -1026,7 +1055,7 @@ export function CodexRetryGatewayManager({
               ) : null}
             </div>
             {updateUnreviewed ? (
-              <label className="flex items-start gap-3 rounded-xl border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-foreground">
+              <label className="flex items-start gap-3 rounded-lg border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-foreground">
                 <input
                   type="checkbox"
                   className="mt-0.5 h-4 w-4 rounded border-line"
@@ -1057,7 +1086,7 @@ export function CodexRetryGatewayManager({
       >
         {manualValidation ? (
           <div className="space-y-3">
-            <div className="rounded-xl border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-muted-foreground">
+            <div className="break-words rounded-lg border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-muted-foreground">
               <div>
                 信任状态：
                 {manualValidation.trust_state
@@ -1072,7 +1101,7 @@ export function CodexRetryGatewayManager({
               ) : null}
             </div>
             {manualUnreviewed ? (
-              <label className="flex items-start gap-3 rounded-xl border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-foreground">
+              <label className="flex items-start gap-3 rounded-lg border border-line-subtle bg-surface-inset px-3 py-3 text-sm text-foreground">
                 <input
                   type="checkbox"
                   className="mt-0.5 h-4 w-4 rounded border-line"
@@ -1097,7 +1126,7 @@ export function CodexRetryGatewayManager({
         confirming={uninstallMutation.isPending}
         confirmVariant="danger"
       >
-        <div className="rounded-xl border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">
+        <div className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">
           此操作会清理当前受管实例数据；如只想恢复直连 AIO，请直接关闭开关。
         </div>
       </ConfirmDialog>
