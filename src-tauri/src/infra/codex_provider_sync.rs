@@ -126,8 +126,41 @@ pub(crate) fn codex_provider_sync_transaction<R: tauri::Runtime, T, F>(
 where
     F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
 {
+    codex_provider_sync_transaction_with_target_resolver(
+        app,
+        context,
+        after_apply,
+        resolve_target_provider,
+    )
+}
+
+pub(crate) fn codex_provider_sync_transaction_for_trusted_target<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    context: CodexProviderSyncContext,
+    after_apply: F,
+) -> AppResult<(CodexProviderSyncResult, T)>
+where
+    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
+{
+    codex_provider_sync_transaction_with_target_resolver(
+        app,
+        context,
+        after_apply,
+        resolve_trusted_target_provider,
+    )
+}
+
+fn codex_provider_sync_transaction_with_target_resolver<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    context: CodexProviderSyncContext,
+    after_apply: F,
+    resolve_target: fn(&str) -> AppResult<String>,
+) -> AppResult<(CodexProviderSyncResult, T)>
+where
+    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
+{
     let home = crate::codex_paths::codex_home_dir(app)?;
-    let target_provider = resolve_target_provider(&context.target_provider)?;
+    let target_provider = resolve_target(&context.target_provider)?;
     if codex_app_is_running()? {
         return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
     }
@@ -280,10 +313,14 @@ pub fn codex_provider_sync_from_config_bytes<R: tauri::Runtime>(
     )
 }
 
-pub fn codex_provider_target_from_config_text(config_text: &str) -> AppResult<String> {
-    let current_provider = read_current_provider(config_text)?.ok_or_else(|| {
+pub(crate) fn codex_provider_identity_from_config_text(config_text: &str) -> AppResult<String> {
+    Ok(read_current_provider(config_text)?.ok_or_else(|| {
         "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".to_string()
-    })?;
+    })?)
+}
+
+pub fn codex_provider_target_from_config_text(config_text: &str) -> AppResult<String> {
+    let current_provider = codex_provider_identity_from_config_text(config_text)?;
     resolve_target_provider(&current_provider)
 }
 
@@ -302,8 +339,31 @@ pub(crate) fn codex_provider_sync_plan_for_target(
     current_config_text: &str,
     target_provider: &str,
 ) -> AppResult<CodexProviderSyncPlan> {
+    codex_provider_sync_plan_for_target_with_resolver(
+        current_config_text,
+        target_provider,
+        resolve_target_provider,
+    )
+}
+
+pub(crate) fn codex_provider_sync_plan_for_trusted_target(
+    current_config_text: &str,
+    target_provider: &str,
+) -> AppResult<CodexProviderSyncPlan> {
+    codex_provider_sync_plan_for_target_with_resolver(
+        current_config_text,
+        target_provider,
+        resolve_trusted_target_provider,
+    )
+}
+
+fn codex_provider_sync_plan_for_target_with_resolver(
+    current_config_text: &str,
+    target_provider: &str,
+    resolve_target: fn(&str) -> AppResult<String>,
+) -> AppResult<CodexProviderSyncPlan> {
     let current_provider = read_current_provider(current_config_text)?;
-    let target_provider = resolve_target_provider(target_provider)?;
+    let target_provider = resolve_target(target_provider)?;
     let change_required = current_provider.as_deref() != Some(target_provider.as_str());
     Ok(CodexProviderSyncPlan {
         current_provider,
@@ -330,6 +390,16 @@ fn resolve_target_provider(input: &str) -> AppResult<String> {
         )
         .into()),
     }
+}
+
+fn resolve_trusted_target_provider(input: &str) -> AppResult<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".into(),
+        );
+    }
+    Ok(trimmed.to_string())
 }
 
 fn read_current_provider(text: &str) -> AppResult<Option<String>> {

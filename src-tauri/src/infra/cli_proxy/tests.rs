@@ -915,6 +915,314 @@ base_url = "https://api.anthropic.com/v1"
 }
 
 #[test]
+fn restore_unproxied_route_requires_closed_codex_when_canonical_provider_changes() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+    let original_config = r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+"#;
+    write_codex_direct_files(
+        &handle,
+        original_config,
+        r#"{
+  "profile": "local"
+}"#,
+    );
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256.clone(),
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("apply guarded route");
+
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(true));
+    let err = restore_unproxied_route(
+        &handle,
+        &store,
+        CodexRestoreUnproxiedRouteRequest {
+            expected_generation: guarded.route.generation,
+            expected_canonical_sha256: guarded.route.canonical_config_sha256.clone(),
+            aio_origin: Some(aio_origin.to_string()),
+            desired_enabled: false,
+            keep_cli_proxy_enabled: false,
+            source_commit: None,
+            process_should_run: false,
+        },
+    )
+    .expect_err("running codex should block restore provider sync");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    assert!(err
+        .to_string()
+        .contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"));
+    let verified = verify_route(&handle).expect("verify guarded route after failed restore");
+    assert_eq!(verified.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(verified.effective_origin.as_deref(), Some(guarded_origin));
+    assert!(verified.live_matches_projection, "{verified:?}");
+    assert!(verified.auth_matches_projection, "{verified:?}");
+    assert!(store.load_pending().expect("load pending").is_none());
+}
+
+#[test]
+fn restore_unproxied_route_fails_closed_when_canonical_provider_missing() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+"#,
+        r#"{
+  "profile": "local"
+}"#,
+    );
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256.clone(),
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: None,
+            process_should_run: true,
+        },
+    )
+    .expect("apply guarded route");
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("manifest exists");
+    let backup_path = backup_file_path_for_manifest(&handle, &manifest, "codex_config_toml")
+        .expect("config backup path lookup")
+        .expect("config backup path");
+    std::fs::write(&backup_path, "approval_policy = \"on-request\"\n")
+        .expect("overwrite canonical backup");
+    let state = codex_cli_proxy_state(&handle)
+        .expect("load codex route state")
+        .expect("managed codex route state");
+    let canonical_sha256 = sha256_hex(
+        &current_canonical_codex_config_bytes(&handle, &state)
+            .expect("current canonical config bytes after backup mutation"),
+    );
+
+    let err = restore_unproxied_route(
+        &handle,
+        &store,
+        CodexRestoreUnproxiedRouteRequest {
+            expected_generation: guarded.route.generation,
+            expected_canonical_sha256: canonical_sha256,
+            aio_origin: Some(aio_origin.to_string()),
+            desired_enabled: false,
+            keep_cli_proxy_enabled: false,
+            source_commit: None,
+            process_should_run: false,
+        },
+    )
+    .expect_err("missing canonical provider should fail closed");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("CODEX_PROVIDER_SYNC_INVALID_TARGET"),
+        "{err_text}"
+    );
+    let verified = verify_route(&handle).expect("verify guarded route after failed restore");
+    assert_eq!(verified.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(verified.effective_origin.as_deref(), Some(guarded_origin));
+    assert!(store.load_pending().expect("load pending").is_none());
+    let current_config = std::fs::read_to_string(codex_config_path(&handle).expect("config path"))
+        .expect("read current config after failed restore");
+    assert!(current_config.contains(&format!("base_url = \"{guarded_origin}/v1\"")));
+}
+
+#[test]
+fn restore_unproxied_route_fails_closed_when_canonical_provider_empty() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+"#,
+        r#"{
+  "profile": "local"
+}"#,
+    );
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256.clone(),
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: None,
+            process_should_run: true,
+        },
+    )
+    .expect("apply guarded route");
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("manifest exists");
+    let backup_path = backup_file_path_for_manifest(&handle, &manifest, "codex_config_toml")
+        .expect("config backup path lookup")
+        .expect("config backup path");
+    std::fs::write(&backup_path, "model_provider = \"\"\n").expect("overwrite canonical backup");
+    let state = codex_cli_proxy_state(&handle)
+        .expect("load codex route state")
+        .expect("managed codex route state");
+    let canonical_sha256 = sha256_hex(
+        &current_canonical_codex_config_bytes(&handle, &state)
+            .expect("current canonical config bytes after backup mutation"),
+    );
+
+    let err = restore_unproxied_route(
+        &handle,
+        &store,
+        CodexRestoreUnproxiedRouteRequest {
+            expected_generation: guarded.route.generation,
+            expected_canonical_sha256: canonical_sha256,
+            aio_origin: Some(aio_origin.to_string()),
+            desired_enabled: false,
+            keep_cli_proxy_enabled: false,
+            source_commit: None,
+            process_should_run: false,
+        },
+    )
+    .expect_err("empty canonical provider should fail closed");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("CODEX_PROVIDER_SYNC_INVALID_TARGET"),
+        "{err_text}"
+    );
+    let verified = verify_route(&handle).expect("verify guarded route after failed restore");
+    assert_eq!(verified.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(verified.effective_origin.as_deref(), Some(guarded_origin));
+    assert!(store.load_pending().expect("load pending").is_none());
+    let current_config = std::fs::read_to_string(codex_config_path(&handle).expect("config path"))
+        .expect("read current config after failed restore");
+    assert!(current_config.contains(&format!("base_url = \"{guarded_origin}/v1\"")));
+}
+
+#[test]
+fn restore_unproxied_route_preserves_remote_compaction_openai_behavior() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+    let original_config = r#"model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://api.openai.com/v1"
+
+[features]
+remote_compaction = true
+"#;
+    write_codex_direct_files(
+        &handle,
+        original_config,
+        r#"{
+  "profile": "local"
+}"#,
+    );
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    assert_eq!(
+        plan.provider_sync.current_provider.as_deref(),
+        Some("OpenAI")
+    );
+    assert_eq!(plan.provider_sync.target_provider, "OpenAI");
+    assert!(!plan.provider_sync.change_required, "{plan:?}");
+
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256.clone(),
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: None,
+            process_should_run: true,
+        },
+    )
+    .expect("apply guarded route");
+    assert!(guarded.provider_sync.is_none(), "{guarded:?}");
+
+    let restore = restore_unproxied_route(
+        &handle,
+        &store,
+        CodexRestoreUnproxiedRouteRequest {
+            expected_generation: guarded.route.generation,
+            expected_canonical_sha256: guarded.route.canonical_config_sha256.clone(),
+            aio_origin: Some(aio_origin.to_string()),
+            desired_enabled: false,
+            keep_cli_proxy_enabled: false,
+            source_commit: None,
+            process_should_run: false,
+        },
+    )
+    .expect("restore unproxied route");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    assert_eq!(restore.route.route_mode, CodexRouteMode::Unproxied);
+    assert!(restore.provider_sync.is_none(), "{restore:?}");
+    let final_config = std::fs::read_to_string(codex_config_path(&handle).expect("config path"))
+        .expect("read final config");
+    assert!(
+        final_config.contains("model_provider = \"OpenAI\""),
+        "{final_config}"
+    );
+    assert!(
+        final_config.contains("remote_compaction = true"),
+        "{final_config}"
+    );
+}
+
+#[test]
 fn codex_route_coordinator_applies_guarded_direct_and_unproxied_transitions() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();

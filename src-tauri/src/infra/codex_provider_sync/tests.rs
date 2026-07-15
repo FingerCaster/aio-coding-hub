@@ -28,12 +28,48 @@ fn target_provider_parses_toml_comments() {
 }
 
 #[test]
+fn provider_identity_from_config_text_accepts_unmanaged_canonical_provider() {
+    assert_eq!(
+        codex_provider_identity_from_config_text(
+            "model_provider = \"Anthropic\"\n[model_providers.Anthropic]\nname = \"Anthropic\"\n",
+        )
+        .expect("Anthropic canonical provider"),
+        "Anthropic"
+    );
+}
+
+#[test]
+fn provider_identity_from_config_text_rejects_missing_provider() {
+    let err = codex_provider_identity_from_config_text("approval_policy = \"on-request\"\n")
+        .expect_err("missing canonical provider should fail closed");
+    assert!(
+        err.to_string()
+            .contains("CODEX_PROVIDER_SYNC_INVALID_TARGET"),
+        "{err}"
+    );
+}
+
+#[test]
 fn current_config_provider_defaults_to_aio_when_missing() {
     assert_eq!(
         codex_provider_target_from_current_config_text("approval_policy = \"on-request\"\n")
             .expect("valid missing-provider config should default"),
         "aio"
     );
+}
+
+#[test]
+fn trusted_provider_sync_plan_accepts_unmanaged_restore_target() {
+    let plan = codex_provider_sync_plan_for_trusted_target(
+        "model_provider = \"aio\"\n[model_providers.aio]\nname = \"aio\"\n",
+        "Anthropic",
+    )
+    .expect("trusted restore plan");
+
+    assert_eq!(plan.current_provider.as_deref(), Some("aio"));
+    assert_eq!(plan.target_provider, "Anthropic");
+    assert!(plan.change_required, "{plan:?}");
+    assert!(plan.codex_must_be_closed, "{plan:?}");
 }
 
 #[test]

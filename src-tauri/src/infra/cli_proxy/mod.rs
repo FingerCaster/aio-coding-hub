@@ -928,6 +928,63 @@ struct CodexRouteWritePlan {
     provider_sync_plan: crate::infra::codex_retry_gateway::CodexProviderSyncPlan,
 }
 
+fn codex_route_provider_sync_plan(
+    current_live_text: &str,
+    target_live_text: &str,
+    route_mode: CodexRouteMode,
+) -> crate::shared::error::AppResult<crate::infra::codex_retry_gateway::CodexProviderSyncPlan> {
+    match route_mode {
+        CodexRouteMode::Unproxied => {
+            let target_provider =
+                crate::infra::codex_provider_sync::codex_provider_identity_from_config_text(
+                    target_live_text,
+                )?;
+            crate::infra::codex_provider_sync::codex_provider_sync_plan_for_trusted_target(
+                current_live_text,
+                &target_provider,
+            )
+        }
+        CodexRouteMode::DirectAio | CodexRouteMode::Guarded => {
+            crate::infra::codex_provider_sync::codex_provider_sync_plan_for_config_text(
+                current_live_text,
+                target_live_text,
+            )
+        }
+    }
+}
+
+fn codex_route_provider_sync_transaction<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    route_mode: CodexRouteMode,
+    context: crate::infra::codex_provider_sync::CodexProviderSyncContext,
+    after_apply: F,
+) -> crate::shared::error::AppResult<(
+    crate::infra::codex_provider_sync::CodexProviderSyncResult,
+    T,
+)>
+where
+    F: FnOnce(
+        &crate::infra::codex_provider_sync::CodexProviderSyncResult,
+    ) -> crate::shared::error::AppResult<T>,
+{
+    match route_mode {
+        CodexRouteMode::Unproxied => {
+            crate::infra::codex_provider_sync::codex_provider_sync_transaction_for_trusted_target(
+                app,
+                context,
+                after_apply,
+            )
+        }
+        CodexRouteMode::DirectAio | CodexRouteMode::Guarded => {
+            crate::infra::codex_provider_sync::codex_provider_sync_transaction(
+                app,
+                context,
+                after_apply,
+            )
+        }
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn apply_codex_route_change<R: tauri::Runtime, S: CodexRetryGatewayTransitionStore>(
     app: &tauri::AppHandle<R>,
@@ -979,26 +1036,7 @@ fn apply_codex_route_change<R: tauri::Runtime, S: CodexRetryGatewayTransitionSto
     let target_live_text = String::from_utf8(live_bytes.clone())
         .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
     let provider_sync_plan =
-        match crate::infra::codex_provider_sync::codex_provider_sync_plan_for_config_text(
-            &current_live_text,
-            &target_live_text,
-        ) {
-            Ok(plan) => plan,
-            Err(err)
-                if matches!(route_mode, CodexRouteMode::Unproxied)
-                    && err
-                        .to_string()
-                        .contains("CODEX_PROVIDER_SYNC_INVALID_TARGET") =>
-            {
-                crate::infra::codex_retry_gateway::CodexProviderSyncPlan {
-                    current_provider: None,
-                    target_provider: "aio".to_string(),
-                    change_required: false,
-                    codex_must_be_closed: false,
-                }
-            }
-            Err(err) => return Err(err),
-        };
+        codex_route_provider_sync_plan(&current_live_text, &target_live_text, route_mode)?;
     let transition = prepare_codex_route_transition(
         store,
         operation_kind,
@@ -1045,40 +1083,40 @@ fn apply_codex_route_change<R: tauri::Runtime, S: CodexRetryGatewayTransitionSto
         if write_plan.provider_sync_plan.change_required {
             let target_provider = write_plan.provider_sync_plan.target_provider.clone();
             let trigger = codex_route_provider_sync_trigger(operation_kind).to_string();
-            let (provider_sync, route) =
-                crate::infra::codex_provider_sync::codex_provider_sync_transaction(
-                    app,
-                    crate::infra::codex_provider_sync::CodexProviderSyncContext {
-                        trigger,
-                        target_provider,
-                        config_bytes: Some(write_plan.live_bytes.clone()),
-                    },
-                    |_| {
-                        write_codex_auth_projection(app, &write_plan.auth_projection)?;
-                        codex_route_write_manifest(
-                            app,
-                            write_plan.manifest.clone(),
-                            write_plan.manifest_enabled,
-                            write_plan.route_state.clone(),
-                        )?;
-                        let verified = verify_route(app)?;
-                        if verified.generation != write_plan.route_state.generation
-                            || verified.route_mode != write_plan.route_state.route_mode
-                            || verified.desired_enabled != write_plan.route_state.desired_enabled
-                            || verified.aio_origin != write_plan.route_state.aio_origin
-                            || verified.guarded_origin != write_plan.route_state.guarded_origin
-                            || !verified.live_matches_projection
-                            || !verified.auth_matches_projection
-                        {
-                            return Err(
+            let (provider_sync, route) = codex_route_provider_sync_transaction(
+                app,
+                route_mode,
+                crate::infra::codex_provider_sync::CodexProviderSyncContext {
+                    trigger,
+                    target_provider,
+                    config_bytes: Some(write_plan.live_bytes.clone()),
+                },
+                |_| {
+                    write_codex_auth_projection(app, &write_plan.auth_projection)?;
+                    codex_route_write_manifest(
+                        app,
+                        write_plan.manifest.clone(),
+                        write_plan.manifest_enabled,
+                        write_plan.route_state.clone(),
+                    )?;
+                    let verified = verify_route(app)?;
+                    if verified.generation != write_plan.route_state.generation
+                        || verified.route_mode != write_plan.route_state.route_mode
+                        || verified.desired_enabled != write_plan.route_state.desired_enabled
+                        || verified.aio_origin != write_plan.route_state.aio_origin
+                        || verified.guarded_origin != write_plan.route_state.guarded_origin
+                        || !verified.live_matches_projection
+                        || !verified.auth_matches_projection
+                    {
+                        return Err(
                             "CLI_PROXY_ROUTE_VERIFY_FAILED: live Codex route did not match projection"
                                 .into(),
                         );
-                        }
-                        commit_codex_route_transition(store, &transition)?;
-                        Ok(verified)
-                    },
-                )?;
+                    }
+                    commit_codex_route_transition(store, &transition)?;
+                    Ok(verified)
+                },
+            )?;
             return Ok(CodexRouteApplyResult {
                 transition_operation_id,
                 route,
