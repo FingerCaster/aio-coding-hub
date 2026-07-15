@@ -38,28 +38,6 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) upstream_stream_idle_timeout: Option<Duration>,
     pub(super) upstream_request_timeout_non_streaming: Option<Duration>,
     pub(super) verbose_provider_error: bool,
-    pub(super) codex_reasoning_guard_enabled: bool,
-    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
-    pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
-    pub(super) codex_reasoning_guard_reasoning_equals: &'a [i64],
-    pub(super) codex_reasoning_guard_model_rules:
-        &'a [crate::settings::CodexReasoningGuardModelRule],
-    pub(super) codex_reasoning_guard_active_template_id: &'a str,
-    pub(super) codex_reasoning_guard_custom_templates:
-        &'a [crate::settings::CodexReasoningGuardRuleTemplate],
-    pub(super) codex_reasoning_guard_post_match_strategy:
-        crate::settings::CodexReasoningGuardPostMatchStrategy,
-    pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
-    pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
-    pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
-    pub(super) codex_reasoning_guard_exhausted_action:
-        crate::settings::CodexReasoningGuardExhaustedAction,
-    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
-    pub(super) codex_reasoning_guard_concurrent_max: u32,
-    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
-    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
-    pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
-    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -89,28 +67,6 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) upstream_stream_idle_timeout: Option<Duration>,
     pub(super) upstream_request_timeout_non_streaming: Option<Duration>,
     pub(super) verbose_provider_error: bool,
-    pub(super) codex_reasoning_guard_enabled: bool,
-    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
-    pub(super) codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
-    pub(super) codex_reasoning_guard_reasoning_equals: &'a [i64],
-    pub(super) codex_reasoning_guard_model_rules:
-        &'a [crate::settings::CodexReasoningGuardModelRule],
-    pub(super) codex_reasoning_guard_active_template_id: &'a str,
-    pub(super) codex_reasoning_guard_custom_templates:
-        &'a [crate::settings::CodexReasoningGuardRuleTemplate],
-    pub(super) codex_reasoning_guard_post_match_strategy:
-        crate::settings::CodexReasoningGuardPostMatchStrategy,
-    pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
-    pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
-    pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
-    pub(super) codex_reasoning_guard_exhausted_action:
-        crate::settings::CodexReasoningGuardExhaustedAction,
-    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
-    pub(super) codex_reasoning_guard_concurrent_max: u32,
-    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
-    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
-    pub(super) codex_reasoning_guard_model_fallbacks: &'a [String],
-    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -150,30 +106,6 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             upstream_stream_idle_timeout: args.upstream_stream_idle_timeout,
             upstream_request_timeout_non_streaming: args.upstream_request_timeout_non_streaming,
             verbose_provider_error: args.verbose_provider_error,
-            codex_reasoning_guard_enabled: args.codex_reasoning_guard_enabled,
-            codex_reasoning_guard_rule_mode: args.codex_reasoning_guard_rule_mode,
-            codex_reasoning_guard_compare_mode: args.codex_reasoning_guard_compare_mode,
-            codex_reasoning_guard_reasoning_equals: args.codex_reasoning_guard_reasoning_equals,
-            codex_reasoning_guard_model_rules: args.codex_reasoning_guard_model_rules,
-            codex_reasoning_guard_active_template_id: args.codex_reasoning_guard_active_template_id,
-            codex_reasoning_guard_custom_templates: args.codex_reasoning_guard_custom_templates,
-            codex_reasoning_guard_post_match_strategy: args
-                .codex_reasoning_guard_post_match_strategy,
-            codex_reasoning_guard_immediate_retry_budget: args
-                .codex_reasoning_guard_immediate_retry_budget,
-            codex_reasoning_guard_delayed_retry_budget: args
-                .codex_reasoning_guard_delayed_retry_budget,
-            codex_reasoning_guard_delayed_retry_ms: args.codex_reasoning_guard_delayed_retry_ms,
-            codex_reasoning_guard_exhausted_action: args.codex_reasoning_guard_exhausted_action,
-            codex_reasoning_guard_retry_policy: args.codex_reasoning_guard_retry_policy,
-            codex_reasoning_guard_concurrent_max: args.codex_reasoning_guard_concurrent_max,
-            codex_reasoning_guard_concurrent_interval_ms: args
-                .codex_reasoning_guard_concurrent_interval_ms,
-            codex_reasoning_guard_concurrent_max_attempts: args
-                .codex_reasoning_guard_concurrent_max_attempts,
-            codex_reasoning_guard_model_fallbacks: args.codex_reasoning_guard_model_fallbacks,
-            codex_reasoning_guard_continuation_max_output_tokens: args
-                .codex_reasoning_guard_continuation_max_output_tokens,
             enable_response_fixer: args.enable_response_fixer,
             response_fixer_stream_config: args.response_fixer_stream_config,
             response_fixer_non_stream_config: args.response_fixer_non_stream_config,
@@ -210,24 +142,6 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) upstream_first_byte_timeout: Option<Duration>,
     pub(super) upstream_stream_idle_timeout: Option<Duration>,
     pub(super) upstream_request_timeout_non_streaming: Option<Duration>,
-    pub(super) codex_reasoning_guard_enabled: bool,
-    pub(super) codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
-    pub(super) codex_reasoning_guard_active_template_id: String,
-    pub(super) codex_reasoning_guard_custom_templates:
-        Vec<crate::settings::CodexReasoningGuardRuleTemplate>,
-    pub(super) codex_reasoning_guard_post_match_strategy:
-        crate::settings::CodexReasoningGuardPostMatchStrategy,
-    pub(super) codex_reasoning_guard_immediate_retry_budget: u32,
-    pub(super) codex_reasoning_guard_delayed_retry_budget: u32,
-    pub(super) codex_reasoning_guard_delayed_retry_ms: u32,
-    pub(super) codex_reasoning_guard_exhausted_action:
-        crate::settings::CodexReasoningGuardExhaustedAction,
-    pub(super) codex_reasoning_guard_retry_policy: crate::settings::CodexReasoningGuardRetryPolicy,
-    pub(super) codex_reasoning_guard_concurrent_max: u32,
-    pub(super) codex_reasoning_guard_concurrent_interval_ms: u32,
-    pub(super) codex_reasoning_guard_concurrent_max_attempts: u32,
-    pub(super) codex_reasoning_guard_model_fallbacks: Vec<String>,
-    pub(super) codex_reasoning_guard_continuation_max_output_tokens: u32,
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
@@ -258,33 +172,6 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             upstream_first_byte_timeout: ctx.upstream_first_byte_timeout,
             upstream_stream_idle_timeout: ctx.upstream_stream_idle_timeout,
             upstream_request_timeout_non_streaming: ctx.upstream_request_timeout_non_streaming,
-            codex_reasoning_guard_enabled: ctx.codex_reasoning_guard_enabled,
-            codex_reasoning_guard_rule_mode: ctx.codex_reasoning_guard_rule_mode,
-            codex_reasoning_guard_active_template_id: ctx
-                .codex_reasoning_guard_active_template_id
-                .to_string(),
-            codex_reasoning_guard_custom_templates: ctx
-                .codex_reasoning_guard_custom_templates
-                .to_vec(),
-            codex_reasoning_guard_post_match_strategy: ctx
-                .codex_reasoning_guard_post_match_strategy,
-            codex_reasoning_guard_immediate_retry_budget: ctx
-                .codex_reasoning_guard_immediate_retry_budget,
-            codex_reasoning_guard_delayed_retry_budget: ctx
-                .codex_reasoning_guard_delayed_retry_budget,
-            codex_reasoning_guard_delayed_retry_ms: ctx.codex_reasoning_guard_delayed_retry_ms,
-            codex_reasoning_guard_exhausted_action: ctx.codex_reasoning_guard_exhausted_action,
-            codex_reasoning_guard_retry_policy: ctx.codex_reasoning_guard_retry_policy,
-            codex_reasoning_guard_concurrent_max: ctx.codex_reasoning_guard_concurrent_max,
-            codex_reasoning_guard_concurrent_interval_ms: ctx
-                .codex_reasoning_guard_concurrent_interval_ms,
-            codex_reasoning_guard_concurrent_max_attempts: ctx
-                .codex_reasoning_guard_concurrent_max_attempts,
-            codex_reasoning_guard_model_fallbacks: ctx
-                .codex_reasoning_guard_model_fallbacks
-                .to_vec(),
-            codex_reasoning_guard_continuation_max_output_tokens: ctx
-                .codex_reasoning_guard_continuation_max_output_tokens,
             enable_response_fixer: ctx.enable_response_fixer,
             response_fixer_stream_config: ctx.response_fixer_stream_config,
             response_fixer_non_stream_config: ctx.response_fixer_non_stream_config,
@@ -504,7 +391,6 @@ impl<'a, R: tauri::Runtime> LoopState<'a, R> {
 
 pub(super) enum LoopControl {
     ContinueRetry,
-    SwitchModel(String),
     BreakRetry,
     Return(Response),
 }

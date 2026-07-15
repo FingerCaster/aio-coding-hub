@@ -1,6 +1,5 @@
 //! Usage: Finalize responses for failover loop terminal states.
 
-use super::codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE;
 use super::context::AttemptOutcome;
 use super::{
     emit_request_event_and_enqueue_request_log, RequestEndArgs, RequestEndContextArgs,
@@ -244,11 +243,7 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
         "all providers failed"
     );
 
-    let final_message = if final_error_code == CODEX_REASONING_GUARD_ERROR_CODE {
-        "Codex reasoning guard retry budget exhausted for all attempted providers".to_string()
-    } else {
-        format!("all providers failed for cli_key={cli_key}")
-    };
+    let final_message = format!("all providers failed for cli_key={cli_key}");
 
     let resp = error_response(
         StatusCode::BAD_GATEWAY,

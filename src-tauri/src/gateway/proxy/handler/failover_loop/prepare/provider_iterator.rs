@@ -32,7 +32,6 @@ pub(super) struct PreparedProvider {
     pub(super) request_body_mutated_before_attempt: bool,
     pub(super) gemini_oauth_response_mode: Option<GeminiOAuthResponseMode>,
     pub(super) use_codex_chatgpt_backend: bool,
-    pub(super) codex_reasoning_continuation_request_eligible: bool,
     pub(super) codex_chatgpt_account_id: Option<String>,
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<String>,
@@ -389,30 +388,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         );
     }
 
-    let continuation_replay_policy =
-        codex_reasoning_continuation::ContinuationReplayPolicy::from_post_match_strategy(
-            input.codex_reasoning_guard_post_match_strategy,
-        );
-    let continuation_repair_enabled =
-        input.codex_reasoning_guard_enabled && continuation_replay_policy.is_some();
-    let include_outcome = codex_reasoning_continuation::ensure_encrypted_reasoning_include(
-        codex_reasoning_continuation::IncludeMergeInput {
-            repair_enabled: continuation_repair_enabled,
-            cli_key: &input.cli_key,
-            upstream_forwarded_path: &upstream_forwarded_path,
-            body: upstream_body_bytes.as_ref(),
-            active_bridge_type: active_bridge_type.as_deref(),
-            oauth_adapter_present: oauth_adapter.is_some(),
-            gemini_oauth_response_mode_present: gemini_oauth_response_mode.is_some(),
-            use_codex_chatgpt_backend,
-        },
-    );
-    let codex_reasoning_continuation_request_eligible = include_outcome.eligible;
-    if include_outcome.changed {
-        upstream_body_bytes = include_outcome.body;
-        strip_request_content_encoding = true;
-    }
-
     let request_body_mutated_before_attempt = input.request_body_state.is_mutated()
         || upstream_body_bytes != input.request_body_state.decoded_clone()
         || strip_request_content_encoding;
@@ -437,7 +412,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         request_body_mutated_before_attempt,
         gemini_oauth_response_mode,
         use_codex_chatgpt_backend,
-        codex_reasoning_continuation_request_eligible,
         codex_chatgpt_account_id,
         cx2cc_active,
         active_bridge_type,

@@ -53,9 +53,9 @@ fn provider_max_attempts_for_request(
   Circuit failures accumulate across requests; the threshold must never enlarge
   one request's configured attempt count.
 - Codex model discovery is strict: its caller supplies a one-attempt provider
-  limit and the strict path does not add OAuth, continuation, or transient
+  limit and the strict path does not add OAuth, `previous_response_id`, or transient
   reservations. Discovery may still fail over and try another provider once.
-- The configured attempt limit is a user-facing baseline. Guarded internal
+- The configured attempt limit is a user-facing baseline. Request-scoped internal
   recovery may raise the effective budget only through the explicit formula
   above; no other subsystem may add implicit capacity.
 
@@ -67,7 +67,7 @@ fn provider_max_attempts_for_request(
 | `failover_max_attempts_per_provider > 20` | Reject with `SEC_INVALID_INPUT` |
 | attempts per provider x providers to try > 100 | Reject with `SEC_INVALID_INPUT` |
 | effective transient policy disabled | Reserve zero transient attempts |
-| OAuth and continuation repair both applicable at configured limit 1 | Effective budget is 3 |
+| OAuth and `previous_response_id` both applicable at configured limit 1 | Effective budget is 3 |
 | circuit threshold greater than configured attempts | Do not change this request's budget |
 | Codex model discovery | Exactly one attempt per provider |
 | circuit threshold outside `1..=50` | Reject independently of attempt-limit validation |
@@ -87,7 +87,7 @@ fn provider_max_attempts_for_request(
 ### 6. Tests Required
 
 - Unit-test `provider_max_attempts_for_request` for no-retry, OAuth-only,
-  continuation-only, combined internal retries, enabled/disabled transient
+  `previous_response_id`-only, combined internal retries, enabled/disabled transient
   retries, and strict-limit cases.
 - Keep an explicit regression proving configured `1` remains `1` when there is
   no retry reason, regardless of the circuit threshold.

@@ -50,8 +50,6 @@ mod attempt_auth;
 mod attempt_executor;
 #[path = "attempt/attempt_record.rs"]
 mod attempt_record;
-#[path = "attempt/codex_reasoning_guard_concurrent.rs"]
-mod codex_reasoning_guard_concurrent;
 #[path = "attempt/retry_engine.rs"]
 mod retry_engine;
 #[path = "attempt/send.rs"]
@@ -62,12 +60,6 @@ mod send_timeout;
 mod upstream_retry_policy;
 
 // --- response/ : upstream response handling & finalization ---
-#[path = "response/codex_reasoning_continuation.rs"]
-mod codex_reasoning_continuation;
-#[path = "response/codex_reasoning_features.rs"]
-mod codex_reasoning_features;
-#[path = "response/codex_reasoning_guard.rs"]
-mod codex_reasoning_guard;
 #[path = "response/finalize.rs"]
 mod finalize;
 #[path = "response/response_router.rs"]
@@ -138,9 +130,8 @@ use crate::gateway::events::{
 };
 use crate::gateway::response_fixer;
 use crate::gateway::streams::{
-    apply_plugin_chunk_hooks, is_plugin_stream_error_chunk, spawn_usage_sse_relay_body,
-    FirstChunkStream, GunzipStream, MaybePluginChunkStream, TimingOnlyTeeStream,
-    UpstreamModelObserverStream, UsageBodyBufferTeeStream, UsageSseTeeStream,
+    spawn_usage_sse_relay_body, FirstChunkStream, GunzipStream, MaybePluginChunkStream,
+    TimingOnlyTeeStream, UpstreamModelObserverStream, UsageBodyBufferTeeStream, UsageSseTeeStream,
 };
 use crate::gateway::thinking_signature_rectifier;
 use crate::gateway::util::{
@@ -165,16 +156,6 @@ fn stream_flag_from_raw_body(body: &[u8]) -> bool {
         Err(_) => return false,
     };
     haystack.contains("\"stream\":true") || haystack.contains("\"stream\": true")
-}
-
-fn current_codex_reasoning_guard_model<'a, R: tauri::Runtime>(
-    input: &'a RequestContext<R>,
-    retry_state: &'a attempt_executor::RetryLoopState,
-) -> Option<&'a str> {
-    retry_state
-        .codex_reasoning_guard_current_model
-        .as_deref()
-        .or(input.requested_model.as_deref())
 }
 
 fn rewrite_prepared_requested_model<R: tauri::Runtime>(
@@ -268,23 +249,6 @@ fn sync_codex_prepared_active_requested_model<R: tauri::Runtime>(
     }
 }
 
-fn apply_codex_reasoning_guard_model_fallback<R: tauri::Runtime>(
-    input: &RequestContext<R>,
-    prepared: &mut provider_iterator::PreparedProvider,
-    retry_state: &mut attempt_executor::RetryLoopState,
-    next_model: &str,
-) -> bool {
-    if !rewrite_prepared_requested_model(input, prepared, next_model) {
-        return false;
-    }
-
-    retry_state.codex_reasoning_guard_current_model = Some(next_model.to_string());
-    prepared.active_requested_model = Some(next_model.to_string());
-    retry_state.codex_reasoning_guard_hits = 0;
-    retry_state.allow_next_retry_beyond_max_attempts = true;
-    true
-}
-
 /// Main failover loop: iterate providers, retry attempts, handle responses.
 ///
 /// This is a thin orchestrator that delegates to:
@@ -327,29 +291,6 @@ where
         upstream_stream_idle_timeout: input.upstream_stream_idle_timeout,
         upstream_request_timeout_non_streaming: input.upstream_request_timeout_non_streaming,
         verbose_provider_error: input.verbose_provider_error,
-        codex_reasoning_guard_enabled: input.codex_reasoning_guard_enabled,
-        codex_reasoning_guard_rule_mode: input.codex_reasoning_guard_rule_mode,
-        codex_reasoning_guard_compare_mode: input.codex_reasoning_guard_compare_mode,
-        codex_reasoning_guard_reasoning_equals: &input.codex_reasoning_guard_reasoning_equals,
-        codex_reasoning_guard_model_rules: &input.codex_reasoning_guard_model_rules,
-        codex_reasoning_guard_active_template_id: &input.codex_reasoning_guard_active_template_id,
-        codex_reasoning_guard_custom_templates: &input.codex_reasoning_guard_custom_templates,
-        codex_reasoning_guard_post_match_strategy: input.codex_reasoning_guard_post_match_strategy,
-        codex_reasoning_guard_immediate_retry_budget: input
-            .codex_reasoning_guard_immediate_retry_budget,
-        codex_reasoning_guard_delayed_retry_budget: input
-            .codex_reasoning_guard_delayed_retry_budget,
-        codex_reasoning_guard_delayed_retry_ms: input.codex_reasoning_guard_delayed_retry_ms,
-        codex_reasoning_guard_exhausted_action: input.codex_reasoning_guard_exhausted_action,
-        codex_reasoning_guard_retry_policy: input.codex_reasoning_guard_retry_policy,
-        codex_reasoning_guard_concurrent_max: input.codex_reasoning_guard_concurrent_max,
-        codex_reasoning_guard_concurrent_interval_ms: input
-            .codex_reasoning_guard_concurrent_interval_ms,
-        codex_reasoning_guard_concurrent_max_attempts: input
-            .codex_reasoning_guard_concurrent_max_attempts,
-        codex_reasoning_guard_model_fallbacks: &input.codex_reasoning_guard_model_fallbacks,
-        codex_reasoning_guard_continuation_max_output_tokens: input
-            .codex_reasoning_guard_continuation_max_output_tokens,
         enable_response_fixer: input.enable_response_fixer,
         response_fixer_stream_config: input.response_fixer_stream_config,
         response_fixer_non_stream_config: input.response_fixer_non_stream_config,

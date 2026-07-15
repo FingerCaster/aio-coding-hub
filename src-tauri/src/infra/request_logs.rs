@@ -13,9 +13,8 @@ use tokio::sync::{mpsc, OwnedSemaphorePermit, Semaphore};
 
 mod types;
 pub use types::{
-    CodexReasoningContinuationStatusStat, CodexReasoningGuardModelEffortStat,
-    CodexReasoningGuardModelStat, CodexReasoningGuardStats, RequestLogDetail, RequestLogInsert,
-    RequestLogRouteHop, RequestLogSummary, SessionStatsAggregate,
+    RequestLogDetail, RequestLogInsert, RequestLogRouteHop, RequestLogSummary,
+    SessionStatsAggregate,
 };
 
 mod costing;
@@ -24,11 +23,11 @@ use costing::{has_any_cost_usage, is_success_status, usage_for_cost};
 mod semantics;
 
 mod queries;
-pub use queries::{
-    codex_reasoning_guard_stats, get_by_id, get_by_trace_id, list_after_id, list_after_id_all,
-    list_recent, list_recent_all, terminal_trace_ids,
-};
 use queries::{final_provider_from_attempts, parse_attempts, validate_cli_key};
+pub use queries::{
+    get_by_id, get_by_trace_id, list_after_id, list_after_id_all, list_recent, list_recent_all,
+    terminal_trace_ids,
+};
 
 const WRITE_BUFFER_CAPACITY: usize = 512;
 const WRITE_BATCH_MAX: usize = 50;

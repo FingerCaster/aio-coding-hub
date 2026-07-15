@@ -150,29 +150,6 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             provider_base_url_ping_cache_ttl_seconds: rs.provider_base_url_ping_cache_ttl_seconds,
             verbose_provider_error: rs.verbose_provider_error,
             enable_codex_session_id_completion: rs.enable_codex_session_id_completion,
-            codex_reasoning_guard_enabled: rs.codex_reasoning_guard_enabled,
-            codex_reasoning_guard_rule_mode: rs.codex_reasoning_guard_rule_mode,
-            codex_reasoning_guard_compare_mode: rs.codex_reasoning_guard_compare_mode,
-            codex_reasoning_guard_reasoning_equals: rs.codex_reasoning_guard_reasoning_equals,
-            codex_reasoning_guard_model_rules: rs.codex_reasoning_guard_model_rules,
-            codex_reasoning_guard_active_template_id: rs.codex_reasoning_guard_active_template_id,
-            codex_reasoning_guard_custom_templates: rs.codex_reasoning_guard_custom_templates,
-            codex_reasoning_guard_post_match_strategy: rs.codex_reasoning_guard_post_match_strategy,
-            codex_reasoning_guard_immediate_retry_budget: rs
-                .codex_reasoning_guard_immediate_retry_budget,
-            codex_reasoning_guard_delayed_retry_budget: rs
-                .codex_reasoning_guard_delayed_retry_budget,
-            codex_reasoning_guard_delayed_retry_ms: rs.codex_reasoning_guard_delayed_retry_ms,
-            codex_reasoning_guard_exhausted_action: rs.codex_reasoning_guard_exhausted_action,
-            codex_reasoning_guard_retry_policy: rs.codex_reasoning_guard_retry_policy,
-            codex_reasoning_guard_concurrent_max: rs.codex_reasoning_guard_concurrent_max,
-            codex_reasoning_guard_concurrent_interval_ms: rs
-                .codex_reasoning_guard_concurrent_interval_ms,
-            codex_reasoning_guard_concurrent_max_attempts: rs
-                .codex_reasoning_guard_concurrent_max_attempts,
-            codex_reasoning_guard_model_fallbacks: rs.codex_reasoning_guard_model_fallbacks,
-            codex_reasoning_guard_continuation_max_output_tokens: rs
-                .codex_reasoning_guard_continuation_max_output_tokens,
             max_attempts_per_provider: rs.max_attempts_per_provider,
             max_providers_to_try: rs.max_providers_to_try,
             upstream_retry_policy: rs.upstream_retry_policy,
