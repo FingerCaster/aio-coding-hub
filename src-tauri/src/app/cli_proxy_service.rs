@@ -4,7 +4,104 @@ use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::gateway::events::GATEWAY_STATUS_EVENT_NAME;
 use crate::gateway_control::app_ensure_gateway_running;
 use crate::gateway_runtime_access::app_gateway_status;
+use crate::infra::codex_retry_gateway::{
+    CodexRetryGatewayRouteTransition, CodexRetryGatewayTransitionStore,
+};
 use crate::{blocking, cli_proxy, mcp, settings};
+use std::sync::{Mutex, OnceLock};
+
+#[derive(Default)]
+struct InMemoryCodexRouteTransitionStore {
+    pending: Mutex<Option<CodexRetryGatewayRouteTransition>>,
+}
+
+impl CodexRetryGatewayTransitionStore for InMemoryCodexRouteTransitionStore {
+    fn load_pending(
+        &self,
+    ) -> crate::shared::error::AppResult<Option<CodexRetryGatewayRouteTransition>> {
+        Ok(self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .clone())
+    }
+
+    fn prepare(
+        &self,
+        transition: &CodexRetryGatewayRouteTransition,
+    ) -> crate::shared::error::AppResult<()> {
+        *self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(transition.clone());
+        Ok(())
+    }
+
+    fn commit(&self, operation_id: &str, _generation: u64) -> crate::shared::error::AppResult<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        match pending.as_ref() {
+            Some(transition) if transition.operation_id == operation_id => {
+                *pending = None;
+                Ok(())
+            }
+            Some(_) => Err(format!(
+                "CLI_PROXY_ROUTE_TRANSITION_MISMATCH: pending transition does not match operation_id={operation_id}"
+            )
+            .into()),
+            None => Err(format!(
+                "CLI_PROXY_ROUTE_TRANSITION_MISSING: no pending transition for operation_id={operation_id}"
+            )
+            .into()),
+        }
+    }
+
+    fn clear(&self, operation_id: &str) -> crate::shared::error::AppResult<()> {
+        let mut pending = self
+            .pending
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if pending
+            .as_ref()
+            .is_some_and(|transition| transition.operation_id == operation_id)
+        {
+            *pending = None;
+        }
+        Ok(())
+    }
+}
+
+fn codex_route_transition_store() -> &'static InMemoryCodexRouteTransitionStore {
+    static STORE: OnceLock<InMemoryCodexRouteTransitionStore> = OnceLock::new();
+    STORE.get_or_init(InMemoryCodexRouteTransitionStore::default)
+}
+
+async fn resync_codex_mcp_after_route_change<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+) {
+    let db_result = match db_state {
+        Some(db_state) => ensure_db_ready(app.clone(), db_state).await,
+        None => crate::infra::db::init(&app),
+    };
+    match db_result {
+        Ok(db) => {
+            if let Err(err) = blocking::run("cli_proxy_codex_route_mcp_resync", move || {
+                let conn = db.open_connection()?;
+                mcp::sync_one_cli(&app, &conn, "codex")
+            })
+            .await
+            {
+                tracing::warn!("codex route MCP re-sync failed: {err}");
+            }
+        }
+        Err(err) => {
+            tracing::warn!("codex route MCP re-sync skipped, db unavailable: {err}");
+        }
+    }
+}
 
 pub(crate) async fn cli_proxy_status_all(
     app: tauri::AppHandle,
@@ -218,6 +315,88 @@ pub(crate) async fn cli_proxy_rebind_codex_home(
 
     blocking::run("cli_proxy_rebind_codex_home", move || {
         cli_proxy::rebind_codex_home_after_change(&app, &base_origin, gateway_running)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn cli_proxy_codex_plan_external_enable<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    aio_origin: String,
+    guarded_origin: String,
+) -> Result<cli_proxy::CodexExternalEnablePlan, String> {
+    blocking::run("cli_proxy_codex_plan_external_enable", move || {
+        cli_proxy::plan_external_enable(&app, &aio_origin, &guarded_origin)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn cli_proxy_codex_apply_guarded_route<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+    request: cli_proxy::CodexGuardedRouteApplyRequest,
+) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    let result = blocking::run("cli_proxy_codex_apply_guarded_route", {
+        let app = app.clone();
+        let store = codex_route_transition_store();
+        move || cli_proxy::apply_guarded_route(&app, store, request)
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    resync_codex_mcp_after_route_change(app, db_state).await;
+    Ok(result)
+}
+
+pub(crate) async fn cli_proxy_codex_apply_direct_aio_route<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+    request: cli_proxy::CodexDirectAioRouteApplyRequest,
+) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    let result = blocking::run("cli_proxy_codex_apply_direct_aio_route", {
+        let app = app.clone();
+        let store = codex_route_transition_store();
+        move || cli_proxy::apply_direct_aio_route(&app, store, request)
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    resync_codex_mcp_after_route_change(app, db_state).await;
+    Ok(result)
+}
+
+pub(crate) async fn cli_proxy_codex_restore_unproxied_route<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+    request: cli_proxy::CodexRestoreUnproxiedRouteRequest,
+) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    let result = blocking::run("cli_proxy_codex_restore_unproxied_route", {
+        let app = app.clone();
+        let store = codex_route_transition_store();
+        move || cli_proxy::restore_unproxied_route(&app, store, request)
+    })
+    .await
+    .map_err(|err| err.to_string())?;
+    resync_codex_mcp_after_route_change(app, db_state).await;
+    Ok(result)
+}
+
+pub(crate) async fn cli_proxy_codex_verify_route<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<cli_proxy::CodexRouteVerifyResult, String> {
+    blocking::run("cli_proxy_codex_verify_route", move || {
+        cli_proxy::verify_route(&app)
+    })
+    .await
+    .map_err(Into::into)
+}
+
+pub(crate) async fn cli_proxy_codex_reconcile_pending_route<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+) -> Result<cli_proxy::CodexRouteReconcileResult, String> {
+    blocking::run("cli_proxy_codex_reconcile_pending_route", {
+        let app = app.clone();
+        let store = codex_route_transition_store();
+        move || cli_proxy::reconcile_pending_route(&app, store)
     })
     .await
     .map_err(Into::into)

@@ -1,5 +1,6 @@
 //! Usage: Strict Codex provider sync / backup / rollback core.
 
+use crate::infra::codex_retry_gateway::CodexProviderSyncPlan;
 use crate::shared::error::AppResult;
 use crate::shared::fs::{
     is_symlink, read_optional_file_with_max_len, write_file_atomic_if_changed,
@@ -114,8 +115,52 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     context: CodexProviderSyncContext,
 ) -> AppResult<CodexProviderSyncResult> {
+    codex_provider_sync_transaction(app, context, |_| Ok(())).map(|(result, _)| result)
+}
+
+pub(crate) fn codex_provider_sync_transaction<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    context: CodexProviderSyncContext,
+    after_apply: F,
+) -> AppResult<(CodexProviderSyncResult, T)>
+where
+    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
+{
+    codex_provider_sync_transaction_with_target_resolver(
+        app,
+        context,
+        after_apply,
+        resolve_target_provider,
+    )
+}
+
+pub(crate) fn codex_provider_sync_transaction_for_trusted_target<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    context: CodexProviderSyncContext,
+    after_apply: F,
+) -> AppResult<(CodexProviderSyncResult, T)>
+where
+    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
+{
+    codex_provider_sync_transaction_with_target_resolver(
+        app,
+        context,
+        after_apply,
+        resolve_trusted_target_provider,
+    )
+}
+
+fn codex_provider_sync_transaction_with_target_resolver<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    context: CodexProviderSyncContext,
+    after_apply: F,
+    resolve_target: fn(&str) -> AppResult<String>,
+) -> AppResult<(CodexProviderSyncResult, T)>
+where
+    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
+{
     let home = crate::codex_paths::codex_home_dir(app)?;
-    let target_provider = resolve_target_provider(&context.target_provider)?;
+    let target_provider = resolve_target(&context.target_provider)?;
     if codex_app_is_running()? {
         return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
     }
@@ -156,7 +201,7 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
         && change_set.global_state_change.is_none()
         && change_set.config_bytes.is_none()
     {
-        return Ok(CodexProviderSyncResult {
+        let sync_result = CodexProviderSyncResult {
             status: "up_to_date".to_string(),
             target_provider,
             trigger: context.trigger,
@@ -167,13 +212,15 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
             sqlite_cwd_rows_updated: 0,
             updated_workspace_roots: Vec::new(),
             warning: None,
-        });
+        };
+        let extra = after_apply(&sync_result)?;
+        return Ok((sync_result, extra));
     }
 
     let backup_dir = create_backup(&home, &context, &change_set)?;
     let mut snapshots = snapshot_paths(&home, &config_path, &change_set)?;
     let mut writes_started = false;
-    let result = (|| -> AppResult<CodexProviderSyncResult> {
+    let result = (|| -> AppResult<(CodexProviderSyncResult, T)> {
         if let Some(bytes) = change_set.config_bytes.as_ref() {
             writes_started = true;
             let _ = write_file_atomic_if_changed(&config_path, bytes)?;
@@ -194,7 +241,7 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
         let warning = prune_managed_backups(&home)
             .ok()
             .and_then(|warning| warning);
-        Ok(CodexProviderSyncResult {
+        let sync_result = CodexProviderSyncResult {
             status: "synced".to_string(),
             target_provider,
             trigger: context.trigger,
@@ -209,7 +256,9 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
             sqlite_cwd_rows_updated: sqlite_counts.cwd_rows_updated,
             updated_workspace_roots: change_set.updated_workspace_roots,
             warning: warning.or(change_set.warning),
-        })
+        };
+        let extra = after_apply(&sync_result)?;
+        Ok((sync_result, extra))
     })();
 
     match result {
@@ -264,10 +313,14 @@ pub fn codex_provider_sync_from_config_bytes<R: tauri::Runtime>(
     )
 }
 
-pub fn codex_provider_target_from_config_text(config_text: &str) -> AppResult<String> {
-    let current_provider = read_current_provider(config_text)?.ok_or_else(|| {
+pub(crate) fn codex_provider_identity_from_config_text(config_text: &str) -> AppResult<String> {
+    Ok(read_current_provider(config_text)?.ok_or_else(|| {
         "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".to_string()
-    })?;
+    })?)
+}
+
+pub fn codex_provider_target_from_config_text(config_text: &str) -> AppResult<String> {
+    let current_provider = codex_provider_identity_from_config_text(config_text)?;
     resolve_target_provider(&current_provider)
 }
 
@@ -282,6 +335,52 @@ pub fn codex_provider_target_from_current_config_text(config_text: &str) -> AppR
     Ok(read_current_provider(config_text)?.unwrap_or_else(|| MANAGED_PROVIDER_AIO.to_string()))
 }
 
+pub(crate) fn codex_provider_sync_plan_for_target(
+    current_config_text: &str,
+    target_provider: &str,
+) -> AppResult<CodexProviderSyncPlan> {
+    codex_provider_sync_plan_for_target_with_resolver(
+        current_config_text,
+        target_provider,
+        resolve_target_provider,
+    )
+}
+
+pub(crate) fn codex_provider_sync_plan_for_trusted_target(
+    current_config_text: &str,
+    target_provider: &str,
+) -> AppResult<CodexProviderSyncPlan> {
+    codex_provider_sync_plan_for_target_with_resolver(
+        current_config_text,
+        target_provider,
+        resolve_trusted_target_provider,
+    )
+}
+
+fn codex_provider_sync_plan_for_target_with_resolver(
+    current_config_text: &str,
+    target_provider: &str,
+    resolve_target: fn(&str) -> AppResult<String>,
+) -> AppResult<CodexProviderSyncPlan> {
+    let current_provider = read_current_provider(current_config_text)?;
+    let target_provider = resolve_target(target_provider)?;
+    let change_required = current_provider.as_deref() != Some(target_provider.as_str());
+    Ok(CodexProviderSyncPlan {
+        current_provider,
+        target_provider,
+        change_required,
+        codex_must_be_closed: change_required,
+    })
+}
+
+pub(crate) fn codex_provider_sync_plan_for_config_text(
+    current_config_text: &str,
+    target_config_text: &str,
+) -> AppResult<CodexProviderSyncPlan> {
+    let target_provider = codex_provider_target_from_config_text(target_config_text)?;
+    codex_provider_sync_plan_for_target(current_config_text, &target_provider)
+}
+
 fn resolve_target_provider(input: &str) -> AppResult<String> {
     let trimmed = input.trim();
     match trimmed {
@@ -291,6 +390,16 @@ fn resolve_target_provider(input: &str) -> AppResult<String> {
         )
         .into()),
     }
+}
+
+fn resolve_trusted_target_provider(input: &str) -> AppResult<String> {
+    let trimmed = input.trim();
+    if trimmed.is_empty() {
+        return Err(
+            "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".into(),
+        );
+    }
+    Ok(trimmed.to_string())
 }
 
 fn read_current_provider(text: &str) -> AppResult<Option<String>> {
