@@ -302,6 +302,47 @@ describe("home/RequestLogDetailDialog", () => {
 
     expectMetricValue("模型路由", "gpt-5.5-high -> gpt-5.4-mini-low");
     expect(screen.getAllByTitle(/模型\/思考等级不一致/).length).toBeGreaterThanOrEqual(1);
+    const severeMetric = screen.getByText("gpt-5.5-high -> gpt-5.4-mini-low");
+    expect(severeMetric).toHaveClass("text-rose-700");
+  });
+
+  it("shows codex-auto-review model routes with neutral styling on the summary tab", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        requested_model: "codex-auto-review",
+        status: 200,
+        error_code: null,
+        final_provider_id: 34,
+        special_settings_json: JSON.stringify([
+          {
+            type: "model_route_mapping",
+            cliKey: "codex",
+            requestedModel: "codex-auto-review",
+            requestedReasoningEffort: "low",
+            requestedReasoningEffortSource: "request",
+            actualModel: "gpt-5.4",
+            actualReasoningEffort: "low",
+            actualReasoningEffortSource: "response",
+            modelMismatch: true,
+            effortMismatch: false,
+            mismatch: true,
+            providerId: 34,
+            providerName: "AI INPUT-Air",
+          },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expectMetricValue("模型路由", "codex-auto-review-low -> gpt-5.4-low");
+    expect(screen.getAllByTitle(/自动审核模型映射/).length).toBeGreaterThanOrEqual(1);
+    const neutralMetric = screen.getByText("codex-auto-review-low -> gpt-5.4-low");
+    expect(neutralMetric).toHaveClass("text-sky-700");
+    expect(neutralMetric).not.toHaveClass("text-rose-700");
+    expect(screen.getByText("自动审核映射")).toBeInTheDocument();
   });
 
   it("shows unknown Codex reasoning effort when no explicit or known default exists", () => {

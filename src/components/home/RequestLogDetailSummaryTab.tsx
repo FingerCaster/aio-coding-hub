@@ -120,7 +120,7 @@ export function RequestLogDetailSummaryTab({
               <MetricCard
                 label="模型路由"
                 value={modelDisplayMeta.text}
-                tone="danger"
+                tone={modelDisplayMeta.isSevereRouteMismatch ? "danger" : "info"}
                 title={modelDisplayMeta.title}
               />
             ) : null}
@@ -177,7 +177,7 @@ function MetricCard({
 }: {
   label: string;
   value: string | number | null | undefined;
-  tone?: "default" | "danger";
+  tone?: "default" | "danger" | "info";
   title?: string;
 }) {
   return (
@@ -186,7 +186,9 @@ function MetricCard({
         "rounded-xl border px-3 py-3",
         tone === "danger"
           ? "border-rose-500/25 bg-rose-50/80 dark:border-rose-400/25 dark:bg-rose-500/15"
-          : "border-border/80 bg-secondary/80 dark:border-border dark:bg-secondary/70"
+          : tone === "info"
+            ? "border-sky-500/25 bg-sky-50/80 dark:border-sky-400/25 dark:bg-sky-500/15"
+            : "border-border/80 bg-secondary/80 dark:border-border dark:bg-secondary/70"
       )}
       title={title}
     >
@@ -194,7 +196,8 @@ function MetricCard({
       <div
         className={cn(
           "mt-1 break-words text-base font-semibold leading-snug text-foreground",
-          tone === "danger" && "break-all text-rose-700 dark:text-rose-200"
+          tone === "danger" && "break-all text-rose-700 dark:text-rose-200",
+          tone === "info" && "break-all text-sky-700 dark:text-sky-200"
         )}
       >
         {value == null || value === "" ? "—" : value}

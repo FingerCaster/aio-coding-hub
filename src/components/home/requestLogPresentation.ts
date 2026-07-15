@@ -124,24 +124,63 @@ export function formatClaudeModelMappingText(
   return fallback || "未知";
 }
 
+const MODEL_ROUTE_EFFORT_SUFFIXES = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const;
+
 function formatModelRoutePart(model: string, effort: string | null | undefined) {
   const normalizedModel = model.trim() || "未知";
   const normalizedEffort = effort?.trim().toLowerCase();
   if (!normalizedEffort || normalizedEffort === "unknown") {
     return normalizedModel;
   }
+  // Model ids may already embed effort (e.g. codex-auto-review-low); avoid
+  // rendering duplicated suffixes like codex-auto-review-low-low.
+  const lowerModel = normalizedModel.toLowerCase();
+  if (
+    lowerModel.endsWith(`-${normalizedEffort}`) ||
+    MODEL_ROUTE_EFFORT_SUFFIXES.some((suffix) => lowerModel.endsWith(`-${suffix}`))
+  ) {
+    return normalizedModel;
+  }
   return `${normalizedModel}-${normalizedEffort}`;
 }
 
-function resolveModelRouteMismatchLabel(mapping: ModelRouteMapping) {
+/** Codex auto-review uses logical model ids like `codex-auto-review` / `codex-auto-review-low`. */
+export function isExpectedCodexAutoReviewRequestedModel(
+  requestedModel: string | null | undefined
+): boolean {
+  const model = requestedModel?.trim().toLowerCase() ?? "";
+  return model === "codex-auto-review" || model.startsWith("codex-auto-review-");
+}
+
+export function isExpectedCodexAutoReviewModelRoute(
+  mapping: Pick<ModelRouteMapping, "requestedModel"> | null | undefined
+): boolean {
+  return isExpectedCodexAutoReviewRequestedModel(mapping?.requestedModel);
+}
+
+function resolveModelRouteMismatchLabel(
+  mapping: ModelRouteMapping,
+  options: { expectedAutoReview?: boolean } = {}
+) {
+  if (options.expectedAutoReview) return "自动审核模型映射";
   if (mapping.modelMismatch && mapping.effortMismatch) return "模型/思考等级不一致";
   if (mapping.effortMismatch) return "思考等级不一致";
   return "模型路由不一致";
 }
 
 function resolveModelRouteTitle(mapping: ModelRouteMapping) {
+  const expectedAutoReview = isExpectedCodexAutoReviewModelRoute(mapping);
   const titleParts = [
-    resolveModelRouteMismatchLabel(mapping),
+    resolveModelRouteMismatchLabel(mapping, { expectedAutoReview }),
     `请求 ${formatModelRoutePart(mapping.requestedModel, mapping.requestedReasoningEffort)}`,
     `返回 ${formatModelRoutePart(mapping.actualModel, mapping.actualReasoningEffort)}`,
     `请求等级 ${formatModelRouteReasoningEffortSource(mapping.requestedReasoningEffortSource)}`,
@@ -157,7 +196,14 @@ export type RequestLogModelDisplayMeta = {
   text: string;
   title: string;
   routeMapping: ModelRouteMapping | null;
+  /** True when a request→actual mapping is shown (including expected auto-review). */
   isRouteMismatch: boolean;
+  /**
+   * True only for unexpected route mismatches that should use severe/rose styling.
+   * Expected Codex auto-review mappings stay visible but non-severe.
+   */
+  isSevereRouteMismatch: boolean;
+  isExpectedAutoReviewRoute: boolean;
   mismatchLabel: string | null;
 };
 
@@ -174,6 +220,7 @@ export function resolveRequestLogModelDisplayMeta(
   );
 
   if (routeMapping) {
+    const expectedAutoReview = isExpectedCodexAutoReviewModelRoute(routeMapping);
     const text = `${formatModelRoutePart(
       routeMapping.requestedModel,
       routeMapping.requestedReasoningEffort
@@ -183,7 +230,9 @@ export function resolveRequestLogModelDisplayMeta(
       title: resolveModelRouteTitle(routeMapping),
       routeMapping,
       isRouteMismatch: true,
-      mismatchLabel: resolveModelRouteMismatchLabel(routeMapping),
+      isSevereRouteMismatch: !expectedAutoReview,
+      isExpectedAutoReviewRoute: expectedAutoReview,
+      mismatchLabel: resolveModelRouteMismatchLabel(routeMapping, { expectedAutoReview }),
     };
   }
 
@@ -194,6 +243,8 @@ export function resolveRequestLogModelDisplayMeta(
       title: modelText,
       routeMapping: null,
       isRouteMismatch: false,
+      isSevereRouteMismatch: false,
+      isExpectedAutoReviewRoute: false,
       mismatchLabel: null,
     };
   }
@@ -205,6 +256,8 @@ export function resolveRequestLogModelDisplayMeta(
     title: text,
     routeMapping: null,
     isRouteMismatch: false,
+    isSevereRouteMismatch: false,
+    isExpectedAutoReviewRoute: false,
     mismatchLabel: null,
   };
 }
@@ -367,10 +420,13 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
   }
 
   if (modelRouteMapping) {
+    const expectedAutoReview = isExpectedCodexAutoReviewModelRoute(modelRouteMapping);
     tags.push(
       auditTag(
-        "模型路由",
-        "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25",
+        expectedAutoReview ? "自动审核映射" : "模型路由",
+        expectedAutoReview
+          ? "bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-500/10 dark:bg-sky-500/15 dark:text-sky-200 dark:ring-sky-400/20"
+          : "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25",
         resolveModelRouteTitle(modelRouteMapping)
       )
     );
@@ -392,7 +448,16 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
   } else if (isCliProxyGuard) {
     summary = "这次请求由 CLI 代理守卫提前处理，保留为审计行。";
   } else if (modelRouteMapping) {
-    summary = `模型路由检测：${resolveModelRouteMismatchLabel(modelRouteMapping)}。`;
+    const expectedAutoReview = isExpectedCodexAutoReviewModelRoute(modelRouteMapping);
+    summary = expectedAutoReview
+      ? `自动审核模型映射：${formatModelRoutePart(
+          modelRouteMapping.requestedModel,
+          modelRouteMapping.requestedReasoningEffort
+        )} -> ${formatModelRoutePart(
+          modelRouteMapping.actualModel,
+          modelRouteMapping.actualReasoningEffort
+        )}（预期行为，非路由故障）。`
+      : `模型路由检测：${resolveModelRouteMismatchLabel(modelRouteMapping)}。`;
   } else if (isAllProvidersUnavailable) {
     summary = "当前没有可用 Provider，网关未继续向已熔断或冷却中的供应商发起上游请求。";
   } else if (isClientAbort) {
