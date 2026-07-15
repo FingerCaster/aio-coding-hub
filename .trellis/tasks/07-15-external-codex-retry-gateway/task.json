@@ -12,7 +12,7 @@
   "assignee": "FingerCaster",
   "createdAt": "2026-07-15",
   "completedAt": null,
-  "branch": null,
+  "branch": "FingerCaster/external-gateway-integration",
   "base_branch": "main",
   "worktree_path": null,
   "commit": null,

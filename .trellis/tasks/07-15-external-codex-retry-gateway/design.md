@@ -546,7 +546,7 @@ into AIO request logs.
 ## Parallel Worktree Delivery
 
 The current task is the integration parent and has four independently
-verifiable child tasks:
+verifiable gateway child tasks plus one already-committed supplemental UI fix:
 
 | Child task | Orca worker name | Primary ownership |
 | --- | --- | --- |
@@ -554,6 +554,12 @@ verifiable child tasks:
 | `07-15-codex-route-coordinator` | `retry-gateway-routing` | Existing CLI proxy, Codex config/provider sync, route projection and rollback |
 | `07-15-external-gateway-frontend` | `retry-gateway-frontend` | Frontend services/query/UI/details, confirmation UX, frontend legacy removal, CSP |
 | `07-15-remove-local-reasoning-guard` | `retry-gateway-removal` | Old Rust guard/runtime/statistics/settings removal plus scripts/docs/spec rules |
+
+The supplemental task `07-16-codex-auto-review-route-neutral` remains owned by
+`codex-auto-reviewer-model-routing` at exact commit
+`1d5d2ac904fea3b5590dbf13b61a8c44956f7c74`. It changes request-log model-route
+presentation and tests only. Its untracked `.codex-review-last.md` is local
+review output and is never an integration input.
 
 ### Foundation wave
 
@@ -605,7 +611,8 @@ Merge worker branches sequentially into the integration branch, never into
 1. Codex route coordinator;
 2. external runtime backend;
 3. local backend guard removal;
-4. frontend/details migration.
+4. frontend/details migration;
+5. supplemental route-neutral UI commit.
 
 The order exposes the routing contract before lifecycle glue and removes old
 backend contracts before the final binding regeneration. File ownership should
@@ -618,9 +625,33 @@ behavioral conflict. A conflict that reveals mutually exclusive product
 behavior is a user decision gate; ordinary compatible integration fixes remain
 inside the approved scope.
 
+The supplemental commit deliberately follows the frontend merge because both
+touch `RequestLogDetailSummaryTab.tsx`. The integration resolution must retain
+the gateway detail/status behavior while applying neutral sky/info treatment
+only to expected `codex-auto-review*` mappings; ordinary route mismatches remain
+severe.
+
+### Independent review wave
+
+After all sources and cross-worker glue are committed, freeze one clean
+integration SHA. Create two isolated, read-only Orca review runs from that exact
+commit: one launched with Codex model `gpt-5.6-sol` and reasoning effort `max`,
+and one with Claude. The launch command, model/effort identity, and reviewed SHA
+are part of each report; failure to launch the requested model and effort is
+surfaced rather than silently substituted.
+
+Reviewers report correctness, regression, security, lifecycle, rollback,
+frontend interaction, and missing-test findings with file/line evidence. They
+do not edit the integration worktree. Accepted findings are fixed on the
+integration branch, the candidate is re-frozen, and affected findings receive
+reviewer confirmation. Focused checks may run throughout integration, but the
+authoritative full suite, build, package audit, and end-to-end gate run only
+after both independent reviews are clear on the final candidate.
+
 ### Main decision gate
 
-Freeze the validated integration commit and leave all worker worktrees intact.
+Freeze the independently reviewed and validated integration commit and leave
+all worker and review worktrees intact.
 Re-read local `main`, its current dirty `AGENTS.md`, and the untracked analysis
 HTML. If `main` advanced, integrate that new local base into the integration
 worktree and rerun affected plus full gates before asking. Present the exact

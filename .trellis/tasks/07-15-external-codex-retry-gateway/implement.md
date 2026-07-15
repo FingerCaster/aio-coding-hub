@@ -14,7 +14,10 @@ four child tasks own parallel implementation:
 | Parallel | `07-15-external-gateway-frontend` | `retry-gateway-frontend` | foundation commit |
 | Parallel | `07-15-remove-local-reasoning-guard` | `retry-gateway-removal` | foundation commit |
 | Integration | parent merge/glue/check | `retry-gateway-integration` | all four `worker_done` reports |
-| Decision | merge to `main` | current main worktree | validated frozen integration commit plus user approval |
+| Supplemental | `07-16-codex-auto-review-route-neutral` | `codex-auto-reviewer-model-routing` | exact commit `1d5d2ac904fea3b5590dbf13b61a8c44956f7c74` |
+| Review | independent Codex audit | isolated review worktree | frozen integration SHA, model `gpt-5.6-sol`, effort `max` |
+| Review | independent Claude audit | isolated review worktree | same frozen integration SHA |
+| Decision | merge to `main` | current main worktree | reviewed and validated frozen integration commit plus user approval |
 
 The detailed checklist sections below are source requirements for the child
 plans. A worker executes only items assigned by its child task. The integration
@@ -312,6 +315,9 @@ pnpm check:generated-bindings
 
 ## 13. Full Quality and Packaging Gate
 
+- [ ] Treat any aggregate run before the independent review wave as preliminary.
+      Run the authoritative full gate again only after both reviewers clear the
+      final candidate and all accepted findings are fixed.
 - [ ] Run `pnpm lint`, `pnpm typecheck`, and `pnpm tauri:fmt`.
 - [ ] Run `pnpm build`.
 - [ ] Run `pnpm check:precommit:full` and `pnpm check:prepush`.
@@ -362,6 +368,10 @@ pnpm check:generated-bindings
       scope changes back to the owning worker or exclude them explicitly.
 - [ ] Merge routing, runtime, removal, and frontend branches in the documented
       order into `retry-gateway-integration` with real merge ancestry.
+- [ ] Merge exact supplemental commit
+      `1d5d2ac904fea3b5590dbf13b61a8c44956f7c74` after frontend. Exclude
+      `.codex-review-last.md` and resolve the shared detail-summary surface so
+      both gateway and route-neutral behavior survive.
 - [ ] Resolve only shared registry/startup/cleanup/settings/binding/task metadata
       in the integration worktree. Stop for a user decision if a conflict reveals
       product behavior that cannot coexist.
@@ -370,17 +380,39 @@ pnpm check:generated-bindings
 - [ ] Archive/finish child tasks and record worker commits/results only after the
       combined tree passes their acceptance criteria.
 
-## 16. Freeze and Ask Before Main Merge
+## 16. Run Independent Candidate Reviews
 
-- [ ] Commit all integration fixes and task records, freeze the validated
+- [ ] Commit all source merges and integration glue, ensure the integration
+      worktree is clean, and record one immutable candidate SHA.
+- [ ] Verify the local Codex CLI accepts model `gpt-5.6-sol` with
+      `model_reasoning_effort="max"`; do not replace either value if launch
+      fails.
+- [ ] Create two isolated Orca review runs from the same candidate SHA. Assign
+      one read-only audit to Codex `gpt-5.6-sol` with effort `max` and one to
+      Claude, and require each report to state its model/effort or agent
+      identity and reviewed SHA.
+- [ ] Require findings first, ordered by severity, with file/line evidence,
+      behavioral impact, and missing-test coverage. Reviewers do not edit,
+      merge, push, release, or operate on `main`.
+- [ ] Resolve accepted findings only in `retry-gateway-integration`, rerun
+      focused checks, freeze a replacement SHA, and request confirmation for
+      every affected finding. Repeat until both review tracks are clear.
+
+## 17. Run Final Validation and Ask Before Main Merge
+
+- [ ] After both independent reviews clear the final candidate, run Sections
+      12-14 as the authoritative focused/full/package/end-to-end validation.
+- [ ] Commit any validation fixes and task records, repeat affected independent
+      review confirmation when behavior changes, freeze the validated
       integration SHA, and ensure its worktree is clean.
 - [ ] Verify current local `main` still contains the expected base and inventory
       its user-owned dirty paths. Preserve the current `AGENTS.md` intent and
       untracked analysis HTML.
 - [ ] If local `main` advanced, merge it into the integration branch and rerun
       affected focused tests plus all aggregate/packaging gates.
-- [ ] Report foundation SHA, four worker merge commits, integration fixes,
-      conflicts, full test/package results, and final integration SHA.
+- [ ] Report foundation SHA, four worker merge commits, supplemental commit,
+      integration fixes, conflicts, both independent review results, full
+      test/package results, and final integration SHA.
 - [ ] Ask the user whether to merge/fast-forward the validated integration
       branch into `main`. Do not perform that operation before the answer.
 - [ ] Do not push, release, or remove Orca worktrees as part of this gate.

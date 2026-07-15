@@ -278,6 +278,26 @@ analytics, and management-page implementation.
   branch into `main`. Do not merge, fast-forward, push, release, or delete the
   worker worktrees before that explicit decision.
 
+### R14. Include the route-neutral UI fix and require independent final review
+
+- Treat commit `1d5d2ac904fea3b5590dbf13b61a8c44956f7c74` from
+  `fix/codex-auto-reviewer-model-routing-detection` as a supplemental integration
+  input. It is not a fifth gateway worker and must not broaden the gateway
+  worker ownership contracts.
+- Merge that commit after the gateway frontend branch. Resolve their shared
+  `RequestLogDetailSummaryTab.tsx` surface so both gateway presentation and the
+  neutral `codex-auto-review*` model-route presentation remain intact. Exclude
+  the untracked `.codex-review-last.md` review artifact.
+- Before the authoritative full-suite/build/package/end-to-end validation,
+  freeze one clean integration SHA and obtain two independent read-only reviews
+  of that exact candidate: Codex model `gpt-5.6-sol` with reasoning effort
+  `max`, and Claude. Do not silently substitute GPT-5.4, another model, or a
+  different reasoning effort.
+- Apply accepted findings only on the integration branch, freeze a new
+  candidate, and obtain reviewer confirmation for affected findings before the
+  authoritative final validation. Neither reviewer may merge to `main`, push,
+  release, or mix edits directly into the reviewed worktree.
+
 ## Acceptance Criteria
 
 - [ ] **AC1 (R1):** `inventory.md` is exhausted and active-source negative
@@ -324,6 +344,11 @@ analytics, and management-page implementation.
       foundation, stay within declared ownership, and merge only into the
       integration worktree; combined validation passes there and `main` remains
       unchanged until the user explicitly approves the final merge.
+- [ ] **AC13 (R14):** the route-neutral commit is present without its local
+      review artifact, both frontend behaviors pass together, and independent
+      `gpt-5.6-sol`/`max` and Claude reports identify the same frozen candidate.
+      All accepted findings are resolved before the authoritative final
+      validation.
 
 ## Out of Scope
 
