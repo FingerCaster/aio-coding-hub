@@ -10,8 +10,18 @@ import type {
 } from "../../services/providers/providers";
 import {
   buildCliProxySetEnabledResult,
+  buildCodexRetryGatewayApplyCommitState,
+  buildCodexRetryGatewayCheckUpdateState,
+  buildCodexRetryGatewayDetailsSessionState,
+  buildCodexRetryGatewayEnablePlanState,
+  buildCodexRetryGatewayRetryState,
+  buildCodexRetryGatewaySetEnabledState,
+  buildCodexRetryGatewaySetNodeOverrideState,
+  buildCodexRetryGatewayUninstallState,
+  buildCodexRetryGatewayValidateCommitState,
   getAppAboutState,
   getCliProxyStatusAllState,
+  getCodexRetryGatewayStatusState,
   getDbDiskUsageState,
   getEnvConflictsState,
   getGatewayStatusState,
@@ -150,6 +160,55 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/gateway_circuit_reset_provider`, () => HttpResponse.json(true)),
 
   http.post(`${TAURI_ENDPOINT}/gateway_circuit_reset_cli`, () => HttpResponse.json(0)),
+
+  // ---- Codex Retry Gateway ----
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_status`, () =>
+    HttpResponse.json(getCodexRetryGatewayStatusState())
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_enable_plan`, () =>
+    HttpResponse.json(buildCodexRetryGatewayEnablePlanState())
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_set_enabled`, async ({ request }) => {
+    const payload = await withJson<{ request?: any }>(request);
+    return HttpResponse.json(buildCodexRetryGatewaySetEnabledState(payload.request));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_check_update`, () =>
+    HttpResponse.json(buildCodexRetryGatewayCheckUpdateState())
+  ),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_validate_commit`, async ({ request }) => {
+    const payload = await withJson<{ request?: { commit?: string } }>(request);
+    return HttpResponse.json(
+      buildCodexRetryGatewayValidateCommitState(payload.request?.commit ?? "")
+    );
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_apply_commit`, async ({ request }) => {
+    const payload = await withJson<{ request?: any }>(request);
+    return HttpResponse.json(buildCodexRetryGatewayApplyCommitState(payload.request));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_set_node_override`, async ({ request }) => {
+    const payload = await withJson<{ request?: any }>(request);
+    return HttpResponse.json(buildCodexRetryGatewaySetNodeOverrideState(payload.request));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_retry`, async ({ request }) => {
+    const payload = await withJson<{ request?: { generation?: number } }>(request);
+    return HttpResponse.json(buildCodexRetryGatewayRetryState(payload.request?.generation ?? 0));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_uninstall`, async ({ request }) => {
+    const payload = await withJson<{ request?: any }>(request);
+    return HttpResponse.json(buildCodexRetryGatewayUninstallState(payload.request));
+  }),
+
+  http.post(`${TAURI_ENDPOINT}/codex_retry_gateway_create_details_session`, () =>
+    HttpResponse.json(buildCodexRetryGatewayDetailsSessionState())
+  ),
 
   // ---- Plugins ----
   http.post(`${TAURI_ENDPOINT}/plugin_list`, () => HttpResponse.json(getPluginSummariesState())),

@@ -6,7 +6,7 @@ import {
   type CliProxyStatus,
   validateCliProxyCliKey,
 } from "../services/cli/cliProxy";
-import { cliProxyKeys } from "./keys";
+import { cliProxyKeys, codexRetryGatewayKeys } from "./keys";
 
 export function useCliProxyStatusAllQuery(options?: { enabled?: boolean }) {
   return useQuery({
@@ -62,6 +62,7 @@ export function useCliProxySetEnabledMutation() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
+      queryClient.invalidateQueries({ queryKey: codexRetryGatewayKeys.status() });
     },
   });
 }

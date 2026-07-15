@@ -1,6 +1,7 @@
 // Usage: UI for configuring local CLI integrations and related app settings. Backend commands: `cli_manager_*`, `settings_*`, `cli_proxy_*`, `gateway_*`.
 
 import { lazy, Suspense } from "react";
+import { useNavigate } from "react-router-dom";
 import { CliManagerGeneralTab } from "../components/cli-manager/tabs/GeneralTab";
 import { PageHeader } from "../ui/PageHeader";
 import { TabList } from "../ui/TabList";
@@ -36,6 +37,7 @@ const LazyGeminiTab = lazy(() =>
 const TAB_FALLBACK = <div className="p-6 text-sm text-muted-foreground">加载中…</div>;
 
 export function CliManagerPage() {
+  const navigate = useNavigate();
   const model = useCliManagerPageDataModel();
 
   return (
@@ -63,7 +65,11 @@ export function CliManagerPage() {
 
         {model.tab === "codex" ? (
           <Suspense fallback={TAB_FALLBACK}>
-            <LazyCodexTab {...model.codexTabProps} />
+            <LazyCodexTab
+              {...model.codexTabProps}
+              onOpenGatewayDetailsRoute={() => navigate("/cli-manager/codex-gateway")}
+              showRetryGatewayManager
+            />
           </Suspense>
         ) : null}
 

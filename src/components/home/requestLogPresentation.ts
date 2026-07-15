@@ -70,50 +70,6 @@ export function hasCodexReasoningGuardSpecialSetting(
   return resolveCodexReasoningGuardSummary(specialSettingsJson).count > 0;
 }
 
-function isCodexReasoningContinuationStrategy(value: string | null | undefined): boolean {
-  return value === "continuation_repair" || value === "continuation_repair_experimental";
-}
-
-function formatCodexReasoningGuardActionText(summary: {
-  latestActionTaken: string | null;
-  latestDelayMs: number | null;
-  latestPostMatchStrategy?: string | null;
-  latestStrategyOutcome?: string | null;
-  latestContinuationSentRounds?: number | null;
-}): string {
-  if (
-    isCodexReasoningContinuationStrategy(summary.latestPostMatchStrategy) &&
-    (summary.latestStrategyOutcome === "continuation_repaired" ||
-      summary.latestStrategyOutcome === "repaired")
-  ) {
-    return `思考续写成功${
-      summary.latestContinuationSentRounds != null
-        ? `（${summary.latestContinuationSentRounds} 次）`
-        : ""
-    }`;
-  }
-  if (isCodexReasoningContinuationStrategy(summary.latestPostMatchStrategy)) {
-    const status = formatCodexReasoningContinuationStatus(summary.latestStrategyOutcome);
-    return summary.latestStrategyOutcome ? `思考续写后${status}` : "思考续写";
-  }
-  if (summary.latestActionTaken === "switch_provider_no_circuit") {
-    return "预算耗尽后切换供应商";
-  }
-  if (summary.latestActionTaken === "switch_model_no_circuit") {
-    return "预算耗尽后切换模型";
-  }
-  if (summary.latestActionTaken === "return_guard_error_no_circuit") {
-    return "预算耗尽后返回错误";
-  }
-  if (
-    summary.latestActionTaken === "retry_same_provider_delayed_no_circuit" &&
-    summary.latestDelayMs != null
-  ) {
-    return `等待 ${summary.latestDelayMs}ms 后重试`;
-  }
-  return "继续重试";
-}
-
 export function formatCodexReasoningContinuationStatus(status: string | null | undefined): string {
   if (status === "continuation_repaired") return "已修复";
   if (status === "repaired") return "已修复";
@@ -125,15 +81,6 @@ export function formatCodexReasoningContinuationStatus(status: string | null | u
   if (status === "unavailable") return "不可用";
   if (status === "unknown") return "未知状态";
   return status || "未知状态";
-}
-
-function formatCodexReasoningGuardSummaryClause(summary: {
-  count: number;
-  latestRuleLabel: string | null;
-}): string {
-  return summary.count > 1
-    ? `命中了 ${summary.count} 次 Codex 降智拦截${summary.latestRuleLabel ? `（规则 ${summary.latestRuleLabel}）` : ""}`
-    : `命中了 Codex 降智拦截${summary.latestRuleLabel ? `（规则 ${summary.latestRuleLabel}）` : ""}`;
 }
 
 function finiteJsonNumber(value: unknown): number | null {
@@ -400,7 +347,7 @@ export function buildRequestLogAuditMeta(
   log: RequestLogAuditInput,
   options: RequestLogAuditMetaOptions = {}
 ): RequestLogAuditMeta {
-  const codexReasoningGuardHitLabel = options.codexReasoningGuardHitLabel?.trim() || "降智命中";
+  void options.codexReasoningGuardHitLabel;
   const settings = parseRequestLogSpecialSettings(log.special_settings_json);
   const settingTypes = new Set(settings.flatMap((item) => (item.type ? [item.type] : [])));
   const isWarmupIntercept = settingTypes.has("warmup_intercept");
@@ -413,19 +360,10 @@ export function buildRequestLogAuditMeta(
   const isAllProvidersUnavailable = log.error_code === GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE;
   const excludedFromStats = !!log.excluded_from_stats;
   const codexReasoningGuard = resolveCodexReasoningGuardSummary(log.special_settings_json);
-  const codexReasoningGuardHitCount = codexReasoningGuard.count;
   const modelRouteMapping = resolveModelRouteMappingFromSpecialSettings(
     log.special_settings_json,
     log.final_provider_id
   );
-  const codexReasoningGuardRuleSuffix = codexReasoningGuard.latestRuleLabel
-    ? ` ${codexReasoningGuard.latestRuleLabel}`
-    : "";
-  const codexReasoningGuardActionText = formatCodexReasoningGuardActionText(codexReasoningGuard);
-  const codexReasoningGuardBudgetSuffix =
-    codexReasoningGuard.latestBudgetTotal != null
-      ? `，剩余预算 ${codexReasoningGuard.latestBudgetRemaining ?? 0}/${codexReasoningGuard.latestBudgetTotal}`
-      : "";
 
   const tags: RequestLogAuditTag[] = [];
 
@@ -469,20 +407,6 @@ export function buildRequestLogAuditMeta(
     );
   }
 
-  if (codexReasoningGuardHitCount > 0) {
-    tags.push(
-      auditTag(
-        codexReasoningGuardHitCount > 1
-          ? `${codexReasoningGuardHitLabel} ${codexReasoningGuardHitCount}${codexReasoningGuardRuleSuffix}`
-          : `${codexReasoningGuardHitLabel}${codexReasoningGuardRuleSuffix}`,
-        "bg-violet-50/80 text-violet-700 ring-1 ring-inset ring-violet-500/10 dark:bg-violet-500/15 dark:text-violet-200 dark:ring-violet-400/20",
-        codexReasoningGuard.latestRuleLabel
-          ? `命中 Codex 降智拦截规则 ${codexReasoningGuard.latestRuleLabel} 后${codexReasoningGuardActionText}，不计入熔断${codexReasoningGuardBudgetSuffix}`
-          : `命中 Codex 降智拦截后${codexReasoningGuardActionText}，不计入熔断${codexReasoningGuardBudgetSuffix}`
-      )
-    );
-  }
-
   if (modelRouteMapping) {
     tags.push(
       auditTag(
@@ -508,10 +432,6 @@ export function buildRequestLogAuditMeta(
     summary = "Warmup 命中后由网关直接应答，仅保留审计记录，不进入统计。";
   } else if (isCliProxyGuard) {
     summary = "这次请求由 CLI 代理守卫提前处理，保留为审计行。";
-  } else if (codexReasoningGuardHitCount > 0) {
-    summary = `本次请求${formatCodexReasoningGuardSummaryClause(
-      codexReasoningGuard
-    )}，${codexReasoningGuardActionText}。`;
   } else if (modelRouteMapping) {
     summary = `模型路由检测：${resolveModelRouteMismatchLabel(modelRouteMapping)}。`;
   } else if (isAllProvidersUnavailable) {
@@ -528,7 +448,6 @@ export function buildRequestLogAuditMeta(
       isCliProxyGuard ||
       isClientAbort ||
       isAllProvidersUnavailable ||
-      codexReasoningGuardHitCount > 0 ||
       excludedFromStats,
     summary,
     tags,

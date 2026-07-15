@@ -48,6 +48,12 @@ export const gatewayKeys = {
   circuitStatus: (cliKey: CliKey) => [...gatewayAllKey, "circuitStatus", cliKey] as const,
 };
 
+const codexRetryGatewayAllKey = ["codexRetryGateway"] as const;
+export const codexRetryGatewayKeys = {
+  all: codexRetryGatewayAllKey,
+  status: () => [...codexRetryGatewayAllKey, "status"] as const,
+};
+
 const requestLogsAllKey = ["requestLogs"] as const;
 export const requestLogsKeys = {
   all: requestLogsAllKey,

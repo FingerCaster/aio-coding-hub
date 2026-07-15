@@ -13,12 +13,10 @@ import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard
 import {
   formatCodexReasoningEffortSource,
   resolveCodexReasoningEffort,
-  resolveCodexReasoningGuardSummary,
 } from "../../services/gateway/requestLogSpecialSettings";
 import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
-  formatCodexReasoningContinuationStatus,
   hasCodexReasoningGuardSpecialSetting,
   resolveCacheCreationDisplay,
   resolveRequestLogModelDisplayMeta,
@@ -61,16 +59,8 @@ export function RequestLogDetailSummaryTab({
     null,
     selectedLog.final_provider_id
   );
-  const codexReasoningGuard =
-    selectedLog.cli_key === "codex"
-      ? resolveCodexReasoningGuardSummary(selectedLog.special_settings_json)
-      : null;
-  const showCodexReasoningSignals = (codexReasoningGuard?.count ?? 0) > 0;
   const showKeyMetrics =
-    hasTokens ||
-    codexReasoningEffort != null ||
-    showCodexReasoningSignals ||
-    modelDisplayMeta.isRouteMismatch;
+    hasTokens || codexReasoningEffort != null || modelDisplayMeta.isRouteMismatch;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
@@ -148,35 +138,6 @@ export function RequestLogDetailSummaryTab({
                 <MetricCard
                   label="等级来源"
                   value={formatCodexReasoningEffortSource(codexReasoningEffort.source)}
-                />
-              </>
-            ) : null}
-            {showCodexReasoningSignals ? (
-              <>
-                <MetricCard
-                  label="规则模式"
-                  value={formatCodexReasoningRuleMode(codexReasoningGuard?.latestRuleMode)}
-                />
-                <MetricCard
-                  label="命中来源"
-                  value={formatCodexReasoningHitSource(codexReasoningGuard?.latestHitSource)}
-                />
-                <MetricCard label="命中次数" value={codexReasoningGuard?.count ?? 0} />
-                <MetricCard
-                  label="命中后策略"
-                  value={formatCodexReasoningPostMatchStrategy(
-                    codexReasoningGuard?.latestPostMatchStrategy
-                  )}
-                />
-                <MetricCard
-                  label="策略结果"
-                  value={formatCodexReasoningContinuationStatus(
-                    codexReasoningGuard?.latestStrategyOutcome
-                  )}
-                />
-                <MetricCard
-                  label="续写轮数"
-                  value={codexReasoningGuard?.latestContinuationSentRounds}
                 />
               </>
             ) : null}
@@ -265,25 +226,6 @@ function MetricCard({
       </div>
     </div>
   );
-}
-
-function formatCodexReasoningRuleMode(value: string | null | undefined) {
-  if (value === "reasoning_tokens") return "reasoning tokens";
-  if (value === "final_answer_only_high_xhigh") return "final-only";
-  return value || "—";
-}
-
-function formatCodexReasoningHitSource(value: string | null | undefined) {
-  if (value === "reasoning_tokens") return "token";
-  if (value === "final_answer_only_high_xhigh") return "final-only";
-  return value || "—";
-}
-
-function formatCodexReasoningPostMatchStrategy(value: string | null | undefined) {
-  if (value === "continuation_repair") return "思考续写";
-  if (value === "continuation_repair_experimental") return "思考续写（实验）";
-  if (value === "retry_same_provider") return "自动重试";
-  return value || "—";
 }
 
 function formatCostMultiplier(value: number | null | undefined) {
