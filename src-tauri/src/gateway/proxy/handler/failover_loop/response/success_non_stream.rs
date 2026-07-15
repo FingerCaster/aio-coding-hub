@@ -1002,7 +1002,8 @@ where
                 .with_trigger(
                     Some(error_code),
                     Some(common.upstream_first_byte_timeout_secs),
-                ),
+                )
+                .with_provider_health_neutral(common.provider_health_neutral),
             );
             if let Some(last) = attempts.last_mut() {
                 last.circuit_state_after = Some(change.after.state.as_str());
@@ -1019,6 +1020,7 @@ where
                     provider_id,
                     now_unix,
                     common.provider_cooldown_secs,
+                    common.provider_health_neutral,
                 );
                 *circuit_snapshot = snap;
             }
@@ -1847,7 +1849,8 @@ where
                 provider_ctx_owned.provider_name_base.as_str(),
                 provider_ctx_owned.provider_base_url_base.as_str(),
                 now_unix,
-            ),
+            )
+            .with_provider_health_neutral(common.provider_health_neutral),
         );
         if let Some(last) = attempts.last_mut() {
             last.circuit_state_after = Some(change.after.state.as_str());
@@ -2098,7 +2101,8 @@ where
             provider_ctx_owned.provider_name_base.as_str(),
             provider_ctx_owned.provider_base_url_base.as_str(),
             now_unix,
-        ),
+        )
+        .with_provider_health_neutral(common.provider_health_neutral),
     );
     if let Some(last) = attempts.last_mut() {
         last.circuit_state_after = Some(change.after.state.as_str());

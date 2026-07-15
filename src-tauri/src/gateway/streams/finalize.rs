@@ -59,6 +59,7 @@ pub(super) fn finalize_circuit_and_session<R: tauri::Runtime>(
             ctx.provider_id,
             now_unix,
             ctx.provider_cooldown_secs,
+            ctx.provider_health_neutral,
         );
     }
 
@@ -136,6 +137,7 @@ mod tests {
             query: None,
             excluded_from_stats: false,
             special_settings: Arc::new(Mutex::new(Vec::new())),
+            provider_health_neutral: false,
             status: 200,
             error_category: None,
             error_code: None,

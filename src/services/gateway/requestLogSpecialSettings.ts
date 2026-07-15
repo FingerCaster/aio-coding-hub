@@ -131,6 +131,11 @@ const KNOWN_CODEX_MODEL_DEFAULT_REASONING_EFFORTS: Readonly<Record<string, Codex
 
 const CODEX_REASONING_EFFORT_FIELD_NAMES = new Set(["effort", "rawEffort"]);
 
+export const CODEX_SYSTEM_REQUEST_SPECIAL_SETTING = {
+  type: "codex_system_request",
+  threadSource: "system",
+} as const;
+
 export function parseRequestLogSpecialSettings(
   specialSettingsJson: string | null | undefined
 ): ParsedRequestLogSpecialSetting[] {
@@ -732,4 +737,14 @@ export function resolveCodexReasoningFeatureSummary(
     latestCompactionExempt,
     latestCandidate,
   };
+}
+
+export function hasCodexSystemRequestSpecialSetting(
+  specialSettingsJson: string | null | undefined
+): boolean {
+  return parseRequestLogSpecialSettings(specialSettingsJson).some(
+    (setting) =>
+      setting.type === CODEX_SYSTEM_REQUEST_SPECIAL_SETTING.type &&
+      setting.threadSource === CODEX_SYSTEM_REQUEST_SPECIAL_SETTING.threadSource
+  );
 }

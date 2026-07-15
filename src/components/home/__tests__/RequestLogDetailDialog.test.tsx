@@ -384,6 +384,22 @@ describe("home/RequestLogDetailDialog", () => {
     expectMetricValue("等级来源", "默认推断");
   });
 
+  it("does not promote the Codex system marker into request details", () => {
+    setRequestLogQueryState({
+      selectedLog: createSelectedLog({
+        cli_key: "codex",
+        special_settings_json: JSON.stringify([
+          { type: "codex_system_request", threadSource: "system" },
+        ]),
+      }),
+    });
+    setTraceStoreState({ traces: [] });
+
+    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.queryByText("Codex 系统请求")).not.toBeInTheDocument();
+  });
+
   it("falls back to raw usage_json when JSON parsing fails without rendering raw json section", () => {
     setRequestLogQueryState({ selectedLog: createSelectedLog({ usage_json: "not-json" }) });
     setTraceStoreState({ traces: [] });

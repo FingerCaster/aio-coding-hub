@@ -5,6 +5,7 @@ import {
   formatCodexReasoningEffortSource,
   hasModelRouteMappingSpecialSetting,
   hasClaudeModelMappingSpecialSetting,
+  hasCodexSystemRequestSpecialSetting,
   hasExplicitCodexReasoningEffortSpecialSetting,
   resolveCodexReasoningContinuationSummary,
   resolveCodexReasoningFeatureSummary,
@@ -690,5 +691,67 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       terminalSettings
     );
     expect(chooseModelRouteAwareSpecialSettingsJson("bad-json", startSettings)).toBe(startSettings);
+  });
+
+  it("identifies only the structured Codex system request marker", () => {
+    expect(
+      hasCodexSystemRequestSpecialSetting(
+        JSON.stringify([{ type: "noop" }, { type: "codex_system_request", threadSource: "system" }])
+      )
+    ).toBe(true);
+    expect(
+      hasCodexSystemRequestSpecialSetting(
+        JSON.stringify({ type: "codex_system_request", threadSource: "system" })
+      )
+    ).toBe(true);
+  });
+
+  it("rejects incomplete or mismatched Codex system request markers", () => {
+    for (const settings of [
+      [{ type: "codex_system_request" }],
+      [{ type: "codex_system_request", threadSource: "user" }],
+      [{ type: "other", threadSource: "system" }],
+      [{ type: "codex_system_request", threadSource: true }],
+    ]) {
+      expect(hasCodexSystemRequestSpecialSetting(JSON.stringify(settings))).toBe(false);
+    }
+  });
+
+  it("fails closed for missing or malformed special settings", () => {
+    expect(hasCodexSystemRequestSpecialSetting(null)).toBe(false);
+    expect(hasCodexSystemRequestSpecialSetting("bad-json")).toBe(false);
+    expect(hasCodexSystemRequestSpecialSetting(JSON.stringify([null, false, "marker"]))).toBe(
+      false
+    );
+  });
+
+  it("keeps Codex system, reasoning, and model-route settings composable", () => {
+    const settings = JSON.stringify([
+      { type: "codex_system_request", threadSource: "system" },
+      {
+        type: "codex_reasoning_guard",
+        compareMode: "equals",
+        matchedRuleValue: 516,
+        reasoningTokens: 516,
+      },
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "gpt-5.5",
+        requestedReasoningEffort: "high",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "low",
+        mismatch: true,
+        providerId: 2,
+      },
+    ]);
+
+    expect(hasCodexSystemRequestSpecialSetting(settings)).toBe(true);
+    expect(countCodexReasoningGuardSpecialSettings(settings)).toBe(1);
+    expect(resolveModelRouteMappingFromSpecialSettings(settings, 2)).toMatchObject({
+      requestedModel: "gpt-5.5",
+      actualModel: "gpt-5.4-mini",
+      providerId: 2,
+    });
   });
 });

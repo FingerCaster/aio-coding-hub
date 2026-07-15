@@ -109,6 +109,7 @@ struct ProbeCtx<R: tauri::Runtime = tauri::Wry> {
     empty_requested_model: Option<String>,
     empty_cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     empty_special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
+    provider_health_neutral: bool,
     codex_reasoning_guard_rule_mode: crate::settings::CodexReasoningGuardRuleMode,
     codex_reasoning_guard_compare_mode: crate::settings::CodexReasoningGuardCompareMode,
     codex_reasoning_guard_reasoning_equals: Vec<i64>,
@@ -132,6 +133,7 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             empty_requested_model: ctx.requested_model.clone(),
             empty_cx2cc_settings: Default::default(),
             empty_special_settings: Arc::new(Mutex::new(Vec::new())),
+            provider_health_neutral: ctx.provider_health_neutral,
             codex_reasoning_guard_rule_mode: ctx.codex_reasoning_guard_rule_mode,
             codex_reasoning_guard_compare_mode: ctx.codex_reasoning_guard_compare_mode,
             codex_reasoning_guard_reasoning_equals: ctx
@@ -169,6 +171,7 @@ impl<R: tauri::Runtime> ProbeCtx<R> {
             cx2cc_settings: &self.empty_cx2cc_settings,
             effective_sort_mode_id: None,
             special_settings: &self.empty_special_settings,
+            provider_health_neutral: self.provider_health_neutral,
             provider_cooldown_secs: 0,
             upstream_first_byte_timeout_secs: 0,
             upstream_first_byte_timeout: self.upstream_first_byte_timeout,

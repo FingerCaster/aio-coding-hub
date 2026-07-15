@@ -158,6 +158,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         provider.auth_mode == "oauth",
         codex_request_has_previous_response_id(input),
         configured_transient_retry_budget(&upstream_retry_policy),
+        input.is_codex_model_discovery,
     );
 
     let mut provider_base_url_base = match provider_checks::resolve_base_url(
@@ -478,10 +479,17 @@ fn provider_max_attempts_for_request(
     needs_oauth_reactive_refresh_retry: bool,
     needs_codex_previous_response_id_retry: bool,
     configured_transient_retries: u32,
+    strict_configured_limit: bool,
 ) -> u32 {
+    if strict_configured_limit {
+        return configured_max_attempts.max(1);
+    }
+
     let required_internal_retries = u32::from(needs_oauth_reactive_refresh_retry)
         + u32::from(needs_codex_previous_response_id_retry)
         + configured_transient_retries;
+    // Circuit failures accumulate across requests; the breaker threshold must
+    // not silently expand this request's configured retry budget.
     configured_max_attempts.max(1 + required_internal_retries)
 }
 
@@ -533,17 +541,38 @@ mod tests {
 
     #[test]
     fn provider_max_attempts_reserves_budget_for_internal_retries() {
-        assert_eq!(provider_max_attempts_for_request(1, false, false, 0), 1);
-        assert_eq!(provider_max_attempts_for_request(1, true, false, 0), 2);
-        assert_eq!(provider_max_attempts_for_request(1, false, true, 0), 2);
-        assert_eq!(provider_max_attempts_for_request(1, true, true, 0), 3);
-        assert_eq!(provider_max_attempts_for_request(5, true, true, 0), 5);
+        assert_eq!(
+            provider_max_attempts_for_request(1, false, false, 0, false),
+            1
+        );
+        assert_eq!(
+            provider_max_attempts_for_request(1, true, false, 0, false),
+            2
+        );
+        assert_eq!(
+            provider_max_attempts_for_request(1, false, true, 0, false),
+            2
+        );
+        assert_eq!(
+            provider_max_attempts_for_request(1, true, true, 0, false),
+            3
+        );
+        assert_eq!(
+            provider_max_attempts_for_request(5, true, true, 0, false),
+            5
+        );
     }
 
     #[test]
     fn provider_max_attempts_reserves_budget_for_configured_transient_retries() {
-        assert_eq!(provider_max_attempts_for_request(1, false, false, 1), 2);
-        assert_eq!(provider_max_attempts_for_request(1, true, true, 2), 5);
+        assert_eq!(
+            provider_max_attempts_for_request(1, false, false, 1, false),
+            2
+        );
+        assert_eq!(
+            provider_max_attempts_for_request(1, true, true, 2, false),
+            5
+        );
     }
 
     #[test]
@@ -555,5 +584,18 @@ mod tests {
         };
 
         assert_eq!(configured_transient_retry_budget(&disabled), 0);
+    }
+
+    #[test]
+    fn provider_max_attempts_preserves_explicit_cap_without_retry_reasons() {
+        assert_eq!(
+            provider_max_attempts_for_request(1, false, false, 0, false),
+            1
+        );
+    }
+
+    #[test]
+    fn provider_max_attempts_honors_strict_request_limit() {
+        assert_eq!(provider_max_attempts_for_request(1, true, true, 3, true), 1);
     }
 }

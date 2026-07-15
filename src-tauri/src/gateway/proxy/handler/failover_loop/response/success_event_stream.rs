@@ -1091,6 +1091,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         state,
         trace_id,
         cli_key,
+        provider_health_neutral,
         provider_cooldown_secs,
         upstream_first_byte_timeout_secs,
         ..
@@ -1161,7 +1162,8 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
                 provider_base_url_base.as_str(),
                 now_unix,
             )
-            .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs)),
+            .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs))
+            .with_provider_health_neutral(provider_health_neutral),
         ))
     };
     if let Some(change) = &change {
@@ -1174,6 +1176,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
             provider_id,
             now_unix,
             provider_cooldown_secs,
+            provider_health_neutral,
         );
         *circuit_snapshot = snap;
     }
@@ -2642,7 +2645,8 @@ where
                     .with_trigger(
                         Some(error_code),
                         Some(common.upstream_first_byte_timeout_secs),
-                    ),
+                    )
+                    .with_provider_health_neutral(common.provider_health_neutral),
                 );
                 *circuit_snapshot = change.after.clone();
                 if common.provider_cooldown_secs > 0 {
@@ -2651,6 +2655,7 @@ where
                         provider_id,
                         now_unix,
                         common.provider_cooldown_secs,
+                        common.provider_health_neutral,
                     );
                 }
                 if let Some(last) = attempts.last_mut() {
@@ -2672,7 +2677,8 @@ where
                         provider_ctx_owned.provider_name_base.as_str(),
                         provider_ctx_owned.provider_base_url_base.as_str(),
                         now_unix,
-                    ),
+                    )
+                    .with_provider_health_neutral(common.provider_health_neutral),
                 );
                 if let Some(last) = attempts.last_mut() {
                     last.circuit_state_after = Some(change.after.state.as_str());

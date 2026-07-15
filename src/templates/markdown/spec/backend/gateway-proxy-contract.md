@@ -102,6 +102,65 @@ Codex-specific note:
   while a later API-key provider is enabled. The gateway must choose the later
   provider without requiring a manual circuit reset.
 
+### Per-Request Attempt Budget vs Circuit Threshold
+
+#### 1. Scope / Trigger
+
+Apply this contract when changing provider attempt limits, OAuth reactive
+refresh, Codex `previous_response_id` repair, transient upstream retries, Codex
+model discovery, or circuit-breaker thresholds.
+
+#### 2. Signatures
+
+- `Settings.failover_max_attempts_per_provider`: default `5`, valid `1..=20`.
+- `Settings.circuit_breaker_failure_threshold`: default `5`, valid `1..=50`.
+- `provider_max_attempts_for_request(configured, oauth, continuation,
+  transient, strict) -> u32` owns the request-scoped calculation.
+
+#### 3. Contracts
+
+- Normal effective budget is
+  `max(configured, 1 + oauth + continuation + enabled_transient_retries)`.
+- Resolve `upstream_retry_policy_override` before reserving transient retries;
+  a disabled effective policy reserves zero.
+- Circuit failures accumulate across requests. The circuit threshold must not
+  enlarge one request's attempt budget.
+- Codex model discovery supplies a strict one-attempt provider limit. It may
+  fail over to another provider, but each provider is called at most once.
+
+#### 4. Validation & Error Matrix
+
+| Condition | Result |
+| --- | --- |
+| per-provider attempts outside `1..=20` | Reject with `SEC_INVALID_INPUT` |
+| attempts x providers exceeds `100` | Reject with `SEC_INVALID_INPUT` |
+| circuit threshold outside `1..=50` | Reject independently |
+| transient policy disabled | Reserve zero transient attempts |
+| circuit threshold exceeds configured attempts | Do not change request budget |
+| Codex model discovery | Exactly one attempt per provider |
+
+#### 5. Good/Base/Bad Cases
+
+- Good: configured `1` plus OAuth, continuation repair, and two enabled
+  transient retries yields `5`.
+- Base: configured `5` with no retry reason remains `5`.
+- Bad: circuit threshold `5` silently turns configured `1` into five attempts.
+
+#### 6. Tests Required
+
+- Unit-test the budget formula, disabled policy, explicit one-attempt cap, and
+  strict model-discovery path.
+- Route-test model discovery across providers and multi-request circuit
+  accumulation.
+- Run the full Rust suite after changing shared failover preparation.
+
+#### 7. Wrong vs Correct
+
+Wrong: `max(configured, circuit_threshold, 1 + internal_retries)`.
+
+Correct: `max(configured, 1 + internal_retries)` while circuit state is
+recorded independently across requests.
+
 ### Route Runtime State Invalidation
 
 #### 1. Scope / Trigger

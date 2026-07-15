@@ -52,6 +52,7 @@ pub(super) struct HandlerRuntimeSettings {
 pub(super) fn handler_runtime_settings(
     settings_cfg: Option<&settings::AppSettings>,
     is_claude_count_tokens: bool,
+    is_codex_model_discovery: bool,
 ) -> HandlerRuntimeSettings {
     let verbose_provider_error = settings_cfg
         .map(|cfg| cfg.verbose_provider_error)
@@ -102,6 +103,8 @@ pub(super) fn handler_runtime_settings(
     if is_claude_count_tokens {
         max_attempts_per_provider = 1;
         max_providers_to_try = 1;
+    } else if is_codex_model_discovery {
+        max_attempts_per_provider = 1;
     }
 
     HandlerRuntimeSettings {
@@ -242,7 +245,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = handler_runtime_settings(Some(&settings), false);
+        let runtime = handler_runtime_settings(Some(&settings), false, false);
 
         assert_eq!(
             runtime.codex_reasoning_guard_rule_mode,
@@ -293,7 +296,7 @@ mod tests {
             ..Default::default()
         };
 
-        let runtime = handler_runtime_settings(Some(&settings), false);
+        let runtime = handler_runtime_settings(Some(&settings), false, false);
         settings.codex_reasoning_guard_rule_mode =
             settings::CodexReasoningGuardRuleMode::FinalAnswerOnlyHighXhigh;
         settings.codex_reasoning_guard_compare_mode =
