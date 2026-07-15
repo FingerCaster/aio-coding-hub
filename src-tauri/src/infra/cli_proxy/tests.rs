@@ -4,6 +4,7 @@ use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::MutexGuard;
+use std::sync::{Arc, Mutex};
 
 static TEST_ENV_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -92,6 +93,7 @@ fn write_cli_proxy_manifest<R: tauri::Runtime>(
             created_at: 1,
             updated_at: 1,
             files: Vec::new(),
+            codex: None,
         },
     )
     .expect("write manifest");
@@ -172,6 +174,50 @@ fn manifest_entry<'a>(manifest: &'a CliProxyManifest, kind: &str) -> &'a BackupF
         .unwrap_or_else(|| panic!("missing manifest entry for kind={kind}"))
 }
 
+#[derive(Default, Clone)]
+struct FakeTransitionStore {
+    pending:
+        Arc<Mutex<Option<crate::infra::codex_retry_gateway::CodexRetryGatewayRouteTransition>>>,
+    committed: Arc<Mutex<Vec<(String, u64)>>>,
+    cleared: Arc<Mutex<Vec<String>>>,
+}
+
+impl crate::infra::codex_retry_gateway::CodexRetryGatewayTransitionStore for FakeTransitionStore {
+    fn load_pending(
+        &self,
+    ) -> crate::shared::error::AppResult<
+        Option<crate::infra::codex_retry_gateway::CodexRetryGatewayRouteTransition>,
+    > {
+        Ok(self.pending.lock().expect("pending lock").clone())
+    }
+
+    fn prepare(
+        &self,
+        transition: &crate::infra::codex_retry_gateway::CodexRetryGatewayRouteTransition,
+    ) -> crate::shared::error::AppResult<()> {
+        *self.pending.lock().expect("pending lock") = Some(transition.clone());
+        Ok(())
+    }
+
+    fn commit(&self, operation_id: &str, generation: u64) -> crate::shared::error::AppResult<()> {
+        self.committed
+            .lock()
+            .expect("committed lock")
+            .push((operation_id.to_string(), generation));
+        *self.pending.lock().expect("pending lock") = None;
+        Ok(())
+    }
+
+    fn clear(&self, operation_id: &str) -> crate::shared::error::AppResult<()> {
+        self.cleared
+            .lock()
+            .expect("cleared lock")
+            .push(operation_id.to_string());
+        *self.pending.lock().expect("pending lock") = None;
+        Ok(())
+    }
+}
+
 #[test]
 fn read_manifest_rejects_oversized_file() {
     let test_app = CliProxyTestApp::new();
@@ -235,6 +281,7 @@ fn restore_backups_exactly_rejects_oversized_backup_file() {
             existed: true,
             backup_rel: Some("config.toml".to_string()),
         }],
+        codex: None,
     };
 
     let err = restore_backups_exactly_from_manifest(&handle, &manifest)
@@ -625,6 +672,395 @@ fn status_all_skips_gateway_application_check_for_disabled_codex() {
     assert!(!codex.enabled);
     assert_eq!(codex.base_origin.as_deref(), Some(base_origin));
     assert_eq!(codex.applied_to_current_gateway, None);
+}
+
+#[test]
+fn status_all_reports_codex_route_metadata_when_proxy_is_enabled() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let rows = status_all(&handle, Some(base_origin)).expect("status_all");
+    let codex = rows
+        .into_iter()
+        .find(|row| row.cli_key == "codex")
+        .expect("codex row");
+
+    assert_eq!(codex.route_mode, Some(CodexRouteMode::DirectAio));
+    assert_eq!(codex.desired_enabled, Some(false));
+    assert_eq!(codex.aio_origin.as_deref(), Some(base_origin));
+    assert_eq!(codex.effective_origin.as_deref(), Some(base_origin));
+    assert!(codex.generation.is_some_and(|generation| generation > 0));
+}
+
+#[test]
+fn current_canonical_codex_auth_bytes_strip_proxy_overlay_and_keep_user_fields() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+
+    write_codex_direct_files(
+        &handle,
+        "[model_providers.openai]\nname = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n",
+        r#"{
+  "tokens": { "access": "tok-123" },
+  "profile": "direct"
+}"#,
+    );
+
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let auth_path = codex_auth_path(&handle).expect("codex auth path");
+    std::fs::write(
+        &auth_path,
+        br#"{
+  "OPENAI_API_KEY": "aio-coding-hub",
+  "auth_mode": "apikey",
+  "user_added": "keep-me"
+}"#,
+    )
+    .expect("write live auth");
+
+    let state = codex_cli_proxy_state(&handle)
+        .expect("codex state")
+        .expect("managed codex state");
+    let canonical = current_canonical_codex_auth_bytes(&handle, &state)
+        .expect("canonical auth bytes")
+        .expect("canonical auth exists");
+    let value: serde_json::Value =
+        serde_json::from_slice(&canonical).expect("parse canonical auth");
+
+    assert!(value.get("OPENAI_API_KEY").is_none(), "{value}");
+    assert!(value.get("auth_mode").is_none(), "{value}");
+    assert_eq!(
+        value.get("user_added").and_then(|entry| entry.as_str()),
+        Some("keep-me")
+    );
+    assert!(value.get("tokens").is_some(), "{value}");
+}
+
+#[test]
+fn codex_route_transition_helpers_reject_stale_generation_and_hash() {
+    let err = reject_stale_codex_route_state(7, "sha256:abc", 8, "sha256:abc")
+        .expect_err("generation mismatch should fail");
+    assert!(err.to_string().contains("CLI_PROXY_STALE_ROUTE_GENERATION"));
+
+    let err = reject_stale_codex_route_state(7, "sha256:abc", 7, "sha256:def")
+        .expect_err("hash mismatch should fail");
+    assert!(err.to_string().contains("CLI_PROXY_STALE_ROUTE_HASH"));
+}
+
+#[test]
+fn codex_route_transition_helpers_prepare_commit_and_reconcile_pending_state() {
+    let store = FakeTransitionStore::default();
+    let prior = CodexCliProxyManifestState {
+        generation: 4,
+        route_mode: CodexRouteMode::DirectAio,
+        desired_enabled: false,
+        aio_origin: Some("http://127.0.0.1:37123".to_string()),
+        guarded_origin: Some("http://127.0.0.1:4610".to_string()),
+        canonical_config_sha256: Some("sha256:old-canonical".to_string()),
+        live_config_sha256: Some("sha256:old-live".to_string()),
+    };
+
+    let transition = prepare_codex_route_transition(
+        &store,
+        crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Recover,
+        &prior,
+        CodexRouteMode::Guarded,
+        "sha256:new-canonical".to_string(),
+        "sha256:new-live".to_string(),
+        Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+        true,
+    )
+    .expect("prepare transition");
+
+    assert_eq!(transition.prior_generation, 4);
+    assert_eq!(transition.target_generation, 5);
+    assert_eq!(transition.prior_mode, CodexRouteMode::DirectAio);
+    assert_eq!(transition.target_mode, CodexRouteMode::Guarded);
+    assert!(store.load_pending().expect("load pending").is_some());
+
+    let reconciled =
+        reconcile_codex_route_transition(&store, 5, CodexRouteMode::Guarded, "sha256:new-live")
+            .expect("reconcile pending");
+    assert_eq!(reconciled, Some(true));
+    assert_eq!(store.pending.lock().expect("pending lock").clone(), None);
+    assert_eq!(store.committed.lock().expect("committed lock").len(), 1);
+
+    let second = prepare_codex_route_transition(
+        &store,
+        crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Update,
+        &prior,
+        CodexRouteMode::Guarded,
+        "sha256:new-canonical".to_string(),
+        "sha256:new-live".to_string(),
+        None,
+        true,
+    )
+    .expect("prepare second transition");
+    let reconciled =
+        reconcile_codex_route_transition(&store, 4, CodexRouteMode::DirectAio, "sha256:old-live")
+            .expect("reconcile mismatch");
+    assert_eq!(reconciled, Some(false));
+    assert_eq!(
+        store.cleared.lock().expect("cleared lock").last().cloned(),
+        Some(second.operation_id)
+    );
+
+    let third = prepare_codex_route_transition(
+        &store,
+        crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::DisableGateway,
+        &prior,
+        CodexRouteMode::DirectAio,
+        "sha256:old-canonical".to_string(),
+        "sha256:old-live".to_string(),
+        None,
+        false,
+    )
+    .expect("prepare third transition");
+    clear_codex_route_transition(&store, &third).expect("clear third transition");
+    assert!(store.pending.lock().expect("pending lock").is_none());
+}
+
+#[test]
+fn plan_external_enable_reports_cli_proxy_and_provider_sync_requirements() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+"#,
+        r#"{
+  "profile": "local"
+}"#,
+    );
+
+    let plan = plan_external_enable(&handle, "http://127.0.0.1:37123", "http://127.0.0.1:4610")
+        .expect("plan external enable");
+
+    assert_eq!(plan.current_route_mode, CodexRouteMode::Unproxied);
+    assert!(plan.cli_proxy_enable_required, "{plan:?}");
+    assert!(plan.route_change_required, "{plan:?}");
+    assert_eq!(
+        plan.provider_sync.current_provider.as_deref(),
+        Some("Anthropic")
+    );
+    assert_eq!(plan.provider_sync.target_provider, "aio");
+    assert!(plan.provider_sync.change_required, "{plan:?}");
+    assert!(plan.provider_sync.codex_must_be_closed, "{plan:?}");
+}
+
+#[test]
+fn apply_guarded_route_rolls_back_when_provider_sync_requires_closed_codex() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let config = r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+"#;
+    let auth = r#"{
+  "profile": "local"
+}"#;
+    write_codex_direct_files(&handle, config, auth);
+
+    let plan = plan_external_enable(&handle, "http://127.0.0.1:37123", "http://127.0.0.1:4610")
+        .expect("plan external enable");
+
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(true));
+    let err = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256.clone(),
+            aio_origin: "http://127.0.0.1:37123".to_string(),
+            guarded_origin: "http://127.0.0.1:4610".to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect_err("running codex should block provider sync");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    assert!(err
+        .to_string()
+        .contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"));
+    assert_eq!(
+        std::fs::read_to_string(codex_config_path(&handle).expect("config path"))
+            .expect("read config"),
+        config
+    );
+    assert_eq!(
+        std::fs::read_to_string(codex_auth_path(&handle).expect("auth path")).expect("read auth"),
+        auth
+    );
+    assert!(read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .is_none());
+    assert!(store.load_pending().expect("load pending").is_none());
+}
+
+#[test]
+fn codex_route_coordinator_applies_guarded_direct_and_unproxied_transitions() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+    let original_config = r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.com/v1"
+"#;
+    write_codex_direct_files(
+        &handle,
+        original_config,
+        r#"{
+  "profile": "local"
+}"#,
+    );
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256.clone(),
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("apply guarded route");
+
+    assert_eq!(guarded.route.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(
+        guarded.route.effective_origin.as_deref(),
+        Some(guarded_origin)
+    );
+    assert!(guarded.route.live_matches_projection, "{guarded:?}");
+    assert!(guarded.route.auth_matches_projection, "{guarded:?}");
+    assert!(guarded.provider_sync.is_some(), "{guarded:?}");
+
+    let verify_guarded = verify_route(&handle).expect("verify guarded");
+    assert_eq!(verify_guarded.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(
+        verify_guarded.effective_origin.as_deref(),
+        Some(guarded_origin)
+    );
+
+    let direct = apply_direct_aio_route(
+        &handle,
+        &store,
+        CodexDirectAioRouteApplyRequest {
+            expected_generation: guarded.route.generation,
+            expected_canonical_sha256: guarded.route.canonical_config_sha256.clone(),
+            aio_origin: aio_origin.to_string(),
+            desired_enabled: true,
+            source_commit: None,
+            process_should_run: false,
+        },
+    )
+    .expect("apply direct aio route");
+
+    assert_eq!(direct.route.route_mode, CodexRouteMode::DirectAio);
+    assert_eq!(direct.route.effective_origin.as_deref(), Some(aio_origin));
+    assert!(direct.route.live_matches_projection, "{direct:?}");
+    assert!(direct.route.auth_matches_projection, "{direct:?}");
+
+    let restore = restore_unproxied_route(
+        &handle,
+        &store,
+        CodexRestoreUnproxiedRouteRequest {
+            expected_generation: direct.route.generation,
+            expected_canonical_sha256: direct.route.canonical_config_sha256.clone(),
+            aio_origin: Some(aio_origin.to_string()),
+            desired_enabled: false,
+            keep_cli_proxy_enabled: false,
+            source_commit: None,
+            process_should_run: false,
+        },
+    )
+    .expect("restore unproxied route");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    assert_eq!(restore.route.route_mode, CodexRouteMode::Unproxied);
+    assert!(!restore.route.cli_proxy_enabled, "{restore:?}");
+    assert!(restore.route.live_matches_projection, "{restore:?}");
+    assert!(restore.route.auth_matches_projection, "{restore:?}");
+    assert_eq!(
+        std::fs::read_to_string(codex_config_path(&handle).expect("config path"))
+            .expect("read final config")
+            .trim_end(),
+        original_config.trim_end()
+    );
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("manifest exists");
+    assert!(!manifest.enabled);
+    let codex = manifest.codex.expect("codex metadata");
+    assert_eq!(codex.route_mode, CodexRouteMode::Unproxied);
+    assert_eq!(codex.desired_enabled, false);
+}
+
+#[test]
+fn apply_guarded_route_rejects_stale_generation_after_managed_config_edit() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+
+    let enabled = set_enabled(&handle, "codex", true, aio_origin).expect("enable codex");
+    assert!(enabled.ok, "{enabled:?}");
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+
+    crate::infra::codex_config::codex_config_toml_set_raw(
+        &handle,
+        "approval_policy = \"on-request\"\n".to_string(),
+    )
+    .expect("update managed canonical config");
+
+    let err = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: None,
+            process_should_run: true,
+        },
+    )
+    .expect_err("stale generation/hash should fail");
+
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("CLI_PROXY_STALE_ROUTE_GENERATION")
+            || err_text.contains("CLI_PROXY_STALE_ROUTE_HASH"),
+        "{err_text}"
+    );
 }
 
 #[test]

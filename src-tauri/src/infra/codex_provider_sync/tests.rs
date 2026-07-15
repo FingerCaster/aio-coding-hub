@@ -37,6 +37,34 @@ fn current_config_provider_defaults_to_aio_when_missing() {
 }
 
 #[test]
+fn provider_sync_plan_marks_noop_when_current_and_target_provider_match() {
+    let plan = codex_provider_sync_plan_for_target(
+        "model_provider = \"aio\"\n[model_providers.aio]\nname = \"aio\"\n",
+        "aio",
+    )
+    .expect("provider sync plan");
+
+    assert_eq!(plan.current_provider.as_deref(), Some("aio"));
+    assert_eq!(plan.target_provider, "aio");
+    assert!(!plan.change_required, "{plan:?}");
+    assert!(!plan.codex_must_be_closed, "{plan:?}");
+}
+
+#[test]
+fn provider_sync_plan_reports_provider_change_and_close_requirement() {
+    let plan = codex_provider_sync_plan_for_config_text(
+        "model_provider = \"Anthropic\"\n[model_providers.Anthropic]\nname = \"Anthropic\"\n",
+        "model_provider = \"OpenAI\"\n[model_providers.OpenAI]\nname = \"OpenAI\"\n",
+    )
+    .expect("provider sync plan");
+
+    assert_eq!(plan.current_provider.as_deref(), Some("Anthropic"));
+    assert_eq!(plan.target_provider, "OpenAI");
+    assert!(plan.change_required, "{plan:?}");
+    assert!(plan.codex_must_be_closed, "{plan:?}");
+}
+
+#[test]
 fn current_config_provider_rejects_invalid_toml() {
     let err = codex_provider_target_from_current_config_text("model_provider =")
         .expect_err("invalid TOML should fail closed");

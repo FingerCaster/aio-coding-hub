@@ -51,3 +51,68 @@ pub(crate) async fn cli_proxy_rebind_codex_home(
 ) -> Result<crate::cli_proxy::CliProxyResult, String> {
     cli_proxy_service::cli_proxy_rebind_codex_home(app).await
 }
+
+#[allow(dead_code)]
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_proxy_codex_plan_external_enable(
+    app: tauri::AppHandle,
+    aio_origin: String,
+    guarded_origin: String,
+) -> Result<crate::cli_proxy::CodexExternalEnablePlan, String> {
+    cli_proxy_service::cli_proxy_codex_plan_external_enable(app, aio_origin, guarded_origin).await
+}
+
+#[allow(dead_code)]
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_proxy_codex_apply_guarded_route(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    request: crate::cli_proxy::CodexGuardedRouteApplyRequest,
+) -> Result<crate::cli_proxy::CodexRouteApplyResult, String> {
+    cli_proxy_service::cli_proxy_codex_apply_guarded_route(app, Some(db_state.inner()), request)
+        .await
+}
+
+#[allow(dead_code)]
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_proxy_codex_apply_direct_aio_route(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    request: crate::cli_proxy::CodexDirectAioRouteApplyRequest,
+) -> Result<crate::cli_proxy::CodexRouteApplyResult, String> {
+    cli_proxy_service::cli_proxy_codex_apply_direct_aio_route(app, Some(db_state.inner()), request)
+        .await
+}
+
+#[allow(dead_code)]
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_proxy_codex_restore_unproxied_route(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    request: crate::cli_proxy::CodexRestoreUnproxiedRouteRequest,
+) -> Result<crate::cli_proxy::CodexRouteApplyResult, String> {
+    cli_proxy_service::cli_proxy_codex_restore_unproxied_route(app, Some(db_state.inner()), request)
+        .await
+}
+
+#[allow(dead_code)]
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_proxy_codex_verify_route(
+    app: tauri::AppHandle,
+) -> Result<crate::cli_proxy::CodexRouteVerifyResult, String> {
+    cli_proxy_service::cli_proxy_codex_verify_route(app).await
+}
+
+#[allow(dead_code)]
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn cli_proxy_codex_reconcile_pending_route(
+    app: tauri::AppHandle,
+) -> Result<crate::cli_proxy::CodexRouteReconcileResult, String> {
+    cli_proxy_service::cli_proxy_codex_reconcile_pending_route(app).await
+}

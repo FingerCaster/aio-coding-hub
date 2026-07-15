@@ -450,6 +450,91 @@ pub fn cli_proxy_restore_enabled_keep_state_json<R: tauri::Runtime>(
     serialize_json(results)
 }
 
+pub fn cli_proxy_codex_plan_external_enable_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    aio_origin: &str,
+    guarded_origin: &str,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let result = tauri::async_runtime::block_on(
+        crate::app::cli_proxy_service::cli_proxy_codex_plan_external_enable(
+            app.clone(),
+            aio_origin.to_string(),
+            guarded_origin.to_string(),
+        ),
+    )?;
+    serialize_json(result)
+}
+
+pub fn cli_proxy_codex_apply_guarded_route_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: serde_json::Value,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let request: crate::infra::cli_proxy::CodexGuardedRouteApplyRequest =
+        serde_json::from_value(request)
+            .map_err(|e| format!("SEC_INVALID_INPUT: invalid guarded route request: {e}"))?;
+    let result = tauri::async_runtime::block_on(
+        crate::app::cli_proxy_service::cli_proxy_codex_apply_guarded_route(
+            app.clone(),
+            None,
+            request,
+        ),
+    )?;
+    serialize_json(result)
+}
+
+pub fn cli_proxy_codex_apply_direct_aio_route_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: serde_json::Value,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let request: crate::infra::cli_proxy::CodexDirectAioRouteApplyRequest =
+        serde_json::from_value(request)
+            .map_err(|e| format!("SEC_INVALID_INPUT: invalid direct route request: {e}"))?;
+    let result = tauri::async_runtime::block_on(
+        crate::app::cli_proxy_service::cli_proxy_codex_apply_direct_aio_route(
+            app.clone(),
+            None,
+            request,
+        ),
+    )?;
+    serialize_json(result)
+}
+
+pub fn cli_proxy_codex_restore_unproxied_route_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    request: serde_json::Value,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let request: crate::infra::cli_proxy::CodexRestoreUnproxiedRouteRequest =
+        serde_json::from_value(request).map_err(|e| {
+            format!("SEC_INVALID_INPUT: invalid restore unproxied route request: {e}")
+        })?;
+    let result = tauri::async_runtime::block_on(
+        crate::app::cli_proxy_service::cli_proxy_codex_restore_unproxied_route(
+            app.clone(),
+            None,
+            request,
+        ),
+    )?;
+    serialize_json(result)
+}
+
+pub fn cli_proxy_codex_verify_route_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let result = tauri::async_runtime::block_on(
+        crate::app::cli_proxy_service::cli_proxy_codex_verify_route(app.clone()),
+    )?;
+    serialize_json(result)
+}
+
+pub fn cli_proxy_codex_reconcile_pending_route_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<serde_json::Value> {
+    let result = tauri::async_runtime::block_on(
+        crate::app::cli_proxy_service::cli_proxy_codex_reconcile_pending_route(app.clone()),
+    )?;
+    serialize_json(result)
+}
+
 pub fn gateway_check_port_available_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     port: u16,
