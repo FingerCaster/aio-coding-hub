@@ -18,9 +18,6 @@ pub(super) struct RetryLoopState {
     pub(super) thinking_signature_rectifier_retried: bool,
     pub(super) thinking_budget_rectifier_retried: bool,
     pub(super) allow_next_retry_beyond_max_attempts: bool,
-    pub(super) codex_reasoning_guard_hits: u32,
-    pub(super) codex_reasoning_guard_current_model: Option<String>,
-    pub(super) codex_reasoning_guard_next_retry_wave: Option<CodexReasoningGuardNextRetryWave>,
 }
 
 impl Clone for RetryLoopState {
@@ -33,23 +30,7 @@ impl Clone for RetryLoopState {
             thinking_signature_rectifier_retried: self.thinking_signature_rectifier_retried,
             thinking_budget_rectifier_retried: self.thinking_budget_rectifier_retried,
             allow_next_retry_beyond_max_attempts: false,
-            codex_reasoning_guard_hits: self.codex_reasoning_guard_hits,
-            codex_reasoning_guard_current_model: self.codex_reasoning_guard_current_model.clone(),
-            codex_reasoning_guard_next_retry_wave: None,
         }
-    }
-}
-
-impl RetryLoopState {
-    pub(super) fn remember_codex_reasoning_guard_retry_wave(
-        &mut self,
-        wave: Option<codex_reasoning_guard::CodexReasoningGuardRetryWave>,
-    ) {
-        self.codex_reasoning_guard_next_retry_wave =
-            wave.map(|wave| CodexReasoningGuardNextRetryWave {
-                concurrency: wave.concurrency,
-                interval_ms: wave.interval_ms,
-            });
     }
 }
 
@@ -62,17 +43,8 @@ impl RetryLoopState {
             thinking_signature_rectifier_retried: false,
             thinking_budget_rectifier_retried: false,
             allow_next_retry_beyond_max_attempts: false,
-            codex_reasoning_guard_hits: 0,
-            codex_reasoning_guard_current_model: None,
-            codex_reasoning_guard_next_retry_wave: None,
         }
     }
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(super) struct CodexReasoningGuardNextRetryWave {
-    pub(super) concurrency: u32,
-    pub(super) interval_ms: u32,
 }
 
 /// Timing captured at the start of an attempt, before the upstream send.
@@ -662,46 +634,5 @@ mod tests {
         apply_body_sanitizer_outcome(&special_settings, 42, "Claude OAuth", &clean_outcome);
 
         assert!(special_settings.lock().unwrap().is_empty());
-    }
-
-    #[test]
-    fn retry_state_remembers_codex_reasoning_guard_next_wave() {
-        let wave = codex_reasoning_guard::retry_wave(
-            2,
-            crate::settings::CodexReasoningGuardRetryPolicy::Concurrent,
-            5,
-            1_000,
-            10,
-        );
-        let mut retry_state = RetryLoopState::new();
-
-        retry_state.remember_codex_reasoning_guard_retry_wave(Some(wave));
-
-        assert_eq!(
-            retry_state.codex_reasoning_guard_next_retry_wave,
-            Some(CodexReasoningGuardNextRetryWave {
-                concurrency: 3,
-                interval_ms: 1_000,
-            })
-        );
-    }
-
-    #[test]
-    fn retry_state_probe_clone_does_not_reuse_pending_wave() {
-        let mut retry_state = RetryLoopState::new();
-        retry_state.codex_reasoning_guard_current_model = Some("gpt-5.4".to_string());
-        retry_state.codex_reasoning_guard_next_retry_wave =
-            Some(CodexReasoningGuardNextRetryWave {
-                concurrency: 4,
-                interval_ms: 500,
-            });
-
-        let cloned = retry_state.clone();
-
-        assert_eq!(
-            cloned.codex_reasoning_guard_current_model.as_deref(),
-            Some("gpt-5.4")
-        );
-        assert!(cloned.codex_reasoning_guard_next_retry_wave.is_none());
     }
 }

@@ -139,35 +139,6 @@ pub(crate) async fn request_attempt_logs_by_trace_id(
 
 #[tauri::command]
 #[specta::specta]
-pub(crate) async fn request_logs_codex_reasoning_guard_stats(
-    app: tauri::AppHandle,
-    db_state: tauri::State<'_, DbInitState>,
-    start_created_at_ms: Option<i64>,
-    end_created_at_ms: Option<i64>,
-) -> Result<request_logs::CodexReasoningGuardStats, String> {
-    if matches!(start_created_at_ms, Some(value) if value <= 0) {
-        return Err("SEC_INVALID_INPUT: invalid sinceCreatedAtMs".to_string());
-    }
-    if matches!(end_created_at_ms, Some(value) if value <= 0) {
-        return Err("SEC_INVALID_INPUT: invalid endCreatedAtMs".to_string());
-    }
-    if matches!(
-        (start_created_at_ms, end_created_at_ms),
-        (Some(start), Some(end)) if end <= start
-    ) {
-        return Err("SEC_INVALID_INPUT: invalid createdAt range".to_string());
-    }
-
-    let db = ensure_db_ready(app, db_state.inner()).await?;
-    blocking::run("request_logs_codex_reasoning_guard_stats", move || {
-        request_logs::codex_reasoning_guard_stats(&db, start_created_at_ms, end_created_at_ms)
-    })
-    .await
-    .map_err(Into::into)
-}
-
-#[tauri::command]
-#[specta::specta]
 pub(crate) async fn active_request_logs_snapshot(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,

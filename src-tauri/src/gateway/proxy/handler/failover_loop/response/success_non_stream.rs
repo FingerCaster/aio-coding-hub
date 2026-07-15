@@ -452,11 +452,11 @@ fn cache_bridge_non_stream_response(
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_success_non_stream<R>(
     ctx: CommonCtx<'_, R>,
-    input: &RequestContext<R>,
+    _input: &RequestContext<R>,
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
     loop_state: LoopState<'_, R>,
-    retry_state: &mut RetryLoopState,
+    _retry_state: &mut RetryLoopState,
     resp: reqwest::Response,
     status: StatusCode,
     mut response_headers: HeaderMap,
@@ -516,16 +516,11 @@ where
 
     strip_hop_headers(&mut response_headers);
     let cx2cc_buffered_event_stream = cx2cc_active && is_event_stream(&response_headers);
-    let should_collect_passive_codex_reasoning_features = common.cli_key == "codex";
-    let should_run_active_codex_reasoning_guard = common.codex_reasoning_guard_enabled
-        && should_collect_passive_codex_reasoning_features
-        && active_bridge_type.is_none();
     if should_passthrough_non_stream_success(
         gemini_oauth_response_mode,
         cx2cc_buffered_event_stream,
         active_bridge_type.is_some(),
-    ) && !should_collect_passive_codex_reasoning_features
-    {
+    ) {
         let should_gunzip = has_gzip_content_encoding(&response_headers);
 
         match resp.content_length() {
@@ -621,111 +616,6 @@ where
                     common.trace_id.as_str(),
                     body,
                 ));
-            }
-            None => {
-                let outcome = "success".to_string();
-
-                attempts.push(FailoverAttempt {
-                    provider_id,
-                    provider_name: provider_ctx_owned.provider_name_base.clone(),
-                    base_url: provider_ctx_owned.provider_base_url_base.clone(),
-                    outcome: outcome.clone(),
-                    status: Some(status.as_u16()),
-                    provider_index: Some(provider_index),
-                    retry_index: Some(retry_index),
-                    session_reuse,
-                    provider_bridged: Some(provider_ctx_owned.provider_bridged),
-                    error_category: None,
-                    error_code: None,
-                    decision: Some("success"),
-                    reason: None,
-                    selection_method,
-                    reason_code: Some(reason_code),
-                    attempt_started_ms: Some(attempt_started_ms),
-                    attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
-                    circuit_state_before: Some(circuit_before.state.as_str()),
-                    circuit_state_after: None,
-                    circuit_failure_count: Some(circuit_before.failure_count),
-                    circuit_failure_threshold: Some(circuit_before.failure_threshold),
-                    circuit_recover_at_unix: None,
-                    circuit_trigger_error_code: None,
-                    timeout_secs: None,
-                });
-
-                emit_attempt_event_and_log_with_circuit_before(
-                    ctx,
-                    provider_ctx,
-                    attempt_ctx,
-                    outcome,
-                    Some(status.as_u16()),
-                )
-                .await;
-
-                codex_service_tier::append_result_if_detected(
-                    common.cli_key.as_str(),
-                    common.introspection_body.as_slice(),
-                    None,
-                    &common.special_settings,
-                );
-
-                let ctx = build_stream_finalize_ctx(
-                    &common,
-                    &provider_ctx_owned,
-                    attempts.as_slice(),
-                    status.as_u16(),
-                    None,
-                    None,
-                    attempt_started,
-                );
-
-                if should_gunzip {
-                    // 上游可能无视 accept-encoding: identity 返回 gzip；
-                    response_headers.remove(header::CONTENT_ENCODING);
-                    response_headers.remove(header::CONTENT_LENGTH);
-                }
-
-                let body = if should_gunzip {
-                    let upstream = GunzipStream::new(resp.bytes_stream());
-                    let stream = UsageBodyBufferTeeStream::new(
-                        upstream,
-                        ctx,
-                        MAX_NON_SSE_BODY_BYTES,
-                        upstream_request_timeout_non_streaming,
-                    );
-                    Body::from_stream(stream)
-                } else {
-                    let stream = UsageBodyBufferTeeStream::new(
-                        resp.bytes_stream(),
-                        ctx,
-                        MAX_NON_SSE_BODY_BYTES,
-                        upstream_request_timeout_non_streaming,
-                    );
-                    Body::from_stream(stream)
-                };
-
-                let mut builder = Response::builder().status(status);
-                for (k, v) in response_headers.iter() {
-                    builder = builder.header(k, v);
-                }
-                builder = builder.header("x-trace-id", common.trace_id.as_str());
-
-                abort_guard.disarm();
-                return LoopControl::Return(match builder.body(body) {
-                    Ok(r) => r,
-                    Err(_) => {
-                        let mut fallback = (
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            GatewayErrorCode::ResponseBuildError.as_str(),
-                        )
-                            .into_response();
-                        fallback.headers_mut().insert(
-                            "x-trace-id",
-                            HeaderValue::from_str(common.trace_id.as_str())
-                                .unwrap_or(HeaderValue::from_static("unknown")),
-                        );
-                        fallback
-                    }
-                });
             }
             _ => {}
         }
@@ -1218,466 +1108,6 @@ where
         body_bytes = outcome.body;
     }
 
-    if should_collect_passive_codex_reasoning_features {
-        if let Ok(body_json) = serde_json::from_slice::<serde_json::Value>(&body_bytes) {
-            let special_settings_snapshot =
-                codex_reasoning_features::special_settings_snapshot(&common.special_settings);
-            let feature_sample = codex_reasoning_features::build_complete_sample(
-                common.cli_key.as_str(),
-                common.codex_reasoning_guard_rule_mode,
-                Some(&input.base_headers),
-                input.introspection_json.as_ref(),
-                special_settings_snapshot.as_slice(),
-                &body_json,
-            );
-            if let Some(sample) = feature_sample.as_ref() {
-                codex_reasoning_features::push_special_setting(&common.special_settings, sample);
-            }
-
-            let active_guard_model =
-                provider_ctx_owned
-                    .active_requested_model
-                    .clone()
-                    .or_else(|| {
-                        current_codex_reasoning_guard_model(input, retry_state)
-                            .map(ToOwned::to_owned)
-                    });
-            if let Some(decision) = if should_run_active_codex_reasoning_guard {
-                codex_reasoning_guard::evaluate_decision(
-                    codex_reasoning_guard::CodexReasoningGuardDecisionEvaluationInput {
-                        base: codex_reasoning_guard::CodexReasoningGuardEvaluationInput {
-                            cli_key: common.cli_key.as_str(),
-                            requested_model: active_guard_model.as_deref(),
-                            value: &body_json,
-                            rule_mode: common.codex_reasoning_guard_rule_mode,
-                            feature_sample: feature_sample.as_ref(),
-                        },
-                        active_template_id: common
-                            .codex_reasoning_guard_active_template_id
-                            .as_str(),
-                        custom_templates: common.codex_reasoning_guard_custom_templates.as_slice(),
-                        duration_ms: Some(started.elapsed().as_millis()),
-                        ttfb_ms: provider_ttfb_ms,
-                    },
-                )
-            } else {
-                None
-            } {
-                let matched = &decision.matched;
-                if decision.action
-                    == crate::settings::CodexReasoningGuardTemplateRuleAction::NoIntercept
-                {
-                    codex_reasoning_guard::push_decision_special_setting(
-                        &common.special_settings,
-                        provider_id,
-                        provider_ctx_owned.provider_name_base.as_str(),
-                        retry_index,
-                        matched,
-                    );
-                } else if common
-                    .codex_reasoning_guard_post_match_strategy
-                    .is_continuation_repair()
-                {
-                    let budget_decision = codex_reasoning_guard::continuation_exhausted_decision(
-                        retry_state.codex_reasoning_guard_hits,
-                        common.codex_reasoning_guard_immediate_retry_budget,
-                        common.codex_reasoning_guard_exhausted_action,
-                    );
-                    codex_reasoning_guard::push_special_setting_with_strategy(
-                        &common.special_settings,
-                        provider_id,
-                        provider_ctx_owned.provider_name_base.as_str(),
-                        retry_index,
-                        matched,
-                        budget_decision,
-                        common.codex_reasoning_guard_post_match_strategy,
-                        Some("unsupported"),
-                        Some(0),
-                        Some("unsupported"),
-                        Some("continuation repair is only supported for native Codex Responses event-stream responses"),
-                        StatusCode::BAD_GATEWAY.as_u16(),
-                    );
-                    codex_reasoning_guard::record_guard_retry_attempt(
-                        attempts,
-                        provider_id,
-                        provider_ctx_owned.provider_name_base.as_str(),
-                        provider_ctx_owned.provider_base_url_base.as_str(),
-                        provider_index,
-                        retry_index,
-                        session_reuse,
-                        attempt_started_ms,
-                        attempt_started.elapsed().as_millis(),
-                        circuit_before.state.as_str(),
-                        circuit_before.failure_count,
-                        circuit_before.failure_threshold,
-                        provider_ctx_owned.provider_bridged,
-                        matched,
-                        budget_decision,
-                    );
-                    let outcome = match budget_decision.action {
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
-                            "codex_reasoning_guard_retry"
-                        }
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
-                            "codex_reasoning_guard_exhausted"
-                        }
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
-                            "codex_reasoning_guard_switch_provider"
-                        }
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
-                            "codex_reasoning_guard_switch_model"
-                        }
-                    };
-                    emit_attempt_event_and_log(
-                        ctx,
-                        provider_ctx,
-                        attempt_ctx,
-                        outcome.to_string(),
-                        Some(StatusCode::BAD_GATEWAY.as_u16()),
-                        AttemptCircuitFields {
-                            state_before: Some(circuit_before.state.as_str()),
-                            state_after: Some(circuit_before.state.as_str()),
-                            failure_count: Some(circuit_before.failure_count),
-                            failure_threshold: Some(circuit_before.failure_threshold),
-                        },
-                    )
-                    .await;
-                    match budget_decision.action {
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
-                            return LoopControl::ContinueRetry;
-                        }
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
-                            *last_outcome = Some(AttemptOutcome::new(
-                                ErrorCategory::SystemError.as_str(),
-                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                            ));
-                            let duration_ms = started.elapsed().as_millis();
-                            let requested_model_for_log =
-                                active_guard_model.clone().or_else(|| common.requested_model.clone());
-                            emit_request_event_and_enqueue_request_log(
-                                RequestEndArgs::from_context(RequestEndContextArgs {
-                                    deps: RequestEndDeps::new(
-                                        &common.state.app,
-                                        &common.state.db,
-                                        &common.state.log_tx,
-                                        &common.state.plugin_pipeline,
-                                        &common.state.active_requests,
-                                    ),
-                                    trace_id: common.trace_id.as_str(),
-                                    cli_key: common.cli_key.as_str(),
-                                    method: common.method_hint.as_str(),
-                                    path: common.forwarded_path.as_str(),
-                                    observe: common.observe,
-                                    query: common.query.as_deref(),
-                                    excluded_from_stats: false,
-                                    duration_ms,
-                                    attempts: attempts.as_slice(),
-                                    special_settings_json: response_fixer::special_settings_json(
-                                        &common.special_settings,
-                                    ),
-                                    session_id: common.session_id.clone(),
-                                    requested_model: requested_model_for_log,
-                                    created_at_ms,
-                                    created_at,
-                                })
-                                .with_completion(RequestCompletion::failure_with_visible_ttfb(
-                                    StatusCode::BAD_GATEWAY.as_u16(),
-                                    Some(ErrorCategory::SystemError.as_str()),
-                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                                    provider_ttfb_ms,
-                                    Some(duration_ms),
-                                )),
-                            )
-                            .await;
-                            abort_guard.disarm();
-                            return LoopControl::Return(error_response(
-                                StatusCode::BAD_GATEWAY,
-                                common.trace_id.clone(),
-                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                                "Codex reasoning guard continuation repair is unsupported for this response".to_string(),
-                                attempts.clone(),
-                            ));
-                        }
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
-                            failed_provider_ids.insert(provider_id);
-                            *last_outcome = Some(AttemptOutcome::new(
-                                ErrorCategory::SystemError.as_str(),
-                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                            ));
-                            return LoopControl::BreakRetry;
-                        }
-                        codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
-                            retry_state.codex_reasoning_guard_next_retry_wave = None;
-                            if let Some(next_model) = codex_reasoning_guard::select_next_model_fallback(
-                                active_guard_model.as_deref(),
-                                common.codex_reasoning_guard_model_fallbacks.as_slice(),
-                            ) {
-                                return LoopControl::SwitchModel(next_model.to_string());
-                            }
-
-                            *last_outcome = Some(AttemptOutcome::new(
-                                ErrorCategory::SystemError.as_str(),
-                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                            ));
-                            let duration_ms = started.elapsed().as_millis();
-                            let requested_model_for_log =
-                                active_guard_model.clone().or_else(|| common.requested_model.clone());
-                            emit_request_event_and_enqueue_request_log(
-                                RequestEndArgs::from_context(RequestEndContextArgs {
-                                    deps: RequestEndDeps::new(
-                                        &common.state.app,
-                                        &common.state.db,
-                                        &common.state.log_tx,
-                                        &common.state.plugin_pipeline,
-                                        &common.state.active_requests,
-                                    ),
-                                    trace_id: common.trace_id.as_str(),
-                                    cli_key: common.cli_key.as_str(),
-                                    method: common.method_hint.as_str(),
-                                    path: common.forwarded_path.as_str(),
-                                    observe: common.observe,
-                                    query: common.query.as_deref(),
-                                    excluded_from_stats: false,
-                                    duration_ms,
-                                    attempts: attempts.as_slice(),
-                                    special_settings_json: response_fixer::special_settings_json(
-                                        &common.special_settings,
-                                    ),
-                                    session_id: common.session_id.clone(),
-                                    requested_model: requested_model_for_log,
-                                    created_at_ms,
-                                    created_at,
-                                })
-                                .with_completion(RequestCompletion::failure_with_visible_ttfb(
-                                    StatusCode::BAD_GATEWAY.as_u16(),
-                                    Some(ErrorCategory::SystemError.as_str()),
-                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                                    provider_ttfb_ms,
-                                    Some(duration_ms),
-                                )),
-                            )
-                            .await;
-                            abort_guard.disarm();
-                            return LoopControl::Return(error_response(
-                                StatusCode::BAD_GATEWAY,
-                                common.trace_id.clone(),
-                                codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                                "Codex reasoning guard model fallback exhausted".to_string(),
-                                attempts.clone(),
-                            ));
-                        }
-                    }
-                } else {
-                    let budget_decision = codex_reasoning_guard::budget_decision(
-                        retry_state.codex_reasoning_guard_hits,
-                        codex_reasoning_guard::CodexReasoningGuardBudgetConfig {
-                            immediate_budget: common.codex_reasoning_guard_immediate_retry_budget,
-                            delayed_budget: common.codex_reasoning_guard_delayed_retry_budget,
-                            delayed_retry_ms: common.codex_reasoning_guard_delayed_retry_ms,
-                            exhausted_action: common.codex_reasoning_guard_exhausted_action,
-                            retry_policy: common.codex_reasoning_guard_retry_policy,
-                            concurrent_max: common.codex_reasoning_guard_concurrent_max,
-                            concurrent_interval_ms: common
-                                .codex_reasoning_guard_concurrent_interval_ms,
-                            concurrent_max_attempts: common
-                                .codex_reasoning_guard_concurrent_max_attempts,
-                        },
-                    );
-                    codex_reasoning_guard::push_special_setting(
-                        &common.special_settings,
-                        provider_id,
-                        provider_ctx_owned.provider_name_base.as_str(),
-                        retry_index,
-                        matched,
-                        budget_decision,
-                    );
-                    codex_reasoning_guard::record_guard_retry_attempt(
-                        attempts,
-                        provider_id,
-                        provider_ctx_owned.provider_name_base.as_str(),
-                        provider_ctx_owned.provider_base_url_base.as_str(),
-                        provider_index,
-                        retry_index,
-                        session_reuse,
-                        attempt_started_ms,
-                        attempt_started.elapsed().as_millis(),
-                        circuit_before.state.as_str(),
-                        circuit_before.failure_count,
-                        circuit_before.failure_threshold,
-                        provider_ctx_owned.provider_bridged,
-                        matched,
-                        budget_decision,
-                    );
-                    let outcome = match budget_decision.action {
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
-                        "codex_reasoning_guard_retry"
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
-                        "codex_reasoning_guard_exhausted"
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
-                        "codex_reasoning_guard_switch_provider"
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
-                        "codex_reasoning_guard_switch_model"
-                    }
-                };
-                    emit_attempt_event_and_log(
-                        ctx,
-                        provider_ctx,
-                        attempt_ctx,
-                        outcome.to_string(),
-                        Some(StatusCode::BAD_GATEWAY.as_u16()),
-                        AttemptCircuitFields {
-                            state_before: Some(circuit_before.state.as_str()),
-                            state_after: Some(circuit_before.state.as_str()),
-                            failure_count: Some(circuit_before.failure_count),
-                            failure_threshold: Some(circuit_before.failure_threshold),
-                        },
-                    )
-                    .await;
-                    match budget_decision.action {
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::RetrySameProvider => {
-                        retry_state.codex_reasoning_guard_hits =
-                            retry_state.codex_reasoning_guard_hits.saturating_add(1);
-                        retry_state.allow_next_retry_beyond_max_attempts = true;
-                        retry_state
-                            .remember_codex_reasoning_guard_retry_wave(budget_decision.retry_wave);
-                        codex_reasoning_guard::apply_delay_if_needed(budget_decision).await;
-                        return LoopControl::ContinueRetry;
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::ReturnError => {
-                        *last_outcome = Some(AttemptOutcome::new(
-                            ErrorCategory::SystemError.as_str(),
-                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                        ));
-                        let duration_ms = started.elapsed().as_millis();
-                        let requested_model_for_log = active_guard_model
-                            .clone()
-                            .or_else(|| common.requested_model.clone());
-                        emit_request_event_and_enqueue_request_log(
-                            RequestEndArgs::from_context(RequestEndContextArgs {
-                                deps: RequestEndDeps::new(
-                                    &common.state.app,
-                                    &common.state.db,
-                                    &common.state.log_tx,
-                                    &common.state.plugin_pipeline,
-                                    &common.state.active_requests,
-                                ),
-                                trace_id: common.trace_id.as_str(),
-                                cli_key: common.cli_key.as_str(),
-                                method: common.method_hint.as_str(),
-                                path: common.forwarded_path.as_str(),
-                                observe: common.observe,
-                                query: common.query.as_deref(),
-                                excluded_from_stats: false,
-                                duration_ms,
-                                attempts: attempts.as_slice(),
-                                special_settings_json: response_fixer::special_settings_json(
-                                    &common.special_settings,
-                                ),
-                                session_id: common.session_id.clone(),
-                                requested_model: requested_model_for_log,
-                                created_at_ms,
-                                created_at,
-                            })
-                            .with_completion(
-                                RequestCompletion::failure_with_visible_ttfb(
-                                    StatusCode::BAD_GATEWAY.as_u16(),
-                                    Some(ErrorCategory::SystemError.as_str()),
-                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                                    provider_ttfb_ms,
-                                    Some(duration_ms),
-                                ),
-                            ),
-                        )
-                        .await;
-                        abort_guard.disarm();
-                        return LoopControl::Return(error_response(
-                            StatusCode::BAD_GATEWAY,
-                            common.trace_id.clone(),
-                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                            "Codex reasoning guard retry budget exhausted".to_string(),
-                            attempts.clone(),
-                        ));
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchProvider => {
-                        failed_provider_ids.insert(provider_id);
-                        *last_outcome = Some(AttemptOutcome::new(
-                            ErrorCategory::SystemError.as_str(),
-                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                        ));
-                        return LoopControl::BreakRetry;
-                    }
-                    codex_reasoning_guard::CodexReasoningGuardBudgetAction::SwitchModel => {
-                        retry_state.codex_reasoning_guard_next_retry_wave = None;
-                        if let Some(next_model) = codex_reasoning_guard::select_next_model_fallback(
-                            active_guard_model.as_deref(),
-                            common.codex_reasoning_guard_model_fallbacks.as_slice(),
-                        ) {
-                            return LoopControl::SwitchModel(next_model.to_string());
-                        }
-
-                        *last_outcome = Some(AttemptOutcome::new(
-                            ErrorCategory::SystemError.as_str(),
-                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                        ));
-                        let duration_ms = started.elapsed().as_millis();
-                        let requested_model_for_log = active_guard_model
-                            .clone()
-                            .or_else(|| common.requested_model.clone());
-                        emit_request_event_and_enqueue_request_log(
-                            RequestEndArgs::from_context(RequestEndContextArgs {
-                                deps: RequestEndDeps::new(
-                                    &common.state.app,
-                                    &common.state.db,
-                                    &common.state.log_tx,
-                                    &common.state.plugin_pipeline,
-                                    &common.state.active_requests,
-                                ),
-                                trace_id: common.trace_id.as_str(),
-                                cli_key: common.cli_key.as_str(),
-                                method: common.method_hint.as_str(),
-                                path: common.forwarded_path.as_str(),
-                                observe: common.observe,
-                                query: common.query.as_deref(),
-                                excluded_from_stats: false,
-                                duration_ms,
-                                attempts: attempts.as_slice(),
-                                special_settings_json: response_fixer::special_settings_json(
-                                    &common.special_settings,
-                                ),
-                                session_id: common.session_id.clone(),
-                                requested_model: requested_model_for_log,
-                                created_at_ms,
-                                created_at,
-                            })
-                            .with_completion(
-                                RequestCompletion::failure_with_visible_ttfb(
-                                    StatusCode::BAD_GATEWAY.as_u16(),
-                                    Some(ErrorCategory::SystemError.as_str()),
-                                    codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                                    provider_ttfb_ms,
-                                    Some(duration_ms),
-                                ),
-                            ),
-                        )
-                        .await;
-                        abort_guard.disarm();
-                        return LoopControl::Return(error_response(
-                            StatusCode::BAD_GATEWAY,
-                            common.trace_id.clone(),
-                            codex_reasoning_guard::CODEX_REASONING_GUARD_ERROR_CODE,
-                            "Codex reasoning guard model fallback exhausted".to_string(),
-                            attempts.clone(),
-                        ));
-                    }
-                }
-                }
-            }
-        }
-    }
-
     let outcome = "success".to_string();
 
     attempts.push(FailoverAttempt {
@@ -1793,7 +1223,6 @@ where
             provider_ctx_owned
                 .active_requested_model
                 .as_deref()
-                .or(retry_state.codex_reasoning_guard_current_model.as_deref())
                 .or(common.requested_model.as_deref()),
             actual_model.as_deref(),
             upstream_actual_reasoning_effort_before_bridge.as_deref(),
@@ -1806,10 +1235,7 @@ where
     }
     let requested_model_for_log = resolve_requested_model_for_log(
         common.requested_model.clone(),
-        provider_ctx_owned
-            .active_requested_model
-            .as_deref()
-            .or(retry_state.codex_reasoning_guard_current_model.as_deref()),
+        provider_ctx_owned.active_requested_model.as_deref(),
         common.cli_key.as_str(),
         &body_bytes,
     );
@@ -2070,7 +1496,6 @@ where
             provider_ctx_owned
                 .active_requested_model
                 .as_deref()
-                .or(_retry_state.codex_reasoning_guard_current_model.as_deref())
                 .or(common.requested_model.as_deref()),
             actual_model.as_deref(),
             actual_reasoning_effort.as_deref(),
@@ -2083,10 +1508,7 @@ where
     }
     let requested_model_for_log = resolve_requested_model_for_log(
         common.requested_model.clone(),
-        provider_ctx_owned
-            .active_requested_model
-            .as_deref()
-            .or(_retry_state.codex_reasoning_guard_current_model.as_deref()),
+        provider_ctx_owned.active_requested_model.as_deref(),
         common.cli_key.as_str(),
         &body_bytes,
     );

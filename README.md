@@ -17,10 +17,6 @@
 
 > **Fork 说明** — 本仓库是个人 fork，主要用于 `vibe coding`、试验和随手折腾。代码可能随时改动，**不保证任何可用性、稳定性或兼容性**，也不适合默认用于生产环境；如需参考原始能力，请以 upstream 仓库为准。
 >
-> Fork 侧参考：
-> - Codex 降智拦截 / 重试设计：[codex-retry-gateway](https://github.com/nonononull/codex-retry-gateway)
-> - 思考续写设计：[CodexCont](https://github.com/neteroster/CodexCont)
-
 ---
 
 ## 为什么需要它？

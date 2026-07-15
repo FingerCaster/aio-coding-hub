@@ -95,35 +95,6 @@ fn real_attempt() -> FailoverAttempt {
     }
 }
 
-fn guard_terminal_attempt(outcome: &'static str, decision: &'static str) -> FailoverAttempt {
-    FailoverAttempt {
-        provider_id: 1,
-        provider_name: "provider".to_string(),
-        base_url: "https://example.com".to_string(),
-        outcome: outcome.to_string(),
-        status: Some(502),
-        provider_index: Some(1),
-        retry_index: Some(1),
-        session_reuse: Some(false),
-        error_category: Some("SYSTEM_ERROR"),
-        error_code: Some("GW_CODEX_REASONING_GUARD"),
-        decision: Some(decision),
-        reason: Some("codex reasoning guard terminal state".to_string()),
-        selection_method: Some("ordered"),
-        reason_code: Some("codex_reasoning_guard"),
-        attempt_started_ms: Some(1),
-        attempt_duration_ms: Some(10),
-        circuit_state_before: Some("CLOSED"),
-        circuit_state_after: Some("CLOSED"),
-        circuit_failure_count: Some(0),
-        circuit_failure_threshold: Some(5),
-        circuit_recover_at_unix: None,
-        circuit_trigger_error_code: None,
-        provider_bridged: Some(false),
-        timeout_secs: None,
-    }
-}
-
 fn timeout_attempt(
     provider_id: i64,
     provider_index: u32,
@@ -200,17 +171,6 @@ fn timeout_storm_attempts_finalize_as_failed_not_unavailable() {
 }
 
 #[test]
-fn codex_reasoning_guard_terminal_attempts_finalize_as_failed_not_unavailable() {
-    for attempt in [
-        guard_terminal_attempt("codex_reasoning_guard_retry", "retry_same_provider"),
-        guard_terminal_attempt("codex_reasoning_guard_exhausted", "abort"),
-        guard_terminal_attempt("codex_reasoning_guard_switch_provider", "switch"),
-    ] {
-        assert!(!should_finalize_as_all_providers_unavailable(&[attempt]));
-    }
-}
-
-#[test]
 fn non_gate_skip_attempts_do_not_finalize_as_unavailable() {
     let attempts = vec![skipped_attempt(None)];
 
@@ -244,42 +204,6 @@ fn failover_run_state_owns_attempts_failed_ids_and_last_outcome() {
     assert!(state.failed_provider_ids.contains(&42));
     assert_eq!(outcome.error_category, "provider_error");
     assert_eq!(outcome.error_code, GatewayErrorCode::Upstream5xx.as_str());
-}
-
-#[test]
-fn codex_reasoning_guard_switch_marks_provider_failed_without_circuit_pollution() {
-    let mut state = FailoverRunState::new();
-    let provider_a = 10;
-    let provider_b = 20;
-
-    state.attempts.push(guard_terminal_attempt(
-        "codex_reasoning_guard_switch_provider",
-        "switch",
-    ));
-    state.failed_provider_ids.insert(provider_a);
-    state.last_outcome = Some(AttemptOutcome::new(
-        "SYSTEM_ERROR",
-        "GW_CODEX_REASONING_GUARD",
-    ));
-
-    assert!(state.failed_provider_ids.contains(&provider_a));
-    assert!(!state.failed_provider_ids.contains(&provider_b));
-    assert!(!should_finalize_as_all_providers_unavailable(
-        &state.attempts
-    ));
-
-    let guard_attempt = &state.attempts[0];
-    assert_eq!(guard_attempt.error_code, Some("GW_CODEX_REASONING_GUARD"));
-    assert_eq!(guard_attempt.circuit_state_before, Some("CLOSED"));
-    assert_eq!(guard_attempt.circuit_state_after, Some("CLOSED"));
-    assert_eq!(guard_attempt.circuit_failure_count, Some(0));
-
-    let outcome = state.last_outcome.expect("last outcome");
-    assert_eq!(outcome.error_code, "GW_CODEX_REASONING_GUARD");
-
-    let next_provider_retry_state = RetryLoopState::new();
-    assert_eq!(next_provider_retry_state.codex_reasoning_guard_hits, 0);
-    assert!(!next_provider_retry_state.allow_next_retry_beyond_max_attempts);
 }
 
 #[test]
