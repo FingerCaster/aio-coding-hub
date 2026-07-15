@@ -13,7 +13,7 @@ use crate::infra::codex_retry_gateway::source::{
     install_source_commit, public_source_error, revalidate_cached_source, validate_commit_request,
     CodexRetryGatewaySourceHttpConfig,
 };
-use crate::infra::codex_retry_gateway::util::{normalize_full_sha, now_unix_ms};
+use crate::infra::codex_retry_gateway::util::{normalize_full_sha, now_unix_ms, strip_trailing_v1};
 use crate::infra::codex_retry_gateway::{
     AioGatewayOrigin, CodexProviderSyncPlan, CodexRetryGatewayApplyCommitRequest,
     CodexRetryGatewayCommitValidation, CodexRetryGatewayDetailsSession,
@@ -65,13 +65,6 @@ fn runtime_lock() -> &'static Mutex<()> {
 
 fn lifecycle_callback_slot() -> &'static RwLock<Arc<dyn CodexRetryGatewayLifecycleCallback>> {
     LIFECYCLE_CALLBACK.get_or_init(|| RwLock::new(Arc::new(RuntimeFailClosedCallback)))
-}
-
-#[cfg(test)]
-pub(crate) async fn install_lifecycle_callback_for_tests(
-    callback: Arc<dyn CodexRetryGatewayLifecycleCallback>,
-) {
-    *lifecycle_callback_slot().write().await = callback;
 }
 
 pub(crate) async fn current_status<R: tauri::Runtime>(
@@ -529,8 +522,13 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
         let reconciled =
             reconcile_runtime_process(paths, Some(record), manager.effective_port).await?;
         if let Some(process) = reconciled.managed.as_ref() {
+            let canonical_node = std::fs::canonicalize(&node.executable)
+                .ok()
+                .map(|path| path.display().to_string());
             if process.record.source_commit == selection.canonical_commit
-                && process.record.node_executable == node.executable.display().to_string()
+                && canonical_node
+                    .as_deref()
+                    .is_some_and(|path| process.record.node_executable == path)
             {
                 return Ok(process.clone());
             }
@@ -646,10 +644,7 @@ fn codex_cli_proxy_projection<R: tauri::Runtime>(
     effective_port: Option<u16>,
     aio_origin: &str,
 ) -> CliProxyProjection {
-    let aio_base_origin = aio_origin
-        .trim_end_matches('/')
-        .trim_end_matches("/v1")
-        .to_string();
+    let aio_base_origin = strip_trailing_v1(aio_origin);
     let external_origin = effective_port.map(|port| format!("http://{DEFAULT_LISTEN_HOST}:{port}"));
     let row = crate::cli_proxy::status_all(app, Some(&aio_base_origin))
         .ok()

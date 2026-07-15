@@ -12,7 +12,7 @@ mod util;
 
 #[cfg(test)]
 #[allow(unused_imports)]
-pub(crate) use bridge::{install_bridge_runtime_for_tests, reset_bridge_runtime_for_tests};
+pub(crate) use bridge::reset_bridge_runtime_for_tests;
 #[allow(unused_imports)]
 pub(crate) use bridge::{BridgeDetailsSession, BridgeRuntimeHandle};
 pub(crate) use config::{managed_gateway_config, managed_gateway_state};
@@ -33,9 +33,6 @@ pub(crate) use process::{
     CodexRetryGatewayHealthSnapshot, CodexRetryGatewayManagedProcess,
     CodexRetryGatewayProcessReconcileResult,
 };
-#[cfg(test)]
-#[allow(unused_imports)]
-pub(crate) use runtime::install_lifecycle_callback_for_tests;
 #[allow(unused_imports)]
 pub(crate) use runtime::{
     apply_selected_commit, build_enable_plan, create_details_session, current_status,

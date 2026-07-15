@@ -16,6 +16,7 @@ const MANAGER_SCHEMA_VERSION: u32 = 1;
 const SOURCE_MANIFEST_SCHEMA_VERSION: u32 = 1;
 const MANAGER_STATE_MAX_BYTES: usize = 512 * 1024;
 const SOURCE_MANIFEST_MAX_BYTES: usize = 256 * 1024;
+#[allow(dead_code)] // Integration-owned route transition glue persists this file outside the runtime worker.
 const TRANSITION_MAX_BYTES: usize = 256 * 1024;
 
 #[derive(Debug, Clone)]
@@ -33,6 +34,8 @@ pub(crate) struct CodexRetryGatewayManagerPaths {
     pub(crate) runtime_log_path: PathBuf,
     pub(crate) runtime_pid_path: PathBuf,
     pub(crate) route_dir: PathBuf,
+    #[allow(dead_code)]
+    // Integration-owned route glue consumes this path outside the runtime worker.
     pub(crate) transition_path: PathBuf,
 }
 
@@ -327,11 +330,13 @@ pub(crate) fn write_source_manifest(
     write_file_atomic(path, &bytes)
 }
 
+#[allow(dead_code)] // Integration-owned route transition glue constructs this store outside the runtime worker.
 #[derive(Debug, Clone)]
 pub(crate) struct FileCodexRetryGatewayTransitionStore {
     path: PathBuf,
 }
 
+#[allow(dead_code)] // Integration-owned route transition glue exercises these helpers outside the runtime worker.
 impl FileCodexRetryGatewayTransitionStore {
     pub(crate) fn new(path: PathBuf) -> Self {
         Self { path }

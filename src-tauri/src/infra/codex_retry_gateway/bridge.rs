@@ -54,6 +54,8 @@ struct BridgeSessionState {
 struct BridgeRuntimeInner {
     handle: BridgeRuntimeHandle,
     state: Arc<BridgeRuntimeState>,
+    #[cfg_attr(not(test), allow(dead_code))]
+    // Test-only reset needs the shutdown handle; runtime keeps it for teardown.
     shutdown: Option<oneshot::Sender<()>>,
     _task: tauri::async_runtime::JoinHandle<()>,
 }
@@ -116,14 +118,6 @@ pub(crate) async fn create_bridge_details_session(
             expires_at_ms,
         },
     })
-}
-
-#[cfg(test)]
-pub(crate) async fn install_bridge_runtime_for_tests(
-    paths: CodexRetryGatewayManagerPaths,
-    callback: Arc<dyn CodexRetryGatewayLifecycleCallback>,
-) -> AppResult<BridgeRuntimeHandle> {
-    ensure_bridge_runtime(paths, callback).await
 }
 
 #[cfg(test)]
