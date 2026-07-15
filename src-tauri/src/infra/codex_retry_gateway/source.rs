@@ -29,6 +29,7 @@ const SOURCE_ZIP_MAX_BYTES: usize = 8 * 1024 * 1024;
 const SOURCE_ZIP_MAX_ENTRIES: usize = 256;
 const SOURCE_ZIP_MAX_EXTRACTED_BYTES: u64 = 32 * 1024 * 1024;
 const SOURCE_ZIP_MAX_FILE_BYTES: u64 = 8 * 1024 * 1024;
+const SOURCE_ZIP_MAX_COMPRESSION_RATIO: u64 = 100;
 const NODE_SYNTAX_TIMEOUT: Duration = Duration::from_secs(5);
 const NODE_SYNTAX_POLL_INTERVAL: Duration = Duration::from_millis(50);
 const NODE_SYNTAX_OUTPUT_LIMIT: usize = 16 * 1024;
@@ -463,20 +464,25 @@ fn map_github_status(response: reqwest::Response, kind: &str) -> AppResult<reqwe
     if status.is_success() {
         return Ok(response);
     }
-    let code = match status {
-        StatusCode::NOT_FOUND => "CODEX_RETRY_GATEWAY_SOURCE_NOT_FOUND",
-        StatusCode::TOO_MANY_REQUESTS => "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED",
-        _ if status.is_server_error() => "CODEX_RETRY_GATEWAY_SOURCE_TRANSIENT",
-        _ => "CODEX_RETRY_GATEWAY_SOURCE_HTTP_ERROR",
-    };
+    let code = github_status_error_code(status);
     Err(AppError::new(
         code,
         format!("GitHub {kind} request failed with status {status}"),
     ))
 }
 
+fn github_status_error_code(status: StatusCode) -> &'static str {
+    match status {
+        StatusCode::NOT_FOUND => "CODEX_RETRY_GATEWAY_SOURCE_NOT_FOUND",
+        StatusCode::FORBIDDEN => "CODEX_RETRY_GATEWAY_SOURCE_FORBIDDEN",
+        StatusCode::TOO_MANY_REQUESTS => "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED",
+        _ if status.is_server_error() => "CODEX_RETRY_GATEWAY_SOURCE_SERVER_ERROR",
+        _ => "CODEX_RETRY_GATEWAY_SOURCE_HTTP_ERROR",
+    }
+}
+
 fn classify_http_error(error: reqwest::Error) -> AppError {
-    let code = if error.is_timeout() {
+    let code = if error.is_timeout() || error.is_connect() {
         "CODEX_RETRY_GATEWAY_SOURCE_TRANSIENT"
     } else {
         "CODEX_RETRY_GATEWAY_SOURCE_HTTP_ERROR"
@@ -550,13 +556,22 @@ fn extract_source_zip(zip_bytes: &[u8], staging_dir: &Path) -> AppResult<PathBuf
         if relative.as_os_str().is_empty() {
             continue;
         }
-        if !seen_paths.insert(relative.to_path_buf()) {
+        if !seen_paths.insert(archive_duplicate_key(relative)) {
             return Err(AppError::new(
                 "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID",
                 format!("duplicate source archive path {}", relative.display()),
             ));
         }
         if !file.is_dir() {
+            if archive_entry_exceeds_compression_ratio(file.size(), file.compressed_size()) {
+                return Err(AppError::new(
+                    "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_COMPRESSION_RATIO",
+                    format!(
+                        "source archive entry {} exceeds the maximum compression ratio",
+                        relative.display()
+                    ),
+                ));
+            }
             extracted_bytes = extracted_bytes.checked_add(file.size()).ok_or_else(|| {
                 AppError::new(
                     "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID",
@@ -637,6 +652,23 @@ fn extract_source_zip(zip_bytes: &[u8], staging_dir: &Path) -> AppResult<PathBuf
     }
 
     Ok(root)
+}
+
+fn archive_entry_exceeds_compression_ratio(uncompressed: u64, compressed: u64) -> bool {
+    uncompressed > 0
+        && (compressed == 0
+            || uncompressed > compressed.saturating_mul(SOURCE_ZIP_MAX_COMPRESSION_RATIO))
+}
+
+fn archive_duplicate_key(path: &Path) -> PathBuf {
+    #[cfg(windows)]
+    {
+        return PathBuf::from(path.to_string_lossy().to_lowercase());
+    }
+    #[cfg(not(windows))]
+    {
+        path.to_path_buf()
+    }
 }
 
 fn normalize_zip_entry(name: &str) -> AppResult<PathBuf> {
@@ -831,6 +863,7 @@ pub(crate) fn public_source_error(error: &AppError) -> CodexRetryGatewayError {
             error.code(),
             "CODEX_RETRY_GATEWAY_SOURCE_TRANSIENT"
                 | "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED"
+                | "CODEX_RETRY_GATEWAY_SOURCE_SERVER_ERROR"
                 | "CODEX_RETRY_GATEWAY_SOURCE_HTTP_ERROR"
         ),
     }
@@ -965,6 +998,7 @@ mod tests {
     use axum::extract::Path as AxumPath;
     use axum::routing::get;
     use axum::{Json, Router};
+    use std::io::Write;
     use tempfile::tempdir;
 
     #[test]
@@ -975,6 +1009,68 @@ mod tests {
             normalize_zip_entry("root/scripts/admin-lib.mjs").unwrap(),
             PathBuf::from("root").join("scripts").join("admin-lib.mjs")
         );
+    }
+
+    #[test]
+    fn github_statuses_keep_actionable_failure_classes() {
+        assert_eq!(
+            github_status_error_code(StatusCode::NOT_FOUND),
+            "CODEX_RETRY_GATEWAY_SOURCE_NOT_FOUND"
+        );
+        assert_eq!(
+            github_status_error_code(StatusCode::FORBIDDEN),
+            "CODEX_RETRY_GATEWAY_SOURCE_FORBIDDEN"
+        );
+        assert_eq!(
+            github_status_error_code(StatusCode::TOO_MANY_REQUESTS),
+            "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED"
+        );
+        assert_eq!(
+            github_status_error_code(StatusCode::BAD_GATEWAY),
+            "CODEX_RETRY_GATEWAY_SOURCE_SERVER_ERROR"
+        );
+    }
+
+    #[test]
+    fn source_archive_rejects_excessive_compression_ratio() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::FileOptions::<()>::default()
+                .compression_method(zip::CompressionMethod::Deflated);
+            writer.start_file("root/gateway.mjs", options).unwrap();
+            writer.write_all(&vec![b'x'; 1024 * 1024]).unwrap();
+            writer.finish().unwrap();
+        }
+        let staging = tempdir().unwrap();
+        let error = extract_source_zip(cursor.get_ref(), staging.path()).unwrap_err();
+        assert_eq!(
+            error.code(),
+            "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_COMPRESSION_RATIO"
+        );
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn source_archive_rejects_case_insensitive_duplicate_paths() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::FileOptions::<()>::default();
+            writer
+                .start_file("root/scripts/Admin.mjs", options)
+                .unwrap();
+            writer.write_all(b"first").unwrap();
+            writer
+                .start_file("root/scripts/admin.mjs", options)
+                .unwrap();
+            writer.write_all(b"second").unwrap();
+            writer.finish().unwrap();
+        }
+        let staging = tempdir().unwrap();
+        let error = extract_source_zip(cursor.get_ref(), staging.path()).unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID");
+        assert!(error.to_string().contains("duplicate"));
     }
 
     #[test]

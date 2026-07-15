@@ -80,6 +80,7 @@ async fn run(app_handle: tauri::AppHandle) {
     };
 
     set_startup_stage(&app_handle, AppStartupStage::SyncingCliProxy);
+    crate::app::codex_retry_gateway_service::reconcile_startup(&app_handle).await;
     crate::app::startup_gateway::sync_cli_proxy_after_autostart(&app_handle, &status).await;
 
     set_startup_stage(&app_handle, AppStartupStage::FinalizingWsl);

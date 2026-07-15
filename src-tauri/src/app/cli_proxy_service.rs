@@ -5,77 +5,19 @@ use crate::gateway::events::GATEWAY_STATUS_EVENT_NAME;
 use crate::gateway_control::app_ensure_gateway_running;
 use crate::gateway_runtime_access::app_gateway_status;
 use crate::infra::codex_retry_gateway::{
-    CodexRetryGatewayRouteTransition, CodexRetryGatewayTransitionStore,
+    CodexRetryGatewayManagerPaths, CodexRetryGatewayOperationKind,
+    FileCodexRetryGatewayTransitionStore,
 };
 use crate::{blocking, cli_proxy, mcp, settings};
-use std::sync::{Mutex, OnceLock};
 
-#[derive(Default)]
-struct InMemoryCodexRouteTransitionStore {
-    pending: Mutex<Option<CodexRetryGatewayRouteTransition>>,
-}
-
-impl CodexRetryGatewayTransitionStore for InMemoryCodexRouteTransitionStore {
-    fn load_pending(
-        &self,
-    ) -> crate::shared::error::AppResult<Option<CodexRetryGatewayRouteTransition>> {
-        Ok(self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .clone())
-    }
-
-    fn prepare(
-        &self,
-        transition: &CodexRetryGatewayRouteTransition,
-    ) -> crate::shared::error::AppResult<()> {
-        *self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(transition.clone());
-        Ok(())
-    }
-
-    fn commit(&self, operation_id: &str, _generation: u64) -> crate::shared::error::AppResult<()> {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match pending.as_ref() {
-            Some(transition) if transition.operation_id == operation_id => {
-                *pending = None;
-                Ok(())
-            }
-            Some(_) => Err(format!(
-                "CLI_PROXY_ROUTE_TRANSITION_MISMATCH: pending transition does not match operation_id={operation_id}"
-            )
-            .into()),
-            None => Err(format!(
-                "CLI_PROXY_ROUTE_TRANSITION_MISSING: no pending transition for operation_id={operation_id}"
-            )
-            .into()),
-        }
-    }
-
-    fn clear(&self, operation_id: &str) -> crate::shared::error::AppResult<()> {
-        let mut pending = self
-            .pending
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if pending
-            .as_ref()
-            .is_some_and(|transition| transition.operation_id == operation_id)
-        {
-            *pending = None;
-        }
-        Ok(())
-    }
-}
-
-fn codex_route_transition_store() -> &'static InMemoryCodexRouteTransitionStore {
-    static STORE: OnceLock<InMemoryCodexRouteTransitionStore> = OnceLock::new();
-    STORE.get_or_init(InMemoryCodexRouteTransitionStore::default)
+fn codex_route_transition_store<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<FileCodexRetryGatewayTransitionStore> {
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
+    paths.ensure_dirs()?;
+    Ok(FileCodexRetryGatewayTransitionStore::new(
+        paths.transition_path,
+    ))
 }
 
 async fn resync_codex_mcp_after_route_change<R: tauri::Runtime>(
@@ -226,6 +168,13 @@ pub(crate) async fn cli_proxy_set_disabled_impl<R: tauri::Runtime>(
 ) -> Result<cli_proxy::CliProxyResult, String> {
     tracing::info!(cli_key = %cli_key, enabled = false, "cli proxy enabled state changing");
 
+    if cli_key == "codex" {
+        return crate::app::codex_retry_gateway_service::disable_codex_cli_proxy(app, db_state)
+            .await;
+    }
+
+    let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
+
     let base_origin = format!("http://127.0.0.1:{}", settings::DEFAULT_GATEWAY_PORT);
     let result = blocking::run("cli_proxy_set_enabled_apply", {
         let app = app.clone();
@@ -337,10 +286,25 @@ pub(crate) async fn cli_proxy_codex_apply_guarded_route<R: tauri::Runtime>(
     db_state: Option<&DbInitState>,
     request: cli_proxy::CodexGuardedRouteApplyRequest,
 ) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    cli_proxy_codex_apply_guarded_route_for_operation(
+        app,
+        db_state,
+        request,
+        CodexRetryGatewayOperationKind::Enable,
+    )
+    .await
+}
+
+pub(crate) async fn cli_proxy_codex_apply_guarded_route_for_operation<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+    request: cli_proxy::CodexGuardedRouteApplyRequest,
+    operation_kind: CodexRetryGatewayOperationKind,
+) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    let store = codex_route_transition_store(&app).map_err(|err| err.to_string())?;
     let result = blocking::run("cli_proxy_codex_apply_guarded_route", {
         let app = app.clone();
-        let store = codex_route_transition_store();
-        move || cli_proxy::apply_guarded_route(&app, store, request)
+        move || cli_proxy::apply_guarded_route_with_operation(&app, &store, request, operation_kind)
     })
     .await
     .map_err(|err| err.to_string())?;
@@ -353,10 +317,27 @@ pub(crate) async fn cli_proxy_codex_apply_direct_aio_route<R: tauri::Runtime>(
     db_state: Option<&DbInitState>,
     request: cli_proxy::CodexDirectAioRouteApplyRequest,
 ) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    cli_proxy_codex_apply_direct_aio_route_for_operation(
+        app,
+        db_state,
+        request,
+        CodexRetryGatewayOperationKind::DisableGateway,
+    )
+    .await
+}
+
+pub(crate) async fn cli_proxy_codex_apply_direct_aio_route_for_operation<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+    request: cli_proxy::CodexDirectAioRouteApplyRequest,
+    operation_kind: CodexRetryGatewayOperationKind,
+) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    let store = codex_route_transition_store(&app).map_err(|err| err.to_string())?;
     let result = blocking::run("cli_proxy_codex_apply_direct_aio_route", {
         let app = app.clone();
-        let store = codex_route_transition_store();
-        move || cli_proxy::apply_direct_aio_route(&app, store, request)
+        move || {
+            cli_proxy::apply_direct_aio_route_with_operation(&app, &store, request, operation_kind)
+        }
     })
     .await
     .map_err(|err| err.to_string())?;
@@ -369,10 +350,27 @@ pub(crate) async fn cli_proxy_codex_restore_unproxied_route<R: tauri::Runtime>(
     db_state: Option<&DbInitState>,
     request: cli_proxy::CodexRestoreUnproxiedRouteRequest,
 ) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    cli_proxy_codex_restore_unproxied_route_for_operation(
+        app,
+        db_state,
+        request,
+        CodexRetryGatewayOperationKind::DisableCliProxy,
+    )
+    .await
+}
+
+pub(crate) async fn cli_proxy_codex_restore_unproxied_route_for_operation<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    db_state: Option<&DbInitState>,
+    request: cli_proxy::CodexRestoreUnproxiedRouteRequest,
+    operation_kind: CodexRetryGatewayOperationKind,
+) -> Result<cli_proxy::CodexRouteApplyResult, String> {
+    let store = codex_route_transition_store(&app).map_err(|err| err.to_string())?;
     let result = blocking::run("cli_proxy_codex_restore_unproxied_route", {
         let app = app.clone();
-        let store = codex_route_transition_store();
-        move || cli_proxy::restore_unproxied_route(&app, store, request)
+        move || {
+            cli_proxy::restore_unproxied_route_with_operation(&app, &store, request, operation_kind)
+        }
     })
     .await
     .map_err(|err| err.to_string())?;
@@ -393,10 +391,10 @@ pub(crate) async fn cli_proxy_codex_verify_route<R: tauri::Runtime>(
 pub(crate) async fn cli_proxy_codex_reconcile_pending_route<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
 ) -> Result<cli_proxy::CodexRouteReconcileResult, String> {
+    let store = codex_route_transition_store(&app).map_err(|err| err.to_string())?;
     blocking::run("cli_proxy_codex_reconcile_pending_route", {
         let app = app.clone();
-        let store = codex_route_transition_store();
-        move || cli_proxy::reconcile_pending_route(&app, store)
+        move || cli_proxy::reconcile_pending_route(&app, &store)
     })
     .await
     .map_err(Into::into)

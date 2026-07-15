@@ -2,6 +2,8 @@
 
 use crate::shared::error::AppResult;
 use serde::{Deserialize, Serialize};
+use std::future::Future;
+use std::pin::Pin;
 
 pub(crate) const CODEX_RETRY_GATEWAY_REPOSITORY: &str = "nonononull/codex-retry-gateway";
 pub(crate) const CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT: &str =
@@ -355,13 +357,14 @@ pub(crate) trait CodexRetryGatewayTransitionStore: Send + Sync {
     fn clear(&self, operation_id: &str) -> AppResult<()>;
 }
 
-#[allow(dead_code)]
+pub(crate) type CodexRetryGatewayLifecycleFuture =
+    Pin<Box<dyn Future<Output = AppResult<()>> + Send + 'static>>;
+
 pub(crate) trait CodexRetryGatewayLifecycleCallback: Send + Sync {
-    fn request_direct_aio(&self, request: CodexRetryGatewayRouteCallbackRequest) -> AppResult<()>;
     fn request_gateway_disable(
         &self,
         request: CodexRetryGatewayRouteCallbackRequest,
-    ) -> AppResult<()>;
+    ) -> CodexRetryGatewayLifecycleFuture;
 }
 
 #[cfg(test)]

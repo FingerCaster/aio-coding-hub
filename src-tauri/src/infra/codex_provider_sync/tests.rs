@@ -1,6 +1,15 @@
 use super::*;
 
 #[test]
+fn provider_sync_preflight_rejects_running_codex_before_mutation() {
+    let error = reject_running_codex_for_provider_sync(true).unwrap_err();
+    assert!(error
+        .to_string()
+        .contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"));
+    reject_running_codex_for_provider_sync(false).unwrap();
+}
+
+#[test]
 fn target_provider_rejects_unmanaged_raw_toml() {
     let err = codex_provider_target_from_config_text(
         "model_provider = \"Anthropic\"\n[model_providers.Anthropic]\nname = \"Anthropic\"\n",

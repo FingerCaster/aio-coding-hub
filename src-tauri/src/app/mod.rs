@@ -5,6 +5,7 @@ pub(crate) mod autostart;
 pub(crate) mod bootstrap;
 pub(crate) mod cleanup;
 pub(crate) mod cli_proxy_service;
+pub(crate) mod codex_retry_gateway_service;
 pub(crate) mod gateway_control;
 pub(crate) mod gateway_lifecycle_lock;
 pub(crate) mod gateway_runtime_access;

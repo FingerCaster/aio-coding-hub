@@ -61,7 +61,13 @@ pub(crate) async fn cleanup_before_exit(app: &tauri::AppHandle) {
     ) {
         Ok(_) => {
             dispose_extension_hosts_best_effort(app).await;
-            stop_gateway_best_effort(app).await;
+            crate::app::codex_retry_gateway_service::stop_health_supervisor().await;
+            let _gateway_lifecycle = super::gateway_lifecycle_lock::lock().await;
+            if let Err(error) =
+                crate::app::codex_retry_gateway_service::shutdown_for_aio_stop_unlocked(app).await
+            {
+                tracing::warn!(error = %error, "exit cleanup: external Codex gateway shutdown failed");
+            }
             restore_cli_proxy_keep_state_best_effort(
                 app,
                 "cleanup_cli_proxy_restore_keep_state",
@@ -85,6 +91,8 @@ pub(crate) async fn cleanup_before_exit(app: &tauri::AppHandle) {
                     ),
                 }
             }
+
+            stop_gateway_best_effort_unlocked(app).await;
 
             CLEANUP_STATE.store(CLEANUP_STATE_DONE, Ordering::Release);
             notify.notify_waiters();
@@ -185,11 +193,6 @@ pub(crate) async fn restore_cli_proxy_keep_state_best_effort(
             CLI_PROXY_RESTORE_TIMEOUT.as_secs()
         ),
     }
-}
-
-pub(crate) async fn stop_gateway_best_effort<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
-    let _gateway_lifecycle = super::gateway_lifecycle_lock::lock().await;
-    stop_gateway_best_effort_unlocked(app).await;
 }
 
 pub(crate) async fn stop_gateway_best_effort_unlocked<R: tauri::Runtime>(

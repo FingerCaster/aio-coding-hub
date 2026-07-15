@@ -317,10 +317,13 @@ async fn proxy_request(
 
 async fn handle_restore(state: &Arc<BridgeRuntimeState>, generation: u64) -> Response<Body> {
     let callback = state.callback.read().await.clone();
-    match callback.request_gateway_disable(CodexRetryGatewayRouteCallbackRequest {
-        generation,
-        reason: CodexRetryGatewayRouteCallbackReason::ExternalRestore,
-    }) {
+    match callback
+        .request_gateway_disable(CodexRetryGatewayRouteCallbackRequest {
+            generation,
+            reason: CodexRetryGatewayRouteCallbackReason::ExternalRestore,
+        })
+        .await
+    {
         Ok(()) => json_response(
             StatusCode::OK,
             serde_json::json!({
@@ -617,7 +620,26 @@ mod tests {
     use super::*;
     use axum::routing::get;
     use axum::Router;
+    use std::sync::atomic::{AtomicBool, Ordering};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+    struct AwaitedRestoreCallback {
+        completed: Arc<AtomicBool>,
+    }
+
+    impl CodexRetryGatewayLifecycleCallback for AwaitedRestoreCallback {
+        fn request_gateway_disable(
+            &self,
+            _request: CodexRetryGatewayRouteCallbackRequest,
+        ) -> crate::infra::codex_retry_gateway::CodexRetryGatewayLifecycleFuture {
+            let completed = self.completed.clone();
+            Box::pin(async move {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+                completed.store(true, Ordering::SeqCst);
+                Ok(())
+            })
+        }
+    }
 
     #[test]
     fn path_allowlist_matches_documented_bridge_surface() {
@@ -697,6 +719,26 @@ mod tests {
         reset_bridge_runtime_for_tests()
             .await
             .expect("second reset succeeds");
+    }
+
+    #[tokio::test]
+    async fn restore_waits_for_lifecycle_disable_before_success() {
+        let completed = Arc::new(AtomicBool::new(false));
+        let paths = CodexRetryGatewayManagerPaths::from_root(
+            tempfile::tempdir().unwrap().path().join("gateway"),
+        );
+        let state = Arc::new(BridgeRuntimeState {
+            paths: RwLock::new(paths),
+            callback: RwLock::new(Arc::new(AwaitedRestoreCallback {
+                completed: completed.clone(),
+            })),
+            sessions: RwLock::new(HashMap::new()),
+            client: Client::new(),
+        });
+
+        let response = handle_restore(&state, 7).await;
+        assert_eq!(response.status(), StatusCode::OK);
+        assert!(completed.load(Ordering::SeqCst));
     }
 
     #[tokio::test]

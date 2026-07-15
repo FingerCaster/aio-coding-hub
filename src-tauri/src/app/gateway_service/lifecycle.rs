@@ -35,7 +35,7 @@ pub(crate) async fn start_and_sync(
     db: db::Db,
     preferred_port: Option<u16>,
 ) -> AppResult<gateway::GatewayStatus> {
-    let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
+    let gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
     let status = blocking::run("gateway_start", {
         let app = app.clone();
         let db = db.clone();
@@ -45,16 +45,27 @@ pub(crate) async fn start_and_sync(
 
     emit_gateway_status(&app, &status);
     sync_cli_proxy_to_gateway(&app, &status, "cli_proxy_sync_enabled_after_gateway_start").await;
+    if let Err(error) =
+        crate::app::codex_retry_gateway_service::reconcile_after_aio_start_unlocked(&app).await
+    {
+        tracing::warn!(error = %error, "AIO gateway started with Codex retry gateway in fail-open mode");
+    }
+    drop(gateway_lifecycle);
+    crate::app::codex_retry_gateway_service::start_health_supervisor(app.clone()).await;
 
     Ok(status)
 }
 
 pub(crate) async fn stop_and_restore(app: tauri::AppHandle) -> AppResult<gateway::GatewayStatus> {
-    let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
-    crate::app::cleanup::stop_gateway_best_effort_unlocked(&app).await;
-
-    let status = app_gateway_status(&app);
-    emit_gateway_status(&app, &status);
+    crate::app::codex_retry_gateway_service::stop_health_supervisor().await;
+    let gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
+    if let Err(error) =
+        crate::app::codex_retry_gateway_service::shutdown_for_aio_stop_unlocked(&app).await
+    {
+        drop(gateway_lifecycle);
+        crate::app::codex_retry_gateway_service::start_health_supervisor(app.clone()).await;
+        return Err(error);
+    }
 
     crate::app::cleanup::restore_cli_proxy_keep_state_best_effort(
         &app,
@@ -63,6 +74,10 @@ pub(crate) async fn stop_and_restore(app: tauri::AppHandle) -> AppResult<gateway
         false,
     )
     .await;
+
+    crate::app::cleanup::stop_gateway_best_effort_unlocked(&app).await;
+    let status = app_gateway_status(&app);
+    emit_gateway_status(&app, &status);
 
     Ok(status)
 }

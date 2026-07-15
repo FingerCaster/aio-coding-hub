@@ -310,11 +310,21 @@ pub(crate) fn read_source_manifest(
     paths: &CodexRetryGatewayManagerPaths,
     commit: &str,
 ) -> AppResult<CodexRetryGatewaySourceManifest> {
-    let path = paths.source_manifest_path(commit)?;
+    let requested_commit = normalize_full_sha(commit)?;
+    let path = paths.source_manifest_path(&requested_commit)?;
     let bytes = crate::shared::fs::read_file_with_max_len(&path, SOURCE_MANIFEST_MAX_BYTES)?;
     let mut manifest: CodexRetryGatewaySourceManifest = serde_json::from_slice(&bytes)
         .map_err(|err| format!("failed to parse {}: {err}", path.display()))?;
     manifest.validate()?;
+    if manifest.commit != requested_commit {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_SOURCE_COMMIT_MISMATCH",
+            format!(
+                "source manifest commit {} does not match requested source directory {}",
+                manifest.commit, requested_commit
+            ),
+        ));
+    }
     ensure_path_within_root(&paths.root, &path)?;
     Ok(manifest)
 }
@@ -463,5 +473,33 @@ mod tests {
         assert_eq!(loaded.operation_id, "op-1");
         store.commit("op-1", 2).unwrap();
         assert!(store.load_pending().unwrap().is_none());
+    }
+
+    #[test]
+    fn source_manifest_commit_must_match_requested_directory() {
+        let dir = tempdir().unwrap();
+        let paths = CodexRetryGatewayManagerPaths::from_root(dir.path().join("gateway"));
+        let requested = "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2";
+        let other = "0123456789abcdef0123456789abcdef01234567";
+        let source_dir = paths.source_dir(requested).unwrap();
+        std::fs::create_dir_all(&source_dir).unwrap();
+        let manifest = CodexRetryGatewaySourceManifest {
+            schema_version: SOURCE_MANIFEST_SCHEMA_VERSION,
+            repository: CODEX_RETRY_GATEWAY_REPOSITORY.to_string(),
+            commit: other.to_string(),
+            verified_main_commit: requested.to_string(),
+            verified_at_ms: 1,
+            archive_sha256: "a".repeat(64),
+            source_sha256: "b".repeat(64),
+            file_count: 0,
+            total_bytes: 0,
+            gateway_entry_rel: "gateway.mjs".to_string(),
+            admin_entry_rel: "scripts/admin-lib.mjs".to_string(),
+            launch_ui_entry_rel: "scripts/launch-ui.mjs".to_string(),
+        };
+        write_source_manifest(&source_dir.join("manifest.json"), &manifest).unwrap();
+
+        let error = read_source_manifest(&paths, requested).unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_COMMIT_MISMATCH");
     }
 }

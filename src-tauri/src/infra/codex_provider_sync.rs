@@ -118,6 +118,18 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
     codex_provider_sync_transaction(app, context, |_| Ok(())).map(|(result, _)| result)
 }
 
+pub(crate) fn codex_provider_sync_preflight() -> AppResult<()> {
+    reject_running_codex_for_provider_sync(codex_app_is_running()?)
+}
+
+fn reject_running_codex_for_provider_sync(running: bool) -> AppResult<()> {
+    if running {
+        Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into())
+    } else {
+        Ok(())
+    }
+}
+
 pub(crate) fn codex_provider_sync_transaction<R: tauri::Runtime, T, F>(
     app: &tauri::AppHandle<R>,
     context: CodexProviderSyncContext,

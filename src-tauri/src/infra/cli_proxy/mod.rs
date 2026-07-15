@@ -1245,10 +1245,23 @@ pub(crate) fn plan_external_enable<R: tauri::Runtime>(
     })
 }
 
+#[cfg(test)]
 pub(crate) fn apply_guarded_route<R: tauri::Runtime, S: CodexRetryGatewayTransitionStore>(
     app: &tauri::AppHandle<R>,
     store: &S,
     request: CodexGuardedRouteApplyRequest,
+) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
+    apply_guarded_route_with_operation(app, store, request, CodexRetryGatewayOperationKind::Enable)
+}
+
+pub(crate) fn apply_guarded_route_with_operation<
+    R: tauri::Runtime,
+    S: CodexRetryGatewayTransitionStore,
+>(
+    app: &tauri::AppHandle<R>,
+    store: &S,
+    request: CodexGuardedRouteApplyRequest,
+    operation_kind: CodexRetryGatewayOperationKind,
 ) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
     let aio_origin = validate_http_origin(&request.aio_origin, "aio_origin")?;
     let guarded_origin = validate_http_origin(&request.guarded_origin, "guarded_origin")?;
@@ -1280,16 +1293,34 @@ pub(crate) fn apply_guarded_route<R: tauri::Runtime, S: CodexRetryGatewayTransit
         request.desired_enabled,
         Some(aio_origin),
         Some(guarded_origin),
-        CodexRetryGatewayOperationKind::Enable,
+        operation_kind,
         request.source_commit,
         request.process_should_run,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn apply_direct_aio_route<R: tauri::Runtime, S: CodexRetryGatewayTransitionStore>(
     app: &tauri::AppHandle<R>,
     store: &S,
     request: CodexDirectAioRouteApplyRequest,
+) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
+    apply_direct_aio_route_with_operation(
+        app,
+        store,
+        request,
+        CodexRetryGatewayOperationKind::DisableGateway,
+    )
+}
+
+pub(crate) fn apply_direct_aio_route_with_operation<
+    R: tauri::Runtime,
+    S: CodexRetryGatewayTransitionStore,
+>(
+    app: &tauri::AppHandle<R>,
+    store: &S,
+    request: CodexDirectAioRouteApplyRequest,
+    operation_kind: CodexRetryGatewayOperationKind,
 ) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
     let aio_origin = validate_http_origin(&request.aio_origin, "aio_origin")?;
     let (state, prior_state, canonical_bytes, canonical_auth_bytes, canonical_sha256) =
@@ -1316,16 +1347,34 @@ pub(crate) fn apply_direct_aio_route<R: tauri::Runtime, S: CodexRetryGatewayTran
         state
             .as_ref()
             .and_then(|state| state.route.guarded_origin.clone()),
-        CodexRetryGatewayOperationKind::DisableGateway,
+        operation_kind,
         request.source_commit,
         request.process_should_run,
     )
 }
 
+#[cfg(test)]
 pub(crate) fn restore_unproxied_route<R: tauri::Runtime, S: CodexRetryGatewayTransitionStore>(
     app: &tauri::AppHandle<R>,
     store: &S,
     request: CodexRestoreUnproxiedRouteRequest,
+) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
+    restore_unproxied_route_with_operation(
+        app,
+        store,
+        request,
+        CodexRetryGatewayOperationKind::DisableCliProxy,
+    )
+}
+
+pub(crate) fn restore_unproxied_route_with_operation<
+    R: tauri::Runtime,
+    S: CodexRetryGatewayTransitionStore,
+>(
+    app: &tauri::AppHandle<R>,
+    store: &S,
+    request: CodexRestoreUnproxiedRouteRequest,
+    operation_kind: CodexRetryGatewayOperationKind,
 ) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
     let aio_origin = request
         .aio_origin
@@ -1369,7 +1418,7 @@ pub(crate) fn restore_unproxied_route<R: tauri::Runtime, S: CodexRetryGatewayTra
         state
             .as_ref()
             .and_then(|state| state.route.guarded_origin.clone()),
-        CodexRetryGatewayOperationKind::DisableCliProxy,
+        operation_kind,
         request.source_commit,
         request.process_should_run,
     )
