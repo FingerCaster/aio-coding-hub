@@ -1,4 +1,5 @@
 use rand::RngCore;
+use std::fs::Metadata;
 use std::net::IpAddr;
 use std::path::{Component, Path, PathBuf};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -76,6 +77,65 @@ pub(crate) fn ensure_path_within_root(
     Ok(())
 }
 
+pub(crate) fn metadata_is_symlink_or_reparse(metadata: &Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt;
+
+        const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return true;
+        }
+    }
+    false
+}
+
+pub(crate) fn symlink_metadata_fail_closed(
+    path: &Path,
+    label: &str,
+) -> crate::shared::error::AppResult<Metadata> {
+    std::fs::symlink_metadata(path)
+        .map_err(|err| format!("failed to read {label} metadata {}: {err}", path.display()).into())
+}
+
+pub(crate) fn ensure_not_symlink_or_reparse(
+    path: &Path,
+    label: &str,
+) -> crate::shared::error::AppResult<Metadata> {
+    let metadata = symlink_metadata_fail_closed(path, label)?;
+    if metadata_is_symlink_or_reparse(&metadata) {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {label} must not be a symbolic link or reparse point: {}",
+            path.display()
+        )
+        .into());
+    }
+    Ok(metadata)
+}
+
+pub(crate) fn canonicalize_path_within_root(
+    root: &Path,
+    candidate: &Path,
+    label: &str,
+) -> crate::shared::error::AppResult<PathBuf> {
+    let _ = ensure_not_symlink_or_reparse(candidate, label)?;
+    let root = std::fs::canonicalize(root)
+        .map_err(|err| format!("failed to canonicalize {}: {err}", root.display()))?;
+    let candidate = std::fs::canonicalize(candidate)
+        .map_err(|err| format!("failed to canonicalize {}: {err}", candidate.display()))?;
+    if !candidate.starts_with(&root) {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {label} escapes managed root {}",
+            candidate.display()
+        )
+        .into());
+    }
+    Ok(candidate)
+}
+
 pub(crate) fn is_loopback_host(host: &str) -> bool {
     let trimmed = host.trim().trim_matches(['[', ']']);
     if trimmed.eq_ignore_ascii_case("localhost") {
@@ -99,6 +159,7 @@ pub(crate) fn strip_trailing_v1(value: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use tempfile::tempdir;
 
     #[test]
     fn normalize_full_sha_requires_canonical_40_hex() {
@@ -138,5 +199,30 @@ mod tests {
             strip_trailing_v1("http://127.0.0.1:37123"),
             "http://127.0.0.1:37123"
         );
+    }
+
+    #[test]
+    fn canonicalize_path_within_root_rejects_escape() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("root");
+        let nested = root.join("nested");
+        std::fs::create_dir_all(&nested).unwrap();
+        let file = nested.join("value.txt");
+        std::fs::write(&file, "ok").unwrap();
+        let escaped = dir.path().join("outside.txt");
+        std::fs::write(&escaped, "no").unwrap();
+        assert!(canonicalize_path_within_root(&root, &file, "managed file").is_ok());
+        assert!(canonicalize_path_within_root(&root, &escaped, "managed file").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn ensure_not_symlink_or_reparse_rejects_symlink() {
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("target.txt");
+        let link = dir.path().join("link.txt");
+        std::fs::write(&target, "ok").unwrap();
+        std::os::unix::fs::symlink(&target, &link).unwrap();
+        assert!(ensure_not_symlink_or_reparse(&link, "managed file").is_err());
     }
 }

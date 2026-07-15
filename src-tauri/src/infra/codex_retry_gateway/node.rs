@@ -1,9 +1,10 @@
+use crate::infra::codex_retry_gateway::util::ensure_not_symlink_or_reparse;
 use crate::infra::codex_retry_gateway::{
     CodexRetryGatewayError, CodexRetryGatewayErrorCategory, CodexRetryGatewayNodeResolutionSource,
     CodexRetryGatewayNodeStatus,
 };
 use crate::shared::error::{AppError, AppResult};
-use crate::shared::fs::is_symlink;
+use std::collections::HashSet;
 use std::ffi::OsString;
 use std::io::Read;
 use std::path::{Path, PathBuf};
@@ -36,6 +37,12 @@ struct VersionProbeOutput {
     stderr: Vec<u8>,
 }
 
+#[derive(Debug, Clone)]
+struct AutoNodeCandidate {
+    executable: PathBuf,
+    source: CodexRetryGatewayNodeResolutionSource,
+}
+
 pub(crate) fn resolve_node_runtime<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     manual_override: Option<&str>,
@@ -53,31 +60,8 @@ pub(crate) fn resolve_node_runtime<R: tauri::Runtime>(
         });
     }
 
-    if let Some(executable) = find_codex_sibling_node(app)? {
-        let version = probe_node_executable(&executable)?;
-        return Ok(CodexRetryGatewayResolvedNode {
-            executable,
-            version,
-            source: CodexRetryGatewayNodeResolutionSource::CodexSibling,
-        });
-    }
-
-    if let Some(executable) = find_aio_discovery_node(app)? {
-        let version = probe_node_executable(&executable)?;
-        return Ok(CodexRetryGatewayResolvedNode {
-            executable,
-            version,
-            source: CodexRetryGatewayNodeResolutionSource::AioDiscovery,
-        });
-    }
-
-    if let Some(executable) = find_process_path_node() {
-        let version = probe_node_executable(&executable)?;
-        return Ok(CodexRetryGatewayResolvedNode {
-            executable,
-            version,
-            source: CodexRetryGatewayNodeResolutionSource::ProcessPath,
-        });
+    if let Some(resolved) = resolve_auto_node_candidates(auto_node_candidates(app)?)? {
+        return Ok(resolved);
     }
 
     Err(AppError::new(
@@ -168,17 +152,8 @@ fn validate_manual_override_path(raw: &str) -> AppResult<PathBuf> {
             "manual Node override must be an absolute path",
         ));
     }
-    if is_symlink(&path)? {
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_NODE_OVERRIDE_INVALID",
-            "manual Node override must not be a symbolic link",
-        ));
-    }
-    let metadata = std::fs::metadata(&path).map_err(|err| {
-        AppError::new(
-            "CODEX_RETRY_GATEWAY_NODE_OVERRIDE_INVALID",
-            format!("failed to read manual Node override metadata: {err}"),
-        )
+    let metadata = ensure_not_symlink_or_reparse(&path, "manual Node override").map_err(|err| {
+        AppError::new("CODEX_RETRY_GATEWAY_NODE_OVERRIDE_INVALID", err.to_string())
     })?;
     if !metadata.is_file() {
         return Err(AppError::new(
@@ -186,13 +161,86 @@ fn validate_manual_override_path(raw: &str) -> AppResult<PathBuf> {
             "manual Node override must point to a file",
         ));
     }
-    Ok(path)
+    validate_real_node_executable_path(&path)
+        .map_err(|err| AppError::new("CODEX_RETRY_GATEWAY_NODE_OVERRIDE_INVALID", err.to_string()))
+}
+
+fn resolve_auto_node_candidates(
+    candidates: Vec<AutoNodeCandidate>,
+) -> AppResult<Option<CodexRetryGatewayResolvedNode>> {
+    resolve_auto_node_candidates_with(candidates, probe_node_executable)
+}
+
+fn resolve_auto_node_candidates_with<F>(
+    candidates: Vec<AutoNodeCandidate>,
+    mut probe: F,
+) -> AppResult<Option<CodexRetryGatewayResolvedNode>>
+where
+    F: FnMut(&Path) -> AppResult<CodexRetryGatewayResolvedNodeVersion>,
+{
+    let mut last_error = None;
+    for candidate in candidates {
+        let executable = match validate_real_node_executable_path(&candidate.executable) {
+            Ok(executable) => executable,
+            Err(error) => {
+                last_error = Some(error);
+                continue;
+            }
+        };
+        match probe(&executable) {
+            Ok(version) => {
+                return Ok(Some(CodexRetryGatewayResolvedNode {
+                    executable,
+                    version,
+                    source: candidate.source,
+                }));
+            }
+            Err(error) => last_error = Some(error),
+        }
+    }
+    match last_error {
+        Some(error) => Err(error),
+        None => Ok(None),
+    }
+}
+
+fn validate_real_node_executable_path(path: &Path) -> AppResult<PathBuf> {
+    let metadata = ensure_not_symlink_or_reparse(path, "managed Node executable")
+        .map_err(|err| AppError::new("CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED", err.to_string()))?;
+    if !metadata.is_file() {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
+            format!("Node executable is not a file: {}", path.display()),
+        ));
+    }
+    #[cfg(windows)]
+    {
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .map(|value| value.to_ascii_lowercase());
+        if matches!(extension.as_deref(), Some("cmd" | "bat")) {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
+                format!(
+                    "refusing to launch shell wrapper as managed Node runtime: {}",
+                    path.display()
+                ),
+            ));
+        }
+    }
+    std::fs::canonicalize(path).map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
+            format!("failed to canonicalize {}: {err}", path.display()),
+        )
+    })
 }
 
 fn node_executable_names() -> &'static [&'static str] {
     #[cfg(windows)]
     {
-        &["node.exe", "node.cmd", "node.bat", "node"]
+        &["node.exe", "node"]
     }
     #[cfg(not(windows))]
     {
@@ -300,16 +348,70 @@ fn find_codex_sibling_node<R: tauri::Runtime>(
         .and_then(find_executable_in_dir))
 }
 
-fn find_aio_discovery_node<R: tauri::Runtime>(
+fn auto_node_candidates<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-) -> AppResult<Option<PathBuf>> {
-    Ok(command_search_dirs(app)?
-        .into_iter()
-        .find_map(|dir| find_executable_in_dir(&dir)))
+) -> AppResult<Vec<AutoNodeCandidate>> {
+    let mut seen = HashSet::new();
+    let mut candidates = Vec::new();
+
+    if let Some(executable) = find_codex_sibling_node(app)? {
+        push_auto_node_candidate(
+            &mut candidates,
+            &mut seen,
+            executable,
+            CodexRetryGatewayNodeResolutionSource::CodexSibling,
+        );
+    }
+
+    for executable in find_aio_discovery_nodes(app)? {
+        push_auto_node_candidate(
+            &mut candidates,
+            &mut seen,
+            executable,
+            CodexRetryGatewayNodeResolutionSource::AioDiscovery,
+        );
+    }
+
+    for executable in find_process_path_nodes() {
+        push_auto_node_candidate(
+            &mut candidates,
+            &mut seen,
+            executable,
+            CodexRetryGatewayNodeResolutionSource::ProcessPath,
+        );
+    }
+
+    Ok(candidates)
 }
 
-fn find_process_path_node() -> Option<PathBuf> {
-    find_process_path_command("node")
+fn push_auto_node_candidate(
+    candidates: &mut Vec<AutoNodeCandidate>,
+    seen: &mut HashSet<String>,
+    executable: PathBuf,
+    source: CodexRetryGatewayNodeResolutionSource,
+) {
+    let key = executable.display().to_string().to_ascii_lowercase();
+    if seen.insert(key) {
+        candidates.push(AutoNodeCandidate { executable, source });
+    }
+}
+
+fn find_aio_discovery_nodes<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<Vec<PathBuf>> {
+    Ok(command_search_dirs(app)?
+        .into_iter()
+        .filter_map(|dir| find_executable_in_dir(&dir))
+        .collect())
+}
+
+fn find_process_path_nodes() -> Vec<PathBuf> {
+    let Some(current) = std::env::var_os("PATH") else {
+        return Vec::new();
+    };
+    std::env::split_paths(&current)
+        .filter_map(|dir| find_executable_in_dir(&dir))
+        .collect()
 }
 
 fn find_process_path_command(command: &str) -> Option<PathBuf> {
@@ -526,12 +628,56 @@ mod tests {
         assert!(!public.retryable);
     }
 
+    #[test]
+    fn resolve_auto_node_candidates_skips_invalid_probe_and_continues() {
+        let dir = tempdir().unwrap();
+        let first = dir.path().join("node-16.exe");
+        let second = dir.path().join("node-20.exe");
+        std::fs::write(&first, b"node").unwrap();
+        std::fs::write(&second, b"node").unwrap();
+        let resolved = resolve_auto_node_candidates_with(
+            vec![
+                AutoNodeCandidate {
+                    executable: first.clone(),
+                    source: CodexRetryGatewayNodeResolutionSource::AioDiscovery,
+                },
+                AutoNodeCandidate {
+                    executable: second.clone(),
+                    source: CodexRetryGatewayNodeResolutionSource::ProcessPath,
+                },
+            ],
+            |path| {
+                if path.file_name().and_then(|value| value.to_str()) == Some("node-16.exe") {
+                    Err(AppError::new(
+                        "CODEX_RETRY_GATEWAY_NODE_UNSUPPORTED",
+                        "Node.js 18+ is required, found v16.0.0",
+                    ))
+                } else {
+                    Ok(CodexRetryGatewayResolvedNodeVersion {
+                        raw: "v20.0.0".to_string(),
+                        major: 20,
+                    })
+                }
+            },
+        )
+        .expect("candidate resolution");
+        let resolved = resolved.expect("resolved node");
+        assert_eq!(resolved.executable, std::fs::canonicalize(&second).unwrap());
+        assert_eq!(
+            resolved.source,
+            CodexRetryGatewayNodeResolutionSource::ProcessPath
+        );
+    }
+
     #[cfg(windows)]
     #[test]
-    fn find_executable_in_dir_accepts_cmd_wrapper() {
+    fn find_executable_in_dir_rejects_cmd_wrapper_and_prefers_real_exe() {
         let dir = tempdir().unwrap();
         let wrapper = dir.path().join("node.cmd");
+        let exe = dir.path().join("node.exe");
         std::fs::write(&wrapper, "@echo off\r\necho v20.0.0\r\n").unwrap();
-        assert_eq!(find_executable_in_dir(dir.path()), Some(wrapper));
+        std::fs::write(&exe, b"MZ").unwrap();
+        assert_eq!(find_executable_in_dir(dir.path()), Some(exe));
+        assert!(validate_real_node_executable_path(&wrapper).is_err());
     }
 }

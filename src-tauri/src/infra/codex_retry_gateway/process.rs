@@ -4,7 +4,8 @@ use crate::infra::codex_retry_gateway::managed_state::{
 };
 use crate::infra::codex_retry_gateway::source::CodexRetryGatewayInstalledSource;
 use crate::infra::codex_retry_gateway::util::{
-    is_loopback_host, normalized_internal_relative_path, now_unix_ms, random_hex,
+    canonicalize_path_within_root, ensure_not_symlink_or_reparse, is_loopback_host,
+    normalized_internal_relative_path, now_unix_ms, random_hex,
 };
 use crate::infra::codex_retry_gateway::{
     managed_gateway_config, managed_gateway_state, AioGatewayOrigin, CodexRetryGatewayError,
@@ -37,7 +38,9 @@ pub(crate) struct CodexRetryGatewayHealthSnapshot {
     pub(crate) upstream_base_url: Option<String>,
     pub(crate) gateway_base_url: Option<String>,
     pub(crate) config_path: Option<String>,
+    pub(crate) state_path: Option<String>,
     pub(crate) state_root: Option<String>,
+    pub(crate) log_path: Option<String>,
     pub(crate) instance_nonce: Option<String>,
     pub(crate) provider_name: Option<String>,
 }
@@ -60,8 +63,11 @@ pub(crate) struct CodexRetryGatewayProcessReconcileResult {
 struct ValidatedManagedRecord {
     start_identity: u64,
     listener: String,
+    source_dir: PathBuf,
     config_path: PathBuf,
+    state_path: PathBuf,
     state_root: PathBuf,
+    log_path: PathBuf,
 }
 
 pub(crate) async fn start_runtime_process(
@@ -81,20 +87,17 @@ pub(crate) async fn start_runtime_process(
         "managed Node executable",
     )?;
     let config = managed_gateway_config(listen_port, aio_origin);
-    let state = managed_gateway_state(
-        &listener,
-        &paths.root.display().to_string(),
-        &paths.runtime_config_path.display().to_string(),
-        &paths.runtime_log_path.display().to_string(),
-        &paths.runtime_pid_path.display().to_string(),
-        &aio_origin.url,
-        MANAGED_PROVIDER_NAME,
-        &instance_nonce,
-    );
     let config_bytes = json_file_bytes(&config, "managed gateway config")?;
-    let state_bytes = json_file_bytes(&state, "managed gateway state")?;
     write_file_atomic(&paths.runtime_config_path, &config_bytes)?;
-    write_file_atomic(&paths.runtime_state_path, &state_bytes)?;
+    ensure_runtime_log_file(&paths.runtime_log_path)?;
+    persist_managed_gateway_state(
+        paths,
+        &listener,
+        &aio_origin.url,
+        &instance_nonce,
+        None,
+        None,
+    )?;
 
     let mut command = Command::new(&node_executable);
     command.arg(source.source_dir.join("gateway.mjs"));
@@ -130,46 +133,123 @@ pub(crate) async fn start_runtime_process(
     };
     drop(child);
 
-    let health = wait_for_healthy_listener(
-        &listener,
-        pid,
-        start_identity,
-        &aio_origin.url,
-        &instance_nonce,
-    )
-    .await
-    .map_err(|error| {
-        let _ = terminate_process_by_identity(pid, Some(start_identity));
-        error
-    })?;
-    let managed = CodexRetryGatewayManagedProcess {
-        record: CodexRetryGatewayManagedProcessRecord {
-            pid,
-            start_identity: Some(start_identity),
-            started_at_ms: now_unix_ms(),
-            node_executable: node_executable.display().to_string(),
-            source_commit: source.manifest.commit.clone(),
-            source_dir_rel: relative_to_root(&paths.root, &source.source_dir)?,
-            config_path_rel: relative_to_root(&paths.root, &paths.runtime_config_path)?,
-            state_path_rel: relative_to_root(&paths.root, &paths.runtime_state_path)?,
-            log_path_rel: relative_to_root(&paths.root, &paths.runtime_log_path)?,
-            listener: listener.clone(),
-            upstream_base_url: aio_origin.url.clone(),
-            instance_nonce,
-        },
-        health,
-    };
-    let validated = validate_managed_record(paths, &managed.record)?;
-    if !health_matches_record(&managed.health, &managed.record, &validated) {
-        let _ = terminate_process_by_identity(pid, Some(start_identity));
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_HEALTH_TIMEOUT",
-            "managed gateway health identity did not match the persisted runtime record",
-        ));
-    }
+    let result = async {
+        persist_managed_gateway_state(
+            paths,
+            &listener,
+            &aio_origin.url,
+            &instance_nonce,
+            Some(pid),
+            Some(start_identity),
+        )?;
+        write_file_atomic(&paths.runtime_pid_path, format!("{pid}\n").as_bytes())?;
 
-    write_file_atomic(&paths.runtime_pid_path, format!("{pid}\n").as_bytes())?;
-    Ok(managed)
+        let health = wait_for_healthy_listener(
+            &listener,
+            pid,
+            start_identity,
+            &aio_origin.url,
+            &instance_nonce,
+        )
+        .await?;
+        let managed = CodexRetryGatewayManagedProcess {
+            record: CodexRetryGatewayManagedProcessRecord {
+                pid,
+                start_identity: Some(start_identity),
+                started_at_ms: now_unix_ms(),
+                node_executable: node_executable.display().to_string(),
+                source_commit: source.manifest.commit.clone(),
+                source_dir_rel: relative_to_root(&paths.root, &source.source_dir)?,
+                config_path_rel: relative_to_root(&paths.root, &paths.runtime_config_path)?,
+                state_path_rel: relative_to_root(&paths.root, &paths.runtime_state_path)?,
+                log_path_rel: relative_to_root(&paths.root, &paths.runtime_log_path)?,
+                listener: listener.clone(),
+                upstream_base_url: aio_origin.url.clone(),
+                instance_nonce: instance_nonce.clone(),
+            },
+            health,
+        };
+        let validated = validate_managed_record(paths, &managed.record)?;
+        if !health_matches_record(&managed.health, &managed.record, &validated) {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_HEALTH_TIMEOUT",
+                "managed gateway health identity did not match the persisted runtime record",
+            ));
+        }
+        Ok(managed)
+    }
+    .await;
+
+    match result {
+        Ok(managed) => Ok(managed),
+        Err(error) => {
+            let _ = terminate_process_by_identity(pid, Some(start_identity));
+            let _ = std::fs::remove_file(&paths.runtime_pid_path);
+            let _ = persist_managed_gateway_state(
+                paths,
+                &listener,
+                &aio_origin.url,
+                &instance_nonce,
+                None,
+                None,
+            );
+            Err(error)
+        }
+    }
+}
+
+fn ensure_runtime_log_file(path: &Path) -> AppResult<()> {
+    let parent = path.parent().ok_or_else(|| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_STATE_WRITE_FAILED",
+            format!("runtime log path has no parent: {}", path.display()),
+        )
+    })?;
+    ensure_not_symlink_or_reparse(parent, "managed runtime log directory")
+        .map_err(|err| AppError::new("CODEX_RETRY_GATEWAY_STATE_WRITE_FAILED", err.to_string()))?;
+    if path.exists() {
+        ensure_not_symlink_or_reparse(path, "managed runtime log file").map_err(|err| {
+            AppError::new("CODEX_RETRY_GATEWAY_STATE_WRITE_FAILED", err.to_string())
+        })?;
+    }
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(path)
+        .map(|_| ())
+        .map_err(|err| {
+            AppError::new(
+                "CODEX_RETRY_GATEWAY_STATE_WRITE_FAILED",
+                format!(
+                    "failed to create runtime log file {}: {err}",
+                    path.display()
+                ),
+            )
+        })
+}
+
+fn persist_managed_gateway_state(
+    paths: &CodexRetryGatewayManagerPaths,
+    listener: &str,
+    upstream_base_url: &str,
+    instance_nonce: &str,
+    process_id: Option<u32>,
+    process_start_identity: Option<u64>,
+) -> AppResult<()> {
+    let state = managed_gateway_state(
+        listener,
+        &paths.runtime_dir.display().to_string(),
+        &paths.runtime_config_path.display().to_string(),
+        &paths.runtime_log_path.display().to_string(),
+        &paths.runtime_pid_path.display().to_string(),
+        upstream_base_url,
+        MANAGED_PROVIDER_NAME,
+        instance_nonce,
+        process_id,
+        process_start_identity,
+    );
+    let state_bytes = json_file_bytes(&state, "managed gateway state")?;
+    write_file_atomic(&paths.runtime_state_path, &state_bytes)
 }
 
 pub(crate) async fn reconcile_runtime_process(
@@ -366,7 +446,7 @@ pub(crate) async fn probe_runtime_health(
         "gateway status",
     )
     .await?;
-    Ok(project_health_snapshot(listener, health, status))
+    Ok(project_health_snapshot(health, status))
 }
 
 fn build_process_client() -> AppResult<Client> {
@@ -417,6 +497,8 @@ async fn wait_for_healthy_listener(
         }
         if let Some(health) = probe_runtime_health(listener).await? {
             if health.process_id == Some(pid)
+                && health.listener.trim() == listener
+                && health.gateway_base_url.as_deref().map(str::trim) == Some(listener)
                 && health
                     .upstream_base_url
                     .as_deref()
@@ -427,6 +509,7 @@ async fn wait_for_healthy_listener(
                     .as_deref()
                     .map(str::trim)
                     .is_some_and(|value| value == instance_nonce)
+                && health.provider_name.as_deref().map(str::trim) == Some(MANAGED_PROVIDER_NAME)
             {
                 return Ok(health);
             }
@@ -475,10 +558,28 @@ fn health_matches_record(
     {
         return false;
     }
-    health
+    if !health
         .state_root
         .as_deref()
         .is_some_and(|path| reported_path_matches(path, &validated.state_root))
+    {
+        return false;
+    }
+    if !health
+        .state_path
+        .as_deref()
+        .is_some_and(|path| reported_path_matches(path, &validated.state_path))
+    {
+        return false;
+    }
+    if !health
+        .log_path
+        .as_deref()
+        .is_some_and(|path| reported_path_matches(path, &validated.log_path))
+    {
+        return false;
+    }
+    true
 }
 
 fn choose_listen_port(persisted_port: Option<u16>, preferred_port: u16) -> AppResult<u16> {
@@ -580,109 +681,113 @@ fn public_process_error(
     }
 }
 
-fn find_string(value: &Value, keys: &[&str]) -> Option<String> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(string) = map.get(*key).and_then(|candidate| candidate.as_str()) {
-                    let trimmed = string.trim();
-                    if !trimmed.is_empty() {
-                        return Some(trimmed.to_string());
-                    }
-                }
-            }
-            for nested in map.values() {
-                if let Some(found) = find_string(nested, keys) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        Value::Array(items) => items.iter().find_map(|item| find_string(item, keys)),
-        _ => None,
-    }
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OfficialHealthProjection {
+    listener: String,
+    upstream_base_url: String,
 }
 
-fn find_u32(value: &Value, keys: &[&str]) -> Option<u32> {
-    match value {
-        Value::Object(map) => {
-            for key in keys {
-                if let Some(found) = map
-                    .get(*key)
-                    .and_then(|candidate| candidate.as_u64())
-                    .and_then(|value| u32::try_from(value).ok())
-                {
-                    return Some(found);
-                }
-            }
-            for nested in map.values() {
-                if let Some(found) = find_u32(nested, keys) {
-                    return Some(found);
-                }
-            }
-            None
-        }
-        Value::Array(items) => items.iter().find_map(|item| find_u32(item, keys)),
-        _ => None,
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct OfficialStatusProjection {
+    listener: String,
+    process_id: Option<u32>,
+    upstream_base_url: Option<String>,
+    gateway_base_url: Option<String>,
+    config_path: Option<String>,
+    state_path: Option<String>,
+    state_root: Option<String>,
+    log_path: Option<String>,
+    instance_nonce: Option<String>,
+    provider_name: Option<String>,
+}
+
+fn object_string(map: &serde_json::Map<String, Value>, key: &str) -> Option<String> {
+    map.get(key)
+        .and_then(|candidate| candidate.as_str())
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(ToOwned::to_owned)
+}
+
+fn object_u32(map: &serde_json::Map<String, Value>, key: &str) -> Option<u32> {
+    map.get(key)
+        .and_then(|candidate| candidate.as_u64())
+        .and_then(|value| u32::try_from(value).ok())
+}
+
+fn normalize_reported_listener(raw: &str) -> Option<String> {
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        return None;
     }
+    let normalized = if trimmed.contains("://") {
+        normalize_listener(trimmed).ok()?
+    } else {
+        normalize_listener(&format!("http://{trimmed}")).ok()?
+    };
+    Some(normalized)
+}
+
+fn parse_official_health_payload(value: &Value) -> Option<OfficialHealthProjection> {
+    let object = value.as_object()?;
+    if object.get("ok").and_then(|candidate| candidate.as_bool()) != Some(true) {
+        return None;
+    }
+    Some(OfficialHealthProjection {
+        listener: normalize_reported_listener(&object_string(object, "listen")?)?,
+        upstream_base_url: object_string(object, "upstream_base_url")?,
+    })
+}
+
+fn parse_official_status_payload(value: &Value) -> Option<OfficialStatusProjection> {
+    let object = value.as_object()?;
+    if object.get("ok").and_then(|candidate| candidate.as_bool()) != Some(true) {
+        return None;
+    }
+    let state = object.get("state")?.as_object()?;
+    let paths = object.get("paths")?.as_object()?;
+    Some(OfficialStatusProjection {
+        listener: normalize_reported_listener(&object_string(object, "listen")?)?,
+        process_id: object_u32(state, "process_id"),
+        upstream_base_url: object_string(state, "original_base_url"),
+        gateway_base_url: object_string(state, "gateway_base_url"),
+        config_path: object_string(paths, "config_path"),
+        state_path: object_string(paths, "state_path"),
+        state_root: object_string(paths, "state_root"),
+        log_path: object_string(paths, "log_path"),
+        instance_nonce: object_string(state, "aio_instance_nonce"),
+        provider_name: object_string(state, "provider_name"),
+    })
 }
 
 fn project_health_snapshot(
-    listener: &str,
     health: Option<Value>,
     status: Option<Value>,
 ) -> Option<CodexRetryGatewayHealthSnapshot> {
-    let primary = health.as_ref().or(status.as_ref())?;
-    let process_id = find_u32(primary, &["process_id", "pid"]).or_else(|| {
-        status
-            .as_ref()
-            .and_then(|value| find_u32(value, &["process_id", "pid"]))
-    });
-    let upstream_base_url = find_string(primary, &["upstream_base_url", "original_base_url"])
-        .or_else(|| {
-            status
-                .as_ref()
-                .and_then(|value| find_string(value, &["upstream_base_url", "original_base_url"]))
-        });
-    let gateway_base_url = find_string(primary, &["gateway_base_url", "base_url"])
-        .or_else(|| {
-            status
-                .as_ref()
-                .and_then(|value| find_string(value, &["gateway_base_url", "base_url"]))
-        })
-        .or_else(|| Some(listener.to_string()));
-    let config_path = find_string(primary, &["gateway_config_path", "config_path"]).or_else(|| {
-        status
-            .as_ref()
-            .and_then(|value| find_string(value, &["gateway_config_path", "config_path"]))
-    });
-    let state_root = find_string(primary, &["state_root"]).or_else(|| {
-        status
-            .as_ref()
-            .and_then(|value| find_string(value, &["state_root"]))
-    });
-    let instance_nonce =
-        find_string(primary, &["aio_instance_nonce", "instance_nonce"]).or_else(|| {
-            status
-                .as_ref()
-                .and_then(|value| find_string(value, &["aio_instance_nonce", "instance_nonce"]))
-        });
-    let provider_name = find_string(primary, &["provider_name"]).or_else(|| {
-        status
-            .as_ref()
-            .and_then(|value| find_string(value, &["provider_name"]))
-    });
-    let listener = gateway_base_url.unwrap_or_else(|| listener.to_string());
+    let health = parse_official_health_payload(&health?)?;
+    let status = parse_official_status_payload(&status?)?;
+    if health.listener != status.listener {
+        return None;
+    }
+    if status
+        .upstream_base_url
+        .as_deref()
+        .is_some_and(|value| value != health.upstream_base_url)
+    {
+        return None;
+    }
 
     Some(CodexRetryGatewayHealthSnapshot {
-        listener: listener.clone(),
-        process_id,
-        upstream_base_url,
-        gateway_base_url: Some(listener),
-        config_path,
-        state_root,
-        instance_nonce,
-        provider_name,
+        listener: health.listener,
+        process_id: status.process_id,
+        upstream_base_url: Some(health.upstream_base_url),
+        gateway_base_url: status.gateway_base_url,
+        config_path: status.config_path,
+        state_path: status.state_path,
+        state_root: status.state_root,
+        log_path: status.log_path,
+        instance_nonce: status.instance_nonce,
+        provider_name: status.provider_name,
     })
 }
 
@@ -900,35 +1005,46 @@ fn validate_managed_record(
         &relative_to_root(&paths.root, &paths.source_dir(&normalized.source_commit)?)?,
         "managed source directory",
     )?;
-    let _ = canonicalize_existing_path(&normalized.source_dir(paths)?, "managed source directory")?;
+    let source_dir = canonicalize_path_within_root(
+        &paths.root,
+        &normalized.source_dir(paths)?,
+        "managed source directory",
+    )
+    .map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
+            err.to_string(),
+        )
+    })?;
     let config_path = validate_managed_runtime_path(
+        &paths.root,
         &normalized.config_path_rel,
         &relative_to_root(&paths.root, &paths.runtime_config_path)?,
         &normalized.config_path(paths)?,
         "managed runtime config",
     )?;
-    let _ = validate_managed_runtime_path(
+    let state_path = validate_managed_runtime_path(
+        &paths.root,
         &normalized.state_path_rel,
         &relative_to_root(&paths.root, &paths.runtime_state_path)?,
         &normalized.state_path(paths)?,
         "managed runtime state",
     )?;
-    validate_exact_record_path(
+    let log_path = validate_managed_runtime_path(
+        &paths.root,
         &normalized.log_path_rel,
         &relative_to_root(&paths.root, &paths.runtime_log_path)?,
+        &normalized.log_path(paths)?,
         "managed runtime log",
     )?;
-    if normalized.log_path(paths)? != paths.runtime_log_path {
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
-            format!(
-                "managed runtime log path {} no longer matches {}",
-                normalized.log_path(paths)?.display(),
-                paths.runtime_log_path.display()
-            ),
-        ));
-    }
-    let state_root = canonicalize_existing_path(&paths.root, "managed runtime root")?;
+    let state_root =
+        canonicalize_path_within_root(&paths.root, &paths.runtime_dir, "managed runtime root")
+            .map_err(|err| {
+                AppError::new(
+                    "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
+                    err.to_string(),
+                )
+            })?;
     let listener = normalize_listener(&normalized.listener)?;
     if normalized.listener != listener {
         return Err(AppError::new(
@@ -942,8 +1058,11 @@ fn validate_managed_record(
     Ok(ValidatedManagedRecord {
         start_identity,
         listener,
+        source_dir,
         config_path,
+        state_path,
         state_root,
+        log_path,
     })
 }
 
@@ -964,16 +1083,28 @@ fn validate_exact_record_path(recorded: &str, expected: &str, label: &str) -> Ap
 }
 
 fn validate_managed_runtime_path(
+    root: &Path,
     recorded_relative: &str,
     expected_relative: &str,
     recorded_absolute: &Path,
     label: &str,
 ) -> AppResult<PathBuf> {
     validate_exact_record_path(recorded_relative, expected_relative, label)?;
-    canonicalize_existing_path(recorded_absolute, label)
+    canonicalize_path_within_root(root, recorded_absolute, label).map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
+            err.to_string(),
+        )
+    })
 }
 
 fn canonicalize_existing_path(path: &Path, label: &str) -> AppResult<PathBuf> {
+    ensure_not_symlink_or_reparse(path, label).map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
+            err.to_string(),
+        )
+    })?;
     std::fs::canonicalize(path).map_err(|err| {
         AppError::new(
             "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
@@ -1049,6 +1180,11 @@ fn reported_path_matches(raw: &str, expected: &Path) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::codex_retry_gateway::managed_state::CodexRetryGatewaySourceManifest;
+    use crate::infra::codex_retry_gateway::{
+        CodexRetryGatewayInstalledSource, CodexRetryGatewayNodeResolutionSource,
+        CodexRetryGatewayResolvedNode, CodexRetryGatewayResolvedNodeVersion,
+    };
     use std::path::PathBuf;
     use tempfile::{tempdir, TempDir};
 
@@ -1080,6 +1216,7 @@ mod tests {
         std::fs::create_dir_all(&source_dir).expect("source dir create");
         std::fs::write(&paths.runtime_config_path, b"{}").expect("config");
         std::fs::write(&paths.runtime_state_path, b"{}").expect("state");
+        std::fs::write(&paths.runtime_log_path, b"").expect("log");
         let node_executable = dir.path().join(node_fixture_name());
         std::fs::write(&node_executable, b"node").expect("node");
         let listener = format!(
@@ -1117,9 +1254,21 @@ mod tests {
                     .display()
                     .to_string(),
             ),
+            state_path: Some(
+                std::fs::canonicalize(&paths.runtime_state_path)
+                    .expect("state canonical")
+                    .display()
+                    .to_string(),
+            ),
             state_root: Some(
-                std::fs::canonicalize(&paths.root)
-                    .expect("root canonical")
+                std::fs::canonicalize(&paths.runtime_dir)
+                    .expect("runtime canonical")
+                    .display()
+                    .to_string(),
+            ),
+            log_path: Some(
+                std::fs::canonicalize(&paths.runtime_log_path)
+                    .expect("log canonical")
                     .display()
                     .to_string(),
             ),
@@ -1207,6 +1356,22 @@ mod tests {
             &fixture.record,
             &fixture.validated
         ));
+
+        let mut missing_state_path = fixture.health.clone();
+        missing_state_path.state_path = None;
+        assert!(!health_matches_record(
+            &missing_state_path,
+            &fixture.record,
+            &fixture.validated
+        ));
+
+        let mut missing_log_path = fixture.health.clone();
+        missing_log_path.log_path = None;
+        assert!(!health_matches_record(
+            &missing_log_path,
+            &fixture.record,
+            &fixture.validated
+        ));
     }
 
     #[test]
@@ -1245,9 +1410,46 @@ mod tests {
         ));
 
         let mut state_mismatch = fixture.health.clone();
-        state_mismatch.state_root = Some(fixture.paths.runtime_dir.display().to_string());
+        state_mismatch.state_root = Some(
+            fixture
+                .paths
+                .runtime_dir
+                .join("other-root")
+                .display()
+                .to_string(),
+        );
         assert!(!health_matches_record(
             &state_mismatch,
+            &fixture.record,
+            &fixture.validated
+        ));
+
+        let mut state_path_mismatch = fixture.health.clone();
+        state_path_mismatch.state_path = Some(
+            fixture
+                .paths
+                .runtime_dir
+                .join("other-state.json")
+                .display()
+                .to_string(),
+        );
+        assert!(!health_matches_record(
+            &state_path_mismatch,
+            &fixture.record,
+            &fixture.validated
+        ));
+
+        let mut log_path_mismatch = fixture.health.clone();
+        log_path_mismatch.log_path = Some(
+            fixture
+                .paths
+                .runtime_logs_dir
+                .join("other.log")
+                .display()
+                .to_string(),
+        );
+        assert!(!health_matches_record(
+            &log_path_mismatch,
             &fixture.record,
             &fixture.validated
         ));
@@ -1284,20 +1486,32 @@ mod tests {
     #[test]
     fn project_health_snapshot_preserves_reported_gateway_base_url() {
         let snapshot = project_health_snapshot(
-            "http://127.0.0.1:4610",
-            None,
             Some(serde_json::json!({
-                "process_id": 7,
-                "original_base_url": "http://127.0.0.1:37123/v1",
-                "gateway_base_url": "http://127.0.0.1:4999",
-                "gateway_config_path": "C:/managed/config.json",
-                "state_root": "C:/managed",
-                "aio_instance_nonce": "deadbeef",
-                "provider_name": "aio"
+                "ok": true,
+                "listen": "127.0.0.1:4610",
+                "upstream_base_url": "http://127.0.0.1:37123/v1",
+                "ui_path": "/__codex_retry_gateway/ui"
+            })),
+            Some(serde_json::json!({
+                "ok": true,
+                "listen": "127.0.0.1:4610",
+                "state": {
+                    "process_id": 7,
+                    "original_base_url": "http://127.0.0.1:37123/v1",
+                    "gateway_base_url": "http://127.0.0.1:4999",
+                    "aio_instance_nonce": "deadbeef",
+                    "provider_name": "aio"
+                },
+                "paths": {
+                    "config_path": "C:/managed/config.json",
+                    "state_path": "C:/managed/state.json",
+                    "state_root": "C:/managed/runtime",
+                    "log_path": "C:/managed/gateway.log"
+                }
             })),
         )
         .expect("snapshot");
-        assert_eq!(snapshot.listener, "http://127.0.0.1:4999");
+        assert_eq!(snapshot.listener, "http://127.0.0.1:4610");
         assert_eq!(
             snapshot.gateway_base_url,
             Some("http://127.0.0.1:4999".to_string())
@@ -1326,5 +1540,108 @@ mod tests {
     #[test]
     fn process_matches_identity_requires_expected_start_identity() {
         assert!(!process_matches_identity(1234, None));
+    }
+
+    #[cfg(windows)]
+    fn discover_smoke_node() -> PathBuf {
+        let output = Command::new("where")
+            .arg("node")
+            .output()
+            .expect("where node");
+        assert!(output.status.success(), "where node must succeed for smoke");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .expect("node path")
+    }
+
+    #[cfg(not(windows))]
+    fn discover_smoke_node() -> PathBuf {
+        let output = Command::new("which")
+            .arg("node")
+            .output()
+            .expect("which node");
+        assert!(output.status.success(), "which node must succeed for smoke");
+        String::from_utf8_lossy(&output.stdout)
+            .lines()
+            .map(str::trim)
+            .find(|line| !line.is_empty())
+            .map(PathBuf::from)
+            .expect("node path")
+    }
+
+    #[tokio::test]
+    #[ignore = "manual smoke against the official read-only checkout"]
+    async fn official_gateway_smoke_start_reconcile_stop() {
+        let official_root = std::env::var("AIO_GATEWAY_OFFICIAL_CHECKOUT")
+            .map(PathBuf::from)
+            .unwrap_or_else(|_| PathBuf::from(r"D:\UGit\codex-retry-gateway"));
+        assert!(
+            official_root.join("gateway.mjs").exists(),
+            "official checkout must contain gateway.mjs"
+        );
+
+        let dir = tempdir().unwrap();
+        let paths = CodexRetryGatewayManagerPaths::from_root(dir.path().join("gateway"));
+        let managed_source_dir = paths
+            .source_dir("ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2")
+            .expect("managed source dir");
+        crate::shared::fs::copy_dir_recursive_if_missing(&official_root, &managed_source_dir)
+            .expect("copy official source into managed root");
+        let node = CodexRetryGatewayResolvedNode {
+            executable: discover_smoke_node(),
+            version: CodexRetryGatewayResolvedNodeVersion {
+                raw: "v20.0.0".to_string(),
+                major: 20,
+            },
+            source: CodexRetryGatewayNodeResolutionSource::ProcessPath,
+        };
+        let source = CodexRetryGatewayInstalledSource {
+            source_dir: managed_source_dir,
+            manifest: CodexRetryGatewaySourceManifest {
+                schema_version: 1,
+                repository: crate::infra::codex_retry_gateway::CODEX_RETRY_GATEWAY_REPOSITORY
+                    .to_string(),
+                commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
+                verified_main_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
+                verified_at_ms: 1,
+                archive_sha256: "0".repeat(64),
+                source_sha256: "0".repeat(64),
+                file_count: 0,
+                total_bytes: 0,
+                gateway_entry_rel: "gateway.mjs".to_string(),
+                admin_entry_rel: "scripts/admin-lib.mjs".to_string(),
+                launch_ui_entry_rel: "scripts/launch-ui.mjs".to_string(),
+            },
+        };
+        let aio_origin = AioGatewayOrigin {
+            url: "http://127.0.0.1:37123/v1".to_string(),
+        };
+
+        let process = start_runtime_process(
+            &paths,
+            &source,
+            &node,
+            &aio_origin,
+            CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+            None,
+        )
+        .await
+        .expect("start runtime process");
+        let reconciled = reconcile_runtime_process(&paths, Some(&process.record), None)
+            .await
+            .expect("reconcile runtime process");
+        assert!(
+            reconciled.managed.is_some(),
+            "managed process must reconcile"
+        );
+        assert!(
+            stop_runtime_process(&paths, &process.record)
+                .await
+                .expect("stop runtime process"),
+            "managed process must stop cleanly"
+        );
     }
 }

@@ -33,6 +33,8 @@ pub(crate) fn managed_gateway_state(
     upstream_base_url: &str,
     provider_name: &str,
     instance_nonce: &str,
+    process_id: Option<u32>,
+    process_start_identity: Option<u64>,
 ) -> serde_json::Value {
     let now = now_rfc3339();
     json!({
@@ -47,7 +49,9 @@ pub(crate) fn managed_gateway_state(
         "gateway_pid_path": pid_path,
         "latest_backup_path": serde_json::Value::Null,
         "state_root": state_root,
-        "aio_instance_nonce": instance_nonce
+        "aio_instance_nonce": instance_nonce,
+        "process_id": process_id,
+        "aio_process_start_identity": process_start_identity
     })
 }
 
@@ -71,15 +75,19 @@ mod tests {
     fn managed_gateway_state_omits_restorable_backup() {
         let state = managed_gateway_state(
             "http://127.0.0.1:4610",
-            "D:/gateway",
+            "D:/gateway/runtime",
             "D:/gateway/runtime/config/config.json",
             "D:/gateway/runtime/logs/gateway.log",
             "D:/gateway/runtime/gateway.pid",
             "http://127.0.0.1:37123/v1",
             "aio",
             "deadbeef",
+            Some(7),
+            Some(99),
         );
         assert!(state["latest_backup_path"].is_null());
         assert_eq!(state["aio_instance_nonce"], "deadbeef");
+        assert_eq!(state["process_id"], 7);
+        assert_eq!(state["aio_process_start_identity"], 99);
     }
 }

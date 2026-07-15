@@ -19,7 +19,10 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
-use super::util::{normalize_full_sha, now_unix_ms, random_hex};
+use super::util::{
+    canonicalize_path_within_root, ensure_not_symlink_or_reparse, normalize_full_sha, now_unix_ms,
+    random_hex,
+};
 
 const GITHUB_JSON_RESPONSE_LIMIT: usize = 512 * 1024;
 const SOURCE_ZIP_MAX_BYTES: usize = 8 * 1024 * 1024;
@@ -126,24 +129,40 @@ pub(crate) async fn resolve_commit_candidate(
     http: &CodexRetryGatewaySourceHttpConfig,
 ) -> AppResult<CodexRetryGatewayCommitSelection> {
     let requested_commit = normalize_full_sha(commit)?;
+    resolve_commit_selection(&requested_commit, &requested_commit, true, http).await
+}
+
+pub(crate) async fn resolve_official_main_candidate(
+    http: &CodexRetryGatewaySourceHttpConfig,
+) -> AppResult<CodexRetryGatewayCommitSelection> {
+    resolve_commit_selection("main", "main", false, http).await
+}
+
+async fn resolve_commit_selection(
+    requested_commit: &str,
+    commit_ref: &str,
+    require_official_ancestor: bool,
+    http: &CodexRetryGatewaySourceHttpConfig,
+) -> AppResult<CodexRetryGatewayCommitSelection> {
     let client = build_github_client()?;
-    let (canonical_commit, summary) =
-        fetch_commit_details(&client, http, &requested_commit).await?;
+    let (canonical_commit, summary) = fetch_commit_details(&client, http, commit_ref).await?;
     let (official_main_commit, _) = fetch_commit_details(&client, http, "main").await?;
-    ensure_commit_is_official_main_ancestor(
-        &client,
-        http,
-        &canonical_commit,
-        &official_main_commit,
-    )
-    .await?;
+    if require_official_ancestor {
+        ensure_commit_is_official_main_ancestor(
+            &client,
+            http,
+            &canonical_commit,
+            &official_main_commit,
+        )
+        .await?;
+    }
     let trust_state = if canonical_commit == CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT {
         CodexRetryGatewayTrustState::AioReviewedRecommendation
     } else {
         CodexRetryGatewayTrustState::OfficialMainUnreviewed
     };
     Ok(CodexRetryGatewayCommitSelection {
-        requested_commit,
+        requested_commit: requested_commit.trim().to_string(),
         canonical_commit,
         official_main_commit,
         summary,
@@ -206,6 +225,8 @@ pub(crate) async fn install_source_commit(
         write_source_manifest(&extracted_root.join("manifest.json"), &manifest)?;
         let final_dir = paths.source_dir(&selection.canonical_commit)?;
         if final_dir.exists() {
+            let _ =
+                canonicalize_path_within_root(&paths.root, &final_dir, "cached source directory")?;
             std::fs::remove_dir_all(&final_dir).map_err(|err| {
                 AppError::new(
                     "CODEX_RETRY_GATEWAY_SOURCE_REPAIR_FAILED",
@@ -241,6 +262,7 @@ pub(crate) fn revalidate_cached_source(
     if !source_dir.exists() {
         return Ok(None);
     }
+    let _ = canonicalize_path_within_root(&paths.root, &source_dir, "cached source directory")?;
     let manifest = read_source_manifest(paths, commit)?;
     validate_source_layout(&source_dir)?;
     let (source_sha256, file_count, total_bytes) = fingerprint_extracted_source(&source_dir)?;
@@ -643,18 +665,22 @@ fn normalize_zip_entry(name: &str) -> AppResult<PathBuf> {
 }
 
 fn validate_source_layout(root: &Path) -> AppResult<()> {
+    let _ = ensure_not_symlink_or_reparse(root, "source root").map_err(|err| {
+        AppError::new("CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID", err.to_string())
+    })?;
     for relative in [
         "gateway.mjs",
         "scripts/admin-lib.mjs",
         "scripts/launch-ui.mjs",
     ] {
         let path = root.join(relative);
-        let metadata = std::fs::metadata(&path).map_err(|err| {
-            AppError::new(
-                "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
-                format!("required source file missing {}: {err}", path.display()),
-            )
-        })?;
+        let metadata =
+            ensure_not_symlink_or_reparse(&path, "required source file").map_err(|err| {
+                AppError::new(
+                    "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
+                    format!("required source file missing {}: {err}", path.display()),
+                )
+            })?;
         if !metadata.is_file() {
             return Err(AppError::new(
                 "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
@@ -837,13 +863,41 @@ fn fingerprint_extracted_source(root: &Path) -> AppResult<(String, u32, u64)> {
     let mut hasher = Sha256::new();
     let mut total_bytes = 0_u64;
     for (relative, path) in &files {
+        let metadata =
+            ensure_not_symlink_or_reparse(path, "cached source file").map_err(|err| {
+                AppError::new("CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID", err.to_string())
+            })?;
+        if !metadata.is_file() {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
+                format!("cached source path is not a file: {}", path.display()),
+            ));
+        }
+        if metadata.len() > SOURCE_ZIP_MAX_FILE_BYTES {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
+                format!("cached source file exceeds limit: {}", path.display()),
+            ));
+        }
         let bytes = std::fs::read(path).map_err(|err| {
             AppError::new(
                 "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
                 format!("failed to read {}: {err}", path.display()),
             )
         })?;
+        if bytes.len() as u64 > SOURCE_ZIP_MAX_FILE_BYTES {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
+                format!("cached source file exceeds limit: {}", path.display()),
+            ));
+        }
         total_bytes = total_bytes.saturating_add(bytes.len() as u64);
+        if total_bytes > SOURCE_ZIP_MAX_EXTRACTED_BYTES {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
+                "cached source extracted content exceeds limits",
+            ));
+        }
         hasher.update(relative.as_bytes());
         hasher.update([0]);
         hasher.update(&bytes);
@@ -860,6 +914,10 @@ fn collect_source_files(
     current: &Path,
     files: &mut Vec<(String, PathBuf)>,
 ) -> AppResult<()> {
+    let _ =
+        canonicalize_path_within_root(root, current, "cached source directory").map_err(|err| {
+            AppError::new("CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID", err.to_string())
+        })?;
     let entries = std::fs::read_dir(current).map_err(|err| {
         AppError::new(
             "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
@@ -877,12 +935,14 @@ fn collect_source_files(
         if path.file_name().and_then(|value| value.to_str()) == Some("manifest.json") {
             continue;
         }
-        let metadata = entry.metadata().map_err(|err| {
-            AppError::new(
-                "CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID",
-                format!("failed to read metadata {}: {err}", path.display()),
-            )
-        })?;
+        let metadata =
+            ensure_not_symlink_or_reparse(&path, "cached source entry").map_err(|err| {
+                AppError::new("CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID", err.to_string())
+            })?;
+        let _ =
+            canonicalize_path_within_root(root, &path, "cached source entry").map_err(|err| {
+                AppError::new("CODEX_RETRY_GATEWAY_SOURCE_LAYOUT_INVALID", err.to_string())
+            })?;
         if metadata.is_dir() {
             collect_source_files(root, &path, files)?;
         } else if metadata.is_file() {
@@ -902,6 +962,9 @@ fn collect_source_files(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::extract::Path as AxumPath;
+    use axum::routing::get;
+    use axum::{Json, Router};
     use tempfile::tempdir;
 
     #[test]
@@ -975,5 +1038,68 @@ mod tests {
         assert!(revalidate_cached_source(&paths, &manifest.commit)
             .unwrap()
             .is_none());
+    }
+
+    #[tokio::test]
+    async fn resolve_official_main_candidate_accepts_main_ref() {
+        const MAIN_SHA: &str = "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2";
+
+        async fn commit_handler(
+            AxumPath((_owner, _repo, reference)): AxumPath<(String, String, String)>,
+        ) -> Json<serde_json::Value> {
+            let sha = if reference == "main" {
+                MAIN_SHA.to_string()
+            } else {
+                reference
+            };
+            Json(serde_json::json!({
+                "sha": sha,
+                "commit": {
+                    "message": "official main"
+                }
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            let router = Router::new().route(
+                "/repos/:owner/:repo/commits/:reference",
+                get(commit_handler),
+            );
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let selection = resolve_official_main_candidate(&CodexRetryGatewaySourceHttpConfig {
+            api_base_url: format!("http://127.0.0.1:{port}"),
+            download_base_url: "http://127.0.0.1:1".to_string(),
+            allowed_hosts: vec!["127.0.0.1".to_string()],
+        })
+        .await
+        .unwrap();
+        assert_eq!(selection.requested_commit, "main");
+        assert_eq!(selection.canonical_commit, MAIN_SHA);
+        assert_eq!(selection.official_main_commit, MAIN_SHA);
+        server.abort();
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn fingerprint_extracted_source_rejects_junction_escape() {
+        let dir = tempdir().unwrap();
+        let root = dir.path().join("source");
+        let outside = dir.path().join("outside");
+        std::fs::create_dir_all(root.join("scripts")).unwrap();
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(root.join("gateway.mjs"), "gateway").unwrap();
+        std::fs::write(root.join("scripts").join("admin-lib.mjs"), "admin").unwrap();
+        std::fs::write(root.join("scripts").join("launch-ui.mjs"), "ui").unwrap();
+        std::fs::write(outside.join("payload.txt"), "escape").unwrap();
+        junction::create(&outside, root.join("escaped")).unwrap();
+
+        let err = fingerprint_extracted_source(&root).expect_err("junction escape must fail");
+        assert!(err.to_string().contains("reparse point"));
     }
 }

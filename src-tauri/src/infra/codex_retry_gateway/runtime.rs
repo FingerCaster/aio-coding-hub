@@ -10,8 +10,8 @@ use crate::infra::codex_retry_gateway::process::{
     CodexRetryGatewayManagedProcess, CodexRetryGatewayProcessReconcileResult,
 };
 use crate::infra::codex_retry_gateway::source::{
-    install_source_commit, public_source_error, revalidate_cached_source, validate_commit_request,
-    CodexRetryGatewaySourceHttpConfig,
+    install_source_commit, public_source_error, resolve_official_main_candidate,
+    revalidate_cached_source, validate_commit_request, CodexRetryGatewaySourceHttpConfig,
 };
 use crate::infra::codex_retry_gateway::util::{normalize_full_sha, now_unix_ms, strip_trailing_v1};
 use crate::infra::codex_retry_gateway::{
@@ -58,6 +58,13 @@ impl CodexRetryGatewayLifecycleCallback for RuntimeFailClosedCallback {
 static RUNTIME_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 static LIFECYCLE_CALLBACK: OnceLock<RwLock<Arc<dyn CodexRetryGatewayLifecycleCallback>>> =
     OnceLock::new();
+
+#[derive(Clone)]
+struct RuntimeRollbackState {
+    settings: crate::settings::AppSettings,
+    manager: CodexRetryGatewayManagerState,
+    restart_process: bool,
+}
 
 fn runtime_lock() -> &'static Mutex<()> {
     RUNTIME_LOCK.get_or_init(|| Mutex::new(()))
@@ -107,10 +114,13 @@ pub(crate) async fn runtime_update_candidate<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<Option<CodexRetryGatewayUpdateCandidate>> {
     let status = current_status(app).await?;
-    let candidate =
-        validate_commit_request("main", &CodexRetryGatewaySourceHttpConfig::default()).await;
-    let Some(selection) = candidate.selection else {
-        return Ok(None);
+    let selection = match resolve_official_main_candidate(
+        &CodexRetryGatewaySourceHttpConfig::default(),
+    )
+    .await
+    {
+        Ok(selection) => selection,
+        Err(_) => return Ok(None),
     };
     let current_commit = status
         .active_commit
@@ -160,12 +170,21 @@ pub(crate) async fn set_runtime_enabled<R: tauri::Runtime>(
     if !request.enabled {
         settings.codex_retry_gateway_enabled = false;
         crate::settings::write(app, &settings)?;
+        let mut stop_error = None;
         if let Some(record) = manager.process_record.clone() {
-            let _ = stop_runtime_process(&paths, &record).await;
+            match stop_runtime_process(&paths, &record).await {
+                Ok(true) => manager.process_record = None,
+                Ok(false) => {
+                    stop_error = Some(runtime_public_error_message(
+                        "CODEX_RETRY_GATEWAY_PROCESS_OWNERSHIP_MISMATCH",
+                        "managed gateway stop could not be verified; cleanup is still required",
+                    ));
+                }
+                Err(error) => stop_error = Some(runtime_public_error(&error)),
+            }
         }
         manager.generation = manager.generation.saturating_add(1);
-        manager.last_error = None;
-        manager.process_record = None;
+        manager.last_error = stop_error;
         manager.recovery_failure_count = 0;
         manager.recovery_next_retry_at_ms = None;
         manager.recovery_paused = false;
@@ -174,15 +193,22 @@ pub(crate) async fn set_runtime_enabled<R: tauri::Runtime>(
     }
 
     require_enable_confirmations(&plan, &request.confirmation)?;
+    let rollback = RuntimeRollbackState {
+        settings: settings.clone(),
+        manager: manager.clone(),
+        restart_process: false,
+    };
     settings.codex_retry_gateway_enabled = true;
-    crate::settings::write(app, &settings)?;
 
     match ensure_runtime_process(app, &settings, &paths, &mut manager).await {
         Ok(process) => {
+            let cleanup_process = (rollback.manager.process_record.as_ref()
+                != Some(&process.record))
+            .then_some(&process);
             manager.generation = manager.generation.saturating_add(1);
             manager.active_commit = Some(process.record.source_commit.clone());
             manager.effective_port = parse_listener_port(&process.record.listener);
-            manager.process_record = Some(process.record);
+            manager.process_record = Some(process.record.clone());
             manager.verified_main_commit = Some(
                 manager
                     .verified_main_commit
@@ -193,7 +219,8 @@ pub(crate) async fn set_runtime_enabled<R: tauri::Runtime>(
             manager.recovery_next_retry_at_ms = None;
             manager.recovery_paused = false;
             manager.last_error = None;
-            write_manager_state(&paths, &manager)?;
+            persist_runtime_transition(app, &paths, &settings, &manager, cleanup_process, rollback)
+                .await?;
             build_runtime_status(app, Some(manager)).await
         }
         Err(error) => {
@@ -252,12 +279,11 @@ pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
         ));
     }
 
-    let mut settings = crate::settings::read(app)?;
+    let previous_settings = crate::settings::read(app)?;
+    let mut settings = previous_settings.clone();
     let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
     let mut manager = read_manager_state(&paths)?;
-    settings.codex_retry_gateway_selected_commit = selection.canonical_commit.clone();
-    crate::settings::write(app, &settings)?;
-
+    let previous_manager = manager.clone();
     let node = resolve_required_node(app, &settings.codex_retry_gateway_node_override)?;
     let installed = install_source_commit(
         &paths,
@@ -266,14 +292,20 @@ pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
         &CodexRetryGatewaySourceHttpConfig::default(),
     )
     .await?;
+    let mut rollback = RuntimeRollbackState {
+        settings: previous_settings,
+        manager: previous_manager,
+        restart_process: false,
+    };
+
     manager.verified_main_commit = Some(installed.manifest.verified_main_commit.clone());
+    let mut started_process = None;
 
     if settings.codex_retry_gateway_enabled {
-        if let Some(record) = manager.process_record.clone() {
-            let _ = stop_runtime_process(&paths, &record).await;
-        }
+        rollback.restart_process =
+            stop_verified_record_for_change(&paths, &manager, "commit switch").await?;
         let aio_origin = aio_origin(app, &settings);
-        let process = start_runtime_process(
+        let process = match start_runtime_process(
             &paths,
             &installed,
             &node,
@@ -283,12 +315,28 @@ pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
                 .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
             manager.effective_port,
         )
-        .await?;
+        .await
+        {
+            Ok(process) => process,
+            Err(error) => {
+                if rollback.restart_process {
+                    let rollback_error = rollback_runtime_state(app, &paths, &rollback).await.err();
+                    return Err(match rollback_error {
+                        Some(rollback_error) => AppError::new(
+                            error.code(),
+                            format!("{error}; rollback failed: {rollback_error}"),
+                        ),
+                        None => error,
+                    });
+                }
+                return Err(error);
+            }
+        };
         if manager.active_commit.as_deref() != Some(selection.canonical_commit.as_str()) {
             manager.previous_commit = manager.active_commit.clone();
         }
         manager.active_commit = Some(selection.canonical_commit.clone());
-        manager.process_record = Some(process.record);
+        manager.process_record = Some(process.record.clone());
         manager.effective_port = parse_listener_port(
             manager
                 .process_record
@@ -296,11 +344,21 @@ pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
                 .map(|record| record.listener.as_str())
                 .unwrap_or_default(),
         );
+        started_process = Some(process);
     }
 
+    settings.codex_retry_gateway_selected_commit = selection.canonical_commit.clone();
     manager.generation = manager.generation.saturating_add(1);
     manager.last_error = None;
-    write_manager_state(&paths, &manager)?;
+    persist_runtime_transition(
+        app,
+        &paths,
+        &settings,
+        &manager,
+        started_process.as_ref(),
+        rollback,
+    )
+    .await?;
     build_runtime_status(app, Some(manager)).await
 }
 
@@ -333,12 +391,21 @@ pub(crate) async fn retry_runtime_recovery<R: tauri::Runtime>(
     let settings = crate::settings::read(app)?;
     let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
     let mut manager = read_manager_state(&paths)?;
+    let rollback = RuntimeRollbackState {
+        settings: settings.clone(),
+        manager: manager.clone(),
+        restart_process: false,
+    };
     manager.recovery_paused = false;
     manager.recovery_next_retry_at_ms = None;
+    let mut cleanup_process = None;
     if settings.codex_retry_gateway_enabled {
         match ensure_runtime_process(app, &settings, &paths, &mut manager).await {
             Ok(process) => {
-                manager.process_record = Some(process.record);
+                cleanup_process = (rollback.manager.process_record.as_ref()
+                    != Some(&process.record))
+                .then_some(process.clone());
+                manager.process_record = Some(process.record.clone());
                 manager.active_commit = manager
                     .process_record
                     .as_ref()
@@ -356,7 +423,15 @@ pub(crate) async fn retry_runtime_recovery<R: tauri::Runtime>(
         }
     }
     manager.generation = manager.generation.saturating_add(1);
-    write_manager_state(&paths, &manager)?;
+    persist_runtime_transition(
+        app,
+        &paths,
+        &settings,
+        &manager,
+        cleanup_process.as_ref(),
+        rollback,
+    )
+    .await?;
     build_runtime_status(app, Some(manager)).await
 }
 
@@ -381,10 +456,18 @@ pub(crate) async fn uninstall_runtime<R: tauri::Runtime>(
     let mut settings = crate::settings::read(app)?;
     let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
     let manager = read_manager_state(&paths)?;
-    if let Some(record) = manager.process_record.as_ref() {
-        let _ = stop_runtime_process(&paths, record).await;
+    let _ = stop_verified_record_for_change(&paths, &manager, "runtime uninstall").await?;
+    if paths.root.exists() {
+        std::fs::remove_dir_all(&paths.root).map_err(|err| {
+            AppError::new(
+                "CODEX_RETRY_GATEWAY_UNINSTALL_FAILED",
+                format!(
+                    "failed to remove runtime data root {}: {err}",
+                    paths.root.display()
+                ),
+            )
+        })?;
     }
-    let _ = std::fs::remove_dir_all(&paths.root);
     settings.codex_retry_gateway_enabled = false;
     settings.codex_retry_gateway_selected_commit =
         CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT.to_string();
@@ -503,20 +586,7 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
     manager: &mut CodexRetryGatewayManagerState,
 ) -> AppResult<CodexRetryGatewayManagedProcess> {
     let node = resolve_required_node(app, &settings.codex_retry_gateway_node_override)?;
-    let selection = validate_commit_request(
-        &normalize_selected_commit(&settings.codex_retry_gateway_selected_commit),
-        &CodexRetryGatewaySourceHttpConfig::default(),
-    )
-    .await;
-    let selection = selection.selection.ok_or_else(|| {
-        let error = selection.validation.error.unwrap_or_else(|| {
-            runtime_public_error_message(
-                "CODEX_RETRY_GATEWAY_SOURCE_RESOLUTION_FAILED",
-                "failed to validate selected commit",
-            )
-        });
-        AppError::new(error.code, error.message)
-    })?;
+    let selected_commit = normalize_selected_commit(&settings.codex_retry_gateway_selected_commit);
 
     if let Some(record) = manager.process_record.as_ref() {
         let reconciled =
@@ -525,7 +595,7 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
             let canonical_node = std::fs::canonicalize(&node.executable)
                 .ok()
                 .map(|path| path.display().to_string());
-            if process.record.source_commit == selection.canonical_commit
+            if process.record.source_commit == selected_commit
                 && canonical_node
                     .as_deref()
                     .is_some_and(|path| process.record.node_executable == path)
@@ -534,17 +604,35 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
             }
         }
         if reconciled.managed.is_some() {
-            let _ = stop_runtime_process(paths, record).await;
+            stop_runtime_process(paths, record).await?;
         }
     }
 
-    let installed = install_source_commit(
-        paths,
-        &selection,
-        &node,
-        &CodexRetryGatewaySourceHttpConfig::default(),
-    )
-    .await?;
+    let installed = if let Some(installed) = revalidate_cached_source(paths, &selected_commit)? {
+        installed
+    } else {
+        let selection = validate_commit_request(
+            &selected_commit,
+            &CodexRetryGatewaySourceHttpConfig::default(),
+        )
+        .await;
+        let selection = selection.selection.ok_or_else(|| {
+            let error = selection.validation.error.unwrap_or_else(|| {
+                runtime_public_error_message(
+                    "CODEX_RETRY_GATEWAY_SOURCE_RESOLUTION_FAILED",
+                    "failed to validate selected commit",
+                )
+            });
+            AppError::new(error.code, error.message)
+        })?;
+        install_source_commit(
+            paths,
+            &selection,
+            &node,
+            &CodexRetryGatewaySourceHttpConfig::default(),
+        )
+        .await?
+    };
     manager.verified_main_commit = Some(installed.manifest.verified_main_commit.clone());
     let aio_origin = aio_origin(app, settings);
     start_runtime_process(
@@ -558,6 +646,121 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
         manager.effective_port,
     )
     .await
+}
+
+async fn stop_verified_record_for_change(
+    paths: &CodexRetryGatewayManagerPaths,
+    manager: &CodexRetryGatewayManagerState,
+    context: &str,
+) -> AppResult<bool> {
+    let Some(record) = manager.process_record.as_ref() else {
+        return Ok(false);
+    };
+    let reconciled = reconcile_runtime_process(paths, Some(record), manager.effective_port).await?;
+    if reconciled.managed.is_some() {
+        stop_runtime_process(paths, record).await?;
+        return Ok(true);
+    }
+    if reconciled.status.phase == CodexRetryGatewayProcessPhase::Stopped {
+        return Ok(false);
+    }
+    Err(AppError::new(
+        "CODEX_RETRY_GATEWAY_PROCESS_STOP_FAILED",
+        format!("{context} requires a verified stop of the currently managed gateway process"),
+    ))
+}
+
+async fn rollback_runtime_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    paths: &CodexRetryGatewayManagerPaths,
+    rollback: &RuntimeRollbackState,
+) -> AppResult<()> {
+    let mut manager = rollback.manager.clone();
+    let mut restarted = None;
+    if rollback.restart_process {
+        if let Some(record) = rollback.manager.process_record.as_ref() {
+            let node =
+                resolve_required_node(app, &rollback.settings.codex_retry_gateway_node_override)?;
+            let installed =
+                revalidate_cached_source(paths, &record.source_commit)?.ok_or_else(|| {
+                    AppError::new(
+                        "CODEX_RETRY_GATEWAY_SOURCE_RESOLUTION_FAILED",
+                        format!(
+                            "failed to revalidate cached source for rollback commit {}",
+                            record.source_commit
+                        ),
+                    )
+                })?;
+            let aio_origin = aio_origin(app, &rollback.settings);
+            let process = start_runtime_process(
+                paths,
+                &installed,
+                &node,
+                &aio_origin,
+                rollback
+                    .settings
+                    .codex_retry_gateway_preferred_port
+                    .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
+                rollback.manager.effective_port,
+            )
+            .await?;
+            manager.process_record = Some(process.record.clone());
+            manager.active_commit = Some(process.record.source_commit.clone());
+            manager.effective_port = parse_listener_port(&process.record.listener);
+            manager.last_error = None;
+            restarted = Some(process);
+        }
+    }
+    if let Err(error) = crate::settings::write(app, &rollback.settings) {
+        if let Some(process) = restarted.as_ref() {
+            let _ = stop_runtime_process(paths, &process.record).await;
+        }
+        return Err(error);
+    }
+    if let Err(error) = write_manager_state(paths, &manager) {
+        if let Some(process) = restarted.as_ref() {
+            let _ = stop_runtime_process(paths, &process.record).await;
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+async fn persist_runtime_transition<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    paths: &CodexRetryGatewayManagerPaths,
+    settings: &crate::settings::AppSettings,
+    manager: &CodexRetryGatewayManagerState,
+    started_process: Option<&CodexRetryGatewayManagedProcess>,
+    rollback: RuntimeRollbackState,
+) -> AppResult<()> {
+    if let Err(error) = crate::settings::write(app, settings) {
+        if let Some(process) = started_process {
+            let _ = stop_runtime_process(paths, &process.record).await;
+        }
+        let rollback_error = rollback_runtime_state(app, paths, &rollback).await.err();
+        return Err(match rollback_error {
+            Some(rollback_error) => AppError::new(
+                error.code(),
+                format!("{error}; rollback failed: {rollback_error}"),
+            ),
+            None => error,
+        });
+    }
+    if let Err(error) = write_manager_state(paths, manager) {
+        if let Some(process) = started_process {
+            let _ = stop_runtime_process(paths, &process.record).await;
+        }
+        let rollback_error = rollback_runtime_state(app, paths, &rollback).await.err();
+        return Err(match rollback_error {
+            Some(rollback_error) => AppError::new(
+                error.code(),
+                format!("{error}; rollback failed: {rollback_error}"),
+            ),
+            None => error,
+        });
+    }
+    Ok(())
 }
 
 fn resolve_required_node<R: tauri::Runtime>(
@@ -776,6 +979,78 @@ fn runtime_public_error_message(code: &str, rendered: &str) -> CodexRetryGateway
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord;
+    use axum::routing::get;
+    use axum::{Json, Router};
+    use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
+    use tauri::Manager;
+    use tempfile::TempDir;
+
+    fn runtime_test_lock() -> &'static StdMutex<()> {
+        static LOCK: StdOnceLock<StdMutex<()>> = StdOnceLock::new();
+        LOCK.get_or_init(|| StdMutex::new(()))
+    }
+
+    struct RuntimeTestContext {
+        _guard: std::sync::MutexGuard<'static, ()>,
+        _home: TempDir,
+        app: tauri::AppHandle<tauri::test::MockRuntime>,
+        paths: CodexRetryGatewayManagerPaths,
+    }
+
+    impl RuntimeTestContext {
+        fn new() -> Self {
+            let guard = runtime_test_lock()
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let home = tempfile::tempdir().unwrap();
+            std::env::set_var("AIO_CODING_HUB_TEST_HOME", home.path());
+            let app = tauri::test::mock_app().handle().clone();
+            app.manage(crate::app::gateway_state::GatewayState::default());
+            let paths = CodexRetryGatewayManagerPaths::from_app(&app).unwrap();
+            paths.ensure_dirs().unwrap();
+            crate::settings::write(&app, &crate::settings::AppSettings::default()).unwrap();
+            Self {
+                _guard: guard,
+                _home: home,
+                app,
+                paths,
+            }
+        }
+    }
+
+    impl Drop for RuntimeTestContext {
+        fn drop(&mut self) {
+            std::env::remove_var("AIO_CODING_HUB_TEST_HOME");
+        }
+    }
+
+    fn managed_record(
+        paths: &CodexRetryGatewayManagerPaths,
+        listener: &str,
+    ) -> CodexRetryGatewayManagedProcessRecord {
+        CodexRetryGatewayManagedProcessRecord {
+            pid: 4242,
+            start_identity: Some(77),
+            started_at_ms: 1,
+            node_executable: "C:/node.exe".to_string(),
+            source_commit: CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT.to_string(),
+            source_dir_rel: format!("sources/{}", CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT),
+            config_path_rel: relative_runtime_path(&paths.runtime_config_path, &paths.root),
+            state_path_rel: relative_runtime_path(&paths.runtime_state_path, &paths.root),
+            log_path_rel: relative_runtime_path(&paths.runtime_log_path, &paths.root),
+            listener: listener.to_string(),
+            upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
+            instance_nonce: "nonce".to_string(),
+        }
+    }
+
+    fn relative_runtime_path(path: &std::path::Path, root: &std::path::Path) -> String {
+        path.strip_prefix(root)
+            .unwrap()
+            .to_string_lossy()
+            .replace('\\', "/")
+    }
 
     #[test]
     fn derive_runtime_phase_is_truthful_for_bypassed_enablement() {
@@ -808,5 +1083,108 @@ mod tests {
         }
         assert!(manager.recovery_next_retry_at_ms.is_some());
         assert!(manager.recovery_paused);
+    }
+
+    #[tokio::test]
+    async fn disable_preserves_process_record_when_stop_cannot_be_verified() {
+        let ctx = RuntimeTestContext::new();
+        let mut settings = crate::settings::AppSettings::default();
+        settings.codex_retry_gateway_enabled = true;
+        crate::settings::write(&ctx.app, &settings).unwrap();
+
+        let mut manager = CodexRetryGatewayManagerState::default();
+        manager.generation = 7;
+        manager.process_record = Some(managed_record(&ctx.paths, "http://127.0.0.1:4610"));
+        write_manager_state(&ctx.paths, &manager).unwrap();
+
+        let plan = build_enable_plan(&ctx.app).await.unwrap();
+        let status = set_runtime_enabled(
+            &ctx.app,
+            CodexRetryGatewaySetEnabledRequest {
+                enabled: false,
+                plan_generation: plan.generation,
+                confirmation: CodexRetryGatewayEnableConfirmation::default(),
+            },
+        )
+        .await
+        .unwrap();
+        let after = read_manager_state(&ctx.paths).unwrap();
+        assert!(!status.desired_enabled);
+        assert!(after.process_record.is_some());
+    }
+
+    #[tokio::test]
+    async fn uninstall_fails_without_deleting_data_when_stop_is_unverified() {
+        let ctx = RuntimeTestContext::new();
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let listener_url = format!("http://127.0.0.1:{port}");
+
+        let health_body = serde_json::json!({
+            "ok": true,
+            "listen": format!("127.0.0.1:{port}"),
+            "upstream_base_url": "http://127.0.0.1:37123/v1",
+            "ui_path": "/__codex_retry_gateway/ui"
+        });
+        let status_body = serde_json::json!({
+            "ok": true,
+            "listen": format!("127.0.0.1:{port}"),
+            "state": {
+                "process_id": 9999,
+                "original_base_url": "http://127.0.0.1:37123/v1",
+                "gateway_base_url": listener_url.clone(),
+                "aio_instance_nonce": "nonce",
+                "provider_name": "aio"
+            },
+            "paths": {
+                "config_path": "C:/fake/config.json",
+                "state_path": "C:/fake/state.json",
+                "state_root": "C:/fake/runtime",
+                "log_path": "C:/fake/gateway.log"
+            }
+        });
+
+        let server = tauri::async_runtime::spawn(async move {
+            let router = Router::new()
+                .route(
+                    "/__codex_retry_gateway/health",
+                    get(move || {
+                        let body = health_body.clone();
+                        async move { Json(body) }
+                    }),
+                )
+                .route(
+                    "/__codex_retry_gateway/api/status",
+                    get(move || {
+                        let body = status_body.clone();
+                        async move { Json(body) }
+                    }),
+                );
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let mut settings = crate::settings::AppSettings::default();
+        settings.codex_retry_gateway_enabled = true;
+        crate::settings::write(&ctx.app, &settings).unwrap();
+        let mut manager = CodexRetryGatewayManagerState::default();
+        manager.generation = 3;
+        manager.process_record = Some(managed_record(&ctx.paths, &listener_url));
+        write_manager_state(&ctx.paths, &manager).unwrap();
+        std::fs::write(ctx.paths.root.join("sentinel.txt"), "keep").unwrap();
+
+        let err = uninstall_runtime(
+            &ctx.app,
+            CodexRetryGatewayUninstallRequest {
+                generation: current_status(&ctx.app).await.unwrap().generation,
+                confirmed_data_removal: true,
+            },
+        )
+        .await
+        .expect_err("ownership mismatch must block uninstall");
+        assert!(err.to_string().contains("verified stop"));
+        assert!(ctx.paths.root.exists());
+        server.abort();
     }
 }

@@ -3,7 +3,7 @@ use crate::infra::codex_retry_gateway::managed_state::{
     read_manager_state, CodexRetryGatewayManagedProcessRecord, CodexRetryGatewayManagerPaths,
 };
 use crate::infra::codex_retry_gateway::process::{
-    probe_runtime_health, CodexRetryGatewayManagedProcess,
+    reconcile_runtime_process, CodexRetryGatewayManagedProcess,
 };
 use crate::infra::codex_retry_gateway::util::now_unix_ms;
 use crate::infra::codex_retry_gateway::{
@@ -283,22 +283,28 @@ async fn proxy_request(
             )
         }
     };
+    if path == "/__codex_retry_gateway/api/config"
+        && method == Method::POST
+        && response.status().is_success()
+    {
+        if let Err(error) = validate_session(&state, &session_id).await {
+            return error_response(
+                StatusCode::BAD_GATEWAY,
+                &format!("managed gateway config write could not be revalidated: {error}"),
+            );
+        }
+    }
     let status = response.status();
     let upstream_headers = response.headers().clone();
-    let bytes = match response.bytes().await {
-        Ok(bytes) if bytes.len() <= BRIDGE_RESPONSE_LIMIT_BYTES => bytes,
-        Ok(_) => {
+    let bytes = match read_bounded_response_bytes(response, BRIDGE_RESPONSE_LIMIT_BYTES).await {
+        Ok(bytes) => bytes,
+        Err(error) if error.code() == "CODEX_RETRY_GATEWAY_BRIDGE_RESPONSE_TOO_LARGE" => {
             return error_response(
                 StatusCode::BAD_GATEWAY,
                 &format!("upstream response exceeds {BRIDGE_RESPONSE_LIMIT_BYTES} bytes"),
             )
         }
-        Err(err) => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("failed to read upstream response: {err}"),
-            )
-        }
+        Err(error) => return error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
     };
     let mut builder = Response::builder().status(status);
     if let Some(headers_mut) = builder.headers_mut() {
@@ -325,6 +331,28 @@ async fn handle_restore(state: &Arc<BridgeRuntimeState>, generation: u64) -> Res
         ),
         Err(error) => error_response(StatusCode::SERVICE_UNAVAILABLE, &error.to_string()),
     }
+}
+
+async fn read_bounded_response_bytes(
+    mut response: reqwest::Response,
+    limit: usize,
+) -> AppResult<Vec<u8>> {
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_BRIDGE_RESPONSE_READ_FAILED",
+            format!("failed to read upstream response: {err}"),
+        )
+    })? {
+        if bytes.len().saturating_add(chunk.len()) > limit {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_BRIDGE_RESPONSE_TOO_LARGE",
+                format!("upstream response exceeds {limit} bytes"),
+            ));
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
 }
 
 struct ValidatedBridgeRequest {
@@ -361,6 +389,15 @@ async fn validate_session(
             "managed gateway process is no longer recorded",
         ));
     };
+    let reconciled =
+        reconcile_runtime_process(&paths, Some(&record), manager.effective_port).await?;
+    let Some(process) = reconciled.managed else {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_STALE",
+            "managed gateway process is no longer owned and healthy",
+        ));
+    };
+    let record = process.record;
     if record.pid != session.pid
         || record.listener != session.listener
         || record.instance_nonce != session.instance_nonce
@@ -370,29 +407,6 @@ async fn validate_session(
         return Err(AppError::new(
             "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_STALE",
             "managed gateway process identity changed",
-        ));
-    }
-    let Some(health) = probe_runtime_health(&record.listener).await? else {
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_STALE",
-            "managed gateway is no longer healthy",
-        ));
-    };
-    if health.process_id != Some(record.pid)
-        || health
-            .upstream_base_url
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| value != record.upstream_base_url)
-        || health
-            .instance_nonce
-            .as_deref()
-            .map(str::trim)
-            .is_some_and(|value| value != record.instance_nonce)
-    {
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_STALE",
-            "managed gateway health no longer matches the recorded identity",
         ));
     }
 
@@ -411,16 +425,45 @@ fn read_session_cookie(headers: &HeaderMap) -> Option<String> {
 }
 
 fn path_allowed(method: &Method, path: &str) -> bool {
-    match path {
-        "/__codex_retry_gateway/ui" => matches!(*method, Method::GET),
-        "/__codex_retry_gateway/api/status" => matches!(*method, Method::GET),
-        "/__codex_retry_gateway/api/config" => matches!(*method, Method::GET | Method::POST),
-        "/__codex_retry_gateway/api/logs" => matches!(*method, Method::GET),
-        "/__codex_retry_gateway/api/analytics/reasoning" => matches!(*method, Method::GET),
-        "/__codex_retry_gateway/api/analytics/reasoning/export" => matches!(*method, Method::GET),
-        "/__codex_retry_gateway/api/analytics/imports" => matches!(*method, Method::GET),
-        "/__codex_retry_gateway/api/probe/run" => matches!(*method, Method::POST),
-        "/__codex_retry_gateway/api/restore" => matches!(*method, Method::POST),
+    let segments = path.trim_start_matches('/').split('/').collect::<Vec<_>>();
+    match segments.as_slice() {
+        ["favicon.ico"] => matches!(*method, Method::GET),
+        ["__codex_retry_gateway", "ui"] => matches!(*method, Method::GET),
+        ["__codex_retry_gateway", "api", "status"] => matches!(*method, Method::GET),
+        ["__codex_retry_gateway", "api", "logs"] => matches!(*method, Method::GET),
+        ["__codex_retry_gateway", "api", "config"] => matches!(*method, Method::POST),
+        ["__codex_retry_gateway", "api", "probe", "run"] => matches!(*method, Method::POST),
+        ["__codex_retry_gateway", "api", "restore"] => matches!(*method, Method::POST),
+        ["__codex_retry_gateway", "api", "analytics", "reasoning"] => {
+            matches!(*method, Method::GET)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "reasoning", "analyze"] => {
+            matches!(*method, Method::POST)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "reasoning", "export"] => {
+            matches!(*method, Method::GET)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "reasoning", "export", "jobs", job_id] => {
+            matches!(*method, Method::GET) && !job_id.is_empty()
+        }
+        ["__codex_retry_gateway", "api", "analytics", "reasoning", "export", "jobs", job_id, "download"] => {
+            matches!(*method, Method::GET) && !job_id.is_empty()
+        }
+        ["__codex_retry_gateway", "api", "analytics", "imports"] => {
+            matches!(*method, Method::GET)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "imports", "run"] => {
+            matches!(*method, Method::POST)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "imports", "analyze"] => {
+            matches!(*method, Method::POST)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "imports", "latest"] => {
+            matches!(*method, Method::GET)
+        }
+        ["__codex_retry_gateway", "api", "analytics", "imports", "jobs", job_id] => {
+            matches!(*method, Method::GET) && !job_id.is_empty()
+        }
         _ => false,
     }
 }
@@ -572,13 +615,41 @@ fn json_response(status: StatusCode, value: Value) -> Response<Body> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use axum::routing::get;
+    use axum::Router;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     #[test]
     fn path_allowlist_matches_documented_bridge_surface() {
         assert!(path_allowed(&Method::GET, "/__codex_retry_gateway/ui"));
+        assert!(path_allowed(&Method::GET, "/favicon.ico"));
         assert!(path_allowed(
             &Method::POST,
             "/__codex_retry_gateway/api/config"
+        ));
+        assert!(path_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/reasoning/export/jobs/job-1"
+        ));
+        assert!(path_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/reasoning/export/jobs/job-1/download"
+        ));
+        assert!(path_allowed(
+            &Method::POST,
+            "/__codex_retry_gateway/api/analytics/imports/run"
+        ));
+        assert!(path_allowed(
+            &Method::POST,
+            "/__codex_retry_gateway/api/analytics/imports/analyze"
+        ));
+        assert!(path_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/imports/latest"
+        ));
+        assert!(path_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/imports/jobs/job-2"
         ));
         assert!(!path_allowed(
             &Method::DELETE,
@@ -587,6 +658,10 @@ mod tests {
         assert!(!path_allowed(
             &Method::GET,
             "/__codex_retry_gateway/api/unknown"
+        ));
+        assert!(!path_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/imports/jobs/job-2/download"
         ));
     }
 
@@ -622,5 +697,62 @@ mod tests {
         reset_bridge_runtime_for_tests()
             .await
             .expect("second reset succeeds");
+    }
+
+    #[tokio::test]
+    async fn bounded_response_reader_rejects_oversized_body() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            let router = Router::new().route(
+                "/large",
+                get(|| async move { Body::from(vec![b'x'; BRIDGE_RESPONSE_LIMIT_BYTES + 1]) }),
+            );
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/large"))
+            .send()
+            .await
+            .unwrap();
+        let err = read_bounded_response_bytes(response, BRIDGE_RESPONSE_LIMIT_BYTES)
+            .await
+            .expect_err("oversized upstream response must fail");
+        assert!(err.to_string().contains("exceeds"));
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn bounded_response_reader_rejects_midstream_disconnect() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            let (mut socket, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = socket.read(&mut request).await;
+            socket
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Length: 64\r\nContent-Type: application/octet-stream\r\nConnection: close\r\n\r\npartial",
+                )
+                .await
+                .unwrap();
+            let _ = socket.shutdown().await;
+        });
+
+        let response = reqwest::Client::new()
+            .get(format!("http://127.0.0.1:{port}/broken"))
+            .send()
+            .await
+            .unwrap();
+        let err = read_bounded_response_bytes(response, BRIDGE_RESPONSE_LIMIT_BYTES)
+            .await
+            .expect_err("truncated upstream response must fail");
+        assert!(err.to_string().contains("failed to read upstream response"));
+        server.await.unwrap();
     }
 }
