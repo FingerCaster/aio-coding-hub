@@ -140,8 +140,3 @@ pub(super) fn handler_runtime_settings(
             .unwrap_or(settings::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS),
     }
 }
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-}

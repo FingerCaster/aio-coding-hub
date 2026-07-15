@@ -187,6 +187,12 @@ pub(crate) struct CodexRetryGatewayManagedProcessRecord {
     pub listener: String,
     pub upstream_base_url: String,
     pub instance_nonce: String,
+    #[serde(default = "default_managed_provider_name")]
+    pub provider_name: String,
+}
+
+fn default_managed_provider_name() -> String {
+    crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO.to_string()
 }
 
 impl CodexRetryGatewayManagedProcessRecord {
@@ -216,6 +222,9 @@ impl CodexRetryGatewayManagedProcessRecord {
         if self.instance_nonce.trim().is_empty() {
             return Err("SEC_INVALID_INPUT: process instance nonce must not be empty".into());
         }
+        crate::infra::codex_retry_gateway::config::validate_managed_provider_name(
+            &self.provider_name,
+        )?;
         Ok(())
     }
 
@@ -447,8 +456,31 @@ mod tests {
             listener: "http://127.0.0.1:4610".to_string(),
             upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
             instance_nonce: "deadbeef".to_string(),
+            provider_name: default_managed_provider_name(),
         };
         assert!(record.validate().is_err());
+    }
+
+    #[test]
+    fn legacy_process_record_defaults_provider_name_to_aio() {
+        let record: CodexRetryGatewayManagedProcessRecord =
+            serde_json::from_value(serde_json::json!({
+                "pid": 1,
+                "start_identity": 2,
+                "started_at_ms": 3,
+                "node_executable": "C:\\node.exe",
+                "source_commit": "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2",
+                "source_dir_rel": "sources/ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2",
+                "config_path_rel": "runtime/config/config.json",
+                "state_path_rel": "runtime/state.json",
+                "log_path_rel": "runtime/logs/gateway.log",
+                "listener": "http://127.0.0.1:4610",
+                "upstream_base_url": "http://127.0.0.1:37123/v1",
+                "instance_nonce": "deadbeef"
+            }))
+            .expect("legacy process record");
+
+        assert_eq!(record.provider_name, default_managed_provider_name());
     }
 
     #[test]

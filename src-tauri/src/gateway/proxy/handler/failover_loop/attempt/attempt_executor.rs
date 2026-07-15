@@ -56,13 +56,6 @@ pub(super) struct AttemptTiming {
 /// Result of building + sending one attempt.
 pub(super) enum AttemptSendOutcome {
     Response(reqwest::Response, AttemptTiming),
-    BufferedNonStreamResponse {
-        status: StatusCode,
-        headers: HeaderMap,
-        body: Bytes,
-        provider_ttfb_ms: Option<u128>,
-        timing: AttemptTiming,
-    },
     Timeout(AttemptTiming),
     ReqwestError(reqwest::Error, AttemptTiming),
     /// URL build failure already recorded; caller should apply the returned LoopControl.
@@ -154,9 +147,8 @@ where
 }
 
 /// Build request headers, inject auth, clean body, run before-send plugins, and
-/// send one prepared upstream request. `abort_guard` is supplied only for normal
-/// retry-loop attempts; continuation repair rounds intentionally reuse the send
-/// semantics without publishing themselves as top-level attempts.
+/// send one prepared upstream request. When supplied, `abort_guard` tracks the
+/// active request for cancellation.
 #[allow(clippy::too_many_arguments)]
 pub(super) async fn send_prepared_upstream<R>(
     ctx: CommonCtx<'_, R>,

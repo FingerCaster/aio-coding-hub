@@ -13,7 +13,8 @@ import type {
   CodexRetryGatewayUninstallRequest,
   CodexRetryGatewayUpdateCandidate,
 } from "../../services/cli/codexRetryGateway";
-import type { CliProxyResult, CliProxyStatus } from "../../services/cli/cliProxy";
+import { createCliProxyStatus, type CliProxyStatus } from "../../services/cli/cliProxyStatus";
+import type { CliProxyResult } from "../../services/cli/cliProxy";
 import type { DbDiskUsage } from "../../services/app/dataManagement";
 import type { EnvConflict } from "../../services/cli/envConflicts";
 import type { GatewayStatus } from "../../services/gateway/gateway";
@@ -28,9 +29,9 @@ import type { WorkspacesListResult } from "../../services/workspace/workspaces";
 const DEFAULT_BASE_ORIGIN = "http://127.0.0.1:37123";
 
 const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
-  { cli_key: "claude", enabled: false, base_origin: null, applied_to_current_gateway: null },
-  { cli_key: "codex", enabled: false, base_origin: null, applied_to_current_gateway: null },
-  { cli_key: "gemini", enabled: false, base_origin: null, applied_to_current_gateway: null },
+  createCliProxyStatus({ cli_key: "claude", enabled: false }),
+  createCliProxyStatus({ cli_key: "codex", enabled: false }),
+  createCliProxyStatus({ cli_key: "gemini", enabled: false }),
 ];
 
 // Default settings matching the Rust backend defaults.
@@ -822,12 +823,12 @@ function setCliProxyEnabledState(cliKey: CliKey, enabled: boolean): CliProxyStat
   const baseOrigin = enabled ? DEFAULT_BASE_ORIGIN : null;
   if (rowIndex < 0) {
     cliProxyStatusAllState = [
-      {
+      createCliProxyStatus({
         cli_key: cliKey,
         enabled,
         base_origin: baseOrigin,
         applied_to_current_gateway: enabled ? true : null,
-      },
+      }),
       ...cliProxyStatusAllState,
     ];
     return getCliProxyStatusAllState();

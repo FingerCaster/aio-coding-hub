@@ -41,7 +41,6 @@ export const GatewayErrorCodes = {
   REQUEST_LOG_DROPPED: "GW_REQUEST_LOG_DROPPED",
   FAKE_200: "GW_FAKE_200",
   EMPTY_RESPONSE: "GW_EMPTY_RESPONSE",
-  RESPONSES_DELTA_FINAL_MISMATCH: "GW_RESPONSES_DELTA_FINAL_MISMATCH",
 } as const;
 
 export type GatewayErrorCode = (typeof GatewayErrorCodes)[keyof typeof GatewayErrorCodes];
@@ -87,7 +86,6 @@ const GatewayErrorShortLabels = {
   [GatewayErrorCodes.REQUEST_LOG_DROPPED]: "请求日志丢弃",
   [GatewayErrorCodes.FAKE_200]: "假200",
   [GatewayErrorCodes.EMPTY_RESPONSE]: "空回",
-  [GatewayErrorCodes.RESPONSES_DELTA_FINAL_MISMATCH]: "响应流不一致",
 } satisfies Record<GatewayErrorCode, string>;
 
 export function getGatewayErrorShortLabel(errorCode: string) {
@@ -253,10 +251,5 @@ export const GatewayErrorDescriptions = {
     desc: "上游返回空成功响应",
     suggestion:
       "上游 Provider 返回了成功状态但没有有效输出。已自动标记为 Provider 失败并尝试切换到其他 Provider。",
-  },
-  GW_RESPONSES_DELTA_FINAL_MISMATCH: {
-    desc: "Responses 流式增量与最终消息不一致",
-    suggestion:
-      "上游 Provider 返回的 response.output_text.delta 与最终 message 内容不一致。已在拦截路径中阻止该响应，不会自动切换 Provider。",
   },
 } satisfies Record<GatewayErrorCode, GatewayErrorDescription>;

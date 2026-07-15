@@ -218,13 +218,194 @@ fn managed_codex_cli_proxy_state<R: tauri::Runtime>(
     Ok(None)
 }
 
+struct ManagedCodexProjectionRollback {
+    gateway_paths: crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths,
+    manifest_path: PathBuf,
+    manifest_snapshot: (bool, Option<Vec<u8>>),
+    manager_snapshot: (bool, Option<Vec<u8>>),
+    runtime_state_snapshot: (bool, Option<Vec<u8>>),
+    backup_snapshot: Option<CodexCliProxyBackupSnapshot>,
+    active: bool,
+}
+
+impl ManagedCodexProjectionRollback {
+    fn commit(mut self) {
+        self.active = false;
+    }
+
+    fn rollback(mut self) -> crate::shared::error::AppResult<()> {
+        self.rollback_inner()
+    }
+
+    fn rollback_inner(&mut self) -> crate::shared::error::AppResult<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+        rollback_managed_codex_projection(
+            &self.gateway_paths,
+            &self.manifest_path,
+            &self.manifest_snapshot,
+            &self.manager_snapshot,
+            &self.runtime_state_snapshot,
+            self.backup_snapshot.as_ref(),
+        )
+    }
+}
+
+impl Drop for ManagedCodexProjectionRollback {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.rollback_inner() {
+                tracing::error!(
+                    error = %error,
+                    "managed Codex projection rollback failed during drop"
+                );
+            }
+        }
+    }
+}
+
+#[must_use = "managed Codex config transactions must be explicitly committed or rolled back"]
+pub(crate) struct CodexConfigMutationTransaction {
+    projection: Option<ManagedCodexProjectionRollback>,
+    provider_sync: Option<crate::infra::codex_provider_sync::CodexProviderSyncRollback>,
+    live_config_snapshot: Option<(PathBuf, (bool, Option<Vec<u8>>))>,
+    verification_record:
+        Option<crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord>,
+    active: bool,
+}
+
+impl CodexConfigMutationTransaction {
+    fn new(
+        projection: ManagedCodexProjectionRollback,
+        provider_sync: Option<crate::infra::codex_provider_sync::CodexProviderSyncRollback>,
+        live_config_snapshot: Option<(PathBuf, (bool, Option<Vec<u8>>))>,
+        verification_record: Option<
+            crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord,
+        >,
+    ) -> Self {
+        Self {
+            projection: Some(projection),
+            provider_sync,
+            live_config_snapshot,
+            verification_record,
+            active: true,
+        }
+    }
+
+    pub(crate) fn verification_record(
+        &self,
+    ) -> Option<&crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord> {
+        self.verification_record.as_ref()
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.commit_inner();
+    }
+
+    pub(crate) fn rollback(mut self) -> crate::shared::error::AppResult<()> {
+        self.rollback_inner()
+    }
+
+    fn commit_inner(&mut self) {
+        if !self.active {
+            return;
+        }
+        self.active = false;
+        if let Some(projection) = self.projection.take() {
+            projection.commit();
+        }
+        if let Some(provider_sync) = self.provider_sync.take() {
+            provider_sync.commit();
+        }
+        self.live_config_snapshot = None;
+        self.verification_record = None;
+    }
+
+    fn rollback_inner(&mut self) -> crate::shared::error::AppResult<()> {
+        if !self.active {
+            return Ok(());
+        }
+        self.active = false;
+        let mut errors = Vec::new();
+        if let Some(projection) = self.projection.take() {
+            if let Err(error) = projection.rollback() {
+                errors.push(error.to_string());
+            }
+        }
+        if let Some(provider_sync) = self.provider_sync.take() {
+            if let Err(error) = provider_sync.rollback() {
+                errors.push(error.to_string());
+            }
+        } else if let Some((path, snapshot)) = self.live_config_snapshot.take() {
+            if let Err(error) = restore_optional_file(&path, &snapshot) {
+                errors.push(error.to_string());
+            }
+        }
+        self.verification_record = None;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!(
+                "CODEX_CONFIG_MANAGED_ROLLBACK_FAILED: {}",
+                errors.join("; ")
+            )
+            .into())
+        }
+    }
+}
+
+impl Drop for CodexConfigMutationTransaction {
+    fn drop(&mut self) {
+        if self.active {
+            if let Err(error) = self.rollback_inner() {
+                tracing::error!(
+                    error = %error,
+                    "managed Codex config transaction failed to roll back during drop"
+                );
+            }
+        }
+    }
+}
+
+pub(crate) struct CodexConfigMutationStage {
+    pub(crate) state: CodexConfigState,
+    pub(crate) transaction: Option<CodexConfigMutationTransaction>,
+}
+
 fn write_managed_codex_manifest<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     state: &crate::infra::cli_proxy::CodexCliProxyState,
     canonical_bytes: &[u8],
     live_bytes: &[u8],
-) -> crate::shared::error::AppResult<()> {
+) -> crate::shared::error::AppResult<(
+    ManagedCodexProjectionRollback,
+    Option<crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord>,
+)> {
+    let live_text = String::from_utf8(live_bytes.to_vec())
+        .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
+    let provider_name =
+        crate::infra::codex_provider_sync::codex_provider_target_from_config_text(&live_text)?;
+    let gateway_paths =
+        crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(app)?;
+    let manifest_path = crate::app_paths::app_data_dir(app)?
+        .join("cli-proxy")
+        .join("codex")
+        .join("manifest.json");
+    let manifest_snapshot = snapshot_optional_file(&manifest_path)?;
+    let manager_snapshot = snapshot_optional_file(&gateway_paths.manager_path)?;
+    let runtime_state_snapshot = snapshot_optional_file(&gateway_paths.runtime_state_path)?;
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, canonical_bytes)?;
+    let rollback = ManagedCodexProjectionRollback {
+        gateway_paths: gateway_paths.clone(),
+        manifest_path,
+        manifest_snapshot,
+        manager_snapshot,
+        runtime_state_snapshot,
+        backup_snapshot,
+        active: true,
+    };
     let mut manifest = state.manifest.clone();
     let mut route = state.route.clone();
     let next_canonical_hash = crate::infra::cli_proxy::sha256_hex(canonical_bytes);
@@ -238,13 +419,68 @@ fn write_managed_codex_manifest<R: tauri::Runtime>(
     route.live_config_sha256 = Some(next_live_hash);
     crate::infra::cli_proxy::set_codex_manifest_state(&mut manifest, route);
     manifest.updated_at = now_unix_seconds();
+    let verification_record =
+        match crate::infra::codex_retry_gateway::update_managed_provider_projection(
+            &gateway_paths,
+            &provider_name,
+        ) {
+            Ok(record) => record,
+            Err(err) => {
+                return match rollback.rollback() {
+                    Ok(()) => Err(err),
+                    Err(rollback_err) => Err(format!(
+                        "CODEX_RETRY_GATEWAY_PROVIDER_ROLLBACK_FAILED: {err}; rollback error: {rollback_err}"
+                    )
+                    .into()),
+                };
+            }
+        };
     if let Err(err) = crate::infra::cli_proxy::write_manifest(app, "codex", &manifest) {
-        if let Some(snapshot) = backup_snapshot.as_ref() {
-            restore_codex_cli_proxy_backup_snapshot(snapshot)?;
-        }
-        return Err(err);
+        return match rollback.rollback() {
+            Ok(()) => Err(err),
+            Err(rollback_err) => Err(format!(
+                "CODEX_RETRY_GATEWAY_PROVIDER_ROLLBACK_FAILED: {err}; rollback error: {rollback_err}"
+            )
+            .into()),
+        };
     }
-    Ok(())
+    Ok((rollback, verification_record))
+}
+
+fn rollback_managed_codex_projection(
+    gateway_paths: &crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths,
+    manifest_path: &Path,
+    manifest_snapshot: &(bool, Option<Vec<u8>>),
+    manager_snapshot: &(bool, Option<Vec<u8>>),
+    runtime_state_snapshot: &(bool, Option<Vec<u8>>),
+    backup_snapshot: Option<&CodexCliProxyBackupSnapshot>,
+) -> crate::shared::error::AppResult<()> {
+    let mut errors = Vec::new();
+    if let Err(error) = restore_optional_file(manifest_path, manifest_snapshot) {
+        errors.push(error.to_string());
+    }
+    if let Err(error) = restore_optional_file(&gateway_paths.manager_path, manager_snapshot) {
+        errors.push(error.to_string());
+    }
+    if let Err(error) =
+        restore_optional_file(&gateway_paths.runtime_state_path, runtime_state_snapshot)
+    {
+        errors.push(error.to_string());
+    }
+    if let Some(snapshot) = backup_snapshot {
+        if let Err(error) = restore_codex_cli_proxy_backup_snapshot(snapshot) {
+            errors.push(error.to_string());
+        }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!(
+            "CODEX_CONFIG_MANAGED_PROJECTION_ROLLBACK_FAILED: {}",
+            errors.join("; ")
+        )
+        .into())
+    }
 }
 
 fn apply_managed_codex_config_bytes<R: tauri::Runtime>(
@@ -252,7 +488,7 @@ fn apply_managed_codex_config_bytes<R: tauri::Runtime>(
     state: &crate::infra::cli_proxy::CodexCliProxyState,
     canonical_bytes: Vec<u8>,
     trigger: &str,
-) -> crate::shared::error::AppResult<()> {
+) -> crate::shared::error::AppResult<CodexConfigMutationTransaction> {
     ensure_codex_config_len(&canonical_bytes, "codex config canonical bytes")?;
     let config_path = codex_paths::codex_config_toml_path(app)?;
     let live_bytes =
@@ -275,19 +511,22 @@ fn apply_managed_codex_config_bytes<R: tauri::Runtime>(
 
     if let Some(target_provider) = target_provider {
         if current_provider != target_provider {
-            crate::infra::codex_provider_sync::codex_provider_sync_transaction(
-                app,
-                crate::infra::codex_provider_sync::CodexProviderSyncContext {
-                    trigger: trigger.to_string(),
-                    target_provider,
-                    config_bytes: Some(live_bytes.clone()),
-                },
-                |_| {
-                    write_managed_codex_manifest(app, state, &canonical_bytes, &live_bytes)?;
-                    Ok(())
-                },
-            )?;
-            return Ok(());
+            let (_, (projection, verification_record), provider_sync) =
+                crate::infra::codex_provider_sync::codex_provider_sync_transaction_reversible(
+                    app,
+                    crate::infra::codex_provider_sync::CodexProviderSyncContext {
+                        trigger: trigger.to_string(),
+                        target_provider,
+                        config_bytes: Some(live_bytes.clone()),
+                    },
+                    |_| write_managed_codex_manifest(app, state, &canonical_bytes, &live_bytes),
+                )?;
+            return Ok(CodexConfigMutationTransaction::new(
+                projection,
+                provider_sync,
+                None,
+                verification_record,
+            ));
         }
     }
 
@@ -296,11 +535,18 @@ fn apply_managed_codex_config_bytes<R: tauri::Runtime>(
         restore_optional_file(&config_path, &live_snapshot)?;
         return Err(err);
     }
-    if let Err(err) = write_managed_codex_manifest(app, state, &canonical_bytes, &live_bytes) {
-        restore_optional_file(&config_path, &live_snapshot)?;
-        return Err(err);
+    match write_managed_codex_manifest(app, state, &canonical_bytes, &live_bytes) {
+        Ok((projection, verification_record)) => Ok(CodexConfigMutationTransaction::new(
+            projection,
+            None,
+            Some((config_path, live_snapshot)),
+            verification_record,
+        )),
+        Err(err) => {
+            restore_optional_file(&config_path, &live_snapshot)?;
+            Err(err)
+        }
     }
-    Ok(())
 }
 
 fn optional_config_bytes_to_utf8(
@@ -410,10 +656,10 @@ pub fn codex_config_toml_validate_raw(
     Ok(validate_codex_config_toml_raw(&toml))
 }
 
-pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
+pub(crate) fn codex_config_toml_set_raw_staged<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     toml: String,
-) -> crate::shared::error::AppResult<CodexConfigState> {
+) -> crate::shared::error::AppResult<CodexConfigMutationStage> {
     let path = codex_paths::codex_config_toml_path(app)?;
     if path.exists() && is_symlink(&path)? {
         return Err(format!(
@@ -424,18 +670,35 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     }
 
     let bytes = codex_config_normalize_raw_toml(toml)?;
-    if let Some(state) = managed_codex_cli_proxy_state(app)? {
-        apply_managed_codex_config_bytes(app, &state, bytes, "codex_config_toml_set_raw")?;
+    let transaction = if let Some(state) = managed_codex_cli_proxy_state(app)? {
+        Some(apply_managed_codex_config_bytes(
+            app,
+            &state,
+            bytes,
+            "codex_config_toml_set_raw",
+        )?)
     } else if let Err(err) = write_file_atomic_if_changed(&path, &bytes) {
         return Err(err);
-    }
-    codex_config_get(app)
+    } else {
+        None
+    };
+    Ok(CodexConfigMutationStage {
+        state: codex_config_get(app)?,
+        transaction,
+    })
 }
 
-pub fn codex_config_set<R: tauri::Runtime>(
+pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    toml: String,
+) -> crate::shared::error::AppResult<CodexConfigState> {
+    finish_synchronous_config_mutation(codex_config_toml_set_raw_staged(app, toml)?)
+}
+
+pub(crate) fn codex_config_set_staged<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     patch: CodexConfigPatch,
-) -> crate::shared::error::AppResult<CodexConfigState> {
+) -> crate::shared::error::AppResult<CodexConfigMutationStage> {
     let path = codex_paths::codex_config_toml_path(app)?;
     if path.exists() && is_symlink(&path)? {
         return Err(format!(
@@ -454,8 +717,13 @@ pub fn codex_config_set<R: tauri::Runtime>(
     let requires_provider_sync = patch_requires_provider_sync(&patch);
     let next = codex_config_next_bytes(current, patch)?;
     ensure_codex_config_len(&next, "codex config.toml")?;
-    if let Some(state) = managed_state.as_ref() {
-        apply_managed_codex_config_bytes(app, state, next, "codex_config_set")?;
+    let transaction = if let Some(state) = managed_state.as_ref() {
+        Some(apply_managed_codex_config_bytes(
+            app,
+            state,
+            next,
+            "codex_config_set",
+        )?)
     } else if requires_provider_sync {
         let next_text = String::from_utf8(next.clone())
             .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
@@ -468,11 +736,40 @@ pub fn codex_config_set<R: tauri::Runtime>(
                 config_bytes: Some(next),
             },
         )?;
+        None
     } else if let Err(err) = write_file_atomic_if_changed(&path, &next) {
         return Err(err);
-    }
+    } else {
+        None
+    };
 
-    codex_config_get(app)
+    Ok(CodexConfigMutationStage {
+        state: codex_config_get(app)?,
+        transaction,
+    })
+}
+
+pub fn codex_config_set<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    patch: CodexConfigPatch,
+) -> crate::shared::error::AppResult<CodexConfigState> {
+    finish_synchronous_config_mutation(codex_config_set_staged(app, patch)?)
+}
+
+fn finish_synchronous_config_mutation(
+    mut staged: CodexConfigMutationStage,
+) -> crate::shared::error::AppResult<CodexConfigState> {
+    if let Some(transaction) = staged.transaction.take() {
+        if transaction.verification_record().is_some() {
+            transaction.rollback()?;
+            return Err(crate::shared::error::AppError::new(
+                "CODEX_CONFIG_MANAGED_ASYNC_VERIFY_REQUIRED",
+                "managed provider changes require the async Codex config coordinator",
+            ));
+        }
+        transaction.commit();
+    }
+    Ok(staged.state)
 }
 
 #[cfg(test)]

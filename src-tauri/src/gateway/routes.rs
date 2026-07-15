@@ -238,73 +238,6 @@ mod tests {
         (format!("http://{addr}"), task)
     }
 
-    async fn spawn_repeating_json_upstream(
-        body: &'static str,
-        response_count: usize,
-    ) -> (
-        String,
-        Arc<std::sync::atomic::AtomicUsize>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind repeating json upstream stub");
-        let addr = listener.local_addr().expect("repeating json upstream addr");
-        let hit_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let hit_count_for_task = Arc::clone(&hit_count);
-        let task = tokio::spawn(async move {
-            for _ in 0..response_count {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let _ = read_complete_http_request(&mut socket).await;
-                hit_count_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            }
-        });
-
-        (format!("http://{addr}"), hit_count, task)
-    }
-
-    async fn spawn_sequence_json_upstream(
-        bodies: Vec<&'static str>,
-    ) -> (
-        String,
-        Arc<std::sync::atomic::AtomicUsize>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind sequence json upstream stub");
-        let addr = listener.local_addr().expect("sequence json upstream addr");
-        let hit_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let hit_count_for_task = Arc::clone(&hit_count);
-        let task = tokio::spawn(async move {
-            for body in bodies {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let _ = read_complete_http_request(&mut socket).await;
-                hit_count_for_task.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            }
-        });
-
-        (format!("http://{addr}"), hit_count, task)
-    }
-
     async fn spawn_counting_status_upstream(
         status: StatusCode,
         body: &'static str,
@@ -637,41 +570,6 @@ mod tests {
         (format!("http://{addr}"), task)
     }
 
-    async fn spawn_sequence_capturing_sse_upstream(
-        bodies: Vec<&'static str>,
-    ) -> (
-        String,
-        tokio::sync::mpsc::Receiver<CapturedRawRequest>,
-        tokio::task::JoinHandle<()>,
-    ) {
-        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
-            .await
-            .expect("bind sequence capturing sse upstream stub");
-        let addr = listener
-            .local_addr()
-            .expect("sequence capturing sse upstream addr");
-        let (tx, rx) = tokio::sync::mpsc::channel(bodies.len().max(1));
-        let task = tokio::spawn(async move {
-            for body in bodies {
-                let Ok((mut socket, _)) = listener.accept().await else {
-                    return;
-                };
-                let request =
-                    split_raw_http_request(read_complete_http_request_bytes(&mut socket).await);
-                let _ = tx.send(request).await;
-                let response = format!(
-                    "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-                    body.len(),
-                    body
-                );
-                let _ = socket.write_all(response.as_bytes()).await;
-                let _ = socket.shutdown().await;
-            }
-        });
-
-        (format!("http://{addr}"), rx, task)
-    }
-
     async fn spawn_stalling_sse_upstream(
         first_chunk: &'static str,
     ) -> (String, tokio::task::JoinHandle<()>) {
@@ -950,51 +848,6 @@ mod tests {
         .expect("insert cx2cc bridge provider")
         .id;
         append_default_route_provider(db, "claude", provider_id);
-        provider_id
-    }
-
-    fn insert_codex_bridge_provider(
-        db: &db::Db,
-        bridge_type: &str,
-        source_provider_id: i64,
-        priority: i64,
-    ) -> i64 {
-        let provider_id = providers::upsert(
-            db,
-            providers::ProviderUpsertParams {
-                provider_id: None,
-                cli_key: "codex".to_string(),
-                name: format!("Codex Bridge Stub {bridge_type}"),
-                base_urls: vec![],
-                base_url_mode: providers::ProviderBaseUrlMode::Order,
-                auth_mode: None,
-                api_key: None,
-                enabled: true,
-                cost_multiplier: 1.0,
-                priority: Some(priority),
-                claude_models: None,
-                model_mapping: None,
-                availability_test_model: None,
-                limit_5h_usd: None,
-                limit_daily_usd: None,
-                daily_reset_mode: None,
-                daily_reset_time: None,
-                limit_weekly_usd: None,
-                limit_monthly_usd: None,
-                limit_total_usd: None,
-                tags: None,
-                note: None,
-                source_provider_id: Some(source_provider_id),
-                bridge_type: Some(bridge_type.to_string()),
-                stream_idle_timeout_seconds: None,
-                extension_values: None,
-                upstream_retry_policy_override: None,
-                upstream_retry_policy_override_specified: false,
-            },
-        )
-        .expect("insert codex bridge provider")
-        .id;
-        append_default_route_provider(db, "codex", provider_id);
         provider_id
     }
 
@@ -5158,7 +5011,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_responses_delta_final_mismatch_streams_successfully() {
+    async fn codex_responses_mismatched_delta_and_final_streams_successfully() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());

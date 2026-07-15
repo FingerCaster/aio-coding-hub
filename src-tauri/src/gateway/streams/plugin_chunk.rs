@@ -73,7 +73,7 @@ where
     }
 }
 
-pub(in crate::gateway) async fn apply_plugin_chunk_hooks(
+async fn apply_plugin_chunk_hooks(
     pipeline: Arc<GatewayPluginPipeline>,
     db: crate::db::Db,
     trace_id: String,
@@ -116,12 +116,6 @@ pub(in crate::gateway) async fn apply_plugin_chunk_hooks(
             plugin_stream_error_chunk("plugin_failed", &err.to_string())
         }
     }
-}
-
-pub(in crate::gateway) fn is_plugin_stream_error_chunk(chunk: &[u8]) -> bool {
-    chunk
-        .windows(PLUGIN_STREAM_ERROR_MARKER.len())
-        .any(|window| window == PLUGIN_STREAM_ERROR_MARKER.as_bytes())
 }
 
 fn plugin_stream_error_chunk(error: &str, reason: &str) -> Bytes {

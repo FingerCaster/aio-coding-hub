@@ -40,7 +40,7 @@ Record the exact upstream merge baseline and fork-preservation checks from the 2
 - Keep releases manual-only through `workflow_dispatch`.
 - Keep updater endpoints and GitHub release links pointed at `FingerCaster/aio-coding-hub`.
 - Keep Homebrew tap default pointed at `FingerCaster/homebrew-aio-coding-hub`.
-- Do not restore the removed Codex continuation repair UI entry; internal default remains disabled unless intentionally changed.
+- Do not restore the removed local Codex reasoning guard or continuation-repair implementation.
 - Re-run support matrix checks after release workflow or upstream release changes.
 
 ## Future upstream sync checklist

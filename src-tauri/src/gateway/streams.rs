@@ -13,9 +13,7 @@ mod gunzip;
 pub(super) use gunzip::GunzipStream;
 
 mod plugin_chunk;
-pub(super) use plugin_chunk::{
-    apply_plugin_chunk_hooks, is_plugin_stream_error_chunk, MaybePluginChunkStream,
-};
+pub(super) use plugin_chunk::MaybePluginChunkStream;
 
 mod usage_tee;
 pub(super) use usage_tee::{

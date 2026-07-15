@@ -63,6 +63,87 @@ struct FileSnapshot {
     bytes: Option<Vec<u8>>,
 }
 
+#[must_use = "provider sync rollback tokens must be explicitly committed or rolled back"]
+pub(crate) struct CodexProviderSyncRollback {
+    snapshots: Option<Vec<FileSnapshot>>,
+    backup_home: Option<PathBuf>,
+    backup_dir: Option<PathBuf>,
+    remove_empty_backup_root: bool,
+}
+
+impl CodexProviderSyncRollback {
+    fn new(
+        snapshots: Vec<FileSnapshot>,
+        backup_home: Option<PathBuf>,
+        backup_dir: Option<PathBuf>,
+        remove_empty_backup_root: bool,
+    ) -> Self {
+        Self {
+            snapshots: Some(snapshots),
+            backup_home,
+            backup_dir,
+            remove_empty_backup_root,
+        }
+    }
+
+    pub(crate) fn commit(mut self) {
+        self.snapshots = None;
+        self.backup_dir = None;
+        self.remove_empty_backup_root = false;
+        if let Some(home) = self.backup_home.take() {
+            match prune_managed_backups(&home) {
+                Ok(Some(warning)) => tracing::warn!(%warning, "provider sync backup prune warning"),
+                Ok(None) => {}
+                Err(error) => tracing::warn!(
+                    error = %error,
+                    "provider sync backup prune failed after transaction commit"
+                ),
+            }
+        }
+    }
+
+    pub(crate) fn rollback(mut self) -> AppResult<()> {
+        self.rollback_inner()
+    }
+
+    fn rollback_inner(&mut self) -> AppResult<()> {
+        let mut errors = Vec::new();
+        if let Some(mut snapshots) = self.snapshots.take() {
+            if let Err(error) = restore_snapshots(&mut snapshots) {
+                errors.push(error.to_string());
+            }
+        }
+        if let (Some(home), Some(backup_dir)) = (self.backup_home.take(), self.backup_dir.take()) {
+            if let Err(error) = remove_created_provider_sync_backup(
+                &home,
+                &backup_dir,
+                self.remove_empty_backup_root,
+            ) {
+                errors.push(error.to_string());
+            }
+        }
+        self.remove_empty_backup_root = false;
+        if errors.is_empty() {
+            Ok(())
+        } else {
+            Err(format!("CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: {}", errors.join("; ")).into())
+        }
+    }
+}
+
+impl Drop for CodexProviderSyncRollback {
+    fn drop(&mut self) {
+        if self.snapshots.is_some() || self.backup_dir.is_some() {
+            if let Err(error) = self.rollback_inner() {
+                tracing::error!(
+                    error = %error,
+                    "provider sync rollback token failed to restore during drop"
+                );
+            }
+        }
+    }
+}
+
 #[derive(Debug, Clone)]
 struct SyncChangeSet {
     config_bytes: Option<Vec<u8>>,
@@ -138,11 +219,37 @@ pub(crate) fn codex_provider_sync_transaction<R: tauri::Runtime, T, F>(
 where
     F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
 {
+    let (result, extra, rollback) = codex_provider_sync_transaction_with_target_resolver(
+        app,
+        context,
+        after_apply,
+        resolve_target_provider,
+        false,
+    )?;
+    if let Some(rollback) = rollback {
+        rollback.commit();
+    }
+    Ok((result, extra))
+}
+
+pub(crate) fn codex_provider_sync_transaction_reversible<R: tauri::Runtime, T, F>(
+    app: &tauri::AppHandle<R>,
+    context: CodexProviderSyncContext,
+    after_apply: F,
+) -> AppResult<(
+    CodexProviderSyncResult,
+    T,
+    Option<CodexProviderSyncRollback>,
+)>
+where
+    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
+{
     codex_provider_sync_transaction_with_target_resolver(
         app,
         context,
         after_apply,
         resolve_target_provider,
+        true,
     )
 }
 
@@ -154,12 +261,17 @@ pub(crate) fn codex_provider_sync_transaction_for_trusted_target<R: tauri::Runti
 where
     F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
 {
-    codex_provider_sync_transaction_with_target_resolver(
+    let (result, extra, rollback) = codex_provider_sync_transaction_with_target_resolver(
         app,
         context,
         after_apply,
         resolve_trusted_target_provider,
-    )
+        false,
+    )?;
+    if let Some(rollback) = rollback {
+        rollback.commit();
+    }
+    Ok((result, extra))
 }
 
 fn codex_provider_sync_transaction_with_target_resolver<R: tauri::Runtime, T, F>(
@@ -167,7 +279,12 @@ fn codex_provider_sync_transaction_with_target_resolver<R: tauri::Runtime, T, F>
     context: CodexProviderSyncContext,
     after_apply: F,
     resolve_target: fn(&str) -> AppResult<String>,
-) -> AppResult<(CodexProviderSyncResult, T)>
+    defer_backup_prune: bool,
+) -> AppResult<(
+    CodexProviderSyncResult,
+    T,
+    Option<CodexProviderSyncRollback>,
+)>
 where
     F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
 {
@@ -226,9 +343,10 @@ where
             warning: None,
         };
         let extra = after_apply(&sync_result)?;
-        return Ok((sync_result, extra));
+        return Ok((sync_result, extra, None));
     }
 
+    let backup_root_existed = home.join(PROVIDER_SYNC_BACKUP_ROOT).exists();
     let backup_dir = create_backup(&home, &context, &change_set)?;
     let mut snapshots = snapshot_paths(&home, &config_path, &change_set)?;
     let mut writes_started = false;
@@ -250,10 +368,7 @@ where
             apply_global_state_change(global_state)?;
         }
 
-        let warning = prune_managed_backups(&home)
-            .ok()
-            .and_then(|warning| warning);
-        let sync_result = CodexProviderSyncResult {
+        let mut sync_result = CodexProviderSyncResult {
             status: "synced".to_string(),
             target_provider,
             trigger: context.trigger,
@@ -267,24 +382,52 @@ where
             sqlite_user_event_rows_updated: sqlite_counts.user_event_rows_updated,
             sqlite_cwd_rows_updated: sqlite_counts.cwd_rows_updated,
             updated_workspace_roots: change_set.updated_workspace_roots,
-            warning: warning.or(change_set.warning),
+            warning: change_set.warning,
         };
         let extra = after_apply(&sync_result)?;
+        if !defer_backup_prune {
+            sync_result.warning = prune_managed_backups(&home)
+                .ok()
+                .and_then(|warning| warning)
+                .or(sync_result.warning);
+        }
         Ok((sync_result, extra))
     })();
 
     match result {
-        Ok(out) => Ok(out),
+        Ok((sync_result, extra)) => Ok((
+            sync_result,
+            extra,
+            writes_started.then(|| {
+                CodexProviderSyncRollback::new(
+                    snapshots,
+                    defer_backup_prune.then(|| home.clone()),
+                    defer_backup_prune.then(|| backup_dir.clone()),
+                    defer_backup_prune && !backup_root_existed,
+                )
+            }),
+        )),
         Err(err) => {
+            let mut rollback_errors = Vec::new();
             if writes_started {
                 if let Err(rollback_err) = restore_snapshots(&mut snapshots) {
-                    return Err(format!(
-                        "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed to restore snapshots after {err}; rollback error: {rollback_err}"
-                    )
-                    .into());
+                    rollback_errors.push(rollback_err.to_string());
                 }
             }
-            Err(err)
+            if let Err(rollback_err) =
+                remove_created_provider_sync_backup(&home, &backup_dir, !backup_root_existed)
+            {
+                rollback_errors.push(rollback_err.to_string());
+            }
+            if rollback_errors.is_empty() {
+                Err(err)
+            } else {
+                Err(format!(
+                    "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed after {err}; rollback error: {}",
+                    rollback_errors.join("; ")
+                )
+                .into())
+            }
         }
     }
 }
@@ -1294,6 +1437,46 @@ fn restore_snapshots(snapshots: &mut [FileSnapshot]) -> AppResult<()> {
                 format!("failed to remove restored {}: {e}", snapshot.path.display())
             })?;
         }
+    }
+    Ok(())
+}
+
+fn remove_created_provider_sync_backup(
+    home: &Path,
+    backup_dir: &Path,
+    remove_empty_root: bool,
+) -> AppResult<()> {
+    if !backup_dir.exists() {
+        return Ok(());
+    }
+    let root = home.join(PROVIDER_SYNC_BACKUP_ROOT);
+    if backup_dir.parent() != Some(root.as_path())
+        || managed_backup_created_at(backup_dir)?.is_none()
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: refusing to remove unverified provider sync backup {}",
+            backup_dir.display()
+        )
+        .into());
+    }
+    fs::remove_dir_all(backup_dir).map_err(|error| {
+        format!(
+            "failed to remove rolled-back provider sync backup {}: {error}",
+            backup_dir.display()
+        )
+    })?;
+    if remove_empty_root
+        && fs::read_dir(&root)
+            .map_err(|error| format!("failed to inspect backup root {}: {error}", root.display()))?
+            .next()
+            .is_none()
+    {
+        fs::remove_dir(&root).map_err(|error| {
+            format!(
+                "failed to remove rolled-back provider sync backup root {}: {error}",
+                root.display()
+            )
+        })?;
     }
     Ok(())
 }

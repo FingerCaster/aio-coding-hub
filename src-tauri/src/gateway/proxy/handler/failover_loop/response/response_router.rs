@@ -231,69 +231,6 @@ where
     control
 }
 
-#[allow(clippy::too_many_arguments)]
-pub(super) async fn route_buffered_non_stream_response<R>(
-    ctx: CommonCtx<'_, R>,
-    input: &RequestContext<R>,
-    prepared: &mut PreparedProvider,
-    retry_state: &mut RetryLoopState,
-    indices: AttemptIndices,
-    status: StatusCode,
-    headers: HeaderMap,
-    body: Bytes,
-    provider_ttfb_ms: Option<u128>,
-    timing: AttemptTiming,
-    loop_state: &mut LoopState<'_, R>,
-) -> LoopControl
-where
-    R: tauri::Runtime,
-    R::Handle: Unpin,
-{
-    let circuit_before = prepared.circuit_snapshot.clone();
-    let attempt_ctx = AttemptCtx {
-        attempt_index: indices.attempt_index,
-        retry_index: indices.retry_index,
-        provider_max_attempts: prepared.provider_max_attempts,
-        attempt_started_ms: timing.attempt_started_ms,
-        attempt_started: timing.attempt_started,
-        circuit_before: &circuit_before,
-        gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
-        cx2cc_active: prepared.cx2cc_active,
-        active_bridge_type: prepared.active_bridge_type.as_deref(),
-        responses_cache_namespace: prepared.responses_cache_namespace.as_deref(),
-        responses_cache_input: prepared.responses_cache_input.as_deref(),
-        anthropic_stream_requested: prepared.anthropic_stream_requested,
-    };
-    let provider_ctx = ProviderCtx {
-        provider_id: prepared.provider_id,
-        provider_name_base: &prepared.provider_name_base,
-        provider_base_url_base: &prepared.provider_base_url_base,
-        active_requested_model: prepared.active_requested_model.as_deref(),
-        auth_mode: prepared.auth_mode.as_str(),
-        provider_index: prepared.provider_index,
-        provider_bridged: prepared.provider_bridged,
-        session_reuse: prepared.session_reuse,
-        provider_max_attempts: prepared.provider_max_attempts,
-        stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
-        upstream_retry_policy: &prepared.upstream_retry_policy,
-        claude_model_mapping: prepared.claude_model_mapping.as_ref(),
-    };
-
-    success_non_stream::handle_success_non_stream_buffered(
-        ctx,
-        input,
-        provider_ctx,
-        attempt_ctx,
-        loop_state.reborrow(),
-        retry_state,
-        status,
-        headers,
-        body,
-        provider_ttfb_ms,
-    )
-    .await
-}
-
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------

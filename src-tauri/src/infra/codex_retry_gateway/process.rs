@@ -1,6 +1,9 @@
-use crate::infra::codex_retry_gateway::config::{DEFAULT_HEALTH_PATH, DEFAULT_LISTEN_HOST};
+use crate::infra::codex_retry_gateway::config::{
+    validate_managed_provider_name, DEFAULT_HEALTH_PATH, DEFAULT_LISTEN_HOST,
+};
 use crate::infra::codex_retry_gateway::managed_state::{
-    CodexRetryGatewayManagedProcessRecord, CodexRetryGatewayManagerPaths,
+    read_manager_state, write_manager_state, CodexRetryGatewayManagedProcessRecord,
+    CodexRetryGatewayManagerPaths,
 };
 use crate::infra::codex_retry_gateway::source::CodexRetryGatewayInstalledSource;
 use crate::infra::codex_retry_gateway::util::{
@@ -29,7 +32,6 @@ const PROCESS_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 const PROCESS_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const PROCESS_STATUS_BODY_LIMIT: usize = 512 * 1024;
 const PROCESS_PORT_SEARCH_MAX: u16 = 40;
-const MANAGED_PROVIDER_NAME: &str = "aio";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexRetryGatewayHealthSnapshot {
@@ -75,9 +77,11 @@ pub(crate) async fn start_runtime_process(
     source: &CodexRetryGatewayInstalledSource,
     node: &CodexRetryGatewayResolvedNode,
     aio_origin: &AioGatewayOrigin,
+    provider_name: &str,
     preferred_port: u16,
     persisted_port: Option<u16>,
 ) -> AppResult<CodexRetryGatewayManagedProcess> {
+    validate_managed_provider_name(provider_name)?;
     paths.ensure_dirs()?;
     let listen_port = choose_listen_port(persisted_port, preferred_port)?;
     let listener = format!("http://{DEFAULT_LISTEN_HOST}:{listen_port}");
@@ -94,6 +98,7 @@ pub(crate) async fn start_runtime_process(
         paths,
         &listener,
         &aio_origin.url,
+        provider_name,
         &instance_nonce,
         None,
         None,
@@ -138,6 +143,7 @@ pub(crate) async fn start_runtime_process(
             paths,
             &listener,
             &aio_origin.url,
+            provider_name,
             &instance_nonce,
             Some(pid),
             Some(start_identity),
@@ -149,6 +155,7 @@ pub(crate) async fn start_runtime_process(
             pid,
             start_identity,
             &aio_origin.url,
+            provider_name,
             &instance_nonce,
         )
         .await?;
@@ -166,6 +173,7 @@ pub(crate) async fn start_runtime_process(
                 listener: listener.clone(),
                 upstream_base_url: aio_origin.url.clone(),
                 instance_nonce: instance_nonce.clone(),
+                provider_name: provider_name.to_string(),
             },
             health,
         };
@@ -189,6 +197,7 @@ pub(crate) async fn start_runtime_process(
                 paths,
                 &listener,
                 &aio_origin.url,
+                provider_name,
                 &instance_nonce,
                 None,
                 None,
@@ -232,6 +241,7 @@ fn persist_managed_gateway_state(
     paths: &CodexRetryGatewayManagerPaths,
     listener: &str,
     upstream_base_url: &str,
+    provider_name: &str,
     instance_nonce: &str,
     process_id: Option<u32>,
     process_start_identity: Option<u64>,
@@ -243,13 +253,77 @@ fn persist_managed_gateway_state(
         &paths.runtime_log_path.display().to_string(),
         &paths.runtime_pid_path.display().to_string(),
         upstream_base_url,
-        MANAGED_PROVIDER_NAME,
+        provider_name,
         instance_nonce,
         process_id,
         process_start_identity,
     );
     let state_bytes = json_file_bytes(&state, "managed gateway state")?;
     write_file_atomic(&paths.runtime_state_path, &state_bytes)
+}
+
+pub(crate) fn update_managed_provider_projection(
+    paths: &CodexRetryGatewayManagerPaths,
+    provider_name: &str,
+) -> AppResult<Option<CodexRetryGatewayManagedProcessRecord>> {
+    validate_managed_provider_name(provider_name)?;
+    let mut manager = read_manager_state(paths)?;
+    let Some(record) = manager.process_record.as_mut() else {
+        return Ok(None);
+    };
+    if record.provider_name == provider_name {
+        return Ok(None);
+    }
+
+    persist_managed_gateway_state(
+        paths,
+        &record.listener,
+        &record.upstream_base_url,
+        provider_name,
+        &record.instance_nonce,
+        Some(record.pid),
+        record.start_identity,
+    )?;
+    record.provider_name = provider_name.to_string();
+    let updated_record = record.clone();
+    manager.generation = manager.generation.saturating_add(1);
+    write_manager_state(paths, &manager)?;
+    Ok(Some(updated_record))
+}
+
+pub(crate) async fn verify_managed_provider_projection(
+    paths: &CodexRetryGatewayManagerPaths,
+    expected_record: &CodexRetryGatewayManagedProcessRecord,
+) -> AppResult<()> {
+    let manager = read_manager_state(paths)?;
+    if manager.process_record.as_ref() != Some(expected_record) {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_PROVIDER_VERIFY_FAILED",
+            "managed process record changed before provider projection verification",
+        ));
+    }
+    let reconciled =
+        reconcile_runtime_process(paths, Some(expected_record), manager.effective_port)
+            .await
+            .map_err(|error| {
+                AppError::new(
+                    "CODEX_RETRY_GATEWAY_PROVIDER_VERIFY_FAILED",
+                    format!("managed provider health verification failed: {error}"),
+                )
+            })?;
+    if reconciled.managed.is_none() {
+        let detail = reconciled
+            .error
+            .map(|error| error.message)
+            .unwrap_or_else(|| {
+                "external gateway did not confirm the updated provider identity".to_string()
+            });
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_PROVIDER_VERIFY_FAILED",
+            detail,
+        ));
+    }
+    Ok(())
 }
 
 pub(crate) async fn reconcile_runtime_process(
@@ -485,6 +559,7 @@ async fn wait_for_healthy_listener(
     pid: u32,
     start_identity: u64,
     upstream_base_url: &str,
+    provider_name: &str,
     instance_nonce: &str,
 ) -> AppResult<CodexRetryGatewayHealthSnapshot> {
     let deadline = tokio::time::Instant::now() + PROCESS_HEALTH_TIMEOUT;
@@ -509,7 +584,7 @@ async fn wait_for_healthy_listener(
                     .as_deref()
                     .map(str::trim)
                     .is_some_and(|value| value == instance_nonce)
-                && health.provider_name.as_deref().map(str::trim) == Some(MANAGED_PROVIDER_NAME)
+                && health.provider_name.as_deref().map(str::trim) == Some(provider_name)
             {
                 return Ok(health);
             }
@@ -548,7 +623,7 @@ fn health_matches_record(
     if health.gateway_base_url.as_deref().map(str::trim) != Some(validated.listener.as_str()) {
         return false;
     }
-    if health.provider_name.as_deref().map(str::trim) != Some(MANAGED_PROVIDER_NAME) {
+    if health.provider_name.as_deref().map(str::trim) != Some(record.provider_name.as_str()) {
         return false;
     }
     if !health
@@ -901,6 +976,11 @@ fn process_start_identity(_pid: u32) -> Option<u64> {
     None
 }
 
+#[cfg(test)]
+pub(crate) fn process_start_identity_for_tests(pid: u32) -> Option<u64> {
+    process_start_identity(pid)
+}
+
 #[cfg(unix)]
 fn unix_ps_start_identity(pid: u32) -> Option<u64> {
     let output = Command::new("ps")
@@ -1241,6 +1321,8 @@ mod tests {
             listener: listener.clone(),
             upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
             instance_nonce: "deadbeef".to_string(),
+            provider_name: crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO
+                .to_string(),
         };
         let validated = validate_managed_record(&paths, &record).expect("validated");
         let health = CodexRetryGatewayHealthSnapshot {
@@ -1273,7 +1355,9 @@ mod tests {
                     .to_string(),
             ),
             instance_nonce: Some(record.instance_nonce.clone()),
-            provider_name: Some(MANAGED_PROVIDER_NAME.to_string()),
+            provider_name: Some(
+                crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO.to_string(),
+            ),
         };
         ManagedFixture {
             _dir: dir,
@@ -1625,6 +1709,7 @@ mod tests {
             &source,
             &node,
             &aio_origin,
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
             CODEX_RETRY_GATEWAY_DEFAULT_PORT,
             None,
         )

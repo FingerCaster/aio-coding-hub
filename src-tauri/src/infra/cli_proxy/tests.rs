@@ -1,5 +1,8 @@
 use super::*;
 use crate::infra::settings::{self, AppSettings, CodexHomeMode};
+use axum::extract::State;
+use axum::routing::get;
+use axum::{Json, Router};
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -72,6 +75,205 @@ impl CliProxyTestApp {
 
     fn handle(&self) -> tauri::AppHandle<tauri::test::MockRuntime> {
         self.app.handle().clone()
+    }
+}
+
+#[derive(Clone)]
+enum ManagedProviderProbeMode {
+    FollowRuntimeState,
+    Fixed(String),
+}
+
+#[derive(Clone)]
+struct ManagedProviderProbeState {
+    listen: String,
+    listener: String,
+    upstream_base_url: String,
+    config_path: String,
+    state_path: String,
+    state_root: String,
+    log_path: String,
+    instance_nonce: String,
+    process_id: u32,
+    provider_mode: ManagedProviderProbeMode,
+}
+
+impl ManagedProviderProbeState {
+    fn provider_name(&self) -> String {
+        match &self.provider_mode {
+            ManagedProviderProbeMode::FollowRuntimeState => std::fs::read(&self.state_path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+                .and_then(|state| {
+                    state
+                        .get("provider_name")
+                        .and_then(serde_json::Value::as_str)
+                        .map(str::to_string)
+                })
+                .unwrap_or_else(|| "missing".to_string()),
+            ManagedProviderProbeMode::Fixed(provider_name) => provider_name.clone(),
+        }
+    }
+}
+
+async fn managed_provider_probe_health(
+    State(state): State<ManagedProviderProbeState>,
+) -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "ok": true,
+        "listen": state.listen,
+        "upstream_base_url": state.upstream_base_url,
+        "ui_path": "/__codex_retry_gateway/ui"
+    }))
+}
+
+async fn managed_provider_probe_status(
+    State(state): State<ManagedProviderProbeState>,
+) -> Json<serde_json::Value> {
+    let provider_name = state.provider_name();
+    Json(serde_json::json!({
+        "ok": true,
+        "listen": state.listen,
+        "state": {
+            "process_id": state.process_id,
+            "original_base_url": state.upstream_base_url,
+            "gateway_base_url": state.listener,
+            "aio_instance_nonce": state.instance_nonce,
+            "provider_name": provider_name
+        },
+        "paths": {
+            "config_path": state.config_path,
+            "state_path": state.state_path,
+            "state_root": state.state_root,
+            "log_path": state.log_path
+        }
+    }))
+}
+
+struct ManagedProviderProbe {
+    listener: String,
+    _server: tokio::task::JoinHandle<()>,
+}
+
+impl Drop for ManagedProviderProbe {
+    fn drop(&mut self) {
+        self._server.abort();
+    }
+}
+
+fn managed_relative_path(path: &Path, root: &Path) -> String {
+    path.strip_prefix(root)
+        .expect("managed path under root")
+        .to_string_lossy()
+        .replace('\\', "/")
+}
+
+fn canonical_path_text(path: &Path) -> String {
+    std::fs::canonicalize(path)
+        .expect("canonical managed path")
+        .display()
+        .to_string()
+}
+
+async fn install_managed_provider_probe(
+    handle: &tauri::AppHandle<tauri::test::MockRuntime>,
+    aio_origin: &str,
+    provider_mode: ManagedProviderProbeMode,
+) -> ManagedProviderProbe {
+    let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+        .await
+        .expect("bind managed provider probe");
+    let port = listener.local_addr().expect("probe address").port();
+    let listener_url = format!("http://127.0.0.1:{port}");
+    let listen = format!("127.0.0.1:{port}");
+    let upstream_base_url = format!("{aio_origin}/v1");
+    let paths = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(handle)
+        .expect("gateway paths");
+    paths.ensure_dirs().expect("gateway dirs");
+
+    let source_commit = "0123456789abcdef0123456789abcdef01234567";
+    let source_dir = paths.source_dir(source_commit).expect("source dir");
+    std::fs::create_dir_all(&source_dir).expect("create source dir");
+    std::fs::write(&paths.runtime_config_path, b"{}").expect("write runtime config");
+    std::fs::write(&paths.runtime_log_path, b"").expect("write runtime log");
+
+    let process_id = std::process::id();
+    let start_identity =
+        crate::infra::codex_retry_gateway::process_start_identity_for_tests(process_id)
+            .expect("current process start identity");
+    let instance_nonce = "provider-probe-nonce";
+    let runtime_state = crate::infra::codex_retry_gateway::managed_gateway_state(
+        &listener_url,
+        &paths.runtime_dir.display().to_string(),
+        &paths.runtime_config_path.display().to_string(),
+        &paths.runtime_log_path.display().to_string(),
+        &paths.runtime_pid_path.display().to_string(),
+        &upstream_base_url,
+        crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO,
+        instance_nonce,
+        Some(process_id),
+        Some(start_identity),
+    );
+    std::fs::write(
+        &paths.runtime_state_path,
+        serde_json::to_vec_pretty(&runtime_state).expect("serialize runtime state"),
+    )
+    .expect("write runtime state");
+
+    let record = crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord {
+        pid: process_id,
+        start_identity: Some(start_identity),
+        started_at_ms: 1,
+        node_executable: canonical_path_text(
+            &std::env::current_exe().expect("current test executable"),
+        ),
+        source_commit: source_commit.to_string(),
+        source_dir_rel: managed_relative_path(&source_dir, &paths.root),
+        config_path_rel: managed_relative_path(&paths.runtime_config_path, &paths.root),
+        state_path_rel: managed_relative_path(&paths.runtime_state_path, &paths.root),
+        log_path_rel: managed_relative_path(&paths.runtime_log_path, &paths.root),
+        listener: listener_url.clone(),
+        upstream_base_url: upstream_base_url.clone(),
+        instance_nonce: instance_nonce.to_string(),
+        provider_name: crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO.to_string(),
+    };
+    let mut manager = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerState::default();
+    manager.generation = 10;
+    manager.active_commit = Some(source_commit.to_string());
+    manager.effective_port = Some(port);
+    manager.process_record = Some(record);
+    crate::infra::codex_retry_gateway::write_manager_state(&paths, &manager)
+        .expect("write manager state");
+
+    let probe_state = ManagedProviderProbeState {
+        listen,
+        listener: listener_url.clone(),
+        upstream_base_url,
+        config_path: canonical_path_text(&paths.runtime_config_path),
+        state_path: canonical_path_text(&paths.runtime_state_path),
+        state_root: canonical_path_text(&paths.runtime_dir),
+        log_path: canonical_path_text(&paths.runtime_log_path),
+        instance_nonce: instance_nonce.to_string(),
+        process_id,
+        provider_mode,
+    };
+    let router = Router::new()
+        .route(
+            "/__codex_retry_gateway/health",
+            get(managed_provider_probe_health),
+        )
+        .route(
+            "/__codex_retry_gateway/api/status",
+            get(managed_provider_probe_status),
+        )
+        .with_state(probe_state);
+    let server = tokio::spawn(async move {
+        let _ = axum::serve(listener, router).await;
+    });
+    tokio::task::yield_now().await;
+    ManagedProviderProbe {
+        listener: listener_url,
+        _server: server,
     }
 }
 
@@ -1328,6 +1530,294 @@ base_url = "https://api.anthropic.com/v1"
     let codex = manifest.codex.expect("codex metadata");
     assert_eq!(codex.route_mode, CodexRouteMode::Unproxied);
     assert_eq!(codex.desired_enabled, false);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn managed_remote_compaction_keeps_runtime_provider_identity_in_guarded_and_direct_modes() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "https://api.openai.com/v1"
+
+[features]
+remote_compaction = false
+"#,
+        r#"{"profile":"local"}"#,
+    );
+
+    let probe = install_managed_provider_probe(
+        &handle,
+        aio_origin,
+        ManagedProviderProbeMode::FollowRuntimeState,
+    )
+    .await;
+    let guarded_origin = probe.listener.as_str();
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("guarded route");
+    assert_eq!(guarded.route.route_mode, CodexRouteMode::Guarded);
+
+    let paths = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(&handle)
+        .expect("gateway paths");
+
+    let patch: crate::infra::codex_config::CodexConfigPatch =
+        serde_json::from_value(serde_json::json!({ "features_remote_compaction": true }))
+            .expect("remote compaction patch");
+    let handle_for_mutation = handle.clone();
+    crate::commands::cli_manager::run_codex_config_stage(
+        handle.clone(),
+        "test_enable_remote_compaction_while_guarded",
+        move || crate::infra::codex_config::codex_config_set_staged(&handle_for_mutation, patch),
+    )
+    .await
+    .expect("enable remote compaction while guarded");
+
+    let guarded_after = verify_route(&handle).expect("verify guarded after provider rename");
+    assert_eq!(guarded_after.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(
+        guarded_after.effective_origin.as_deref(),
+        Some(guarded_origin)
+    );
+    assert!(guarded_after.live_matches_projection);
+    let manager_after = crate::infra::codex_retry_gateway::read_manager_state(&paths)
+        .expect("manager after guarded rename");
+    assert_eq!(
+        manager_after
+            .process_record
+            .as_ref()
+            .map(|record| record.provider_name.as_str()),
+        Some(crate::infra::codex_retry_gateway::MANAGED_PROVIDER_OPENAI)
+    );
+    let state_after: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&paths.runtime_state_path).expect("runtime state after guarded rename"),
+    )
+    .expect("runtime state JSON");
+    assert_eq!(state_after["provider_name"], "OpenAI");
+
+    let direct = apply_direct_aio_route(
+        &handle,
+        &store,
+        CodexDirectAioRouteApplyRequest {
+            expected_generation: guarded_after.generation,
+            expected_canonical_sha256: guarded_after.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            desired_enabled: true,
+            source_commit: None,
+            process_should_run: true,
+        },
+    )
+    .expect("direct AIO route");
+    assert_eq!(direct.route.route_mode, CodexRouteMode::DirectAio);
+    let raw = crate::infra::codex_config::codex_config_toml_get_raw(&handle)
+        .expect("canonical raw config")
+        .toml
+        .replace("model_provider = \"OpenAI\"", "model_provider = \"aio\"")
+        .replace("[model_providers.OpenAI]", "[model_providers.aio]")
+        .replace("name = \"OpenAI\"", "name = \"aio\"")
+        .replace("remote_compaction = true", "remote_compaction = false");
+    let handle_for_mutation = handle.clone();
+    crate::commands::cli_manager::run_codex_config_stage(
+        handle.clone(),
+        "test_disable_remote_compaction_while_direct",
+        move || {
+            crate::infra::codex_config::codex_config_toml_set_raw_staged(&handle_for_mutation, raw)
+        },
+    )
+    .await
+    .expect("disable remote compaction while direct");
+
+    let direct_after = verify_route(&handle).expect("verify direct after provider rename");
+    assert_eq!(direct_after.route_mode, CodexRouteMode::DirectAio);
+    assert_eq!(direct_after.effective_origin.as_deref(), Some(aio_origin));
+    assert!(direct_after.live_matches_projection);
+    let manager_after = crate::infra::codex_retry_gateway::read_manager_state(&paths)
+        .expect("manager after direct rename");
+    assert_eq!(
+        manager_after
+            .process_record
+            .as_ref()
+            .map(|record| record.provider_name.as_str()),
+        Some(crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO)
+    );
+    let state_after: serde_json::Value = serde_json::from_slice(
+        &std::fs::read(&paths.runtime_state_path).expect("runtime state after direct rename"),
+    )
+    .expect("runtime state JSON");
+    assert_eq!(state_after["provider_name"], "aio");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn managed_provider_probe_failure_restores_every_mutated_projection() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "https://api.openai.com/v1"
+
+[features]
+remote_compaction = false
+"#,
+        r#"{"profile":"local"}"#,
+    );
+
+    let probe = install_managed_provider_probe(
+        &handle,
+        aio_origin,
+        ManagedProviderProbeMode::Fixed(
+            crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO.to_string(),
+        ),
+    )
+    .await;
+    let guarded_origin = probe.listener.as_str();
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("guarded route");
+
+    let codex_home = crate::codex_paths::codex_home_dir(&handle).expect("Codex home");
+    let rollout_path = codex_home
+        .join("sessions")
+        .join("2026")
+        .join("rollout-provider-rollback.jsonl");
+    std::fs::create_dir_all(rollout_path.parent().expect("rollout parent"))
+        .expect("create rollout parent");
+    std::fs::write(
+        &rollout_path,
+        b"{\"type\":\"session_meta\",\"payload\":{\"model_provider\":\"aio\"}}\n",
+    )
+    .expect("write rollout");
+
+    let paths = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(&handle)
+        .expect("gateway paths");
+    let provider_sync_backup_root =
+        codex_home.join(crate::infra::codex_provider_sync::PROVIDER_SYNC_BACKUP_ROOT);
+    let backup_root_existed_before = provider_sync_backup_root.exists();
+    let backup_entries_before = if backup_root_existed_before {
+        std::fs::read_dir(&provider_sync_backup_root)
+            .expect("read provider sync backups before mutation")
+            .map(|entry| {
+                entry
+                    .expect("provider sync backup entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("manifest exists");
+    let canonical_backup_path =
+        backup_file_path_for_manifest(&handle, &manifest, "codex_config_toml")
+            .expect("backup lookup")
+            .expect("canonical backup exists");
+    let manifest_path =
+        cli_proxy_manifest_path(&cli_proxy_root_dir(&handle, "codex").expect("CLI proxy root"));
+    let live_config_path = codex_config_path(&handle).expect("live config path");
+    let snapshots = [
+        ("live config", live_config_path),
+        ("rollout", rollout_path),
+        ("CLI manifest", manifest_path),
+        ("canonical backup", canonical_backup_path),
+        ("manager state", paths.manager_path.clone()),
+        ("runtime state", paths.runtime_state_path.clone()),
+    ]
+    .map(|(label, path)| {
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("read {label} snapshot {}: {error}", path.display()));
+        (label, path, bytes)
+    });
+
+    let patch: crate::infra::codex_config::CodexConfigPatch =
+        serde_json::from_value(serde_json::json!({ "features_remote_compaction": true }))
+            .expect("remote compaction patch");
+    let handle_for_mutation = handle.clone();
+    let error = crate::commands::cli_manager::run_codex_config_stage(
+        handle.clone(),
+        "test_reject_stale_managed_provider",
+        move || crate::infra::codex_config::codex_config_set_staged(&handle_for_mutation, patch),
+    )
+    .await
+    .expect_err("stale provider health must reject the mutation");
+    assert!(
+        error.contains("CODEX_RETRY_GATEWAY_PROVIDER_VERIFY_FAILED"),
+        "{error}"
+    );
+
+    for (label, path, expected) in snapshots {
+        assert_eq!(
+            std::fs::read(&path).unwrap_or_else(|read_error| panic!(
+                "read {label} {}: {read_error}",
+                path.display()
+            )),
+            expected,
+            "{label} must be restored byte-for-byte"
+        );
+    }
+    let backup_root_existed_after = provider_sync_backup_root.exists();
+    let backup_entries_after = if backup_root_existed_after {
+        std::fs::read_dir(&provider_sync_backup_root)
+            .expect("read provider sync backups after rollback")
+            .map(|entry| {
+                entry
+                    .expect("provider sync backup entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
+            .collect::<std::collections::BTreeSet<_>>()
+    } else {
+        std::collections::BTreeSet::new()
+    };
+    assert_eq!(backup_root_existed_after, backup_root_existed_before);
+    assert_eq!(backup_entries_after, backup_entries_before);
+    let verified = verify_route(&handle).expect("verify guarded route after rollback");
+    assert_eq!(verified.route_mode, CodexRouteMode::Guarded);
+    assert_eq!(verified.effective_origin.as_deref(), Some(guarded_origin));
+    assert!(verified.live_matches_projection, "{verified:?}");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
 }
 
 #[test]

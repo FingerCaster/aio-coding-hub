@@ -1,4 +1,3 @@
-use super::attempt_executor::RetryLoopState;
 use super::context::{AttemptOutcome, FailoverRunState};
 use super::loop_helpers::{
     push_skipped_provider_attempt, should_finalize_as_all_providers_unavailable,

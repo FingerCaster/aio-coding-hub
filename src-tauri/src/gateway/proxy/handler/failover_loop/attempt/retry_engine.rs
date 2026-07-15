@@ -116,28 +116,6 @@ where
             )
             .await
         }
-        AttemptSendOutcome::BufferedNonStreamResponse {
-            status,
-            headers,
-            body,
-            provider_ttfb_ms,
-            timing,
-        } => {
-            response_router::route_buffered_non_stream_response(
-                ctx,
-                input,
-                prepared,
-                retry_state,
-                indices,
-                status,
-                headers,
-                body,
-                provider_ttfb_ms,
-                timing,
-                loop_state,
-            )
-            .await
-        }
         AttemptSendOutcome::Timeout(timing) => {
             let (attempt_ctx, provider_ctx) = build_error_contexts(
                 input,

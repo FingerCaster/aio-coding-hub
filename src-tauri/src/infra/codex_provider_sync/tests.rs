@@ -184,3 +184,78 @@ fn process_check_failed_message_explains_next_step() {
         "{message}"
     );
 }
+
+fn rollback_token_fixture() -> (
+    tempfile::TempDir,
+    std::path::PathBuf,
+    CodexProviderSyncRollback,
+) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let path = dir.path().join("provider-state.jsonl");
+    std::fs::write(&path, b"before").expect("write original state");
+    let token = CodexProviderSyncRollback::new(
+        vec![FileSnapshot {
+            path: path.clone(),
+            existed: true,
+            bytes: Some(b"before".to_vec()),
+        }],
+        None,
+        None,
+        false,
+    );
+    std::fs::write(&path, b"after").expect("write mutated state");
+    (dir, path, token)
+}
+
+#[test]
+fn provider_sync_rollback_token_commits_without_restoring() {
+    let (_dir, path, token) = rollback_token_fixture();
+    token.commit();
+    assert_eq!(std::fs::read(path).expect("read committed state"), b"after");
+}
+
+#[test]
+fn provider_sync_rollback_token_restores_explicitly() {
+    let (_dir, path, token) = rollback_token_fixture();
+    token.rollback().expect("explicit rollback");
+    assert_eq!(std::fs::read(path).expect("read restored state"), b"before");
+}
+
+#[test]
+fn provider_sync_rollback_token_restores_when_dropped_unfinished() {
+    let (_dir, path, token) = rollback_token_fixture();
+    drop(token);
+    assert_eq!(std::fs::read(path).expect("read restored state"), b"before");
+}
+
+#[test]
+fn provider_sync_rollback_token_removes_only_the_uncommitted_backup() {
+    let home = tempfile::tempdir().expect("home");
+    let backup_root = home.path().join(PROVIDER_SYNC_BACKUP_ROOT);
+    let prior_backup = backup_root.join("prior");
+    let current_backup = backup_root.join("current");
+    for (path, created_at) in [(&prior_backup, "1"), (&current_backup, "2")] {
+        std::fs::create_dir_all(path).expect("create managed backup");
+        std::fs::write(
+            path.join(PROVIDER_SYNC_MANAGED_BACKUP_MANIFEST),
+            serde_json::to_vec(&serde_json::json!({
+                "managed_by": "Codex provider sync",
+                "created_at": created_at,
+            }))
+            .expect("serialize backup manifest"),
+        )
+        .expect("write backup manifest");
+    }
+
+    CodexProviderSyncRollback::new(
+        Vec::new(),
+        Some(home.path().to_path_buf()),
+        Some(current_backup.clone()),
+        false,
+    )
+    .rollback()
+    .expect("rollback provider sync backup");
+
+    assert!(prior_backup.exists());
+    assert!(!current_backup.exists());
+}

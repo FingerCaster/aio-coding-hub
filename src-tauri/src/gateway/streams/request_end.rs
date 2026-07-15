@@ -141,8 +141,7 @@ fn status_for_stream_request_log(status: u16, error_code: Option<&'static str>) 
         Some(code)
             if code == GatewayErrorCode::StreamError.as_str()
                 || code == GatewayErrorCode::Fake200.as_str()
-                || code == GatewayErrorCode::EmptyResponse.as_str()
-                || code == GatewayErrorCode::ResponsesDeltaFinalMismatch.as_str() =>
+                || code == GatewayErrorCode::EmptyResponse.as_str() =>
         {
             if (200..400).contains(&status) {
                 502
@@ -406,13 +405,6 @@ mod tests {
         );
         assert_eq!(
             status_for_stream_request_log(200, Some(GatewayErrorCode::EmptyResponse.as_str())),
-            502
-        );
-        assert_eq!(
-            status_for_stream_request_log(
-                200,
-                Some(GatewayErrorCode::ResponsesDeltaFinalMismatch.as_str())
-            ),
             502
         );
         assert_eq!(

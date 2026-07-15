@@ -702,6 +702,8 @@ mod tests {
             listener: "http://127.0.0.1:4610".to_string(),
             upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
             instance_nonce: "nonce".to_string(),
+            provider_name: crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO
+                .to_string(),
         };
         let err = protected_config_body(
             &record,

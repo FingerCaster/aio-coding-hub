@@ -1865,23 +1865,6 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
-  async requestLogsCodexReasoningGuardStats(
-    startCreatedAtMs: number | null,
-    endCreatedAtMs: number | null
-  ): Promise<Result<CodexReasoningGuardStats, string>> {
-    try {
-      return {
-        status: "ok",
-        data: await TAURI_INVOKE("request_logs_codex_reasoning_guard_stats", {
-          startCreatedAtMs,
-          endCreatedAtMs,
-        }),
-      };
-    } catch (e) {
-      if (e instanceof Error) throw e;
-      else return { status: "error", error: e as any };
-    }
-  },
   async activeRequestLogsSnapshot(): Promise<Result<ActiveRequestSnapshotItem[], string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("active_request_logs_snapshot") };
@@ -2460,6 +2443,12 @@ export type CliProxyStatus = {
   base_origin: string | null;
   current_gateway_origin: string | null;
   applied_to_current_gateway: boolean | null;
+  generation: number | null;
+  route_mode: CodexRouteMode | null;
+  desired_enabled: boolean | null;
+  aio_origin: string | null;
+  guarded_origin: string | null;
+  effective_origin: string | null;
 };
 export type CliSessionsDisplayContentBlock =
   | { type: "text"; text: string }
@@ -2640,125 +2629,7 @@ export type CodexProviderSyncResult = {
   updated_workspace_roots: string[];
   warning: string | null;
 };
-export type CodexReasoningContinuationStatusStat = {
-  status: string;
-  request_count: number;
-  attempt_count: number;
-  average_sent_rounds: number;
-};
 export type CodexReasoningEffortOption = { reasoning_effort: string; description: string | null };
-export type CodexReasoningGuardCompareMode = "equals" | "less_than_or_equal";
-export type CodexReasoningGuardExhaustedAction =
-  | "return_error"
-  | "switch_provider"
-  | "switch_model";
-export type CodexReasoningGuardModelEffortStat = {
-  requested_model: string;
-  reasoning_effort: string;
-  total_request_count: number;
-  hit_request_count: number;
-  normal_request_count: number;
-  hit_attempt_count: number;
-  hit_rate: number;
-};
-export type CodexReasoningGuardModelRule = {
-  requested_model: string;
-  compare_mode?: CodexReasoningGuardCompareMode;
-  reasoning_equals: number[];
-};
-export type CodexReasoningGuardModelStat = {
-  requested_model: string;
-  total_request_count: number;
-  hit_request_count: number;
-  normal_request_count: number;
-  hit_attempt_count: number;
-  hit_rate: number;
-};
-export type CodexReasoningGuardPostMatchStrategy = "retry_same_provider" | "continuation_repair";
-export type CodexReasoningGuardRetryPolicy = "single" | "concurrent";
-export type CodexReasoningGuardRuleMode = "reasoning_tokens" | "final_answer_only_high_xhigh";
-export type CodexReasoningGuardRuleTemplate = {
-  id: string;
-  name: string;
-  description: string;
-  rules: CodexReasoningGuardTemplateRule[];
-};
-export type CodexReasoningGuardStats = {
-  hit_request_count: number;
-  hit_attempt_count: number;
-  token_hit_attempt_count: number;
-  feature_hit_attempt_count: number;
-  reasoning_token_hit_request_count: number;
-  final_answer_only_high_xhigh_hit_request_count: number;
-  normal_request_count: number;
-  total_request_count: number;
-  hit_rate: number;
-  feature_sample_request_count: number;
-  feature_sample_count: number;
-  final_answer_only_sample_count: number;
-  high_xhigh_final_answer_only_sample_count: number;
-  reasoning_516_final_answer_only_no_commentary_count: number;
-  compaction_exempt_sample_count: number;
-  reasoning_tokens_coverage_count: number;
-  final_answer_only_coverage_count: number;
-  commentary_observed_coverage_count: number;
-  reasoning_effort_coverage_count: number;
-  duration_ms_coverage_count: number;
-  output_tokens_coverage_count: number;
-  continuation_triggered_request_count: number;
-  continuation_triggered_attempt_count: number;
-  continuation_repaired_request_count: number;
-  continuation_repaired_attempt_count: number;
-  continuation_non_repaired_attempt_count: number;
-  continuation_repair_rate: number;
-  continuation_average_sent_rounds: number;
-  continuation_by_status: CodexReasoningContinuationStatusStat[];
-  by_model: CodexReasoningGuardModelStat[];
-  by_model_and_effort: CodexReasoningGuardModelEffortStat[];
-};
-export type CodexReasoningGuardTemplateFilter = {
-  id: string;
-  field: CodexReasoningGuardTemplateFilterField;
-  operator: CodexReasoningGuardTemplateFilterOperator;
-  number_value: number | null;
-  bool_value: boolean | null;
-  string_value: string | null;
-  string_values: string[];
-};
-export type CodexReasoningGuardTemplateFilterField =
-  | "duration_ms"
-  | "tps"
-  | "output_tokens"
-  | "input_tokens"
-  | "total_tokens"
-  | "reasoning_tokens"
-  | "final_answer_only"
-  | "has_tool_call"
-  | "has_reasoning_item"
-  | "commentary_observed"
-  | "request_reasoning_effort"
-  | "requested_model";
-export type CodexReasoningGuardTemplateFilterOperator =
-  | "equals"
-  | "not_equals"
-  | "less_than"
-  | "less_than_or_equal"
-  | "greater_than"
-  | "greater_than_or_equal"
-  | "in"
-  | "not_in";
-export type CodexReasoningGuardTemplateRule = {
-  id: string;
-  name: string;
-  reasoning_tokens: number | null;
-  reasoning_tokens_formula: CodexReasoningGuardTemplateRuleFormula | null;
-  action: CodexReasoningGuardTemplateRuleAction;
-  logic: CodexReasoningGuardTemplateRuleLogic;
-  filters: CodexReasoningGuardTemplateFilter[];
-};
-export type CodexReasoningGuardTemplateRuleAction = "intercept" | "no_intercept";
-export type CodexReasoningGuardTemplateRuleFormula = "reasoning_tokens_518n_minus_2";
-export type CodexReasoningGuardTemplateRuleLogic = "and" | "or";
 export type CodexRetryGatewayApplyCommitRequest = {
   planGeneration: number;
   commit: string;
@@ -4097,29 +3968,6 @@ export type SettingsUpdate = {
   codexHomeOverride: string | null;
   codexOauthCompatibleProxyMode: boolean | null;
   codexProviderTestModel: string | null;
-  codexReasoningGuardHitLabel: string | null;
-  codexReasoningGuardEnabled: boolean | null;
-  codexReasoningGuardRuleMode: CodexReasoningGuardRuleMode | null;
-  codexReasoningGuardCompareMode: CodexReasoningGuardCompareMode | null;
-  codexReasoningGuardReasoningEquals: number[] | null;
-  codexReasoningGuardModelRules: CodexReasoningGuardModelRule[] | null;
-  codexReasoningGuardActiveTemplateId: string | null;
-  codexReasoningGuardCustomTemplates: CodexReasoningGuardRuleTemplate[] | null;
-  codexReasoningGuardPostMatchStrategy: CodexReasoningGuardPostMatchStrategy | null;
-  codexReasoningGuardImmediateRetryBudget: number | null;
-  codexReasoningGuardDelayedRetryBudget: number | null;
-  codexReasoningGuardDelayedRetryMs: number | null;
-  codexReasoningGuardExhaustedAction: CodexReasoningGuardExhaustedAction | null;
-  codexReasoningGuardRetryPolicy: CodexReasoningGuardRetryPolicy | null;
-  codexReasoningGuardConcurrentMax: number | null;
-  codexReasoningGuardConcurrentIntervalMs: number | null;
-  codexReasoningGuardConcurrentMaxAttempts: number | null;
-  codexReasoningGuardModelFallbacks: string[] | null;
-  codexReasoningGuardContinuationRepairEnabled: boolean | null;
-  codexReasoningGuardContinuationMaxRounds: number | null;
-  codexReasoningGuardContinuationMaxOutputTokens: number | null;
-  codexReasoningGuardBackoffAfterHits: number | null;
-  codexReasoningGuardBackoffMs: number | null;
   cx2CcFallbackModelOpus: string | null;
   cx2CcFallbackModelSonnet: string | null;
   cx2CcFallbackModelHaiku: string | null;
@@ -4153,29 +4001,6 @@ export type SettingsView = {
   codex_home_override: string;
   codex_oauth_compatible_proxy_mode: boolean;
   codex_provider_test_model: string;
-  codex_reasoning_guard_hit_label: string;
-  codex_reasoning_guard_enabled: boolean;
-  codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode;
-  codex_reasoning_guard_compare_mode: CodexReasoningGuardCompareMode;
-  codex_reasoning_guard_reasoning_equals: number[];
-  codex_reasoning_guard_model_rules: CodexReasoningGuardModelRule[];
-  codex_reasoning_guard_active_template_id: string;
-  codex_reasoning_guard_custom_templates: CodexReasoningGuardRuleTemplate[];
-  codex_reasoning_guard_post_match_strategy: CodexReasoningGuardPostMatchStrategy;
-  codex_reasoning_guard_immediate_retry_budget: number;
-  codex_reasoning_guard_delayed_retry_budget: number;
-  codex_reasoning_guard_delayed_retry_ms: number;
-  codex_reasoning_guard_exhausted_action: CodexReasoningGuardExhaustedAction;
-  codex_reasoning_guard_retry_policy: CodexReasoningGuardRetryPolicy;
-  codex_reasoning_guard_concurrent_max: number;
-  codex_reasoning_guard_concurrent_interval_ms: number;
-  codex_reasoning_guard_concurrent_max_attempts: number;
-  codex_reasoning_guard_model_fallbacks: string[];
-  codex_reasoning_guard_continuation_repair_enabled: boolean;
-  codex_reasoning_guard_continuation_max_rounds: number;
-  codex_reasoning_guard_continuation_max_output_tokens: number;
-  codex_reasoning_guard_backoff_after_hits: number;
-  codex_reasoning_guard_backoff_ms: number;
   auto_start: boolean;
   start_minimized: boolean;
   tray_enabled: boolean;

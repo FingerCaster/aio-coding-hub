@@ -114,13 +114,13 @@ model discovery, or circuit-breaker thresholds.
 
 - `Settings.failover_max_attempts_per_provider`: default `5`, valid `1..=20`.
 - `Settings.circuit_breaker_failure_threshold`: default `5`, valid `1..=50`.
-- `provider_max_attempts_for_request(configured, oauth, continuation,
+- `provider_max_attempts_for_request(configured, oauth, previous_response_id,
   transient, strict) -> u32` owns the request-scoped calculation.
 
 #### 3. Contracts
 
 - Normal effective budget is
-  `max(configured, 1 + oauth + continuation + enabled_transient_retries)`.
+  `max(configured, 1 + oauth + previous_response_id + enabled_transient_retries)`.
 - Resolve `upstream_retry_policy_override` before reserving transient retries;
   a disabled effective policy reserves zero.
 - Circuit failures accumulate across requests. The circuit threshold must not
@@ -141,7 +141,7 @@ model discovery, or circuit-breaker thresholds.
 
 #### 5. Good/Base/Bad Cases
 
-- Good: configured `1` plus OAuth, continuation repair, and two enabled
+- Good: configured `1` plus OAuth, `previous_response_id` recovery, and two enabled
   transient retries yields `5`.
 - Base: configured `5` with no retry reason remains `5`.
 - Bad: circuit threshold `5` silently turns configured `1` into five attempts.
@@ -304,7 +304,7 @@ The gateway may rewrite request JSON in a small number of controlled situations:
 - **Codex previous-response rectifier**: after a Codex upstream returns 400/404
   explicitly indicating the supplied `previous_response_id` is missing/invalid,
   removes only `previous_response_id` and retries the same provider once. This
-  stale provider-scoped continuation error must not increment circuit failure
+  stale provider-scoped previous-response error must not increment circuit failure
   counts or trigger cooldown for the newly selected provider.
 
 Each rectifier must:
@@ -367,7 +367,7 @@ Never include secrets (API keys, bearer tokens, refresh tokens) in any of these 
   `requestedReasoningEffortSource`, `actualModel`, `actualReasoningEffort`,
   `actualReasoningEffortSource`, `modelMismatch`, `effortMismatch`, `mismatch`,
   `providerId`, and `providerName`.
-- Use the active failover/reasoning-guard requested model, not a stale model from
+- Use the active failover attempt's requested model, not a stale model from
   an earlier attempt.
 - Explicit upstream effort uses source `response`. Infer a returned model default
   only when the request also relied on a model default, using source

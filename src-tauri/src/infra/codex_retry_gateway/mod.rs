@@ -15,21 +15,27 @@ mod util;
 pub(crate) use bridge::reset_bridge_runtime_for_tests;
 #[allow(unused_imports)]
 pub(crate) use bridge::{BridgeDetailsSession, BridgeRuntimeHandle};
-pub(crate) use config::{managed_gateway_config, managed_gateway_state};
+pub(crate) use config::{managed_gateway_config, managed_gateway_state, normalize_preferred_port};
+#[cfg(test)]
+pub(crate) use config::{MANAGED_PROVIDER_AIO, MANAGED_PROVIDER_OPENAI};
 pub(crate) use contracts::*;
 #[allow(unused_imports)]
 pub(crate) use managed_state::{
-    CodexRetryGatewayManagedProcessRecord, CodexRetryGatewayManagerPaths,
-    CodexRetryGatewayManagerState, FileCodexRetryGatewayTransitionStore,
+    read_manager_state, write_manager_state, CodexRetryGatewayManagedProcessRecord,
+    CodexRetryGatewayManagerPaths, CodexRetryGatewayManagerState,
+    FileCodexRetryGatewayTransitionStore,
 };
 #[allow(unused_imports)]
 pub(crate) use node::{
     resolve_node_runtime, set_node_override, CodexRetryGatewayResolvedNode,
     CodexRetryGatewayResolvedNodeVersion,
 };
+#[cfg(test)]
+pub(crate) use process::process_start_identity_for_tests;
 #[allow(unused_imports)]
 pub(crate) use process::{
     reconcile_runtime_process, start_runtime_process, stop_runtime_process,
+    update_managed_provider_projection, verify_managed_provider_projection,
     CodexRetryGatewayHealthSnapshot, CodexRetryGatewayManagedProcess,
     CodexRetryGatewayProcessReconcileResult,
 };

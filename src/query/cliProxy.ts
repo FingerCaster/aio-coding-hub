@@ -3,6 +3,7 @@ import type { CliKey } from "../services/providers/providers";
 import {
   cliProxySetEnabled,
   cliProxyStatusAll,
+  createCliProxyStatus,
   type CliProxyStatus,
   validateCliProxyCliKey,
 } from "../services/cli/cliProxy";
@@ -33,12 +34,11 @@ export function useCliProxySetEnabledMutation() {
         const exists = cur.some((row) => row.cli_key === cliKey);
         if (!exists) {
           return [
-            {
+            createCliProxyStatus({
               cli_key: cliKey,
               enabled: input.enabled,
-              base_origin: null,
               applied_to_current_gateway: input.enabled ? true : null,
-            },
+            }),
             ...cur,
           ];
         }

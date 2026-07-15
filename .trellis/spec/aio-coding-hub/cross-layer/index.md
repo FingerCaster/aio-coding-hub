@@ -6,7 +6,8 @@ TypeScript bindings, frontend adapters, and React UI.
 ## Topics
 
 - [Codex config contract](./codex-config-contract.md): typed config fields,
-  patch semantics, raw TOML validation, generated bindings, and UI behavior.
+  patch semantics, raw TOML validation, generated bindings, UI behavior, and
+  chain-managed route transactions.
 
 ## Pre-Development Checklist
 
@@ -26,5 +27,7 @@ When changing a Codex `config.toml` field:
 - Test Rust parsing, structured patching, and full-file write safety.
 - Test frontend adapter defaults and the UI's null/unknown-value behavior.
 - Verify unrelated patches preserve fields that they do not own.
+- With a managed Codex route, verify health failure restores config, Provider
+  Sync data, route metadata, runtime projection, and backup directory shape.
 - Run focused tests, `pnpm typecheck`, `pnpm lint`, `pnpm tauri:fmt`, and
   `pnpm check:generated-bindings`.

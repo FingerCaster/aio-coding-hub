@@ -1,7 +1,11 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { CliProxyStatus } from "../../services/cli/cliProxy";
-import { cliProxySetEnabled, cliProxyStatusAll } from "../../services/cli/cliProxy";
+import {
+  cliProxySetEnabled,
+  cliProxyStatusAll,
+  createCliProxyStatus,
+  type CliProxyStatus,
+} from "../../services/cli/cliProxy";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
 import { cliProxyKeys } from "../keys";
@@ -66,9 +70,13 @@ describe("query/cliProxy", () => {
     setTauriRuntime();
 
     const initial: CliProxyStatus[] = [
-      { cli_key: "claude", enabled: true, base_origin: null, applied_to_current_gateway: true },
-      { cli_key: "codex", enabled: false, base_origin: null, applied_to_current_gateway: null },
-      { cli_key: "gemini", enabled: false, base_origin: null, applied_to_current_gateway: null },
+      createCliProxyStatus({
+        cli_key: "claude",
+        enabled: true,
+        applied_to_current_gateway: true,
+      }),
+      createCliProxyStatus({ cli_key: "codex", enabled: false }),
+      createCliProxyStatus({ cli_key: "gemini", enabled: false }),
     ];
     vi.mocked(cliProxySetEnabled).mockResolvedValue({
       trace_id: "t1",
@@ -103,7 +111,11 @@ describe("query/cliProxy", () => {
     setTauriRuntime();
 
     const initial: CliProxyStatus[] = [
-      { cli_key: "claude", enabled: true, base_origin: null, applied_to_current_gateway: true },
+      createCliProxyStatus({
+        cli_key: "claude",
+        enabled: true,
+        applied_to_current_gateway: true,
+      }),
     ];
     vi.mocked(cliProxySetEnabled).mockResolvedValue({
       trace_id: "t2",
@@ -125,12 +137,12 @@ describe("query/cliProxy", () => {
       const promise = result.current.mutateAsync({ cliKey: "codex", enabled: false });
 
       const optimistic = client.getQueryData<CliProxyStatus[] | null>(cliProxyKeys.statusAll());
-      expect(optimistic?.[0]).toEqual({
-        cli_key: "codex",
-        enabled: false,
-        base_origin: null,
-        applied_to_current_gateway: null,
-      });
+      expect(optimistic?.[0]).toEqual(
+        createCliProxyStatus({
+          cli_key: "codex",
+          enabled: false,
+        })
+      );
 
       await promise;
     });
@@ -164,7 +176,11 @@ describe("query/cliProxy", () => {
     setTauriRuntime();
 
     const initial: CliProxyStatus[] = [
-      { cli_key: "codex", enabled: true, base_origin: null, applied_to_current_gateway: true },
+      createCliProxyStatus({
+        cli_key: "codex",
+        enabled: true,
+        applied_to_current_gateway: true,
+      }),
     ];
     vi.mocked(cliProxySetEnabled).mockResolvedValue({
       trace_id: "t4",
@@ -187,12 +203,10 @@ describe("query/cliProxy", () => {
 
       const optimistic = client.getQueryData<CliProxyStatus[] | null>(cliProxyKeys.statusAll());
       expect(optimistic).toEqual([
-        {
+        createCliProxyStatus({
           cli_key: "codex",
           enabled: false,
-          base_origin: null,
-          applied_to_current_gateway: null,
-        },
+        }),
       ]);
 
       await promise;
@@ -202,9 +216,7 @@ describe("query/cliProxy", () => {
   it("rolls back cache when setEnabled fails", async () => {
     setTauriRuntime();
 
-    const initial: CliProxyStatus[] = [
-      { cli_key: "codex", enabled: false, base_origin: null, applied_to_current_gateway: null },
-    ];
+    const initial: CliProxyStatus[] = [createCliProxyStatus({ cli_key: "codex", enabled: false })];
     vi.mocked(cliProxySetEnabled).mockRejectedValue(new Error("boom"));
 
     const client = createTestQueryClient();
@@ -225,9 +237,7 @@ describe("query/cliProxy", () => {
   it("rejects invalid cli keys before service calls or optimistic cache writes", async () => {
     setTauriRuntime();
 
-    const initial: CliProxyStatus[] = [
-      { cli_key: "codex", enabled: false, base_origin: null, applied_to_current_gateway: null },
-    ];
+    const initial: CliProxyStatus[] = [createCliProxyStatus({ cli_key: "codex", enabled: false })];
     const client = createTestQueryClient();
     client.setQueryData(cliProxyKeys.statusAll(), initial);
     const wrapper = createQueryWrapper(client);

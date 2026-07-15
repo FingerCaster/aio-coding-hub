@@ -9,7 +9,7 @@ use crate::infra::codex_retry_gateway::{
 };
 use crate::shared::error::{AppError, AppResult};
 use crate::shared::http_body::read_text_with_limit;
-use reqwest::header::LOCATION;
+use reqwest::header::{HeaderMap, LOCATION, RETRY_AFTER};
 use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
@@ -464,14 +464,28 @@ fn map_github_status(response: reqwest::Response, kind: &str) -> AppResult<reqwe
     if status.is_success() {
         return Ok(response);
     }
-    let code = github_status_error_code(status);
+    let rate_limited = github_response_is_rate_limited(status, response.headers());
+    let code = github_status_error_code(status, rate_limited);
     Err(AppError::new(
         code,
         format!("GitHub {kind} request failed with status {status}"),
     ))
 }
 
-fn github_status_error_code(status: StatusCode) -> &'static str {
+fn github_response_is_rate_limited(status: StatusCode, headers: &HeaderMap) -> bool {
+    status == StatusCode::TOO_MANY_REQUESTS
+        || (status == StatusCode::FORBIDDEN
+            && (headers.contains_key(RETRY_AFTER)
+                || headers
+                    .get("x-ratelimit-remaining")
+                    .and_then(|value| value.to_str().ok())
+                    .is_some_and(|value| value.trim() == "0")))
+}
+
+fn github_status_error_code(status: StatusCode, rate_limited: bool) -> &'static str {
+    if rate_limited {
+        return "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED";
+    }
     match status {
         StatusCode::NOT_FOUND => "CODEX_RETRY_GATEWAY_SOURCE_NOT_FOUND",
         StatusCode::FORBIDDEN => "CODEX_RETRY_GATEWAY_SOURCE_FORBIDDEN",
@@ -1014,21 +1028,51 @@ mod tests {
     #[test]
     fn github_statuses_keep_actionable_failure_classes() {
         assert_eq!(
-            github_status_error_code(StatusCode::NOT_FOUND),
+            github_status_error_code(StatusCode::NOT_FOUND, false),
             "CODEX_RETRY_GATEWAY_SOURCE_NOT_FOUND"
         );
         assert_eq!(
-            github_status_error_code(StatusCode::FORBIDDEN),
+            github_status_error_code(StatusCode::FORBIDDEN, false),
             "CODEX_RETRY_GATEWAY_SOURCE_FORBIDDEN"
         );
         assert_eq!(
-            github_status_error_code(StatusCode::TOO_MANY_REQUESTS),
+            github_status_error_code(StatusCode::FORBIDDEN, true),
             "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED"
         );
         assert_eq!(
-            github_status_error_code(StatusCode::BAD_GATEWAY),
+            github_status_error_code(StatusCode::TOO_MANY_REQUESTS, true),
+            "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED"
+        );
+        assert_eq!(
+            github_status_error_code(StatusCode::BAD_GATEWAY, false),
             "CODEX_RETRY_GATEWAY_SOURCE_SERVER_ERROR"
         );
+    }
+
+    #[test]
+    fn github_rate_limit_headers_reclassify_forbidden_responses() {
+        let mut headers = HeaderMap::new();
+        assert!(!github_response_is_rate_limited(
+            StatusCode::FORBIDDEN,
+            &headers
+        ));
+
+        headers.insert("x-ratelimit-remaining", "0".parse().unwrap());
+        assert!(github_response_is_rate_limited(
+            StatusCode::FORBIDDEN,
+            &headers
+        ));
+
+        headers.clear();
+        headers.insert(RETRY_AFTER, "60".parse().unwrap());
+        assert!(github_response_is_rate_limited(
+            StatusCode::FORBIDDEN,
+            &headers
+        ));
+        assert!(github_response_is_rate_limited(
+            StatusCode::TOO_MANY_REQUESTS,
+            &HeaderMap::new()
+        ));
     }
 
     #[test]

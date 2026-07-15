@@ -2,10 +2,11 @@
 
 use super::app_state::{ensure_db_ready, DbInitState};
 use crate::infra::codex_retry_gateway::{
-    self, CodexRetryGatewayApplyCommitRequest, CodexRetryGatewayCommitValidation,
-    CodexRetryGatewayDetailsSession, CodexRetryGatewayEnablePlan,
-    CodexRetryGatewayGenerationRequest, CodexRetryGatewayLifecycleCallback,
-    CodexRetryGatewayLifecycleFuture, CodexRetryGatewayNodeStatus, CodexRetryGatewayOperationKind,
+    self, normalize_preferred_port, CodexRetryGatewayApplyCommitRequest,
+    CodexRetryGatewayCommitValidation, CodexRetryGatewayDetailsSession,
+    CodexRetryGatewayEnablePlan, CodexRetryGatewayGenerationRequest,
+    CodexRetryGatewayLifecycleCallback, CodexRetryGatewayLifecycleFuture,
+    CodexRetryGatewayNodeStatus, CodexRetryGatewayOperationKind,
     CodexRetryGatewayRouteCallbackRequest, CodexRetryGatewaySetEnabledRequest,
     CodexRetryGatewaySetNodeOverrideRequest, CodexRetryGatewayStatus,
     CodexRetryGatewayUninstallRequest, CodexRetryGatewayUpdateCandidate,
@@ -543,10 +544,12 @@ async fn prepare_enable_plan_unlocked(app: &tauri::AppHandle) -> AppResult<Prepa
     let settings = crate::settings::read(app)?;
     let runtime_status = codex_retry_gateway::current_status(app).await?;
     let aio_origin = projected_aio_origin(app, &settings);
-    let port = runtime_status
-        .effective_port
-        .unwrap_or(settings.codex_retry_gateway_preferred_port)
-        .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT);
+    let port = normalize_preferred_port(
+        runtime_status
+            .effective_port
+            .unwrap_or(settings.codex_retry_gateway_preferred_port),
+        CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+    );
     let guarded_origin = format!("http://127.0.0.1:{port}");
     let route = crate::app::cli_proxy_service::cli_proxy_codex_plan_external_enable(
         app.clone(),
@@ -912,7 +915,13 @@ fn emit_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>, status: CodexRetryG
     crate::app::heartbeat_watchdog::gated_emit(app, CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME, status);
 }
 
-async fn emit_current_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+pub(crate) async fn emit_current_status<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if app
+        .try_state::<crate::app::gateway_state::GatewayState>()
+        .is_none()
+    {
+        return;
+    }
     match codex_retry_gateway::current_status(app).await {
         Ok(status) => emit_status(app, status),
         Err(error) => tracing::warn!(error = %error, "failed to emit Codex retry gateway status"),

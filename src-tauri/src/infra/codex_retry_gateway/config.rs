@@ -6,6 +6,28 @@ use crate::infra::codex_retry_gateway::{AioGatewayOrigin, CODEX_RETRY_GATEWAY_DE
 pub(crate) const DEFAULT_LISTEN_HOST: &str = "127.0.0.1";
 pub(crate) const DEFAULT_HEALTH_PATH: &str = "/__codex_retry_gateway/health";
 pub(crate) const DEFAULT_REQUEST_BODY_LIMIT_BYTES: u64 = 100 * 1024 * 1024;
+pub(crate) const MANAGED_PROVIDER_AIO: &str = "aio";
+pub(crate) const MANAGED_PROVIDER_OPENAI: &str = "OpenAI";
+
+pub(crate) fn normalize_preferred_port(port: u16, fallback: u16) -> u16 {
+    if port >= 1024 {
+        port
+    } else {
+        fallback
+    }
+}
+
+pub(crate) fn validate_managed_provider_name(
+    provider_name: &str,
+) -> crate::shared::error::AppResult<()> {
+    match provider_name {
+        MANAGED_PROVIDER_AIO | MANAGED_PROVIDER_OPENAI => Ok(()),
+        _ => Err(format!(
+            "CODEX_RETRY_GATEWAY_PROVIDER_INVALID: unsupported managed provider {provider_name}"
+        )
+        .into()),
+    }
+}
 
 pub(crate) fn managed_gateway_config(
     listen_port: u16,
@@ -13,11 +35,10 @@ pub(crate) fn managed_gateway_config(
 ) -> serde_json::Value {
     json!({
         "listen_host": DEFAULT_LISTEN_HOST,
-        "listen_port": if listen_port == 0 {
-            CODEX_RETRY_GATEWAY_DEFAULT_PORT
-        } else {
-            listen_port
-        },
+        "listen_port": normalize_preferred_port(
+            listen_port,
+            CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+        ),
         "upstream_base_url": aio_origin.url,
         "request_body_limit_bytes": DEFAULT_REQUEST_BODY_LIMIT_BYTES,
         "health_path": DEFAULT_HEALTH_PATH
@@ -69,6 +90,16 @@ mod tests {
         assert_eq!(config["listen_port"], 4620);
         assert_eq!(config["upstream_base_url"], origin.url);
         assert_eq!(config["health_path"], DEFAULT_HEALTH_PATH);
+    }
+
+    #[test]
+    fn normalize_preferred_port_preserves_every_non_privileged_port() {
+        assert_eq!(normalize_preferred_port(0, 4610), 4610);
+        assert_eq!(normalize_preferred_port(1023, 4610), 4610);
+        assert_eq!(normalize_preferred_port(1024, 4610), 1024);
+        assert_eq!(normalize_preferred_port(4609, 4610), 4609);
+        assert_eq!(normalize_preferred_port(4610, 4610), 4610);
+        assert_eq!(normalize_preferred_port(u16::MAX, 4610), u16::MAX);
     }
 
     #[test]

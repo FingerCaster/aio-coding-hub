@@ -14,12 +14,12 @@ use crate::infra::codex_retry_gateway::source::{
 };
 use crate::infra::codex_retry_gateway::util::{normalize_full_sha, now_unix_ms, strip_trailing_v1};
 use crate::infra::codex_retry_gateway::{
-    AioGatewayOrigin, CodexProviderSyncPlan, CodexRetryGatewayApplyCommitRequest,
-    CodexRetryGatewayCommitValidation, CodexRetryGatewayDetailsSession,
-    CodexRetryGatewayEnableConfirmation, CodexRetryGatewayEnablePlan, CodexRetryGatewayError,
-    CodexRetryGatewayErrorCategory, CodexRetryGatewayGenerationRequest,
-    CodexRetryGatewayLifecycleCallback, CodexRetryGatewayLifecycleFuture,
-    CodexRetryGatewayNodeStatus, CodexRetryGatewayProcessPhase,
+    normalize_preferred_port, AioGatewayOrigin, CodexProviderSyncPlan,
+    CodexRetryGatewayApplyCommitRequest, CodexRetryGatewayCommitValidation,
+    CodexRetryGatewayDetailsSession, CodexRetryGatewayEnableConfirmation,
+    CodexRetryGatewayEnablePlan, CodexRetryGatewayError, CodexRetryGatewayErrorCategory,
+    CodexRetryGatewayGenerationRequest, CodexRetryGatewayLifecycleCallback,
+    CodexRetryGatewayLifecycleFuture, CodexRetryGatewayNodeStatus, CodexRetryGatewayProcessPhase,
     CodexRetryGatewayRouteCallbackRequest, CodexRetryGatewayRuntimePhase,
     CodexRetryGatewaySetEnabledRequest, CodexRetryGatewaySetNodeOverrideRequest,
     CodexRetryGatewayStatus, CodexRetryGatewayTrustState, CodexRetryGatewayUninstallRequest,
@@ -99,9 +99,10 @@ pub(crate) async fn build_enable_plan<R: tauri::Runtime>(
             codex_must_be_closed: false,
         },
         node_status: status.node_status.clone(),
-        preferred_port: settings
-            .codex_retry_gateway_preferred_port
-            .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
+        preferred_port: normalize_preferred_port(
+            settings.codex_retry_gateway_preferred_port,
+            CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+        ),
         wsl_codex_unprotected: settings.wsl_auto_config && settings.wsl_target_cli.codex,
     })
 }
@@ -300,14 +301,17 @@ pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
         rollback.restart_process =
             stop_verified_record_for_change(&paths, &manager, "commit switch").await?;
         let aio_origin = aio_origin(app, &settings);
+        let provider_name = current_managed_provider_name(app)?;
         let process = match start_runtime_process(
             &paths,
             &installed,
             &node,
             &aio_origin,
-            settings
-                .codex_retry_gateway_preferred_port
-                .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
+            &provider_name,
+            normalize_preferred_port(
+                settings.codex_retry_gateway_preferred_port,
+                CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+            ),
             manager.effective_port,
         )
         .await
@@ -545,14 +549,17 @@ pub(crate) async fn rollback_selected_commit<R: tauri::Runtime>(
         rollback.restart_process =
             stop_verified_record_for_change(&paths, &manager, "route rollback").await?;
         let aio_origin = aio_origin(app, &settings);
+        let provider_name = current_managed_provider_name(app)?;
         let process = match start_runtime_process(
             &paths,
             &installed,
             &node,
             &aio_origin,
-            settings
-                .codex_retry_gateway_preferred_port
-                .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
+            &provider_name,
+            normalize_preferred_port(
+                settings.codex_retry_gateway_preferred_port,
+                CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+            ),
             manager.effective_port,
         )
         .await
@@ -702,6 +709,7 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
 ) -> AppResult<CodexRetryGatewayManagedProcess> {
     let node = resolve_required_node(app, &settings.codex_retry_gateway_node_override)?;
     let selected_commit = normalize_selected_commit(&settings.codex_retry_gateway_selected_commit);
+    let provider_name = current_managed_provider_name(app)?;
 
     if let Some(record) = manager.process_record.as_ref() {
         let reconciled =
@@ -714,8 +722,10 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
             if healthy_process_can_be_reused(
                 &process.record.source_commit,
                 &process.record.node_executable,
+                &process.record.provider_name,
                 &selected_commit,
                 canonical_node.as_deref(),
+                &provider_name,
                 source_valid,
             ) {
                 return Ok(process.clone());
@@ -758,9 +768,11 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
         &installed,
         &node,
         &aio_origin,
-        settings
-            .codex_retry_gateway_preferred_port
-            .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
+        &provider_name,
+        normalize_preferred_port(
+            settings.codex_retry_gateway_preferred_port,
+            CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+        ),
         manager.effective_port,
     )
     .await
@@ -769,13 +781,16 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
 fn healthy_process_can_be_reused(
     process_commit: &str,
     process_node: &str,
+    process_provider_name: &str,
     selected_commit: &str,
     canonical_node: Option<&str>,
+    provider_name: &str,
     source_valid: bool,
 ) -> bool {
     source_valid
         && process_commit == selected_commit
         && canonical_node.is_some_and(|path| process_node == path)
+        && process_provider_name == provider_name
 }
 
 async fn stop_verified_record_for_change(
@@ -822,15 +837,17 @@ async fn rollback_runtime_state<R: tauri::Runtime>(
                     )
                 })?;
             let aio_origin = aio_origin(app, &rollback.settings);
+            let provider_name = current_managed_provider_name(app)?;
             let process = start_runtime_process(
                 paths,
                 &installed,
                 &node,
                 &aio_origin,
-                rollback
-                    .settings
-                    .codex_retry_gateway_preferred_port
-                    .max(CODEX_RETRY_GATEWAY_DEFAULT_PORT),
+                &provider_name,
+                normalize_preferred_port(
+                    rollback.settings.codex_retry_gateway_preferred_port,
+                    CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+                ),
                 rollback.manager.effective_port,
             )
             .await?;
@@ -900,6 +917,17 @@ fn resolve_required_node<R: tauri::Runtime>(
     crate::infra::codex_retry_gateway::resolve_node_runtime(app, Some(manual_override))
 }
 
+fn current_managed_provider_name<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<String> {
+    let config = crate::infra::codex_config::codex_config_get(app)?;
+    Ok(if config.features_remote_compaction == Some(true) {
+        crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_OPENAI.to_string()
+    } else {
+        crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO.to_string()
+    })
+}
+
 pub(crate) fn require_enable_confirmations(
     plan: &CodexRetryGatewayEnablePlan,
     confirmation: &CodexRetryGatewayEnableConfirmation,
@@ -956,9 +984,10 @@ fn aio_origin<R: tauri::Runtime>(
     } else {
         format!(
             "http://127.0.0.1:{}",
-            settings
-                .preferred_port
-                .max(crate::settings::DEFAULT_GATEWAY_PORT)
+            normalize_preferred_port(
+                settings.preferred_port,
+                crate::settings::DEFAULT_GATEWAY_PORT,
+            )
         )
     };
     AioGatewayOrigin {
@@ -1179,6 +1208,8 @@ mod tests {
             listener: listener.to_string(),
             upstream_base_url: "http://127.0.0.1:37123/v1".to_string(),
             instance_nonce: "nonce".to_string(),
+            provider_name: crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO
+                .to_string(),
         }
     }
 
@@ -1244,16 +1275,29 @@ mod tests {
         assert!(healthy_process_can_be_reused(
             commit,
             "C:/node.exe",
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
             commit,
             Some("C:/node.exe"),
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
             true,
         ));
         assert!(!healthy_process_can_be_reused(
             commit,
             "C:/node.exe",
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
             commit,
             Some("C:/node.exe"),
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
             false,
+        ));
+        assert!(!healthy_process_can_be_reused(
+            commit,
+            "C:/node.exe",
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO,
+            commit,
+            Some("C:/node.exe"),
+            crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_OPENAI,
+            true,
         ));
     }
 

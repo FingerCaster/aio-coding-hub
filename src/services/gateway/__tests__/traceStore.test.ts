@@ -1131,7 +1131,7 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
-  it("lets a live Codex reasoning-guard fallback attempt replace requested_model", async () => {
+  it("lets a live Codex fallback attempt replace requested_model", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
 

@@ -10,24 +10,6 @@ pub(super) enum SendResult {
     Timeout,
 }
 
-pub(super) async fn send_upstream<R: tauri::Runtime>(
-    ctx: CommonCtx<'_, R>,
-    method: Method,
-    url: reqwest::Url,
-    headers: HeaderMap,
-    body: Bytes,
-) -> SendResult {
-    send_upstream_with_first_byte_timeout(
-        ctx,
-        method,
-        url,
-        headers,
-        body,
-        ctx.upstream_first_byte_timeout,
-    )
-    .await
-}
-
 pub(super) async fn send_upstream_with_first_byte_timeout<R: tauri::Runtime>(
     ctx: CommonCtx<'_, R>,
     method: Method,

@@ -19,7 +19,6 @@
 >
 > Fork-side references:
 > - Codex reasoning-token guard / retry design: [codex-retry-gateway](https://github.com/nonononull/codex-retry-gateway)
-> - Continuation repair design: [CodexCont](https://github.com/neteroster/CodexCont)
 
 ---
 
