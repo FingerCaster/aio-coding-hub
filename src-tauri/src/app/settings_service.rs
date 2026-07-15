@@ -969,6 +969,15 @@ pub(crate) async fn settings_set_impl(
                 codex_home_override,
                 codex_oauth_compatible_proxy_mode,
                 codex_provider_test_model,
+                codex_retry_gateway_enabled: previous.codex_retry_gateway_enabled,
+                codex_retry_gateway_selected_commit: previous
+                    .codex_retry_gateway_selected_commit
+                    .clone(),
+                codex_retry_gateway_preferred_port: previous
+                    .codex_retry_gateway_preferred_port,
+                codex_retry_gateway_node_override: previous
+                    .codex_retry_gateway_node_override
+                    .clone(),
                 codex_reasoning_guard_hit_label,
                 codex_reasoning_guard_enabled,
                 codex_reasoning_guard_rule_mode,

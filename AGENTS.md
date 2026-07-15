@@ -6,3 +6,25 @@
 - Before releasing changes that touch Codex reasoning guard / continuation repair, verify that successful continuation repair exposes one coherent user-visible assistant response with no duplicated intermediate-round visible text and no silently lost visible content. V1 `FinalSuperset` must be exact duplicate or monotonic strict-prefix extension without cross-round concatenation; quoted/non-prefix containment is unsafe. Empty rounds may be skipped in prefix-chain comparison only after the internal-only classifier proves no visible client output. Non-final refusals, message-unwrapped output text, unknown visible-result items, and mixed visible payloads must block final-only branches instead of being silently dropped. Final-full passthrough must not leak internal markers, commentary-visible output, echoed prior reasoning, or unclassified final raw pre-completion frames carrying reasoning/summary/commentary/`encrypted_content`; unknown or unparseable semantic frames before `response.completed` must fail closed, and `data: [DONE]` is allowed only after exactly one completed frame. Delivered visible hash/length must match the selected final source round visible hash/length for `EmptyPrior`, exact duplicate, and `FinalSuperset`. Early reasoning/commentary must not leak as stale visible output. Non-final function/tool calls must be unsafe unless fully and coherently replayed. Client-visible usage must not blindly repeat-count input tokens, provider repair usage must remain available for quota/cost/logs, non-repair usage behavior must not regress, canonical response-id continuity must be real-upstream transcript validated or mitigated, v1 repair must stay pre-commit with an automated assertion/test enforcing the wall-clock cap below the minimum measured response-header or first-byte (TTFB) timeout threshold across the current supported path set, supported path additions/removals/remeasurements/timeout changes must recompute the minimum threshold, repair diagnostics must record per-round and cumulative durations, and peak retained repair bytes must respect the aggregate 20 MiB cap.
 - Keep `upstream` fetch-only for normal work. Do not restore an `upstream` push URL unless the user explicitly requests upstream push access.
 - When the user explicitly requests upstream merge or drift repair work, carry forward non-conflicting `upstream/main` changes. If an upstream change conflicts with fork-specific product behavior or functionality, pause and ask the user with concrete file/behavior evidence and viable options before choosing either side.
+- For local commits from Codex/PowerShell in this clone, ensure the git hook environment can resolve `node` and `pnpm` before `git commit`. Do not hardcode machine-specific install paths; derive them from the current shell, for example: `$env:PATH = "$(Split-Path (Get-Command node -ErrorAction Stop).Source);$(Split-Path (Get-Command pnpm -ErrorAction Stop).Source);$env:PATH"; git commit ...`. The `.githooks/pre-commit` bash hook may otherwise fail to find `node`/`pnpm`.
+<!-- TRELLIS:START -->
+# Trellis Instructions
+
+These instructions are for AI assistants working in this project.
+
+This project is managed by Trellis. The working knowledge you need lives under `.trellis/`:
+
+- `.trellis/workflow.md` — development phases, when to create tasks, skill routing
+- `.trellis/spec/` — package- and layer-scoped coding guidelines (read before writing code in a given layer)
+- `.trellis/workspace/` — per-developer journals and session traces
+- `.trellis/tasks/` — active and archived tasks (PRDs, research, jsonl context)
+
+If a Trellis command is available on your platform (e.g. `/trellis:finish-work`, `/trellis:continue`), prefer it over manual steps. Not every platform exposes every command.
+
+If you're using Codex or another agent-capable tool, additional project-scoped helpers may live in:
+- `.agents/skills/` — reusable Trellis skills
+- `.codex/agents/` — optional custom subagents
+
+Managed by Trellis. Edits outside this block are preserved; edits inside may be overwritten by a future `trellis update`.
+
+<!-- TRELLIS:END -->

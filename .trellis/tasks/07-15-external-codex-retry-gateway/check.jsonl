@@ -1,0 +1,8 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Verify root Rust backend and gateway quality gates."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Regression-check retained provider attempts, retries, failover, discovery, and circuits."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify DTO, generated binding, adapter, and UI consistency."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Check config preservation, transaction boundaries, generated types, and UI semantics."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit every route/runtime state across backend and frontend boundaries."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Audit duplicated contracts and helper reuse after parallel merges."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"Validate implementation against reviewed external behavior and trust assumptions."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Drive final negative searches and retained-behavior audit."}

@@ -67,6 +67,17 @@ macro_rules! generated_command_registry {
             cli_manager_claude_hooks_set => crate::commands::cli_manager::cli_manager_claude_hooks_set,
             cli_check_latest_version => crate::commands::cli_update::cli_check_latest_version,
             cli_update => crate::commands::cli_update::cli_update,
+            // ── Codex retry gateway ──
+            codex_retry_gateway_status => crate::commands::codex_retry_gateway::codex_retry_gateway_status,
+            codex_retry_gateway_enable_plan => crate::commands::codex_retry_gateway::codex_retry_gateway_enable_plan,
+            codex_retry_gateway_set_enabled => crate::commands::codex_retry_gateway::codex_retry_gateway_set_enabled,
+            codex_retry_gateway_check_update => crate::commands::codex_retry_gateway::codex_retry_gateway_check_update,
+            codex_retry_gateway_validate_commit => crate::commands::codex_retry_gateway::codex_retry_gateway_validate_commit,
+            codex_retry_gateway_apply_commit => crate::commands::codex_retry_gateway::codex_retry_gateway_apply_commit,
+            codex_retry_gateway_set_node_override => crate::commands::codex_retry_gateway::codex_retry_gateway_set_node_override,
+            codex_retry_gateway_retry => crate::commands::codex_retry_gateway::codex_retry_gateway_retry,
+            codex_retry_gateway_uninstall => crate::commands::codex_retry_gateway::codex_retry_gateway_uninstall,
+            codex_retry_gateway_create_details_session => crate::commands::codex_retry_gateway::codex_retry_gateway_create_details_session,
             // ── gateway ──
             gateway_start => crate::commands::gateway::gateway_start,
             gateway_stop => crate::commands::gateway::gateway_stop,
@@ -278,7 +289,7 @@ pub(crate) fn export_typescript_bindings(output_path: &str) -> Result<(), String
         .export(
             specta_typescript::Typescript::default()
                 .header(
-                    "/* eslint-disable */\n// @ts-nocheck\n// NOTE: Generated IPC contract for settings, config migration, desktop, app management, gateway, request-log, CLI update, CLI proxy, provider, WSL, sort-mode, provider-limit, usage, model-price, prompt, workspace, skills, MCP, CLI manager, CLI sessions, Claude validation, notice, and env-conflict command families.",
+                    "/* eslint-disable */\n// @ts-nocheck\n// NOTE: Generated IPC contract for settings, config migration, desktop, app management, gateway, Codex retry gateway, request-log, CLI update, CLI proxy, provider, WSL, sort-mode, provider-limit, usage, model-price, prompt, workspace, skills, MCP, CLI manager, CLI sessions, Claude validation, notice, and env-conflict command families.",
                 )
                 .bigint(specta_typescript::BigIntExportBehavior::Number),
             output_path,

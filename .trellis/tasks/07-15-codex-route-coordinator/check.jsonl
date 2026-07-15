@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify route DTO, generated binding, adapter, and UI consistency."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Check config patch, raw save, Provider Sync, rollback, and unknown-value preservation."}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Run backend routing quality checks."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Regression-check ordinary retry, failover, discovery, and circuit behavior."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit every route transition and failure boundary."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"Validate route behavior against the reviewed external contract."}

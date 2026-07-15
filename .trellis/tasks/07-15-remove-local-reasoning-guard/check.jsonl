@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Run full retained Rust gateway quality checks."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Prove ordinary attempts, retries, failover, discovery, and circuit behavior remain intact."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify settings and generated contract consistency after removal."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Regression-check unrelated Codex config behavior."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Drive exhaustive active-source negative search and preservation audit."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"Confirm the external replacement boundary is retained."}

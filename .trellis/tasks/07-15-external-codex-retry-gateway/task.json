@@ -1,0 +1,31 @@
+{
+  "id": "external-codex-retry-gateway",
+  "name": "external-codex-retry-gateway",
+  "title": "Replace local reasoning guard with retry gateway",
+  "description": "Replace the local Codex reasoning guard with a managed external gateway through four isolated worker streams and one validated integration gate.",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-07-15",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-15-external-gateway-runtime",
+    "07-15-codex-route-coordinator",
+    "07-15-external-gateway-frontend",
+    "07-15-remove-local-reasoning-guard"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

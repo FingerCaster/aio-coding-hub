@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify generated contract, service adapter, query, event, and UI consistency."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Check explicit Provider Sync confirmation and Codex config preservation semantics."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit enable/update/details navigation and lifecycle boundaries."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Audit duplicated status, dialog, and query logic."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"Validate UI and bridge behavior against reviewed external behavior."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Drive legacy frontend negative searches and retained-behavior review."}

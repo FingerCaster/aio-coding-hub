@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Root Rust gateway pre-development and retained-behavior checklist."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Distinguish removable continuation guard behavior from retained provider attempts, retries, failover, discovery, and circuits."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Preserve foundation settings, commands, and generated contracts while deleting old backend fields."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Avoid regressing unrelated Codex config and generated binding behavior during settings cleanup."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Search all shared guard branches before simplifying common gateway helpers."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Authoritative deletion and preservation inventory for the local guard."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"External replacement boundary that new foundation fields must preserve."}

@@ -7,6 +7,14 @@ fn default_codex_provider_test_model() -> String {
     DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
 }
 
+fn default_codex_retry_gateway_selected_commit() -> String {
+    DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT.to_string()
+}
+
+fn default_codex_retry_gateway_port() -> u16 {
+    DEFAULT_CODEX_RETRY_GATEWAY_PORT
+}
+
 fn default_codex_reasoning_guard_hit_label() -> String {
     DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string()
 }
@@ -364,6 +372,14 @@ pub struct AppSettings {
     pub codex_oauth_compatible_proxy_mode: bool,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
+    #[serde(default)]
+    pub codex_retry_gateway_enabled: bool,
+    #[serde(default = "default_codex_retry_gateway_selected_commit")]
+    pub codex_retry_gateway_selected_commit: String,
+    #[serde(default = "default_codex_retry_gateway_port")]
+    pub codex_retry_gateway_preferred_port: u16,
+    #[serde(default)]
+    pub codex_retry_gateway_node_override: String,
     #[serde(default = "default_codex_reasoning_guard_hit_label")]
     pub codex_reasoning_guard_hit_label: String,
     // Codex reasoning guard: detect degraded reasoning token signatures and
@@ -501,6 +517,12 @@ impl Default for AppSettings {
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
+            codex_retry_gateway_enabled: DEFAULT_CODEX_RETRY_GATEWAY_ENABLED,
+            codex_retry_gateway_selected_commit: DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT
+                .to_string(),
+            codex_retry_gateway_preferred_port: DEFAULT_CODEX_RETRY_GATEWAY_PORT,
+            codex_retry_gateway_node_override: DEFAULT_CODEX_RETRY_GATEWAY_NODE_OVERRIDE
+                .to_string(),
             codex_reasoning_guard_hit_label: DEFAULT_CODEX_REASONING_GUARD_HIT_LABEL.to_string(),
             codex_reasoning_guard_enabled: DEFAULT_CODEX_REASONING_GUARD_ENABLED,
             codex_reasoning_guard_rule_mode: CodexReasoningGuardRuleMode::default(),

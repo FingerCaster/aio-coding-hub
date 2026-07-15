@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Root Rust gateway runtime conventions and quality gates."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Keep managed runtime failure handling separate from provider attempt and circuit accounting."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Keep runtime DTOs, commands, generated bindings, and frontend consumers aligned."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Map source download, verification, process ownership, bridge, events, and UI-facing status boundaries."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing bounded download, extraction, CLI path, and process helpers."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"External source layout, execution contract, UI restore behavior, and reviewed SHA evidence."}

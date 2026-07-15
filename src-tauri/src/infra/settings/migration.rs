@@ -1669,9 +1669,30 @@ fn migrate_unify_codex_reasoning_guard(
     true
 }
 
+fn migrate_add_codex_retry_gateway(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if !migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_RETRY_GATEWAY,
+    ) {
+        return false;
+    }
+
+    settings.codex_retry_gateway_enabled = DEFAULT_CODEX_RETRY_GATEWAY_ENABLED;
+    settings.codex_retry_gateway_selected_commit =
+        DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT.to_string();
+    settings.codex_retry_gateway_preferred_port = DEFAULT_CODEX_RETRY_GATEWAY_PORT;
+    settings.codex_retry_gateway_node_override =
+        DEFAULT_CODEX_RETRY_GATEWAY_NODE_OVERRIDE.to_string();
+    true
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
-const SETTINGS_MIGRATIONS: [SettingsMigration; 42] = [
+const SETTINGS_MIGRATIONS: [SettingsMigration; 43] = [
     migrate_disable_upstream_timeouts,
     migrate_add_gateway_rectifiers,
     migrate_add_circuit_breaker_notice,
@@ -1714,6 +1735,7 @@ const SETTINGS_MIGRATIONS: [SettingsMigration; 42] = [
     migrate_add_codex_reasoning_guard_rule_templates,
     migrate_add_codex_reasoning_guard_continuation_repair,
     migrate_unify_codex_reasoning_guard,
+    migrate_add_codex_retry_gateway,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -2158,6 +2180,78 @@ mod tests {
     fn app_settings_default_has_expected_port() {
         let s = AppSettings::default();
         assert_eq!(s.preferred_port, DEFAULT_GATEWAY_PORT);
+    }
+
+    #[test]
+    fn app_settings_default_has_external_gateway_contract() {
+        let s = AppSettings::default();
+        assert!(!s.codex_retry_gateway_enabled);
+        assert_eq!(
+            s.codex_retry_gateway_selected_commit,
+            DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT
+        );
+        assert_eq!(
+            s.codex_retry_gateway_preferred_port,
+            DEFAULT_CODEX_RETRY_GATEWAY_PORT
+        );
+        assert!(s.codex_retry_gateway_node_override.is_empty());
+    }
+
+    #[test]
+    fn migrate_add_codex_retry_gateway_initializes_schema_49() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_UNIFY_CODEX_REASONING_GUARD,
+            codex_retry_gateway_enabled: true,
+            codex_retry_gateway_selected_commit: "invalid".to_string(),
+            codex_retry_gateway_preferred_port: 9999,
+            codex_retry_gateway_node_override: "stale-node".to_string(),
+            ..Default::default()
+        };
+
+        assert!(migrate_add_codex_retry_gateway(&mut s, true));
+        assert_eq!(s.schema_version, SCHEMA_VERSION_ADD_CODEX_RETRY_GATEWAY);
+        assert!(!s.codex_retry_gateway_enabled);
+        assert_eq!(
+            s.codex_retry_gateway_selected_commit,
+            DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT
+        );
+        assert_eq!(
+            s.codex_retry_gateway_preferred_port,
+            DEFAULT_CODEX_RETRY_GATEWAY_PORT
+        );
+        assert!(s.codex_retry_gateway_node_override.is_empty());
+    }
+
+    #[test]
+    fn migrate_add_codex_retry_gateway_preserves_schema_49_values() {
+        let mut s = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_CODEX_RETRY_GATEWAY,
+            codex_retry_gateway_enabled: true,
+            codex_retry_gateway_selected_commit: "0123456789abcdef0123456789abcdef01234567"
+                .to_string(),
+            codex_retry_gateway_preferred_port: 4620,
+            codex_retry_gateway_node_override: "C:\\node.exe".to_string(),
+            ..Default::default()
+        };
+        let before = s.clone();
+
+        assert!(!migrate_add_codex_retry_gateway(&mut s, true));
+        assert_eq!(
+            s.codex_retry_gateway_enabled,
+            before.codex_retry_gateway_enabled
+        );
+        assert_eq!(
+            s.codex_retry_gateway_selected_commit,
+            before.codex_retry_gateway_selected_commit
+        );
+        assert_eq!(
+            s.codex_retry_gateway_preferred_port,
+            before.codex_retry_gateway_preferred_port
+        );
+        assert_eq!(
+            s.codex_retry_gateway_node_override,
+            before.codex_retry_gateway_node_override
+        );
     }
 
     #[test]
