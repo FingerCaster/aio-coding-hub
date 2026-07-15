@@ -50,4 +50,3 @@
 - [ ] Commit child-owned changes and send one `worker_done` with commit, paths,
       tests, API/glue notes, and residual risks.
 - [ ] Do not merge, push, release, edit shared Trellis state, or touch main.
-

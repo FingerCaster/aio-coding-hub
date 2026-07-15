@@ -75,4 +75,3 @@ push, and release. Backend contract defects are reported to the coordinator.
 Return commit SHA, modified path audit, focused Vitest/typecheck results, mock
 contract assumptions, screenshot/layout observations if performed, and any
 binding/glue changes required after backend merges.
-

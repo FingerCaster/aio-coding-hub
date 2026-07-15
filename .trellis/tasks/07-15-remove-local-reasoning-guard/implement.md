@@ -54,4 +54,3 @@
       tests, negative searches, and remaining integration cleanup.
 - [ ] Do not edit frontend/generated/shared Trellis state, merge, push, release,
       or touch main.
-

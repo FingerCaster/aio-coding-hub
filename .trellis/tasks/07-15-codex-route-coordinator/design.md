@@ -84,4 +84,3 @@ state, main, or remotes. Contract defects go to the coordinator.
 
 Report route API signatures, commit SHA, path audit, focused test output, and
 which startup/external lifecycle calls the integration coordinator must order.
-

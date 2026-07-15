@@ -82,4 +82,3 @@ failure rollback.
   external config implementation.
 - Frontend UX/CSP, local guard deletion, generated bindings, registry/startup/
   cleanup integration, packaging, and main merge.
-

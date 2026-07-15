@@ -73,4 +73,3 @@ external gateway foundation.
 
 - New external runtime, route coordinator, frontend, generated bindings,
   startup/cleanup integration, packaging, integration/main merge, and release.
-

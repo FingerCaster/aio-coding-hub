@@ -59,4 +59,3 @@
       commit/path/tests/assumptions/risks.
 - [ ] Do not edit generated/Rust/shared Trellis state, merge, push, release, or
       touch main.
-

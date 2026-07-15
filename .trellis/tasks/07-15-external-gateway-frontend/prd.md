@@ -92,4 +92,3 @@ sandboxed details route backed by an AIO bridge session.
 - Rust source/Node/process/bridge, Codex config/Provider Sync implementation,
   startup/cleanup, generated binding regeneration, backend guard deletion,
   packaging, integration merge, and release.
-

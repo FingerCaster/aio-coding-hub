@@ -69,4 +69,3 @@ Build outputs are ignored, not edited.
 Report deleted/modified paths, retained behavior tests, negative-search output,
 foundation fields verified, commit SHA, and any registry/generated/frontend
 cleanup left for integration/other workers.
-

@@ -82,4 +82,3 @@ through a protected AIO loopback bridge.
 - Frontend UI, Tauri CSP, generated bindings, command registry, startup/exit
   wiring, or local reasoning-guard deletion.
 - Merging into integration/main, packaging, or release.
-

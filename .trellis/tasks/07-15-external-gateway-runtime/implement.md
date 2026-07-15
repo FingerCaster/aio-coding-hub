@@ -63,4 +63,3 @@
 - [ ] Send one `worker_done` with commit SHA, paths, tests, risks, and requested
       integration glue. Do not merge, push, release, archive shared Trellis
       state, or touch main.
-

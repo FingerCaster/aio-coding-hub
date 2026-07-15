@@ -91,4 +91,3 @@ main operations, push, and release.
 Return commit SHA, exact modified paths, source/Node/process/bridge test output,
 public contract mismatches, and startup/route glue still required. Do not merge
 another branch or edit shared glue to make the worker branch globally complete.
-
