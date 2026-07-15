@@ -41,18 +41,6 @@ describe("query/keys", () => {
     expect(requestLogsKeys.listAll(10)).toEqual(["requestLogs", "list", "all", 10]);
     expect(requestLogsKeys.activeSnapshot()).toEqual(["requestLogs", "activeSnapshot"]);
     expect(requestLogsKeys.detail(1)).toEqual(["requestLogs", "detail", 1]);
-    expect(requestLogsKeys.codexReasoningGuardStats(null, null)).toEqual([
-      "requestLogs",
-      "codexReasoningGuardStats",
-      null,
-      null,
-    ]);
-    expect(requestLogsKeys.codexReasoningGuardStats(1_770_000_000_000, 1_770_086_400_000)).toEqual([
-      "requestLogs",
-      "codexReasoningGuardStats",
-      1_770_000_000_000,
-      1_770_086_400_000,
-    ]);
     expect(requestLogsKeys.attemptsByTrace("trace-1", 10)).toEqual([
       "requestLogs",
       "attempts",

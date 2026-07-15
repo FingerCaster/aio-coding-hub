@@ -34,7 +34,6 @@ import type { RequestAttemptLog } from "../../services/gateway/requestLogs";
 export type RequestLogDetailDialogProps = {
   selectedLogId: number | null;
   onSelectLogId: (id: number | null) => void;
-  codexReasoningGuardHitLabel?: string;
 };
 
 type DetailTab = "summary" | "chain" | "raw";
@@ -62,7 +61,6 @@ function hasProviderFailover(attemptLogs: RequestAttemptLog[]) {
 export function RequestLogDetailDialog({
   selectedLogId,
   onSelectLogId,
-  codexReasoningGuardHitLabel,
 }: RequestLogDetailDialogProps) {
   const [activeTab, setActiveTab] = useState<string>("summary");
   const { contributions: logDetailTabContributions } = useContributionsForSlot("logs.detail.tabs");
@@ -107,9 +105,7 @@ export function RequestLogDetailDialog({
   const providerId = isInProgress
     ? (liveProvider?.providerId ?? selectedLog?.final_provider_id)
     : selectedLog?.final_provider_id;
-  const auditMeta = selectedLog
-    ? buildRequestLogAuditMeta(selectedLog, { codexReasoningGuardHitLabel })
-    : null;
+  const auditMeta = selectedLog ? buildRequestLogAuditMeta(selectedLog) : null;
   const usageReasoningTokens = selectedLog
     ? resolveRequestLogUsageReasoningTokens(selectedLog.usage_json)
     : null;
@@ -146,7 +142,6 @@ export function RequestLogDetailDialog({
       selectedLog.cost_usd != null ||
       selectedLog.duration_ms != null ||
       selectedLog.ttfb_ms != null ||
-      selectedLog.visible_ttfb_ms != null ||
       (isInProgress && liveTrace != null));
   const detailTabs = [
     ...DETAIL_TABS,
@@ -211,7 +206,6 @@ export function RequestLogDetailDialog({
               displayDurationMs={displayDurationMs}
               isInProgress={isInProgress}
               attemptCount={attemptLogs.length}
-              codexReasoningGuardHitLabel={codexReasoningGuardHitLabel}
             />
           )}
 

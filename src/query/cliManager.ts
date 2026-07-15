@@ -28,7 +28,6 @@ import {
   type SimpleCliInfo,
 } from "../services/cli/cliManager";
 import { cliManagerKeys } from "./keys";
-import { useRequestLogsCodexReasoningGuardStatsQuery } from "./requestLogs";
 
 const CODEX_CONFIG_MUTATION_SCOPE = "codex-config";
 const CODEX_MODEL_CATALOG_STALE_TIME = 5 * 60 * 1000;
@@ -248,11 +247,4 @@ export function useCliManagerClaudeHooksSetMutation() {
 export function pickCliAvailable(info: SimpleCliInfo | ClaudeCliInfo | null) {
   if (!info) return "unavailable" as const;
   return info.found ? ("available" as const) : ("unavailable" as const);
-}
-
-export function useCliManagerCodexReasoningGuardStatsQuery(
-  range?: { startCreatedAtMs?: number | null; endCreatedAtMs?: number | null } | null,
-  options?: { enabled?: boolean }
-) {
-  return useRequestLogsCodexReasoningGuardStatsQuery(range, options);
 }

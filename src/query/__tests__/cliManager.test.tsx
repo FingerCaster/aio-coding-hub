@@ -44,12 +44,10 @@ import {
   useCliManagerCodexModelCatalogQuery,
   useCliManagerCodexModelCatalogRefresh,
   useCliManagerCodexProviderSyncMutation,
-  useCliManagerCodexReasoningGuardStatsQuery,
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
   useCliManagerGeminiInfoQuery,
 } from "../cliManager";
-import { useRequestLogsCodexReasoningGuardStatsQuery } from "../requestLogs";
 
 vi.mock("../../services/cli/cliManager", async () => {
   const actual = await vi.importActual<typeof import("../../services/cli/cliManager")>(
@@ -72,14 +70,6 @@ vi.mock("../../services/cli/cliManager", async () => {
     cliManagerGeminiConfigGet: vi.fn(),
     cliManagerGeminiConfigSet: vi.fn(),
     cliManagerGeminiInfoGet: vi.fn(),
-  };
-});
-
-vi.mock("../requestLogs", async () => {
-  const actual = await vi.importActual<typeof import("../requestLogs")>("../requestLogs");
-  return {
-    ...actual,
-    useRequestLogsCodexReasoningGuardStatsQuery: vi.fn(),
   };
 });
 
@@ -872,35 +862,5 @@ describe("query/cliManager", () => {
     expect(pickCliAvailable(null)).toBe("unavailable");
     expect(pickCliAvailable(makeSimpleCliInfo({ found: false }))).toBe("unavailable");
     expect(pickCliAvailable(makeSimpleCliInfo({ found: true }))).toBe("available");
-  });
-
-  it("forwards Codex reasoning guard stats queries with the requested time window", () => {
-    vi.mocked(useRequestLogsCodexReasoningGuardStatsQuery).mockReturnValue({
-      data: null,
-      isFetching: false,
-    } as any);
-
-    const sessionOptions = { enabled: true };
-    const allTimeOptions = { enabled: false };
-
-    useCliManagerCodexReasoningGuardStatsQuery(
-      { startCreatedAtMs: 1_770_000_000_000, endCreatedAtMs: 1_770_086_400_000 },
-      sessionOptions
-    );
-    useCliManagerCodexReasoningGuardStatsQuery(
-      { startCreatedAtMs: null, endCreatedAtMs: null },
-      allTimeOptions
-    );
-
-    expect(useRequestLogsCodexReasoningGuardStatsQuery).toHaveBeenNthCalledWith(
-      1,
-      { startCreatedAtMs: 1_770_000_000_000, endCreatedAtMs: 1_770_086_400_000 },
-      sessionOptions
-    );
-    expect(useRequestLogsCodexReasoningGuardStatsQuery).toHaveBeenNthCalledWith(
-      2,
-      { startCreatedAtMs: null, endCreatedAtMs: null },
-      allTimeOptions
-    );
   });
 });

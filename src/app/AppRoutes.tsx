@@ -8,6 +8,9 @@ import { Spinner } from "../ui/Spinner";
 const CliManagerPage = lazy(() =>
   import("../pages/CliManagerPage").then((m) => ({ default: m.CliManagerPage }))
 );
+const CodexGatewayPage = lazy(() =>
+  import("../pages/CodexGatewayPage").then((m) => ({ default: m.CodexGatewayPage }))
+);
 const ConsolePage = lazy(() =>
   import("../pages/ConsolePage").then((m) => ({ default: m.ConsolePage }))
 );
@@ -85,6 +88,7 @@ export function AppRoutes() {
         <Route path="/usage" element={<LazyPage Page={UsagePage} />} />
         <Route path="/settings/*" element={<LazyPage Page={SettingsPage} />} />
         <Route path="/cli-manager" element={<LazyPage Page={CliManagerPage} />} />
+        <Route path="/cli-manager/codex-gateway" element={<LazyPage Page={CodexGatewayPage} />} />
         <Route path="/skills" element={<LazyPage Page={SkillsPage} />} />
         <Route path="/skills/market" element={<LazyPage Page={SkillsMarketPage} />} />
         <Route path="*" element={<Navigate to="/" replace />} />

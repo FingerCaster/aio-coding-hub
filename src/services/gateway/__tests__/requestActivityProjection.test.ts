@@ -570,14 +570,8 @@ describe("services/gateway/requestActivityProjection", () => {
     expect(projection.realtimeCards[0]?.trace.special_settings_json).toBe(routeSettingsJson);
   });
 
-  it("uses terminal Codex settings after reasoning guard provider switch", () => {
-    const guardOnlySettings = JSON.stringify([
-      {
-        type: "codex_reasoning_guard",
-        actionTaken: "switch_provider",
-        guardRetryPhase: "retry",
-      },
-    ]);
+  it("uses terminal Codex settings instead of stale live settings", () => {
+    const staleSettings = JSON.stringify([{ type: "legacy_observation" }]);
     const terminalEffortSettings = JSON.stringify([
       { type: "codex_reasoning_effort", source: "request", effort: "high" },
     ]);
@@ -598,7 +592,7 @@ describe("services/gateway/requestActivityProjection", () => {
           trace_id: "codex-terminal-guard",
           cli_key: "codex",
           requested_model: "gpt-5.5",
-          special_settings_json: guardOnlySettings,
+          special_settings_json: staleSettings,
         }),
       ],
       nowMs: 1_700_000_000_500,

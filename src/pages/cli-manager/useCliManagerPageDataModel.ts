@@ -501,34 +501,6 @@ export function useCliManagerPageDataModel() {
     return true;
   }
 
-  async function persistCodexReasoningGuardSettings(
-    patch: Partial<
-      Pick<
-        AppSettings,
-        | "codex_reasoning_guard_enabled"
-        | "codex_reasoning_guard_hit_label"
-        | "codex_reasoning_guard_rule_mode"
-        | "codex_reasoning_guard_compare_mode"
-        | "codex_reasoning_guard_reasoning_equals"
-        | "codex_reasoning_guard_model_rules"
-        | "codex_reasoning_guard_active_template_id"
-        | "codex_reasoning_guard_custom_templates"
-        | "codex_reasoning_guard_immediate_retry_budget"
-        | "codex_reasoning_guard_delayed_retry_budget"
-        | "codex_reasoning_guard_delayed_retry_ms"
-        | "codex_reasoning_guard_exhausted_action"
-        | "codex_reasoning_guard_retry_policy"
-        | "codex_reasoning_guard_concurrent_max"
-        | "codex_reasoning_guard_concurrent_interval_ms"
-        | "codex_reasoning_guard_concurrent_max_attempts"
-        | "codex_reasoning_guard_model_fallbacks"
-      >
-    >
-  ) {
-    const updated = await persistCommonSettings(patch);
-    return Boolean(updated);
-  }
-
   async function pickCodexHomeDirectory(initialPath?: string): Promise<string | null> {
     try {
       return await openDesktopSinglePath({
@@ -747,7 +719,6 @@ export function useCliManagerPageDataModel() {
       persistCodexConfigToml,
       syncCodexProvider,
       persistCommonSettings,
-      persistCodexReasoningGuardSettings,
       persistCodexHomeSettings,
       persistCodexOauthCompatibleProxyMode,
       pickCodexHomeDirectory,

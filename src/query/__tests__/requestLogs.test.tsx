@@ -8,10 +8,8 @@ import {
   REQUEST_LOG_TRACE_ID_MAX_LENGTH,
   requestAttemptLogsByTraceId,
   requestLogGet,
-  requestLogsCodexReasoningGuardStats,
   requestLogsListAfterIdAll,
   requestLogsListAll,
-  type CodexReasoningGuardStats,
   type RequestLogSummary,
 } from "../../services/gateway/requestLogs";
 import { activeRequestLogsSnapshot } from "../../services/gateway/activeRequests";
@@ -28,7 +26,6 @@ import {
   useRequestAttemptLogsByTraceIdQuery,
   useActiveRequestLogsSnapshotQuery,
   useRequestLogDetailQuery,
-  useRequestLogsCodexReasoningGuardStatsQuery,
   useRequestLogsIncrementalRefreshMutation,
   useRequestLogsListAllQuery,
 } from "../requestLogs";
@@ -43,7 +40,6 @@ vi.mock("../../services/gateway/requestLogs", async () => {
     requestLogsListAfterIdAll: vi.fn(),
     requestLogGet: vi.fn(),
     requestAttemptLogsByTraceId: vi.fn(),
-    requestLogsCodexReasoningGuardStats: vi.fn(),
   };
 });
 
@@ -59,45 +55,6 @@ function makeRequestLogSummary(
     ...(hasTimestampOverride ? {} : { created_at_ms: 10_000, created_at: 10 }),
     ...overrides,
   });
-}
-
-function makeCodexReasoningGuardStats(
-  overrides: Partial<CodexReasoningGuardStats> = {}
-): CodexReasoningGuardStats {
-  return {
-    hit_request_count: 5,
-    hit_attempt_count: 8,
-    token_hit_attempt_count: 8,
-    feature_hit_attempt_count: 0,
-    reasoning_token_hit_request_count: 5,
-    final_answer_only_high_xhigh_hit_request_count: 0,
-    normal_request_count: 15,
-    total_request_count: 20,
-    hit_rate: 0.25,
-    feature_sample_request_count: 0,
-    feature_sample_count: 0,
-    final_answer_only_sample_count: 0,
-    high_xhigh_final_answer_only_sample_count: 0,
-    reasoning_516_final_answer_only_no_commentary_count: 0,
-    compaction_exempt_sample_count: 0,
-    reasoning_tokens_coverage_count: 0,
-    final_answer_only_coverage_count: 0,
-    commentary_observed_coverage_count: 0,
-    reasoning_effort_coverage_count: 0,
-    duration_ms_coverage_count: 0,
-    output_tokens_coverage_count: 0,
-    continuation_triggered_request_count: 0,
-    continuation_triggered_attempt_count: 0,
-    continuation_repaired_request_count: 0,
-    continuation_repaired_attempt_count: 0,
-    continuation_non_repaired_attempt_count: 0,
-    continuation_repair_rate: 0,
-    continuation_average_sent_rounds: 0,
-    continuation_by_status: [],
-    by_model: [],
-    by_model_and_effort: [],
-    ...overrides,
-  };
 }
 
 describe("query/requestLogs", () => {
@@ -450,72 +407,6 @@ describe("query/requestLogs", () => {
     expect(detailOptions?.gcTime).toBe(REQUEST_LOG_DETAIL_GC_TIME_MS);
     expect(attemptsOptions?.staleTime).toBe(REQUEST_LOG_DETAIL_STALE_TIME_MS);
     expect(attemptsOptions?.gcTime).toBe(REQUEST_LOG_DETAIL_GC_TIME_MS);
-  });
-
-  it("queries Codex reasoning guard stats with a windowed cache key", async () => {
-    setTauriRuntime();
-    const stats = makeCodexReasoningGuardStats();
-
-    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue(stats);
-
-    const client = createTestQueryClient();
-    const wrapper = createQueryWrapper(client);
-
-    const { result } = renderHook(
-      () =>
-        useRequestLogsCodexReasoningGuardStatsQuery({
-          startCreatedAtMs: 1_770_000_000_000,
-          endCreatedAtMs: 1_770_086_400_000,
-        }),
-      {
-        wrapper,
-      }
-    );
-
-    await waitFor(() => {
-      expect(result.current.data).toEqual(stats);
-    });
-
-    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith({
-      startCreatedAtMs: 1_770_000_000_000,
-      endCreatedAtMs: 1_770_086_400_000,
-    });
-    expect(
-      client.getQueryState(
-        requestLogsKeys.codexReasoningGuardStats(1_770_000_000_000, 1_770_086_400_000)
-      )
-    ).toBeTruthy();
-  });
-
-  it("queries all-time Codex reasoning guard stats with a null cache key", async () => {
-    setTauriRuntime();
-    const stats = makeCodexReasoningGuardStats();
-
-    vi.mocked(requestLogsCodexReasoningGuardStats).mockResolvedValue(stats);
-
-    const client = createTestQueryClient();
-    const wrapper = createQueryWrapper(client);
-
-    const { result } = renderHook(
-      () =>
-        useRequestLogsCodexReasoningGuardStatsQuery({
-          startCreatedAtMs: null,
-          endCreatedAtMs: null,
-        }),
-      {
-        wrapper,
-      }
-    );
-
-    await waitFor(() => {
-      expect(result.current.data).toEqual(stats);
-    });
-
-    expect(requestLogsCodexReasoningGuardStats).toHaveBeenCalledWith({
-      startCreatedAtMs: null,
-      endCreatedAtMs: null,
-    });
-    expect(client.getQueryState(requestLogsKeys.codexReasoningGuardStats(null, null))).toBeTruthy();
   });
 
   it("incremental refresh mutation keeps backend rows and cache stable on empty incremental items", async () => {

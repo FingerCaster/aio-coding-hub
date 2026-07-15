@@ -2,6 +2,7 @@ export * from "./appAbout";
 export * from "./cliSessions";
 export * from "./cliManager";
 export * from "./cliProxy";
+export * from "./codexRetryGateway";
 export * from "./dataManagement";
 export * from "./gateway";
 export * from "./keys";

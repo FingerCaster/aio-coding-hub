@@ -66,30 +66,6 @@ export function sanitizeTtfbMs(
   return t;
 }
 
-export type ResolvedTtfbDisplayMetrics = {
-  providerTtfbMs: number | null;
-  visibleTtfbMs: number | null;
-  showVisibleTtfb: boolean;
-};
-
-export function resolveTtfbDisplayMetrics(
-  providerTtfbMs: number | null | undefined,
-  visibleTtfbMs: number | null | undefined,
-  durationMs: number | null | undefined,
-  allowVisibleSecondary = false
-): ResolvedTtfbDisplayMetrics {
-  const provider = sanitizeTtfbMs(providerTtfbMs, durationMs);
-  const visible = sanitizeTtfbMs(visibleTtfbMs, durationMs);
-  const showVisibleTtfb =
-    allowVisibleSecondary && provider != null && visible != null && provider !== visible;
-
-  return {
-    providerTtfbMs: provider ?? visible,
-    visibleTtfbMs: showVisibleTtfb ? visible : null,
-    showVisibleTtfb,
-  };
-}
-
 export function formatInteger(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
   const v = Math.max(0, Math.round(value));

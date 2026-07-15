@@ -7,19 +7,16 @@ import {
   formatDurationMs,
   formatTokensPerSecond,
   formatUsd,
-  resolveTtfbDisplayMetrics,
+  sanitizeTtfbMs,
 } from "../../utils/formatters";
 import { RequestLogErrorObservationCard } from "./RequestLogErrorObservationCard";
 import {
   formatCodexReasoningEffortSource,
   resolveCodexReasoningEffort,
-  resolveCodexReasoningGuardSummary,
 } from "../../services/gateway/requestLogSpecialSettings";
 import {
   buildRequestLogAuditMeta,
   computeStatusBadge,
-  formatCodexReasoningContinuationStatus,
-  hasCodexReasoningGuardSpecialSetting,
   resolveCacheCreationDisplay,
   resolveRequestLogModelDisplayMeta,
   resolveRequestLogUsageReasoningTokens,
@@ -35,7 +32,6 @@ export type RequestLogDetailSummaryTabProps = {
   displayDurationMs: number;
   isInProgress: boolean;
   attemptCount: number;
-  codexReasoningGuardHitLabel?: string;
 };
 
 export function RequestLogDetailSummaryTab({
@@ -46,9 +42,8 @@ export function RequestLogDetailSummaryTab({
   displayDurationMs,
   isInProgress: _isInProgress,
   attemptCount: _attemptCount,
-  codexReasoningGuardHitLabel,
 }: RequestLogDetailSummaryTabProps) {
-  const auditMeta = buildRequestLogAuditMeta(selectedLog, { codexReasoningGuardHitLabel });
+  const auditMeta = buildRequestLogAuditMeta(selectedLog);
   const usageReasoningTokens = resolveRequestLogUsageReasoningTokens(selectedLog.usage_json);
   const codexReasoningEffort =
     selectedLog.cli_key === "codex"
@@ -61,25 +56,12 @@ export function RequestLogDetailSummaryTab({
     null,
     selectedLog.final_provider_id
   );
-  const codexReasoningGuard =
-    selectedLog.cli_key === "codex"
-      ? resolveCodexReasoningGuardSummary(selectedLog.special_settings_json)
-      : null;
-  const showCodexReasoningSignals = (codexReasoningGuard?.count ?? 0) > 0;
   const showKeyMetrics =
-    hasTokens ||
-    codexReasoningEffort != null ||
-    showCodexReasoningSignals ||
-    modelDisplayMeta.isRouteMismatch;
+    hasTokens || codexReasoningEffort != null || modelDisplayMeta.isRouteMismatch;
   const isPriorityServiceTier =
     selectedLog.cli_key === "codex" &&
     hasPriorityServiceTierSpecialSetting(selectedLog.special_settings_json);
-  const ttfbMetrics = resolveTtfbDisplayMetrics(
-    selectedLog.ttfb_ms,
-    selectedLog.visible_ttfb_ms ?? null,
-    displayDurationMs,
-    hasCodexReasoningGuardSpecialSetting(selectedLog.special_settings_json)
-  );
+  const ttfbMs = sanitizeTtfbMs(selectedLog.ttfb_ms, displayDurationMs);
   const cacheCreation = resolveCacheCreationDisplay(selectedLog);
 
   return (
@@ -151,35 +133,6 @@ export function RequestLogDetailSummaryTab({
                 />
               </>
             ) : null}
-            {showCodexReasoningSignals ? (
-              <>
-                <MetricCard
-                  label="规则模式"
-                  value={formatCodexReasoningRuleMode(codexReasoningGuard?.latestRuleMode)}
-                />
-                <MetricCard
-                  label="命中来源"
-                  value={formatCodexReasoningHitSource(codexReasoningGuard?.latestHitSource)}
-                />
-                <MetricCard label="命中次数" value={codexReasoningGuard?.count ?? 0} />
-                <MetricCard
-                  label="命中后策略"
-                  value={formatCodexReasoningPostMatchStrategy(
-                    codexReasoningGuard?.latestPostMatchStrategy
-                  )}
-                />
-                <MetricCard
-                  label="策略结果"
-                  value={formatCodexReasoningContinuationStatus(
-                    codexReasoningGuard?.latestStrategyOutcome
-                  )}
-                />
-                <MetricCard
-                  label="续写轮数"
-                  value={codexReasoningGuard?.latestContinuationSentRounds}
-                />
-              </>
-            ) : null}
             {cacheCreation ? (
               <MetricCard
                 label="缓存创建"
@@ -192,31 +145,14 @@ export function RequestLogDetailSummaryTab({
             ) : null}
             <MetricCard label="缓存读取" value={selectedLog.cache_read_input_tokens} />
             <MetricCard label="总耗时" value={formatDurationMs(displayDurationMs)} />
-            <MetricCard
-              label="TTFB"
-              value={
-                ttfbMetrics.providerTtfbMs != null
-                  ? formatDurationMs(ttfbMetrics.providerTtfbMs)
-                  : "—"
-              }
-            />
-            {ttfbMetrics.showVisibleTtfb ? (
-              <MetricCard
-                label="可见首字"
-                value={
-                  ttfbMetrics.visibleTtfbMs != null
-                    ? formatDurationMs(ttfbMetrics.visibleTtfbMs)
-                    : "—"
-                }
-              />
-            ) : null}
+            <MetricCard label="TTFB" value={ttfbMs != null ? formatDurationMs(ttfbMs) : "—"} />
             <MetricCard
               label="速率"
               value={(() => {
                 const rate = computeOutputTokensPerSecond(
                   selectedLog.output_tokens,
                   displayDurationMs,
-                  ttfbMetrics.providerTtfbMs
+                  ttfbMs
                 );
                 return rate != null ? formatTokensPerSecond(rate) : "—";
               })()}
@@ -265,25 +201,6 @@ function MetricCard({
       </div>
     </div>
   );
-}
-
-function formatCodexReasoningRuleMode(value: string | null | undefined) {
-  if (value === "reasoning_tokens") return "reasoning tokens";
-  if (value === "final_answer_only_high_xhigh") return "final-only";
-  return value || "—";
-}
-
-function formatCodexReasoningHitSource(value: string | null | undefined) {
-  if (value === "reasoning_tokens") return "token";
-  if (value === "final_answer_only_high_xhigh") return "final-only";
-  return value || "—";
-}
-
-function formatCodexReasoningPostMatchStrategy(value: string | null | undefined) {
-  if (value === "continuation_repair") return "思考续写";
-  if (value === "continuation_repair_experimental") return "思考续写（实验）";
-  if (value === "retry_same_provider") return "自动重试";
-  return value || "—";
 }
 
 function formatCostMultiplier(value: number | null | undefined) {

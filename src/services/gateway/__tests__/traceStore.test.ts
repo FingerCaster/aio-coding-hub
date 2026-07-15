@@ -1030,20 +1030,14 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
-  it("lets a terminal persisted request log replace live guard-only Codex settings", async () => {
+  it("lets a terminal persisted request log replace stale live Codex settings", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
 
     const { ingestTraceStart, reconcileTraceFromRequestLog, useTraceStore } =
       await importFreshTraceStore();
     const { result } = renderHook(() => useTraceStore());
-    const guardOnlySettings = JSON.stringify([
-      {
-        type: "codex_reasoning_guard",
-        actionTaken: "switch_provider",
-        guardRetryPhase: "retry",
-      },
-    ]);
+    const staleSettings = JSON.stringify([{ type: "legacy_observation" }]);
     const terminalEffortSettings = JSON.stringify([
       { type: "codex_reasoning_effort", source: "request", effort: "high" },
     ]);
@@ -1057,7 +1051,7 @@ describe("services/gateway/traceStore", () => {
           path: "/v1/responses",
           query: null,
           requested_model: "gpt-5.5",
-          special_settings_json: guardOnlySettings,
+          special_settings_json: staleSettings,
           ts: 0,
         })
       );
@@ -1357,12 +1351,7 @@ describe("services/gateway/traceStore", () => {
     const { ingestTraceRequest, reconcileTraceFromRequestLog, useTraceStore } =
       await importFreshTraceStore();
     const { result } = renderHook(() => useTraceStore());
-    const guardOnlySettings = JSON.stringify([
-      {
-        type: "codex_reasoning_guard",
-        actionTaken: "switch_provider",
-      },
-    ]);
+    const staleSettings = JSON.stringify([{ type: "legacy_observation" }]);
     const terminalEffortSettings = JSON.stringify([
       { type: "codex_reasoning_effort", source: "request", effort: "high" },
     ]);
@@ -1376,7 +1365,7 @@ describe("services/gateway/traceStore", () => {
           path: "/v1/responses",
           query: null,
           requested_model: "gpt-5.5",
-          special_settings_json: guardOnlySettings,
+          special_settings_json: staleSettings,
           status: 200,
           error_category: null,
           error_code: null,

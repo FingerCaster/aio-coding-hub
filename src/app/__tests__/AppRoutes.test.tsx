@@ -61,6 +61,9 @@ vi.mock("../../pages/SettingsPage", () => ({
 vi.mock("../../pages/CliManagerPage", () => ({
   CliManagerPage: () => <h1>cli-manager-route</h1>,
 }));
+vi.mock("../../pages/CodexGatewayPage", () => ({
+  CodexGatewayPage: () => <h1>codex-gateway-route</h1>,
+}));
 vi.mock("../../pages/SkillsPage", () => ({
   SkillsPage: () => <h1>skills-route</h1>,
 }));
@@ -92,6 +95,7 @@ describe("app/AppRoutes", () => {
     ["/usage", "usage-route"],
     ["/settings/general", "settings-route"],
     ["/cli-manager", "cli-manager-route"],
+    ["/cli-manager/codex-gateway", "codex-gateway-route"],
     ["/skills", "skills-route"],
     ["/skills/market", "skills-market-route"],
   ])("renders %s", async (path, heading) => {

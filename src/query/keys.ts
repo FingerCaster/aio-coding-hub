@@ -48,6 +48,12 @@ export const gatewayKeys = {
   circuitStatus: (cliKey: CliKey) => [...gatewayAllKey, "circuitStatus", cliKey] as const,
 };
 
+const codexRetryGatewayAllKey = ["codexRetryGateway"] as const;
+export const codexRetryGatewayKeys = {
+  all: codexRetryGatewayAllKey,
+  status: () => [...codexRetryGatewayAllKey, "status"] as const,
+};
+
 const requestLogsAllKey = ["requestLogs"] as const;
 export const requestLogsKeys = {
   all: requestLogsAllKey,
@@ -57,8 +63,6 @@ export const requestLogsKeys = {
   detail: (logId: number | null) => [...requestLogsAllKey, "detail", logId] as const,
   attemptsByTrace: (traceId: string | null, limit: number | null) =>
     [...requestLogsAllKey, "attempts", traceId, limit] as const,
-  codexReasoningGuardStats: (startCreatedAtMs: number | null, endCreatedAtMs: number | null) =>
-    [...requestLogsAllKey, "codexReasoningGuardStats", startCreatedAtMs, endCreatedAtMs] as const,
 };
 
 const sortModesAllKey = ["sortModes"] as const;

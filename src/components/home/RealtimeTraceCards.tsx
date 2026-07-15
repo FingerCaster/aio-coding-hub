@@ -19,12 +19,11 @@ import {
   formatTokensPerSecond,
   formatTokensPerSecondShort,
   formatUsd,
-  resolveTtfbDisplayMetrics,
+  sanitizeTtfbMs,
 } from "../../utils/formatters";
 import { Clock, Server, CheckCircle2, XCircle } from "lucide-react";
 import {
   computeStatusBadge,
-  hasCodexReasoningGuardRetryAttempt,
   resolveRequestLogModelDisplayMeta,
   resolveCacheCreationDisplay,
 } from "./requestLogPresentation";
@@ -213,19 +212,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
 
         const cacheWrite = summary ? resolveCacheCreationDisplay(summary) : null;
 
-        const ttfbMetrics = summary
-          ? resolveTtfbDisplayMetrics(
-              summary.ttfb_ms ?? null,
-              summary.visible_ttfb_ms ?? null,
-              summary.duration_ms,
-              hasCodexReasoningGuardRetryAttempt(trace.attempts)
-            )
-          : {
-              providerTtfbMs: null,
-              visibleTtfbMs: null,
-              showVisibleTtfb: false,
-            };
-        const ttfbMs = ttfbMetrics.providerTtfbMs;
+        const ttfbMs = summary ? sanitizeTtfbMs(summary.ttfb_ms, summary.duration_ms) : null;
 
         const effectiveInputTokens = summary?.effective_input_tokens ?? null;
         const displayInputTokens = effectiveInputTokens ?? (isClientAbort ? 0 : null);
@@ -509,21 +496,8 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                         <span className="text-slate-400 dark:text-slate-500 font-medium shrink-0">
                           首字
                         </span>
-                        <span
-                          className="font-mono tabular-nums text-slate-700 dark:text-slate-200 font-semibold truncate"
-                          title={
-                            ttfbMetrics.showVisibleTtfb &&
-                            ttfbMs != null &&
-                            ttfbMetrics.visibleTtfbMs != null
-                              ? `首字 ${formatDurationMs(ttfbMs)} / 可见首字 ${formatDurationMs(ttfbMetrics.visibleTtfbMs)}`
-                              : undefined
-                          }
-                        >
-                          {ttfbMs != null
-                            ? ttfbMetrics.showVisibleTtfb && ttfbMetrics.visibleTtfbMs != null
-                              ? `${formatDurationMs(ttfbMs)} / ${formatDurationMs(ttfbMetrics.visibleTtfbMs)}`
-                              : formatDurationMs(ttfbMs)
-                            : "—"}
+                        <span className="font-mono tabular-nums text-slate-700 dark:text-slate-200 font-semibold truncate">
+                          {ttfbMs != null ? formatDurationMs(ttfbMs) : "—"}
                         </span>
                       </div>
                       <div className="flex items-center gap-1 h-4" title="Cost">
