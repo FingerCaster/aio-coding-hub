@@ -559,14 +559,126 @@ pub fn clear_cache() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::{clear_settings_cache, test_env_lock};
+    use std::ffi::OsString;
+
+    struct EnvVarRestore {
+        key: &'static str,
+        original: Option<OsString>,
+    }
+
+    impl EnvVarRestore {
+        fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+            let original = std::env::var_os(key);
+            std::env::set_var(key, value.into());
+            Self { key, original }
+        }
+    }
+
+    impl Drop for EnvVarRestore {
+        fn drop(&mut self) {
+            match self.original.take() {
+                Some(value) => std::env::set_var(self.key, value),
+                None => std::env::remove_var(self.key),
+            }
+        }
+    }
 
     #[test]
-    fn parse_settings_json_reports_schema_presence() {
-        let (settings, schema_version_present, raw) =
-            parse_settings_json(r#"{"schema_version":49}"#).unwrap();
+    fn parse_settings_json_detects_schema_version_present() {
+        let json = r#"{"schema_version": 14, "preferred_port": 37123}"#;
+        let (settings, schema_version_present, _) = parse_settings_json(json).unwrap();
         assert!(schema_version_present);
-        assert_eq!(settings.schema_version, 49);
-        assert_eq!(raw["schema_version"], 49);
+        assert_eq!(settings.schema_version, 14);
+        assert_eq!(settings.preferred_port, 37123);
+    }
+
+    #[test]
+    fn parse_settings_json_detects_schema_version_absent() {
+        let json = r#"{"preferred_port": 37123}"#;
+        let (settings, schema_version_present, _) = parse_settings_json(json).unwrap();
+        assert!(!schema_version_present);
+        assert_eq!(settings.preferred_port, 37123);
+    }
+
+    #[test]
+    fn parse_settings_json_uses_defaults_for_missing_fields() {
+        let (settings, _, _) = parse_settings_json(r#"{}"#).unwrap();
+        assert_eq!(settings.preferred_port, DEFAULT_GATEWAY_PORT);
+        assert_eq!(settings.log_retention_days, DEFAULT_LOG_RETENTION_DAYS);
+        assert!(settings.tray_enabled);
+        assert!(!settings.auto_start);
+    }
+
+    #[test]
+    fn parse_settings_json_rejects_invalid_json() {
+        assert!(parse_settings_json("not json").is_err());
+    }
+
+    #[test]
+    fn canonical_settings_json_keeps_default_fields() {
+        let canonical = canonical_settings_json(&AppSettings::default()).unwrap();
+        let serialized_defaults = serde_json::to_value(AppSettings::default()).unwrap();
+        assert_eq!(canonical, serialized_defaults);
+    }
+
+    #[test]
+    fn canonical_settings_json_keeps_non_default_fields() {
+        let settings = AppSettings {
+            auto_start: true,
+            ..Default::default()
+        };
+        let canonical = canonical_settings_json(&settings).unwrap();
+        let expected = serde_json::to_value(settings).unwrap();
+        assert_eq!(canonical, expected);
+    }
+
+    #[test]
+    fn canonical_settings_json_detects_truncated_snapshots() {
+        let raw = serde_json::json!({
+            "schema_version": SCHEMA_VERSION
+        });
+        let settings = AppSettings::default();
+        let canonical = canonical_settings_json(&settings).unwrap();
+        assert_ne!(raw, canonical);
+    }
+
+    #[test]
+    fn write_settings_serializes_concurrent_atomic_replacements() {
+        let _env_lock = test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvVarRestore::set("AIO_CODING_HUB_HOME_DIR", home.path());
+        let _dotdir_restore = EnvVarRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-coding-hub-settings-write-test",
+        );
+        clear_settings_cache();
+
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let mut workers = Vec::new();
+
+        for index in 0..8 {
+            let app = handle.clone();
+            workers.push(std::thread::spawn(move || {
+                for offset in 0..20 {
+                    let settings = AppSettings {
+                        preferred_port: 20_000 + index * 100 + offset,
+                        ..Default::default()
+                    };
+                    write(&app, &settings).expect("write settings");
+                }
+            }));
+        }
+
+        for worker in workers {
+            worker.join().expect("settings writer thread");
+        }
+
+        let persisted = read(&handle).expect("read settings");
+        assert!((20_000..=20_719).contains(&persisted.preferred_port));
+        assert!(settings_path(&handle).expect("settings path").exists());
+        clear_settings_cache();
     }
 
     #[test]
@@ -576,5 +688,122 @@ mod tests {
             ..Default::default()
         };
         assert!(validate_bounds(&settings).is_err());
+    }
+
+    #[test]
+    fn validate_bounds_rejects_log_retention_above_cap() {
+        let settings = AppSettings {
+            log_retention_days: MAX_LOG_RETENTION_DAYS + 1,
+            ..Default::default()
+        };
+
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("log_retention_days must be <="));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_excessive_failover_product() {
+        let settings = AppSettings {
+            failover_max_attempts_per_provider: 20,
+            failover_max_providers_to_try: 20,
+            ..Default::default()
+        };
+
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("failover limits too high"));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_invalid_custom_listen_address() {
+        let settings = AppSettings {
+            gateway_listen_mode: GatewayListenMode::Custom,
+            gateway_custom_listen_address: "http://127.0.0.1:37123".to_string(),
+            ..Default::default()
+        };
+
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("custom listen address must be host or host:port"));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_invalid_wsl_custom_host_address() {
+        let settings = AppSettings {
+            wsl_host_address_mode: WslHostAddressMode::Custom,
+            wsl_custom_host_address: "127.0.0.1:37123".to_string(),
+            ..Default::default()
+        };
+
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("custom host address"));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_non_http_update_releases_url() {
+        let settings = AppSettings {
+            update_releases_url: "file:///tmp/releases.json".to_string(),
+            ..Default::default()
+        };
+
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("update_releases_url must use http or https"));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_credentialed_update_releases_url() {
+        let settings = AppSettings {
+            update_releases_url: "https://user:secret@example.invalid/releases".to_string(),
+            ..Default::default()
+        };
+
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("update_releases_url must not include credentials"));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_oversized_upstream_proxy_fields() {
+        let settings = AppSettings {
+            upstream_proxy_url: "x".repeat(MAX_UPSTREAM_PROXY_URL_LEN + 1),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("upstream_proxy_url must be <="));
+
+        let settings = AppSettings {
+            upstream_proxy_username: "x".repeat(MAX_UPSTREAM_PROXY_USERNAME_LEN + 1),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("upstream_proxy_username must be <="));
+
+        let settings = AppSettings {
+            upstream_proxy_password: "x".repeat(MAX_UPSTREAM_PROXY_PASSWORD_LEN + 1),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("upstream_proxy_password must be <="));
+    }
+
+    #[test]
+    fn validate_bounds_rejects_invalid_cx2cc_strings() {
+        let settings = AppSettings {
+            cx2cc_fallback_model_main: " ".to_string(),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("cx2cc_fallback_model_main cannot be empty"));
+
+        let settings = AppSettings {
+            cx2cc_fallback_model_main: "x".repeat(MAX_CX2CC_MODEL_NAME_LEN + 1),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("cx2cc_fallback_model_main must be <="));
+
+        let settings = AppSettings {
+            cx2cc_service_tier: "priority\ninjected".to_string(),
+            ..Default::default()
+        };
+        let err = validate_bounds(&settings).unwrap_err().to_string();
+        assert!(err.contains("cx2cc_service_tier must not contain control characters"));
     }
 }

@@ -520,7 +520,8 @@ where
         gemini_oauth_response_mode,
         cx2cc_buffered_event_stream,
         active_bridge_type.is_some(),
-    ) {
+    ) && common.cli_key != "codex"
+    {
         let should_gunzip = has_gzip_content_encoding(&response_headers);
 
         match resp.content_length() {
@@ -616,6 +617,111 @@ where
                     common.trace_id.as_str(),
                     body,
                 ));
+            }
+            None => {
+                let outcome = "success".to_string();
+
+                attempts.push(FailoverAttempt {
+                    provider_id,
+                    provider_name: provider_ctx_owned.provider_name_base.clone(),
+                    base_url: provider_ctx_owned.provider_base_url_base.clone(),
+                    outcome: outcome.clone(),
+                    status: Some(status.as_u16()),
+                    provider_index: Some(provider_index),
+                    retry_index: Some(retry_index),
+                    session_reuse,
+                    provider_bridged: Some(provider_ctx_owned.provider_bridged),
+                    error_category: None,
+                    error_code: None,
+                    decision: Some("success"),
+                    reason: None,
+                    selection_method,
+                    reason_code: Some(reason_code),
+                    attempt_started_ms: Some(attempt_started_ms),
+                    attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+                    circuit_state_before: Some(circuit_before.state.as_str()),
+                    circuit_state_after: None,
+                    circuit_failure_count: Some(circuit_before.failure_count),
+                    circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    circuit_recover_at_unix: None,
+                    circuit_trigger_error_code: None,
+                    timeout_secs: None,
+                });
+
+                emit_attempt_event_and_log_with_circuit_before(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    outcome,
+                    Some(status.as_u16()),
+                )
+                .await;
+
+                codex_service_tier::append_result_if_detected(
+                    common.cli_key.as_str(),
+                    common.introspection_body.as_slice(),
+                    None,
+                    &common.special_settings,
+                );
+
+                let ctx = build_stream_finalize_ctx(
+                    &common,
+                    &provider_ctx_owned,
+                    attempts.as_slice(),
+                    status.as_u16(),
+                    None,
+                    None,
+                    attempt_started,
+                );
+
+                if should_gunzip {
+                    // 上游可能无视 accept-encoding: identity 返回 gzip；
+                    response_headers.remove(header::CONTENT_ENCODING);
+                    response_headers.remove(header::CONTENT_LENGTH);
+                }
+
+                let body = if should_gunzip {
+                    let upstream = GunzipStream::new(resp.bytes_stream());
+                    let stream = UsageBodyBufferTeeStream::new(
+                        upstream,
+                        ctx,
+                        MAX_NON_SSE_BODY_BYTES,
+                        upstream_request_timeout_non_streaming,
+                    );
+                    Body::from_stream(stream)
+                } else {
+                    let stream = UsageBodyBufferTeeStream::new(
+                        resp.bytes_stream(),
+                        ctx,
+                        MAX_NON_SSE_BODY_BYTES,
+                        upstream_request_timeout_non_streaming,
+                    );
+                    Body::from_stream(stream)
+                };
+
+                let mut builder = Response::builder().status(status);
+                for (k, v) in response_headers.iter() {
+                    builder = builder.header(k, v);
+                }
+                builder = builder.header("x-trace-id", common.trace_id.as_str());
+
+                abort_guard.disarm();
+                return LoopControl::Return(match builder.body(body) {
+                    Ok(r) => r,
+                    Err(_) => {
+                        let mut fallback = (
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            GatewayErrorCode::ResponseBuildError.as_str(),
+                        )
+                            .into_response();
+                        fallback.headers_mut().insert(
+                            "x-trace-id",
+                            HeaderValue::from_str(common.trace_id.as_str())
+                                .unwrap_or_else(|_| HeaderValue::from_static("invalid-trace-id")),
+                        );
+                        fallback
+                    }
+                });
             }
             _ => {}
         }

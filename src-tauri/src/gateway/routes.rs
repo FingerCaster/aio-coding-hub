@@ -733,6 +733,48 @@ mod tests {
         (format!("http://{addr}"), task)
     }
 
+    async fn spawn_delayed_chunked_json_upstream(
+        first_chunk: Vec<u8>,
+        second_chunk: Vec<u8>,
+        delay: Duration,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind delayed chunked json upstream stub");
+        let addr = listener
+            .local_addr()
+            .expect("delayed chunked json upstream addr");
+        let task = tokio::spawn(async move {
+            if let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let headers = concat!(
+                    "HTTP/1.1 200 OK\r\n",
+                    "content-type: application/json\r\n",
+                    "transfer-encoding: chunked\r\n",
+                    "connection: close\r\n",
+                    "\r\n"
+                );
+                let _ = socket.write_all(headers.as_bytes()).await;
+
+                let first_len = format!("{:X}\r\n", first_chunk.len());
+                let _ = socket.write_all(first_len.as_bytes()).await;
+                let _ = socket.write_all(&first_chunk).await;
+                let _ = socket.write_all(b"\r\n").await;
+
+                tokio::time::sleep(delay).await;
+
+                let second_len = format!("{:X}\r\n", second_chunk.len());
+                let _ = socket.write_all(second_len.as_bytes()).await;
+                let _ = socket.write_all(&second_chunk).await;
+                let _ = socket.write_all(b"\r\n0\r\n\r\n").await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{addr}"), task)
+    }
+
     fn insert_provider_with_priority(
         db: &db::Db,
         cli_key: &str,
@@ -4771,6 +4813,112 @@ mod tests {
         assert_eq!(
             session.get_bound_provider("codex", logged_session_id, 0),
             None
+        );
+
+        json_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn chat_completions_unknown_length_success_streams_before_completion_and_ignores_aggregate_limit(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-unknown-length-json-success-stream.sqlite"),
+        )
+        .expect("init test db");
+
+        let first_chunk = br#"{"id":"msg_chunked","type":"message","role":"assistant","model":"claude-3-5-sonnet","content":[{"type":"text","text":""#.to_vec();
+        let mut second_chunk = vec![b'a'; 20 * 1024 * 1024 + 1024];
+        second_chunk.extend_from_slice(
+            br#""}],"stop_reason":"end_turn","usage":{"input_tokens":1,"output_tokens":2}}"#,
+        );
+        let (json_base_url, json_task) = spawn_delayed_chunked_json_upstream(
+            first_chunk.clone(),
+            second_chunk,
+            Duration::from_secs(3),
+        )
+        .await;
+        let provider_id = insert_provider_with_priority(
+            &db,
+            "claude",
+            "Unknown Length JSON Success Stub",
+            json_base_url,
+            0,
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/claude/_aio/provider/{provider_id}/v1/messages"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-3-5-sonnet","max_tokens":512,"messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = tokio::time::timeout(Duration::from_secs(1), router.oneshot(request))
+            .await
+            .expect("response returned before delayed body completion")
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let mut body_stream = Box::pin(response.into_body().into_data_stream());
+        let first = tokio::time::timeout(
+            Duration::from_secs(1),
+            std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
+        )
+        .await
+        .expect("first body chunk timeout")
+        .expect("first body chunk")
+        .expect("first body chunk ok");
+        assert!(
+            first.starts_with(&first_chunk),
+            "first body chunk should stream before upstream completion"
+        );
+
+        let mut total_bytes = first.len();
+        loop {
+            let next = tokio::time::timeout(
+                Duration::from_secs(5),
+                std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
+            )
+            .await
+            .expect("body completion timeout");
+            let Some(chunk) = next else {
+                break;
+            };
+            let chunk = chunk.expect("body chunk ok");
+            total_bytes += chunk.len();
+        }
+        assert!(total_bytes > 20 * 1024 * 1024);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
         );
 
         json_task.abort();
