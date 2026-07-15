@@ -210,6 +210,7 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         const modelTitle = modelDisplayMeta.isRouteMismatch
           ? `${cliLabel} / ${modelDisplayMeta.title}`
           : `${cliLabel} / ${modelText}`;
+        const isSevereRouteMismatch = modelDisplayMeta.isSevereRouteMismatch;
 
         const cacheWrite = summary ? resolveCacheCreationDisplay(summary) : null;
 
@@ -350,9 +351,11 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                   <span
                     className={cn(
                       "inline-flex min-w-0 items-center gap-1 rounded-md px-2 py-0.5 text-[11px] font-medium shadow-pill-subtle",
-                      modelDisplayMeta.isRouteMismatch
+                      isSevereRouteMismatch
                         ? "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 border border-rose-500/10 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25 dark:border-rose-400/10"
-                        : "bg-muted/65 text-muted-foreground border border-border/40 dark:bg-muted/40 dark:border-border/20"
+                        : modelDisplayMeta.isExpectedAutoReviewRoute
+                          ? "bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-500/10 border border-sky-500/10 dark:bg-sky-500/15 dark:text-sky-200 dark:ring-sky-400/20 dark:border-sky-400/10"
+                          : "bg-muted/65 text-muted-foreground border border-border/40 dark:bg-muted/40 dark:border-border/20"
                     )}
                     title={modelTitle}
                   >
@@ -364,8 +367,9 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                     <span
                       className={cn(
                         "truncate",
-                        modelDisplayMeta.isRouteMismatch &&
-                          "font-semibold text-rose-600 dark:text-rose-300"
+                        isSevereRouteMismatch && "font-semibold text-rose-600 dark:text-rose-300",
+                        modelDisplayMeta.isExpectedAutoReviewRoute &&
+                          "font-semibold text-sky-700 dark:text-sky-200"
                       )}
                     >
                       {modelText}

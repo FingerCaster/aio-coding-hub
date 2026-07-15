@@ -669,6 +669,62 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getAllByTitle(/模型\/思考等级不一致/).length).toBeGreaterThanOrEqual(1);
   });
 
+  it("renders codex-auto-review route mappings with neutral styling", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: false }}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={makeRequestLogs([
+            {
+              id: 46,
+              trace_id: "t-codex-auto-review-route",
+              cli_key: "codex",
+              method: "POST",
+              path: "/v1/responses",
+              requested_model: "codex-auto-review",
+              status: 200,
+              special_settings_json: JSON.stringify([
+                {
+                  type: "model_route_mapping",
+                  cliKey: "codex",
+                  requestedModel: "codex-auto-review",
+                  requestedReasoningEffort: "low",
+                  requestedReasoningEffortSource: "request",
+                  actualModel: "gpt-5.4",
+                  actualReasoningEffort: "low",
+                  actualReasoningEffortSource: "response",
+                  modelMismatch: true,
+                  effortMismatch: false,
+                  mismatch: true,
+                  providerId: 34,
+                  providerName: "AI INPUT-Air",
+                },
+              ]),
+              final_provider_id: 34,
+              final_provider_name: "AI INPUT-Air",
+              created_at: TEST_CREATED_AT_SECONDS,
+            },
+          ])}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    const routeText = screen.getByText("codex-auto-review-low -> gpt-5.4-low");
+    expect(routeText).toBeInTheDocument();
+    expect(routeText).toHaveClass("text-sky-700");
+    expect(routeText).not.toHaveClass("text-rose-600");
+    expect(screen.getByText("自动审核映射")).toBeInTheDocument();
+    expect(screen.getAllByTitle(/自动审核模型映射/).length).toBeGreaterThanOrEqual(1);
+  });
+
   it("shows dual TTFB only for reasoning-guard request logs", () => {
     render(
       <MemoryRouter>

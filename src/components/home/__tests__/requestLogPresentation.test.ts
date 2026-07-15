@@ -184,6 +184,8 @@ describe("components/home/requestLogPresentation", () => {
     expect(display).toMatchObject({
       text: "gpt-5.5-high -> gpt-5.4-mini-low",
       isRouteMismatch: true,
+      isSevereRouteMismatch: true,
+      isExpectedAutoReviewRoute: false,
       mismatchLabel: "模型/思考等级不一致",
     });
     expect(display.title).toContain("请求等级 请求显式");
@@ -200,6 +202,121 @@ describe("components/home/requestLogPresentation", () => {
     expect(audit.tags.map((tag) => tag.label)).toContain("模型路由");
     expect(audit.tags.find((tag) => tag.label === "模型路由")?.className).toContain("rose");
     expect(audit.summary).toBe("模型路由检测：模型/思考等级不一致。");
+  });
+
+  it("renders codex-auto-review model routes as expected non-severe mappings", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "codex-auto-review",
+        requestedReasoningEffort: "low",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4",
+        actualReasoningEffort: "low",
+        actualReasoningEffortSource: "response",
+        modelMismatch: true,
+        effortMismatch: false,
+        mismatch: true,
+        providerId: 34,
+        providerName: "AI INPUT-Air",
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "codex-auto-review",
+      specialSettingsJson,
+      null,
+      34
+    );
+    expect(display).toMatchObject({
+      text: "codex-auto-review-low -> gpt-5.4-low",
+      isRouteMismatch: true,
+      isSevereRouteMismatch: false,
+      isExpectedAutoReviewRoute: true,
+      mismatchLabel: "自动审核模型映射",
+    });
+    expect(display.title).toContain("自动审核模型映射");
+    expect(display.title).toContain("Provider AI INPUT-Air");
+
+    const audit = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: specialSettingsJson,
+      final_provider_id: 34,
+    });
+    expect(audit.tags.map((tag) => tag.label)).toContain("自动审核映射");
+    expect(audit.tags.find((tag) => tag.label === "自动审核映射")?.className).toContain("sky");
+    expect(audit.tags.find((tag) => tag.label === "自动审核映射")?.className).not.toContain("rose");
+    expect(audit.summary).toBe(
+      "自动审核模型映射：codex-auto-review-low -> gpt-5.4-low（预期行为，非路由故障）。"
+    );
+  });
+
+  it("treats codex-auto-review-* requested models as expected auto-review routes", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "codex-auto-review-low",
+        requestedReasoningEffort: "low",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4",
+        actualReasoningEffort: "low",
+        actualReasoningEffortSource: "response",
+        modelMismatch: true,
+        effortMismatch: false,
+        mismatch: true,
+        providerId: 1,
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "codex-auto-review-low",
+      specialSettingsJson,
+      null,
+      1
+    );
+    expect(display.isExpectedAutoReviewRoute).toBe(true);
+    expect(display.isSevereRouteMismatch).toBe(false);
+    expect(display.mismatchLabel).toBe("自动审核模型映射");
+    // Model id already embeds effort; do not render codex-auto-review-low-low.
+    expect(display.text).toBe("codex-auto-review-low -> gpt-5.4-low");
+    expect(display.text).not.toContain("codex-auto-review-low-low");
+  });
+
+  it("does not re-append effort when model id already ends with an effort suffix", () => {
+    const specialSettingsJson = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "codex-auto-review-high",
+        requestedReasoningEffort: "low",
+        requestedReasoningEffortSource: "request",
+        actualModel: "gpt-5.4-mini",
+        actualReasoningEffort: "medium",
+        actualReasoningEffortSource: "response",
+        modelMismatch: true,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 1,
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta(
+      "codex",
+      "codex-auto-review-high",
+      specialSettingsJson,
+      null,
+      1
+    );
+    // Keep embedded suffix on requested side; only append on actual when needed.
+    expect(display.text).toBe("codex-auto-review-high -> gpt-5.4-mini-medium");
+    expect(display.isExpectedAutoReviewRoute).toBe(true);
+    expect(display.isSevereRouteMismatch).toBe(false);
   });
 
   it("formats non-Codex model route mismatches from special settings", () => {
@@ -232,6 +349,8 @@ describe("components/home/requestLogPresentation", () => {
     expect(display).toMatchObject({
       text: "claude-sonnet-4 -> gpt-5.4",
       isRouteMismatch: true,
+      isSevereRouteMismatch: true,
+      isExpectedAutoReviewRoute: false,
       mismatchLabel: "模型路由不一致",
     });
     expect(display.title).toContain("请求 claude-sonnet-4");
@@ -267,6 +386,8 @@ describe("components/home/requestLogPresentation", () => {
     expect(display).toMatchObject({
       text: "gpt-5.5-high -> gpt-5.4-mini",
       isRouteMismatch: true,
+      isSevereRouteMismatch: true,
+      isExpectedAutoReviewRoute: false,
       mismatchLabel: "模型路由不一致",
       routeMapping: {
         actualReasoningEffort: "unknown",
@@ -334,6 +455,8 @@ describe("components/home/requestLogPresentation", () => {
     expect(display).toMatchObject({
       text: "gpt-5.5-medium",
       isRouteMismatch: false,
+      isSevereRouteMismatch: false,
+      isExpectedAutoReviewRoute: false,
       mismatchLabel: null,
     });
   });

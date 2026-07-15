@@ -156,6 +156,7 @@ const RequestLogCard = memo(function RequestLogCard({
   const modelTitle = modelDisplayMeta.isRouteMismatch
     ? `${cliLabel} / ${modelDisplayMeta.title}`
     : `${cliLabel} / ${modelText}`;
+  const isSevereRouteMismatch = modelDisplayMeta.isSevereRouteMismatch;
 
   const isCodexSystemRequest =
     log.cli_key === "codex" && hasCodexSystemRequestSpecialSetting(log.special_settings_json);
@@ -249,9 +250,11 @@ const RequestLogCard = memo(function RequestLogCard({
               <span
                 className={cn(
                   "inline-flex min-w-0 items-center gap-1 rounded-md px-1.5 py-0.5 text-[11px] font-medium",
-                  modelDisplayMeta.isRouteMismatch
+                  isSevereRouteMismatch
                     ? "bg-rose-50/80 text-rose-700 ring-1 ring-inset ring-rose-500/15 dark:bg-rose-500/15 dark:text-rose-200 dark:ring-rose-400/25"
-                    : cliTone
+                    : modelDisplayMeta.isExpectedAutoReviewRoute
+                      ? "bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-500/10 dark:bg-sky-500/15 dark:text-sky-200 dark:ring-sky-400/20"
+                      : cliTone
                 )}
                 title={modelTitle}
               >
@@ -263,8 +266,9 @@ const RequestLogCard = memo(function RequestLogCard({
                 <span
                   className={cn(
                     compactTextClass,
-                    modelDisplayMeta.isRouteMismatch &&
-                      "font-semibold text-rose-600 dark:text-rose-300"
+                    isSevereRouteMismatch && "font-semibold text-rose-600 dark:text-rose-300",
+                    modelDisplayMeta.isExpectedAutoReviewRoute &&
+                      "font-semibold text-sky-700 dark:text-sky-200"
                   )}
                 >
                   {modelText}
