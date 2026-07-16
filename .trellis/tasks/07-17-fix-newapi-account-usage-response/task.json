@@ -3,7 +3,7 @@
   "name": "fix-newapi-account-usage-response",
   "title": "兼容 NewAPI 账户查询响应",
   "description": "改用 NewAPI 模型令牌可访问的 billing 契约，并正确处理 success=false、单位与脱敏错误。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

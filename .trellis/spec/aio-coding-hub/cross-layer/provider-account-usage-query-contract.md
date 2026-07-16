@@ -116,3 +116,195 @@ return queryClient.fetchQuery({ ...options, staleTime: 0 });
 
 Cancellation establishes the new ordering boundary, and the forced shared
 query remains the only cache writer.
+
+## Scenario: NewAPI Model-Token Billing Adapter
+
+### 1. Scope / Trigger
+
+Use this scenario when changing the NewAPI account-usage adapter, its endpoint
+construction, authentication, response parsing, unit normalization, body
+limits, or error presentation. The production IPC entry remains
+`provider_account_usage_fetch`; this scenario owns the Rust boundary between a
+configured model API key and the display-only `ProviderAccountUsageResult`.
+
+This scenario does not change the query-owner rules above and does not apply
+account-usage results to routing, circuit state, provider availability, order,
+or enablement.
+
+### 2. Signatures
+
+The production entry and NewAPI protocol helpers are:
+
+```rust
+pub(crate) async fn provider_account_usage_fetch(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    provider_id: i64,
+) -> Result<ProviderAccountUsageResult, String>;
+
+pub(crate) fn build_newapi_billing_urls(base_url: &str)
+    -> Result<NewapiBillingUrls, String>;
+
+pub(crate) async fn fetch_newapi_account_usage(
+    client: &reqwest::Client,
+    base_url: &str,
+    api_key: &str,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult;
+
+pub(crate) fn parse_newapi_billing_responses(
+    status_body: &Value,
+    subscription_body: &Value,
+    usage_body: &Value,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult;
+```
+
+`build_newapi_billing_urls` produces one same-origin public status URL and two
+same-origin billing URLs. `fetch_newapi_account_usage` owns the bounded GET
+sequence and `parse_newapi_billing_responses` owns all-or-nothing validation and
+normalization. The existing generated IPC DTO remains the frontend boundary.
+
+### 3. Contracts
+
+- Normalize a configured Base URL to its deployment root, accepting both a
+  root URL and a URL with a trailing `/v1`. Derive only these same-origin paths:
+  `/api/status`, `/v1/dashboard/billing/subscription`, and
+  `/v1/dashboard/billing/usage`.
+- The status GET is unauthenticated. The subscription and usage GETs use only
+  the configured model key as Bearer authentication. Never send
+  `New-Api-User` on this path.
+- Disable redirects for the NewAPI client so credentials cannot follow a
+  redirect target. Keep sub2api's existing redirect behavior unchanged.
+- Read `quota_display_type` from status before interpreting billing values.
+  The implemented unit is exactly `USD`; unknown and non-USD values fail
+  closed and must not inherit a USD label.
+- For USD, require finite, non-negative numeric `hard_limit_usd` and
+  `total_usage`, then normalize `total = hard_limit_usd`,
+  `used = total_usage / 100`, and `balance = total - used`. A finite negative
+  derived balance is valid overage data and is passed to the shared status
+  mapping; it is not a cross-endpoint inconsistency.
+- `access_until` must be an exact JSON integer representable as `i64`.
+  Floating-point values such as `1.0`, strings, and out-of-range integers fail
+  closed. Values `<= 0` mean no expiry; values `> 0` map unchanged to
+  `expires_at`.
+- Select the usage date window from subscription payment-method semantics:
+  month start through today when a payment method exists, otherwise the
+  established inclusive 100-day window through today.
+- On every response, recognize root `success=false` and a root `error` before
+  required-field parsing. An authenticated `success=false` is an auth failure;
+  other application errors are query failures. Never expose the upstream
+  message.
+- The snapshot is all-or-nothing. A transport, HTTP, application, JSON, size,
+  type, unit, or required-field failure at any endpoint returns no partial
+  total, used amount, balance, unit, or expiry.
+- Enforce explicit response limits: status 16 KiB, subscription 8 KiB, usage
+  8 KiB, and sub2api 32 KiB.
+- Upstream bodies/messages, API keys, PII, hosts, token names, and actual
+  account amounts must not enter logs, IPC errors, fixtures, research output,
+  or this spec. Fixtures use synthetic values and reserved test hosts only.
+- Account usage is display-only. Fetching and parsing must not test or mutate
+  routing, circuit/cooldown state, availability, provider order/enablement,
+  OAuth quota, or local request usage.
+
+### 4. Validation & Error Matrix
+
+| Input / condition | Required result |
+| --- | --- |
+| Base URL is the deployment root | Derive the three documented same-origin paths |
+| Base URL ends in `/v1` | Remove only that trailing API segment before deriving paths |
+| Base URL contains credentials, lacks an HTTP(S) origin, or cannot be parsed | Configuration-required result; send no request |
+| Status request | No Authorization or `New-Api-User` header |
+| Subscription or usage request | Bearer model key only; no `New-Api-User` |
+| NewAPI response redirects | Do not follow; fail the snapshot without forwarding credentials |
+| `quota_display_type` is `USD` | Apply the documented billing formulas and label USD |
+| Unit is missing, unknown, non-USD, or differently cased | Query failure with no unit or amounts |
+| Raw total/usage is missing, negative, non-numeric, NaN, or infinite | Query failure with no partial snapshot |
+| Used amount exceeds total | Preserve the finite negative derived balance and use shared status mapping |
+| `access_until` is an exact in-range JSON integer | Preserve it exactly; map positive values to `expires_at` |
+| `access_until` is `<= 0` | Successful snapshot with no expiry |
+| `access_until` is a float, string, or outside `i64` | Query failure with no partial snapshot |
+| Root `success=false` on an authenticated response | `AuthFailed` before required-field validation |
+| Root `error` or unauthenticated application error | `QueryFailed` before required-field validation |
+| Any one endpoint returns non-success HTTP, invalid JSON, or exceeds its cap | Fail the whole snapshot; never reuse values from another endpoint |
+| Account usage fetch completes | No routing, circuit, availability, or provider mutation side effect |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a Base URL ending in `/v1` yields one public status request and two
+  same-origin Bearer billing requests; the model key never reaches status or a
+  redirect target.
+- Good: finite non-negative raw values produce total, used, and their exact
+  finite difference; an overage produces a negative balance rather than a
+  fabricated zero or query failure.
+- Good: a large exact `i64` JSON expiry is preserved without passing through
+  floating-point conversion.
+- Base: USD status, a valid subscription, and valid usage produce one complete
+  display snapshot with optional expiry.
+- Bad: parse quota-like fields before checking `success=false`, causing an auth
+  error to appear as a missing-field error.
+- Bad: accept a partial snapshot when status or one billing endpoint fails, or
+  hard-label an unknown unit as USD.
+- Bad: feed account usage into availability, provider selection, circuit reset,
+  or automatic provider disablement.
+
+### 6. Tests Required
+
+- Cover Base URL root and trailing `/v1` forms, exact derived paths, same-origin
+  enforcement, disabled redirects, and rejection of credentialed/invalid URLs.
+- Capture requests and assert status has no authentication, billing requests
+  have Bearer authentication, no request has `New-Api-User`, and usage dates
+  follow both payment-method branches.
+- Assert the exact USD formula, finite overage/negative balance behavior,
+  zero/expired/available status mapping, and unchanged positive expiry mapping.
+- Assert `access_until` preserves exact integers above `2^53`, while floats,
+  strings, and integers outside `i64` fail closed.
+- Cover root `success=false`, root error, missing required fields, negative raw
+  values, non-finite representations, unknown/non-USD units, invalid JSON,
+  body caps, and each partial-endpoint failure.
+- Assert errors contain no upstream message, body, key, host, PII, token name,
+  or actual account amount; fixtures must remain wholly synthetic.
+- Keep all sub2api fixtures green and prove its parser and redirect behavior do
+  not change. Keep the query-owner, manual-refresh race, display rendering, and
+  routing/circuit/availability isolation tests green.
+- Run focused Rust and frontend tests, generated-binding validation, typecheck,
+  lint, Rust format/check/Clippy, secret/PII diff audit, and `git diff --check`
+  in proportion to the change.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// A model key is not a user access token.
+client
+    .get(format!("{origin}/api/user/self"))
+    .bearer_auth(model_key)
+    .header("New-Api-User", user_id);
+
+let balance_usd = quota / 500_000.0;
+```
+
+This combines incompatible authentication contracts, may mask
+`success=false` as a missing quota field, and assumes a deployment-specific
+divisor and USD unit.
+
+#### Correct
+
+```text
+GET {origin}/api/status
+GET {origin}/v1/dashboard/billing/subscription  Authorization: Bearer <model-key>
+GET {origin}/v1/dashboard/billing/usage         Authorization: Bearer <model-key>
+```
+
+```rust
+// Internally normalizes three same-origin URLs, performs bounded requests,
+// and returns a snapshot only after complete response validation.
+fetch_newapi_account_usage(client, base_url, model_key, fetched_at, now).await
+```
+
+The NewAPI client refuses redirects, every URL remains on the normalized
+origin, status selects the display unit, and the billing parser applies the
+documented formula only after application-error and field validation.

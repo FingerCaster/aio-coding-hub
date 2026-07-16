@@ -1,9 +1,10 @@
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::blocking;
 use crate::domain::provider_account_usage::{
-    build_account_usage_url, config_from_extension_values, http_status_result,
-    parse_account_usage_response, redact_secret, ProviderAccountUsageAdapterKind,
-    ProviderAccountUsageConfigState, ProviderAccountUsageResult, ProviderAccountUsageStatus,
+    build_account_usage_url, config_from_extension_values, fetch_newapi_account_usage,
+    http_status_result, parse_account_usage_response, redact_secret,
+    ProviderAccountUsageAdapterKind, ProviderAccountUsageConfigState, ProviderAccountUsageResult,
+    ProviderAccountUsageStatus, SUB2API_RESPONSE_BODY_LIMIT,
 };
 
 #[tauri::command]
@@ -69,17 +70,6 @@ pub(crate) async fn provider_account_usage_fetch(
         ));
     };
 
-    let url = match build_account_usage_url(base_url, config.adapter_kind) {
-        Ok(url) => url,
-        Err(message) => {
-            return Ok(ProviderAccountUsageResult::local_status(
-                Some(config.adapter_kind),
-                ProviderAccountUsageStatus::ConfigurationRequired,
-                message,
-            ));
-        }
-    };
-
     let api_key = blocking::run("provider_account_usage_fetch_load_api_key", {
         let db = db.clone();
         move || crate::providers::get_api_key_plaintext(&db, provider_id)
@@ -96,20 +86,37 @@ pub(crate) async fn provider_account_usage_fetch(
         ));
     }
 
-    let client = reqwest::Client::builder()
+    let mut client_builder = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(format!(
             "aio-coding-hub-provider-account-usage/{}",
             env!("CARGO_PKG_VERSION")
-        ))
+        ));
+    if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi {
+        client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
+    }
+    let client = client_builder
         .build()
         .map_err(|err| format!("SYSTEM_ERROR: failed to build HTTP client: {err}"))?;
 
     let fetched_at = crate::shared::time::now_unix_seconds();
-    let mut request = client.get(&url).bearer_auth(&api_key);
-    if let Some(new_api_user_id) = config.new_api_user_id.as_deref() {
-        request = request.header("New-Api-User", new_api_user_id);
+    if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi {
+        return Ok(
+            fetch_newapi_account_usage(&client, base_url, &api_key, fetched_at, fetched_at).await,
+        );
     }
+
+    let url = match build_account_usage_url(base_url, config.adapter_kind) {
+        Ok(url) => url,
+        Err(message) => {
+            return Ok(ProviderAccountUsageResult::local_status(
+                Some(config.adapter_kind),
+                ProviderAccountUsageStatus::ConfigurationRequired,
+                message,
+            ));
+        }
+    };
+    let request = client.get(&url).bearer_auth(&api_key);
 
     let response = match request.send().await {
         Ok(response) => response,
@@ -136,7 +143,13 @@ pub(crate) async fn provider_account_usage_fetch(
         return Ok(http_status_result(config.adapter_kind, status, fetched_at));
     }
 
-    let body_text = match response.text().await {
+    let body_text = match crate::shared::http_body::read_text_with_limit(
+        response,
+        SUB2API_RESPONSE_BODY_LIMIT,
+        "sub2api account usage",
+    )
+    .await
+    {
         Ok(body) => body,
         Err(err) => {
             let message = redact_secret(&format!("账户用量响应读取失败: {err}"), &api_key);
