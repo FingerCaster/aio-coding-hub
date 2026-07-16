@@ -119,6 +119,7 @@ pub(crate) struct CodexRetryGatewayUpdateCandidate {
     pub commit: String,
     pub current_commit: Option<String>,
     pub previous_commit: Option<String>,
+    pub rollback_commit: Option<String>,
     pub official_main_commit: String,
     pub commits_ahead: Option<u32>,
     pub summary: Option<String>,
@@ -319,6 +320,26 @@ pub(crate) enum CodexRetryGatewayOperationKind {
     ExternalRestore,
 }
 
+pub(crate) const CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION: u32 = 2;
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum CodexRetryGatewayRouteSnapshotRoot {
+    CodexHome,
+    CliProxyState,
+    GatewayManagedState,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub(crate) struct CodexRetryGatewayRouteSnapshot {
+    pub root: CodexRetryGatewayRouteSnapshotRoot,
+    pub root_path_sha256: String,
+    pub target_rel: String,
+    pub existed: bool,
+    pub backup_rel: Option<String>,
+    pub backup_sha256: Option<String>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 pub(crate) struct CodexRetryGatewayRouteTransition {
     pub schema_version: u32,
@@ -328,10 +349,13 @@ pub(crate) struct CodexRetryGatewayRouteTransition {
     pub target_generation: u64,
     pub prior_mode: CodexRouteMode,
     pub target_mode: CodexRouteMode,
+    pub prior_canonical_config_sha256: String,
+    pub prior_live_config_sha256: String,
     pub canonical_config_sha256: String,
     pub live_config_sha256: String,
     pub source_commit: Option<String>,
     pub process_should_run: bool,
+    pub snapshots: Vec<CodexRetryGatewayRouteSnapshot>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -352,7 +376,16 @@ pub(crate) struct CodexRetryGatewayRouteCallbackRequest {
 #[allow(dead_code)]
 pub(crate) trait CodexRetryGatewayTransitionStore: Send + Sync {
     fn load_pending(&self) -> AppResult<Option<CodexRetryGatewayRouteTransition>>;
-    fn prepare(&self, transition: &CodexRetryGatewayRouteTransition) -> AppResult<()>;
+    fn prepare(
+        &self,
+        transition: &CodexRetryGatewayRouteTransition,
+        snapshot_bytes: &[Option<Vec<u8>>],
+    ) -> AppResult<()>;
+    fn read_snapshot(
+        &self,
+        transition: &CodexRetryGatewayRouteTransition,
+        snapshot: &CodexRetryGatewayRouteSnapshot,
+    ) -> AppResult<Vec<u8>>;
     fn commit(&self, operation_id: &str, generation: u64) -> AppResult<()>;
     fn clear(&self, operation_id: &str) -> AppResult<()>;
 }

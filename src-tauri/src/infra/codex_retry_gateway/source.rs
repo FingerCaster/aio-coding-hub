@@ -91,6 +91,8 @@ struct GitHubCommitMessage {
 #[derive(Debug, Deserialize)]
 struct GitHubCompareResponse {
     status: String,
+    #[serde(default)]
+    ahead_by: Option<u32>,
 }
 
 pub(crate) async fn validate_commit_request(
@@ -247,11 +249,7 @@ pub(crate) async fn install_source_commit(
         })
     })();
 
-    if install_result.is_err() {
-        let _ = std::fs::remove_dir_all(&staging_dir);
-    } else {
-        let _ = std::fs::remove_dir_all(&staging_dir);
-    }
+    let _ = std::fs::remove_dir_all(&staging_dir);
     install_result
 }
 
@@ -341,6 +339,27 @@ async fn ensure_commit_is_official_main_ancestor(
     candidate: &str,
     main: &str,
 ) -> AppResult<()> {
+    let _ = compare_official_commits(client, http, candidate, main).await?;
+    Ok(())
+}
+
+pub(crate) async fn official_commit_distance(
+    candidate: &str,
+    main: &str,
+    http: &CodexRetryGatewaySourceHttpConfig,
+) -> AppResult<Option<u32>> {
+    let candidate = normalize_full_sha(candidate)?;
+    let main = normalize_full_sha(main)?;
+    let client = build_github_client()?;
+    compare_official_commits(&client, http, &candidate, &main).await
+}
+
+async fn compare_official_commits(
+    client: &Client,
+    http: &CodexRetryGatewaySourceHttpConfig,
+    candidate: &str,
+    main: &str,
+) -> AppResult<Option<u32>> {
     let (owner, repo) = split_repository();
     let url = Url::parse(&format!(
         "{}/repos/{owner}/{repo}/compare/{candidate}...{main}",
@@ -368,7 +387,9 @@ async fn ensure_commit_is_official_main_ancestor(
             format!("commit {candidate} is not official main or its ancestor"),
         ));
     }
-    Ok(())
+    Ok(payload
+        .ahead_by
+        .or_else(|| (payload.status == "identical").then_some(0)))
 }
 
 async fn download_zipball(
@@ -417,6 +438,12 @@ async fn download_zipball(
 }
 
 fn validate_allowed_host(url: &Url, allowed_hosts: &[String]) -> AppResult<()> {
+    if url.scheme() != "https" {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_SOURCE_REDIRECT_INVALID",
+            format!("redirect URL must use https, got {}", url.scheme()),
+        ));
+    }
     let host = url.host_str().unwrap_or_default().to_ascii_lowercase();
     if allowed_hosts
         .iter()
@@ -677,7 +704,7 @@ fn archive_entry_exceeds_compression_ratio(uncompressed: u64, compressed: u64) -
 fn archive_duplicate_key(path: &Path) -> PathBuf {
     #[cfg(windows)]
     {
-        return PathBuf::from(path.to_string_lossy().to_lowercase());
+        PathBuf::from(path.to_string_lossy().to_lowercase())
     }
     #[cfg(not(windows))]
     {
@@ -1016,6 +1043,22 @@ mod tests {
     use tempfile::tempdir;
 
     #[test]
+    fn redirect_allowlist_rejects_plaintext_downgrade() {
+        let allowed = vec!["codeload.github.com".to_string()];
+        assert!(validate_allowed_host(
+            &Url::parse("https://codeload.github.com/repo.zip").unwrap(),
+            &allowed,
+        )
+        .is_ok());
+        let error = validate_allowed_host(
+            &Url::parse("http://codeload.github.com/repo.zip").unwrap(),
+            &allowed,
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_REDIRECT_INVALID");
+    }
+
+    #[test]
     fn normalize_zip_entry_rejects_traversal() {
         assert!(normalize_zip_entry("../evil").is_err());
         assert!(normalize_zip_entry("/absolute").is_err());
@@ -1222,6 +1265,48 @@ mod tests {
         assert_eq!(selection.requested_commit, "main");
         assert_eq!(selection.canonical_commit, MAIN_SHA);
         assert_eq!(selection.official_main_commit, MAIN_SHA);
+        server.abort();
+    }
+
+    #[tokio::test]
+    async fn official_commit_distance_uses_github_compare_ahead_by() {
+        const CURRENT_SHA: &str = "0123456789abcdef0123456789abcdef01234567";
+        const MAIN_SHA: &str = "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2";
+
+        async fn compare_handler(
+            AxumPath((_owner, _repo, comparison)): AxumPath<(String, String, String)>,
+        ) -> Json<serde_json::Value> {
+            assert_eq!(comparison, format!("{CURRENT_SHA}...{MAIN_SHA}"));
+            Json(serde_json::json!({
+                "status": "ahead",
+                "ahead_by": 3
+            }))
+        }
+
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let server = tauri::async_runtime::spawn(async move {
+            let router = Router::new().route(
+                "/repos/:owner/:repo/compare/:comparison",
+                get(compare_handler),
+            );
+            let _ = axum::serve(listener, router).await;
+        });
+
+        let distance = official_commit_distance(
+            CURRENT_SHA,
+            MAIN_SHA,
+            &CodexRetryGatewaySourceHttpConfig {
+                api_base_url: format!("http://127.0.0.1:{port}"),
+                download_base_url: "http://127.0.0.1:1".to_string(),
+                allowed_hosts: vec!["127.0.0.1".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+        assert_eq!(distance, Some(3));
         server.abort();
     }
 

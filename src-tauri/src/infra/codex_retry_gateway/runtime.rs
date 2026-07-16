@@ -5,12 +5,14 @@ use crate::infra::codex_retry_gateway::managed_state::{
 };
 use crate::infra::codex_retry_gateway::node::{public_node_error, resolve_node_status};
 use crate::infra::codex_retry_gateway::process::{
+    reconcile_pending_runtime_launch as reconcile_pending_process_launch,
     reconcile_runtime_process, start_runtime_process, stop_runtime_process,
     CodexRetryGatewayManagedProcess, CodexRetryGatewayProcessReconcileResult,
 };
 use crate::infra::codex_retry_gateway::source::{
-    install_source_commit, public_source_error, resolve_official_main_candidate,
-    revalidate_cached_source, validate_commit_request, CodexRetryGatewaySourceHttpConfig,
+    install_source_commit, official_commit_distance, public_source_error,
+    resolve_official_main_candidate, revalidate_cached_source, validate_commit_request,
+    CodexRetryGatewaySourceHttpConfig,
 };
 use crate::infra::codex_retry_gateway::util::{normalize_full_sha, now_unix_ms, strip_trailing_v1};
 use crate::infra::codex_retry_gateway::{
@@ -76,6 +78,14 @@ pub(crate) async fn current_status<R: tauri::Runtime>(
     build_runtime_status(app, None).await
 }
 
+pub(crate) async fn reconcile_pending_runtime_launch<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<()> {
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
+    reconcile_pending_process_launch(&paths).await?;
+    Ok(())
+}
+
 pub(crate) async fn build_enable_plan<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<CodexRetryGatewayEnablePlan> {
@@ -111,8 +121,8 @@ pub(crate) async fn runtime_update_candidate<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<Option<CodexRetryGatewayUpdateCandidate>> {
     let status = current_status(app).await?;
-    let selection =
-        resolve_official_main_candidate(&CodexRetryGatewaySourceHttpConfig::default()).await?;
+    let http = CodexRetryGatewaySourceHttpConfig::default();
+    let selection = resolve_official_main_candidate(&http).await?;
     let current_commit = status
         .active_commit
         .clone()
@@ -120,12 +130,19 @@ pub(crate) async fn runtime_update_candidate<R: tauri::Runtime>(
     if current_commit.as_deref() == Some(selection.canonical_commit.as_str()) {
         return Ok(None);
     }
+    let commits_ahead = match current_commit.as_deref() {
+        Some(current) if normalize_full_sha(current).is_ok() => {
+            official_commit_distance(current, &selection.canonical_commit, &http).await?
+        }
+        _ => None,
+    };
     Ok(Some(CodexRetryGatewayUpdateCandidate {
         commit: selection.canonical_commit.clone(),
-        current_commit,
+        current_commit: current_commit.clone(),
         previous_commit: status.previous_commit.clone(),
+        rollback_commit: current_commit,
         official_main_commit: selection.official_main_commit,
-        commits_ahead: None,
+        commits_ahead,
         summary: selection.summary,
         trust_state: selection.trust_state,
     }))
@@ -664,7 +681,20 @@ async fn build_runtime_status<R: tauri::Runtime>(
         Some(manager) => manager,
         None => read_manager_state(&paths)?,
     };
-    let selected_commit = normalize_selected_commit(&settings.codex_retry_gateway_selected_commit);
+    let selected_commit_result =
+        normalize_selected_commit(&settings.codex_retry_gateway_selected_commit);
+    let selected_commit = selected_commit_result
+        .as_ref()
+        .cloned()
+        .unwrap_or_else(|_| {
+            settings
+                .codex_retry_gateway_selected_commit
+                .trim()
+                .to_string()
+        });
+    let selected_commit_error = selected_commit_result
+        .err()
+        .map(|error| runtime_public_error(&error));
     let node_status = resolve_node_status(app, Some(&settings.codex_retry_gateway_node_override));
     let reconcile = reconcile_runtime_process(
         &paths,
@@ -676,22 +706,37 @@ async fn build_runtime_status<R: tauri::Runtime>(
     let cli_proxy = codex_cli_proxy_projection(app, manager.effective_port, &aio_origin.url);
     let route_mode = cli_proxy.route_mode;
 
-    let trust_state = if selected_commit == CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT {
+    let trust_state = if selected_commit_error.is_some() {
+        CodexRetryGatewayTrustState::Unavailable
+    } else if selected_commit == CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT {
         CodexRetryGatewayTrustState::AioReviewedRecommendation
     } else {
         CodexRetryGatewayTrustState::OfficialMainUnreviewed
     };
-    let last_error = manager
-        .last_error
-        .clone()
-        .or_else(|| reconcile.error.clone())
-        .or_else(|| node_status.error.clone());
-    let runtime_phase = derive_runtime_phase(
-        settings.codex_retry_gateway_enabled,
-        route_mode,
-        &reconcile,
-        manager.recovery_paused,
-    );
+    let last_error = selected_commit_error.clone().or_else(|| {
+        manager
+            .last_error
+            .clone()
+            .or_else(|| reconcile.error.clone())
+            .or_else(|| node_status.error.clone())
+    });
+    let runtime_phase = if selected_commit_error.is_some() {
+        CodexRetryGatewayRuntimePhase::Error
+    } else {
+        derive_runtime_phase(
+            settings.codex_retry_gateway_enabled,
+            route_mode,
+            &reconcile,
+            manager.recovery_paused,
+        )
+    };
+    let route_transition_pending = match std::fs::symlink_metadata(&paths.transition_path) {
+        Ok(_) => true,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => false,
+        Err(_) => true,
+    };
+    let provider_sync_pending =
+        crate::infra::codex_provider_sync::has_pending_provider_sync_recovery(app).unwrap_or(true);
     Ok(CodexRetryGatewayStatus {
         generation: manager.generation,
         desired_enabled: settings.codex_retry_gateway_enabled,
@@ -718,7 +763,9 @@ async fn build_runtime_status<R: tauri::Runtime>(
         wsl_codex_unprotected: settings.wsl_auto_config && settings.wsl_target_cli.codex,
         last_error,
         details_available: reconcile.managed.is_some(),
-        operation_pending: false,
+        operation_pending: route_transition_pending
+            || provider_sync_pending
+            || manager.pending_launch.is_some(),
     })
 }
 
@@ -729,7 +776,7 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
     manager: &mut CodexRetryGatewayManagerState,
 ) -> AppResult<CodexRetryGatewayManagedProcess> {
     let node = resolve_required_node(app, &settings.codex_retry_gateway_node_override)?;
-    let selected_commit = normalize_selected_commit(&settings.codex_retry_gateway_selected_commit);
+    let selected_commit = normalize_selected_commit(&settings.codex_retry_gateway_selected_commit)?;
     let provider_name = current_managed_provider_name(app)?;
     let aio_origin = aio_origin(app, settings);
 
@@ -985,8 +1032,13 @@ pub(crate) fn require_enable_confirmations(
     Ok(())
 }
 
-fn normalize_selected_commit(value: &str) -> String {
-    normalize_full_sha(value).unwrap_or_else(|_| CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT.to_string())
+fn normalize_selected_commit(value: &str) -> AppResult<String> {
+    normalize_full_sha(value).map_err(|_| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_SOURCE_SELECTION_INVALID",
+            "persisted selected commit must be a full 40-hex SHA",
+        )
+    })
 }
 
 fn aio_origin<R: tauri::Runtime>(
@@ -1166,6 +1218,13 @@ fn runtime_public_error_message(code: &str, rendered: &str) -> CodexRetryGateway
 mod tests {
     use super::*;
     use crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord;
+
+    #[test]
+    fn invalid_persisted_commit_is_not_replaced_with_recommendation() {
+        let error = normalize_selected_commit("not-a-full-sha").unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_SELECTION_INVALID");
+        assert_ne!("not-a-full-sha", CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT);
+    }
     use axum::routing::get;
     use axum::{Json, Router};
     use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
@@ -1289,6 +1348,26 @@ mod tests {
         assert!(manager.recovery_paused);
     }
 
+    #[tokio::test]
+    async fn status_exposes_invalid_persisted_commit_without_substitution() {
+        let ctx = RuntimeTestContext::new();
+        let settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: true,
+            codex_retry_gateway_selected_commit: "invalid-selection".to_string(),
+            ..Default::default()
+        };
+        crate::settings::write(&ctx.app, &settings).unwrap();
+
+        let status = current_status(&ctx.app).await.unwrap();
+        assert_eq!(status.selected_commit, "invalid-selection");
+        assert_eq!(status.trust_state, CodexRetryGatewayTrustState::Unavailable);
+        assert_eq!(status.runtime_phase, CodexRetryGatewayRuntimePhase::Error);
+        assert_eq!(
+            status.last_error.as_ref().map(|error| error.code.as_str()),
+            Some("CODEX_RETRY_GATEWAY_SOURCE_SELECTION_INVALID")
+        );
+    }
+
     #[test]
     fn healthy_process_reuse_requires_revalidated_source() {
         let commit = CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT;
@@ -1337,8 +1416,10 @@ mod tests {
     #[test]
     fn recovery_due_honors_backoff_and_pause() {
         let ctx = RuntimeTestContext::new();
-        let mut manager = CodexRetryGatewayManagerState::default();
-        manager.recovery_next_retry_at_ms = Some(now_unix_ms().saturating_add(60_000));
+        let mut manager = CodexRetryGatewayManagerState {
+            recovery_next_retry_at_ms: Some(now_unix_ms().saturating_add(60_000)),
+            ..Default::default()
+        };
         write_manager_state(&ctx.paths, &manager).unwrap();
         assert!(!runtime_recovery_due(&ctx.app).unwrap());
 
@@ -1354,8 +1435,10 @@ mod tests {
     #[tokio::test]
     async fn disable_ignores_corrupt_cache_and_preserves_unverified_process_record() {
         let ctx = RuntimeTestContext::new();
-        let mut settings = crate::settings::AppSettings::default();
-        settings.codex_retry_gateway_enabled = true;
+        let settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: true,
+            ..Default::default()
+        };
         crate::settings::write(&ctx.app, &settings).unwrap();
 
         let source_dir = ctx
@@ -1365,9 +1448,11 @@ mod tests {
         std::fs::create_dir_all(&source_dir).unwrap();
         std::fs::write(source_dir.join("manifest.json"), b"{").unwrap();
 
-        let mut manager = CodexRetryGatewayManagerState::default();
-        manager.generation = 7;
-        manager.process_record = Some(managed_record(&ctx.paths, "http://127.0.0.1:4610"));
+        let manager = CodexRetryGatewayManagerState {
+            generation: 7,
+            process_record: Some(managed_record(&ctx.paths, "http://127.0.0.1:4610")),
+            ..Default::default()
+        };
         write_manager_state(&ctx.paths, &manager).unwrap();
 
         let status = set_runtime_enabled(
@@ -1388,8 +1473,10 @@ mod tests {
     #[tokio::test]
     async fn uninstall_rejects_enabled_state_without_deleting_data() {
         let ctx = RuntimeTestContext::new();
-        let mut settings = crate::settings::AppSettings::default();
-        settings.codex_retry_gateway_enabled = true;
+        let settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: true,
+            ..Default::default()
+        };
         crate::settings::write(&ctx.app, &settings).unwrap();
         std::fs::create_dir_all(&ctx.paths.root).unwrap();
         std::fs::write(ctx.paths.root.join("sentinel.txt"), "keep").unwrap();
@@ -1462,12 +1549,13 @@ mod tests {
             let _ = axum::serve(listener, router).await;
         });
 
-        let mut settings = crate::settings::AppSettings::default();
-        settings.codex_retry_gateway_enabled = false;
+        let settings = crate::settings::AppSettings::default();
         crate::settings::write(&ctx.app, &settings).unwrap();
-        let mut manager = CodexRetryGatewayManagerState::default();
-        manager.generation = 3;
-        manager.process_record = Some(managed_record(&ctx.paths, &listener_url));
+        let manager = CodexRetryGatewayManagerState {
+            generation: 3,
+            process_record: Some(managed_record(&ctx.paths, &listener_url)),
+            ..Default::default()
+        };
         write_manager_state(&ctx.paths, &manager).unwrap();
         std::fs::write(ctx.paths.root.join("sentinel.txt"), "keep").unwrap();
 
@@ -1488,11 +1576,13 @@ mod tests {
     #[tokio::test]
     async fn uninstall_removes_only_disabled_stopped_runtime_data() {
         let ctx = RuntimeTestContext::new();
-        let mut settings = crate::settings::AppSettings::default();
-        settings.codex_retry_gateway_enabled = false;
-        settings.codex_retry_gateway_selected_commit = "1".repeat(40);
-        settings.codex_retry_gateway_preferred_port = 4620;
-        settings.codex_retry_gateway_node_override = "C:/Tools/node.exe".to_string();
+        let settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: false,
+            codex_retry_gateway_selected_commit: "1".repeat(40),
+            codex_retry_gateway_preferred_port: 4620,
+            codex_retry_gateway_node_override: "C:/Tools/node.exe".to_string(),
+            ..Default::default()
+        };
         crate::settings::write(&ctx.app, &settings).unwrap();
         std::fs::create_dir_all(&ctx.paths.root).unwrap();
         std::fs::write(ctx.paths.root.join("sentinel.txt"), "remove").unwrap();

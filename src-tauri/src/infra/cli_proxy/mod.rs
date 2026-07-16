@@ -6,9 +6,12 @@ mod gemini;
 
 use crate::app_paths;
 use crate::infra::codex_retry_gateway::{
-    CodexRetryGatewayOperationKind, CodexRetryGatewayRouteTransition,
+    metadata_is_symlink_or_reparse, CodexRetryGatewayOperationKind, CodexRetryGatewayRouteSnapshot,
+    CodexRetryGatewayRouteSnapshotRoot, CodexRetryGatewayRouteTransition,
     CodexRetryGatewayTransitionStore, CodexRouteMode,
+    CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION,
 };
+use crate::shared::error::AppError;
 use crate::shared::fs::{
     read_file_with_max_len, read_optional_file_with_max_len, write_file_atomic,
     write_file_atomic_if_changed,
@@ -249,6 +252,331 @@ struct FileSnapshot {
     path: PathBuf,
     existed: bool,
     bytes: Option<Vec<u8>>,
+}
+
+fn route_snapshot_root_identity(root: &Path) -> crate::shared::error::AppResult<String> {
+    if !root.is_absolute() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: route snapshot root must be absolute: {}",
+            root.display()
+        )
+        .into());
+    }
+    let normalized = root
+        .to_string_lossy()
+        .replace('\\', "/")
+        .trim_end_matches('/')
+        .to_string();
+    #[cfg(windows)]
+    let normalized = normalized.to_lowercase();
+    Ok(sha256_hex(normalized.as_bytes()))
+}
+
+fn route_snapshot_relative_path(
+    root: &Path,
+    path: &Path,
+    label: &str,
+) -> crate::shared::error::AppResult<String> {
+    let relative = path.strip_prefix(root).map_err(|_| {
+        format!(
+            "SEC_INVALID_INPUT: {label} is outside its approved root: {}",
+            path.display()
+        )
+    })?;
+    let mut components = Vec::new();
+    for component in relative.components() {
+        let std::path::Component::Normal(value) = component else {
+            return Err(format!(
+                "SEC_INVALID_INPUT: {label} has a non-normal path component: {}",
+                path.display()
+            )
+            .into());
+        };
+        components.push(
+            value
+                .to_str()
+                .ok_or_else(|| {
+                    format!(
+                        "SEC_INVALID_INPUT: {label} is not a Unicode path: {}",
+                        path.display()
+                    )
+                })?
+                .to_string(),
+        );
+    }
+    if components.is_empty() {
+        return Err(format!("SEC_INVALID_INPUT: {label} must identify a file").into());
+    }
+    Ok(components.join("/"))
+}
+
+#[derive(Debug, Clone)]
+struct CodexRouteSnapshotRoots {
+    codex_home: PathBuf,
+    cli_proxy_state: PathBuf,
+    gateway_managed_state: PathBuf,
+}
+
+impl CodexRouteSnapshotRoots {
+    fn from_app<R: tauri::Runtime>(
+        app: &tauri::AppHandle<R>,
+    ) -> crate::shared::error::AppResult<Self> {
+        Ok(Self {
+            codex_home: crate::codex_paths::codex_home_dir(app)?,
+            cli_proxy_state: cli_proxy_root_dir(app, "codex")?,
+            gateway_managed_state:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(app)?
+                    .root,
+        })
+    }
+
+    fn path(&self, root: CodexRetryGatewayRouteSnapshotRoot) -> &Path {
+        match root {
+            CodexRetryGatewayRouteSnapshotRoot::CodexHome => &self.codex_home,
+            CodexRetryGatewayRouteSnapshotRoot::CliProxyState => &self.cli_proxy_state,
+            CodexRetryGatewayRouteSnapshotRoot::GatewayManagedState => &self.gateway_managed_state,
+        }
+    }
+}
+
+struct PersistentCodexRouteSnapshots {
+    metadata: Vec<CodexRetryGatewayRouteSnapshot>,
+    bytes: Vec<Option<Vec<u8>>>,
+}
+
+fn build_persistent_codex_route_snapshots<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    snapshots: &[FileSnapshot],
+) -> crate::shared::error::AppResult<PersistentCodexRouteSnapshots> {
+    let roots = CodexRouteSnapshotRoots::from_app(app)?;
+    let codex_home_identity = route_snapshot_root_identity(&roots.codex_home)?;
+    let cli_proxy_root_identity = route_snapshot_root_identity(&roots.cli_proxy_state)?;
+    let gateway_root_identity = route_snapshot_root_identity(&roots.gateway_managed_state)?;
+    let mut metadata = Vec::with_capacity(snapshots.len());
+    let mut snapshot_bytes = Vec::with_capacity(snapshots.len());
+
+    for (index, snapshot) in snapshots.iter().enumerate() {
+        let (root, root_path, root_path_sha256) = if snapshot.path.starts_with(&roots.codex_home) {
+            (
+                CodexRetryGatewayRouteSnapshotRoot::CodexHome,
+                roots.codex_home.as_path(),
+                codex_home_identity.clone(),
+            )
+        } else if snapshot.path.starts_with(&roots.cli_proxy_state) {
+            (
+                CodexRetryGatewayRouteSnapshotRoot::CliProxyState,
+                roots.cli_proxy_state.as_path(),
+                cli_proxy_root_identity.clone(),
+            )
+        } else if snapshot.path.starts_with(&roots.gateway_managed_state) {
+            (
+                CodexRetryGatewayRouteSnapshotRoot::GatewayManagedState,
+                roots.gateway_managed_state.as_path(),
+                gateway_root_identity.clone(),
+            )
+        } else {
+            return Err(format!(
+                "SEC_INVALID_INPUT: route snapshot target is outside approved roots: {}",
+                snapshot.path.display()
+            )
+            .into());
+        };
+        let target_rel =
+            route_snapshot_relative_path(root_path, &snapshot.path, "Codex route snapshot target")?;
+        let (backup_rel, backup_sha256) = if snapshot.existed {
+            let bytes = snapshot.bytes.as_ref().ok_or_else(|| {
+                format!(
+                    "CLI_PROXY_ROUTE_SNAPSHOT_INVALID: existing file has no bytes: {}",
+                    snapshot.path.display()
+                )
+            })?;
+            (
+                Some(format!("files/{index:08}.bin")),
+                Some(sha256_hex(bytes)),
+            )
+        } else {
+            if snapshot.bytes.is_some() {
+                return Err(format!(
+                    "CLI_PROXY_ROUTE_SNAPSHOT_INVALID: absent file has snapshot bytes: {}",
+                    snapshot.path.display()
+                )
+                .into());
+            }
+            (None, None)
+        };
+        metadata.push(CodexRetryGatewayRouteSnapshot {
+            root,
+            root_path_sha256,
+            target_rel,
+            existed: snapshot.existed,
+            backup_rel,
+            backup_sha256,
+        });
+        snapshot_bytes.push(snapshot.bytes.clone());
+    }
+
+    Ok(PersistentCodexRouteSnapshots {
+        metadata,
+        bytes: snapshot_bytes,
+    })
+}
+
+fn validate_route_snapshot_relative_path(value: &str) -> crate::shared::error::AppResult<PathBuf> {
+    let path = PathBuf::from(value);
+    if value.trim().is_empty()
+        || path.is_absolute()
+        || path
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)))
+    {
+        return Err(
+            format!("SEC_INVALID_INPUT: invalid route snapshot target path={value}").into(),
+        );
+    }
+    Ok(path)
+}
+
+fn ensure_plain_route_snapshot_directory(
+    path: &Path,
+    create: bool,
+) -> crate::shared::error::AppResult<bool> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata_is_symlink_or_reparse(&metadata) || !metadata.is_dir() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: route snapshot parent must be a plain directory: {}",
+                    path.display()
+                )
+                .into());
+            }
+            Ok(true)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound && create => {
+            std::fs::create_dir(path)
+                .map_err(|error| format!("failed to create {}: {error}", path.display()))?;
+            ensure_plain_route_snapshot_directory(path, false)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("failed to inspect {}: {error}", path.display()).into()),
+    }
+}
+
+fn route_snapshot_target_path(
+    roots: &CodexRouteSnapshotRoots,
+    snapshot: &CodexRetryGatewayRouteSnapshot,
+    create_parents: bool,
+) -> crate::shared::error::AppResult<Option<PathBuf>> {
+    let root = roots.path(snapshot.root).to_path_buf();
+    if route_snapshot_root_identity(&root)? != snapshot.root_path_sha256 {
+        return Err(format!(
+            "CLI_PROXY_ROUTE_RECOVERY_ROOT_CHANGED: approved snapshot root changed for {}",
+            snapshot.target_rel
+        )
+        .into());
+    }
+    if !ensure_plain_route_snapshot_directory(&root, create_parents)? {
+        return Ok(None);
+    }
+    let relative = validate_route_snapshot_relative_path(&snapshot.target_rel)?;
+    let mut current = root;
+    let components: Vec<_> = relative.components().collect();
+    for component in components.iter().take(components.len().saturating_sub(1)) {
+        let std::path::Component::Normal(value) = component else {
+            unreachable!("validated route snapshot components are normal")
+        };
+        current.push(value);
+        if !ensure_plain_route_snapshot_directory(&current, create_parents)? {
+            return Ok(None);
+        }
+    }
+    let Some(std::path::Component::Normal(file_name)) = components.last() else {
+        return Err("SEC_INVALID_INPUT: route snapshot target must identify a file".into());
+    };
+    Ok(Some(current.join(file_name)))
+}
+
+fn restore_persistent_codex_route_snapshots<S: CodexRetryGatewayTransitionStore>(
+    roots: &CodexRouteSnapshotRoots,
+    store: &S,
+    transition: &CodexRetryGatewayRouteTransition,
+) -> crate::shared::error::AppResult<()> {
+    for snapshot in transition.snapshots.iter().rev() {
+        if snapshot.existed {
+            let bytes = store.read_snapshot(transition, snapshot)?;
+            let target = route_snapshot_target_path(roots, snapshot, true)?.ok_or_else(|| {
+                AppError::from(
+                    "CLI_PROXY_ROUTE_RECOVERY_FAILED: snapshot parent disappeared during restore",
+                )
+            })?;
+            if let Ok(metadata) = std::fs::symlink_metadata(&target) {
+                if metadata_is_symlink_or_reparse(&metadata) || !metadata.is_file() {
+                    return Err(format!(
+                        "SEC_INVALID_INPUT: refusing to replace non-plain route snapshot target: {}",
+                        target.display()
+                    )
+                    .into());
+                }
+            }
+            write_cli_proxy_file_atomic(&target, &bytes)?;
+        } else if let Some(target) = route_snapshot_target_path(roots, snapshot, false)? {
+            match std::fs::symlink_metadata(&target) {
+                Ok(metadata) => {
+                    if metadata_is_symlink_or_reparse(&metadata) || !metadata.is_file() {
+                        return Err(format!(
+                            "SEC_INVALID_INPUT: refusing to remove non-plain route snapshot target: {}",
+                            target.display()
+                        )
+                        .into());
+                    }
+                    std::fs::remove_file(&target).map_err(|error| {
+                        format!(
+                            "failed to remove restored target {}: {error}",
+                            target.display()
+                        )
+                    })?;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect restored target {}: {error}",
+                        target.display()
+                    )
+                    .into())
+                }
+            }
+        }
+    }
+
+    for snapshot in &transition.snapshots {
+        let target = route_snapshot_target_path(roots, snapshot, false)?;
+        if snapshot.existed {
+            let target = target.ok_or_else(|| {
+                AppError::from(
+                    "CLI_PROXY_ROUTE_RECOVERY_FAILED: restored snapshot target is missing",
+                )
+            })?;
+            let bytes = read_optional_cli_proxy_file(&target)?.ok_or_else(|| {
+                format!(
+                    "CLI_PROXY_ROUTE_RECOVERY_FAILED: restored snapshot target is missing: {}",
+                    target.display()
+                )
+            })?;
+            if snapshot.backup_sha256.as_deref() != Some(sha256_hex(&bytes).as_str()) {
+                return Err(format!(
+                    "CLI_PROXY_ROUTE_RECOVERY_FAILED: restored snapshot hash mismatch: {}",
+                    target.display()
+                )
+                .into());
+            }
+        } else if target.is_some_and(|target| target.exists()) {
+            return Err(format!(
+                "CLI_PROXY_ROUTE_RECOVERY_FAILED: created route target still exists after restore: {}",
+                snapshot.target_rel
+            )
+            .into());
+        }
+    }
+    Ok(())
 }
 
 // -- Shared helpers ---------------------------------------------------------
@@ -609,8 +937,7 @@ fn codex_auth_matches_projection<R: tauri::Runtime>(
     })
 }
 
-fn build_codex_route_manifest_state(
-    prior_state: &CodexCliProxyManifestState,
+struct CodexRouteManifestUpdate {
     generation: u64,
     route_mode: CodexRouteMode,
     desired_enabled: bool,
@@ -618,15 +945,20 @@ fn build_codex_route_manifest_state(
     guarded_origin: Option<String>,
     canonical_config_sha256: String,
     live_config_sha256: String,
+}
+
+fn build_codex_route_manifest_state(
+    prior_state: &CodexCliProxyManifestState,
+    update: CodexRouteManifestUpdate,
 ) -> CodexCliProxyManifestState {
     let mut next = prior_state.clone();
-    next.generation = generation;
-    next.route_mode = route_mode;
-    next.desired_enabled = desired_enabled;
-    next.aio_origin = aio_origin;
-    next.guarded_origin = guarded_origin;
-    next.canonical_config_sha256 = Some(canonical_config_sha256);
-    next.live_config_sha256 = Some(live_config_sha256);
+    next.generation = update.generation;
+    next.route_mode = update.route_mode;
+    next.desired_enabled = update.desired_enabled;
+    next.aio_origin = update.aio_origin;
+    next.guarded_origin = update.guarded_origin;
+    next.canonical_config_sha256 = Some(update.canonical_config_sha256);
+    next.live_config_sha256 = Some(update.live_config_sha256);
     next
 }
 
@@ -723,30 +1055,41 @@ pub(crate) fn reject_stale_codex_route_state(
     Ok(())
 }
 
-pub(crate) fn prepare_codex_route_transition<S: CodexRetryGatewayTransitionStore>(
-    store: &S,
+pub(crate) struct CodexRouteTransitionPreparation<'a> {
     operation_kind: CodexRetryGatewayOperationKind,
-    prior_state: &CodexCliProxyManifestState,
+    prior_state: &'a CodexCliProxyManifestState,
     target_mode: CodexRouteMode,
+    prior_canonical_config_sha256: String,
+    prior_live_config_sha256: String,
     canonical_config_sha256: String,
     live_config_sha256: String,
     source_commit: Option<String>,
     process_should_run: bool,
+    snapshots: Vec<CodexRetryGatewayRouteSnapshot>,
+    snapshot_bytes: Vec<Option<Vec<u8>>>,
+}
+
+pub(crate) fn prepare_codex_route_transition<S: CodexRetryGatewayTransitionStore>(
+    store: &S,
+    preparation: CodexRouteTransitionPreparation<'_>,
 ) -> crate::shared::error::AppResult<CodexRetryGatewayRouteTransition> {
     let transition = CodexRetryGatewayRouteTransition {
-        schema_version: 1,
+        schema_version: CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION,
         operation_id: new_trace_id("codex-route"),
-        operation_kind,
-        prior_generation: prior_state.generation,
-        target_generation: prior_state.generation.saturating_add(1),
-        prior_mode: prior_state.route_mode,
-        target_mode,
-        canonical_config_sha256,
-        live_config_sha256,
-        source_commit,
-        process_should_run,
+        operation_kind: preparation.operation_kind,
+        prior_generation: preparation.prior_state.generation,
+        target_generation: preparation.prior_state.generation.saturating_add(1),
+        prior_mode: preparation.prior_state.route_mode,
+        target_mode: preparation.target_mode,
+        prior_canonical_config_sha256: preparation.prior_canonical_config_sha256,
+        prior_live_config_sha256: preparation.prior_live_config_sha256,
+        canonical_config_sha256: preparation.canonical_config_sha256,
+        live_config_sha256: preparation.live_config_sha256,
+        source_commit: preparation.source_commit,
+        process_should_run: preparation.process_should_run,
+        snapshots: preparation.snapshots,
     };
-    store.prepare(&transition)?;
+    store.prepare(&transition, &preparation.snapshot_bytes)?;
     Ok(transition)
 }
 
@@ -764,10 +1107,91 @@ pub(crate) fn clear_codex_route_transition<S: CodexRetryGatewayTransitionStore>(
     store.clear(&transition.operation_id)
 }
 
+pub(crate) struct CodexConfigRouteTransitionGuard {
+    store: crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore,
+    transition: CodexRetryGatewayRouteTransition,
+    roots: CodexRouteSnapshotRoots,
+}
+
+impl CodexConfigRouteTransitionGuard {
+    pub(crate) fn commit(self) -> crate::shared::error::AppResult<()> {
+        commit_codex_route_transition(&self.store, &self.transition)
+    }
+
+    pub(crate) fn rollback(self) -> crate::shared::error::AppResult<()> {
+        restore_persistent_codex_route_snapshots(&self.roots, &self.store, &self.transition)?;
+        clear_codex_route_transition(&self.store, &self.transition)
+    }
+}
+
+pub(crate) fn prepare_managed_codex_config_route_transition<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    state: &CodexCliProxyState,
+    prior_canonical_bytes: &[u8],
+    prior_live_bytes: &[u8],
+    target_canonical_bytes: &[u8],
+    target_live_bytes: &[u8],
+) -> crate::shared::error::AppResult<Option<CodexConfigRouteTransitionGuard>> {
+    let prior_canonical_sha256 = sha256_hex(prior_canonical_bytes);
+    let prior_live_sha256 = sha256_hex(prior_live_bytes);
+    let target_canonical_sha256 = sha256_hex(target_canonical_bytes);
+    let target_live_sha256 = sha256_hex(target_live_bytes);
+    if prior_canonical_sha256 == target_canonical_sha256 && prior_live_sha256 == target_live_sha256
+    {
+        return Ok(None);
+    }
+
+    let paths = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(app)?;
+    paths.ensure_dirs()?;
+    let manager = crate::infra::codex_retry_gateway::read_manager_state(&paths)?;
+    let mut snapshot_paths = vec![
+        codex::codex_config_path(app)?,
+        codex_route_manifest_path(app)?,
+        paths.manager_path.clone(),
+        paths.runtime_state_path.clone(),
+    ];
+    if let Some(backup_path) =
+        backup_file_path_for_manifest(app, &state.manifest, "codex_config_toml")?
+    {
+        snapshot_paths.push(backup_path);
+    }
+    snapshot_paths.dedup();
+    let snapshots = snapshot_paths
+        .iter()
+        .map(|path| snapshot_file(path))
+        .collect::<crate::shared::error::AppResult<Vec<_>>>()?;
+    let persistent_snapshots = build_persistent_codex_route_snapshots(app, &snapshots)?;
+    let store = crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore::new(
+        paths.transition_path,
+    );
+    let transition = prepare_codex_route_transition(
+        &store,
+        CodexRouteTransitionPreparation {
+            operation_kind: CodexRetryGatewayOperationKind::ProviderModeChange,
+            prior_state: &state.route,
+            target_mode: state.route.route_mode,
+            prior_canonical_config_sha256: prior_canonical_sha256,
+            prior_live_config_sha256: prior_live_sha256,
+            canonical_config_sha256: target_canonical_sha256,
+            live_config_sha256: target_live_sha256,
+            source_commit: manager.active_commit,
+            process_should_run: manager.process_record.is_some(),
+            snapshots: persistent_snapshots.metadata,
+            snapshot_bytes: persistent_snapshots.bytes,
+        },
+    )?;
+    Ok(Some(CodexConfigRouteTransitionGuard {
+        store,
+        transition,
+        roots: CodexRouteSnapshotRoots::from_app(app)?,
+    }))
+}
+
 pub(crate) fn reconcile_codex_route_transition<S: CodexRetryGatewayTransitionStore>(
     store: &S,
     current_generation: u64,
     current_route_mode: CodexRouteMode,
+    current_canonical_config_sha256: &str,
     current_live_config_sha256: &str,
 ) -> crate::shared::error::AppResult<Option<bool>> {
     let Some(transition) = store.load_pending()? else {
@@ -775,12 +1199,12 @@ pub(crate) fn reconcile_codex_route_transition<S: CodexRetryGatewayTransitionSto
     };
     if transition.target_generation == current_generation
         && transition.target_mode == current_route_mode
+        && transition.canonical_config_sha256 == current_canonical_config_sha256
         && transition.live_config_sha256 == current_live_config_sha256
     {
         store.commit(&transition.operation_id, transition.target_generation)?;
         return Ok(Some(true));
     }
-    store.clear(&transition.operation_id)?;
     Ok(Some(false))
 }
 
@@ -852,16 +1276,18 @@ fn codex_route_provider_sync_trigger(
     }
 }
 
+struct CodexRouteContext {
+    state: Option<CodexCliProxyState>,
+    route_state: CodexCliProxyManifestState,
+    canonical_config: Vec<u8>,
+    canonical_auth: Option<Vec<u8>>,
+    canonical_sha256: String,
+}
+
 fn codex_route_context<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     aio_origin: Option<&str>,
-) -> crate::shared::error::AppResult<(
-    Option<CodexCliProxyState>,
-    CodexCliProxyManifestState,
-    Vec<u8>,
-    Option<Vec<u8>>,
-    String,
-)> {
+) -> crate::shared::error::AppResult<CodexRouteContext> {
     let state = reload_codex_route_state_after_rebind(app, aio_origin)?;
     let baseline = if let Some(state) = state.as_ref() {
         state.route.clone()
@@ -887,13 +1313,13 @@ fn codex_route_context<R: tauri::Runtime>(
         current_unmanaged_codex_auth_bytes(app)?
     };
     let canonical_sha256 = sha256_hex(&canonical_config);
-    Ok((
+    Ok(CodexRouteContext {
         state,
-        baseline,
+        route_state: baseline,
         canonical_config,
         canonical_auth,
         canonical_sha256,
-    ))
+    })
 }
 
 fn restore_codex_route_snapshots(
@@ -986,6 +1412,7 @@ fn apply_codex_route_change<R: tauri::Runtime, S: CodexRetryGatewayTransitionSto
     existing_manifest: Option<CliProxyManifest>,
     refresh_backups: bool,
     prior_state: CodexCliProxyManifestState,
+    prior_canonical_sha256: String,
     canonical_bytes: Vec<u8>,
     canonical_auth_bytes: Option<Vec<u8>>,
     manifest_enabled: bool,
@@ -1000,79 +1427,93 @@ fn apply_codex_route_change<R: tauri::Runtime, S: CodexRetryGatewayTransitionSto
     let canonical_sha256 = sha256_hex(&canonical_bytes);
     let projection_route_state = build_codex_route_manifest_state(
         &prior_state,
-        prior_state.generation.saturating_add(1),
-        route_mode,
-        desired_enabled,
-        aio_origin.clone(),
-        guarded_origin.clone(),
-        canonical_sha256.clone(),
-        String::new(),
+        CodexRouteManifestUpdate {
+            generation: prior_state.generation.saturating_add(1),
+            route_mode,
+            desired_enabled,
+            aio_origin: aio_origin.clone(),
+            guarded_origin: guarded_origin.clone(),
+            canonical_config_sha256: canonical_sha256.clone(),
+            live_config_sha256: String::new(),
+        },
     );
     let live_bytes = project_codex_live_config(app, &projection_route_state, &canonical_bytes)?;
     let live_sha256 = sha256_hex(&live_bytes);
     let route_state = build_codex_route_manifest_state(
         &prior_state,
-        prior_state.generation.saturating_add(1),
-        route_mode,
-        desired_enabled,
-        aio_origin.clone(),
-        guarded_origin.clone(),
-        canonical_sha256.clone(),
-        live_sha256.clone(),
+        CodexRouteManifestUpdate {
+            generation: prior_state.generation.saturating_add(1),
+            route_mode,
+            desired_enabled,
+            aio_origin: aio_origin.clone(),
+            guarded_origin: guarded_origin.clone(),
+            canonical_config_sha256: canonical_sha256.clone(),
+            live_config_sha256: live_sha256.clone(),
+        },
     );
     let auth_projection =
         build_codex_auth_projection(app, route_mode, canonical_auth_bytes.as_deref())?;
 
-    let current_live_text = String::from_utf8(
-        read_optional_cli_proxy_file(&codex::codex_config_path(app)?)?.unwrap_or_default(),
-    )
-    .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
+    let current_live_bytes =
+        read_optional_cli_proxy_file(&codex::codex_config_path(app)?)?.unwrap_or_default();
+    let prior_live_sha256 = sha256_hex(&current_live_bytes);
+    let current_live_text = String::from_utf8(current_live_bytes)
+        .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
     let target_live_text = String::from_utf8(live_bytes.clone())
         .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
     let provider_sync_plan =
         codex_route_provider_sync_plan(&current_live_text, &target_live_text, route_mode)?;
-    let transition = prepare_codex_route_transition(
-        store,
-        operation_kind,
-        &prior_state,
-        route_mode,
-        canonical_sha256.clone(),
-        live_sha256.clone(),
-        source_commit,
-        process_should_run,
-    )?;
-
     let captured = capture_current_target_state(app, "codex")?;
     let target_snapshots = snapshot_target_files(&captured)?;
     let backup_snapshots = snapshot_backup_files(app, "codex", &captured)?;
     let manifest_snapshot = snapshot_file(&codex_route_manifest_path(app)?)?;
-    let manifest = match (refresh_backups, existing_manifest) {
-        (true, existing_manifest) => {
-            let aio_origin = aio_origin.as_deref().ok_or_else(|| {
-                crate::shared::error::AppError::from(
-                    "CLI_PROXY_INVALID_ROUTE: route mutation requires aio_origin",
-                )
-            })?;
-            backup_for_enable(app, "codex", aio_origin, existing_manifest)?
-        }
-        (false, Some(mut manifest)) => {
-            ensure_manifest_has_current_targets(app, "codex", &mut manifest)?;
-            manifest
-        }
-        (false, None) => {
-            return Err("CLI_PROXY_NO_BACKUP: missing codex route manifest".into());
-        }
-    };
-    let write_plan = CodexRouteWritePlan {
-        manifest,
-        route_state,
-        manifest_enabled,
-        live_bytes,
-        auth_projection,
-        provider_sync_plan: provider_sync_plan.clone(),
-    };
+    let mut route_snapshots = target_snapshots.clone();
+    route_snapshots.extend(backup_snapshots.iter().cloned());
+    route_snapshots.push(manifest_snapshot.clone());
+    let persistent_snapshots = build_persistent_codex_route_snapshots(app, &route_snapshots)?;
+    let transition = prepare_codex_route_transition(
+        store,
+        CodexRouteTransitionPreparation {
+            operation_kind,
+            prior_state: &prior_state,
+            target_mode: route_mode,
+            prior_canonical_config_sha256: prior_canonical_sha256,
+            prior_live_config_sha256: prior_live_sha256,
+            canonical_config_sha256: canonical_sha256.clone(),
+            live_config_sha256: live_sha256.clone(),
+            source_commit,
+            process_should_run,
+            snapshots: persistent_snapshots.metadata,
+            snapshot_bytes: persistent_snapshots.bytes,
+        },
+    )?;
 
     let result = (|| -> crate::shared::error::AppResult<CodexRouteApplyResult> {
+        let manifest = match (refresh_backups, existing_manifest) {
+            (true, existing_manifest) => {
+                let aio_origin = aio_origin.as_deref().ok_or_else(|| {
+                    crate::shared::error::AppError::from(
+                        "CLI_PROXY_INVALID_ROUTE: route mutation requires aio_origin",
+                    )
+                })?;
+                backup_for_enable(app, "codex", aio_origin, existing_manifest)?
+            }
+            (false, Some(mut manifest)) => {
+                ensure_manifest_has_current_targets(app, "codex", &mut manifest)?;
+                manifest
+            }
+            (false, None) => {
+                return Err("CLI_PROXY_NO_BACKUP: missing codex route manifest".into());
+            }
+        };
+        let write_plan = CodexRouteWritePlan {
+            manifest,
+            route_state,
+            manifest_enabled,
+            live_bytes,
+            auth_projection,
+            provider_sync_plan,
+        };
         let transition_operation_id = transition.operation_id.clone();
         if write_plan.provider_sync_plan.change_required {
             let target_provider = write_plan.provider_sync_plan.target_provider.clone();
@@ -1197,17 +1638,24 @@ pub(crate) fn plan_external_enable<R: tauri::Runtime>(
         );
     }
 
-    let (state, current_route_state, canonical_bytes, _, canonical_sha256) =
-        codex_route_context(app, Some(&aio_origin))?;
+    let CodexRouteContext {
+        state,
+        route_state: current_route_state,
+        canonical_config: canonical_bytes,
+        canonical_auth: _,
+        canonical_sha256,
+    } = codex_route_context(app, Some(&aio_origin))?;
     let projected_route_state = build_codex_route_manifest_state(
         &current_route_state,
-        current_route_state.generation.saturating_add(1),
-        CodexRouteMode::Guarded,
-        true,
-        Some(aio_origin.clone()),
-        Some(guarded_origin.clone()),
-        canonical_sha256.clone(),
-        String::new(),
+        CodexRouteManifestUpdate {
+            generation: current_route_state.generation.saturating_add(1),
+            route_mode: CodexRouteMode::Guarded,
+            desired_enabled: true,
+            aio_origin: Some(aio_origin.clone()),
+            guarded_origin: Some(guarded_origin.clone()),
+            canonical_config_sha256: canonical_sha256.clone(),
+            live_config_sha256: String::new(),
+        },
     );
     let projected_live_bytes =
         project_codex_live_config(app, &projected_route_state, &canonical_bytes)?;
@@ -1232,7 +1680,7 @@ pub(crate) fn plan_external_enable<R: tauri::Runtime>(
         projected_live_config_sha256,
         cli_proxy_enable_required: !state.as_ref().is_some_and(|state| state.manifest_enabled),
         route_change_required: current_route_state.route_mode != CodexRouteMode::Guarded
-            || current_route_state.desired_enabled != true
+            || !current_route_state.desired_enabled
             || current_route_state.aio_origin.as_deref() != Some(aio_origin.as_str())
             || current_route_state.guarded_origin.as_deref() != Some(guarded_origin.as_str())
             || !verification.live_matches_projection
@@ -1273,8 +1721,13 @@ pub(crate) fn apply_guarded_route_with_operation<
         );
     }
 
-    let (state, prior_state, canonical_bytes, canonical_auth_bytes, canonical_sha256) =
-        codex_route_context(app, Some(&aio_origin))?;
+    let CodexRouteContext {
+        state,
+        route_state: prior_state,
+        canonical_config: canonical_bytes,
+        canonical_auth: canonical_auth_bytes,
+        canonical_sha256,
+    } = codex_route_context(app, Some(&aio_origin))?;
     reject_stale_codex_route_state(
         request.expected_generation,
         &request.expected_canonical_sha256,
@@ -1288,6 +1741,7 @@ pub(crate) fn apply_guarded_route_with_operation<
         state.as_ref().map(|state| state.manifest.clone()),
         !state.as_ref().is_some_and(|state| state.manifest_enabled),
         prior_state,
+        canonical_sha256,
         canonical_bytes,
         canonical_auth_bytes,
         true,
@@ -1325,8 +1779,13 @@ pub(crate) fn apply_direct_aio_route_with_operation<
     operation_kind: CodexRetryGatewayOperationKind,
 ) -> crate::shared::error::AppResult<CodexRouteApplyResult> {
     let aio_origin = validate_http_origin(&request.aio_origin, "aio_origin")?;
-    let (state, prior_state, canonical_bytes, canonical_auth_bytes, canonical_sha256) =
-        codex_route_context(app, Some(&aio_origin))?;
+    let CodexRouteContext {
+        state,
+        route_state: prior_state,
+        canonical_config: canonical_bytes,
+        canonical_auth: canonical_auth_bytes,
+        canonical_sha256,
+    } = codex_route_context(app, Some(&aio_origin))?;
     reject_stale_codex_route_state(
         request.expected_generation,
         &request.expected_canonical_sha256,
@@ -1340,6 +1799,7 @@ pub(crate) fn apply_direct_aio_route_with_operation<
         state.as_ref().map(|state| state.manifest.clone()),
         !state.as_ref().is_some_and(|state| state.manifest_enabled),
         prior_state,
+        canonical_sha256,
         canonical_bytes,
         canonical_auth_bytes,
         true,
@@ -1383,8 +1843,13 @@ pub(crate) fn restore_unproxied_route_with_operation<
         .as_deref()
         .map(|origin| validate_http_origin(origin, "aio_origin"))
         .transpose()?;
-    let (state, prior_state, canonical_bytes, canonical_auth_bytes, canonical_sha256) =
-        codex_route_context(app, aio_origin.as_deref())?;
+    let CodexRouteContext {
+        state,
+        route_state: prior_state,
+        canonical_config: canonical_bytes,
+        canonical_auth: canonical_auth_bytes,
+        canonical_sha256,
+    } = codex_route_context(app, aio_origin.as_deref())?;
     reject_stale_codex_route_state(
         request.expected_generation,
         &request.expected_canonical_sha256,
@@ -1407,6 +1872,7 @@ pub(crate) fn restore_unproxied_route_with_operation<
         request.keep_cli_proxy_enabled
             && !state.as_ref().is_some_and(|state| state.manifest_enabled),
         prior_state,
+        canonical_sha256,
         canonical_bytes,
         canonical_auth_bytes,
         request.keep_cli_proxy_enabled,
@@ -1429,7 +1895,13 @@ pub(crate) fn restore_unproxied_route_with_operation<
 pub(crate) fn verify_route<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<CodexRouteVerifyResult> {
-    let (state, route_state, canonical_bytes, _, _) = codex_route_context(app, None)?;
+    let CodexRouteContext {
+        state,
+        route_state,
+        canonical_config: canonical_bytes,
+        canonical_auth: _,
+        canonical_sha256: _,
+    } = codex_route_context(app, None)?;
     let manifest_enabled = state.as_ref().is_some_and(|state| state.manifest_enabled);
     let route_state = if state.as_ref().is_some_and(should_manage_codex_route_state) {
         route_state
@@ -1452,21 +1924,32 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
     store: &S,
 ) -> crate::shared::error::AppResult<CodexRouteReconcileResult> {
     let pending_transition = store.load_pending()?;
-    let route_before_provider_recovery = verify_route(app)?;
+    let route_before_provider_recovery = match verify_route(app) {
+        Ok(route) => Some(route),
+        Err(error) if pending_transition.is_some() => {
+            tracing::warn!(
+                error = %error,
+                "Codex route is unreadable while a recovery journal is pending"
+            );
+            None
+        }
+        Err(error) => return Err(error),
+    };
+    let provider_route = route_before_provider_recovery.as_ref().map(|route| {
+        crate::infra::codex_provider_sync::CodexProviderSyncCurrentRoute {
+            generation: route.generation,
+            mode: route.route_mode,
+            live_config_sha256: route.live_config_sha256.clone(),
+            live_matches_projection: route.live_matches_projection,
+            auth_matches_projection: route.auth_matches_projection,
+            pending_operation_id: pending_transition
+                .as_ref()
+                .map(|transition| transition.operation_id.clone()),
+        }
+    });
     let provider_recovery = crate::infra::codex_provider_sync::recover_interrupted_provider_sync(
         app,
-        Some(
-            &crate::infra::codex_provider_sync::CodexProviderSyncCurrentRoute {
-                generation: route_before_provider_recovery.generation,
-                mode: route_before_provider_recovery.route_mode,
-                live_config_sha256: route_before_provider_recovery.live_config_sha256.clone(),
-                live_matches_projection: route_before_provider_recovery.live_matches_projection,
-                auth_matches_projection: route_before_provider_recovery.auth_matches_projection,
-                pending_operation_id: pending_transition
-                    .as_ref()
-                    .map(|transition| transition.operation_id.clone()),
-            },
-        ),
+        provider_route.as_ref(),
     )?;
     if provider_recovery
         != crate::infra::codex_provider_sync::CodexProviderSyncRecoveryOutcome::None
@@ -1476,25 +1959,58 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
             "reconciled interrupted Codex provider sync before route journal"
         );
     }
-    let route = verify_route(app)?;
-    let pending_transition_reconciled =
-        if route.live_matches_projection && route.auth_matches_projection {
-            reconcile_codex_route_transition(
+    let route_after_provider_recovery = verify_route(app);
+    let Some(transition) = pending_transition else {
+        return Ok(CodexRouteReconcileResult {
+            route: route_after_provider_recovery?,
+            pending_transition_reconciled: None,
+        });
+    };
+
+    if let Ok(route) = route_after_provider_recovery.as_ref() {
+        if route.live_matches_projection
+            && route.auth_matches_projection
+            && reconcile_codex_route_transition(
                 store,
                 route.generation,
                 route.route_mode,
+                &route.canonical_config_sha256,
                 &route.live_config_sha256,
-            )?
-        } else if let Some(transition) = store.load_pending()? {
-            store.clear(&transition.operation_id)?;
-            Some(false)
-        } else {
-            None
-        };
+            )? == Some(true)
+        {
+            return Ok(CodexRouteReconcileResult {
+                route: route.clone(),
+                pending_transition_reconciled: Some(true),
+            });
+        }
+    } else if let Err(error) = route_after_provider_recovery.as_ref() {
+        tracing::warn!(
+            error = %error,
+            operation_id = %transition.operation_id,
+            "restoring an interrupted Codex route whose live state is unreadable"
+        );
+    }
 
+    let snapshot_roots = CodexRouteSnapshotRoots::from_app(app)?;
+    restore_persistent_codex_route_snapshots(&snapshot_roots, store, &transition)?;
+    let restored = verify_route(app)?;
+    if restored.generation != transition.prior_generation
+        || restored.route_mode != transition.prior_mode
+        || restored.canonical_config_sha256 != transition.prior_canonical_config_sha256
+        || restored.live_config_sha256 != transition.prior_live_config_sha256
+        || !restored.live_matches_projection
+        || !restored.auth_matches_projection
+    {
+        return Err(format!(
+            "CLI_PROXY_ROUTE_RECOVERY_FAILED: restored route did not match prior generation/mode/hashes for operation {}",
+            transition.operation_id
+        )
+        .into());
+    }
+    store.clear(&transition.operation_id)?;
     Ok(CodexRouteReconcileResult {
-        route,
-        pending_transition_reconciled,
+        route: restored,
+        pending_transition_reconciled: Some(false),
     })
 }
 

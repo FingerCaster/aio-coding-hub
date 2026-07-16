@@ -61,8 +61,7 @@ async fn commit_config_stage(
     transaction: codex_config::CodexConfigMutationTransaction,
 ) -> Result<(), String> {
     blocking::run("cli_manager_codex_config_commit", move || {
-        transaction.commit();
-        Ok::<(), crate::shared::error::AppError>(())
+        transaction.commit()
     })
     .await
     .map_err(String::from)

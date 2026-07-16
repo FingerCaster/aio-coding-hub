@@ -45,34 +45,36 @@ pub(crate) fn managed_gateway_config(
     })
 }
 
-pub(crate) fn managed_gateway_state(
-    gateway_base_url: &str,
-    state_root: &str,
-    config_path: &str,
-    log_path: &str,
-    pid_path: &str,
-    upstream_base_url: &str,
-    provider_name: &str,
-    instance_nonce: &str,
-    process_id: Option<u32>,
-    process_start_identity: Option<u64>,
-) -> serde_json::Value {
+pub(crate) struct ManagedGatewayStateInput<'a> {
+    pub(crate) gateway_base_url: &'a str,
+    pub(crate) state_root: &'a str,
+    pub(crate) config_path: &'a str,
+    pub(crate) log_path: &'a str,
+    pub(crate) pid_path: &'a str,
+    pub(crate) upstream_base_url: &'a str,
+    pub(crate) provider_name: &'a str,
+    pub(crate) instance_nonce: &'a str,
+    pub(crate) process_id: Option<u32>,
+    pub(crate) process_start_identity: Option<u64>,
+}
+
+pub(crate) fn managed_gateway_state(input: ManagedGatewayStateInput<'_>) -> serde_json::Value {
     let now = now_rfc3339();
     json!({
         "installed_at": now,
         "last_started_at": now_rfc3339(),
         "codex_config_path": "",
-        "provider_name": provider_name,
-        "original_base_url": upstream_base_url,
-        "gateway_base_url": gateway_base_url,
-        "gateway_config_path": config_path,
-        "gateway_log_path": log_path,
-        "gateway_pid_path": pid_path,
+        "provider_name": input.provider_name,
+        "original_base_url": input.upstream_base_url,
+        "gateway_base_url": input.gateway_base_url,
+        "gateway_config_path": input.config_path,
+        "gateway_log_path": input.log_path,
+        "gateway_pid_path": input.pid_path,
         "latest_backup_path": serde_json::Value::Null,
-        "state_root": state_root,
-        "aio_instance_nonce": instance_nonce,
-        "process_id": process_id,
-        "aio_process_start_identity": process_start_identity
+        "state_root": input.state_root,
+        "aio_instance_nonce": input.instance_nonce,
+        "process_id": input.process_id,
+        "aio_process_start_identity": input.process_start_identity
     })
 }
 
@@ -104,18 +106,18 @@ mod tests {
 
     #[test]
     fn managed_gateway_state_omits_restorable_backup() {
-        let state = managed_gateway_state(
-            "http://127.0.0.1:4610",
-            "D:/gateway/runtime",
-            "D:/gateway/runtime/config/config.json",
-            "D:/gateway/runtime/logs/gateway.log",
-            "D:/gateway/runtime/gateway.pid",
-            "http://127.0.0.1:37123/v1",
-            "aio",
-            "deadbeef",
-            Some(7),
-            Some(99),
-        );
+        let state = managed_gateway_state(ManagedGatewayStateInput {
+            gateway_base_url: "http://127.0.0.1:4610",
+            state_root: "D:/gateway/runtime",
+            config_path: "D:/gateway/runtime/config/config.json",
+            log_path: "D:/gateway/runtime/logs/gateway.log",
+            pid_path: "D:/gateway/runtime/gateway.pid",
+            upstream_base_url: "http://127.0.0.1:37123/v1",
+            provider_name: "aio",
+            instance_nonce: "deadbeef",
+            process_id: Some(7),
+            process_start_identity: Some(99),
+        });
         assert!(state["latest_backup_path"].is_null());
         assert_eq!(state["aio_instance_nonce"], "deadbeef");
         assert_eq!(state["process_id"], 7);

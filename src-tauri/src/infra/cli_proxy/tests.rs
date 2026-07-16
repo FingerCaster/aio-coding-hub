@@ -3,6 +3,7 @@ use crate::infra::settings::{self, AppSettings, CodexHomeMode};
 use axum::extract::State;
 use axum::routing::get;
 use axum::{Json, Router};
+use std::collections::HashMap;
 use std::ffi::OsString;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -203,16 +204,18 @@ async fn install_managed_provider_probe(
             .expect("current process start identity");
     let instance_nonce = "provider-probe-nonce";
     let runtime_state = crate::infra::codex_retry_gateway::managed_gateway_state(
-        &listener_url,
-        &paths.runtime_dir.display().to_string(),
-        &paths.runtime_config_path.display().to_string(),
-        &paths.runtime_log_path.display().to_string(),
-        &paths.runtime_pid_path.display().to_string(),
-        &upstream_base_url,
-        crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO,
-        instance_nonce,
-        Some(process_id),
-        Some(start_identity),
+        crate::infra::codex_retry_gateway::ManagedGatewayStateInput {
+            gateway_base_url: &listener_url,
+            state_root: &paths.runtime_dir.display().to_string(),
+            config_path: &paths.runtime_config_path.display().to_string(),
+            log_path: &paths.runtime_log_path.display().to_string(),
+            pid_path: &paths.runtime_pid_path.display().to_string(),
+            upstream_base_url: &upstream_base_url,
+            provider_name: crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO,
+            instance_nonce,
+            process_id: Some(process_id),
+            process_start_identity: Some(start_identity),
+        },
     );
     std::fs::write(
         &paths.runtime_state_path,
@@ -237,11 +240,13 @@ async fn install_managed_provider_probe(
         instance_nonce: instance_nonce.to_string(),
         provider_name: crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO.to_string(),
     };
-    let mut manager = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerState::default();
-    manager.generation = 10;
-    manager.active_commit = Some(source_commit.to_string());
-    manager.effective_port = Some(port);
-    manager.process_record = Some(record);
+    let manager = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerState {
+        generation: 10,
+        active_commit: Some(source_commit.to_string()),
+        effective_port: Some(port),
+        process_record: Some(record),
+        ..Default::default()
+    };
     crate::infra::codex_retry_gateway::write_manager_state(&paths, &manager)
         .expect("write manager state");
 
@@ -382,6 +387,7 @@ struct FakeTransitionStore {
         Arc<Mutex<Option<crate::infra::codex_retry_gateway::CodexRetryGatewayRouteTransition>>>,
     committed: Arc<Mutex<Vec<(String, u64)>>>,
     cleared: Arc<Mutex<Vec<String>>>,
+    snapshots: Arc<Mutex<HashMap<String, Vec<u8>>>>,
 }
 
 impl crate::infra::codex_retry_gateway::CodexRetryGatewayTransitionStore for FakeTransitionStore {
@@ -396,9 +402,46 @@ impl crate::infra::codex_retry_gateway::CodexRetryGatewayTransitionStore for Fak
     fn prepare(
         &self,
         transition: &crate::infra::codex_retry_gateway::CodexRetryGatewayRouteTransition,
+        snapshot_bytes: &[Option<Vec<u8>>],
     ) -> crate::shared::error::AppResult<()> {
+        if transition.snapshots.len() != snapshot_bytes.len() {
+            return Err("snapshot metadata and bytes count differ".into());
+        }
+        let mut stored = self.snapshots.lock().expect("snapshot lock");
+        stored.clear();
+        for (snapshot, bytes) in transition.snapshots.iter().zip(snapshot_bytes) {
+            if let (Some(backup_rel), Some(bytes)) = (snapshot.backup_rel.as_ref(), bytes.as_ref())
+            {
+                stored.insert(backup_rel.clone(), bytes.clone());
+            }
+        }
         *self.pending.lock().expect("pending lock") = Some(transition.clone());
         Ok(())
+    }
+
+    fn read_snapshot(
+        &self,
+        transition: &crate::infra::codex_retry_gateway::CodexRetryGatewayRouteTransition,
+        snapshot: &crate::infra::codex_retry_gateway::CodexRetryGatewayRouteSnapshot,
+    ) -> crate::shared::error::AppResult<Vec<u8>> {
+        let pending = self.pending.lock().expect("pending lock");
+        if pending
+            .as_ref()
+            .map(|pending| pending.operation_id.as_str())
+            != Some(transition.operation_id.as_str())
+        {
+            return Err("pending transition mismatch".into());
+        }
+        let backup_rel = snapshot
+            .backup_rel
+            .as_ref()
+            .ok_or_else(|| AppError::from("snapshot backup path missing"))?;
+        self.snapshots
+            .lock()
+            .expect("snapshot lock")
+            .get(backup_rel)
+            .cloned()
+            .ok_or_else(|| AppError::from("snapshot bytes missing"))
     }
 
     fn commit(&self, operation_id: &str, generation: u64) -> crate::shared::error::AppResult<()> {
@@ -407,6 +450,7 @@ impl crate::infra::codex_retry_gateway::CodexRetryGatewayTransitionStore for Fak
             .expect("committed lock")
             .push((operation_id.to_string(), generation));
         *self.pending.lock().expect("pending lock") = None;
+        self.snapshots.lock().expect("snapshot lock").clear();
         Ok(())
     }
 
@@ -416,6 +460,7 @@ impl crate::infra::codex_retry_gateway::CodexRetryGatewayTransitionStore for Fak
             .expect("cleared lock")
             .push(operation_id.to_string());
         *self.pending.lock().expect("pending lock") = None;
+        self.snapshots.lock().expect("snapshot lock").clear();
         Ok(())
     }
 }
@@ -971,13 +1016,20 @@ fn codex_route_transition_helpers_prepare_commit_and_reconcile_pending_state() {
 
     let transition = prepare_codex_route_transition(
         &store,
-        crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Recover,
-        &prior,
-        CodexRouteMode::Guarded,
-        "sha256:new-canonical".to_string(),
-        "sha256:new-live".to_string(),
-        Some("0123456789abcdef0123456789abcdef01234567".to_string()),
-        true,
+        CodexRouteTransitionPreparation {
+            operation_kind:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Recover,
+            prior_state: &prior,
+            target_mode: CodexRouteMode::Guarded,
+            prior_canonical_config_sha256: "sha256:old-canonical".to_string(),
+            prior_live_config_sha256: "sha256:old-live".to_string(),
+            canonical_config_sha256: "sha256:new-canonical".to_string(),
+            live_config_sha256: "sha256:new-live".to_string(),
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+            snapshots: Vec::new(),
+            snapshot_bytes: Vec::new(),
+        },
     )
     .expect("prepare transition");
 
@@ -987,28 +1039,47 @@ fn codex_route_transition_helpers_prepare_commit_and_reconcile_pending_state() {
     assert_eq!(transition.target_mode, CodexRouteMode::Guarded);
     assert!(store.load_pending().expect("load pending").is_some());
 
-    let reconciled =
-        reconcile_codex_route_transition(&store, 5, CodexRouteMode::Guarded, "sha256:new-live")
-            .expect("reconcile pending");
+    let reconciled = reconcile_codex_route_transition(
+        &store,
+        5,
+        CodexRouteMode::Guarded,
+        "sha256:new-canonical",
+        "sha256:new-live",
+    )
+    .expect("reconcile pending");
     assert_eq!(reconciled, Some(true));
     assert_eq!(store.pending.lock().expect("pending lock").clone(), None);
     assert_eq!(store.committed.lock().expect("committed lock").len(), 1);
 
     let second = prepare_codex_route_transition(
         &store,
-        crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Update,
-        &prior,
-        CodexRouteMode::Guarded,
-        "sha256:new-canonical".to_string(),
-        "sha256:new-live".to_string(),
-        None,
-        true,
+        CodexRouteTransitionPreparation {
+            operation_kind:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Update,
+            prior_state: &prior,
+            target_mode: CodexRouteMode::Guarded,
+            prior_canonical_config_sha256: "sha256:old-canonical".to_string(),
+            prior_live_config_sha256: "sha256:old-live".to_string(),
+            canonical_config_sha256: "sha256:new-canonical".to_string(),
+            live_config_sha256: "sha256:new-live".to_string(),
+            source_commit: None,
+            process_should_run: true,
+            snapshots: Vec::new(),
+            snapshot_bytes: Vec::new(),
+        },
     )
     .expect("prepare second transition");
-    let reconciled =
-        reconcile_codex_route_transition(&store, 4, CodexRouteMode::DirectAio, "sha256:old-live")
-            .expect("reconcile mismatch");
+    let reconciled = reconcile_codex_route_transition(
+        &store,
+        4,
+        CodexRouteMode::DirectAio,
+        "sha256:old-canonical",
+        "sha256:old-live",
+    )
+    .expect("reconcile mismatch");
     assert_eq!(reconciled, Some(false));
+    assert!(store.pending.lock().expect("pending lock").is_some());
+    clear_codex_route_transition(&store, &second).expect("clear mismatched transition");
     assert_eq!(
         store.cleared.lock().expect("cleared lock").last().cloned(),
         Some(second.operation_id)
@@ -1016,17 +1087,116 @@ fn codex_route_transition_helpers_prepare_commit_and_reconcile_pending_state() {
 
     let third = prepare_codex_route_transition(
         &store,
-        crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::DisableGateway,
-        &prior,
-        CodexRouteMode::DirectAio,
-        "sha256:old-canonical".to_string(),
-        "sha256:old-live".to_string(),
-        None,
-        false,
+        CodexRouteTransitionPreparation {
+            operation_kind:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::DisableGateway,
+            prior_state: &prior,
+            target_mode: CodexRouteMode::DirectAio,
+            prior_canonical_config_sha256: "sha256:old-canonical".to_string(),
+            prior_live_config_sha256: "sha256:old-live".to_string(),
+            canonical_config_sha256: "sha256:old-canonical".to_string(),
+            live_config_sha256: "sha256:old-live".to_string(),
+            source_commit: None,
+            process_should_run: false,
+            snapshots: Vec::new(),
+            snapshot_bytes: Vec::new(),
+        },
     )
     .expect("prepare third transition");
     clear_codex_route_transition(&store, &third).expect("clear third transition");
     assert!(store.pending.lock().expect("pending lock").is_none());
+}
+
+#[test]
+fn interrupted_route_transaction_restores_persistent_snapshots_before_clearing_journal() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let original_config = r#"model_provider = "Anthropic"
+
+[model_providers.Anthropic]
+name = "Anthropic"
+base_url = "https://api.anthropic.example/v1"
+"#;
+    let original_auth = r#"{"OPENAI_API_KEY":"user-key","auth_mode":"apikey"}"#;
+    write_codex_direct_files(&handle, original_config, original_auth);
+
+    let CodexRouteContext {
+        state: _,
+        route_state: prior,
+        canonical_config: canonical_bytes,
+        canonical_auth: _,
+        canonical_sha256: prior_canonical_sha256,
+    } = codex_route_context(&handle, Some("http://127.0.0.1:37123")).expect("route context");
+    let prior_live_bytes = read_cli_proxy_file(&codex_config_path(&handle).expect("config path"))
+        .expect("read prior live config");
+    let captured = capture_current_target_state(&handle, "codex").expect("capture targets");
+    let target_snapshots = snapshot_target_files(&captured).expect("target snapshots");
+    let backup_snapshots =
+        snapshot_backup_files(&handle, "codex", &captured).expect("backup snapshots");
+    let manifest_path = codex_route_manifest_path(&handle).expect("manifest path");
+    let manifest_snapshot = snapshot_file(&manifest_path).expect("manifest snapshot");
+    let mut route_snapshots = target_snapshots;
+    route_snapshots.extend(backup_snapshots);
+    route_snapshots.push(manifest_snapshot);
+    let persistent_snapshots = build_persistent_codex_route_snapshots(&handle, &route_snapshots)
+        .expect("persistent snapshots");
+
+    let manager_paths =
+        crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(&handle)
+            .expect("manager paths");
+    manager_paths.ensure_dirs().expect("manager dirs");
+    let store = crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore::new(
+        manager_paths.transition_path.clone(),
+    );
+    let transition = prepare_codex_route_transition(
+        &store,
+        CodexRouteTransitionPreparation {
+            operation_kind:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Enable,
+            prior_state: &prior,
+            target_mode: CodexRouteMode::DirectAio,
+            prior_canonical_config_sha256: prior_canonical_sha256.clone(),
+            prior_live_config_sha256: sha256_hex(&prior_live_bytes),
+            canonical_config_sha256: sha256_hex(&canonical_bytes),
+            live_config_sha256: sha256_hex(b"partial-live-config"),
+            source_commit: None,
+            process_should_run: true,
+            snapshots: persistent_snapshots.metadata,
+            snapshot_bytes: persistent_snapshots.bytes,
+        },
+    )
+    .expect("prepare persistent route transaction");
+
+    let config_path = codex_config_path(&handle).expect("config path");
+    let auth_path = codex_auth_path(&handle).expect("auth path");
+    write_cli_proxy_file_atomic(&config_path, b"partial-live-config")
+        .expect("write partial config");
+    write_cli_proxy_file_atomic(&auth_path, b"partial-auth").expect("write partial auth");
+    let files_dir =
+        cli_proxy_files_dir(&cli_proxy_root_dir(&handle, "codex").expect("cli proxy root"));
+    std::fs::create_dir_all(&files_dir).expect("create backup files dir");
+    std::fs::write(files_dir.join("config.toml"), b"partial-config-backup")
+        .expect("write partial config backup");
+    std::fs::write(files_dir.join("auth.json"), b"partial-auth-backup")
+        .expect("write partial auth backup");
+    std::fs::write(&manifest_path, b"{").expect("write malformed partial manifest");
+
+    let reconciled = reconcile_pending_route(&handle, &store).expect("reconcile interrupted route");
+    assert_eq!(reconciled.pending_transition_reconciled, Some(false));
+    assert_eq!(reconciled.route.generation, transition.prior_generation);
+    assert_eq!(reconciled.route.route_mode, transition.prior_mode);
+    assert_eq!(
+        std::fs::read(&config_path).expect("restored config"),
+        original_config.as_bytes()
+    );
+    assert_eq!(
+        std::fs::read(&auth_path).expect("restored auth"),
+        original_auth.as_bytes()
+    );
+    assert!(!files_dir.join("config.toml").exists());
+    assert!(!files_dir.join("auth.json").exists());
+    assert!(!manifest_path.exists());
+    assert!(!manager_paths.transition_path.exists());
 }
 
 #[test]
@@ -1483,6 +1653,11 @@ remote_compaction = true
         final_config.contains("remote_compaction = true"),
         "{final_config}"
     );
+    assert!(
+        final_config.contains("base_url = \"https://api.openai.com/v1\""),
+        "{final_config}"
+    );
+    assert!(!final_config.contains(guarded_origin), "{final_config}");
 }
 
 #[test]
@@ -1590,7 +1765,7 @@ base_url = "https://api.anthropic.com/v1"
     assert!(!manifest.enabled);
     let codex = manifest.codex.expect("codex metadata");
     assert_eq!(codex.route_mode, CodexRouteMode::Unproxied);
-    assert_eq!(codex.desired_enabled, false);
+    assert!(!codex.desired_enabled);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1878,6 +2053,116 @@ remote_compaction = false
     assert_eq!(verified.route_mode, CodexRouteMode::Guarded);
     assert_eq!(verified.effective_origin.as_deref(), Some(guarded_origin));
     assert!(verified.live_matches_projection, "{verified:?}");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn interrupted_managed_provider_change_restores_route_and_runtime_snapshots() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let store = FakeTransitionStore::default();
+    let aio_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "https://api.openai.com/v1"
+
+[features]
+remote_compaction = false
+"#,
+        r#"{"profile":"local"}"#,
+    );
+    let probe = install_managed_provider_probe(
+        &handle,
+        aio_origin,
+        ManagedProviderProbeMode::Fixed(
+            crate::infra::codex_retry_gateway::MANAGED_PROVIDER_AIO.to_string(),
+        ),
+    )
+    .await;
+    let plan = plan_external_enable(&handle, aio_origin, &probe.listener).expect("plan");
+    crate::test_support::codex_provider_sync_set_running_override_for_tests(Some(false));
+    apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: probe.listener.clone(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("guarded route");
+
+    let paths = crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(&handle)
+        .expect("gateway paths");
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("manifest exists");
+    let backup_path = backup_file_path_for_manifest(&handle, &manifest, "codex_config_toml")
+        .expect("backup lookup")
+        .expect("canonical backup");
+    let manifest_path = codex_route_manifest_path(&handle).expect("manifest path");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let prior_files = [
+        config_path.clone(),
+        manifest_path.clone(),
+        backup_path.clone(),
+        paths.manager_path.clone(),
+        paths.runtime_state_path.clone(),
+    ]
+    .map(|path| {
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("read prior {}: {error}", path.display()));
+        (path, bytes)
+    });
+
+    let patch: crate::infra::codex_config::CodexConfigPatch =
+        serde_json::from_value(serde_json::json!({ "features_remote_compaction": true }))
+            .expect("remote compaction patch");
+    let mut staged = crate::infra::codex_config::codex_config_set_staged(&handle, patch)
+        .expect("stage managed provider change");
+    let transaction = staged.transaction.take().expect("managed transaction");
+    std::mem::forget(transaction);
+    assert!(
+        paths.transition_path.exists(),
+        "route journal must remain pending"
+    );
+    assert!(
+        crate::infra::codex_provider_sync::has_pending_provider_sync_recovery(&handle)
+            .expect("provider journal status")
+    );
+    std::fs::write(&manifest_path, b"{").expect("corrupt partial manifest");
+
+    let file_store = crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore::new(
+        paths.transition_path.clone(),
+    );
+    let reconciled =
+        reconcile_pending_route(&handle, &file_store).expect("recover interrupted provider change");
+    assert_eq!(reconciled.pending_transition_reconciled, Some(false));
+    assert_eq!(reconciled.route.route_mode, CodexRouteMode::Guarded);
+    assert!(reconciled.route.live_matches_projection);
+    assert!(reconciled.route.auth_matches_projection);
+    for (path, expected) in prior_files {
+        assert_eq!(
+            std::fs::read(&path)
+                .unwrap_or_else(|error| panic!("read restored {}: {error}", path.display())),
+            expected,
+            "{} must be restored byte-for-byte",
+            path.display()
+        );
+    }
+    assert!(!paths.transition_path.exists());
+    assert!(
+        !crate::infra::codex_provider_sync::has_pending_provider_sync_recovery(&handle)
+            .expect("provider journal cleared")
+    );
     crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
 }
 

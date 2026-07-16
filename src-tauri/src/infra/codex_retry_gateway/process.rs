@@ -3,7 +3,8 @@ use crate::infra::codex_retry_gateway::config::{
 };
 use crate::infra::codex_retry_gateway::managed_state::{
     read_manager_state, write_manager_state, CodexRetryGatewayManagedProcessRecord,
-    CodexRetryGatewayManagerPaths,
+    CodexRetryGatewayManagerPaths, CodexRetryGatewayManagerState,
+    CodexRetryGatewayPendingLaunchRecord,
 };
 use crate::infra::codex_retry_gateway::source::CodexRetryGatewayInstalledSource;
 use crate::infra::codex_retry_gateway::util::{
@@ -13,7 +14,7 @@ use crate::infra::codex_retry_gateway::util::{
 use crate::infra::codex_retry_gateway::{
     managed_gateway_config, managed_gateway_state, AioGatewayOrigin, CodexRetryGatewayError,
     CodexRetryGatewayErrorCategory, CodexRetryGatewayProcessPhase, CodexRetryGatewayProcessStatus,
-    CodexRetryGatewayResolvedNode, CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+    CodexRetryGatewayResolvedNode, ManagedGatewayStateInput, CODEX_RETRY_GATEWAY_DEFAULT_PORT,
 };
 use crate::shared::error::{AppError, AppResult};
 use crate::shared::fs::write_file_atomic;
@@ -64,6 +65,7 @@ pub(crate) struct CodexRetryGatewayProcessReconcileResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct ValidatedManagedRecord {
     start_identity: u64,
+    node_executable: PathBuf,
     listener: String,
     source_dir: PathBuf,
     config_path: PathBuf,
@@ -86,10 +88,28 @@ pub(crate) async fn start_runtime_process(
     let listen_port = choose_listen_port(persisted_port, preferred_port)?;
     let listener = format!("http://{DEFAULT_LISTEN_HOST}:{listen_port}");
     let instance_nonce = random_hex(16);
+    let previous_manager = read_manager_state(paths)?;
     let node_executable = canonicalize_absolute_existing_path(
         &node.executable.display().to_string(),
         "managed Node executable",
     )?;
+    let source_dir_rel = relative_to_root(&paths.root, &source.source_dir)?;
+    let config_path_rel = relative_to_root(&paths.root, &paths.runtime_config_path)?;
+    let state_path_rel = relative_to_root(&paths.root, &paths.runtime_state_path)?;
+    let log_path_rel = relative_to_root(&paths.root, &paths.runtime_log_path)?;
+    let pending_launch = CodexRetryGatewayPendingLaunchRecord {
+        created_at_ms: now_unix_ms(),
+        node_executable: node_executable.display().to_string(),
+        source_commit: source.manifest.commit.clone(),
+        source_dir_rel: source_dir_rel.clone(),
+        config_path_rel: config_path_rel.clone(),
+        state_path_rel: state_path_rel.clone(),
+        log_path_rel: log_path_rel.clone(),
+        listener: listener.clone(),
+        upstream_base_url: aio_origin.url.clone(),
+        instance_nonce: instance_nonce.clone(),
+        provider_name: provider_name.to_string(),
+    };
     let config = managed_gateway_config(listen_port, aio_origin);
     let config_bytes = json_file_bytes(&config, "managed gateway config")?;
     write_file_atomic(&paths.runtime_config_path, &config_bytes)?;
@@ -118,24 +138,69 @@ pub(crate) async fn start_runtime_process(
         use std::os::windows::process::CommandExt;
         command.creation_flags(0x08000000);
     }
-    let mut child = command.spawn().map_err(|err| {
-        AppError::new(
-            "CODEX_RETRY_GATEWAY_PROCESS_START_FAILED",
-            format!(
-                "failed to start managed gateway with {}: {err}",
-                node_executable.display()
-            ),
-        )
-    })?;
+    let mut pending_manager = previous_manager.clone();
+    pending_manager.pending_launch = Some(pending_launch.clone());
+    write_manager_state(paths, &pending_manager)?;
+
+    let mut child = match command.spawn() {
+        Ok(child) => child,
+        Err(err) => {
+            let error = AppError::new(
+                "CODEX_RETRY_GATEWAY_PROCESS_START_FAILED",
+                format!(
+                    "failed to start managed gateway with {}: {err}",
+                    node_executable.display()
+                ),
+            );
+            return Err(restore_manager_after_failed_launch(
+                paths,
+                &previous_manager,
+                error,
+            ));
+        }
+    };
     let pid = child.id();
     let Some(start_identity) = process_start_identity(pid) else {
         let _ = child.kill();
         let _ = child.wait();
-        return Err(AppError::new(
+        let error = AppError::new(
             "CODEX_RETRY_GATEWAY_PROCESS_START_FAILED",
             format!("failed to capture a stable start identity for managed gateway process {pid}"),
+        );
+        return Err(restore_manager_after_failed_launch(
+            paths,
+            &previous_manager,
+            error,
         ));
     };
+    let process_record = CodexRetryGatewayManagedProcessRecord {
+        pid,
+        start_identity: Some(start_identity),
+        started_at_ms: now_unix_ms(),
+        node_executable: node_executable.display().to_string(),
+        source_commit: source.manifest.commit.clone(),
+        source_dir_rel,
+        config_path_rel,
+        state_path_rel,
+        log_path_rel,
+        listener: listener.clone(),
+        upstream_base_url: aio_origin.url.clone(),
+        instance_nonce: instance_nonce.clone(),
+        provider_name: provider_name.to_string(),
+    };
+    let mut provisional_manager = pending_manager;
+    provisional_manager.effective_port = Some(listen_port);
+    provisional_manager.process_record = Some(process_record.clone());
+    provisional_manager.pending_launch = None;
+    if let Err(error) = write_manager_state(paths, &provisional_manager) {
+        let _ = child.kill();
+        let _ = child.wait();
+        return Err(restore_manager_after_failed_launch(
+            paths,
+            &previous_manager,
+            error,
+        ));
+    }
     drop(child);
 
     let result = async {
@@ -160,21 +225,7 @@ pub(crate) async fn start_runtime_process(
         )
         .await?;
         let managed = CodexRetryGatewayManagedProcess {
-            record: CodexRetryGatewayManagedProcessRecord {
-                pid,
-                start_identity: Some(start_identity),
-                started_at_ms: now_unix_ms(),
-                node_executable: node_executable.display().to_string(),
-                source_commit: source.manifest.commit.clone(),
-                source_dir_rel: relative_to_root(&paths.root, &source.source_dir)?,
-                config_path_rel: relative_to_root(&paths.root, &paths.runtime_config_path)?,
-                state_path_rel: relative_to_root(&paths.root, &paths.runtime_state_path)?,
-                log_path_rel: relative_to_root(&paths.root, &paths.runtime_log_path)?,
-                listener: listener.clone(),
-                upstream_base_url: aio_origin.url.clone(),
-                instance_nonce: instance_nonce.clone(),
-                provider_name: provider_name.to_string(),
-            },
+            record: process_record,
             health,
         };
         let validated = validate_managed_record(paths, &managed.record)?;
@@ -202,9 +253,110 @@ pub(crate) async fn start_runtime_process(
                 None,
                 None,
             );
-            Err(error)
+            Err(restore_manager_after_failed_launch(
+                paths,
+                &previous_manager,
+                error,
+            ))
         }
     }
+}
+
+fn restore_manager_after_failed_launch(
+    paths: &CodexRetryGatewayManagerPaths,
+    previous_manager: &CodexRetryGatewayManagerState,
+    error: AppError,
+) -> AppError {
+    match write_manager_state(paths, previous_manager) {
+        Ok(_) => error,
+        Err(restore_error) => AppError::new(
+            error.code(),
+            format!(
+                "{error}; failed to restore manager state after start failure: {restore_error}"
+            ),
+        ),
+    }
+}
+
+pub(super) async fn reconcile_pending_runtime_launch(
+    paths: &CodexRetryGatewayManagerPaths,
+) -> AppResult<Option<CodexRetryGatewayManagedProcessRecord>> {
+    reconcile_pending_runtime_launch_with_timeout(paths, PROCESS_HEALTH_TIMEOUT).await
+}
+
+async fn reconcile_pending_runtime_launch_with_timeout(
+    paths: &CodexRetryGatewayManagerPaths,
+    timeout: Duration,
+) -> AppResult<Option<CodexRetryGatewayManagedProcessRecord>> {
+    let mut manager = read_manager_state(paths)?;
+    let Some(pending) = manager.pending_launch.clone() else {
+        return Ok(None);
+    };
+    validate_pending_launch(paths, &pending)?;
+
+    let deadline = tokio::time::Instant::now() + timeout;
+    loop {
+        if let Some(health) = probe_runtime_health(&pending.listener).await? {
+            if let Some(record) = process_record_from_pending_health(paths, &pending, &health) {
+                persist_managed_gateway_state(
+                    paths,
+                    &record.listener,
+                    &record.upstream_base_url,
+                    &record.provider_name,
+                    &record.instance_nonce,
+                    Some(record.pid),
+                    record.start_identity,
+                )?;
+                write_file_atomic(
+                    &paths.runtime_pid_path,
+                    format!("{}\n", record.pid).as_bytes(),
+                )?;
+                manager.effective_port = listener_port(&record.listener);
+                manager.process_record = Some(record.clone());
+                manager.pending_launch = None;
+                write_manager_state(paths, &manager)?;
+                return Ok(Some(record));
+            }
+        }
+        if tokio::time::Instant::now() >= deadline {
+            break;
+        }
+        tokio::time::sleep(PROCESS_HEALTH_POLL_INTERVAL).await;
+    }
+
+    manager.pending_launch = None;
+    write_manager_state(paths, &manager)?;
+    Ok(None)
+}
+
+fn validate_pending_launch(
+    paths: &CodexRetryGatewayManagerPaths,
+    pending: &CodexRetryGatewayPendingLaunchRecord,
+) -> AppResult<()> {
+    let placeholder = pending.clone().into_process_record(1, 1);
+    validate_managed_record(paths, &placeholder).map(|_| ())
+}
+
+fn process_record_from_pending_health(
+    paths: &CodexRetryGatewayManagerPaths,
+    pending: &CodexRetryGatewayPendingLaunchRecord,
+    health: &CodexRetryGatewayHealthSnapshot,
+) -> Option<CodexRetryGatewayManagedProcessRecord> {
+    let pid = health.process_id.filter(|pid| *pid != 0)?;
+    let start_identity = process_start_identity(pid)?;
+    let record = pending.clone().into_process_record(pid, start_identity);
+    let validated = validate_managed_record(paths, &record).ok()?;
+    if !process_matches_identity(pid, Some(start_identity))
+        || !process_executable_matches(pid, &validated.node_executable)
+        || !health_matches_record(health, &record, &validated)
+    {
+        return None;
+    }
+    Some(record)
+}
+
+fn listener_port(listener: &str) -> Option<u16> {
+    reqwest::Url::parse(listener).ok()?.port_or_known_default()
 }
 
 fn ensure_runtime_log_file(path: &Path) -> AppResult<()> {
@@ -246,18 +398,18 @@ fn persist_managed_gateway_state(
     process_id: Option<u32>,
     process_start_identity: Option<u64>,
 ) -> AppResult<()> {
-    let state = managed_gateway_state(
-        listener,
-        &paths.runtime_dir.display().to_string(),
-        &paths.runtime_config_path.display().to_string(),
-        &paths.runtime_log_path.display().to_string(),
-        &paths.runtime_pid_path.display().to_string(),
+    let state = managed_gateway_state(ManagedGatewayStateInput {
+        gateway_base_url: listener,
+        state_root: &paths.runtime_dir.display().to_string(),
+        config_path: &paths.runtime_config_path.display().to_string(),
+        log_path: &paths.runtime_log_path.display().to_string(),
+        pid_path: &paths.runtime_pid_path.display().to_string(),
         upstream_base_url,
         provider_name,
         instance_nonce,
         process_id,
         process_start_identity,
-    );
+    });
     let state_bytes = json_file_bytes(&state, "managed gateway state")?;
     write_file_atomic(&paths.runtime_state_path, &state_bytes)
 }
@@ -385,6 +537,7 @@ pub(crate) async fn reconcile_runtime_process(
     let validated_record = validate_managed_record(paths, record).ok();
     let pid_matches = validated_record.as_ref().is_some_and(|validated| {
         process_matches_identity(record.pid, Some(validated.start_identity))
+            && process_executable_matches(record.pid, &validated.node_executable)
     });
 
     match (pid_matches, health) {
@@ -480,7 +633,7 @@ pub(crate) async fn stop_runtime_process(
     record: &CodexRetryGatewayManagedProcessRecord,
 ) -> AppResult<bool> {
     let reconciled = reconcile_runtime_process(paths, Some(record), None).await?;
-    if reconciled.managed.is_none() {
+    if reconciled.managed.is_none() && !reconciled.status.owned {
         return Ok(false);
     }
     terminate_process_by_identity(record.pid, record.start_identity)?;
@@ -546,12 +699,11 @@ async fn fetch_gateway_json(client: &Client, url: &str, context: &str) -> AppRes
     if !response.status().is_success() {
         return Ok(None);
     }
-    let body = read_text_with_limit(response, PROCESS_STATUS_BODY_LIMIT, context)
-        .await
-        .map_err(|err| AppError::new("CODEX_RETRY_GATEWAY_HEALTH_PROBE_FAILED", err))?;
-    serde_json::from_str(&body)
-        .map(Some)
-        .map_err(|err| AppError::new("CODEX_RETRY_GATEWAY_HEALTH_PROBE_FAILED", err.to_string()))
+    let body = match read_text_with_limit(response, PROCESS_STATUS_BODY_LIMIT, context).await {
+        Ok(body) => body,
+        Err(_) => return Ok(None),
+    };
+    Ok(serde_json::from_str(&body).ok())
 }
 
 async fn wait_for_healthy_listener(
@@ -879,6 +1031,73 @@ fn process_matches_identity(pid: u32, expected_start_identity: Option<u64>) -> b
     expected_start_identity == current
 }
 
+fn process_executable_matches(pid: u32, expected: &Path) -> bool {
+    let Some(actual) = process_executable_path(pid) else {
+        return false;
+    };
+    let Ok(actual) = std::fs::canonicalize(actual) else {
+        return false;
+    };
+    let Ok(expected) = std::fs::canonicalize(expected) else {
+        return false;
+    };
+    actual == expected
+}
+
+#[cfg(windows)]
+fn process_executable_path(pid: u32) -> Option<PathBuf> {
+    use std::os::windows::ffi::OsStringExt;
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::Threading::{
+        OpenProcess, QueryFullProcessImageNameW, PROCESS_QUERY_LIMITED_INFORMATION,
+    };
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle.is_null() {
+            return None;
+        }
+        let mut buffer = vec![0_u16; 32_768];
+        let mut length = buffer.len() as u32;
+        let ok = QueryFullProcessImageNameW(handle, 0, buffer.as_mut_ptr(), &mut length);
+        CloseHandle(handle);
+        if ok == 0 || length == 0 {
+            return None;
+        }
+        Some(PathBuf::from(std::ffi::OsString::from_wide(
+            &buffer[..length as usize],
+        )))
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn process_executable_path(pid: u32) -> Option<PathBuf> {
+    std::fs::read_link(format!("/proc/{pid}/exe")).ok()
+}
+
+#[cfg(all(unix, not(target_os = "linux")))]
+fn process_executable_path(pid: u32) -> Option<PathBuf> {
+    let output = Command::new("ps")
+        .args(["-o", "comm=", "-p", &pid.to_string()])
+        .env("LC_ALL", "C")
+        .env("LANG", "C")
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .output()
+        .ok()?;
+    if !output.status.success() {
+        return None;
+    }
+    let path = String::from_utf8_lossy(&output.stdout).trim().to_string();
+    (!path.is_empty()).then(|| PathBuf::from(path))
+}
+
+#[cfg(not(any(windows, unix)))]
+fn process_executable_path(_pid: u32) -> Option<PathBuf> {
+    None
+}
+
 fn terminate_process_by_identity(pid: u32, expected_start_identity: Option<u64>) -> AppResult<()> {
     if !process_matches_identity(pid, expected_start_identity) {
         return Err(AppError::new(
@@ -903,10 +1122,10 @@ fn terminate_process_by_identity(pid: u32, expected_start_identity: Option<u64>)
         if status.success() {
             return Ok(());
         }
-        return Err(AppError::new(
+        Err(AppError::new(
             "CODEX_RETRY_GATEWAY_PROCESS_STOP_FAILED",
             format!("taskkill failed for process {pid} with status {status}"),
-        ));
+        ))
     }
     #[cfg(not(windows))]
     {
@@ -1137,6 +1356,7 @@ fn validate_managed_record(
     }
     Ok(ValidatedManagedRecord {
         start_identity,
+        node_executable: canonical_node,
         listener,
         source_dir,
         config_path,
@@ -1265,6 +1485,8 @@ mod tests {
         CodexRetryGatewayInstalledSource, CodexRetryGatewayNodeResolutionSource,
         CodexRetryGatewayResolvedNode, CodexRetryGatewayResolvedNodeVersion,
     };
+    use axum::routing::get;
+    use axum::{Json, Router};
     use std::path::PathBuf;
     use tempfile::{tempdir, TempDir};
 
@@ -1274,6 +1496,78 @@ mod tests {
         record: CodexRetryGatewayManagedProcessRecord,
         validated: ValidatedManagedRecord,
         health: CodexRetryGatewayHealthSnapshot,
+    }
+
+    fn pending_launch_from_record(
+        record: &CodexRetryGatewayManagedProcessRecord,
+    ) -> CodexRetryGatewayPendingLaunchRecord {
+        CodexRetryGatewayPendingLaunchRecord {
+            created_at_ms: record.started_at_ms,
+            node_executable: record.node_executable.clone(),
+            source_commit: record.source_commit.clone(),
+            source_dir_rel: record.source_dir_rel.clone(),
+            config_path_rel: record.config_path_rel.clone(),
+            state_path_rel: record.state_path_rel.clone(),
+            log_path_rel: record.log_path_rel.clone(),
+            listener: record.listener.clone(),
+            upstream_base_url: record.upstream_base_url.clone(),
+            instance_nonce: record.instance_nonce.clone(),
+            provider_name: record.provider_name.clone(),
+        }
+    }
+
+    async fn spawn_pending_health_server(
+        paths: &CodexRetryGatewayManagerPaths,
+        process_id: u32,
+        instance_nonce: &str,
+    ) -> (String, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind((DEFAULT_LISTEN_HOST, 0))
+            .await
+            .unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let listener_url = format!("http://{DEFAULT_LISTEN_HOST}:{port}");
+        let health_body = serde_json::json!({
+            "ok": true,
+            "listen": format!("{DEFAULT_LISTEN_HOST}:{port}"),
+            "upstream_base_url": "http://127.0.0.1:37123/v1",
+            "ui_path": "/__codex_retry_gateway/ui"
+        });
+        let status_body = serde_json::json!({
+            "ok": true,
+            "listen": format!("{DEFAULT_LISTEN_HOST}:{port}"),
+            "state": {
+                "process_id": process_id,
+                "original_base_url": "http://127.0.0.1:37123/v1",
+                "gateway_base_url": listener_url.clone(),
+                "aio_instance_nonce": instance_nonce,
+                "provider_name": crate::infra::codex_retry_gateway::config::MANAGED_PROVIDER_AIO
+            },
+            "paths": {
+                "config_path": std::fs::canonicalize(&paths.runtime_config_path).unwrap(),
+                "state_path": std::fs::canonicalize(&paths.runtime_state_path).unwrap(),
+                "state_root": std::fs::canonicalize(&paths.runtime_dir).unwrap(),
+                "log_path": std::fs::canonicalize(&paths.runtime_log_path).unwrap()
+            }
+        });
+        let server = tokio::spawn(async move {
+            let router = Router::new()
+                .route(
+                    DEFAULT_HEALTH_PATH,
+                    get(move || {
+                        let body = health_body.clone();
+                        async move { Json(body) }
+                    }),
+                )
+                .route(
+                    "/__codex_retry_gateway/api/status",
+                    get(move || {
+                        let body = status_body.clone();
+                        async move { Json(body) }
+                    }),
+                );
+            let _ = axum::serve(listener, router).await;
+        });
+        (listener_url, server)
     }
 
     fn node_fixture_name() -> &'static str {
@@ -1366,6 +1660,154 @@ mod tests {
             validated,
             health,
         }
+    }
+
+    #[tokio::test]
+    async fn pending_launch_without_health_is_cleared_and_prior_record_is_preserved() {
+        let fixture = managed_fixture();
+        let manager = CodexRetryGatewayManagerState {
+            process_record: Some(fixture.record.clone()),
+            pending_launch: Some(pending_launch_from_record(&fixture.record)),
+            ..Default::default()
+        };
+        write_manager_state(&fixture.paths, &manager).unwrap();
+        let prior_record = read_manager_state(&fixture.paths).unwrap().process_record;
+
+        let recovered =
+            reconcile_pending_runtime_launch_with_timeout(&fixture.paths, Duration::ZERO)
+                .await
+                .unwrap();
+
+        assert!(recovered.is_none());
+        let persisted = read_manager_state(&fixture.paths).unwrap();
+        assert!(persisted.pending_launch.is_none());
+        assert_eq!(persisted.process_record, prior_record);
+    }
+
+    #[tokio::test]
+    async fn pending_launch_is_promoted_only_from_complete_owned_health() {
+        let fixture = managed_fixture();
+        let process_id = std::process::id();
+        let expected_start_identity =
+            process_start_identity(process_id).expect("current process start identity");
+        let (listener, server) =
+            spawn_pending_health_server(&fixture.paths, process_id, "deadbeef").await;
+        let mut pending = pending_launch_from_record(&fixture.record);
+        pending.listener = listener.clone();
+        pending.node_executable = std::fs::canonicalize(std::env::current_exe().unwrap())
+            .unwrap()
+            .display()
+            .to_string();
+        let manager = CodexRetryGatewayManagerState {
+            pending_launch: Some(pending),
+            ..Default::default()
+        };
+        write_manager_state(&fixture.paths, &manager).unwrap();
+
+        let recovered =
+            reconcile_pending_runtime_launch_with_timeout(&fixture.paths, Duration::from_secs(1))
+                .await
+                .unwrap()
+                .expect("matching pending launch must be promoted");
+        server.abort();
+
+        assert_eq!(recovered.pid, process_id);
+        assert_eq!(recovered.start_identity, Some(expected_start_identity));
+        assert_eq!(recovered.listener, listener);
+        let persisted = read_manager_state(&fixture.paths).unwrap();
+        assert!(persisted.pending_launch.is_none());
+        assert_eq!(persisted.process_record.as_ref(), Some(&recovered));
+        assert_eq!(persisted.effective_port, listener_port(&listener));
+    }
+
+    #[tokio::test]
+    async fn pending_launch_with_mismatched_nonce_is_not_adopted_or_terminated() {
+        let fixture = managed_fixture();
+        let process_id = std::process::id();
+        let start_identity =
+            process_start_identity(process_id).expect("current process start identity");
+        let (listener, server) =
+            spawn_pending_health_server(&fixture.paths, process_id, "foreign-nonce").await;
+        let mut pending = pending_launch_from_record(&fixture.record);
+        pending.listener = listener;
+        pending.node_executable = std::fs::canonicalize(std::env::current_exe().unwrap())
+            .unwrap()
+            .display()
+            .to_string();
+        let manager = CodexRetryGatewayManagerState {
+            pending_launch: Some(pending),
+            ..Default::default()
+        };
+        write_manager_state(&fixture.paths, &manager).unwrap();
+
+        let recovered = reconcile_pending_runtime_launch_with_timeout(
+            &fixture.paths,
+            Duration::from_millis(20),
+        )
+        .await
+        .unwrap();
+        server.abort();
+
+        assert!(recovered.is_none());
+        assert!(process_matches_identity(process_id, Some(start_identity)));
+        let persisted = read_manager_state(&fixture.paths).unwrap();
+        assert!(persisted.pending_launch.is_none());
+        assert!(persisted.process_record.is_none());
+    }
+
+    #[tokio::test]
+    async fn pending_launch_spawn_failure_restores_the_exact_prior_manager() {
+        let fixture = managed_fixture();
+        let prior = CodexRetryGatewayManagerState {
+            generation: 17,
+            active_commit: Some(fixture.record.source_commit.clone()),
+            ..Default::default()
+        };
+        write_manager_state(&fixture.paths, &prior).unwrap();
+        let prior = read_manager_state(&fixture.paths).unwrap();
+        let source = CodexRetryGatewayInstalledSource {
+            source_dir: fixture.record.source_dir(&fixture.paths).unwrap(),
+            manifest: CodexRetryGatewaySourceManifest {
+                schema_version: 1,
+                repository: crate::infra::codex_retry_gateway::CODEX_RETRY_GATEWAY_REPOSITORY
+                    .to_string(),
+                commit: fixture.record.source_commit.clone(),
+                verified_main_commit: fixture.record.source_commit.clone(),
+                verified_at_ms: 1,
+                archive_sha256: "0".repeat(64),
+                source_sha256: "0".repeat(64),
+                file_count: 0,
+                total_bytes: 0,
+                gateway_entry_rel: "gateway.mjs".to_string(),
+                admin_entry_rel: "scripts/admin-lib.mjs".to_string(),
+                launch_ui_entry_rel: "scripts/launch-ui.mjs".to_string(),
+            },
+        };
+        let node = CodexRetryGatewayResolvedNode {
+            executable: PathBuf::from(&fixture.record.node_executable),
+            version: CodexRetryGatewayResolvedNodeVersion {
+                raw: "v20.0.0".to_string(),
+                major: 20,
+            },
+            source: CodexRetryGatewayNodeResolutionSource::ProcessPath,
+        };
+
+        let error = start_runtime_process(
+            &fixture.paths,
+            &source,
+            &node,
+            &AioGatewayOrigin {
+                url: fixture.record.upstream_base_url.clone(),
+            },
+            &fixture.record.provider_name,
+            CODEX_RETRY_GATEWAY_DEFAULT_PORT,
+            None,
+        )
+        .await
+        .expect_err("non-executable Node fixture must fail at spawn");
+
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_PROCESS_START_FAILED");
+        assert_eq!(read_manager_state(&fixture.paths).unwrap(), prior);
     }
 
     #[test]
@@ -1602,6 +2044,36 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn malformed_success_payload_is_treated_as_unhealthy() {
+        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let address = listener.local_addr().unwrap();
+        let server = tokio::spawn(async move {
+            let (mut stream, _) = listener.accept().await.unwrap();
+            let mut request = [0_u8; 1024];
+            let _ = stream.read(&mut request).await;
+            stream
+                .write_all(
+                    b"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: 8\r\nConnection: close\r\n\r\nnot-json",
+                )
+                .await
+                .unwrap();
+        });
+
+        let client = build_process_client().unwrap();
+        let result = fetch_gateway_json(
+            &client,
+            &format!("http://{address}/health"),
+            "gateway health",
+        )
+        .await
+        .unwrap();
+        server.await.unwrap();
+        assert!(result.is_none());
+    }
+
     #[test]
     fn parse_linux_proc_start_identity_reads_field_22_after_command_name() {
         assert_eq!(
@@ -1624,6 +2096,16 @@ mod tests {
     #[test]
     fn process_matches_identity_requires_expected_start_identity() {
         assert!(!process_matches_identity(1234, None));
+    }
+
+    #[test]
+    fn process_executable_match_uses_the_live_process_image() {
+        let current = std::fs::canonicalize(std::env::current_exe().unwrap()).unwrap();
+        assert!(process_executable_matches(std::process::id(), &current));
+        assert!(!process_executable_matches(
+            std::process::id(),
+            &current.with_file_name("not-the-current-process")
+        ));
     }
 
     #[cfg(windows)]

@@ -641,7 +641,11 @@ async fn route_direct_aio_unlocked<R: tauri::Runtime>(
     {
         return Ok(());
     }
-    let status = codex_retry_gateway::current_status(app).await?;
+    // Fail-open routing must not depend on probing the process we are bypassing.
+    let source_commit = codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(app)
+        .and_then(|paths| codex_retry_gateway::read_manager_state(&paths))
+        .ok()
+        .and_then(|manager| manager.active_commit);
     let applied =
         crate::app::cli_proxy_service::cli_proxy_codex_apply_direct_aio_route_for_operation(
             app.clone(),
@@ -651,7 +655,7 @@ async fn route_direct_aio_unlocked<R: tauri::Runtime>(
                 expected_canonical_sha256: route.canonical_config_sha256,
                 aio_origin: aio_origin.to_string(),
                 desired_enabled,
-                source_commit: status.active_commit,
+                source_commit,
                 process_should_run: true,
             },
             operation_kind,
@@ -674,6 +678,7 @@ async fn reconcile_startup_unlocked(app: &tauri::AppHandle) -> AppResult<()> {
     crate::app::cli_proxy_service::cli_proxy_codex_reconcile_pending_route(app.clone())
         .await
         .map_err(AppError::from)?;
+    codex_retry_gateway::reconcile_pending_runtime_launch(app).await?;
     reconcile_desired_runtime_unlocked(app, CodexRetryGatewayOperationKind::Startup).await
 }
 
@@ -722,11 +727,36 @@ async fn reconcile_desired_runtime_unlocked(
 
 async fn health_supervisor_tick(app: &tauri::AppHandle) -> AppResult<()> {
     let _lifecycle = super::gateway_lifecycle_lock::lock().await;
-    let status = codex_retry_gateway::current_status(app).await?;
-    if !status.desired_enabled {
+    let settings = crate::settings::read(app)?;
+    if !settings.codex_retry_gateway_enabled {
         return Ok(());
     }
-    if status.process_status.healthy && status.route_mode == CodexRouteMode::Guarded {
+    let status = match codex_retry_gateway::current_status(app).await {
+        Ok(status) => status,
+        Err(status_error) => {
+            let aio_origin = ensure_aio_gateway_running_unlocked(app).await?;
+            route_direct_aio_unlocked(
+                app,
+                &aio_origin,
+                true,
+                CodexRetryGatewayOperationKind::Recover,
+            )
+            .await
+            .map_err(|route_error| {
+                AppError::new(
+                    "CODEX_RETRY_GATEWAY_FAIL_OPEN_FAILED",
+                    format!(
+                        "runtime status failed before fallback: {status_error}; direct-AIO fallback failed: {route_error}"
+                    ),
+                )
+            })?;
+            return Err(status_error);
+        }
+    };
+    if status.runtime_phase == codex_retry_gateway::CodexRetryGatewayRuntimePhase::Guarded
+        && status.process_status.healthy
+        && status.route_mode == CodexRouteMode::Guarded
+    {
         return Ok(());
     }
     let aio_origin = ensure_aio_gateway_running_unlocked(app).await?;

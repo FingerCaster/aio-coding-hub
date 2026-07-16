@@ -116,6 +116,49 @@ pub(crate) fn ensure_not_symlink_or_reparse(
     Ok(metadata)
 }
 
+pub(crate) fn create_or_validate_plain_directory(
+    path: &Path,
+    label: &str,
+) -> crate::shared::error::AppResult<()> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata) => {
+            if metadata_is_symlink_or_reparse(&metadata) {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: {label} must not be a symbolic link or reparse point: {}",
+                    path.display()
+                )
+                .into());
+            }
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: {label} must be a directory: {}",
+                    path.display()
+                )
+                .into());
+            }
+            Ok(())
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            std::fs::create_dir(path)
+                .map_err(|error| format!("failed to create {label} {}: {error}", path.display()))?;
+            let metadata = ensure_not_symlink_or_reparse(path, label)?;
+            if !metadata.is_dir() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: {label} must be a directory: {}",
+                    path.display()
+                )
+                .into());
+            }
+            Ok(())
+        }
+        Err(error) => Err(format!(
+            "failed to read {label} metadata {}: {error}",
+            path.display()
+        )
+        .into()),
+    }
+}
+
 pub(crate) fn canonicalize_path_within_root(
     root: &Path,
     candidate: &Path,

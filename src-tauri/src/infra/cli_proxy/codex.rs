@@ -216,8 +216,8 @@ pub(super) fn merge_restore_codex_auth_json(
 }
 
 /// Merge-restore Codex `config.toml`: revert the proxy-managed root keys
-/// (`model_provider`, `preferred_auth_method`) and the `[model_providers.aio]`
-/// section / `[windows] sandbox` while preserving user changes.
+/// (`model_provider`, `preferred_auth_method`), the managed `aio` / `OpenAI`
+/// provider sections, and `[windows] sandbox` while preserving user changes.
 pub(super) fn merge_restore_codex_config_toml(
     target_path: &Path,
     backup_path: &Path,
@@ -305,13 +305,9 @@ pub(super) fn merge_restore_codex_config_toml_bytes(
         backup_auth_method.as_deref(),
     );
 
-    // --- Remove the proxy-injected `[model_providers.aio]` section ---
-    // If the backup had this section, we leave it; otherwise remove it.
-    let backup_had_aio =
-        !find_model_provider_base_table_indices(&backup_lines, CODEX_PROVIDER_KEY).is_empty();
-    if !backup_had_aio {
-        remove_model_provider_section(&mut lines, CODEX_PROVIDER_KEY);
-    }
+    // The live projection may rewrite either managed provider table. Restore
+    // both from the canonical backup so a routed base_url is never learned.
+    restore_managed_provider_sections(&mut lines, &backup_lines);
 
     // --- Revert `[windows] sandbox` ---
     // If the backup did not have `[windows]` sandbox, remove the one the proxy added.
@@ -387,6 +383,44 @@ pub(super) fn remove_model_provider_section(lines: &mut Vec<String>, provider_ke
     while let Some(start) = find_model_provider_nested_table_index(lines, provider_key) {
         let end = find_next_table_header(lines, start.saturating_add(1));
         lines.drain(start..end);
+    }
+}
+
+fn restore_managed_provider_sections(lines: &mut Vec<String>, backup_lines: &[String]) {
+    let provider_keys = [CODEX_PROVIDER_KEY, CODEX_REMOTE_COMPACTION_PROVIDER_KEY];
+    let insert_at = lines
+        .iter()
+        .position(|line| {
+            provider_keys
+                .iter()
+                .any(|key| is_model_provider_section_header_line(line.trim(), key))
+        })
+        .unwrap_or(lines.len());
+
+    for provider_key in provider_keys {
+        remove_model_provider_section(lines, provider_key);
+    }
+
+    let mut restored = Vec::new();
+    let mut index = 0;
+    while index < backup_lines.len() {
+        if provider_keys
+            .iter()
+            .any(|key| is_model_provider_section_header_line(backup_lines[index].trim(), key))
+        {
+            let end = find_next_table_header(backup_lines, index.saturating_add(1));
+            restored.extend_from_slice(&backup_lines[index..end]);
+            index = end;
+        } else {
+            index += 1;
+        }
+    }
+
+    if !restored.is_empty() {
+        lines.splice(
+            insert_at.min(lines.len())..insert_at.min(lines.len()),
+            restored,
+        );
     }
 }
 
@@ -529,16 +563,23 @@ pub(super) fn find_model_provider_nested_table_index(
     lines: &[String],
     provider_key: &str,
 ) -> Option<usize> {
+    lines
+        .iter()
+        .position(|line| is_model_provider_nested_header_line(line.trim(), provider_key))
+}
+
+fn is_model_provider_section_header_line(trimmed: &str, provider_key: &str) -> bool {
+    is_model_provider_base_header_line(trimmed, provider_key)
+        || is_model_provider_nested_header_line(trimmed, provider_key)
+}
+
+fn is_model_provider_nested_header_line(trimmed: &str, provider_key: &str) -> bool {
     let prefix_unquoted = format!("[model_providers.{provider_key}.");
     let prefix_double = format!("[model_providers.\"{provider_key}\".");
     let prefix_single = format!("[model_providers.'{provider_key}'.");
-
-    lines.iter().position(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with(&prefix_unquoted)
-            || trimmed.starts_with(&prefix_double)
-            || trimmed.starts_with(&prefix_single)
-    })
+    trimmed.starts_with(&prefix_unquoted)
+        || trimmed.starts_with(&prefix_double)
+        || trimmed.starts_with(&prefix_single)
 }
 
 fn patch_model_provider_base_table(

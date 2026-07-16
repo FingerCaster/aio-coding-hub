@@ -380,6 +380,7 @@ export function buildCodexRetryGatewayCheckUpdateState(): CodexRetryGatewayUpdat
     commit: "2222222222222222222222222222222222222222",
     current_commit: codexRetryGatewayStatusState.active_commit,
     previous_commit: codexRetryGatewayStatusState.selected_commit,
+    rollback_commit: codexRetryGatewayStatusState.active_commit,
     official_main_commit: "3333333333333333333333333333333333333333",
     commits_ahead: 2,
     summary: "MSW 候选提交：包含新的健康检查和桥接修复。",

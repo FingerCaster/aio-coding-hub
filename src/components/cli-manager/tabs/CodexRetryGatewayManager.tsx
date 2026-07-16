@@ -321,7 +321,7 @@ export function CodexRetryGatewayManager({
       active = false;
       detailsSessionRequestRef.current += 1;
     };
-  }, [refreshDetailsSession, showDetailsFrame, status?.details_available]);
+  }, [refreshDetailsSession, showDetailsFrame, status?.details_available, status?.generation]);
 
   const openBrowser = useCallback(async () => {
     if (!status?.details_available) {
@@ -1056,7 +1056,7 @@ export function CodexRetryGatewayManager({
                 {updateCandidate.commits_ahead ?? "未知"}
               </div>
               <div className="mt-1">
-                回滚目标：{updateCandidate.previous_commit ?? "无历史回滚提交"}
+                回滚目标：{updateCandidate.rollback_commit ?? "无可用回滚提交"}
               </div>
               {updateCandidate.summary ? (
                 <div className="mt-1 leading-relaxed">{updateCandidate.summary}</div>

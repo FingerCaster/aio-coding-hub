@@ -212,10 +212,9 @@ async fn launch_session(
                 .header(LOCATION, "/__codex_retry_gateway/ui")
                 .body(Body::empty())
                 .unwrap_or_else(|_| Response::new(Body::empty()));
-            if let Ok(value) = HeaderValue::from_str(&format!(
-                "{}={session_id}; HttpOnly; SameSite=Strict; Path=/",
-                state.cookie_name
-            )) {
+            if let Ok(value) =
+                HeaderValue::from_str(&bridge_session_cookie(&state.cookie_name, &session_id))
+            {
                 response.headers_mut().insert(SET_COOKIE, value);
             }
             response
@@ -595,6 +594,12 @@ fn bridge_cookie_name(port: u16) -> String {
     format!("{BRIDGE_COOKIE_NAME_PREFIX}_{port}")
 }
 
+fn bridge_session_cookie(cookie_name: &str, session_id: &str) -> String {
+    // The Tauri page and loopback bridge are cross-site. Chromium/WebView2
+    // require SameSite=None plus Secure for the iframe to send this cookie.
+    format!("{cookie_name}={session_id}; HttpOnly; SameSite=None; Secure; Path=/")
+}
+
 fn read_session_cookie(headers: &HeaderMap, cookie_name: &str) -> Option<String> {
     let raw = headers.get(COOKIE)?.to_str().ok()?;
     raw.split(';').find_map(|part| {
@@ -939,6 +944,15 @@ mod tests {
         assert_eq!(
             read_session_cookie(&headers, &second).as_deref(),
             Some("second-session")
+        );
+    }
+
+    #[test]
+    fn bridge_session_cookie_supports_cross_site_iframe_requests() {
+        let cookie = bridge_session_cookie("aio_bridge_45100", "session-id");
+        assert_eq!(
+            cookie,
+            "aio_bridge_45100=session-id; HttpOnly; SameSite=None; Secure; Path=/"
         );
     }
 

@@ -323,6 +323,7 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
       commit: CODEX_RETRY_GATEWAY_CANDIDATE_COMMIT,
       current_commit: statusQuery.data.active_commit,
       previous_commit: CODEX_RETRY_GATEWAY_PREVIOUS_COMMIT,
+      rollback_commit: statusQuery.data.active_commit,
       official_main_commit: "fedcba0987654321fedcba0987654321fedcba09",
       commits_ahead: 3,
       summary: "Health verification and bridge-session hardening.",
@@ -334,7 +335,8 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     await user.click(screen.getByRole("button", { name: "检查更新" }));
     const dialog = await screen.findByRole("dialog", { name: "应用外部网关更新" });
     expect(within(dialog).getByText(candidate.summary)).toBeInTheDocument();
-    expect(within(dialog).getByText(/回滚目标/)).toHaveTextContent(
+    expect(within(dialog).getByText(/回滚目标/)).toHaveTextContent(statusQuery.data.active_commit!);
+    expect(within(dialog).getByText(/回滚目标/)).not.toHaveTextContent(
       CODEX_RETRY_GATEWAY_PREVIOUS_COMMIT
     );
     const confirm = within(dialog).getByRole("button", { name: "确认更新" });
@@ -497,6 +499,34 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     expectNoLifecycleMutation();
     unmount();
     expectNoLifecycleMutation();
+  });
+
+  it("replaces the bridge session when the managed runtime generation changes", async () => {
+    const firstSession = createCodexRetryGatewayDetailsSession("generation-7");
+    const nextSession = {
+      ...createCodexRetryGatewayDetailsSession("generation-8"),
+      generation: 8,
+    };
+    mutations.detailsSession.mutateAsync
+      .mockResolvedValueOnce(firstSession)
+      .mockResolvedValueOnce(nextSession);
+
+    const view = renderManager({ showDetailsFrame: true });
+    expect(await screen.findByTitle("Codex 外部网关管理页")).toHaveAttribute(
+      "src",
+      firstSession.iframe_url
+    );
+
+    statusQuery.data = createCodexRetryGatewayStatus({ generation: 8 });
+    view.rerender(<CodexRetryGatewayManager showDetailsFrame />);
+
+    await waitFor(() => {
+      expect(mutations.detailsSession.mutateAsync).toHaveBeenCalledTimes(2);
+      expect(screen.getByTitle("Codex 外部网关管理页")).toHaveAttribute(
+        "src",
+        nextSession.iframe_url
+      );
+    });
   });
 
   it("does not mint or advertise a browser session when details are unavailable", () => {

@@ -2774,6 +2774,7 @@ export type CodexRetryGatewayUpdateCandidate = {
   commit: string;
   current_commit: string | null;
   previous_commit: string | null;
+  rollback_commit: string | null;
   official_main_commit: string;
   commits_ahead: number | null;
   summary: string | null;

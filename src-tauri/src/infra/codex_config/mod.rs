@@ -267,10 +267,16 @@ impl Drop for ManagedCodexProjectionRollback {
 }
 
 #[must_use = "managed Codex config transactions must be explicitly committed or rolled back"]
+struct LiveConfigSnapshot {
+    path: PathBuf,
+    contents: (bool, Option<Vec<u8>>),
+}
+
 pub(crate) struct CodexConfigMutationTransaction {
+    route_transition: Option<crate::infra::cli_proxy::CodexConfigRouteTransitionGuard>,
     projection: Option<ManagedCodexProjectionRollback>,
     provider_sync: Option<crate::infra::codex_provider_sync::CodexProviderSyncRollback>,
-    live_config_snapshot: Option<(PathBuf, (bool, Option<Vec<u8>>))>,
+    live_config_snapshot: Option<LiveConfigSnapshot>,
     verification_record:
         Option<crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord>,
     active: bool,
@@ -278,14 +284,16 @@ pub(crate) struct CodexConfigMutationTransaction {
 
 impl CodexConfigMutationTransaction {
     fn new(
+        route_transition: Option<crate::infra::cli_proxy::CodexConfigRouteTransitionGuard>,
         projection: ManagedCodexProjectionRollback,
         provider_sync: Option<crate::infra::codex_provider_sync::CodexProviderSyncRollback>,
-        live_config_snapshot: Option<(PathBuf, (bool, Option<Vec<u8>>))>,
+        live_config_snapshot: Option<LiveConfigSnapshot>,
         verification_record: Option<
             crate::infra::codex_retry_gateway::CodexRetryGatewayManagedProcessRecord,
         >,
     ) -> Self {
         Self {
+            route_transition,
             projection: Some(projection),
             provider_sync,
             live_config_snapshot,
@@ -300,17 +308,20 @@ impl CodexConfigMutationTransaction {
         self.verification_record.as_ref()
     }
 
-    pub(crate) fn commit(mut self) {
-        self.commit_inner();
+    pub(crate) fn commit(mut self) -> crate::shared::error::AppResult<()> {
+        self.commit_inner()
     }
 
     pub(crate) fn rollback(mut self) -> crate::shared::error::AppResult<()> {
         self.rollback_inner()
     }
 
-    fn commit_inner(&mut self) {
+    fn commit_inner(&mut self) -> crate::shared::error::AppResult<()> {
         if !self.active {
-            return;
+            return Ok(());
+        }
+        if let Some(route_transition) = self.route_transition.take() {
+            route_transition.commit()?;
         }
         self.active = false;
         if let Some(projection) = self.projection.take() {
@@ -321,6 +332,7 @@ impl CodexConfigMutationTransaction {
         }
         self.live_config_snapshot = None;
         self.verification_record = None;
+        Ok(())
     }
 
     fn rollback_inner(&mut self) -> crate::shared::error::AppResult<()> {
@@ -338,8 +350,13 @@ impl CodexConfigMutationTransaction {
             if let Err(error) = provider_sync.rollback() {
                 errors.push(error.to_string());
             }
-        } else if let Some((path, snapshot)) = self.live_config_snapshot.take() {
-            if let Err(error) = restore_optional_file(&path, &snapshot) {
+        } else if let Some(snapshot) = self.live_config_snapshot.take() {
+            if let Err(error) = restore_optional_file(&snapshot.path, &snapshot.contents) {
+                errors.push(error.to_string());
+            }
+        }
+        if let Some(route_transition) = self.route_transition.take() {
+            if let Err(error) = route_transition.rollback() {
                 errors.push(error.to_string());
             }
         }
@@ -447,6 +464,22 @@ fn write_managed_codex_manifest<R: tauri::Runtime>(
     Ok((rollback, verification_record))
 }
 
+fn rollback_prepared_route_transition<T>(
+    route_transition: Option<crate::infra::cli_proxy::CodexConfigRouteTransitionGuard>,
+    cause: crate::shared::error::AppError,
+) -> crate::shared::error::AppResult<T> {
+    let Some(route_transition) = route_transition else {
+        return Err(cause);
+    };
+    match route_transition.rollback() {
+        Ok(()) => Err(cause),
+        Err(rollback_error) => Err(format!(
+            "CODEX_CONFIG_MANAGED_ROLLBACK_FAILED: {cause}; persistent route rollback error: {rollback_error}"
+        )
+        .into()),
+    }
+}
+
 fn rollback_managed_codex_projection(
     gateway_paths: &crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths,
     manifest_path: &Path,
@@ -508,10 +541,21 @@ fn apply_managed_codex_config_bytes<R: tauri::Runtime>(
             &projected_live_text,
         )
         .ok();
+    let prior_canonical_bytes =
+        crate::infra::cli_proxy::current_canonical_codex_config_bytes(app, state)?;
+    let mut route_transition =
+        crate::infra::cli_proxy::prepare_managed_codex_config_route_transition(
+            app,
+            state,
+            &prior_canonical_bytes,
+            current_live.as_deref().unwrap_or_default(),
+            &canonical_bytes,
+            &live_bytes,
+        )?;
 
     if let Some(target_provider) = target_provider {
         if current_provider != target_provider {
-            let (_, (projection, verification_record), provider_sync) =
+            let sync_result =
                 crate::infra::codex_provider_sync::codex_provider_sync_transaction_reversible(
                     app,
                     crate::infra::codex_provider_sync::CodexProviderSyncContext {
@@ -520,31 +564,53 @@ fn apply_managed_codex_config_bytes<R: tauri::Runtime>(
                         config_bytes: Some(live_bytes.clone()),
                     },
                     |_| write_managed_codex_manifest(app, state, &canonical_bytes, &live_bytes),
-                )?;
-            return Ok(CodexConfigMutationTransaction::new(
-                projection,
-                provider_sync,
-                None,
-                verification_record,
-            ));
+                );
+            return match sync_result {
+                Ok((_, (projection, verification_record), provider_sync)) => {
+                    Ok(CodexConfigMutationTransaction::new(
+                        route_transition.take(),
+                        projection,
+                        provider_sync,
+                        None,
+                        verification_record,
+                    ))
+                }
+                Err(error) => rollback_prepared_route_transition(route_transition.take(), error),
+            };
         }
     }
 
     let live_snapshot = snapshot_optional_file(&config_path)?;
     if let Err(err) = write_file_atomic_if_changed(&config_path, &live_bytes) {
-        restore_optional_file(&config_path, &live_snapshot)?;
-        return Err(err);
+        let cause = match restore_optional_file(&config_path, &live_snapshot) {
+            Ok(()) => err,
+            Err(restore_error) => format!(
+                "CODEX_CONFIG_MANAGED_ROLLBACK_FAILED: {err}; live config rollback error: {restore_error}"
+            )
+            .into(),
+        };
+        return rollback_prepared_route_transition(route_transition.take(), cause);
     }
     match write_managed_codex_manifest(app, state, &canonical_bytes, &live_bytes) {
         Ok((projection, verification_record)) => Ok(CodexConfigMutationTransaction::new(
+            route_transition.take(),
             projection,
             None,
-            Some((config_path, live_snapshot)),
+            Some(LiveConfigSnapshot {
+                path: config_path,
+                contents: live_snapshot,
+            }),
             verification_record,
         )),
         Err(err) => {
-            restore_optional_file(&config_path, &live_snapshot)?;
-            Err(err)
+            let cause = match restore_optional_file(&config_path, &live_snapshot) {
+                Ok(()) => err,
+                Err(restore_error) => format!(
+                    "CODEX_CONFIG_MANAGED_ROLLBACK_FAILED: {err}; live config rollback error: {restore_error}"
+                )
+                .into(),
+            };
+            rollback_prepared_route_transition(route_transition.take(), cause)
         }
     }
 }
@@ -767,7 +833,7 @@ fn finish_synchronous_config_mutation(
                 "managed provider changes require the async Codex config coordinator",
             ));
         }
-        transaction.commit();
+        transaction.commit()?;
     }
     Ok(staged.state)
 }

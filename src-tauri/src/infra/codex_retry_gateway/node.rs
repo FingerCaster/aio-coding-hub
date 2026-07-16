@@ -205,17 +205,23 @@ where
 }
 
 fn validate_real_node_executable_path(path: &Path) -> AppResult<PathBuf> {
-    let metadata = ensure_not_symlink_or_reparse(path, "managed Node executable")
+    let canonical = std::fs::canonicalize(path).map_err(|err| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
+            format!("failed to canonicalize {}: {err}", path.display()),
+        )
+    })?;
+    let metadata = ensure_not_symlink_or_reparse(&canonical, "managed Node executable")
         .map_err(|err| AppError::new("CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED", err.to_string()))?;
     if !metadata.is_file() {
         return Err(AppError::new(
             "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
-            format!("Node executable is not a file: {}", path.display()),
+            format!("Node executable is not a file: {}", canonical.display()),
         ));
     }
     #[cfg(windows)]
     {
-        let extension = path
+        let extension = canonical
             .extension()
             .and_then(|value| value.to_str())
             .map(|value| value.to_ascii_lowercase());
@@ -224,17 +230,12 @@ fn validate_real_node_executable_path(path: &Path) -> AppResult<PathBuf> {
                 "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
                 format!(
                     "refusing to launch shell wrapper as managed Node runtime: {}",
-                    path.display()
+                    canonical.display()
                 ),
             ));
         }
     }
-    std::fs::canonicalize(path).map_err(|err| {
-        AppError::new(
-            "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",
-            format!("failed to canonicalize {}: {err}", path.display()),
-        )
-    })
+    Ok(canonical)
 }
 
 fn node_executable_names() -> &'static [&'static str] {
@@ -245,22 +246,6 @@ fn node_executable_names() -> &'static [&'static str] {
     #[cfg(not(windows))]
     {
         &["node"]
-    }
-}
-
-fn command_executable_names(command: &str) -> Vec<String> {
-    #[cfg(windows)]
-    {
-        vec![
-            format!("{command}.exe"),
-            format!("{command}.cmd"),
-            format!("{command}.bat"),
-            command.to_string(),
-        ]
-    }
-    #[cfg(not(windows))]
-    {
-        vec![command.to_string()]
     }
 }
 
@@ -289,59 +274,12 @@ fn find_executable_in_dir(dir: &Path) -> Option<PathBuf> {
         .find(|path| is_path_executable(path))
 }
 
-fn find_command_in_dir(dir: &Path, command: &str) -> Option<PathBuf> {
-    command_executable_names(command)
-        .into_iter()
-        .map(|name| dir.join(name))
-        .find(|path| is_path_executable(path))
-}
-
-fn command_search_dirs<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<Vec<PathBuf>> {
-    let home = crate::app_paths::home_dir(app)?;
-    let mut candidates = vec![
-        home.join(".local").join("bin"),
-        home.join(".npm-global").join("bin"),
-        home.join(".pnpm-global").join("bin"),
-        home.join(".volta").join("bin"),
-        home.join(".asdf").join("shims"),
-        home.join(".bun").join("bin"),
-        home.join("n").join("bin"),
-    ];
-    #[cfg(windows)]
-    {
-        candidates.push(PathBuf::from(r"C:\Program Files\nodejs"));
-        candidates.push(PathBuf::from(r"C:\Program Files (x86)\nodejs"));
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            let root = PathBuf::from(local_app_data);
-            candidates.push(root.join("Programs").join("nodejs"));
-            candidates.push(root.join("nodejs"));
-        }
-        if let Some(app_data) = std::env::var_os("APPDATA") {
-            candidates.push(PathBuf::from(app_data).join("npm"));
-        }
-    }
-    #[cfg(target_os = "macos")]
-    {
-        candidates.push(PathBuf::from("/opt/homebrew/bin"));
-        candidates.push(PathBuf::from("/usr/local/bin"));
-    }
-    #[cfg(target_os = "linux")]
-    {
-        candidates.push(PathBuf::from("/usr/local/bin"));
-        candidates.push(PathBuf::from("/usr/bin"));
-    }
-    Ok(candidates)
-}
-
 fn find_codex_sibling_node<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<Option<PathBuf>> {
-    let codex = find_process_path_command("codex").or_else(|| {
-        command_search_dirs(app).ok().and_then(|dirs| {
-            dirs.into_iter()
-                .find_map(|dir| find_command_in_dir(&dir, "codex"))
-        })
-    });
+    let codex = crate::cli_manager::resolve_executable_candidates(app, "codex")?
+        .into_iter()
+        .next();
     Ok(codex
         .as_deref()
         .and_then(Path::parent)
@@ -399,10 +337,7 @@ fn push_auto_node_candidate(
 fn find_aio_discovery_nodes<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<Vec<PathBuf>> {
-    Ok(command_search_dirs(app)?
-        .into_iter()
-        .filter_map(|dir| find_executable_in_dir(&dir))
-        .collect())
+    crate::cli_manager::resolve_executable_candidates(app, "node")
 }
 
 fn find_process_path_nodes() -> Vec<PathBuf> {
@@ -412,16 +347,6 @@ fn find_process_path_nodes() -> Vec<PathBuf> {
     std::env::split_paths(&current)
         .filter_map(|dir| find_executable_in_dir(&dir))
         .collect()
-}
-
-fn find_process_path_command(command: &str) -> Option<PathBuf> {
-    let current = std::env::var_os("PATH")?;
-    for dir in std::env::split_paths(&current) {
-        if let Some(path) = find_command_in_dir(&dir, command) {
-            return Some(path);
-        }
-    }
-    None
 }
 
 fn probe_node_executable(executable: &Path) -> AppResult<CodexRetryGatewayResolvedNodeVersion> {
@@ -604,6 +529,27 @@ mod tests {
         assert!(validate_manual_override_path(file.to_str().unwrap()).is_ok());
         assert!(validate_manual_override_path("relative-node").is_err());
         assert!(validate_manual_override_path(dir.path().to_str().unwrap()).is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn automatic_discovery_accepts_symlink_to_regular_node_binary() {
+        use std::os::unix::fs::{symlink, PermissionsExt};
+
+        let dir = tempdir().unwrap();
+        let target = dir.path().join("node-real");
+        let link = dir.path().join("node");
+        std::fs::write(&target, b"node").unwrap();
+        let mut permissions = std::fs::metadata(&target).unwrap().permissions();
+        permissions.set_mode(0o755);
+        std::fs::set_permissions(&target, permissions).unwrap();
+        symlink(&target, &link).unwrap();
+
+        assert_eq!(
+            validate_real_node_executable_path(&link).unwrap(),
+            std::fs::canonicalize(&target).unwrap()
+        );
+        assert!(validate_manual_override_path(link.to_str().unwrap()).is_err());
     }
 
     #[test]
