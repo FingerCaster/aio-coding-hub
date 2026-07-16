@@ -73,3 +73,37 @@ Merged upstream Codex system-request classification and provider-health-neutral 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 3: Replace managed Codex gateway with repository recommendation
+
+**Date**: 2026-07-17
+**Task**: Replace managed Codex gateway with repository recommendation
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/external-gateway-integration`
+
+### Summary
+
+Removed the unreleased managed external gateway integration, retained only the official repository recommendation card, preserved approvals reviewer and route-neutral auto-review behavior, passed full precommit/prepush gates, and built the Windows x64 MSI.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `93a08f15` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
