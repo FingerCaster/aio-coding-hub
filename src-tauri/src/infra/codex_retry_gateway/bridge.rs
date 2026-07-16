@@ -456,27 +456,26 @@ fn request_origin_allowed(
     let fetch_site = headers
         .get(SEC_FETCH_SITE)
         .and_then(|value| value.to_str().ok());
-    if fetch_site.is_some_and(|site| site != "same-origin") {
-        return false;
-    }
     let exact_origin = headers
         .get(ORIGIN)
         .and_then(|value| value.to_str().ok())
         .is_some_and(|origin| origin == base_origin);
+    let same_origin_referer = headers
+        .get(REFERER)
+        .and_then(|value| value.to_str().ok())
+        .and_then(|referer| reqwest::Url::parse(referer).ok())
+        .is_some_and(|referer| referer.origin().ascii_serialization() == base_origin);
+    if fetch_site.is_some_and(|site| site != "same-origin") && !exact_origin && !same_origin_referer
+    {
+        return false;
+    }
     if !matches!(*method, Method::GET | Method::HEAD) {
         return exact_origin;
     }
     if !path.starts_with("/__codex_retry_gateway/api/") {
         return true;
     }
-    if fetch_site == Some("same-origin") || exact_origin {
-        return true;
-    }
-    headers
-        .get(REFERER)
-        .and_then(|value| value.to_str().ok())
-        .and_then(|referer| reqwest::Url::parse(referer).ok())
-        .is_some_and(|referer| referer.origin().ascii_serialization() == base_origin)
+    fetch_site == Some("same-origin") || exact_origin || same_origin_referer
 }
 
 fn response_requires_status_overlay(method: &Method, path: &str, status: StatusCode) -> bool {
@@ -1134,7 +1133,7 @@ mod tests {
             REFERER,
             HeaderValue::from_static("http://127.0.0.1:45100/__codex_retry_gateway/ui"),
         );
-        assert!(!request_origin_allowed(
+        assert!(request_origin_allowed(
             &Method::GET,
             "/__codex_retry_gateway/api/analytics/reasoning/export",
             &headers,

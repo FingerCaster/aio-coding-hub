@@ -345,7 +345,7 @@ export function CodexRetryGatewayManager({
   }, [revokeIframeSession]);
 
   useEffect(() => {
-    if (!showDetailsFrame || !status?.details_available) {
+    if (!showDetailsFrame || !status?.desired_enabled || !status?.details_available) {
       detailsSessionRequestRef.current += 1;
       const previous = activeDetailsSessionRef.current;
       activeDetailsSessionRef.current = null;
@@ -372,12 +372,17 @@ export function CodexRetryGatewayManager({
     refreshDetailsSession,
     revokeIframeSession,
     showDetailsFrame,
+    status?.desired_enabled,
     status?.details_available,
     status?.generation,
   ]);
 
   const openBrowser = useCallback(async () => {
-    if (!status?.details_available) {
+    if (!status?.desired_enabled) {
+      toast("请先启用 Codex 外部网关，再打开管理页");
+      return;
+    }
+    if (!status.details_available) {
       toast("管理桥接暂不可用，请刷新状态后重试");
       return;
     }
@@ -393,7 +398,7 @@ export function CodexRetryGatewayManager({
       logToConsole("error", "打开 Codex 外部网关浏览器入口失败", { error: formatted.raw });
       toast(formatted.toast);
     }
-  }, [revokeIframeSession, status?.details_available]);
+  }, [revokeIframeSession, status?.details_available, status?.desired_enabled]);
 
   const handleMutationError = useCallback(
     (action: string, error: unknown, providerSync = false) => {
@@ -718,7 +723,12 @@ export function CodexRetryGatewayManager({
                         variant="secondary"
                         className="gap-2"
                         onClick={onOpenDetailsRoute}
-                        disabled={!onOpenDetailsRoute}
+                        disabled={
+                          !onOpenDetailsRoute ||
+                          !currentStatus.desired_enabled ||
+                          !currentStatus.details_available ||
+                          Boolean(managerBusy)
+                        }
                       >
                         <SquareArrowOutUpRight className="h-4 w-4" aria-hidden="true" />
                         详情
@@ -730,7 +740,11 @@ export function CodexRetryGatewayManager({
                       variant="secondary"
                       className="gap-2"
                       onClick={() => void openBrowser()}
-                      disabled={!currentStatus.details_available || Boolean(managerBusy)}
+                      disabled={
+                        !currentStatus.desired_enabled ||
+                        !currentStatus.details_available ||
+                        Boolean(managerBusy)
+                      }
                     >
                       <ExternalLink className="h-4 w-4" aria-hidden="true" />
                       浏览器打开
@@ -1011,7 +1025,11 @@ export function CodexRetryGatewayManager({
                             setDetailsSessionError(formatted.toast);
                           });
                         }}
-                        disabled={!currentStatus.details_available || Boolean(managerBusy)}
+                        disabled={
+                          !currentStatus.desired_enabled ||
+                          !currentStatus.details_available ||
+                          Boolean(managerBusy)
+                        }
                       >
                         <RefreshCw
                           className={cn(
@@ -1028,7 +1046,11 @@ export function CodexRetryGatewayManager({
                         variant="secondary"
                         className="gap-2"
                         onClick={() => void openBrowser()}
-                        disabled={!currentStatus.details_available || Boolean(managerBusy)}
+                        disabled={
+                          !currentStatus.desired_enabled ||
+                          !currentStatus.details_available ||
+                          Boolean(managerBusy)
+                        }
                       >
                         <ExternalLink className="h-4 w-4" aria-hidden="true" />
                         浏览器打开
@@ -1036,7 +1058,11 @@ export function CodexRetryGatewayManager({
                     </div>
                   </div>
 
-                  {!currentStatus.details_available ? (
+                  {!currentStatus.desired_enabled ? (
+                    <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
+                      请先启用 Codex 外部网关，再进入管理页。
+                    </div>
+                  ) : !currentStatus.details_available ? (
                     <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
                       管理桥接暂不可用。请刷新状态；若网关正在恢复，请使用“重试恢复”。
                     </div>

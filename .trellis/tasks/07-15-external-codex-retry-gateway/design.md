@@ -444,12 +444,17 @@ Bridge behavior:
 The Tauri CSP changes from `frame-src 'none'` to only
 `http://127.0.0.1:*`. The iframe URL is accepted only from the typed bridge
 command, and the frame sandbox allows scripts, same-origin, forms, modals, and
-downloads but not Tauri IPC, top navigation, or unrestricted popups.
+downloads but not Tauri IPC, top navigation, or unrestricted popups. Chromium
+may label iframe API requests cross-site relative to the Tauri top-level page;
+the bridge accepts only an exact loopback Origin or loopback Referer proof for
+those GETs, while mutations remain exact-Origin protected.
 
 Leaving the details route unloads the frame and revokes that view session if
 appropriate; it does not change desired state or stop the process. The outer
 page keeps back, refresh, open-browser, update, retry/stop, and status controls
-outside the frame.
+outside the frame. Details entry is disabled unless the gateway is desired-on
+and its management bridge is available. Both details-page exit controls return
+to `/cli-manager?tab=codex`, which initializes the Codex tab explicitly.
 
 ## Frontend and IPC Contract
 

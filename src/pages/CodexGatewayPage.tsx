@@ -14,7 +14,12 @@ export function CodexGatewayPage() {
         subtitle="受管实例状态与本地桥接安全边界"
         actions={
           <>
-            <Button type="button" variant="secondary" size="sm" onClick={() => navigate(-1)}>
+            <Button
+              type="button"
+              variant="secondary"
+              size="sm"
+              onClick={() => navigate("/cli-manager?tab=codex")}
+            >
               <ArrowLeft className="h-4 w-4" aria-hidden="true" />
               返回
             </Button>
@@ -22,7 +27,7 @@ export function CodexGatewayPage() {
               type="button"
               variant="secondary"
               size="sm"
-              onClick={() => navigate("/cli-manager")}
+              onClick={() => navigate("/cli-manager?tab=codex")}
             >
               <X className="h-4 w-4" aria-hidden="true" />
               退出

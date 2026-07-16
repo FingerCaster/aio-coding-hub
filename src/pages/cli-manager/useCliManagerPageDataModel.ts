@@ -1,6 +1,7 @@
 // Usage: Data-model hook for CLI manager page orchestration.
 
 import { useEffect, useState, type KeyboardEvent as ReactKeyboardEvent } from "react";
+import { useSearchParams } from "react-router-dom";
 import { toast } from "sonner";
 import {
   type ClaudeSettingsPatch,
@@ -75,7 +76,13 @@ const DEFAULT_RECTIFIER: GatewayRectifierSettingsPatch = {
 };
 
 export function useCliManagerPageDataModel() {
-  const [tab, setTab] = useState<CliManagerTabKey>("general");
+  const [searchParams] = useSearchParams();
+  const [tab, setTab] = useState<CliManagerTabKey>(() => {
+    const requested = searchParams.get("tab");
+    return CLI_MANAGER_TABS.some((item) => item.key === requested)
+      ? (requested as CliManagerTabKey)
+      : "general";
+  });
 
   const settingsQuery = useSettingsQuery();
   const appSettings = settingsQuery.data ?? null;

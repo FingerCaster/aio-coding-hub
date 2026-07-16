@@ -1,6 +1,6 @@
 import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { MemoryRouter, Route, Routes } from "react-router-dom";
+import { MemoryRouter, Route, Routes, useLocation } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
   useCodexRetryGatewayApplyCommitMutation,
@@ -125,6 +125,11 @@ function renderManager(
   props: { showDetailsFrame?: boolean; onOpenDetailsRoute?: () => void } = {}
 ) {
   return render(<CodexRetryGatewayManager {...props} />);
+}
+
+function LocationProbe() {
+  const location = useLocation();
+  return <div>{`CLI manager route ${location.search}`}</div>;
 }
 
 function expectNoLifecycleMutation() {
@@ -657,6 +662,20 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     }
   });
 
+  it("does not allow details entry or browser access while the gateway is disabled", () => {
+    statusQuery.data = createCodexRetryGatewayStatus({
+      desired_enabled: false,
+      runtime_phase: "disabled",
+      route_mode: "direct_aio",
+      details_available: true,
+    });
+    renderManager({ onOpenDetailsRoute: vi.fn() });
+
+    expect(screen.getByRole("button", { name: "详情" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "浏览器打开" })).toBeDisabled();
+    expect(mutations.detailsSession.mutateAsync).not.toHaveBeenCalled();
+  });
+
   it.each(["返回", "退出"])(
     "%s only navigates and never changes gateway lifecycle",
     async (action) => {
@@ -667,7 +686,7 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
           initialIndex={1}
         >
           <Routes>
-            <Route path="/cli-manager" element={<div>CLI manager route</div>} />
+            <Route path="/cli-manager" element={<LocationProbe />} />
             <Route path="/cli-manager/codex-gateway" element={<CodexGatewayPage />} />
           </Routes>
         </MemoryRouter>
@@ -676,7 +695,7 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
       await screen.findByTitle("Codex 外部网关管理页");
       expect(screen.getByText("受管实例状态与本地桥接安全边界")).toBeInTheDocument();
       await user.click(screen.getByRole("button", { name: action }));
-      expect(await screen.findByText("CLI manager route")).toBeInTheDocument();
+      expect(await screen.findByText("CLI manager route ?tab=codex")).toBeInTheDocument();
       expectNoLifecycleMutation();
     }
   );

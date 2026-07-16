@@ -94,7 +94,11 @@ that `null`; it is not a missing-result error.
   system-browser entry use independent tokens and view identities. Refresh or
   leaving the AIO details view revokes only its iframe view; this must not stop
   the gateway or revoke an already-open browser session.
-- Bridge API requests require a verified same-origin browser context. Status
+- Bridge API requests require a verified same-origin browser context. For the
+  AIO iframe, Chromium may report `Sec-Fetch-Site: cross-site` because the
+  top-level document is the Tauri origin; accept that GET only when the exact
+  bridge Origin or a same-origin bridge Referer proves the request came from
+  the loopback bridge. Mutations still require the exact bridge Origin. Status
   overlays may buffer up to 8 MiB; other allowlisted responses stream through a
   cumulative 8 MiB bound. Every request revalidates the managed generation and
   process identity.
@@ -151,6 +155,8 @@ that `null`; it is not a missing-result error.
 | Git cache contains graph/config overrides | Reject as `SOURCE_GIT_CACHE_INVALID`; never use its ancestry result |
 | Codeload ZIP begins with its explicit root directory entry | Accept it and extract only descendants of that one root |
 | ZIP contains a top-level file or multiple roots | Reject as `SOURCE_ARCHIVE_INVALID` before writing extracted content |
+| Iframe GET has `Sec-Fetch-Site: cross-site` but exact bridge Origin/Referer | Accept as an embedded bridge request; do not reject solely on top-level Tauri site |
+| Iframe mutation lacks exact bridge Origin | Reject with HTTP 403 |
 
 ### 5. Good / Base / Bad Cases
 
@@ -165,6 +171,8 @@ that `null`; it is not a missing-result error.
   unchanged in the enable request.
 - Good: AIO fetches official `main` into its own bare cache and accepts an exact
   ancestor SHA without consuming anonymous REST quota.
+- Good: leaving the embedded details view navigates to `/cli-manager?tab=codex`,
+  and the CLI manager initializes the Codex tab from that query parameter.
 - Bad: restore the first route or Provider Sync snapshot before discovering
   that a later backup is missing. This creates an unrecoverable mixed state.
 - Bad: infer an applied route from commented TOML text, the manifest, or a
@@ -173,6 +181,9 @@ that `null`; it is not a missing-result error.
   session when the AIO frame unmounts.
 - Bad: trust a user's existing clone, allow `url.*.insteadOf`, or interpret a
   failed Git fetch as proof that a commit is not on official main.
+- Bad: expose the details route/button while the gateway is disabled, or reject
+  the embedded page merely because its fetch-site is cross-site relative to the
+  Tauri top-level document.
 
 ### 6. Tests Required
 
@@ -203,6 +214,9 @@ that `null`; it is not a missing-result error.
   independent and cover fallback status/rate-limit classification.
 - Archive tests include an explicit root-directory entry matching codeload,
   plus negative top-level-file and multiple-root cases.
+- Bridge tests cover embedded cross-site fetch metadata with a same-origin
+  bridge Referer, reject missing/foreign proof, and keep mutations exact-Origin
+  protected. UI tests cover disabled details entry and Codex-tab return.
 - Process tests require matching health/status PIDs and prove exited children
   are reaped. Run generated bindings, full Rust, precommit, prepush, build, and
   installer-content gates before release.
