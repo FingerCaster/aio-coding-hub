@@ -1,0 +1,3 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查导出与导入对称性、失败原子性、bundle 兼容和跨层错误边界。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"确认实现仍由共享常量和既有安全 helper 驱动，没有扩散魔法数字或旁路。"}
+{"file":".trellis/tasks/07-17-fix-config-export-large-skill-asset/research/config-export-large-asset.md","reason":"逐项核对大文件 round trip、安全负例、风险和回滚点。"}

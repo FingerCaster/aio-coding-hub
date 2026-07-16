@@ -1,0 +1,32 @@
+{
+  "id": "sequential-task-acceptance",
+  "name": "sequential-task-acceptance",
+  "title": "规划多任务串行执行与验收",
+  "description": "严格串行修复四项用户问题，最后同步 upstream/main 并执行父任务集成验收。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-07-17",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "FingerCaster/sequential-task-acceptance",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "07-17-fix-multi-provider-failover-503",
+    "07-17-fix-account-balance-manual-refresh",
+    "07-17-fix-newapi-account-usage-response",
+    "07-17-fix-config-export-large-skill-asset",
+    "07-17-sync-upstream-main-after-fixes"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}

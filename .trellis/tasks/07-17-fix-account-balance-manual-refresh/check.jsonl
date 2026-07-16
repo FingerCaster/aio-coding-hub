@@ -1,0 +1,2 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check automatic, timed, manual, service and UI paths against one shared query contract."}
+{"file":".trellis/tasks/07-17-fix-account-balance-manual-refresh/research/manual-refresh-race.md","reason":"Verify deferred ordering, forced fetch, provider isolation, and no gateway side effects."}

@@ -1,0 +1,2 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Keep remote NewAPI shapes, Rust normalization, IPC DTO, query cache, and UI unit semantics aligned."}
+{"file":".trellis/tasks/07-17-fix-newapi-account-usage-response/research/newapi-muyuan-readonly-validation.md","reason":"Implement only the authenticated endpoint and field semantics proven by immutable source and redacted live evidence."}
