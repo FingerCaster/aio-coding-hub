@@ -420,6 +420,14 @@ HttpOnly, SameSite session cookie and redirects to the external UI path. API
 requests without a current bridge session are rejected. Sessions expire on app
 restart, uninstall, or ownership change.
 
+WebView2 can preserve the Tauri initiator's `Sec-Fetch-Site: cross-site` (or
+`none`) through the launch redirect and omit a bridge Origin/Referer. Therefore
+the read-only UI/favicon navigation is allowed to reach session and
+managed-identity validation. API GETs separately require same-origin fetch
+metadata, the exact bridge Origin, or a same-origin bridge Referer; mutations
+require the exact bridge Origin. The API predicate must never gate the initial
+redirected document navigation.
+
 Before each proxied request, validate the active process generation and raw
 external health identity. Use an explicit method/path allowlist and bounded
 request/response streaming; do not create an arbitrary local reverse proxy.
@@ -446,8 +454,9 @@ The Tauri CSP changes from `frame-src 'none'` to only
 command, and the frame sandbox allows scripts, same-origin, forms, modals, and
 downloads but not Tauri IPC, top navigation, or unrestricted popups. Chromium
 may label iframe API requests cross-site relative to the Tauri top-level page;
-the bridge accepts only an exact loopback Origin or loopback Referer proof for
-those GETs, while mutations remain exact-Origin protected.
+the bridge accepts only same-origin fetch metadata, an exact loopback Origin,
+or loopback Referer proof for those API GETs, while mutations remain
+exact-Origin protected.
 
 Leaving the details route unloads the frame and revokes that view session if
 appropriate; it does not change desired state or stop the process. The outer

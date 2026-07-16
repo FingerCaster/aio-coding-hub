@@ -123,6 +123,21 @@ After implementation:
 
 ---
 
+## Embedded Bridge Navigation Checklist
+
+When an app-owned page embeds a loopback bridge or reverse-proxied UI:
+
+- [ ] Trace launch-token handling, redirect/document navigation, and API calls
+      as separate request contexts.
+- [ ] Account for iframe and top-level redirects preserving the initiator's
+      `Sec-Fetch-Site` while omitting the destination Origin/Referer.
+- [ ] Authenticate read-only document navigation with the launch/session
+      boundary; enforce same-origin/CSRF proof independently on API mutations.
+- [ ] Add a handler-level regression that proves the document reaches session
+      validation and the same cross-site metadata is rejected on the API path.
+
+---
+
 ## Cross-Platform Template Consistency
 
 In Trellis, command templates (e.g., `record-session.md`) exist in **multiple platforms** with identical or near-identical content. This is a cross-layer boundary.

@@ -453,6 +453,15 @@ fn request_origin_allowed(
     headers: &HeaderMap,
     base_origin: &str,
 ) -> bool {
+    // The one-time launch route redirects a Tauri iframe to the bridge UI.
+    // WebView2 preserves the top-level cross-site fetch metadata across that
+    // redirect, so the document navigation cannot prove bridge origin yet.
+    // It is read-only and is still authenticated by the session cookie below;
+    // API requests retain the stricter browser-origin checks.
+    if !path.starts_with("/__codex_retry_gateway/api/") {
+        return matches!(*method, Method::GET | Method::HEAD);
+    }
+
     let fetch_site = headers
         .get(SEC_FETCH_SITE)
         .and_then(|value| value.to_str().ok());
@@ -471,9 +480,6 @@ fn request_origin_allowed(
     }
     if !matches!(*method, Method::GET | Method::HEAD) {
         return exact_origin;
-    }
-    if !path.starts_with("/__codex_retry_gateway/api/") {
-        return true;
     }
     fetch_site == Some("same-origin") || exact_origin || same_origin_referer
 }
@@ -1100,12 +1106,27 @@ mod tests {
             &headers,
             "http://127.0.0.1:45100"
         ));
+
+        headers.insert(SEC_FETCH_SITE, HeaderValue::from_static("cross-site"));
+        headers.insert(
+            REFERER,
+            HeaderValue::from_static("http://tauri.localhost/cli-manager/codex-gateway"),
+        );
+        assert!(request_origin_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/ui",
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
         assert!(!request_origin_allowed(
             &Method::GET,
             "/__codex_retry_gateway/api/analytics/reasoning/export",
             &headers,
             "http://127.0.0.1:45100"
         ));
+
+        headers.remove(SEC_FETCH_SITE);
+        headers.remove(REFERER);
         assert!(!request_origin_allowed(
             &Method::POST,
             "/__codex_retry_gateway/api/config",
@@ -1153,6 +1174,52 @@ mod tests {
             &headers,
             "http://127.0.0.1:45100"
         ));
+    }
+
+    #[tokio::test]
+    async fn cross_site_ui_navigation_reaches_session_validation_but_api_does_not() {
+        let paths = CodexRetryGatewayManagerPaths::from_root(
+            tempfile::tempdir().unwrap().path().join("gateway"),
+        );
+        let state = Arc::new(BridgeRuntimeState {
+            base_origin: "http://127.0.0.1:45100".to_string(),
+            cookie_name: bridge_cookie_name(45100),
+            paths: RwLock::new(paths),
+            callback: RwLock::new(Arc::new(AwaitedRestoreCallback {
+                completed: Arc::new(AtomicBool::new(false)),
+            })),
+            launch_tokens: RwLock::new(HashMap::new()),
+            sessions: RwLock::new(HashMap::new()),
+            client: Client::new(),
+        });
+        let mut headers = HeaderMap::new();
+        headers.insert(SEC_FETCH_SITE, HeaderValue::from_static("cross-site"));
+        headers.insert(
+            REFERER,
+            HeaderValue::from_static("http://tauri.localhost/cli-manager/codex-gateway"),
+        );
+
+        let ui_response = proxy_request(
+            State(state.clone()),
+            Method::GET,
+            headers.clone(),
+            OriginalUri(axum::http::Uri::from_static("/__codex_retry_gateway/ui")),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(ui_response.status(), StatusCode::UNAUTHORIZED);
+
+        let api_response = proxy_request(
+            State(state),
+            Method::GET,
+            headers,
+            OriginalUri(axum::http::Uri::from_static(
+                "/__codex_retry_gateway/api/status",
+            )),
+            Body::empty(),
+        )
+        .await;
+        assert_eq!(api_response.status(), StatusCode::FORBIDDEN);
     }
 
     #[test]

@@ -94,14 +94,19 @@ that `null`; it is not a missing-result error.
   system-browser entry use independent tokens and view identities. Refresh or
   leaving the AIO details view revokes only its iframe view; this must not stop
   the gateway or revoke an already-open browser session.
-- Bridge API requests require a verified same-origin browser context. For the
-  AIO iframe, Chromium may report `Sec-Fetch-Site: cross-site` because the
-  top-level document is the Tauri origin; accept that GET only when the exact
-  bridge Origin or a same-origin bridge Referer proves the request came from
-  the loopback bridge. Mutations still require the exact bridge Origin. Status
+- Treat bridge launch, document navigation, and API calls as separate browser
+  security contexts. The one-time `/launch/:token` response creates the session
+  and redirects to the allowlisted UI document. WebView2 may preserve the
+  Tauri top-level `Sec-Fetch-Site: cross-site` (or `none`) across that redirect
+  while omitting a bridge Origin/Referer, so read-only UI/favicon navigation is
+  allowed to reach cookie validation. It must still present the bridge session
+  cookie and revalidate the managed generation and process identity.
+- Bridge API requests require a verified same-origin browser context. API GETs
+  require `Sec-Fetch-Site: same-origin`, the exact bridge Origin, or a
+  same-origin bridge Referer. Mutations require the exact bridge Origin. Do not
+  apply the API Fetch Metadata rule to the redirected UI document. Status
   overlays may buffer up to 8 MiB; other allowlisted responses stream through a
-  cumulative 8 MiB bound. Every request revalidates the managed generation and
-  process identity.
+  cumulative 8 MiB bound.
 - Automatic Node discovery may canonicalize a package-manager symlink to a
   concrete executable. A manual override rejects symlink/reparse input before
   probing and never replaces a prior valid override on failure.
@@ -146,6 +151,7 @@ that `null`; it is not a missing-result error.
 | Bridge view ID is not exactly 32 hex characters | `CODEX_RETRY_GATEWAY_BRIDGE_SESSION_INVALID` |
 | Revoke succeeds with Tauri `null` | Resolve successfully in service/query layers |
 | Launch token is missing, expired, or reused | HTTP 410; do not create a cookie session |
+| Redirected UI GET has cross-site/none fetch metadata and no bridge Origin/Referer | Continue to session-cookie and managed-identity validation; missing cookie is HTTP 401, not origin HTTP 403 |
 | API request is cross-site or a mutation lacks exact origin | HTTP 403 |
 | Health/status process IDs differ | Treat the process as unowned/unhealthy |
 | Manual Node override is a link, directory, relative path, or Node < 18 | Reject and preserve prior selection |
@@ -173,6 +179,8 @@ that `null`; it is not a missing-result error.
   ancestor SHA without consuming anonymous REST quota.
 - Good: leaving the embedded details view navigates to `/cli-manager?tab=codex`,
   and the CLI manager initializes the Codex tab from that query parameter.
+- Good: the launch redirect reaches the UI document under WebView2 cross-site
+  navigation metadata, then same-origin UI API calls use the stricter API rule.
 - Bad: restore the first route or Provider Sync snapshot before discovering
   that a later backup is missing. This creates an unrecoverable mixed state.
 - Bad: infer an applied route from commented TOML text, the manifest, or a
@@ -184,6 +192,9 @@ that `null`; it is not a missing-result error.
 - Bad: expose the details route/button while the gateway is disabled, or reject
   the embedded page merely because its fetch-site is cross-site relative to the
   Tauri top-level document.
+- Bad: use one origin predicate for both redirected HTML navigation and API
+  calls. A redirect can preserve the initiator's fetch-site before the bridge
+  document has a same-origin browser context.
 
 ### 6. Tests Required
 
@@ -214,8 +225,10 @@ that `null`; it is not a missing-result error.
   independent and cover fallback status/rate-limit classification.
 - Archive tests include an explicit root-directory entry matching codeload,
   plus negative top-level-file and multiple-root cases.
-- Bridge tests cover embedded cross-site fetch metadata with a same-origin
-  bridge Referer, reject missing/foreign proof, and keep mutations exact-Origin
+- Bridge tests cover the handler-level launch redirect shape: a cross-site UI
+  document request proceeds to session validation while the same headers on an
+  API request fail with HTTP 403. API tests also cover same-origin bridge
+  Referer proof, reject missing/foreign proof, and keep mutations exact-Origin
   protected. UI tests cover disabled details entry and Codex-tab return.
 - Process tests require matching health/status PIDs and prove exited children
   are reaped. Run generated bindings, full Rust, precommit, prepush, build, and
@@ -266,4 +279,13 @@ For official commit trust, using an arbitrary checkout is wrong:
 Wrong: user clone/remotes -> merge-base -> execute
 Correct: fixed official HTTPS URL -> isolated AIO bare cache -> fetch main ->
          exact-SHA merge-base -> bounded codeload download
+```
+
+For the management bridge, treating every proxied GET as an API request is
+wrong:
+
+```text
+Wrong: launch redirect -> cross-site UI GET -> require bridge Origin -> HTTP 403
+Correct: launch redirect -> UI GET -> validate session cookie/managed identity
+         UI fetch -> API GET/mutation -> enforce API same-origin rules
 ```
