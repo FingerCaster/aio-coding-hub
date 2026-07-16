@@ -415,8 +415,12 @@ jobs:
           if (-not $msi -or -not $portable) {
             throw "Missing Windows MSI or portable ZIP before bundle inventory scan."
           }
-          & msiexec.exe /a $msi.FullName /qn "TARGETDIR=$msiRoot"
-          if ($LASTEXITCODE -ne 0) { throw "MSI administrative extraction failed: $LASTEXITCODE" }
+          $msiExtract = Start-Process -FilePath msiexec.exe `
+            -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$msiRoot`"") `
+            -Wait -PassThru
+          if ($msiExtract.ExitCode -ne 0) {
+            throw "MSI administrative extraction failed: $($msiExtract.ExitCode)"
+          }
           Expand-Archive -LiteralPath $portable.FullName -DestinationPath $portableRoot -Force
           node scripts/check-release-bundle-inventory.mjs --root $msiRoot --root $portableRoot
 
