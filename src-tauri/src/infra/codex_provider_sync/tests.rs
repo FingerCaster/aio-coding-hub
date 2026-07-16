@@ -121,6 +121,34 @@ fn current_config_provider_rejects_invalid_toml() {
 }
 
 #[test]
+fn rollout_provider_rewrite_allows_length_changes_and_preserves_other_segments() {
+    let session_meta = r#"{"type":"session_meta","payload":{"model_provider":"x","note":"keep"}}"#;
+    let event = r#"{"type":"event_msg","payload":{"text":"model_provider=x"}}"#;
+    let malformed = "not-json-without-final-newline";
+    let input = format!("{session_meta}\r\n{event}\r\n{malformed}");
+
+    let output = rewrite_rollout_session_meta_providers(input.as_bytes(), "Anthropic")
+        .expect("rewrite rollout provider");
+    let output = String::from_utf8(output).expect("rewritten rollout remains UTF-8");
+    let mut segments = output.split_inclusive('\n');
+    let rewritten_meta = segments.next().expect("session meta segment");
+    let preserved_event = segments.next().expect("event segment");
+    let preserved_malformed = segments.next().expect("malformed segment");
+
+    let rewritten_value: Value =
+        serde_json::from_str(rewritten_meta.trim_end_matches(['\r', '\n']))
+            .expect("parse rewritten session meta");
+    assert_eq!(
+        rewritten_value["payload"]["model_provider"],
+        Value::String("Anthropic".to_string())
+    );
+    assert_eq!(rewritten_value["payload"]["note"], "keep");
+    assert_eq!(preserved_event, format!("{event}\r\n"));
+    assert_eq!(preserved_malformed, malformed);
+    assert!(segments.next().is_none());
+}
+
+#[test]
 fn backup_pruning_keeps_only_latest_five_managed_backups() {
     let temp = tempfile::tempdir().expect("tempdir");
     let home = temp.path();
@@ -275,6 +303,108 @@ fn managed_backup_fixture(home: &Path, name: &str) -> PathBuf {
     )
     .expect("write managed backup manifest");
     backup
+}
+
+fn persistent_snapshot_corruption_fixture() -> (tempfile::TempDir, [PathBuf; 2]) {
+    let home = tempfile::tempdir().expect("Codex home");
+    let targets = [
+        home.path().join("config.toml"),
+        home.path().join("sessions/2026/rollout.jsonl"),
+    ];
+    for (index, target) in targets.iter().enumerate() {
+        std::fs::create_dir_all(target.parent().expect("target parent"))
+            .expect("create target parent");
+        std::fs::write(target, format!("before-{index}")).expect("write snapshot source");
+    }
+    let snapshots = targets
+        .iter()
+        .map(|target| snapshot_path(target).expect("snapshot target"))
+        .collect::<Vec<_>>();
+    let backup = managed_backup_fixture(home.path(), "corrupt-preflight");
+    prepare_provider_sync_transaction(
+        home.path(),
+        "corrupt-preflight",
+        "aio",
+        &sha256_hex(b"target-config"),
+        None,
+        &backup,
+        true,
+        &snapshots,
+    )
+    .expect("prepare persistent snapshot fixture");
+    for (index, target) in targets.iter().enumerate() {
+        std::fs::write(target, format!("after-{index}")).expect("mutate target after prepare");
+    }
+    (home, targets)
+}
+
+fn assert_persistent_snapshot_targets_remain_unmodified(targets: &[PathBuf; 2]) {
+    for (index, target) in targets.iter().enumerate() {
+        assert_eq!(
+            std::fs::read(target).expect("read target after failed preflight"),
+            format!("after-{index}").as_bytes(),
+            "{} must not be partially restored",
+            target.display()
+        );
+    }
+}
+
+#[test]
+fn persistent_snapshot_recovery_rejects_hash_corruption_before_any_restore() {
+    let (home, targets) = persistent_snapshot_corruption_fixture();
+    let backup = provider_sync_transaction_root(home.path()).join("files/00000001.bin");
+    std::fs::write(&backup, b"corrupt!" /* same length as before-1 */)
+        .expect("corrupt backup without changing length");
+
+    let error = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+        .expect_err("hash-corrupt snapshot must fail recovery");
+
+    assert!(error.to_string().contains("hash mismatch"), "{error}");
+    assert_persistent_snapshot_targets_remain_unmodified(&targets);
+}
+
+#[test]
+fn persistent_snapshot_recovery_rejects_missing_and_truncated_backups_before_restore() {
+    for corruption in ["missing", "truncated"] {
+        let (home, targets) = persistent_snapshot_corruption_fixture();
+        let backup = provider_sync_transaction_root(home.path()).join("files/00000001.bin");
+        if corruption == "missing" {
+            std::fs::remove_file(&backup).expect("remove backup");
+        } else {
+            std::fs::write(&backup, b"short").expect("truncate backup");
+        }
+
+        let error = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+            .expect_err("invalid snapshot backup must fail recovery");
+
+        assert!(
+            error.to_string().contains("snapshot"),
+            "{corruption}: {error}"
+        );
+        assert_persistent_snapshot_targets_remain_unmodified(&targets);
+    }
+}
+
+#[test]
+fn persistent_snapshot_recovery_rejects_oversized_declared_snapshot_before_read() {
+    let (home, targets) = persistent_snapshot_corruption_fixture();
+    let manifest_path = provider_sync_transaction_manifest_path(home.path());
+    let mut manifest: serde_json::Value =
+        serde_json::from_slice(&std::fs::read(&manifest_path).expect("read transaction manifest"))
+            .expect("parse transaction manifest");
+    manifest["snapshots"][0]["byte_len"] =
+        serde_json::Value::from(PROVIDER_SYNC_SNAPSHOT_MAX_BYTES as u64 + 1);
+    write_file_atomic(
+        &manifest_path,
+        &serde_json::to_vec_pretty(&manifest).expect("serialize oversized manifest"),
+    )
+    .expect("write oversized declaration");
+
+    let error = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+        .expect_err("oversized declared snapshot must fail recovery");
+
+    assert!(error.to_string().contains("snapshot exceeds"), "{error}");
+    assert_persistent_snapshot_targets_remain_unmodified(&targets);
 }
 
 #[test]

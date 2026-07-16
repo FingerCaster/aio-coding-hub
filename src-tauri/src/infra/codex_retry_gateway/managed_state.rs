@@ -16,7 +16,7 @@ use std::path::{Path, PathBuf};
 use super::util::{
     canonicalize_path_within_root, create_or_validate_plain_directory,
     ensure_not_symlink_or_reparse, ensure_path_within_root, metadata_is_symlink_or_reparse,
-    normalize_full_sha, normalized_internal_relative_path,
+    normalize_full_sha, normalized_internal_relative_path, now_unix_ms, random_hex,
 };
 
 const FEATURE_ROOT_DIR_NAME: &str = "codex-retry-gateway";
@@ -27,9 +27,11 @@ const SOURCE_MANIFEST_MAX_BYTES: usize = 256 * 1024;
 #[allow(dead_code)] // Integration-owned route transition glue persists this file outside the runtime worker.
 const TRANSITION_MAX_BYTES: usize = 512 * 1024;
 const TRANSITION_SNAPSHOT_MAX_BYTES: usize = 1024 * 1024;
-const TRANSITION_SNAPSHOT_AGGREGATE_MAX_BYTES: usize = 8 * 1024 * 1024;
+pub(crate) const TRANSITION_SNAPSHOT_AGGREGATE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const TRANSITION_SNAPSHOT_DIR_NAME: &str = "transition-snapshots";
 const TRANSITION_SNAPSHOT_STAGING_DIR_NAME: &str = "transition-snapshots.staging";
+const TRANSITION_QUARANTINE_DIR_NAME: &str = "corrupt-transitions";
+const TRANSITION_QUARANTINE_REASON_MAX_CHARS: usize = 4 * 1024;
 
 #[derive(Debug, Clone)]
 pub(crate) struct CodexRetryGatewayManagerPaths {
@@ -547,6 +549,85 @@ impl FileCodexRetryGatewayTransitionStore {
         Ok(self.parent()?.join(TRANSITION_SNAPSHOT_STAGING_DIR_NAME))
     }
 
+    fn quarantine_root(&self) -> AppResult<PathBuf> {
+        Ok(self.parent()?.join(TRANSITION_QUARANTINE_DIR_NAME))
+    }
+
+    fn quarantine_corrupt_artifacts(&self, reason: &str) -> AppResult<String> {
+        let parent = self.parent()?;
+        let parent_metadata =
+            ensure_not_symlink_or_reparse(parent, "Codex route transition parent")?;
+        if !parent_metadata.is_dir() {
+            return Err(format!(
+                "SEC_INVALID_INPUT: transition parent must be a plain directory: {}",
+                parent.display()
+            )
+            .into());
+        }
+
+        let quarantine_root = self.quarantine_root()?;
+        create_or_validate_plain_directory(
+            &quarantine_root,
+            "Codex route transition quarantine root",
+        )?;
+        let quarantine_dir = quarantine_root.join(format!("{}-{}", now_unix_ms(), random_hex(8)));
+        std::fs::create_dir(&quarantine_dir).map_err(|error| {
+            format!(
+                "failed to create Codex route transition quarantine {}: {error}",
+                quarantine_dir.display()
+            )
+        })?;
+
+        let reason = reason
+            .chars()
+            .take(TRANSITION_QUARANTINE_REASON_MAX_CHARS)
+            .collect::<String>();
+        let metadata = serde_json::to_vec_pretty(&serde_json::json!({
+            "schema_version": 1,
+            "quarantined_at_ms": now_unix_ms(),
+            "reason": reason,
+        }))
+        .map_err(|error| format!("failed to serialize transition quarantine metadata: {error}"))?;
+        write_file_atomic(&quarantine_dir.join("quarantine.json"), &metadata)?;
+
+        let mut moved = false;
+        for (source, name) in [
+            (self.snapshot_root()?, TRANSITION_SNAPSHOT_DIR_NAME),
+            (
+                self.snapshot_staging_root()?,
+                TRANSITION_SNAPSHOT_STAGING_DIR_NAME,
+            ),
+            (self.path.clone(), "transition.json"),
+        ] {
+            match std::fs::symlink_metadata(&source) {
+                Ok(_) => {
+                    std::fs::rename(&source, quarantine_dir.join(name)).map_err(|error| {
+                        format!(
+                            "failed to quarantine Codex route transition artifact {}: {error}",
+                            source.display()
+                        )
+                    })?;
+                    moved = true;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to inspect Codex route transition artifact {}: {error}",
+                        source.display()
+                    )
+                    .into())
+                }
+            }
+        }
+        if !moved {
+            return Err(
+                "CODEX_RETRY_GATEWAY_TRANSITION_QUARANTINE_FAILED: no corrupt transition artifacts were present"
+                    .into(),
+            );
+        }
+        Ok(quarantine_dir.display().to_string())
+    }
+
     fn validate_transition(&self, transition: &CodexRetryGatewayRouteTransition) -> AppResult<()> {
         if transition.schema_version != CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION {
             return Err(format!(
@@ -699,6 +780,10 @@ impl CodexRetryGatewayTransitionStore for FileCodexRetryGatewayTransitionStore {
         self.read_transition()
     }
 
+    fn quarantine_corrupt(&self, reason: &str) -> AppResult<String> {
+        self.quarantine_corrupt_artifacts(reason)
+    }
+
     fn prepare(
         &self,
         transition: &CodexRetryGatewayRouteTransition,
@@ -711,11 +796,20 @@ impl CodexRetryGatewayTransitionStore for FileCodexRetryGatewayTransitionStore {
                     .into(),
             );
         }
-        if self.read_transition()?.is_some() {
-            return Err(
+        match self.read_transition() {
+            Ok(Some(_)) => return Err(
                 "CODEX_RETRY_GATEWAY_TRANSITION_RECOVERY_REQUIRED: pending route transition exists"
                     .into(),
-            );
+            ),
+            Ok(None) => {}
+            Err(error) => {
+                let quarantine = self.quarantine_corrupt_artifacts(&error.to_string())?;
+                tracing::warn!(
+                    error = %error,
+                    quarantine = %quarantine,
+                    "quarantined corrupt Codex route transition before preparing a new transaction"
+                );
+            }
         }
         create_or_validate_plain_directory(
             self.parent()?,
@@ -895,6 +989,33 @@ mod tests {
     use crate::infra::codex_retry_gateway::{CodexRetryGatewayOperationKind, CodexRouteMode};
     use tempfile::tempdir;
 
+    fn route_transition_fixture(bytes: &[u8]) -> CodexRetryGatewayRouteTransition {
+        CodexRetryGatewayRouteTransition {
+            schema_version: CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION,
+            operation_id: "op-1".to_string(),
+            operation_kind: CodexRetryGatewayOperationKind::Enable,
+            prior_generation: 1,
+            target_generation: 2,
+            prior_mode: CodexRouteMode::Unproxied,
+            target_mode: CodexRouteMode::DirectAio,
+            prior_canonical_config_sha256: format!("sha256:{}", "a".repeat(64)),
+            prior_live_config_sha256: format!("sha256:{}", "b".repeat(64)),
+            canonical_config_sha256: format!("sha256:{}", "d".repeat(64)),
+            live_config_sha256: format!("sha256:{}", "e".repeat(64)),
+            source_commit: None,
+            process_should_run: true,
+            snapshots: vec![CodexRetryGatewayRouteSnapshot {
+                root:
+                    crate::infra::codex_retry_gateway::CodexRetryGatewayRouteSnapshotRoot::CodexHome,
+                root_path_sha256: format!("sha256:{}", "c".repeat(64)),
+                target_rel: "config.toml".to_string(),
+                existed: true,
+                backup_rel: Some("files/00000000.bin".to_string()),
+                backup_sha256: Some(transition_sha256(bytes)),
+            }],
+        }
+    }
+
     #[test]
     fn manager_state_defaults_to_repository_and_schema() {
         let state = CodexRetryGatewayManagerState::default();
@@ -1061,30 +1182,8 @@ mod tests {
     fn transition_store_prepare_and_commit_is_bounded() {
         let dir = tempdir().unwrap();
         let store = FileCodexRetryGatewayTransitionStore::new(dir.path().join("transition.json"));
-        let snapshot = CodexRetryGatewayRouteSnapshot {
-            root: crate::infra::codex_retry_gateway::CodexRetryGatewayRouteSnapshotRoot::CodexHome,
-            root_path_sha256: format!("sha256:{}", "c".repeat(64)),
-            target_rel: "config.toml".to_string(),
-            existed: true,
-            backup_rel: Some("files/00000000.bin".to_string()),
-            backup_sha256: Some(transition_sha256(b"before")),
-        };
-        let transition = CodexRetryGatewayRouteTransition {
-            schema_version: CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION,
-            operation_id: "op-1".to_string(),
-            operation_kind: CodexRetryGatewayOperationKind::Enable,
-            prior_generation: 1,
-            target_generation: 2,
-            prior_mode: CodexRouteMode::Unproxied,
-            target_mode: CodexRouteMode::DirectAio,
-            prior_canonical_config_sha256: format!("sha256:{}", "a".repeat(64)),
-            prior_live_config_sha256: format!("sha256:{}", "b".repeat(64)),
-            canonical_config_sha256: format!("sha256:{}", "d".repeat(64)),
-            live_config_sha256: format!("sha256:{}", "e".repeat(64)),
-            source_commit: None,
-            process_should_run: true,
-            snapshots: vec![snapshot.clone()],
-        };
+        let transition = route_transition_fixture(b"before");
+        let snapshot = transition.snapshots[0].clone();
         store
             .prepare(&transition, &[Some(b"before".to_vec())])
             .unwrap();
@@ -1094,6 +1193,56 @@ mod tests {
         store.commit("op-1", 2).unwrap();
         assert!(store.load_pending().unwrap().is_none());
         assert!(!dir.path().join(TRANSITION_SNAPSHOT_DIR_NAME).exists());
+    }
+
+    #[test]
+    fn transition_store_quarantines_malformed_journal_before_prepare() {
+        let dir = tempdir().unwrap();
+        let transition_path = dir.path().join("transition.json");
+        let store = FileCodexRetryGatewayTransitionStore::new(transition_path.clone());
+        let snapshot_root = dir.path().join(TRANSITION_SNAPSHOT_DIR_NAME);
+        std::fs::create_dir_all(snapshot_root.join("files")).unwrap();
+        std::fs::write(snapshot_root.join("files/corrupt.bin"), b"diagnostic").unwrap();
+        std::fs::write(&transition_path, b"{").unwrap();
+
+        let transition = route_transition_fixture(b"before");
+        store
+            .prepare(&transition, &[Some(b"before".to_vec())])
+            .expect("new transition should proceed after quarantine");
+
+        assert_eq!(
+            store.load_pending().unwrap().unwrap().operation_id,
+            transition.operation_id
+        );
+        let quarantine_root = dir.path().join(TRANSITION_QUARANTINE_DIR_NAME);
+        let quarantine = std::fs::read_dir(&quarantine_root)
+            .unwrap()
+            .next()
+            .unwrap()
+            .unwrap()
+            .path();
+        assert!(quarantine.join("transition.json").is_file());
+        assert!(quarantine
+            .join(TRANSITION_SNAPSHOT_DIR_NAME)
+            .join("files/corrupt.bin")
+            .is_file());
+        assert!(quarantine.join("quarantine.json").is_file());
+    }
+
+    #[test]
+    fn transition_store_quarantines_oversized_journal_without_reading_it() {
+        let dir = tempdir().unwrap();
+        let transition_path = dir.path().join("transition.json");
+        let store = FileCodexRetryGatewayTransitionStore::new(transition_path.clone());
+        std::fs::write(&transition_path, vec![b'x'; TRANSITION_MAX_BYTES + 1]).unwrap();
+
+        let error = store
+            .load_pending()
+            .expect_err("oversized journal must fail closed");
+        let quarantine = store.quarantine_corrupt(&error.to_string()).unwrap();
+
+        assert!(!transition_path.exists());
+        assert!(Path::new(&quarantine).join("transition.json").is_file());
     }
 
     #[test]

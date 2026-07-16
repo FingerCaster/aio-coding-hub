@@ -6,6 +6,7 @@ import {
   codexRetryGatewayCreateDetailsSession,
   codexRetryGatewayEnablePlan,
   codexRetryGatewayRetry,
+  codexRetryGatewayRevokeDetailsSession,
   codexRetryGatewaySetEnabled,
   codexRetryGatewaySetNodeOverride,
   codexRetryGatewayStatus,
@@ -74,8 +75,8 @@ export function useCodexRetryGatewaySetEnabledMutation() {
   return useMutation({
     mutationFn: (request: CodexRetryGatewaySetEnabledRequest) =>
       codexRetryGatewaySetEnabled(request),
-    onSuccess: (status) => {
-      setGatewayStatusCache(queryClient, status);
+    onSuccess: (result) => {
+      setGatewayStatusCache(queryClient, result.status);
     },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: codexRetryGatewayKeys.status() });
@@ -174,5 +175,11 @@ export function useCodexRetryGatewayUninstallMutation() {
 export function useCodexRetryGatewayCreateDetailsSessionMutation() {
   return useMutation({
     mutationFn: () => codexRetryGatewayCreateDetailsSession(),
+  });
+}
+
+export function useCodexRetryGatewayRevokeDetailsSessionMutation() {
+  return useMutation({
+    mutationFn: (viewId: string) => codexRetryGatewayRevokeDetailsSession(viewId),
   });
 }

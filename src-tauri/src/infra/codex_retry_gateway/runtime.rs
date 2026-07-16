@@ -1,4 +1,6 @@
-use crate::infra::codex_retry_gateway::bridge::create_bridge_details_session;
+use crate::infra::codex_retry_gateway::bridge::{
+    create_bridge_details_session, revoke_bridge_details_session,
+};
 use crate::infra::codex_retry_gateway::managed_state::{
     read_manager_state, write_manager_state, CodexRetryGatewayManagedProcessRecord,
     CodexRetryGatewayManagerPaths, CodexRetryGatewayManagerState,
@@ -559,6 +561,21 @@ pub(crate) async fn record_runtime_recovery_failure<R: tauri::Runtime>(
     build_runtime_status(app, Some(manager)).await
 }
 
+pub(crate) async fn record_route_recovery_warning<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    warning: &str,
+) -> AppResult<CodexRetryGatewayStatus> {
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
+    let mut manager = read_manager_state(&paths)?;
+    manager.last_error = Some(
+        runtime_public_error_message("CODEX_RETRY_GATEWAY_TRANSITION_CORRUPT", warning)
+            .with_category(CodexRetryGatewayErrorCategory::RouteApply),
+    );
+    manager.generation = manager.generation.saturating_add(1);
+    write_manager_state(&paths, &manager)?;
+    build_runtime_status(app, Some(manager)).await
+}
+
 pub(crate) async fn rollback_selected_commit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     commit: &str,
@@ -671,6 +688,12 @@ pub(crate) async fn create_details_session<R: tauri::Runtime>(
     )
 }
 
+pub(crate) async fn revoke_details_session(
+    request: crate::infra::codex_retry_gateway::CodexRetryGatewayRevokeDetailsSessionRequest,
+) -> AppResult<()> {
+    revoke_bridge_details_session(&request.view_id).await
+}
+
 async fn build_runtime_status<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     manager_override: Option<CodexRetryGatewayManagerState>,
@@ -718,6 +741,7 @@ async fn build_runtime_status<R: tauri::Runtime>(
             .last_error
             .clone()
             .or_else(|| reconcile.error.clone())
+            .or_else(|| cli_proxy.error.clone())
             .or_else(|| node_status.error.clone())
     });
     let runtime_phase = if selected_commit_error.is_some() {
@@ -1071,42 +1095,61 @@ struct CliProxyProjection {
     enabled: bool,
     applied: bool,
     route_mode: CodexRouteMode,
+    error: Option<CodexRetryGatewayError>,
 }
 
 fn codex_cli_proxy_projection<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    _effective_port: Option<u16>,
+    effective_port: Option<u16>,
     aio_origin: &str,
 ) -> CliProxyProjection {
     let aio_base_origin = strip_trailing_v1(aio_origin);
-    let row = crate::cli_proxy::status_all(app, Some(&aio_base_origin))
-        .ok()
-        .and_then(|rows| rows.into_iter().find(|row| row.cli_key == "codex"));
-
-    let enabled = row.as_ref().map(|row| row.enabled).unwrap_or(false);
-    let applied = row
-        .as_ref()
-        .and_then(|row| row.applied_to_current_gateway)
-        .unwrap_or(false);
-    let route_mode = truthful_route_mode(
-        enabled,
-        applied,
-        row.as_ref().and_then(|row| row.route_mode),
-    );
-    CliProxyProjection {
-        enabled,
-        applied,
-        route_mode,
+    let guarded_origin = effective_port.map(|port| format!("http://127.0.0.1:{port}"));
+    match crate::cli_proxy::verify_route(app) {
+        Ok(route) => {
+            let projection_matches = route.live_matches_projection
+                && route.auth_matches_projection
+                && route.aio_origin.as_deref() == Some(aio_base_origin.as_str())
+                && match route.route_mode {
+                    CodexRouteMode::Unproxied => true,
+                    CodexRouteMode::DirectAio => {
+                        route.effective_origin.as_deref() == Some(aio_base_origin.as_str())
+                    }
+                    CodexRouteMode::Guarded => {
+                        route.desired_enabled
+                            && route.guarded_origin.as_deref() == guarded_origin.as_deref()
+                            && route.effective_origin.as_deref() == guarded_origin.as_deref()
+                    }
+                };
+            let applied = route.cli_proxy_enabled
+                && route.route_mode != CodexRouteMode::Unproxied
+                && projection_matches;
+            let route_mode = truthful_route_mode(route.route_mode, applied);
+            let error = (route.route_mode != CodexRouteMode::Unproxied && !applied).then(|| {
+                runtime_public_error_message(
+                    "CODEX_RETRY_GATEWAY_ROUTE_VERIFY_FAILED",
+                    "Codex live config, auth, or managed route origin drifted from the verified projection",
+                )
+            });
+            CliProxyProjection {
+                enabled: route.cli_proxy_enabled,
+                applied,
+                route_mode,
+                error,
+            }
+        }
+        Err(error) => CliProxyProjection {
+            enabled: false,
+            applied: false,
+            route_mode: CodexRouteMode::Unproxied,
+            error: Some(runtime_public_error(&error)),
+        },
     }
 }
 
-fn truthful_route_mode(
-    enabled: bool,
-    applied: bool,
-    advertised: Option<CodexRouteMode>,
-) -> CodexRouteMode {
-    if enabled && applied {
-        advertised.unwrap_or(CodexRouteMode::DirectAio)
+fn truthful_route_mode(advertised: CodexRouteMode, applied: bool) -> CodexRouteMode {
+    if applied {
+        advertised
     } else {
         CodexRouteMode::Unproxied
     }
@@ -1227,14 +1270,8 @@ mod tests {
     }
     use axum::routing::get;
     use axum::{Json, Router};
-    use std::sync::{Mutex as StdMutex, OnceLock as StdOnceLock};
     use tauri::Manager;
     use tempfile::TempDir;
-
-    fn runtime_test_lock() -> &'static StdMutex<()> {
-        static LOCK: StdOnceLock<StdMutex<()>> = StdOnceLock::new();
-        LOCK.get_or_init(|| StdMutex::new(()))
-    }
 
     struct RuntimeTestContext {
         _guard: std::sync::MutexGuard<'static, ()>,
@@ -1245,9 +1282,7 @@ mod tests {
 
     impl RuntimeTestContext {
         fn new() -> Self {
-            let guard = runtime_test_lock()
-                .lock()
-                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let guard = crate::test_support::test_env_lock();
             let home = tempfile::tempdir().unwrap();
             std::env::set_var("AIO_CODING_HUB_TEST_HOME", home.path());
             let app = tauri::test::mock_app().handle().clone();
@@ -1322,16 +1357,16 @@ mod tests {
     #[test]
     fn guarded_status_requires_enabled_and_verified_live_projection() {
         assert_eq!(
-            truthful_route_mode(true, true, Some(CodexRouteMode::Guarded)),
+            truthful_route_mode(CodexRouteMode::Guarded, true),
             CodexRouteMode::Guarded
         );
         assert_eq!(
-            truthful_route_mode(true, false, Some(CodexRouteMode::Guarded)),
+            truthful_route_mode(CodexRouteMode::Guarded, false),
             CodexRouteMode::Unproxied
         );
         assert_eq!(
-            truthful_route_mode(false, true, Some(CodexRouteMode::Guarded)),
-            CodexRouteMode::Unproxied
+            truthful_route_mode(CodexRouteMode::DirectAio, true),
+            CodexRouteMode::DirectAio
         );
     }
 
@@ -1508,12 +1543,14 @@ mod tests {
 
         let health_body = serde_json::json!({
             "ok": true,
+            "process_id": 9999,
             "listen": format!("127.0.0.1:{port}"),
             "upstream_base_url": "http://127.0.0.1:37123/v1",
             "ui_path": "/__codex_retry_gateway/ui"
         });
         let status_body = serde_json::json!({
             "ok": true,
+            "process_id": 9999,
             "listen": format!("127.0.0.1:{port}"),
             "state": {
                 "process_id": 9999,

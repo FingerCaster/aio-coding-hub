@@ -3,7 +3,8 @@
 use crate::infra::codex_retry_gateway::{CodexProviderSyncPlan, CodexRouteMode};
 use crate::shared::error::AppResult;
 use crate::shared::fs::{
-    is_symlink, read_optional_file_with_max_len, write_file_atomic, write_file_atomic_if_changed,
+    is_symlink, read_file_with_max_len, read_optional_file_with_max_len, write_file_atomic,
+    write_file_atomic_if_changed,
 };
 use crate::shared::time::{now_unix_millis, now_unix_seconds};
 use rusqlite::{Connection, OpenFlags};
@@ -21,8 +22,11 @@ const PROVIDER_SYNC_TRANSACTION_ROOT: &str = "tmp/provider-sync-transaction";
 const PROVIDER_SYNC_TRANSACTION_STAGING_PREFIX: &str = "provider-sync-transaction.staging-";
 const PROVIDER_SYNC_TRANSACTION_MANIFEST: &str = "journal.json";
 const PROVIDER_SYNC_TRANSACTION_APPLIED_MARKER: &str = "applied.json";
-const PROVIDER_SYNC_TRANSACTION_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_SYNC_TRANSACTION_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_SYNC_TRANSACTION_MANIFEST_MAX_BYTES: usize = 1024 * 1024;
+const PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS: usize = 4096;
+const PROVIDER_SYNC_SNAPSHOT_MAX_BYTES: usize = 128 * 1024 * 1024;
+const PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES: usize = 256 * 1024 * 1024;
 const PROVIDER_SYNC_KEEP_COUNT: usize = 5;
 const PROVIDER_SYNC_MAX_BYTES: usize = 1024 * 1024;
 const MANAGED_PROVIDER_AIO: &str = "aio";
@@ -108,6 +112,8 @@ struct PersistentFileSnapshot {
     target_rel: String,
     existed: bool,
     backup_rel: Option<String>,
+    byte_len: Option<u64>,
+    sha256: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1082,6 +1088,9 @@ fn rewrite_rollout_session_meta_providers(
     let text = String::from_utf8(bytes.to_vec())
         .map_err(|_| "SEC_INVALID_INPUT: rollout jsonl must be valid UTF-8".to_string())?;
     let mut out = String::with_capacity(text.len());
+    // The complete file is atomically replaced, so a provider may grow or shrink.
+    // Only parsed session_meta rows are reserialized; every other JSONL segment
+    // and its original line ending remain byte-for-byte unchanged.
     for segment in text.split_inclusive('\n') {
         let (line, ending) = split_line_ending(segment);
         let next_line = match serde_json::from_str::<Value>(line) {
@@ -1556,24 +1565,51 @@ fn snapshot_paths(
     change_set: &SyncChangeSet,
 ) -> AppResult<Vec<FileSnapshot>> {
     let mut snapshots = Vec::new();
-    snapshots.push(snapshot_path(config_path)?);
-    snapshots.push(snapshot_path(&home.join("config.toml.bak"))?);
+    let mut aggregate_bytes = 0usize;
+    push_snapshot_with_budget(&mut snapshots, config_path, &mut aggregate_bytes)?;
+    push_snapshot_with_budget(
+        &mut snapshots,
+        &home.join("config.toml.bak"),
+        &mut aggregate_bytes,
+    )?;
     for change in &change_set.session_changes {
-        snapshots.push(snapshot_path(&change.path)?);
+        push_snapshot_with_budget(&mut snapshots, &change.path, &mut aggregate_bytes)?;
     }
     for change in &change_set.sqlite_changes {
         for path in codex_sqlite_sidecar_paths(&change.path) {
-            snapshots.push(snapshot_path(&path)?);
+            push_snapshot_with_budget(&mut snapshots, &path, &mut aggregate_bytes)?;
         }
     }
     if let Some(change) = change_set.global_state_change.as_ref() {
-        snapshots.push(snapshot_path(&change.path)?);
-        snapshots.push(snapshot_path(&change.bak_path)?);
+        push_snapshot_with_budget(&mut snapshots, &change.path, &mut aggregate_bytes)?;
+        push_snapshot_with_budget(&mut snapshots, &change.bak_path, &mut aggregate_bytes)?;
+    }
+    if snapshots.len() > PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: provider sync snapshot count exceeds {}",
+            PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS
+        )
+        .into());
     }
     Ok(snapshots)
 }
 
+#[cfg(test)]
 fn snapshot_path(path: &Path) -> AppResult<FileSnapshot> {
+    let mut aggregate_bytes = 0usize;
+    snapshot_path_with_budget(path, &mut aggregate_bytes)
+}
+
+fn push_snapshot_with_budget(
+    snapshots: &mut Vec<FileSnapshot>,
+    path: &Path,
+    aggregate_bytes: &mut usize,
+) -> AppResult<()> {
+    snapshots.push(snapshot_path_with_budget(path, aggregate_bytes)?);
+    Ok(())
+}
+
+fn snapshot_path_with_budget(path: &Path, aggregate_bytes: &mut usize) -> AppResult<FileSnapshot> {
     let Some(metadata) = non_symlink_metadata(path, "Codex provider sync snapshot")? else {
         return Ok(FileSnapshot {
             path: path.to_path_buf(),
@@ -1588,8 +1624,33 @@ fn snapshot_path(path: &Path) -> AppResult<FileSnapshot> {
         )
         .into());
     };
-    let bytes =
-        fs::read(path).map_err(|e| format!("failed to snapshot {}: {e}", path.display()))?;
+    if metadata.len() > PROVIDER_SYNC_SNAPSHOT_MAX_BYTES as u64 {
+        return Err(format!(
+            "SEC_INVALID_INPUT: provider sync snapshot exceeds {} bytes path={}",
+            PROVIDER_SYNC_SNAPSHOT_MAX_BYTES,
+            path.display()
+        )
+        .into());
+    }
+    if (*aggregate_bytes as u64).saturating_add(metadata.len())
+        > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES as u64
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: provider sync snapshot aggregate exceeds {} bytes",
+            PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
+        )
+        .into());
+    }
+    let bytes = read_file_with_max_len(path, PROVIDER_SYNC_SNAPSHOT_MAX_BYTES)?;
+    let next_aggregate = aggregate_bytes.saturating_add(bytes.len());
+    if next_aggregate > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: provider sync snapshot aggregate exceeds {} bytes",
+            PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
+        )
+        .into());
+    }
+    *aggregate_bytes = next_aggregate;
     Ok(FileSnapshot {
         path: path.to_path_buf(),
         existed: true,
@@ -1690,6 +1751,45 @@ fn prepare_provider_sync_transaction(
     backup_root_existed: bool,
     snapshots: &[FileSnapshot],
 ) -> AppResult<()> {
+    if snapshots.len() > PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: provider sync snapshot count exceeds {}",
+            PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS
+        )
+        .into());
+    }
+    let mut aggregate_bytes = 0usize;
+    for snapshot in snapshots {
+        match (snapshot.existed, snapshot.bytes.as_deref()) {
+            (true, Some(bytes)) => {
+                if bytes.len() > PROVIDER_SYNC_SNAPSHOT_MAX_BYTES {
+                    return Err(format!(
+                        "SEC_INVALID_INPUT: provider sync snapshot exceeds {} bytes path={}",
+                        PROVIDER_SYNC_SNAPSHOT_MAX_BYTES,
+                        snapshot.path.display()
+                    )
+                    .into());
+                }
+                aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
+                if aggregate_bytes > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES {
+                    return Err(format!(
+                        "SEC_INVALID_INPUT: provider sync snapshot aggregate exceeds {} bytes",
+                        PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
+                    )
+                    .into());
+                }
+            }
+            (false, None) => {}
+            _ => {
+                return Err(format!(
+                    "CODEX_PROVIDER_SYNC_SNAPSHOT_INVALID: snapshot existence metadata is inconsistent path={}",
+                    snapshot.path.display()
+                )
+                .into())
+            }
+        }
+    }
+
     let root = provider_sync_transaction_root(home);
     if root.exists() {
         return Err(format!(
@@ -1732,7 +1832,7 @@ fn prepare_provider_sync_transaction(
         for (index, snapshot) in snapshots.iter().enumerate() {
             let target_rel =
                 path_relative_to_home(home, &snapshot.path, "Codex provider sync snapshot target")?;
-            let backup_rel = if snapshot.existed {
+            let (backup_rel, byte_len, sha256) = if snapshot.existed {
                 let bytes = snapshot.bytes.as_deref().ok_or_else(|| {
                     format!(
                         "CODEX_PROVIDER_SYNC_SNAPSHOT_INVALID: existing snapshot has no bytes path={}",
@@ -1741,14 +1841,20 @@ fn prepare_provider_sync_transaction(
                 })?;
                 let relative = format!("files/{index:08}.bin");
                 write_file_atomic(&staging.join(&relative), bytes)?;
-                Some(relative)
+                (
+                    Some(relative),
+                    Some(bytes.len() as u64),
+                    Some(sha256_hex(bytes)),
+                )
             } else {
-                None
+                (None, None, None)
             };
             persistent_snapshots.push(PersistentFileSnapshot {
                 target_rel,
                 existed: snapshot.existed,
                 backup_rel,
+                byte_len,
+                sha256,
             });
         }
 
@@ -1859,7 +1965,16 @@ fn read_provider_sync_transaction(
         &journal.backup_dir_rel,
         "Codex provider sync backup directory",
     )?;
+    if journal.snapshots.len() > PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS {
+        return Err(format!(
+            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot count exceeds {}",
+            PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS
+        )
+        .into());
+    }
     let mut targets = HashSet::new();
+    let mut backups = HashSet::new();
+    let mut aggregate_bytes = 0u64;
     for snapshot in &journal.snapshots {
         let _ =
             validated_relative_path(&snapshot.target_rel, "Codex provider sync snapshot target")?;
@@ -1870,22 +1985,50 @@ fn read_provider_sync_transaction(
             )
             .into());
         }
-        match (snapshot.existed, snapshot.backup_rel.as_deref()) {
-            (true, Some(relative)) => {
+        match (
+            snapshot.existed,
+            snapshot.backup_rel.as_deref(),
+            snapshot.byte_len,
+            snapshot.sha256.as_deref(),
+        ) {
+            (true, Some(relative), Some(byte_len), Some(sha256)) => {
                 let path = validated_relative_path(
                     relative,
                     "Codex provider sync snapshot backup",
                 )?;
                 if path.components().next()
                     != Some(Component::Normal(std::ffi::OsStr::new("files")))
+                    || !backups.insert(path)
                 {
                     return Err(format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot backup is outside files root path={relative}"
+                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot backup is outside files root or duplicated path={relative}"
+                    )
+                    .into());
+                }
+                if byte_len > PROVIDER_SYNC_SNAPSHOT_MAX_BYTES as u64 {
+                    return Err(format!(
+                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot exceeds {} bytes target={}",
+                        PROVIDER_SYNC_SNAPSHOT_MAX_BYTES, snapshot.target_rel
+                    )
+                    .into());
+                }
+                aggregate_bytes = aggregate_bytes.saturating_add(byte_len);
+                if aggregate_bytes > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES as u64 {
+                    return Err(format!(
+                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot aggregate exceeds {} bytes",
+                        PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
+                    )
+                    .into());
+                }
+                if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(format!(
+                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot hash is invalid target={}",
+                        snapshot.target_rel
                     )
                     .into());
                 }
             }
-            (false, None) => {}
+            (false, None, None, None) => {}
             _ => {
                 return Err(format!(
                     "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot existence metadata is inconsistent target={}",
@@ -1938,17 +2081,39 @@ fn mark_provider_sync_transaction_applied(home: &Path, operation_id: &str) -> Ap
     write_file_atomic(&provider_sync_transaction_applied_path(home), &bytes)
 }
 
-fn restore_persistent_provider_sync_snapshots(
+struct PreparedPersistentProviderSyncSnapshot {
+    target: PathBuf,
+    existed: bool,
+    bytes: Option<Vec<u8>>,
+}
+
+fn preflight_persistent_provider_sync_snapshots(
     home: &Path,
     journal: &ProviderSyncTransactionJournal,
-) -> AppResult<()> {
+) -> AppResult<Vec<PreparedPersistentProviderSyncSnapshot>> {
     let transaction_root = provider_sync_transaction_root(home);
-    for snapshot in journal.snapshots.iter().rev() {
+    let mut aggregate_bytes = 0usize;
+    let mut prepared = Vec::with_capacity(journal.snapshots.len());
+    for snapshot in &journal.snapshots {
         let target = home.join(validated_relative_path(
             &snapshot.target_rel,
             "Codex provider sync snapshot target",
         )?);
-        if snapshot.existed {
+        if let Some(parent) = target.parent() {
+            ensure_safe_operational_dir(parent, "Codex provider sync recovery target parent")?;
+        }
+        if let Some(metadata) =
+            non_symlink_metadata(&target, "Codex provider sync recovery target")?
+        {
+            if !metadata.is_file() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: provider sync recovery target is not a file path={}",
+                    target.display()
+                )
+                .into());
+            }
+        }
+        let bytes = if snapshot.existed {
             let backup = transaction_root.join(validated_relative_path(
                 snapshot.backup_rel.as_deref().ok_or_else(|| {
                     format!(
@@ -1974,32 +2139,91 @@ fn restore_persistent_provider_sync_snapshots(
                 )
                 .into());
             }
-            let bytes = fs::read(&backup).map_err(|error| {
+            let expected_len = snapshot.byte_len.ok_or_else(|| {
                 format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: failed to read snapshot {}: {error}",
-                    backup.display()
+                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot length missing target={}",
+                    snapshot.target_rel
                 )
             })?;
-            write_file_atomic(&target, &bytes)?;
-        } else if target.exists() {
-            let Some(metadata) =
-                non_symlink_metadata(&target, "Codex provider sync recovery target")?
-            else {
-                continue;
-            };
-            if !metadata.is_file() {
+            if metadata.len() != expected_len {
                 return Err(format!(
-                    "SEC_INVALID_INPUT: refusing to remove non-file recovery target path={}",
-                    target.display()
+                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot length mismatch path={} expected={} actual={}",
+                    backup.display(),
+                    expected_len,
+                    metadata.len()
                 )
                 .into());
             }
-            fs::remove_file(&target).map_err(|error| {
+            let bytes = read_file_with_max_len(&backup, PROVIDER_SYNC_SNAPSHOT_MAX_BYTES)?;
+            if bytes.len() as u64 != expected_len {
+                return Err(format!(
+                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot changed while reading path={}",
+                    backup.display()
+                )
+                .into());
+            }
+            let expected_sha256 = snapshot.sha256.as_deref().ok_or_else(|| {
                 format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: failed to remove created target {}: {error}",
-                    target.display()
+                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot hash missing target={}",
+                    snapshot.target_rel
                 )
             })?;
+            if sha256_hex(&bytes) != expected_sha256 {
+                return Err(format!(
+                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot hash mismatch path={}",
+                    backup.display()
+                )
+                .into());
+            }
+            aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
+            if aggregate_bytes > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES {
+                return Err(format!(
+                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot aggregate exceeds {} bytes",
+                    PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
+                )
+                .into());
+            }
+            Some(bytes)
+        } else {
+            None
+        };
+        prepared.push(PreparedPersistentProviderSyncSnapshot {
+            target,
+            existed: snapshot.existed,
+            bytes,
+        });
+    }
+    Ok(prepared)
+}
+
+fn restore_persistent_provider_sync_snapshots(
+    home: &Path,
+    journal: &ProviderSyncTransactionJournal,
+) -> AppResult<()> {
+    let prepared = preflight_persistent_provider_sync_snapshots(home, journal)?;
+    for snapshot in prepared.into_iter().rev() {
+        if snapshot.existed {
+            write_file_atomic(
+                &snapshot.target,
+                snapshot.bytes.as_deref().ok_or_else(|| {
+                    format!(
+                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: preflight bytes missing path={}",
+                        snapshot.target.display()
+                    )
+                })?,
+            )?;
+        } else {
+            match fs::remove_file(&snapshot.target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: failed to remove created target {}: {error}",
+                        snapshot.target.display()
+                    )
+                    .into())
+                }
+            }
         }
     }
     Ok(())

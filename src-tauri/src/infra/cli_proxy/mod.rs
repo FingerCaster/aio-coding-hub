@@ -9,7 +9,7 @@ use crate::infra::codex_retry_gateway::{
     metadata_is_symlink_or_reparse, CodexRetryGatewayOperationKind, CodexRetryGatewayRouteSnapshot,
     CodexRetryGatewayRouteSnapshotRoot, CodexRetryGatewayRouteTransition,
     CodexRetryGatewayTransitionStore, CodexRouteMode,
-    CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION,
+    CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION, TRANSITION_SNAPSHOT_AGGREGATE_MAX_BYTES,
 };
 use crate::shared::error::AppError;
 use crate::shared::fs::{
@@ -143,6 +143,7 @@ pub struct CodexRouteApplyResult {
 pub struct CodexRouteReconcileResult {
     pub route: CodexRouteVerifyResult,
     pub pending_transition_reconciled: Option<bool>,
+    pub recovery_warning: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, specta::Type)]
@@ -495,31 +496,73 @@ fn route_snapshot_target_path(
     Ok(Some(current.join(file_name)))
 }
 
-fn restore_persistent_codex_route_snapshots<S: CodexRetryGatewayTransitionStore>(
-    roots: &CodexRouteSnapshotRoots,
+fn preflight_persistent_codex_route_snapshot_bytes<S: CodexRetryGatewayTransitionStore>(
     store: &S,
     transition: &CodexRetryGatewayRouteTransition,
-) -> crate::shared::error::AppResult<()> {
-    for snapshot in transition.snapshots.iter().rev() {
-        if snapshot.existed {
+) -> crate::shared::error::AppResult<Vec<Option<Vec<u8>>>> {
+    let mut aggregate_bytes = 0usize;
+    transition
+        .snapshots
+        .iter()
+        .map(|snapshot| {
+            if !snapshot.existed {
+                return Ok(None);
+            }
             let bytes = store.read_snapshot(transition, snapshot)?;
-            let target = route_snapshot_target_path(roots, snapshot, true)?.ok_or_else(|| {
+            aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
+            if aggregate_bytes > TRANSITION_SNAPSHOT_AGGREGATE_MAX_BYTES {
+                return Err(
+                    "CODEX_RETRY_GATEWAY_TRANSITION_RECOVERY_FAILED: route snapshot aggregate exceeds 8 MiB"
+                        .into(),
+                );
+            }
+            Ok(Some(bytes))
+        })
+        .collect()
+}
+
+fn restore_persistent_codex_route_snapshots(
+    roots: &CodexRouteSnapshotRoots,
+    transition: &CodexRetryGatewayRouteTransition,
+    snapshot_bytes: &[Option<Vec<u8>>],
+) -> crate::shared::error::AppResult<()> {
+    if transition.snapshots.len() != snapshot_bytes.len() {
+        return Err(
+            "CODEX_RETRY_GATEWAY_TRANSITION_RECOVERY_FAILED: route snapshot metadata and bytes count differ"
+                .into(),
+        );
+    }
+
+    let mut targets = Vec::with_capacity(transition.snapshots.len());
+    for snapshot in &transition.snapshots {
+        let target = route_snapshot_target_path(roots, snapshot, snapshot.existed)?;
+        if snapshot.existed {
+            let target = target.as_ref().ok_or_else(|| {
                 AppError::from(
                     "CLI_PROXY_ROUTE_RECOVERY_FAILED: snapshot parent disappeared during restore",
                 )
             })?;
-            if let Ok(metadata) = std::fs::symlink_metadata(&target) {
-                if metadata_is_symlink_or_reparse(&metadata) || !metadata.is_file() {
+            match std::fs::symlink_metadata(target) {
+                Ok(metadata) => {
+                    if metadata_is_symlink_or_reparse(&metadata) || !metadata.is_file() {
+                        return Err(format!(
+                            "SEC_INVALID_INPUT: refusing to replace non-plain route snapshot target: {}",
+                            target.display()
+                        )
+                        .into());
+                    }
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
                     return Err(format!(
-                        "SEC_INVALID_INPUT: refusing to replace non-plain route snapshot target: {}",
+                        "failed to inspect restored target {}: {error}",
                         target.display()
                     )
-                    .into());
+                    .into())
                 }
             }
-            write_cli_proxy_file_atomic(&target, &bytes)?;
-        } else if let Some(target) = route_snapshot_target_path(roots, snapshot, false)? {
-            match std::fs::symlink_metadata(&target) {
+        } else if let Some(target) = target.as_ref() {
+            match std::fs::symlink_metadata(target) {
                 Ok(metadata) => {
                     if metadata_is_symlink_or_reparse(&metadata) || !metadata.is_file() {
                         return Err(format!(
@@ -528,17 +571,39 @@ fn restore_persistent_codex_route_snapshots<S: CodexRetryGatewayTransitionStore>
                         )
                         .into());
                     }
-                    std::fs::remove_file(&target).map_err(|error| {
-                        format!(
-                            "failed to remove restored target {}: {error}",
-                            target.display()
-                        )
-                    })?;
                 }
                 Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
                 Err(error) => {
                     return Err(format!(
                         "failed to inspect restored target {}: {error}",
+                        target.display()
+                    )
+                    .into())
+                }
+            }
+        }
+        targets.push(target);
+    }
+
+    for index in (0..transition.snapshots.len()).rev() {
+        let snapshot = &transition.snapshots[index];
+        if snapshot.existed {
+            let target = targets[index].as_ref().expect("existing snapshot target");
+            let bytes = snapshot_bytes[index]
+                .as_deref()
+                .ok_or_else(|| {
+                    AppError::from(
+                        "CODEX_RETRY_GATEWAY_TRANSITION_RECOVERY_FAILED: existing route snapshot has no preflight bytes",
+                    )
+                })?;
+            write_cli_proxy_file_atomic(target, bytes)?;
+        } else if let Some(target) = targets[index].as_ref() {
+            match std::fs::remove_file(target) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "failed to remove restored target {}: {error}",
                         target.display()
                     )
                     .into())
@@ -1119,7 +1184,9 @@ impl CodexConfigRouteTransitionGuard {
     }
 
     pub(crate) fn rollback(self) -> crate::shared::error::AppResult<()> {
-        restore_persistent_codex_route_snapshots(&self.roots, &self.store, &self.transition)?;
+        let snapshot_bytes =
+            preflight_persistent_codex_route_snapshot_bytes(&self.store, &self.transition)?;
+        restore_persistent_codex_route_snapshots(&self.roots, &self.transition, &snapshot_bytes)?;
         clear_codex_route_transition(&self.store, &self.transition)
     }
 }
@@ -1919,11 +1986,32 @@ pub(crate) fn verify_route<R: tauri::Runtime>(
     codex_route_verify_from_state(app, manifest_enabled, &route_state, &canonical_bytes)
 }
 
+fn quarantine_corrupt_route_transition<S: CodexRetryGatewayTransitionStore>(
+    store: &S,
+    error: &AppError,
+) -> crate::shared::error::AppResult<String> {
+    let quarantine = store.quarantine_corrupt(&error.to_string())?;
+    tracing::warn!(
+        error = %error,
+        quarantine = %quarantine,
+        "quarantined corrupt Codex route transition and retained it for diagnosis"
+    );
+    Ok(format!(
+        "CODEX_RETRY_GATEWAY_TRANSITION_CORRUPT: quarantined invalid route recovery artifacts at {quarantine}: {error}"
+    ))
+}
+
 pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTransitionStore>(
     app: &tauri::AppHandle<R>,
     store: &S,
 ) -> crate::shared::error::AppResult<CodexRouteReconcileResult> {
-    let pending_transition = store.load_pending()?;
+    let (pending_transition, recovery_warning) = match store.load_pending() {
+        Ok(pending) => (pending, None),
+        Err(error) => (
+            None,
+            Some(quarantine_corrupt_route_transition(store, &error)?),
+        ),
+    };
     let route_before_provider_recovery = match verify_route(app) {
         Ok(route) => Some(route),
         Err(error) if pending_transition.is_some() => {
@@ -1964,6 +2052,7 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
         return Ok(CodexRouteReconcileResult {
             route: route_after_provider_recovery?,
             pending_transition_reconciled: None,
+            recovery_warning,
         });
     };
 
@@ -1981,6 +2070,7 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
             return Ok(CodexRouteReconcileResult {
                 route: route.clone(),
                 pending_transition_reconciled: Some(true),
+                recovery_warning,
             });
         }
     } else if let Err(error) = route_after_provider_recovery.as_ref() {
@@ -1991,8 +2081,19 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
         );
     }
 
+    let snapshot_bytes = match preflight_persistent_codex_route_snapshot_bytes(store, &transition) {
+        Ok(bytes) => bytes,
+        Err(error) => {
+            let recovery_warning = quarantine_corrupt_route_transition(store, &error)?;
+            return Ok(CodexRouteReconcileResult {
+                route: verify_route(app)?,
+                pending_transition_reconciled: None,
+                recovery_warning: Some(recovery_warning),
+            });
+        }
+    };
     let snapshot_roots = CodexRouteSnapshotRoots::from_app(app)?;
-    restore_persistent_codex_route_snapshots(&snapshot_roots, store, &transition)?;
+    restore_persistent_codex_route_snapshots(&snapshot_roots, &transition, &snapshot_bytes)?;
     let restored = verify_route(app)?;
     if restored.generation != transition.prior_generation
         || restored.route_mode != transition.prior_mode
@@ -2011,6 +2112,7 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
     Ok(CodexRouteReconcileResult {
         route: restored,
         pending_transition_reconciled: Some(false),
+        recovery_warning,
     })
 }
 

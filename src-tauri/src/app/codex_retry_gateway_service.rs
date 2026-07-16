@@ -7,7 +7,8 @@ use crate::infra::codex_retry_gateway::{
     CodexRetryGatewayEnablePlan, CodexRetryGatewayGenerationRequest,
     CodexRetryGatewayLifecycleCallback, CodexRetryGatewayLifecycleFuture,
     CodexRetryGatewayNodeStatus, CodexRetryGatewayOperationKind,
-    CodexRetryGatewayRouteCallbackRequest, CodexRetryGatewaySetEnabledRequest,
+    CodexRetryGatewayRevokeDetailsSessionRequest, CodexRetryGatewayRouteCallbackRequest,
+    CodexRetryGatewaySetEnabledRequest, CodexRetryGatewaySetEnabledResult,
     CodexRetryGatewaySetNodeOverrideRequest, CodexRetryGatewayStatus,
     CodexRetryGatewayStatusFuture, CodexRetryGatewayUninstallRequest,
     CodexRetryGatewayUpdateCandidate, CodexRetryGatewayValidateCommitRequest, CodexRouteMode,
@@ -90,17 +91,21 @@ pub(crate) async fn enable_plan(app: &tauri::AppHandle) -> AppResult<CodexRetryG
 pub(crate) async fn set_enabled(
     app: &tauri::AppHandle,
     request: CodexRetryGatewaySetEnabledRequest,
-) -> AppResult<CodexRetryGatewayStatus> {
+) -> AppResult<CodexRetryGatewaySetEnabledResult> {
     let _lifecycle = super::gateway_lifecycle_lock::lock().await;
     if request.enabled {
         enable_gateway_unlocked(app, request).await
     } else {
-        disable_gateway_unlocked(
+        let status = disable_gateway_unlocked(
             app,
             Some(request.plan_generation),
             CodexRetryGatewayOperationKind::DisableGateway,
         )
-        .await
+        .await?;
+        Ok(CodexRetryGatewaySetEnabledResult {
+            status,
+            provider_sync: None,
+        })
     }
 }
 
@@ -303,6 +308,12 @@ pub(crate) async fn details_session(
     codex_retry_gateway::create_details_session(app).await
 }
 
+pub(crate) async fn revoke_details_session(
+    request: CodexRetryGatewayRevokeDetailsSessionRequest,
+) -> AppResult<()> {
+    codex_retry_gateway::revoke_details_session(request).await
+}
+
 pub(crate) async fn reconcile_startup(app: &tauri::AppHandle) {
     install_lifecycle_callback(app).await;
     {
@@ -435,7 +446,7 @@ pub(crate) async fn disable_codex_cli_proxy<R: tauri::Runtime>(
 async fn enable_gateway_unlocked(
     app: &tauri::AppHandle,
     request: CodexRetryGatewaySetEnabledRequest,
-) -> AppResult<CodexRetryGatewayStatus> {
+) -> AppResult<CodexRetryGatewaySetEnabledResult> {
     let before = codex_retry_gateway::current_status(app).await?;
     let prepared = prepare_enable_plan_unlocked(app).await?;
     if request.plan_generation != prepared.public.generation {
@@ -492,10 +503,13 @@ async fn enable_gateway_unlocked(
         },
     )
     .await;
-    if let Err(error) = enable_result {
-        emit_current_status(app).await;
-        return Err(error);
-    }
+    let (_, provider_sync) = match enable_result {
+        Ok(result) => result,
+        Err(error) => {
+            emit_current_status(app).await;
+            return Err(error);
+        }
+    };
     let result = codex_retry_gateway::current_status(app).await?;
     if result.route_mode != CodexRouteMode::Guarded || !result.process_status.healthy {
         return Err(AppError::new(
@@ -504,7 +518,10 @@ async fn enable_gateway_unlocked(
         ));
     }
     emit_status(app, result.clone());
-    Ok(result)
+    Ok(CodexRetryGatewaySetEnabledResult {
+        status: result,
+        provider_sync,
+    })
 }
 
 async fn disable_gateway_unlocked(
@@ -569,7 +586,7 @@ async fn prepare_enable_plan_unlocked(app: &tauri::AppHandle) -> AppResult<Prepa
 async fn route_guarded_if_healthy_unlocked(
     app: &tauri::AppHandle,
     operation_kind: CodexRetryGatewayOperationKind,
-) -> AppResult<()> {
+) -> AppResult<Option<crate::infra::codex_provider_sync::CodexProviderSyncResult>> {
     let status = codex_retry_gateway::current_status(app).await?;
     if !status.process_status.healthy {
         return Err(AppError::new(
@@ -594,7 +611,7 @@ async fn route_guarded_if_healthy_unlocked(
     .await
     .map_err(AppError::from)?;
     if !route_plan.route_change_required {
-        return Ok(());
+        return Ok(None);
     }
     let applied = crate::app::cli_proxy_service::cli_proxy_codex_apply_guarded_route_for_operation(
         app.clone(),
@@ -621,7 +638,7 @@ async fn route_guarded_if_healthy_unlocked(
             "Codex guarded route did not match the committed projection",
         ));
     }
-    Ok(())
+    Ok(applied.provider_sync)
 }
 
 async fn route_direct_aio_unlocked<R: tauri::Runtime>(
@@ -675,11 +692,50 @@ async fn route_direct_aio_unlocked<R: tauri::Runtime>(
 }
 
 async fn reconcile_startup_unlocked(app: &tauri::AppHandle) -> AppResult<()> {
-    crate::app::cli_proxy_service::cli_proxy_codex_reconcile_pending_route(app.clone())
-        .await
-        .map_err(AppError::from)?;
-    codex_retry_gateway::reconcile_pending_runtime_launch(app).await?;
-    reconcile_desired_runtime_unlocked(app, CodexRetryGatewayOperationKind::Startup).await
+    let route_reconcile = reconcile_startup_steps(
+        || async {
+            crate::app::cli_proxy_service::cli_proxy_codex_reconcile_pending_route(app.clone())
+                .await
+                .map_err(AppError::from)
+        },
+        || async { codex_retry_gateway::reconcile_pending_runtime_launch(app).await },
+        || async {
+            reconcile_desired_runtime_unlocked(app, CodexRetryGatewayOperationKind::Startup).await
+        },
+    )
+    .await?;
+    if let Some(warning) = route_reconcile.recovery_warning.as_deref() {
+        let status = codex_retry_gateway::record_route_recovery_warning(app, warning).await?;
+        emit_status(app, status);
+    }
+    Ok(())
+}
+
+async fn reconcile_startup_steps<
+    T,
+    Route,
+    RouteFuture,
+    PendingLaunch,
+    PendingLaunchFuture,
+    DesiredRuntime,
+    DesiredRuntimeFuture,
+>(
+    route: Route,
+    pending_launch: PendingLaunch,
+    desired_runtime: DesiredRuntime,
+) -> AppResult<T>
+where
+    Route: FnOnce() -> RouteFuture,
+    RouteFuture: std::future::Future<Output = AppResult<T>>,
+    PendingLaunch: FnOnce() -> PendingLaunchFuture,
+    PendingLaunchFuture: std::future::Future<Output = AppResult<()>>,
+    DesiredRuntime: FnOnce() -> DesiredRuntimeFuture,
+    DesiredRuntimeFuture: std::future::Future<Output = AppResult<()>>,
+{
+    let route = route().await?;
+    pending_launch().await?;
+    desired_runtime().await?;
+    Ok(route)
 }
 
 async fn reconcile_desired_runtime_unlocked(
@@ -892,6 +948,7 @@ fn stale_generation_error(expected: u64, actual: u64) -> AppError {
 
 async fn start_then_verified_route<
     T,
+    U,
     Start,
     StartFuture,
     Route,
@@ -902,28 +959,31 @@ async fn start_then_verified_route<
     start: Start,
     route: Route,
     rollback: Rollback,
-) -> AppResult<T>
+) -> AppResult<(T, U)>
 where
     Start: FnOnce() -> StartFuture,
     StartFuture: std::future::Future<Output = AppResult<T>>,
     Route: FnOnce() -> RouteFuture,
-    RouteFuture: std::future::Future<Output = AppResult<()>>,
+    RouteFuture: std::future::Future<Output = AppResult<U>>,
     Rollback: FnOnce() -> RollbackFuture,
     RollbackFuture: std::future::Future<Output = AppResult<()>>,
 {
     let started = start().await?;
-    if let Err(route_error) = route().await {
-        return match rollback().await {
-            Ok(()) => Err(route_error),
-            Err(rollback_error) => Err(AppError::new(
-                "CODEX_RETRY_GATEWAY_ENABLE_ROLLBACK_FAILED",
-                format!(
-                    "guarded route activation failed: {route_error}; process rollback failed: {rollback_error}"
-                ),
-            )),
-        };
-    }
-    Ok(started)
+    let routed = match route().await {
+        Ok(routed) => routed,
+        Err(route_error) => {
+            return match rollback().await {
+                Ok(()) => Err(route_error),
+                Err(rollback_error) => Err(AppError::new(
+                    "CODEX_RETRY_GATEWAY_ENABLE_ROLLBACK_FAILED",
+                    format!(
+                        "guarded route activation failed: {route_error}; process rollback failed: {rollback_error}"
+                    ),
+                )),
+            }
+        }
+    };
+    Ok((started, routed))
 }
 
 async fn safe_route_then_runtime<T, Route, RouteFuture, Runtime, RuntimeFuture>(
@@ -1018,7 +1078,7 @@ mod tests {
             },
             move || async move {
                 route_steps.lock().unwrap().push("guarded_route");
-                Err(AppError::new("TEST_ROUTE_FAILED", "route failed"))
+                Err::<(), _>(AppError::new("TEST_ROUTE_FAILED", "route failed"))
             },
             move || async move {
                 rollback_steps.lock().unwrap().push("rollback");
@@ -1032,6 +1092,19 @@ mod tests {
             steps.lock().unwrap().as_slice(),
             ["process", "guarded_route", "rollback"]
         );
+    }
+
+    #[tokio::test]
+    async fn enable_returns_the_verified_route_result() {
+        let result = start_then_verified_route(
+            || async { Ok("runtime") },
+            || async { Ok("provider-sync") },
+            || async { Ok(()) },
+        )
+        .await
+        .expect("enable route result");
+
+        assert_eq!(result, ("runtime", "provider-sync"));
     }
 
     #[tokio::test]
@@ -1052,6 +1125,37 @@ mod tests {
         .await
         .unwrap();
         assert_eq!(steps.lock().unwrap().as_slice(), ["direct_aio", "stop"]);
+    }
+
+    #[tokio::test]
+    async fn startup_reconciles_pending_launch_before_desired_runtime() {
+        let steps = Arc::new(StdMutex::new(Vec::new()));
+        let route_steps = steps.clone();
+        let pending_steps = steps.clone();
+        let desired_steps = steps.clone();
+
+        let route_result = reconcile_startup_steps(
+            move || async move {
+                route_steps.lock().unwrap().push("route");
+                Ok("route-result")
+            },
+            move || async move {
+                pending_steps.lock().unwrap().push("pending_launch");
+                Ok(())
+            },
+            move || async move {
+                desired_steps.lock().unwrap().push("desired_runtime");
+                Ok(())
+            },
+        )
+        .await
+        .expect("startup reconciliation");
+
+        assert_eq!(route_result, "route-result");
+        assert_eq!(
+            steps.lock().unwrap().as_slice(),
+            ["route", "pending_launch", "desired_runtime"]
+        );
     }
 
     #[test]

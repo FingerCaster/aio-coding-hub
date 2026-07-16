@@ -27,6 +27,7 @@ import {
   useCodexRetryGatewayCreateDetailsSessionMutation,
   useCodexRetryGatewayEnablePlanMutation,
   useCodexRetryGatewayRetryMutation,
+  useCodexRetryGatewayRevokeDetailsSessionMutation,
   useCodexRetryGatewaySetEnabledMutation,
   useCodexRetryGatewaySetNodeOverrideMutation,
   useCodexRetryGatewayStatusQuery,
@@ -40,6 +41,7 @@ import {
   formatCodexRetryGatewayError,
   formatCodexRetryGatewayNodeSource,
   formatCodexRetryGatewayProviderSync,
+  formatCodexRetryGatewayProviderSyncResult,
   formatCodexRetryGatewayRouteMode,
   formatCodexRetryGatewayRuntimePhase,
   formatCodexRetryGatewayTone,
@@ -238,8 +240,11 @@ export function CodexRetryGatewayManager({
   const retryMutation = useCodexRetryGatewayRetryMutation();
   const uninstallMutation = useCodexRetryGatewayUninstallMutation();
   const detailsSessionMutation = useCodexRetryGatewayCreateDetailsSessionMutation();
+  const revokeDetailsSessionMutation = useCodexRetryGatewayRevokeDetailsSessionMutation();
   const createDetailsSessionRef = useRef(detailsSessionMutation.mutateAsync);
+  const revokeDetailsSessionRef = useRef(revokeDetailsSessionMutation.mutateAsync);
   const detailsSessionRequestRef = useRef(0);
+  const activeDetailsSessionRef = useRef<CodexRetryGatewayDetailsSession | null>(null);
 
   const [enablePlan, setEnablePlan] = useState<CodexRetryGatewayEnablePlan | null>(null);
   const [enableDialogOpen, setEnableDialogOpen] = useState(false);
@@ -290,6 +295,23 @@ export function CodexRetryGatewayManager({
     createDetailsSessionRef.current = detailsSessionMutation.mutateAsync;
   }, [detailsSessionMutation.mutateAsync]);
 
+  useEffect(() => {
+    revokeDetailsSessionRef.current = revokeDetailsSessionMutation.mutateAsync;
+  }, [revokeDetailsSessionMutation.mutateAsync]);
+
+  const revokeIframeSession = useCallback(
+    async (session: CodexRetryGatewayDetailsSession | null) => {
+      if (!session) return;
+      try {
+        await revokeDetailsSessionRef.current(session.iframe_view_id);
+      } catch (error) {
+        const formatted = formatActionFailureToast("撤销详情会话", error);
+        logToConsole("warn", "撤销 Codex 外部网关详情会话失败", { error: formatted.raw });
+      }
+    },
+    []
+  );
+
   const refreshDetailsSession = useCallback(async () => {
     const requestId = detailsSessionRequestRef.current + 1;
     detailsSessionRequestRef.current = requestId;
@@ -298,15 +320,23 @@ export function CodexRetryGatewayManager({
     setIframeLoaded(false);
     const session = await createDetailsSessionRef.current();
     if (detailsSessionRequestRef.current === requestId) {
+      const previous = activeDetailsSessionRef.current;
+      activeDetailsSessionRef.current = session;
       setDetailsSession(session);
+      void revokeIframeSession(previous);
+    } else {
+      void revokeIframeSession(session);
     }
     return session;
-  }, []);
+  }, [revokeIframeSession]);
 
   useEffect(() => {
     if (!showDetailsFrame || !status?.details_available) {
       detailsSessionRequestRef.current += 1;
+      const previous = activeDetailsSessionRef.current;
+      activeDetailsSessionRef.current = null;
       setDetailsSession(null);
+      void revokeIframeSession(previous);
       return;
     }
     let active = true;
@@ -320,8 +350,17 @@ export function CodexRetryGatewayManager({
     return () => {
       active = false;
       detailsSessionRequestRef.current += 1;
+      const previous = activeDetailsSessionRef.current;
+      activeDetailsSessionRef.current = null;
+      void revokeIframeSession(previous);
     };
-  }, [refreshDetailsSession, showDetailsFrame, status?.details_available, status?.generation]);
+  }, [
+    refreshDetailsSession,
+    revokeIframeSession,
+    showDetailsFrame,
+    status?.details_available,
+    status?.generation,
+  ]);
 
   const openBrowser = useCallback(async () => {
     if (!status?.details_available) {
@@ -329,14 +368,18 @@ export function CodexRetryGatewayManager({
       return;
     }
     try {
-      const session = detailsSession ?? (await refreshDetailsSession());
-      await handleOpenUrl("浏览器入口", session.browser_url);
+      const browserSession = await createDetailsSessionRef.current();
+      try {
+        await handleOpenUrl("浏览器入口", browserSession.browser_url);
+      } finally {
+        void revokeIframeSession(browserSession);
+      }
     } catch (error) {
       const formatted = formatActionFailureToast("打开浏览器入口", error);
       logToConsole("error", "打开 Codex 外部网关浏览器入口失败", { error: formatted.raw });
       toast(formatted.toast);
     }
-  }, [detailsSession, refreshDetailsSession, status?.details_available]);
+  }, [revokeIframeSession, status?.details_available]);
 
   const handleMutationError = useCallback(
     (action: string, error: unknown, providerSync = false) => {
@@ -389,7 +432,7 @@ export function CodexRetryGatewayManager({
   const onConfirmEnable = useCallback(async () => {
     if (!enablePlan) return;
     try {
-      await setEnabledMutation.mutateAsync({
+      const enabled = await setEnabledMutation.mutateAsync({
         enabled: true,
         planGeneration: enablePlan.generation,
         confirmation: {
@@ -412,7 +455,11 @@ export function CodexRetryGatewayManager({
       });
       setEnableDialogOpen(false);
       setEnablePlan(null);
-      toast("Codex 外部网关启用流程已提交");
+      toast(
+        enabled.provider_sync
+          ? formatCodexRetryGatewayProviderSyncResult(enabled.provider_sync)
+          : "Codex 外部网关已启用"
+      );
     } catch (error) {
       handleMutationError("启用 Codex 外部网关", error, true);
     }

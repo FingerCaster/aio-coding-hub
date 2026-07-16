@@ -1,5 +1,6 @@
 //! Shared contracts for the managed external Codex retry gateway.
 
+use crate::infra::codex_provider_sync::CodexProviderSyncResult;
 use crate::shared::error::AppResult;
 use serde::{Deserialize, Serialize};
 use std::future::Future;
@@ -187,6 +188,12 @@ impl Default for CodexRetryGatewayStatus {
     }
 }
 
+#[derive(Debug, Clone, Serialize, specta::Type)]
+pub(crate) struct CodexRetryGatewaySetEnabledResult {
+    pub status: CodexRetryGatewayStatus,
+    pub provider_sync: Option<CodexProviderSyncResult>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 pub(crate) struct CodexRetryGatewayEnablePlan {
     pub generation: u64,
@@ -290,7 +297,14 @@ pub(crate) struct CodexRetryGatewayDetailsSession {
     pub generation: u64,
     pub iframe_url: String,
     pub browser_url: String,
+    pub iframe_view_id: String,
     pub expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct CodexRetryGatewayRevokeDetailsSessionRequest {
+    pub view_id: String,
 }
 
 #[allow(dead_code)]
@@ -376,6 +390,9 @@ pub(crate) struct CodexRetryGatewayRouteCallbackRequest {
 #[allow(dead_code)]
 pub(crate) trait CodexRetryGatewayTransitionStore: Send + Sync {
     fn load_pending(&self) -> AppResult<Option<CodexRetryGatewayRouteTransition>>;
+    fn quarantine_corrupt(&self, _reason: &str) -> AppResult<String> {
+        Err("CODEX_RETRY_GATEWAY_TRANSITION_QUARANTINE_UNSUPPORTED: transition store cannot quarantine corrupt artifacts".into())
+    }
     fn prepare(
         &self,
         transition: &CodexRetryGatewayRouteTransition,

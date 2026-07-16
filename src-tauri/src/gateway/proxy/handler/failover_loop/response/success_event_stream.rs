@@ -134,68 +134,6 @@ fn is_terminal_error_sse_frame(event_name: &str, data: &serde_json::Value) -> bo
             .is_some_and(|status| matches!(status, "error" | "failed" | "incomplete"))
 }
 
-fn non_empty_string(value: Option<&serde_json::Value>) -> bool {
-    value
-        .and_then(serde_json::Value::as_str)
-        .is_some_and(|text| !text.trim().is_empty())
-}
-
-fn is_meaningful_output_item(value: &serde_json::Value) -> bool {
-    let Some(obj) = value.as_object() else {
-        return false;
-    };
-
-    match obj.get("type").and_then(serde_json::Value::as_str) {
-        Some("function_call" | "function_call_output" | "tool_call" | "tool_result") => {
-            return true;
-        }
-        Some("output_text" | "text") => return non_empty_string(obj.get("text")),
-        Some("refusal") => return non_empty_string(obj.get("refusal")),
-        Some(_) | None => {}
-    }
-
-    if non_empty_string(obj.get("text")) || non_empty_string(obj.get("refusal")) {
-        return true;
-    }
-
-    obj.get("content")
-        .and_then(serde_json::Value::as_array)
-        .is_some_and(|content| content.iter().any(is_meaningful_output_item))
-}
-
-fn has_codex_meaningful_output(data: &serde_json::Value) -> bool {
-    match data.get("type").and_then(serde_json::Value::as_str) {
-        Some("response.output_text.delta" | "response.refusal.delta")
-            if non_empty_string(data.get("delta")) =>
-        {
-            return true;
-        }
-        Some("response.function_call_arguments.delta") if non_empty_string(data.get("delta")) => {
-            return true;
-        }
-        Some("response.output_text.done" | "response.refusal.done")
-            if non_empty_string(data.get("text")) || non_empty_string(data.get("refusal")) =>
-        {
-            return true;
-        }
-        _ => {}
-    }
-
-    if data.get("item").is_some_and(is_meaningful_output_item) {
-        return true;
-    }
-
-    [
-        data.get("output").and_then(serde_json::Value::as_array),
-        data.get("response")
-            .and_then(|response| response.get("output"))
-            .and_then(serde_json::Value::as_array),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|items| items.iter().any(is_meaningful_output_item))
-}
-
 enum BufferedStreamPrefixDecision {
     NeedMore,
     StartStreaming,
@@ -218,7 +156,6 @@ fn inspect_buffered_event_stream_prefix(
         is_native_codex_responses_event_stream_path(cli_key, path, active_bridge_type);
     let mut cursor = 0usize;
     let mut saw_non_error_frame = false;
-    let mut saw_meaningful_output = false;
     let mut saw_completion_frame = false;
 
     while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
@@ -244,7 +181,6 @@ fn inspect_buffered_event_stream_prefix(
 
         saw_non_error_frame = true;
         if inspect_empty_success {
-            saw_meaningful_output |= has_codex_meaningful_output(&data);
             saw_completion_frame |= is_completion_sse_frame(&event_name, &data);
         }
     }
@@ -266,11 +202,7 @@ fn inspect_buffered_event_stream_prefix(
         return BufferedStreamPrefixDecision::StartStreaming;
     }
 
-    if inspect_empty_success && saw_meaningful_output {
-        return BufferedStreamPrefixDecision::StartStreaming;
-    }
-
-    if !inspect_empty_success && saw_non_error_frame {
+    if saw_non_error_frame {
         return BufferedStreamPrefixDecision::StartStreaming;
     }
 

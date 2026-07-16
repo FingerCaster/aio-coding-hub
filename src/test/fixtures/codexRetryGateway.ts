@@ -155,12 +155,14 @@ export function createCodexRetryGatewayEnablePlan(
 }
 
 export function createCodexRetryGatewayDetailsSession(
-  suffix = "first"
+  suffix = "first",
+  iframeViewId = "a".repeat(32)
 ): CodexRetryGatewayDetailsSession {
   return {
     generation: 7,
     iframe_url: `http://127.0.0.1:4610/aio-bridge?session=${suffix}`,
     browser_url: `http://127.0.0.1:4610/aio-browser?session=${suffix}`,
+    iframe_view_id: iframeViewId,
     expires_at_ms: 2_000_000_000_000,
   };
 }

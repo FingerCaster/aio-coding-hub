@@ -2,6 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { commands } from "../../../generated/bindings";
 import {
   codexRetryGatewayCheckUpdate,
+  codexRetryGatewayRevokeDetailsSession,
   codexRetryGatewaySetEnabled,
   codexRetryGatewayValidateCommit,
 } from "../codexRetryGateway";
@@ -15,6 +16,7 @@ vi.mock("../../../generated/bindings", async () => {
     commands: {
       ...actual.commands,
       codexRetryGatewayCheckUpdate: vi.fn(),
+      codexRetryGatewayRevokeDetailsSession: vi.fn(),
       codexRetryGatewaySetEnabled: vi.fn(),
       codexRetryGatewayValidateCommit: vi.fn(),
     },
@@ -30,39 +32,42 @@ describe("services/cli/codexRetryGateway", () => {
     vi.mocked(commands.codexRetryGatewaySetEnabled).mockResolvedValueOnce({
       status: "ok",
       data: {
-        generation: 8,
-        desired_enabled: true,
-        runtime_phase: "guarded",
-        route_mode: "guarded",
-        cli_proxy_enabled: true,
-        cli_proxy_applied: true,
-        effective_port: 4610,
-        repository: "nonononull/codex-retry-gateway",
-        license: null,
-        selected_commit: "1111111111111111111111111111111111111111",
-        active_commit: "1111111111111111111111111111111111111111",
-        previous_commit: null,
-        recommended_commit: "1111111111111111111111111111111111111111",
-        trust_state: "aio_reviewed_recommendation",
-        node_status: {
-          available: true,
-          executable: "node",
-          version: "20.12.2",
-          source: "aio_discovery",
-          error: null,
+        status: {
+          generation: 8,
+          desired_enabled: true,
+          runtime_phase: "guarded",
+          route_mode: "guarded",
+          cli_proxy_enabled: true,
+          cli_proxy_applied: true,
+          effective_port: 4610,
+          repository: "nonononull/codex-retry-gateway",
+          license: null,
+          selected_commit: "1111111111111111111111111111111111111111",
+          active_commit: "1111111111111111111111111111111111111111",
+          previous_commit: null,
+          recommended_commit: "1111111111111111111111111111111111111111",
+          trust_state: "aio_reviewed_recommendation",
+          node_status: {
+            available: true,
+            executable: "node",
+            version: "20.12.2",
+            source: "aio_discovery",
+            error: null,
+          },
+          process_status: {
+            phase: "healthy",
+            owned: true,
+            healthy: true,
+            process_id: 1,
+            listener: "http://127.0.0.1:4610",
+          },
+          update_candidate: null,
+          wsl_codex_unprotected: false,
+          last_error: null,
+          details_available: true,
+          operation_pending: false,
         },
-        process_status: {
-          phase: "healthy",
-          owned: true,
-          healthy: true,
-          process_id: 1,
-          listener: "http://127.0.0.1:4610",
-        },
-        update_candidate: null,
-        wsl_codex_unprotected: false,
-        last_error: null,
-        details_available: true,
-        operation_pending: false,
+        provider_sync: null,
       },
     });
 
@@ -98,6 +103,23 @@ describe("services/cli/codexRetryGateway", () => {
     });
 
     await expect(codexRetryGatewayCheckUpdate()).resolves.toBeNull();
+  });
+
+  it("validates and forwards details-session revocation view ids", async () => {
+    const viewId = "A".repeat(32);
+    vi.mocked(commands.codexRetryGatewayRevokeDetailsSession).mockResolvedValueOnce({
+      status: "ok",
+      data: null,
+    });
+
+    await expect(codexRetryGatewayRevokeDetailsSession(viewId)).resolves.toBeNull();
+    expect(commands.codexRetryGatewayRevokeDetailsSession).toHaveBeenCalledWith({ viewId });
+
+    vi.mocked(commands.codexRetryGatewayRevokeDetailsSession).mockClear();
+    await expect(codexRetryGatewayRevokeDetailsSession("not-a-view-id")).rejects.toThrow(
+      "SEC_INVALID_INPUT"
+    );
+    expect(commands.codexRetryGatewayRevokeDetailsSession).not.toHaveBeenCalled();
   });
 
   it("rejects invalid commit inputs before invoking generated commands", async () => {

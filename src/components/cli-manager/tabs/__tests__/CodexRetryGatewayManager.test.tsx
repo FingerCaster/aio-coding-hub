@@ -8,6 +8,7 @@ import {
   useCodexRetryGatewayCreateDetailsSessionMutation,
   useCodexRetryGatewayEnablePlanMutation,
   useCodexRetryGatewayRetryMutation,
+  useCodexRetryGatewayRevokeDetailsSessionMutation,
   useCodexRetryGatewaySetEnabledMutation,
   useCodexRetryGatewaySetNodeOverrideMutation,
   useCodexRetryGatewayStatusQuery,
@@ -38,6 +39,7 @@ vi.mock("../../../../query/codexRetryGateway", () => ({
   useCodexRetryGatewayRetryMutation: vi.fn(),
   useCodexRetryGatewayUninstallMutation: vi.fn(),
   useCodexRetryGatewayCreateDetailsSessionMutation: vi.fn(),
+  useCodexRetryGatewayRevokeDetailsSessionMutation: vi.fn(),
 }));
 
 vi.mock("../../../../services/desktop/dialog", () => ({
@@ -84,6 +86,7 @@ let mutations: {
   retry: MutationMock;
   uninstall: MutationMock;
   detailsSession: MutationMock;
+  revokeDetailsSession: MutationMock;
 };
 
 function installHookMocks() {
@@ -113,6 +116,9 @@ function installHookMocks() {
   vi.mocked(useCodexRetryGatewayCreateDetailsSessionMutation).mockImplementation(
     () => mutations.detailsSession as never
   );
+  vi.mocked(useCodexRetryGatewayRevokeDetailsSessionMutation).mockImplementation(
+    () => mutations.revokeDetailsSession as never
+  );
 }
 
 function renderManager(
@@ -140,7 +146,12 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     };
     mutations = {
       enablePlan: createMutation(),
-      setEnabled: createMutation(vi.fn().mockResolvedValue(createCodexRetryGatewayStatus())),
+      setEnabled: createMutation(
+        vi.fn().mockResolvedValue({
+          status: createCodexRetryGatewayStatus(),
+          provider_sync: null,
+        })
+      ),
       checkUpdate: createMutation(),
       validateCommit: createMutation(),
       applyCommit: createMutation(vi.fn().mockResolvedValue(createCodexRetryGatewayStatus())),
@@ -150,6 +161,7 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
       detailsSession: createMutation(
         vi.fn().mockResolvedValue(createCodexRetryGatewayDetailsSession())
       ),
+      revokeDetailsSession: createMutation(vi.fn().mockResolvedValue(null)),
     };
     installHookMocks();
     vi.mocked(openDesktopSinglePath).mockResolvedValue(null);
@@ -193,6 +205,21 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
       details_available: false,
     });
     mutations.enablePlan.mutateAsync.mockResolvedValue(plan);
+    mutations.setEnabled.mutateAsync.mockResolvedValue({
+      status: createCodexRetryGatewayStatus(),
+      provider_sync: {
+        status: "ok",
+        target_provider: "aio",
+        trigger: "external_gateway_enable",
+        backup_dir: "C:\\Users\\test\\.codex\\backups_state\\provider-sync\\1",
+        changed_session_files: ["session-1.jsonl", "session-2.jsonl"],
+        sqlite_provider_rows_updated: 3,
+        sqlite_user_event_rows_updated: 4,
+        sqlite_cwd_rows_updated: 5,
+        updated_workspace_roots: ["workspace-1"],
+        warning: null,
+      },
+    });
     renderManager();
 
     await user.click(screen.getByRole("switch", { name: "切换 Codex 外部网关" }));
@@ -235,6 +262,9 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
         },
       });
     });
+    expect(toast).toHaveBeenCalledWith(
+      "Provider Sync 已完成：aio；会话文件 2；SQLite Provider 3；用户事件 4；工作目录 5；工作区 1；备份已创建"
+    );
   });
 
   it("omits non-required enable rows and cancel performs no mutation", async () => {
@@ -457,11 +487,13 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
 
   it("creates bridge sessions on entry and refresh, replacing a same-generation URL", async () => {
     const user = userEvent.setup();
-    const firstSession = createCodexRetryGatewayDetailsSession("first");
-    const refreshedSession = createCodexRetryGatewayDetailsSession("refreshed");
+    const firstSession = createCodexRetryGatewayDetailsSession("first", "a".repeat(32));
+    const refreshedSession = createCodexRetryGatewayDetailsSession("refreshed", "b".repeat(32));
+    const browserSession = createCodexRetryGatewayDetailsSession("browser", "c".repeat(32));
     mutations.detailsSession.mutateAsync
       .mockResolvedValueOnce(firstSession)
-      .mockResolvedValueOnce(refreshedSession);
+      .mockResolvedValueOnce(refreshedSession)
+      .mockResolvedValueOnce(browserSession);
 
     const { unmount } = renderManager({ showDetailsFrame: true });
 
@@ -490,8 +522,16 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
 
     const browserButtons = screen.getAllByRole("button", { name: "浏览器打开" });
     await user.click(browserButtons[browserButtons.length - 1]!);
-    expect(openDesktopUrl).toHaveBeenCalledWith(refreshedSession.browser_url);
-    expect(mutations.detailsSession.mutateAsync).toHaveBeenCalledTimes(2);
+    expect(openDesktopUrl).toHaveBeenCalledWith(browserSession.browser_url);
+    expect(mutations.detailsSession.mutateAsync).toHaveBeenCalledTimes(3);
+    expect(mutations.revokeDetailsSession.mutateAsync).toHaveBeenNthCalledWith(
+      1,
+      firstSession.iframe_view_id
+    );
+    expect(mutations.revokeDetailsSession.mutateAsync).toHaveBeenNthCalledWith(
+      2,
+      browserSession.iframe_view_id
+    );
 
     act(() => {
       document.dispatchEvent(new Event("visibilitychange"));
@@ -499,6 +539,12 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     expectNoLifecycleMutation();
     unmount();
     expectNoLifecycleMutation();
+    await waitFor(() => {
+      expect(mutations.revokeDetailsSession.mutateAsync).toHaveBeenNthCalledWith(
+        3,
+        refreshedSession.iframe_view_id
+      );
+    });
   });
 
   it("replaces the bridge session when the managed runtime generation changes", async () => {

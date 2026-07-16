@@ -122,6 +122,7 @@ async fn managed_provider_probe_health(
 ) -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "ok": true,
+        "process_id": state.process_id,
         "listen": state.listen,
         "upstream_base_url": state.upstream_base_url,
         "ui_path": "/__codex_retry_gateway/ui"
@@ -134,6 +135,7 @@ async fn managed_provider_probe_status(
     let provider_name = state.provider_name();
     Json(serde_json::json!({
         "ok": true,
+        "process_id": state.process_id,
         "listen": state.listen,
         "state": {
             "process_id": state.process_id,
@@ -1200,6 +1202,172 @@ base_url = "https://api.anthropic.example/v1"
 }
 
 #[test]
+fn corrupt_route_journal_is_quarantined_and_no_longer_blocks_direct_aio_fail_open() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let aio_origin = "http://127.0.0.1:37123";
+    let guarded_origin = "http://127.0.0.1:4610";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "https://api.openai.com/v1"
+"#,
+        r#"{"profile":"local"}"#,
+    );
+    let manager_paths =
+        crate::infra::codex_retry_gateway::CodexRetryGatewayManagerPaths::from_app(&handle)
+            .expect("manager paths");
+    manager_paths.ensure_dirs().expect("manager dirs");
+    let store = crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore::new(
+        manager_paths.transition_path.clone(),
+    );
+
+    let plan = plan_external_enable(&handle, aio_origin, guarded_origin).expect("guarded plan");
+    let guarded = apply_guarded_route(
+        &handle,
+        &store,
+        CodexGuardedRouteApplyRequest {
+            expected_generation: plan.generation,
+            expected_canonical_sha256: plan.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            guarded_origin: guarded_origin.to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("apply guarded route");
+    assert_eq!(guarded.route.route_mode, CodexRouteMode::Guarded);
+
+    std::fs::write(&manager_paths.transition_path, b"{").expect("corrupt route journal");
+    let reconciled = reconcile_pending_route(&handle, &store).expect("quarantine corrupt journal");
+    assert!(
+        reconciled
+            .recovery_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("TRANSITION_CORRUPT")),
+        "{reconciled:?}"
+    );
+    assert!(!manager_paths.transition_path.exists());
+
+    let current = verify_route(&handle).expect("verify guarded route before fail-open");
+    let direct = apply_direct_aio_route(
+        &handle,
+        &store,
+        CodexDirectAioRouteApplyRequest {
+            expected_generation: current.generation,
+            expected_canonical_sha256: current.canonical_config_sha256,
+            aio_origin: aio_origin.to_string(),
+            desired_enabled: true,
+            source_commit: Some("0123456789abcdef0123456789abcdef01234567".to_string()),
+            process_should_run: true,
+        },
+    )
+    .expect("corrupt journal must not block direct-AIO fail-open");
+    assert_eq!(direct.route.route_mode, CodexRouteMode::DirectAio);
+    assert!(direct.route.live_matches_projection);
+    assert!(direct.route.auth_matches_projection);
+}
+
+#[test]
+fn route_snapshot_recovery_preflights_every_backup_before_writing_targets() {
+    for corruption in ["missing", "hash"] {
+        let dir = tempfile::tempdir().expect("transition dir");
+        let store = crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore::new(
+            dir.path().join("transition.json"),
+        );
+        let snapshots = [b"first".as_slice(), b"second".as_slice()]
+            .into_iter()
+            .enumerate()
+            .map(|(index, bytes)| CodexRetryGatewayRouteSnapshot {
+                root: CodexRetryGatewayRouteSnapshotRoot::CodexHome,
+                root_path_sha256: format!("sha256:{}", "a".repeat(64)),
+                target_rel: format!("target-{index}.json"),
+                existed: true,
+                backup_rel: Some(format!("files/{index:08}.bin")),
+                backup_sha256: Some(sha256_hex(bytes)),
+            })
+            .collect::<Vec<_>>();
+        let transition = CodexRetryGatewayRouteTransition {
+            schema_version: CODEX_RETRY_GATEWAY_ROUTE_TRANSITION_SCHEMA_VERSION,
+            operation_id: format!("preflight-{corruption}"),
+            operation_kind:
+                crate::infra::codex_retry_gateway::CodexRetryGatewayOperationKind::Recover,
+            prior_generation: 1,
+            target_generation: 2,
+            prior_mode: CodexRouteMode::Guarded,
+            target_mode: CodexRouteMode::DirectAio,
+            prior_canonical_config_sha256: format!("sha256:{}", "b".repeat(64)),
+            prior_live_config_sha256: format!("sha256:{}", "c".repeat(64)),
+            canonical_config_sha256: format!("sha256:{}", "d".repeat(64)),
+            live_config_sha256: format!("sha256:{}", "e".repeat(64)),
+            source_commit: None,
+            process_should_run: true,
+            snapshots,
+        };
+        store
+            .prepare(
+                &transition,
+                &[Some(b"first".to_vec()), Some(b"second".to_vec())],
+            )
+            .expect("prepare route snapshots");
+        let second_backup = dir.path().join("transition-snapshots/files/00000001.bin");
+        if corruption == "missing" {
+            std::fs::remove_file(&second_backup).expect("remove second backup");
+        } else {
+            std::fs::write(&second_backup, b"corrupt").expect("corrupt second backup");
+        }
+
+        let error = preflight_persistent_codex_route_snapshot_bytes(&store, &transition)
+            .expect_err("every corrupt backup must fail preflight");
+        assert!(
+            error.to_string().contains("snapshot"),
+            "{corruption}: {error}"
+        );
+    }
+}
+
+#[test]
+fn verify_route_rejects_commented_expected_projection_and_wrong_auth() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let aio_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "https://api.openai.com/v1"
+"#,
+        r#"{"profile":"local"}"#,
+    );
+    set_enabled(&handle, "codex", true, aio_origin).expect("enable direct-AIO route");
+
+    let config_path = codex_config_path(&handle).expect("config path");
+    std::fs::write(
+        &config_path,
+        format!(
+            "# model_provider = \"aio\"\n# [model_providers.aio]\n# base_url = \"{aio_origin}/v1\"\nmodel_provider = \"other\"\n[model_providers.other]\nname = \"other\"\nbase_url = \"https://example.invalid/v1\"\n"
+        ),
+    )
+    .expect("write drifted config with misleading comments");
+    std::fs::write(
+        codex_auth_path(&handle).expect("auth path"),
+        br#"{"OPENAI_API_KEY":"wrong-key"}"#,
+    )
+    .expect("write wrong auth projection");
+
+    let verified = verify_route(&handle).expect("route verification remains observable");
+    assert_eq!(verified.route_mode, CodexRouteMode::DirectAio);
+    assert!(!verified.live_matches_projection, "{verified:?}");
+    assert!(!verified.auth_matches_projection, "{verified:?}");
+}
+
+#[test]
 fn sync_enabled_skips_codex_while_provider_sync_recovery_is_pending() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
@@ -1225,7 +1393,7 @@ base_url = "https://api.openai.com/v1"
     std::fs::write(
         transaction_root.join("journal.json"),
         serde_json::to_vec_pretty(&serde_json::json!({
-            "schema_version": 1,
+            "schema_version": 2,
             "operation_id": "interrupted-route",
             "phase": "prepared",
             "target_provider": "OpenAI",

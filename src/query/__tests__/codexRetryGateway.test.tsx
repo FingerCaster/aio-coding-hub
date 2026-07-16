@@ -1,6 +1,7 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  codexRetryGatewayRevokeDetailsSession,
   codexRetryGatewaySetEnabled,
   codexRetryGatewayStatus,
   codexRetryGatewaySetNodeOverride,
@@ -10,6 +11,7 @@ import { setTauriRuntime } from "../../test/utils/tauriRuntime";
 import { cliProxyKeys, codexRetryGatewayKeys } from "../keys";
 import {
   useCodexRetryGatewaySetEnabledMutation,
+  useCodexRetryGatewayRevokeDetailsSessionMutation,
   useCodexRetryGatewaySetNodeOverrideMutation,
   useCodexRetryGatewayStatusQuery,
 } from "../codexRetryGateway";
@@ -21,6 +23,7 @@ vi.mock("../../services/cli/codexRetryGateway", async () => {
   return {
     ...actual,
     codexRetryGatewayStatus: vi.fn(),
+    codexRetryGatewayRevokeDetailsSession: vi.fn(),
     codexRetryGatewaySetEnabled: vi.fn(),
     codexRetryGatewaySetNodeOverride: vi.fn(),
   };
@@ -117,39 +120,42 @@ describe("query/codexRetryGateway", () => {
   it("writes the returned gateway status into cache after enable/disable mutations", async () => {
     setTauriRuntime();
     vi.mocked(codexRetryGatewaySetEnabled).mockResolvedValue({
-      generation: 6,
-      desired_enabled: true,
-      runtime_phase: "guarded",
-      route_mode: "guarded",
-      cli_proxy_enabled: true,
-      cli_proxy_applied: true,
-      effective_port: 4610,
-      repository: "nonononull/codex-retry-gateway",
-      license: null,
-      selected_commit: "6666666666666666666666666666666666666666",
-      active_commit: "6666666666666666666666666666666666666666",
-      previous_commit: null,
-      recommended_commit: "6666666666666666666666666666666666666666",
-      trust_state: "aio_reviewed_recommendation",
-      node_status: {
-        available: true,
-        executable: "node",
-        version: "20.12.2",
-        source: "aio_discovery",
-        error: null,
+      status: {
+        generation: 6,
+        desired_enabled: true,
+        runtime_phase: "guarded",
+        route_mode: "guarded",
+        cli_proxy_enabled: true,
+        cli_proxy_applied: true,
+        effective_port: 4610,
+        repository: "nonononull/codex-retry-gateway",
+        license: null,
+        selected_commit: "6666666666666666666666666666666666666666",
+        active_commit: "6666666666666666666666666666666666666666",
+        previous_commit: null,
+        recommended_commit: "6666666666666666666666666666666666666666",
+        trust_state: "aio_reviewed_recommendation",
+        node_status: {
+          available: true,
+          executable: "node",
+          version: "20.12.2",
+          source: "aio_discovery",
+          error: null,
+        },
+        process_status: {
+          phase: "healthy",
+          owned: true,
+          healthy: true,
+          process_id: 1,
+          listener: "http://127.0.0.1:4610",
+        },
+        update_candidate: null,
+        wsl_codex_unprotected: false,
+        last_error: null,
+        details_available: true,
+        operation_pending: false,
       },
-      process_status: {
-        phase: "healthy",
-        owned: true,
-        healthy: true,
-        process_id: 1,
-        listener: "http://127.0.0.1:4610",
-      },
-      update_candidate: null,
-      wsl_codex_unprotected: false,
-      last_error: null,
-      details_available: true,
-      operation_pending: false,
+      provider_sync: null,
     });
 
     const client = createTestQueryClient();
@@ -172,6 +178,24 @@ describe("query/codexRetryGateway", () => {
     });
 
     expect(client.getQueryData<any>(codexRetryGatewayKeys.status())?.generation).toBe(6);
+  });
+
+  it("forwards details-session revocation through the mutation hook", async () => {
+    setTauriRuntime();
+    const viewId = "d".repeat(32);
+    vi.mocked(codexRetryGatewayRevokeDetailsSession).mockResolvedValue(null);
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(() => useCodexRetryGatewayRevokeDetailsSessionMutation(), {
+      wrapper,
+    });
+
+    await act(async () => {
+      await result.current.mutateAsync(viewId);
+    });
+
+    expect(codexRetryGatewayRevokeDetailsSession).toHaveBeenCalledWith(viewId);
   });
 
   it("only patches node status when the cached generation matches the mutation request", async () => {

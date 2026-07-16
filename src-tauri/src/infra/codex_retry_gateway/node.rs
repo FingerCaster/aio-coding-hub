@@ -205,6 +205,8 @@ where
 }
 
 fn validate_real_node_executable_path(path: &Path) -> AppResult<PathBuf> {
+    // Automatic discovery may encounter package-manager symlinks. Resolve those
+    // to a concrete regular file; manual overrides reject links before reaching here.
     let canonical = std::fs::canonicalize(path).map_err(|err| {
         AppError::new(
             "CODEX_RETRY_GATEWAY_NODE_PROBE_FAILED",

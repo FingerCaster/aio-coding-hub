@@ -457,7 +457,7 @@ export const commands = {
   },
   async codexRetryGatewaySetEnabled(
     request: CodexRetryGatewaySetEnabledRequest
-  ): Promise<Result<CodexRetryGatewayStatus, string>> {
+  ): Promise<Result<CodexRetryGatewaySetEnabledResult, string>> {
     try {
       return {
         status: "ok",
@@ -547,6 +547,19 @@ export const commands = {
       return {
         status: "ok",
         data: await TAURI_INVOKE("codex_retry_gateway_create_details_session"),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async codexRetryGatewayRevokeDetailsSession(
+    request: CodexRetryGatewayRevokeDetailsSessionRequest
+  ): Promise<Result<null, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("codex_retry_gateway_revoke_details_session", { request }),
       };
     } catch (e) {
       if (e instanceof Error) throw e;
@@ -2649,6 +2662,7 @@ export type CodexRetryGatewayDetailsSession = {
   generation: number;
   iframe_url: string;
   browser_url: string;
+  iframe_view_id: string;
   expires_at_ms: number;
 };
 export type CodexRetryGatewayEnableConfirmation = {
@@ -2718,6 +2732,7 @@ export type CodexRetryGatewayProcessStatus = {
   process_id: number | null;
   listener: string | null;
 };
+export type CodexRetryGatewayRevokeDetailsSessionRequest = { viewId: string };
 export type CodexRetryGatewayRuntimePhase =
   | "disabled"
   | "preparing"
@@ -2734,6 +2749,10 @@ export type CodexRetryGatewaySetEnabledRequest = {
   enabled: boolean;
   planGeneration: number;
   confirmation: CodexRetryGatewayEnableConfirmation;
+};
+export type CodexRetryGatewaySetEnabledResult = {
+  status: CodexRetryGatewayStatus;
+  provider_sync: CodexProviderSyncResult | null;
 };
 export type CodexRetryGatewaySetNodeOverrideRequest = {
   generation: number;

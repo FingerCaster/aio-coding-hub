@@ -5,7 +5,8 @@ use crate::infra::codex_retry_gateway::{
     CodexRetryGatewayApplyCommitRequest, CodexRetryGatewayCommitValidation,
     CodexRetryGatewayDetailsSession, CodexRetryGatewayEnablePlan,
     CodexRetryGatewayGenerationRequest, CodexRetryGatewayNodeStatus,
-    CodexRetryGatewaySetEnabledRequest, CodexRetryGatewaySetNodeOverrideRequest,
+    CodexRetryGatewayRevokeDetailsSessionRequest, CodexRetryGatewaySetEnabledRequest,
+    CodexRetryGatewaySetEnabledResult, CodexRetryGatewaySetNodeOverrideRequest,
     CodexRetryGatewayStatus, CodexRetryGatewayUninstallRequest, CodexRetryGatewayUpdateCandidate,
     CodexRetryGatewayValidateCommitRequest,
 };
@@ -35,7 +36,7 @@ pub(crate) async fn codex_retry_gateway_enable_plan(
 pub(crate) async fn codex_retry_gateway_set_enabled(
     app: tauri::AppHandle,
     request: CodexRetryGatewaySetEnabledRequest,
-) -> Result<CodexRetryGatewayStatus, String> {
+) -> Result<CodexRetryGatewaySetEnabledResult, String> {
     codex_retry_gateway_service::set_enabled(&app, request)
         .await
         .map_err(Into::into)
@@ -111,6 +112,16 @@ pub(crate) async fn codex_retry_gateway_create_details_session(
     app: tauri::AppHandle,
 ) -> Result<CodexRetryGatewayDetailsSession, String> {
     codex_retry_gateway_service::details_session(&app)
+        .await
+        .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn codex_retry_gateway_revoke_details_session(
+    request: CodexRetryGatewayRevokeDetailsSessionRequest,
+) -> Result<(), String> {
+    codex_retry_gateway_service::revoke_details_session(request)
         .await
         .map_err(Into::into)
 }

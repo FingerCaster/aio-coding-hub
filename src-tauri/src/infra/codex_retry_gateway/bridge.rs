@@ -14,21 +14,26 @@ use crate::infra::codex_retry_gateway::{
 use crate::shared::error::{AppError, AppResult};
 use axum::body::{to_bytes, Body};
 use axum::extract::{OriginalUri, Path as AxumPath, State};
-use axum::http::header::{COOKIE, LOCATION, ORIGIN, SET_COOKIE};
+use axum::http::header::{COOKIE, LOCATION, ORIGIN, REFERER, SET_COOKIE};
 use axum::http::{HeaderMap, HeaderName, HeaderValue, Method, Response, StatusCode};
 use axum::routing::{any, get};
 use axum::Router;
+use bytes::Bytes;
+use futures_core::Stream;
 use reqwest::Client;
 use serde_json::Value;
 use std::collections::HashMap;
+use std::pin::Pin;
 use std::sync::{Arc, OnceLock};
+use std::task::{Context, Poll};
 use std::time::Duration;
 use tokio::sync::{oneshot, Mutex, RwLock};
 
 const BRIDGE_BODY_LIMIT_BYTES: usize = 8 * 1024 * 1024;
 const BRIDGE_RESPONSE_LIMIT_BYTES: usize = 8 * 1024 * 1024;
-const BRIDGE_SESSION_TTL_MS: u64 = 15 * 60 * 1000;
+const BRIDGE_LAUNCH_TOKEN_TTL_MS: u64 = 60 * 1000;
 const BRIDGE_COOKIE_NAME_PREFIX: &str = "aio_codex_retry_gateway_session";
+const SEC_FETCH_SITE: &str = "sec-fetch-site";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct BridgeRuntimeHandle {
@@ -42,14 +47,26 @@ pub(crate) struct BridgeDetailsSession {
 }
 
 #[derive(Debug, Clone)]
-struct BridgeSessionState {
+struct BridgeManagedIdentity {
     generation: u64,
     listener: String,
     pid: u32,
     start_identity: Option<u64>,
     source_commit: String,
     instance_nonce: String,
+}
+
+#[derive(Debug, Clone)]
+struct BridgeLaunchTokenState {
+    identity: BridgeManagedIdentity,
+    view_id: String,
     expires_at_ms: u64,
+}
+
+#[derive(Debug, Clone)]
+struct BridgeSessionState {
+    identity: BridgeManagedIdentity,
+    view_id: String,
 }
 
 struct BridgeRuntimeInner {
@@ -66,6 +83,7 @@ struct BridgeRuntimeState {
     cookie_name: String,
     paths: RwLock<CodexRetryGatewayManagerPaths>,
     callback: RwLock<Arc<dyn CodexRetryGatewayLifecycleCallback>>,
+    launch_tokens: RwLock<HashMap<String, BridgeLaunchTokenState>>,
     sessions: RwLock<HashMap<String, BridgeSessionState>>,
     client: Client,
 }
@@ -83,44 +101,87 @@ pub(crate) async fn create_bridge_details_session(
     callback: Arc<dyn CodexRetryGatewayLifecycleCallback>,
 ) -> AppResult<BridgeDetailsSession> {
     let handle = ensure_bridge_runtime(paths.clone(), callback).await?;
-    let session_id = crate::infra::codex_retry_gateway::util::random_hex(16);
-    let expires_at_ms = now_unix_ms().saturating_add(BRIDGE_SESSION_TTL_MS);
+    let iframe_view_id = crate::infra::codex_retry_gateway::util::random_hex(16);
+    let browser_view_id = crate::infra::codex_retry_gateway::util::random_hex(16);
+    let iframe_launch_token = crate::infra::codex_retry_gateway::util::random_hex(24);
+    let browser_launch_token = crate::infra::codex_retry_gateway::util::random_hex(24);
+    let expires_at_ms = now_unix_ms().saturating_add(BRIDGE_LAUNCH_TOKEN_TTL_MS);
+    let identity = BridgeManagedIdentity {
+        generation,
+        listener: process.record.listener.clone(),
+        pid: process.record.pid,
+        start_identity: process.record.start_identity,
+        source_commit: process.record.source_commit.clone(),
+        instance_nonce: process.record.instance_nonce.clone(),
+    };
 
-    let runtime = bridge_runtime_slot().lock().await;
-    let Some(inner) = runtime.as_ref() else {
-        return Err(AppError::new(
-            "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_UNAVAILABLE",
-            "bridge runtime is not running",
-        ));
+    let state = {
+        let runtime = bridge_runtime_slot().lock().await;
+        runtime
+            .as_ref()
+            .map(|inner| inner.state.clone())
+            .ok_or_else(|| {
+                AppError::new(
+                    "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_UNAVAILABLE",
+                    "bridge runtime is not running",
+                )
+            })?
     };
     {
-        let mut sessions = inner.state.sessions.write().await;
-        prune_expired_sessions(&mut sessions);
-        sessions.insert(
-            session_id.clone(),
-            BridgeSessionState {
-                generation,
-                listener: process.record.listener.clone(),
-                pid: process.record.pid,
-                start_identity: process.record.start_identity,
-                source_commit: process.record.source_commit.clone(),
-                instance_nonce: process.record.instance_nonce.clone(),
-                expires_at_ms,
-            },
-        );
+        let mut launch_tokens = state.launch_tokens.write().await;
+        prune_expired_launch_tokens(&mut launch_tokens);
+        for (token, view_id) in [
+            (&iframe_launch_token, &iframe_view_id),
+            (&browser_launch_token, &browser_view_id),
+        ] {
+            launch_tokens.insert(
+                token.clone(),
+                BridgeLaunchTokenState {
+                    identity: identity.clone(),
+                    view_id: view_id.clone(),
+                    expires_at_ms,
+                },
+            );
+        }
     }
-    drop(runtime);
 
-    let launch_url = format!("{}/launch/{}", handle.base_origin, session_id);
+    let iframe_url = format!("{}/launch/{}", handle.base_origin, iframe_launch_token);
+    let browser_url = format!("{}/launch/{}", handle.base_origin, browser_launch_token);
     Ok(BridgeDetailsSession {
         handle: handle.clone(),
         session: CodexRetryGatewayDetailsSession {
             generation,
-            iframe_url: launch_url.clone(),
-            browser_url: launch_url,
+            iframe_url,
+            browser_url,
+            iframe_view_id,
             expires_at_ms,
         },
     })
+}
+
+pub(crate) async fn revoke_bridge_details_session(view_id: &str) -> AppResult<()> {
+    if view_id.len() != 32 || !view_id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_INVALID",
+            "bridge view id must be an exact 32-character hexadecimal value",
+        ));
+    }
+    let state = {
+        let runtime = bridge_runtime_slot().lock().await;
+        runtime.as_ref().map(|inner| inner.state.clone())
+    };
+    let Some(state) = state else {
+        return Ok(());
+    };
+    {
+        let mut launch_tokens = state.launch_tokens.write().await;
+        launch_tokens.retain(|_, launch| launch.view_id != view_id);
+    }
+    {
+        let mut sessions = state.sessions.write().await;
+        sessions.retain(|_, session| session.view_id != view_id);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -165,6 +226,7 @@ async fn ensure_bridge_runtime(
         cookie_name: bridge_cookie_name(addr.port()),
         paths: RwLock::new(paths),
         callback: RwLock::new(callback),
+        launch_tokens: RwLock::new(HashMap::new()),
         sessions: RwLock::new(HashMap::new()),
         client: Client::builder()
             .no_proxy()
@@ -203,10 +265,28 @@ async fn ensure_bridge_runtime(
 
 async fn launch_session(
     State(state): State<Arc<BridgeRuntimeState>>,
-    AxumPath(session_id): AxumPath<String>,
+    AxumPath(launch_token): AxumPath<String>,
 ) -> Response<Body> {
-    match validate_session(&state, &session_id).await {
+    let launch = {
+        let mut launch_tokens = state.launch_tokens.write().await;
+        consume_launch_token(&mut launch_tokens, &launch_token)
+    };
+    let Some(launch) = launch else {
+        return error_response(
+            StatusCode::GONE,
+            "bridge launch token is missing, expired, or already consumed",
+        );
+    };
+    match validate_managed_identity(&state, &launch.identity).await {
         Ok(_) => {
+            let session_id = crate::infra::codex_retry_gateway::util::random_hex(24);
+            state.sessions.write().await.insert(
+                session_id.clone(),
+                BridgeSessionState {
+                    identity: launch.identity,
+                    view_id: launch.view_id,
+                },
+            );
             let mut response = Response::builder()
                 .status(StatusCode::FOUND)
                 .header(LOCATION, "/__codex_retry_gateway/ui")
@@ -239,10 +319,10 @@ async fn proxy_request(
     if !path_allowed(&method, &path) {
         return error_response(StatusCode::NOT_FOUND, "path is not allowlisted");
     }
-    if !request_origin_allowed(&method, &headers, &state.base_origin) {
+    if !request_origin_allowed(&method, &path, &headers, &state.base_origin) {
         return error_response(
             StatusCode::FORBIDDEN,
-            "state-changing bridge requests require the exact bridge origin",
+            "bridge API requests require a verified same-origin browser context",
         );
     }
 
@@ -306,18 +386,18 @@ async fn proxy_request(
     }
     let status = response.status();
     let upstream_headers = response.headers().clone();
-    let bytes = match read_bounded_response_bytes(response, BRIDGE_RESPONSE_LIMIT_BYTES).await {
-        Ok(bytes) => bytes,
-        Err(error) if error.code() == "CODEX_RETRY_GATEWAY_BRIDGE_RESPONSE_TOO_LARGE" => {
-            return error_response(
-                StatusCode::BAD_GATEWAY,
-                &format!("upstream response exceeds {BRIDGE_RESPONSE_LIMIT_BYTES} bytes"),
-            )
-        }
-        Err(error) => return error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
-    };
     let should_overlay_status = response_requires_status_overlay(&method, &path, status);
-    let bytes = if should_overlay_status {
+    if should_overlay_status {
+        let bytes = match read_bounded_response_bytes(response, BRIDGE_RESPONSE_LIMIT_BYTES).await {
+            Ok(bytes) => bytes,
+            Err(error) if error.code() == "CODEX_RETRY_GATEWAY_BRIDGE_RESPONSE_TOO_LARGE" => {
+                return error_response(
+                    StatusCode::BAD_GATEWAY,
+                    &format!("upstream response exceeds {BRIDGE_RESPONSE_LIMIT_BYTES} bytes"),
+                )
+            }
+            Err(error) => return error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
+        };
         let callback = state.callback.read().await.clone();
         let authoritative = match callback.current_gateway_status().await {
             Ok(status) => status,
@@ -334,30 +414,69 @@ async fn proxy_request(
                 "bridge session generation changed while reading status",
             );
         }
-        match overlay_authoritative_status(&bytes, &validated.record, &authoritative) {
+        let bytes = match overlay_authoritative_status(&bytes, &validated.record, &authoritative) {
             Ok(bytes) => bytes,
             Err(error) => return error_response(StatusCode::BAD_GATEWAY, &error.to_string()),
+        };
+        let mut builder = Response::builder().status(status);
+        if let Some(headers_mut) = builder.headers_mut() {
+            copy_response_headers(&upstream_headers, headers_mut);
         }
-    } else {
-        bytes
-    };
+        return builder.body(Body::from(bytes)).unwrap_or_else(|_| {
+            error_response(StatusCode::BAD_GATEWAY, "failed to build bridge response")
+        });
+    }
+
+    if response
+        .content_length()
+        .is_some_and(|length| length > BRIDGE_RESPONSE_LIMIT_BYTES as u64)
+    {
+        return error_response(
+            StatusCode::BAD_GATEWAY,
+            &format!("upstream response exceeds {BRIDGE_RESPONSE_LIMIT_BYTES} bytes"),
+        );
+    }
     let mut builder = Response::builder().status(status);
     if let Some(headers_mut) = builder.headers_mut() {
         copy_response_headers(&upstream_headers, headers_mut);
     }
-    builder.body(Body::from(bytes)).unwrap_or_else(|_| {
+    let stream =
+        BoundedBridgeResponseStream::new(response.bytes_stream(), BRIDGE_RESPONSE_LIMIT_BYTES);
+    builder.body(Body::from_stream(stream)).unwrap_or_else(|_| {
         error_response(StatusCode::BAD_GATEWAY, "failed to build bridge response")
     })
 }
 
-fn request_origin_allowed(method: &Method, headers: &HeaderMap, base_origin: &str) -> bool {
-    if matches!(*method, Method::GET | Method::HEAD | Method::OPTIONS) {
+fn request_origin_allowed(
+    method: &Method,
+    path: &str,
+    headers: &HeaderMap,
+    base_origin: &str,
+) -> bool {
+    let fetch_site = headers
+        .get(SEC_FETCH_SITE)
+        .and_then(|value| value.to_str().ok());
+    if fetch_site.is_some_and(|site| site != "same-origin") {
+        return false;
+    }
+    let exact_origin = headers
+        .get(ORIGIN)
+        .and_then(|value| value.to_str().ok())
+        .is_some_and(|origin| origin == base_origin);
+    if !matches!(*method, Method::GET | Method::HEAD) {
+        return exact_origin;
+    }
+    if !path.starts_with("/__codex_retry_gateway/api/") {
+        return true;
+    }
+    if fetch_site == Some("same-origin") || exact_origin {
         return true;
     }
     headers
-        .get(ORIGIN)
+        .get(REFERER)
         .and_then(|value| value.to_str().ok())
-        .is_some_and(|origin| origin == base_origin)
+        .and_then(|referer| reqwest::Url::parse(referer).ok())
+        .is_some_and(|referer| referer.origin().ascii_serialization() == base_origin)
 }
 
 fn response_requires_status_overlay(method: &Method, path: &str, status: StatusCode) -> bool {
@@ -539,19 +658,31 @@ async fn validate_session(
     session_id: &str,
 ) -> AppResult<ValidatedBridgeRequest> {
     let session = {
-        let mut sessions = state.sessions.write().await;
-        prune_expired_sessions(&mut sessions);
+        let sessions = state.sessions.read().await;
         sessions.get(session_id).cloned().ok_or_else(|| {
             AppError::new(
                 "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_INVALID",
-                "bridge session is missing or expired",
+                "bridge session is missing or revoked",
             )
         })?
     };
 
+    match validate_managed_identity(state, &session.identity).await {
+        Ok(validated) => Ok(validated),
+        Err(error) => {
+            state.sessions.write().await.remove(session_id);
+            Err(error)
+        }
+    }
+}
+
+async fn validate_managed_identity(
+    state: &Arc<BridgeRuntimeState>,
+    identity: &BridgeManagedIdentity,
+) -> AppResult<ValidatedBridgeRequest> {
     let paths = state.paths.read().await.clone();
     let manager = read_manager_state(&paths)?;
-    if manager.generation != session.generation {
+    if manager.generation != identity.generation {
         return Err(AppError::new(
             "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_STALE",
             "bridge session generation no longer matches the managed runtime state",
@@ -572,11 +703,11 @@ async fn validate_session(
         ));
     };
     let record = process.record;
-    if record.pid != session.pid
-        || record.listener != session.listener
-        || record.instance_nonce != session.instance_nonce
-        || record.source_commit != session.source_commit
-        || record.start_identity != session.start_identity
+    if record.pid != identity.pid
+        || record.listener != identity.listener
+        || record.instance_nonce != identity.instance_nonce
+        || record.source_commit != identity.source_commit
+        || record.start_identity != identity.start_identity
     {
         return Err(AppError::new(
             "CODEX_RETRY_GATEWAY_BRIDGE_SESSION_STALE",
@@ -585,7 +716,7 @@ async fn validate_session(
     }
 
     Ok(ValidatedBridgeRequest {
-        generation: session.generation,
+        generation: identity.generation,
         record,
     })
 }
@@ -770,9 +901,72 @@ fn should_drop_response_header(name: &HeaderName) -> bool {
     )
 }
 
-fn prune_expired_sessions(sessions: &mut HashMap<String, BridgeSessionState>) {
+fn prune_expired_launch_tokens(tokens: &mut HashMap<String, BridgeLaunchTokenState>) {
     let now = now_unix_ms();
-    sessions.retain(|_, session| session.expires_at_ms > now);
+    tokens.retain(|_, token| token.expires_at_ms > now);
+}
+
+fn consume_launch_token(
+    tokens: &mut HashMap<String, BridgeLaunchTokenState>,
+    launch_token: &str,
+) -> Option<BridgeLaunchTokenState> {
+    prune_expired_launch_tokens(tokens);
+    tokens.remove(launch_token)
+}
+
+struct BoundedBridgeResponseStream {
+    inner: Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send>>,
+    limit: usize,
+    bytes_seen: usize,
+    failed: bool,
+}
+
+impl BoundedBridgeResponseStream {
+    fn new<S>(stream: S, limit: usize) -> Self
+    where
+        S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static,
+    {
+        Self {
+            inner: Box::pin(stream),
+            limit,
+            bytes_seen: 0,
+            failed: false,
+        }
+    }
+}
+
+impl Stream for BoundedBridgeResponseStream {
+    type Item = Result<Bytes, std::io::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, context: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        if self.failed {
+            return Poll::Ready(None);
+        }
+        match self.inner.as_mut().poll_next(context) {
+            Poll::Ready(Some(Ok(chunk))) => {
+                let next = self.bytes_seen.saturating_add(chunk.len());
+                if next > self.limit {
+                    self.failed = true;
+                    let error = std::io::Error::other(format!(
+                        "Codex retry gateway bridge response exceeds {} bytes",
+                        self.limit
+                    ));
+                    return Poll::Ready(Some(Err(error)));
+                }
+                self.bytes_seen = next;
+                Poll::Ready(Some(Ok(chunk)))
+            }
+            Poll::Ready(Some(Err(error))) => {
+                self.failed = true;
+                let error = std::io::Error::other(format!(
+                    "failed to stream Codex retry gateway bridge response: {error}"
+                ));
+                Poll::Ready(Some(Err(error)))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
 }
 
 fn error_response(status: StatusCode, message: &str) -> Response<Body> {
@@ -899,30 +1093,101 @@ mod tests {
     }
 
     #[test]
-    fn state_changing_requests_require_exact_bridge_origin() {
+    fn bridge_api_requests_require_verified_same_origin_context() {
         let mut headers = HeaderMap::new();
         assert!(request_origin_allowed(
             &Method::GET,
+            "/__codex_retry_gateway/ui",
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+        assert!(!request_origin_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/reasoning/export",
             &headers,
             "http://127.0.0.1:45100"
         ));
         assert!(!request_origin_allowed(
             &Method::POST,
+            "/__codex_retry_gateway/api/config",
             &headers,
             "http://127.0.0.1:45100"
         ));
         headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:45101"));
         assert!(!request_origin_allowed(
             &Method::POST,
+            "/__codex_retry_gateway/api/config",
             &headers,
             "http://127.0.0.1:45100"
         ));
         headers.insert(ORIGIN, HeaderValue::from_static("http://127.0.0.1:45100"));
         assert!(request_origin_allowed(
             &Method::POST,
+            "/__codex_retry_gateway/api/config",
             &headers,
             "http://127.0.0.1:45100"
         ));
+
+        headers.remove(ORIGIN);
+        headers.insert(SEC_FETCH_SITE, HeaderValue::from_static("cross-site"));
+        headers.insert(
+            REFERER,
+            HeaderValue::from_static("http://127.0.0.1:45100/__codex_retry_gateway/ui"),
+        );
+        assert!(!request_origin_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/reasoning/export",
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+        headers.insert(SEC_FETCH_SITE, HeaderValue::from_static("same-origin"));
+        assert!(request_origin_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/analytics/reasoning/export",
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+        headers.remove(SEC_FETCH_SITE);
+        assert!(request_origin_allowed(
+            &Method::GET,
+            "/__codex_retry_gateway/api/status",
+            &headers,
+            "http://127.0.0.1:45100"
+        ));
+    }
+
+    #[test]
+    fn launch_tokens_are_short_lived_and_single_use() {
+        let identity = BridgeManagedIdentity {
+            generation: 7,
+            listener: "http://127.0.0.1:4610".to_string(),
+            pid: 1,
+            start_identity: Some(2),
+            source_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
+            instance_nonce: "nonce".to_string(),
+        };
+        let mut tokens = HashMap::from([
+            (
+                "usable".to_string(),
+                BridgeLaunchTokenState {
+                    identity: identity.clone(),
+                    view_id: "a".repeat(32),
+                    expires_at_ms: now_unix_ms().saturating_add(60_000),
+                },
+            ),
+            (
+                "expired".to_string(),
+                BridgeLaunchTokenState {
+                    identity,
+                    view_id: "b".repeat(32),
+                    expires_at_ms: now_unix_ms().saturating_sub(1),
+                },
+            ),
+        ]);
+
+        assert!(consume_launch_token(&mut tokens, "expired").is_none());
+        assert!(consume_launch_token(&mut tokens, "usable").is_some());
+        assert!(consume_launch_token(&mut tokens, "usable").is_none());
     }
 
     #[test]
@@ -1035,6 +1300,7 @@ mod tests {
             callback: RwLock::new(Arc::new(AwaitedRestoreCallback {
                 completed: completed.clone(),
             })),
+            launch_tokens: RwLock::new(HashMap::new()),
             sessions: RwLock::new(HashMap::new()),
             client: Client::new(),
         });

@@ -4910,7 +4910,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_responses_streams_first_delta_before_completion() {
+    async fn codex_responses_streams_created_event_before_completion() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -4928,8 +4928,8 @@ mod tests {
         let db = db::init_for_tests(&db_dir.path().join("codex-disabled-responses-stream.sqlite"))
             .expect("init test db");
         let first_chunk = concat!(
-            "event: response.output_text.delta\n",
-            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"first visible\"}\n\n"
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-disabled-stream\",\"status\":\"in_progress\",\"model\":\"gpt-disabled-stream\",\"output\":[]}}\n\n"
         );
         let completion_chunk = concat!(
             "event: response.completed\n",
@@ -4971,8 +4971,8 @@ mod tests {
         .expect("first stream chunk")
         .expect("first stream chunk ok");
         let first_text = String::from_utf8_lossy(&first);
-        assert!(first_text.contains("response.output_text.delta"));
-        assert!(first_text.contains("first visible"));
+        assert!(first_text.contains("response.created"));
+        assert!(first_text.contains("resp-disabled-stream"));
         assert!(!first_text.contains("response.completed"));
 
         let mut full_body = first_text.to_string();

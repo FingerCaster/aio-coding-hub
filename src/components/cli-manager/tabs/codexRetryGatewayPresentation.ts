@@ -1,5 +1,6 @@
 import type {
   CodexProviderSyncPlan,
+  CodexProviderSyncResult,
   CodexRetryGatewayError,
   CodexRetryGatewayNodeResolutionSource,
   CodexRetryGatewayRuntimePhase,
@@ -115,6 +116,20 @@ export function formatCodexRetryGatewayProviderSync(plan: CodexProviderSyncPlan)
   const changeText = plan.change_required ? `${current} -> ${plan.target_provider}` : "无需切换";
   const closedText = plan.codex_must_be_closed ? "需要先关闭 Codex App" : "无需关闭 Codex App";
   return `${changeText}；会同步会话与 Provider 状态、写入备份，${closedText}。`;
+}
+
+export function formatCodexRetryGatewayProviderSyncResult(result: CodexProviderSyncResult): string {
+  const summary = [
+    `Provider Sync 已完成：${result.target_provider}`,
+    `会话文件 ${result.changed_session_files.length}`,
+    `SQLite Provider ${result.sqlite_provider_rows_updated}`,
+    `用户事件 ${result.sqlite_user_event_rows_updated}`,
+    `工作目录 ${result.sqlite_cwd_rows_updated}`,
+    `工作区 ${result.updated_workspace_roots.length}`,
+  ];
+  if (result.backup_dir) summary.push("备份已创建");
+  if (result.warning) summary.push(result.warning);
+  return summary.join("；");
 }
 
 export function formatCodexRetryGatewayError(error: CodexRetryGatewayError | null): string | null {

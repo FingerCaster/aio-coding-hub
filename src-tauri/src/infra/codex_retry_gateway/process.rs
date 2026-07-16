@@ -24,7 +24,7 @@ use serde_json::Value;
 use std::ffi::OsString;
 use std::net::TcpListener;
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::{Child, Command, Stdio};
 use std::time::Duration;
 
 const PROCESS_HEALTH_TIMEOUT: Duration = Duration::from_secs(15);
@@ -33,6 +33,15 @@ const PROCESS_HTTP_TIMEOUT: Duration = Duration::from_secs(3);
 const PROCESS_HEALTH_POLL_INTERVAL: Duration = Duration::from_millis(250);
 const PROCESS_STATUS_BODY_LIMIT: usize = 512 * 1024;
 const PROCESS_PORT_SEARCH_MAX: u16 = 40;
+
+fn reap_managed_child_on_exit(mut child: Child) {
+    let pid = child.id();
+    std::mem::drop(tauri::async_runtime::spawn_blocking(move || {
+        if let Err(error) = child.wait() {
+            tracing::warn!(pid, error = %error, "failed to reap managed Codex retry gateway process");
+        }
+    }));
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexRetryGatewayHealthSnapshot {
@@ -201,7 +210,7 @@ pub(crate) async fn start_runtime_process(
             error,
         ));
     }
-    drop(child);
+    reap_managed_child_on_exit(child);
 
     let result = async {
         persist_managed_gateway_state(
@@ -911,13 +920,14 @@ fn public_process_error(
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OfficialHealthProjection {
     listener: String,
+    process_id: u32,
     upstream_base_url: String,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 struct OfficialStatusProjection {
     listener: String,
-    process_id: Option<u32>,
+    process_id: u32,
     upstream_base_url: Option<String>,
     gateway_base_url: Option<String>,
     config_path: Option<String>,
@@ -962,6 +972,7 @@ fn parse_official_health_payload(value: &Value) -> Option<OfficialHealthProjecti
     }
     Some(OfficialHealthProjection {
         listener: normalize_reported_listener(&object_string(object, "listen")?)?,
+        process_id: object_u32(object, "process_id").filter(|pid| *pid != 0)?,
         upstream_base_url: object_string(object, "upstream_base_url")?,
     })
 }
@@ -973,9 +984,13 @@ fn parse_official_status_payload(value: &Value) -> Option<OfficialStatusProjecti
     }
     let state = object.get("state")?.as_object()?;
     let paths = object.get("paths")?.as_object()?;
+    let process_id = object_u32(object, "process_id").filter(|pid| *pid != 0)?;
+    if object_u32(state, "process_id").is_some_and(|state_pid| state_pid != process_id) {
+        return None;
+    }
     Some(OfficialStatusProjection {
         listener: normalize_reported_listener(&object_string(object, "listen")?)?,
-        process_id: object_u32(state, "process_id"),
+        process_id,
         upstream_base_url: object_string(state, "original_base_url"),
         gateway_base_url: object_string(state, "gateway_base_url"),
         config_path: object_string(paths, "config_path"),
@@ -996,6 +1011,9 @@ fn project_health_snapshot(
     if health.listener != status.listener {
         return None;
     }
+    if health.process_id != status.process_id {
+        return None;
+    }
     if status
         .upstream_base_url
         .as_deref()
@@ -1006,7 +1024,7 @@ fn project_health_snapshot(
 
     Some(CodexRetryGatewayHealthSnapshot {
         listener: health.listener,
-        process_id: status.process_id,
+        process_id: Some(health.process_id),
         upstream_base_url: Some(health.upstream_base_url),
         gateway_base_url: status.gateway_base_url,
         config_path: status.config_path,
@@ -1171,6 +1189,9 @@ fn process_start_identity(pid: u32) -> Option<u64> {
         let ok = GetProcessTimes(handle, &mut created, &mut exited, &mut kernel, &mut user);
         CloseHandle(handle);
         if ok == 0 {
+            return None;
+        }
+        if exited.dwHighDateTime != 0 || exited.dwLowDateTime != 0 {
             return None;
         }
         Some(((created.dwHighDateTime as u64) << 32) | created.dwLowDateTime as u64)
@@ -1528,15 +1549,16 @@ mod tests {
         let listener_url = format!("http://{DEFAULT_LISTEN_HOST}:{port}");
         let health_body = serde_json::json!({
             "ok": true,
+            "process_id": process_id,
             "listen": format!("{DEFAULT_LISTEN_HOST}:{port}"),
             "upstream_base_url": "http://127.0.0.1:37123/v1",
             "ui_path": "/__codex_retry_gateway/ui"
         });
         let status_body = serde_json::json!({
             "ok": true,
+            "process_id": process_id,
             "listen": format!("{DEFAULT_LISTEN_HOST}:{port}"),
             "state": {
-                "process_id": process_id,
                 "original_base_url": "http://127.0.0.1:37123/v1",
                 "gateway_base_url": listener_url.clone(),
                 "aio_instance_nonce": instance_nonce,
@@ -2014,15 +2036,16 @@ mod tests {
         let snapshot = project_health_snapshot(
             Some(serde_json::json!({
                 "ok": true,
+                "process_id": 7,
                 "listen": "127.0.0.1:4610",
                 "upstream_base_url": "http://127.0.0.1:37123/v1",
                 "ui_path": "/__codex_retry_gateway/ui"
             })),
             Some(serde_json::json!({
                 "ok": true,
+                "process_id": 7,
                 "listen": "127.0.0.1:4610",
                 "state": {
-                    "process_id": 7,
                     "original_base_url": "http://127.0.0.1:37123/v1",
                     "gateway_base_url": "http://127.0.0.1:4999",
                     "aio_instance_nonce": "deadbeef",
@@ -2042,6 +2065,49 @@ mod tests {
             snapshot.gateway_base_url,
             Some("http://127.0.0.1:4999".to_string())
         );
+    }
+
+    #[test]
+    fn project_health_snapshot_rejects_process_identity_disagreement() {
+        let health = serde_json::json!({
+            "ok": true,
+            "process_id": 7,
+            "listen": "127.0.0.1:4610",
+            "upstream_base_url": "http://127.0.0.1:37123/v1"
+        });
+        let status = serde_json::json!({
+            "ok": true,
+            "process_id": 8,
+            "listen": "127.0.0.1:4610",
+            "state": {
+                "original_base_url": "http://127.0.0.1:37123/v1"
+            },
+            "paths": {}
+        });
+
+        assert!(project_health_snapshot(Some(health), Some(status)).is_none());
+    }
+
+    #[test]
+    fn project_health_snapshot_rejects_stale_state_process_identity() {
+        let health = serde_json::json!({
+            "ok": true,
+            "process_id": 7,
+            "listen": "127.0.0.1:4610",
+            "upstream_base_url": "http://127.0.0.1:37123/v1"
+        });
+        let status = serde_json::json!({
+            "ok": true,
+            "process_id": 7,
+            "listen": "127.0.0.1:4610",
+            "state": {
+                "process_id": 8,
+                "original_base_url": "http://127.0.0.1:37123/v1"
+            },
+            "paths": {}
+        });
+
+        assert!(project_health_snapshot(Some(health), Some(status)).is_none());
     }
 
     #[tokio::test]
@@ -2108,6 +2174,40 @@ mod tests {
         ));
     }
 
+    #[test]
+    fn managed_child_reaper_helper_process() {
+        if std::env::var_os("AIO_CODING_HUB_TEST_CHILD_REAPER_HELPER").is_some() {
+            std::thread::sleep(Duration::from_millis(250));
+        }
+    }
+
+    #[tokio::test]
+    async fn managed_child_reaper_removes_exited_process_identity() {
+        let child = Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "infra::codex_retry_gateway::process::tests::managed_child_reaper_helper_process",
+            ])
+            .env("AIO_CODING_HUB_TEST_CHILD_REAPER_HELPER", "1")
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()
+            .expect("spawn child reaper helper");
+        let pid = child.id();
+        let start_identity = process_start_identity(pid).expect("helper process start identity");
+        reap_managed_child_on_exit(child);
+
+        let deadline = tokio::time::Instant::now() + Duration::from_secs(5);
+        while tokio::time::Instant::now() < deadline {
+            if !process_matches_identity(pid, Some(start_identity)) {
+                return;
+            }
+            tokio::time::sleep(Duration::from_millis(25)).await;
+        }
+        panic!("managed child {pid} was not reaped after exit");
+    }
+
     #[cfg(windows)]
     fn discover_smoke_node() -> PathBuf {
         let output = Command::new("where")
@@ -2141,6 +2241,7 @@ mod tests {
     #[tokio::test]
     #[ignore = "manual smoke against the official read-only checkout"]
     async fn official_gateway_smoke_start_reconcile_stop() {
+        const OFFICIAL_COMMIT: &str = "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2";
         let official_root = std::env::var("AIO_GATEWAY_OFFICIAL_CHECKOUT")
             .map(PathBuf::from)
             .unwrap_or_else(|_| PathBuf::from(r"D:\UGit\codex-retry-gateway"));
@@ -2148,11 +2249,26 @@ mod tests {
             official_root.join("gateway.mjs").exists(),
             "official checkout must contain gateway.mjs"
         );
+        let checkout_head = Command::new("git")
+            .arg("-C")
+            .arg(&official_root)
+            .args(["rev-parse", "HEAD"])
+            .output()
+            .expect("read official checkout HEAD");
+        assert!(
+            checkout_head.status.success(),
+            "official checkout HEAD must be readable"
+        );
+        assert_eq!(
+            String::from_utf8_lossy(&checkout_head.stdout).trim(),
+            OFFICIAL_COMMIT,
+            "official checkout must be pinned to the recommended commit"
+        );
 
         let dir = tempdir().unwrap();
         let paths = CodexRetryGatewayManagerPaths::from_root(dir.path().join("gateway"));
         let managed_source_dir = paths
-            .source_dir("ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2")
+            .source_dir(OFFICIAL_COMMIT)
             .expect("managed source dir");
         crate::shared::fs::copy_dir_recursive_if_missing(&official_root, &managed_source_dir)
             .expect("copy official source into managed root");
@@ -2170,8 +2286,8 @@ mod tests {
                 schema_version: 1,
                 repository: crate::infra::codex_retry_gateway::CODEX_RETRY_GATEWAY_REPOSITORY
                     .to_string(),
-                commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
-                verified_main_commit: "ef7fc5a0f9da125b91431cd99bcf6fd9387a53b2".to_string(),
+                commit: OFFICIAL_COMMIT.to_string(),
+                verified_main_commit: OFFICIAL_COMMIT.to_string(),
                 verified_at_ms: 1,
                 archive_sha256: "0".repeat(64),
                 source_sha256: "0".repeat(64),

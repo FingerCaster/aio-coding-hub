@@ -78,6 +78,7 @@ macro_rules! generated_command_registry {
             codex_retry_gateway_retry => crate::commands::codex_retry_gateway::codex_retry_gateway_retry,
             codex_retry_gateway_uninstall => crate::commands::codex_retry_gateway::codex_retry_gateway_uninstall,
             codex_retry_gateway_create_details_session => crate::commands::codex_retry_gateway::codex_retry_gateway_create_details_session,
+            codex_retry_gateway_revoke_details_session => crate::commands::codex_retry_gateway::codex_retry_gateway_revoke_details_session,
             // ── gateway ──
             gateway_start => crate::commands::gateway::gateway_start,
             gateway_stop => crate::commands::gateway::gateway_stop,

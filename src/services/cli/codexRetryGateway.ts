@@ -6,7 +6,9 @@ import {
   type CodexRetryGatewayEnablePlan,
   type CodexRetryGatewayGenerationRequest,
   type CodexRetryGatewayNodeStatus,
+  type CodexRetryGatewayRevokeDetailsSessionRequest,
   type CodexRetryGatewaySetEnabledRequest,
+  type CodexRetryGatewaySetEnabledResult,
   type CodexRetryGatewaySetNodeOverrideRequest,
   type CodexRetryGatewayStatus,
   type CodexRetryGatewayUninstallRequest,
@@ -21,7 +23,9 @@ export type {
   CodexRetryGatewayDetailsSession,
   CodexRetryGatewayEnablePlan,
   CodexRetryGatewayNodeStatus,
+  CodexRetryGatewayRevokeDetailsSessionRequest,
   CodexRetryGatewaySetEnabledRequest,
+  CodexRetryGatewaySetEnabledResult,
   CodexRetryGatewaySetNodeOverrideRequest,
   CodexRetryGatewayStatus,
   CodexRetryGatewayUninstallRequest,
@@ -106,6 +110,15 @@ function normalizeUninstallRequest(
   };
 }
 
+function normalizeRevokeDetailsSessionRequest(
+  viewId: string
+): CodexRetryGatewayRevokeDetailsSessionRequest {
+  if (typeof viewId !== "string" || !/^[0-9a-fA-F]{32}$/.test(viewId)) {
+    throw new Error("SEC_INVALID_INPUT: invalid Codex retry gateway details view id");
+  }
+  return { viewId };
+}
+
 export async function codexRetryGatewayStatus() {
   return invokeGeneratedIpc<CodexRetryGatewayStatus>({
     title: "读取 Codex 外部网关状态失败",
@@ -127,13 +140,13 @@ export async function codexRetryGatewayEnablePlan() {
 
 export async function codexRetryGatewaySetEnabled(request: CodexRetryGatewaySetEnabledRequest) {
   const payload = normalizeSetEnabledRequest(request);
-  return invokeGeneratedIpc<CodexRetryGatewayStatus>({
+  return invokeGeneratedIpc<CodexRetryGatewaySetEnabledResult>({
     title: payload.enabled ? "启用 Codex 外部网关失败" : "停用 Codex 外部网关失败",
     cmd: "codex_retry_gateway_set_enabled",
     args: { request: payload },
     invoke: () =>
       commands.codexRetryGatewaySetEnabled(payload) as Promise<
-        GeneratedCommandResult<CodexRetryGatewayStatus>
+        GeneratedCommandResult<CodexRetryGatewaySetEnabledResult>
       >,
   });
 }
@@ -228,5 +241,20 @@ export async function codexRetryGatewayCreateDetailsSession() {
       commands.codexRetryGatewayCreateDetailsSession() as Promise<
         GeneratedCommandResult<CodexRetryGatewayDetailsSession>
       >,
+  });
+}
+
+export async function codexRetryGatewayRevokeDetailsSession(viewId: string) {
+  const request = normalizeRevokeDetailsSessionRequest(viewId);
+  return invokeGeneratedIpc<null>({
+    title: "撤销 Codex 外部网关详情会话失败",
+    cmd: "codex_retry_gateway_revoke_details_session",
+    args: { request },
+    invoke: () =>
+      commands.codexRetryGatewayRevokeDetailsSession(request) as Promise<
+        GeneratedCommandResult<null>
+      >,
+    fallback: null,
+    nullResultBehavior: "return_fallback",
   });
 }

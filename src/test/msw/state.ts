@@ -523,6 +523,7 @@ export function buildCodexRetryGatewayDetailsSessionState(): CodexRetryGatewayDe
     generation,
     iframe_url: `http://127.0.0.1:${port}/aio-bridge?session=msw-${generation}`,
     browser_url: `http://127.0.0.1:${port}/`,
+    iframe_view_id: generation.toString(16).padStart(32, "0").slice(-32),
     expires_at_ms: Date.now() + 5 * 60 * 1000,
   };
 }

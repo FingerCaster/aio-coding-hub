@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   formatCodexRetryGatewayNodeSource,
   formatCodexRetryGatewayProviderSync,
+  formatCodexRetryGatewayProviderSyncResult,
   formatCodexRetryGatewayRouteMode,
   formatCodexRetryGatewayRuntimePhase,
   formatCodexRetryGatewayTone,
@@ -29,6 +30,22 @@ describe("codexRetryGatewayPresentation", () => {
         codex_must_be_closed: true,
       })
     ).toBe("OpenAI -> aio；会同步会话与 Provider 状态、写入备份，需要先关闭 Codex App。");
+    expect(
+      formatCodexRetryGatewayProviderSyncResult({
+        status: "ok",
+        target_provider: "aio",
+        trigger: "external_gateway_enable",
+        backup_dir: "C:\\Users\\test\\provider-sync\\1",
+        changed_session_files: ["session-1.jsonl", "session-2.jsonl"],
+        sqlite_provider_rows_updated: 3,
+        sqlite_user_event_rows_updated: 4,
+        sqlite_cwd_rows_updated: 5,
+        updated_workspace_roots: ["workspace-1"],
+        warning: "有 1 个旧记录保持不变",
+      })
+    ).toBe(
+      "Provider Sync 已完成：aio；会话文件 2；SQLite Provider 3；用户事件 4；工作目录 5；工作区 1；备份已创建；有 1 个旧记录保持不变"
+    );
   });
 
   it("treats guarded runtime as success tone and resolves repository shorthands", () => {
