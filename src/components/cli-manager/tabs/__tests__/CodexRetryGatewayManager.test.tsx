@@ -182,6 +182,11 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
 
     renderManager();
 
+    expect(screen.getByTestId("codex-retry-gateway-card")).toHaveClass(
+      "rounded-lg",
+      "border",
+      "bg-surface-panel"
+    );
     expect(screen.getByText("nonononull/codex-retry-gateway")).toHaveClass("break-all");
     expect(screen.getByText("未声明")).toBeInTheDocument();
     expect(screen.getAllByText(statusQuery.data.selected_commit)).not.toHaveLength(0);
@@ -342,6 +347,42 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     await user.click(screen.getByRole("switch", { name: "切换 Codex 外部网关" }));
     const dialog = await screen.findByRole("dialog", { name: "启用 Codex 外部网关" });
     await user.click(within(dialog).getByRole("checkbox", { name: /Provider Sync/ }));
+    await user.click(within(dialog).getByRole("button", { name: "确认启用" }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expectedToast));
+  });
+
+  it.each([
+    [
+      "SEC_INVALID_INPUT: invalid codex retry gateway generation=72139708461794900",
+      "网关状态版本无效，请刷新状态后重试",
+    ],
+    [
+      "CODEX_RETRY_GATEWAY_STALE_GENERATION: expected gateway generation 7, got 8",
+      "网关状态已发生变化，请刷新状态后重试",
+    ],
+  ])("shows actionable gateway generation guidance for %s", async (error, expectedToast) => {
+    const user = userEvent.setup();
+    statusQuery.data = createCodexRetryGatewayStatus({ desired_enabled: false });
+    mutations.enablePlan.mutateAsync.mockResolvedValue(
+      createCodexRetryGatewayEnablePlan({
+        first_download_required: false,
+        unreviewed_commit: false,
+        cli_proxy_enable_required: false,
+        provider_sync: {
+          current_provider: "aio",
+          target_provider: "aio",
+          change_required: false,
+          codex_must_be_closed: false,
+        },
+        wsl_codex_unprotected: false,
+      })
+    );
+    mutations.setEnabled.mutateAsync.mockRejectedValue(new Error(error));
+    renderManager();
+
+    await user.click(screen.getByRole("switch", { name: "切换 Codex 外部网关" }));
+    const dialog = await screen.findByRole("dialog", { name: "启用 Codex 外部网关" });
     await user.click(within(dialog).getByRole("button", { name: "确认启用" }));
 
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expectedToast));

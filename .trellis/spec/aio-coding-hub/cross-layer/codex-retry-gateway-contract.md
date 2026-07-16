@@ -71,6 +71,11 @@ that `null`; it is not a missing-result error.
 - Public `cli_proxy_applied` and guarded status come from `verify_route`,
   including live TOML, auth, AIO origin, guarded origin, and desired state.
   Commented text or a manifest alone cannot prove the route is applied.
+- Any public `generation` or plan fingerprint serialized to TypeScript must be
+  an integer in `0..=Number.MAX_SAFE_INTEGER` (`2^53 - 1`). Rust may retain a
+  wider internal generation, but it must derive a stable safe-integer public
+  fingerprint before crossing the Tauri boundary so the frontend can return
+  it exactly without precision loss.
 - Route rollback reads and validates every snapshot before changing any target.
   Corrupt or oversized journals/snapshots are moved under the owned quarantine
   root and retained for diagnosis; they must not permanently block direct-AIO
@@ -117,6 +122,8 @@ that `null`; it is not a missing-result error.
 | Condition | Required result |
 | --- | --- |
 | Enable plan generation changed | Reject before route/process mutation |
+| Public generation exceeds `2^53 - 1` | Treat as invalid boundary data; do not submit a rounded value |
+| Enable/update action has a stale or invalid generation | Preserve the raw error in Console and tell the user to refresh status and retry |
 | Guarded config, auth, or origin drift | `cli_proxy_applied=false`; never report guarded protection |
 | Corrupt route journal | Quarantine it, surface `TRANSITION_CORRUPT`, continue safe reconciliation |
 | Any rollback snapshot is missing, oversized, or hash-invalid | Fail before writing any target |
@@ -137,6 +144,9 @@ that `null`; it is not a missing-result error.
   view while desired state, process state, and an open browser view remain.
 - Good: startup finds a malformed route journal, quarantines it, records a
   warning, then still reconciles pending launch and desired-on runtime state.
+- Good: Rust hashes an internal `u64` route generation into a deterministic
+  public fingerprint no larger than `2^53 - 1`; TypeScript round-trips it
+  unchanged in the enable request.
 - Bad: restore the first route or Provider Sync snapshot before discovering
   that a later backup is missing. This creates an unrecoverable mixed state.
 - Bad: infer an applied route from commented TOML text, the manifest, or a
@@ -164,6 +174,10 @@ that `null`; it is not a missing-result error.
 - Frontend service/query/component tests cover generated DTOs, successful
   `null` revocation, stale async session cleanup, independent browser entry,
   unmount revocation, and Provider Sync result presentation.
+- Fingerprint tests assert route changes alter the public generation and every
+  result is at most `2^53 - 1`. Component tests assert stale/invalid generation
+  failures show refresh-and-retry guidance while retaining the raw Console
+  diagnostic.
 - Process tests require matching health/status PIDs and prove exited children
   are reaped. Run generated bindings, full Rust, precommit, prepush, build, and
   installer-content gates before release.
@@ -196,3 +210,13 @@ for snapshot in prepared.into_iter().rev() {
 
 Read, bound, and authenticate the complete recovery set before the first
 mutation. Apply the same rule to route and Provider Sync rollback stores.
+
+For public plan fingerprints, returning an arbitrary `u64` is likewise wrong:
+
+```rust
+// Wrong: JavaScript may round this value before returning it.
+Ok(u64::from_le_bytes(prefix))
+
+// Correct: the public value round-trips through a JavaScript number exactly.
+Ok(u64::from_le_bytes(prefix) & ((1_u64 << 53) - 1))
+```

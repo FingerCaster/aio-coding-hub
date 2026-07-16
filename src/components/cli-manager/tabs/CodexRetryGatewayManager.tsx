@@ -205,6 +205,15 @@ function requirementsSatisfied(
 }
 
 function getProviderSyncAlignedToast(formatted: ReturnType<typeof formatActionFailureToast>) {
+  if (formatted.error_code === "CODEX_RETRY_GATEWAY_STALE_GENERATION") {
+    return "网关状态已发生变化，请刷新状态后重试";
+  }
+  if (
+    formatted.error_code === "SEC_INVALID_INPUT" &&
+    /codex retry gateway generation/i.test(formatted.message)
+  ) {
+    return "网关状态版本无效，请刷新状态后重试";
+  }
   if (formatted.error_code === "CODEX_PROVIDER_SYNC_PROCESS_RUNNING") {
     return "Codex App 正在运行，请先关闭 Codex App 后重试";
   }
@@ -388,7 +397,8 @@ export function CodexRetryGatewayManager({
         error: formatted.raw,
         error_code: formatted.error_code,
       });
-      toast(providerSync ? getProviderSyncAlignedToast(formatted) : formatted.toast);
+      const friendlyToast = getProviderSyncAlignedToast(formatted);
+      toast(providerSync || friendlyToast !== formatted.toast ? friendlyToast : formatted.toast);
     },
     []
   );
@@ -599,404 +609,116 @@ export function CodexRetryGatewayManager({
 
   return (
     <>
-      <QueryStateView
-        query={statusQuery}
-        loading={
-          <div className="flex items-center gap-3 border-y border-line-subtle py-4">
-            <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
-            <span className="text-sm text-muted-foreground">读取 Codex 外部网关状态…</span>
-          </div>
-        }
-        error={
-          <div className="space-y-3 border-y border-line-subtle py-4">
-            <div className="flex items-start gap-3 break-words text-sm text-rose-600 dark:text-rose-300">
-              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
-              <span>{String(statusQuery.error)}</span>
-            </div>
-            <Button variant="secondary" size="sm" onClick={() => void statusQuery.refetch()}>
-              重试
-            </Button>
-          </div>
-        }
-        isEmpty={(data) => data == null}
-        empty={
-          <div className="border-y border-line-subtle py-4 text-sm text-muted-foreground">
-            当前还没有 Codex 外部网关状态。
-          </div>
-        }
+      <div
+        data-testid="codex-retry-gateway-card"
+        className="rounded-lg border border-line-subtle bg-surface-panel p-4 shadow-sm"
       >
-        {(currentStatus) => (
-          <div className="space-y-4">
-            <section
-              data-testid="codex-retry-gateway-section"
-              className="space-y-4 border-y border-line-subtle py-4"
-            >
-              <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
-                <div className="min-w-0 space-y-2">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <div className="flex items-center gap-2 text-base font-semibold text-foreground">
-                      {isCodexRetryGatewayProtected(currentStatus) ? (
-                        <Shield className="h-4 w-4 text-emerald-500" aria-hidden="true" />
-                      ) : (
-                        <ShieldOff className="h-4 w-4 text-amber-500" aria-hidden="true" />
-                      )}
-                      Codex 外部网关
-                    </div>
-                    <InlineBadge
-                      label={formatCodexRetryGatewayDesiredState(currentStatus)}
-                      tone={currentStatus.desired_enabled ? "success" : "muted"}
-                    />
-                    <InlineBadge
-                      label={formatCodexRetryGatewayRouteMode(currentStatus.route_mode)}
-                      tone={statusTone}
-                    />
-                    <InlineBadge
-                      label={formatCodexRetryGatewayRuntimePhase(currentStatus.runtime_phase)}
-                      tone={statusTone}
-                    />
-                    <InlineBadge
-                      label={formatCodexRetryGatewayTrustState(currentStatus.trust_state)}
-                      tone={
-                        currentStatus.trust_state === "aio_reviewed_recommendation"
-                          ? "success"
-                          : currentStatus.trust_state === "official_main_unreviewed"
-                            ? "warning"
-                            : "muted"
-                      }
-                    />
-                  </div>
-                  <div className="text-sm leading-relaxed text-muted-foreground">
-                    {currentStatus.desired_enabled
-                      ? isCodexRetryGatewayProtected(currentStatus)
-                        ? "当前 Codex 请求会先进入外部网关，再转发到 AIO。"
-                        : "已请求启用，但当前并未处于外部网关保护链路。"
-                      : "当前保持非外部网关模式。"}
-                  </div>
-                </div>
-
-                <div className="flex flex-wrap items-center justify-end gap-2">
-                  <Switch
-                    checked={currentStatus.desired_enabled}
-                    disabled={Boolean(managerBusy)}
-                    onCheckedChange={(next) => void onToggleEnabled(next)}
-                    aria-label="切换 Codex 外部网关"
-                  />
-                  <Button
-                    type="button"
-                    variant="secondary"
-                    size="sm"
-                    className="gap-2"
-                    onClick={() => void statusQuery.refetch()}
-                    disabled={Boolean(managerBusy)}
-                  >
-                    <RefreshCw
-                      className={cn("h-4 w-4", statusQuery.isFetching && "animate-spin")}
-                      aria-hidden="true"
-                    />
-                    刷新状态
-                  </Button>
-                  {showDetailsFrame ? null : (
-                    <Button
-                      type="button"
-                      size="sm"
-                      variant="secondary"
-                      className="gap-2"
-                      onClick={onOpenDetailsRoute}
-                      disabled={!onOpenDetailsRoute}
-                    >
-                      <SquareArrowOutUpRight className="h-4 w-4" aria-hidden="true" />
-                      详情
-                    </Button>
-                  )}
-                  <Button
-                    type="button"
-                    size="sm"
-                    variant="secondary"
-                    className="gap-2"
-                    onClick={() => void openBrowser()}
-                    disabled={!currentStatus.details_available || Boolean(managerBusy)}
-                  >
-                    <ExternalLink className="h-4 w-4" aria-hidden="true" />
-                    浏览器打开
-                  </Button>
-                </div>
+        <QueryStateView
+          query={statusQuery}
+          loading={
+            <div className="flex items-center gap-3 py-4">
+              <Loader2 className="h-4 w-4 animate-spin text-muted-foreground" />
+              <span className="text-sm text-muted-foreground">读取 Codex 外部网关状态…</span>
+            </div>
+          }
+          error={
+            <div className="space-y-3 py-4">
+              <div className="flex items-start gap-3 break-words text-sm text-rose-600 dark:text-rose-300">
+                <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" />
+                <span>{String(statusQuery.error)}</span>
               </div>
-
-              <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
-                <ReadonlyValue
-                  label="实际链路"
-                  value={formatCodexRetryGatewayRouteMode(currentStatus.route_mode)}
-                />
-                <ReadonlyValue
-                  label="运行阶段"
-                  value={formatCodexRetryGatewayRuntimePhase(currentStatus.runtime_phase)}
-                />
-                <ReadonlyValue label="生效端口" value={currentStatus.effective_port ?? "—"} />
-                <ReadonlyValue
-                  label="Node 运行时"
-                  value={
-                    currentStatus.node_status.available
-                      ? `${currentStatus.node_status.version ?? "未知版本"} / ${formatCodexRetryGatewayNodeSource(currentStatus.node_status.source)}`
-                      : "未找到可用 Node 18+"
-                  }
-                />
-              </div>
-
-              {currentStatus.wsl_codex_unprotected ? (
-                <div className="break-words rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">
-                  已检测到 WSL 中的 Codex 仍然直连 AIO。启用外部网关不会保护 WSL 流量。
-                </div>
-              ) : null}
-
-              {currentStatus.last_error ? (
-                <div className="break-words rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
-                  {formatCodexRetryGatewayError(currentStatus.last_error)}
-                </div>
-              ) : null}
-
-              <div className="grid gap-4 xl:grid-cols-[1.3fr,0.7fr]">
-                <div className="space-y-3">
-                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                      <GitBranch className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
-                      源码与提交
-                    </div>
-                    <div className="mt-3 grid gap-3 md:grid-cols-2">
-                      <ReadonlyValue label="官方仓库" value={currentStatus.repository} mono />
-                      <ReadonlyValue label="许可证" value={currentStatus.license ?? "未声明"} />
-                      <ReadonlyValue label="已选提交" value={currentStatus.selected_commit} mono />
-                      <ReadonlyValue
-                        label="当前运行提交"
-                        value={currentStatus.active_commit}
-                        mono
-                      />
-                      <ReadonlyValue
-                        label="推荐提交"
-                        value={currentStatus.recommended_commit}
-                        mono
-                      />
-                      <ReadonlyValue label="回滚提交" value={currentStatus.previous_commit} mono />
-                    </div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        onClick={() => void handleOpenUrl("官方仓库", repoUrl)}
-                        disabled={!repoUrl}
-                      >
-                        打开仓库
-                      </Button>
-                    </div>
-                  </div>
-
-                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
-                    <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
-                      <HardDriveDownload
-                        className="h-4 w-4 text-muted-foreground"
-                        aria-hidden="true"
-                      />
-                      更新与手动 SHA
-                    </div>
-                    <div className="mt-3 space-y-3">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          className="gap-2"
-                          onClick={() => void onCheckUpdate()}
-                          disabled={Boolean(managerBusy)}
-                        >
-                          <RefreshCw
-                            className={cn(
-                              "h-4 w-4",
-                              checkUpdateMutation.isPending && "animate-spin"
-                            )}
-                            aria-hidden="true"
-                          />
-                          检查更新
-                        </Button>
-                        <div className="text-xs text-muted-foreground">
-                          只检查候选提交，不会直接替换当前源码。
-                        </div>
+              <Button variant="secondary" size="sm" onClick={() => void statusQuery.refetch()}>
+                重试
+              </Button>
+            </div>
+          }
+          isEmpty={(data) => data == null}
+          empty={
+            <div className="py-4 text-sm text-muted-foreground">
+              当前还没有 Codex 外部网关状态。
+            </div>
+          }
+        >
+          {(currentStatus) => (
+            <div className="space-y-4">
+              <section data-testid="codex-retry-gateway-section" className="space-y-4">
+                <div className="flex flex-col gap-4 lg:flex-row lg:items-start lg:justify-between">
+                  <div className="min-w-0 space-y-2">
+                    <div className="flex flex-wrap items-center gap-2">
+                      <div className="flex items-center gap-2 text-base font-semibold text-foreground">
+                        {isCodexRetryGatewayProtected(currentStatus) ? (
+                          <Shield className="h-4 w-4 text-emerald-500" aria-hidden="true" />
+                        ) : (
+                          <ShieldOff className="h-4 w-4 text-amber-500" aria-hidden="true" />
+                        )}
+                        Codex 外部网关
                       </div>
-
-                      <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
-                        <Input
-                          value={manualCommit}
-                          onChange={(event) => {
-                            setManualCommit(event.currentTarget.value);
-                            setManualValidation(null);
-                          }}
-                          placeholder="输入官方仓库完整提交 SHA"
-                          className="font-mono text-xs"
-                        />
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => void onValidateManualCommit()}
-                          disabled={Boolean(managerBusy) || manualCommit.trim().length === 0}
-                        >
-                          校验并选择
-                        </Button>
-                      </div>
-
-                      {manualValidation ? (
-                        <div className="min-w-0 break-words rounded-lg border border-line-subtle bg-surface-panel px-3 py-3 text-xs text-muted-foreground">
-                          <div className="font-mono text-foreground">
-                            规范 SHA：{manualValidation.canonical_commit ?? "—"}
-                          </div>
-                          <div className="mt-1">
-                            官方主线：{manualValidation.official_main_commit ?? "—"}
-                          </div>
-                          <div className="mt-1">
-                            信任状态：
-                            {manualValidation.trust_state
-                              ? formatCodexRetryGatewayTrustState(manualValidation.trust_state)
-                              : "—"}
-                          </div>
-                          <div className="mt-1">
-                            祖先校验：{manualValidation.official_main_ancestor ? "通过" : "未通过"}
-                          </div>
-                          {manualValidation.summary ? (
-                            <div className="mt-1 leading-relaxed">{manualValidation.summary}</div>
-                          ) : null}
-                          {manualValidation.error ? (
-                            <div className="mt-1 text-rose-600 dark:text-rose-300">
-                              {formatCodexRetryGatewayError(manualValidation.error)}
-                            </div>
-                          ) : null}
-                        </div>
-                      ) : null}
-                    </div>
-                  </div>
-                </div>
-
-                <div className="space-y-3">
-                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
-                    <div className="text-sm font-semibold text-foreground">Node.js</div>
-                    <div className="mt-3 space-y-3">
-                      <ReadonlyValue
-                        label="可执行文件"
-                        value={currentStatus.node_status.executable}
-                        mono
+                      <InlineBadge
+                        label={formatCodexRetryGatewayDesiredState(currentStatus)}
+                        tone={currentStatus.desired_enabled ? "success" : "muted"}
                       />
-                      <ReadonlyValue
-                        label="版本 / 来源"
-                        value={
-                          currentStatus.node_status.available
-                            ? `${currentStatus.node_status.version ?? "未知版本"} / ${formatCodexRetryGatewayNodeSource(
-                                currentStatus.node_status.source
-                              )}`
-                            : formatCodexRetryGatewayNodeSource(currentStatus.node_status.source)
+                      <InlineBadge
+                        label={formatCodexRetryGatewayRouteMode(currentStatus.route_mode)}
+                        tone={statusTone}
+                      />
+                      <InlineBadge
+                        label={formatCodexRetryGatewayRuntimePhase(currentStatus.runtime_phase)}
+                        tone={statusTone}
+                      />
+                      <InlineBadge
+                        label={formatCodexRetryGatewayTrustState(currentStatus.trust_state)}
+                        tone={
+                          currentStatus.trust_state === "aio_reviewed_recommendation"
+                            ? "success"
+                            : currentStatus.trust_state === "official_main_unreviewed"
+                              ? "warning"
+                              : "muted"
                         }
                       />
-                      {currentStatus.node_status.error ? (
-                        <div className="break-words text-xs text-rose-600 dark:text-rose-300">
-                          {formatCodexRetryGatewayError(currentStatus.node_status.error)}
-                        </div>
-                      ) : null}
-                      <div className="flex flex-wrap gap-2">
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => void onPickNode()}
-                          disabled={Boolean(managerBusy) || currentStatus.desired_enabled}
-                        >
-                          选择 Node
-                        </Button>
-                        <Button
-                          type="button"
-                          size="sm"
-                          variant="secondary"
-                          onClick={() => void onResetNode()}
-                          disabled={Boolean(managerBusy) || currentStatus.desired_enabled}
-                        >
-                          恢复自动
-                        </Button>
-                      </div>
-                      {currentStatus.desired_enabled ? (
-                        <div className="text-xs text-muted-foreground">
-                          请先关闭拦截网关，再修改 Node.js 运行时。
-                        </div>
-                      ) : null}
+                    </div>
+                    <div className="text-sm leading-relaxed text-muted-foreground">
+                      {currentStatus.desired_enabled
+                        ? isCodexRetryGatewayProtected(currentStatus)
+                          ? "当前 Codex 请求会先进入外部网关，再转发到 AIO。"
+                          : "已请求启用，但当前并未处于外部网关保护链路。"
+                        : "当前保持非外部网关模式。"}
                     </div>
                   </div>
 
-                  <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
-                    <div className="text-sm font-semibold text-foreground">运行操作</div>
-                    <div className="mt-3 flex flex-wrap gap-2">
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="gap-2"
-                        onClick={() => void onRetry()}
-                        disabled={Boolean(managerBusy)}
-                      >
-                        <RotateCcw className="h-4 w-4" aria-hidden="true" />
-                        重试恢复
-                      </Button>
-                      <Button
-                        type="button"
-                        size="sm"
-                        variant="secondary"
-                        className="gap-2"
-                        onClick={() => setUninstallOpen(true)}
-                        disabled={Boolean(managerBusy) || !uninstallReady}
-                      >
-                        <Trash2 className="h-4 w-4" aria-hidden="true" />
-                        卸载并清理
-                      </Button>
-                    </div>
-                    <div className="mt-3 text-xs leading-relaxed text-muted-foreground">
-                      {uninstallReady
-                        ? "卸载会移除已管理的外部网关数据与源码缓存。"
-                        : "请先停用拦截网关；确认路由已恢复且受管进程完全停止后，才可卸载。"}
-                    </div>
-                  </div>
-                </div>
-              </div>
-            </section>
-
-            {showDetailsFrame ? (
-              <section className="space-y-4 border-b border-line-subtle pb-4">
-                <div className="flex flex-wrap items-center justify-between gap-2">
-                  <div className="min-w-0">
-                    <div className="text-sm font-semibold text-foreground">管理页嵌入</div>
-                    <div className="mt-1 text-xs text-muted-foreground">
-                      仅限 127.0.0.1 的临时桥接会话
-                    </div>
-                  </div>
-                  <div className="flex flex-wrap gap-2">
+                  <div className="flex flex-wrap items-center justify-end gap-2">
+                    <Switch
+                      checked={currentStatus.desired_enabled}
+                      disabled={Boolean(managerBusy)}
+                      onCheckedChange={(next) => void onToggleEnabled(next)}
+                      aria-label="切换 Codex 外部网关"
+                    />
                     <Button
                       type="button"
-                      size="sm"
                       variant="secondary"
+                      size="sm"
                       className="gap-2"
-                      onClick={() => {
-                        void refreshDetailsSession().catch((error) => {
-                          const formatted = formatActionFailureToast("刷新详情会话", error);
-                          logToConsole("error", "刷新 Codex 外部网关详情会话失败", {
-                            error: formatted.raw,
-                          });
-                          setDetailsSession(null);
-                          setDetailsSessionError(formatted.toast);
-                        });
-                      }}
-                      disabled={!currentStatus.details_available || Boolean(managerBusy)}
+                      onClick={() => void statusQuery.refetch()}
+                      disabled={Boolean(managerBusy)}
                     >
                       <RefreshCw
-                        className={cn(
-                          "h-4 w-4",
-                          (detailsSessionMutation.isPending || !iframeLoaded) && "animate-spin"
-                        )}
+                        className={cn("h-4 w-4", statusQuery.isFetching && "animate-spin")}
                         aria-hidden="true"
                       />
-                      刷新嵌入
+                      刷新状态
                     </Button>
+                    {showDetailsFrame ? null : (
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="gap-2"
+                        onClick={onOpenDetailsRoute}
+                        disabled={!onOpenDetailsRoute}
+                      >
+                        <SquareArrowOutUpRight className="h-4 w-4" aria-hidden="true" />
+                        详情
+                      </Button>
+                    )}
                     <Button
                       type="button"
                       size="sm"
@@ -1011,39 +733,338 @@ export function CodexRetryGatewayManager({
                   </div>
                 </div>
 
-                {!currentStatus.details_available ? (
-                  <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
-                    管理桥接暂不可用。请刷新状态；若网关正在恢复，请使用“重试恢复”。
+                <div className="grid gap-3 md:grid-cols-2 xl:grid-cols-4">
+                  <ReadonlyValue
+                    label="实际链路"
+                    value={formatCodexRetryGatewayRouteMode(currentStatus.route_mode)}
+                  />
+                  <ReadonlyValue
+                    label="运行阶段"
+                    value={formatCodexRetryGatewayRuntimePhase(currentStatus.runtime_phase)}
+                  />
+                  <ReadonlyValue label="生效端口" value={currentStatus.effective_port ?? "—"} />
+                  <ReadonlyValue
+                    label="Node 运行时"
+                    value={
+                      currentStatus.node_status.available
+                        ? `${currentStatus.node_status.version ?? "未知版本"} / ${formatCodexRetryGatewayNodeSource(currentStatus.node_status.source)}`
+                        : "未找到可用 Node 18+"
+                    }
+                  />
+                </div>
+
+                {currentStatus.wsl_codex_unprotected ? (
+                  <div className="break-words rounded-lg border border-amber-200 bg-amber-50 px-3 py-3 text-sm text-amber-800 dark:border-amber-800/70 dark:bg-amber-900/30 dark:text-amber-200">
+                    已检测到 WSL 中的 Codex 仍然直连 AIO。启用外部网关不会保护 WSL 流量。
                   </div>
-                ) : detailsSessionError ? (
-                  <div className="break-words rounded-lg border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
-                    {detailsSessionError}
+                ) : null}
+
+                {currentStatus.last_error ? (
+                  <div className="break-words rounded-lg border border-rose-200 bg-rose-50 px-3 py-3 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
+                    {formatCodexRetryGatewayError(currentStatus.last_error)}
                   </div>
-                ) : iframeBroken || !detailsSession ? (
-                  <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
-                    当前无法嵌入管理页。可先使用“浏览器打开”，或点击“刷新嵌入”重建桥接会话。
+                ) : null}
+
+                <div className="grid gap-4 xl:grid-cols-[1.3fr,0.7fr]">
+                  <div className="space-y-3">
+                    <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                        <GitBranch className="h-4 w-4 text-muted-foreground" aria-hidden="true" />
+                        源码与提交
+                      </div>
+                      <div className="mt-3 grid gap-3 md:grid-cols-2">
+                        <ReadonlyValue label="官方仓库" value={currentStatus.repository} mono />
+                        <ReadonlyValue label="许可证" value={currentStatus.license ?? "未声明"} />
+                        <ReadonlyValue
+                          label="已选提交"
+                          value={currentStatus.selected_commit}
+                          mono
+                        />
+                        <ReadonlyValue
+                          label="当前运行提交"
+                          value={currentStatus.active_commit}
+                          mono
+                        />
+                        <ReadonlyValue
+                          label="推荐提交"
+                          value={currentStatus.recommended_commit}
+                          mono
+                        />
+                        <ReadonlyValue
+                          label="回滚提交"
+                          value={currentStatus.previous_commit}
+                          mono
+                        />
+                      </div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          onClick={() => void handleOpenUrl("官方仓库", repoUrl)}
+                          disabled={!repoUrl}
+                        >
+                          打开仓库
+                        </Button>
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
+                      <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+                        <HardDriveDownload
+                          className="h-4 w-4 text-muted-foreground"
+                          aria-hidden="true"
+                        />
+                        更新与手动 SHA
+                      </div>
+                      <div className="mt-3 space-y-3">
+                        <div className="flex flex-wrap items-center gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            className="gap-2"
+                            onClick={() => void onCheckUpdate()}
+                            disabled={Boolean(managerBusy)}
+                          >
+                            <RefreshCw
+                              className={cn(
+                                "h-4 w-4",
+                                checkUpdateMutation.isPending && "animate-spin"
+                              )}
+                              aria-hidden="true"
+                            />
+                            检查更新
+                          </Button>
+                          <div className="text-xs text-muted-foreground">
+                            只检查候选提交，不会直接替换当前源码。
+                          </div>
+                        </div>
+
+                        <div className="grid gap-2 md:grid-cols-[minmax(0,1fr)_auto]">
+                          <Input
+                            value={manualCommit}
+                            onChange={(event) => {
+                              setManualCommit(event.currentTarget.value);
+                              setManualValidation(null);
+                            }}
+                            placeholder="输入官方仓库完整提交 SHA"
+                            className="font-mono text-xs"
+                          />
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => void onValidateManualCommit()}
+                            disabled={Boolean(managerBusy) || manualCommit.trim().length === 0}
+                          >
+                            校验并选择
+                          </Button>
+                        </div>
+
+                        {manualValidation ? (
+                          <div className="min-w-0 break-words rounded-lg border border-line-subtle bg-surface-panel px-3 py-3 text-xs text-muted-foreground">
+                            <div className="font-mono text-foreground">
+                              规范 SHA：{manualValidation.canonical_commit ?? "—"}
+                            </div>
+                            <div className="mt-1">
+                              官方主线：{manualValidation.official_main_commit ?? "—"}
+                            </div>
+                            <div className="mt-1">
+                              信任状态：
+                              {manualValidation.trust_state
+                                ? formatCodexRetryGatewayTrustState(manualValidation.trust_state)
+                                : "—"}
+                            </div>
+                            <div className="mt-1">
+                              祖先校验：
+                              {manualValidation.official_main_ancestor ? "通过" : "未通过"}
+                            </div>
+                            {manualValidation.summary ? (
+                              <div className="mt-1 leading-relaxed">{manualValidation.summary}</div>
+                            ) : null}
+                            {manualValidation.error ? (
+                              <div className="mt-1 text-rose-600 dark:text-rose-300">
+                                {formatCodexRetryGatewayError(manualValidation.error)}
+                              </div>
+                            ) : null}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
                   </div>
-                ) : (
-                  <div className="min-w-0 overflow-hidden rounded-lg border border-line-subtle bg-black/5">
-                    <iframe
-                      key={detailsSession.iframe_url}
-                      title="Codex 外部网关管理页"
-                      src={detailsSession.iframe_url}
-                      className="h-[70vh] min-h-[420px] max-h-[760px] w-full bg-white"
-                      sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
-                      onLoad={() => setIframeLoaded(true)}
-                      onError={() => {
-                        setIframeBroken(true);
-                        setIframeLoaded(false);
-                      }}
-                    />
+
+                  <div className="space-y-3">
+                    <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
+                      <div className="text-sm font-semibold text-foreground">Node.js</div>
+                      <div className="mt-3 space-y-3">
+                        <ReadonlyValue
+                          label="可执行文件"
+                          value={currentStatus.node_status.executable}
+                          mono
+                        />
+                        <ReadonlyValue
+                          label="版本 / 来源"
+                          value={
+                            currentStatus.node_status.available
+                              ? `${currentStatus.node_status.version ?? "未知版本"} / ${formatCodexRetryGatewayNodeSource(
+                                  currentStatus.node_status.source
+                                )}`
+                              : formatCodexRetryGatewayNodeSource(currentStatus.node_status.source)
+                          }
+                        />
+                        {currentStatus.node_status.error ? (
+                          <div className="break-words text-xs text-rose-600 dark:text-rose-300">
+                            {formatCodexRetryGatewayError(currentStatus.node_status.error)}
+                          </div>
+                        ) : null}
+                        <div className="flex flex-wrap gap-2">
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => void onPickNode()}
+                            disabled={Boolean(managerBusy) || currentStatus.desired_enabled}
+                          >
+                            选择 Node
+                          </Button>
+                          <Button
+                            type="button"
+                            size="sm"
+                            variant="secondary"
+                            onClick={() => void onResetNode()}
+                            disabled={Boolean(managerBusy) || currentStatus.desired_enabled}
+                          >
+                            恢复自动
+                          </Button>
+                        </div>
+                        {currentStatus.desired_enabled ? (
+                          <div className="text-xs text-muted-foreground">
+                            请先关闭拦截网关，再修改 Node.js 运行时。
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+
+                    <div className="rounded-lg border border-line-subtle bg-surface-inset p-4">
+                      <div className="text-sm font-semibold text-foreground">运行操作</div>
+                      <div className="mt-3 flex flex-wrap gap-2">
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="gap-2"
+                          onClick={() => void onRetry()}
+                          disabled={Boolean(managerBusy)}
+                        >
+                          <RotateCcw className="h-4 w-4" aria-hidden="true" />
+                          重试恢复
+                        </Button>
+                        <Button
+                          type="button"
+                          size="sm"
+                          variant="secondary"
+                          className="gap-2"
+                          onClick={() => setUninstallOpen(true)}
+                          disabled={Boolean(managerBusy) || !uninstallReady}
+                        >
+                          <Trash2 className="h-4 w-4" aria-hidden="true" />
+                          卸载并清理
+                        </Button>
+                      </div>
+                      <div className="mt-3 text-xs leading-relaxed text-muted-foreground">
+                        {uninstallReady
+                          ? "卸载会移除已管理的外部网关数据与源码缓存。"
+                          : "请先停用拦截网关；确认路由已恢复且受管进程完全停止后，才可卸载。"}
+                      </div>
+                    </div>
                   </div>
-                )}
+                </div>
               </section>
-            ) : null}
-          </div>
-        )}
-      </QueryStateView>
+
+              {showDetailsFrame ? (
+                <section className="space-y-4 border-b border-line-subtle pb-4">
+                  <div className="flex flex-wrap items-center justify-between gap-2">
+                    <div className="min-w-0">
+                      <div className="text-sm font-semibold text-foreground">管理页嵌入</div>
+                      <div className="mt-1 text-xs text-muted-foreground">
+                        仅限 127.0.0.1 的临时桥接会话
+                      </div>
+                    </div>
+                    <div className="flex flex-wrap gap-2">
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="gap-2"
+                        onClick={() => {
+                          void refreshDetailsSession().catch((error) => {
+                            const formatted = formatActionFailureToast("刷新详情会话", error);
+                            logToConsole("error", "刷新 Codex 外部网关详情会话失败", {
+                              error: formatted.raw,
+                            });
+                            setDetailsSession(null);
+                            setDetailsSessionError(formatted.toast);
+                          });
+                        }}
+                        disabled={!currentStatus.details_available || Boolean(managerBusy)}
+                      >
+                        <RefreshCw
+                          className={cn(
+                            "h-4 w-4",
+                            (detailsSessionMutation.isPending || !iframeLoaded) && "animate-spin"
+                          )}
+                          aria-hidden="true"
+                        />
+                        刷新嵌入
+                      </Button>
+                      <Button
+                        type="button"
+                        size="sm"
+                        variant="secondary"
+                        className="gap-2"
+                        onClick={() => void openBrowser()}
+                        disabled={!currentStatus.details_available || Boolean(managerBusy)}
+                      >
+                        <ExternalLink className="h-4 w-4" aria-hidden="true" />
+                        浏览器打开
+                      </Button>
+                    </div>
+                  </div>
+
+                  {!currentStatus.details_available ? (
+                    <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
+                      管理桥接暂不可用。请刷新状态；若网关正在恢复，请使用“重试恢复”。
+                    </div>
+                  ) : detailsSessionError ? (
+                    <div className="break-words rounded-lg border border-rose-200 bg-rose-50 px-4 py-4 text-sm text-rose-800 dark:border-rose-800/70 dark:bg-rose-900/30 dark:text-rose-200">
+                      {detailsSessionError}
+                    </div>
+                  ) : iframeBroken || !detailsSession ? (
+                    <div className="rounded-lg border border-dashed border-line bg-surface-inset px-4 py-6 text-sm text-muted-foreground">
+                      当前无法嵌入管理页。可先使用“浏览器打开”，或点击“刷新嵌入”重建桥接会话。
+                    </div>
+                  ) : (
+                    <div className="min-w-0 overflow-hidden rounded-lg border border-line-subtle bg-black/5">
+                      <iframe
+                        key={detailsSession.iframe_url}
+                        title="Codex 外部网关管理页"
+                        src={detailsSession.iframe_url}
+                        className="h-[70vh] min-h-[420px] max-h-[760px] w-full bg-white"
+                        sandbox="allow-scripts allow-same-origin allow-forms allow-modals allow-downloads"
+                        onLoad={() => setIframeLoaded(true)}
+                        onError={() => {
+                          setIframeBroken(true);
+                          setIframeLoaded(false);
+                        }}
+                      />
+                    </div>
+                  )}
+                </section>
+              ) : null}
+            </div>
+          )}
+        </QueryStateView>
+      </div>
 
       <ConfirmDialog
         open={enableDialogOpen}

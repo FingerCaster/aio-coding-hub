@@ -910,6 +910,7 @@ fn enable_plan_fingerprint(
     runtime_generation: u64,
     route: &crate::cli_proxy::CodexExternalEnablePlan,
 ) -> AppResult<u64> {
+    const JAVASCRIPT_MAX_SAFE_INTEGER: u64 = (1_u64 << 53) - 1;
     let mut hasher = Sha256::new();
     hasher.update(runtime_generation.to_le_bytes());
     hasher
@@ -921,7 +922,7 @@ fn enable_plan_fingerprint(
         digest[..8]
             .try_into()
             .expect("SHA-256 prefix always contains eight bytes"),
-    ))
+    ) & JAVASCRIPT_MAX_SAFE_INTEGER)
 }
 
 fn stale_generation_error(expected: u64, actual: u64) -> AppError {
@@ -1048,6 +1049,8 @@ mod tests {
         changed.generation = 2;
         let second = enable_plan_fingerprint(7, &changed).unwrap();
         assert_ne!(first, second);
+        assert!(first <= ((1_u64 << 53) - 1));
+        assert!(second <= ((1_u64 << 53) - 1));
     }
 
     #[tokio::test]
