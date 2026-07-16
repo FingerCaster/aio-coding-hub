@@ -10,6 +10,7 @@ import {
   type CodexModelCatalogState,
   type GeminiConfigState,
   type SimpleCliInfo,
+  type GrokConfigState,
   cliManagerClaudeHooksGet,
   cliManagerClaudeHooksSet,
   cliManagerClaudeInfoGet,
@@ -25,6 +26,9 @@ import {
   cliManagerGeminiConfigGet,
   cliManagerGeminiConfigSet,
   cliManagerGeminiInfoGet,
+  cliManagerGrokConfigGet,
+  cliManagerGrokConfigSet,
+  cliManagerGrokInfoGet,
 } from "../../services/cli/cliManager";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
@@ -47,6 +51,9 @@ import {
   useCliManagerGeminiConfigQuery,
   useCliManagerGeminiConfigSetMutation,
   useCliManagerGeminiInfoQuery,
+  useCliManagerGrokConfigQuery,
+  useCliManagerGrokConfigSetMutation,
+  useCliManagerGrokInfoQuery,
 } from "../cliManager";
 
 vi.mock("../../services/cli/cliManager", async () => {
@@ -70,6 +77,9 @@ vi.mock("../../services/cli/cliManager", async () => {
     cliManagerGeminiConfigGet: vi.fn(),
     cliManagerGeminiConfigSet: vi.fn(),
     cliManagerGeminiInfoGet: vi.fn(),
+    cliManagerGrokInfoGet: vi.fn(),
+    cliManagerGrokConfigGet: vi.fn(),
+    cliManagerGrokConfigSet: vi.fn(),
   };
 });
 
@@ -234,6 +244,35 @@ function makeCodexModelCatalogState(
   };
 }
 
+function makeGrokConfigState(overrides: Partial<GrokConfigState> = {}): GrokConfigState {
+  return {
+    config_path: "/tmp/.grok/config.toml",
+    file_exists: false,
+    preferences: {
+      model_id: "grok-build",
+      api_backend: "responses",
+      context_window: null,
+      telemetry: null,
+      supports_backend_search: null,
+    },
+    aio_preferences: null,
+    effective_preferences: {
+      model_id: "grok-build",
+      api_backend: "responses",
+      context_window: null,
+      telemetry: null,
+      supports_backend_search: null,
+    },
+    preference_source: "fallback",
+    default_profile: null,
+    session_summary_profile: null,
+    web_search_profile: null,
+    image_description_profile: null,
+    policy_files: [],
+    ...overrides,
+  };
+}
+
 describe("query/cliManager", () => {
   it("calls cliManager queries with tauri runtime", async () => {
     setTauriRuntime();
@@ -259,6 +298,10 @@ describe("query/cliManager", () => {
     });
     vi.mocked(cliManagerGeminiConfigGet).mockResolvedValue(makeGeminiConfigState());
     vi.mocked(cliManagerGeminiInfoGet).mockResolvedValue(makeSimpleCliInfo());
+    vi.mocked(cliManagerGrokInfoGet).mockResolvedValue(
+      makeSimpleCliInfo({ executable_path: "/usr/bin/grok" })
+    );
+    vi.mocked(cliManagerGrokConfigGet).mockResolvedValue(makeGrokConfigState());
 
     const client = createTestQueryClient();
     const wrapper = createQueryWrapper(client);
@@ -283,6 +326,8 @@ describe("query/cliManager", () => {
     renderHook(() => useCliManagerCodexProviderSyncMutation(), { wrapper });
     renderHook(() => useCliManagerGeminiConfigQuery(), { wrapper });
     renderHook(() => useCliManagerGeminiInfoQuery(), { wrapper });
+    renderHook(() => useCliManagerGrokInfoQuery(), { wrapper });
+    renderHook(() => useCliManagerGrokConfigQuery(), { wrapper });
 
     await waitFor(() => {
       expect(cliManagerClaudeInfoGet).toHaveBeenCalled();
@@ -295,6 +340,8 @@ describe("query/cliManager", () => {
       expect(cliManagerCodexProviderSync).not.toHaveBeenCalled();
       expect(cliManagerGeminiConfigGet).toHaveBeenCalled();
       expect(cliManagerGeminiInfoGet).toHaveBeenCalled();
+      expect(cliManagerGrokInfoGet).toHaveBeenCalled();
+      expect(cliManagerGrokConfigGet).toHaveBeenCalled();
     });
   });
 
@@ -383,6 +430,8 @@ describe("query/cliManager", () => {
     renderHook(() => useCliManagerCodexProviderSyncMutation(), { wrapper });
     renderHook(() => useCliManagerGeminiConfigQuery({ enabled: false }), { wrapper });
     renderHook(() => useCliManagerGeminiInfoQuery({ enabled: false }), { wrapper });
+    renderHook(() => useCliManagerGrokInfoQuery({ enabled: false }), { wrapper });
+    renderHook(() => useCliManagerGrokConfigQuery({ enabled: false }), { wrapper });
 
     await Promise.resolve();
 
@@ -396,6 +445,44 @@ describe("query/cliManager", () => {
     expect(cliManagerCodexProviderSync).not.toHaveBeenCalled();
     expect(cliManagerGeminiConfigGet).not.toHaveBeenCalled();
     expect(cliManagerGeminiInfoGet).not.toHaveBeenCalled();
+    expect(cliManagerGrokInfoGet).not.toHaveBeenCalled();
+    expect(cliManagerGrokConfigGet).not.toHaveBeenCalled();
+  });
+
+  it("useCliManagerGrokConfigSetMutation updates and invalidates Grok config cache", async () => {
+    setTauriRuntime();
+
+    const updated = makeGrokConfigState({
+      aio_preferences: {
+        model_id: "grok-4-fast",
+        api_backend: "chat_completions",
+        context_window: null,
+      },
+      effective_preferences: {
+        model_id: "grok-4-fast",
+        api_backend: "chat_completions",
+        context_window: null,
+      },
+      preference_source: "aio_settings",
+    });
+    vi.mocked(cliManagerGrokConfigSet).mockResolvedValue(updated);
+
+    const client = createTestQueryClient();
+    client.setQueryData(cliManagerKeys.grokConfig(), makeGrokConfigState());
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useCliManagerGrokConfigSetMutation(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({
+        model_id: "grok-4-fast",
+        api_backend: "chat_completions",
+        context_window: null,
+      });
+    });
+
+    expect(client.getQueryData(cliManagerKeys.grokConfig())).toEqual(updated);
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.grokConfig() });
   });
 
   it("useCliManagerClaudeSettingsSetMutation updates cache and invalidates", async () => {

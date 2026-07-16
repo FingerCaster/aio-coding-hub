@@ -104,6 +104,7 @@ impl ProviderResolutionMiddleware {
         // --- no enabled provider guard ---
         if ctx.providers.is_empty() {
             let final_provider_ids = provider_ids(&ctx.providers);
+
             push_special_setting(
                 &ctx.special_settings,
                 no_enabled_provider_diagnostic(&NoEnabledProviderDiagnosticArgs {

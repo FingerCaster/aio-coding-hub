@@ -10,6 +10,7 @@ import {
   type CodexConfigTomlValidationResult,
   type CodexModelCatalogState,
   type SimpleCliInfo,
+  type GrokConfigState,
   cliManagerClaudeEnvSet,
   cliManagerClaudeHooksGet,
   cliManagerClaudeHooksSet,
@@ -23,6 +24,9 @@ import {
   cliManagerCodexInfoGet,
   cliManagerCodexModelCatalogGet,
   cliManagerCodexProviderSync,
+  cliManagerGrokConfigGet,
+  cliManagerGrokConfigSet,
+  cliManagerGrokInfoGet,
 } from "../cliManager";
 
 vi.mock("../../../generated/bindings", async () => {
@@ -41,6 +45,9 @@ vi.mock("../../../generated/bindings", async () => {
       cliManagerCodexConfigTomlValidate: vi.fn(),
       cliManagerCodexConfigTomlSet: vi.fn(),
       cliManagerCodexProviderSync: vi.fn(),
+      cliManagerGrokInfoGet: vi.fn(),
+      cliManagerGrokConfigGet: vi.fn(),
+      cliManagerGrokConfigSet: vi.fn(),
       cliManagerClaudeEnvSet: vi.fn(),
       cliManagerClaudeHooksGet: vi.fn(),
       cliManagerClaudeHooksSet: vi.fn(),
@@ -138,6 +145,35 @@ function makeCodexConfigTomlValidationResult(
   return {
     ok: true,
     error: null,
+    ...overrides,
+  };
+}
+
+function makeGrokConfigState(overrides: Partial<GrokConfigState> = {}): GrokConfigState {
+  return {
+    config_path: "/tmp/.grok/config.toml",
+    file_exists: true,
+    preferences: {
+      model_id: "grok-build",
+      api_backend: "responses",
+      context_window: null,
+      telemetry: null,
+      supports_backend_search: null,
+    },
+    aio_preferences: null,
+    effective_preferences: {
+      model_id: "grok-build",
+      api_backend: "responses",
+      context_window: null,
+      telemetry: null,
+      supports_backend_search: null,
+    },
+    preference_source: "existing_config",
+    default_profile: "grok-build",
+    session_summary_profile: null,
+    web_search_profile: null,
+    image_description_profile: null,
+    policy_files: [],
     ...overrides,
   };
 }
@@ -285,6 +321,26 @@ describe("services/cli/cliManager", () => {
         warning: null,
       },
     });
+    vi.mocked(commands.cliManagerGrokInfoGet).mockResolvedValue({
+      status: "ok",
+      data: makeSimpleCliInfo({ executable_path: "/usr/bin/grok" }),
+    });
+    vi.mocked(commands.cliManagerGrokConfigGet).mockResolvedValue({
+      status: "ok",
+      data: makeGrokConfigState(),
+    });
+    vi.mocked(commands.cliManagerGrokConfigSet).mockResolvedValue({
+      status: "ok",
+      data: makeGrokConfigState({
+        aio_preferences: {
+          model_id: "grok-4-fast",
+          api_backend: "chat_completions",
+          context_window: null,
+          telemetry: null,
+          supports_backend_search: null,
+        },
+      }),
+    });
 
     await cliManagerCodexInfoGet();
     expect(commands.cliManagerCodexInfoGet).toHaveBeenCalledWith();
@@ -353,5 +409,19 @@ describe("services/cli/cliManager", () => {
 
     await cliManagerCodexProviderSync();
     expect(commands.cliManagerCodexProviderSync).toHaveBeenCalledWith();
+
+    await cliManagerGrokInfoGet();
+    expect(commands.cliManagerGrokInfoGet).toHaveBeenCalledWith();
+
+    await cliManagerGrokConfigGet();
+    expect(commands.cliManagerGrokConfigGet).toHaveBeenCalledWith();
+
+    const preferences = {
+      model_id: "grok-4-fast",
+      api_backend: "chat_completions",
+      context_window: null,
+    } as const;
+    await cliManagerGrokConfigSet(preferences);
+    expect(commands.cliManagerGrokConfigSet).toHaveBeenCalledWith(preferences);
   });
 });

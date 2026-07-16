@@ -258,6 +258,9 @@ function writePassingScaffold(root) {
   writeFileSync(
     join(root, "src-tauri/src/gateway/plugins/contract.rs"),
     [
+      "pub(crate) const DEFAULT_HOOK_TIMEOUT_MS: u64 = 150;",
+      'pub(crate) const DEFAULT_FAILURE_POLICY: &str = "fail-open";',
+      "timeout_ms: DEFAULT_HOOK_TIMEOUT_MS default_failure_policy: DEFAULT_FAILURE_POLICY",
       [
         "gateway.request.afterBodyRead",
         "gateway.request.beforeSend",

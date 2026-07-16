@@ -12,6 +12,7 @@ import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../services/gateway/upstreamRe
 import type { SortModeActiveRow, SortModeSummary } from "../../services/providers/sortModes";
 import type { UsageSummary } from "../../services/usage/usage";
 import type { WorkspacesListResult } from "../../services/workspace/workspaces";
+import { isCliKey } from "../../constants/clis";
 
 const DEFAULT_BASE_ORIGIN = "http://127.0.0.1:37123";
 
@@ -19,11 +20,12 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
   { cli_key: "claude", enabled: false, base_origin: null, applied_to_current_gateway: null },
   { cli_key: "codex", enabled: false, base_origin: null, applied_to_current_gateway: null },
   { cli_key: "gemini", enabled: false, base_origin: null, applied_to_current_gateway: null },
+  { cli_key: "grok", enabled: false, base_origin: null, applied_to_current_gateway: null },
 ];
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 49,
+  schema_version: 51,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -32,7 +34,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   gateway_custom_listen_address: "",
   wsl_auto_config: false,
   wsl_target_cli: { claude: true, codex: true, gemini: true },
-  cli_priority_order: ["claude", "codex", "gemini"],
+  cli_priority_order: ["claude", "codex", "gemini", "grok"],
   wsl_host_address_mode: "auto",
   wsl_custom_host_address: "127.0.0.1",
   codex_home_mode: "user_home_default",
@@ -528,7 +530,7 @@ export function buildCliProxySetEnabledResult(input: {
   const cliKey = input.cli_key;
   const enabled = input.enabled;
 
-  if (cliKey !== "claude" && cliKey !== "codex" && cliKey !== "gemini") {
+  if (!isCliKey(cliKey)) {
     return {
       trace_id: nextTraceId(),
       cli_key: cliKey as CliKey,
@@ -540,7 +542,7 @@ export function buildCliProxySetEnabledResult(input: {
     };
   }
 
-  const cli_key = cliKey as CliKey;
+  const cli_key = cliKey;
   const base_origin = enabled ? DEFAULT_BASE_ORIGIN : null;
   setCliProxyEnabledState(cli_key, enabled);
 

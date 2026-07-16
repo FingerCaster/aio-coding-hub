@@ -767,6 +767,29 @@ fn migrate_remove_codex_reasoning_guard(
     )
 }
 
+fn migrate_add_grok_proxy_preferences(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_GROK_PROXY_PREFERENCES,
+    )
+}
+
+fn migrate_add_image_gen_storage_dir(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    // v51: Add image gen storage dir override (default None = app data dir/image-gen).
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_DIR,
+    )
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -801,6 +824,8 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_codex_provider_test_model,
     migrate_add_upstream_retry_policy,
     migrate_remove_codex_reasoning_guard,
+    migrate_add_grok_proxy_preferences,
+    migrate_add_image_gen_storage_dir,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1398,6 +1423,7 @@ mod tests {
                 "codex".to_string(),
                 "claude".to_string(),
                 "gemini".to_string(),
+                "grok".to_string()
             ]
         );
     }
@@ -1456,6 +1482,36 @@ mod tests {
         assert!(repair_settings(&mut settings, true, &raw).unwrap());
         assert_eq!(settings.update_releases_url, DEFAULT_UPDATE_RELEASES_URL);
         assert_eq!(settings.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_add_grok_proxy_preferences_bumps_schema_without_initializing_preferences() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_REMOVE_CODEX_REASONING_GUARD,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_grok_proxy_preferences(&mut settings, true));
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_GROK_PROXY_PREFERENCES
+        );
+        assert_eq!(settings.grok_proxy_preferences, None);
+    }
+
+    #[test]
+    fn migrate_add_image_gen_storage_dir_bumps_schema_without_initializing_dir() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_GROK_PROXY_PREFERENCES,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_image_gen_storage_dir(&mut settings, true));
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_DIR
+        );
+        assert_eq!(settings.image_gen_storage_dir, None);
     }
 
     #[test]

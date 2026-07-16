@@ -16,6 +16,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md):
   bounded installed/local Skill export, Base64 serialization, import
   validation, and validation-before-write filesystem restoration.
+- [Image Gen trust boundary contract](./image-gen-trust-boundary-contract.md):
+  DNS-pinned redirect-safe downloads, backend-owned native saving, canonical
+  history paths, DB-reference validation, and asset-scope authority.
 
 ## Pre-Development Checklist
 
@@ -55,6 +58,17 @@ When changing config migration Skill payload handling:
 4. Confirm path, duplicate, file-count, symlink, special-file, metadata,
    `SKILL.md`, and import-file limits remain enforced before partial output.
 
+When changing Image Gen network or filesystem behavior:
+
+1. Read [Image Gen trust boundary contract](./image-gen-trust-boundary-contract.md).
+2. Trace remote URL hops through DNS validation and pinned connections; do not
+   rely on final-URL checks after automatic redirects.
+3. Keep save-dialog authorization and file writing in one Rust command; the
+   renderer supplies data and a suggested filename, never a destination path.
+4. Treat task dirs and stored filenames from SQLite as untrusted candidates and
+   validate them against the canonical settings-derived storage root.
+5. Confirm DB content cannot expand read/delete/cleanup or asset-scope authority.
+
 ## Quality Check
 
 - Regenerate and verify `src/generated/bindings.ts` from Rust source.
@@ -78,3 +92,7 @@ When changing config migration Skill payload handling:
   symmetry, failure before target-directory creation or file writes, v1/v2 and
   installed/local compatibility, and file-count, total-size, Base64, path,
   symlink, cycle, special-file, metadata, and import-bundle safety negatives.
+- When changing Image Gen, verify no-redirect per-hop DNS pinning, private-host
+  negatives, body/redirect caps, backend-owned save cancellation and extension
+  checks, canonical root containment, DB-reference validation, batch
+  validation-before-delete, and root-only asset scope.

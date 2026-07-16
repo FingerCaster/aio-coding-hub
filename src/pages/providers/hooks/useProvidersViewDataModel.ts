@@ -163,11 +163,13 @@ function terminalLaunchCopiedToastMessage(command: string) {
 }
 const EMPTY_ROUTE_ROWS: ProviderRouteRow[] = [];
 
-function allCodexBridgeSourceCliKeys<T extends readonly CliKey[]>(
+type CodexBridgeSourceCliKey = Exclude<CliKey, "grok">;
+
+function allCodexBridgeSourceCliKeys<T extends readonly CodexBridgeSourceCliKey[]>(
   keys: T &
-    (Exclude<CliKey, T[number]> extends never
+    (Exclude<CodexBridgeSourceCliKey, T[number]> extends never
       ? unknown
-      : readonly ["missing", Exclude<CliKey, T[number]>])
+      : readonly ["missing", Exclude<CodexBridgeSourceCliKey, T[number]>])
 ) {
   return keys;
 }
@@ -183,6 +185,7 @@ function emptyActiveModeByCli(): Record<CliKey, number | null> {
     claude: null,
     codex: null,
     gemini: null,
+    grok: null,
   };
 }
 

@@ -5,6 +5,7 @@ import updaterSource from "../desktop/updater.ts?raw";
 const allowedRawTauriImportFiles = new Set([
   "generated/bindings.ts",
   "services/desktop/confirm.ts",
+  "services/desktop/assetUrl.ts",
   "services/desktop/event.ts",
   "services/desktop/updater.ts",
   "services/tauriInvoke.ts",

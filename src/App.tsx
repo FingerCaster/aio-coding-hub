@@ -4,6 +4,7 @@ import { HashRouter } from "react-router-dom";
 import { AppRoutes } from "./app/AppRoutes";
 import { useInitializeAppSession } from "./app/appSession";
 import { useAppBootstrap } from "./app/useAppBootstrap";
+import { useGlobalFileDropGuard } from "./app/useGlobalFileDropGuard";
 
 type CssVarsStyle = CSSProperties & Record<`--toast-${string}`, string | number>;
 
@@ -16,6 +17,7 @@ const TOASTER_STYLE: CssVarsStyle = {
 export default function App() {
   useInitializeAppSession();
   useAppBootstrap();
+  useGlobalFileDropGuard();
 
   return (
     <>

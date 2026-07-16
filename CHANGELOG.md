@@ -7,6 +7,25 @@
 
 * **codex:** add approvals reviewer setting ([aa8f4ef](https://github.com/FingerCaster/aio-coding-hub/commit/aa8f4efa562cfa2d19352e76053def6d7b5920dc))
 
+### Upstream changes
+
+## [0.60.15](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.14...aio-coding-hub-v0.60.15) (2026-07-16)
+
+
+### Features
+
+* **grok:** 支持供应商 OAuth 登录 ([#348](https://github.com/dyndynjyxa/aio-coding-hub/issues/348)) ([9e19e7c](https://github.com/dyndynjyxa/aio-coding-hub/commit/9e19e7c1b0bb2f1656b806757c7b23c7e0c412d4))
+* **image-gen:** 生图页面、并发生成与历史持久化 ([#351](https://github.com/dyndynjyxa/aio-coding-hub/issues/351)) ([656b077](https://github.com/dyndynjyxa/aio-coding-hub/commit/656b07780016b3ed25a7059bbcafbb5a7cc2d531))
+
+## [0.60.14](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.13...aio-coding-hub-v0.60.14) (2026-07-15)
+
+
+### Features
+
+* **grok:** 接入 Grok CLI 网关 ([#342](https://github.com/dyndynjyxa/aio-coding-hub/issues/342)) ([2deb7e8](https://github.com/dyndynjyxa/aio-coding-hub/commit/2deb7e82ca8672cefd994327990fda4d5ccd9419))
+
+## [0.60.13](https://github.com/dyndynjyxa/aio-coding-hub/compare/aio-coding-hub-v0.60.12...aio-coding-hub-v0.60.13) (2026-07-14)
+
 ## [0.60.25](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.24...aio-coding-hub-v0.60.25) (2026-07-14)
 
 

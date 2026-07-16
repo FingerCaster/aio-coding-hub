@@ -629,7 +629,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
           return Boolean(value.trim());
         }).length
       : 0;
-  const supportsOAuth = cliKey === "codex" || cliKey === "gemini";
+  const supportsOAuth = cliKey === "codex" || cliKey === "gemini" || cliKey === "grok";
   const supportsCx2cc = cliKey === "claude" || cliKey === "codex";
 
   const buildPayloadContext = useCallback(
