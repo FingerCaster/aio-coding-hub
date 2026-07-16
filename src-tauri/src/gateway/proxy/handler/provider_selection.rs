@@ -125,7 +125,7 @@ pub(super) fn resolve_session_bound_provider_id(
     created_at: i64,
     allow_session_reuse: bool,
     forced_provider_id: Option<i64>,
-    providers: &mut Vec<providers::ProviderForGateway>,
+    providers: &mut [providers::ProviderForGateway],
     bound_provider_order: Option<&[i64]>,
 ) -> Option<i64> {
     let bound_provider_id =
