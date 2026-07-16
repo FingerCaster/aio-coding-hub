@@ -3,6 +3,7 @@
 mod bridge;
 mod config;
 mod contracts;
+mod git_source;
 mod managed_state;
 mod node;
 mod process;

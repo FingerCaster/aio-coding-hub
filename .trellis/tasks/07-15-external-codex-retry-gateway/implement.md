@@ -139,8 +139,10 @@ coordinator does not duplicate those edits while workers are active.
 
 - [ ] Add fixed repository identity and build-time recommended full-SHA
       metadata. Do not accept caller-supplied repository or archive URLs.
-- [ ] Resolve exact commits and official `main` ancestry through bounded GitHub
-      API requests with explicit 404/transient/rate-limit handling.
+- [ ] Resolve exact commits and official `main` ancestry through an isolated
+      AIO-owned bare cache using the user's local Git. Use bounded GitHub REST
+      only when Git is unavailable, with explicit 404/transient/rate-limit
+      handling.
 - [ ] Download only by canonical SHA with a GitHub/codeload redirect allowlist.
 - [ ] Reuse/factor existing bounded ZIP extraction and package hashing rather
       than copy a weaker extractor.

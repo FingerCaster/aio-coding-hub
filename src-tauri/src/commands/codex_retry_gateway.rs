@@ -55,9 +55,10 @@ pub(crate) async fn codex_retry_gateway_check_update(
 #[tauri::command]
 #[specta::specta]
 pub(crate) async fn codex_retry_gateway_validate_commit(
+    app: tauri::AppHandle,
     request: CodexRetryGatewayValidateCommitRequest,
 ) -> Result<CodexRetryGatewayCommitValidation, String> {
-    codex_retry_gateway_service::validate_commit(request)
+    codex_retry_gateway_service::validate_commit(&app, request)
         .await
         .map_err(Into::into)
 }
@@ -124,21 +125,4 @@ pub(crate) async fn codex_retry_gateway_revoke_details_session(
     codex_retry_gateway_service::revoke_details_session(request)
         .await
         .map_err(Into::into)
-}
-
-#[cfg(test)]
-mod tests {
-    use super::codex_retry_gateway_validate_commit;
-    use crate::infra::codex_retry_gateway::CodexRetryGatewayValidateCommitRequest;
-
-    #[tokio::test]
-    async fn validate_commit_command_fails_closed_for_non_sha_input() {
-        let validation =
-            codex_retry_gateway_validate_commit(CodexRetryGatewayValidateCommitRequest {
-                commit: "main".to_string(),
-            })
-            .await
-            .expect("validation");
-        assert!(validation.error.is_some());
-    }
 }

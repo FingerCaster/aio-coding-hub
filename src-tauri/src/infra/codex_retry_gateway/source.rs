@@ -19,6 +19,7 @@ use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
 
+use super::git_source;
 use super::util::{
     canonicalize_path_within_root, ensure_not_symlink_or_reparse, normalize_full_sha, now_unix_ms,
     random_hex,
@@ -96,10 +97,11 @@ struct GitHubCompareResponse {
 }
 
 pub(crate) async fn validate_commit_request(
+    paths: &CodexRetryGatewayManagerPaths,
     commit: &str,
     http: &CodexRetryGatewaySourceHttpConfig,
 ) -> CodexRetryGatewayCommitCandidate {
-    match resolve_commit_candidate(commit, http).await {
+    match resolve_commit_candidate(paths, commit, http).await {
         Ok(selection) => CodexRetryGatewayCommitCandidate {
             validation: CodexRetryGatewayCommitValidation {
                 requested_commit: commit.trim().to_string(),
@@ -128,20 +130,57 @@ pub(crate) async fn validate_commit_request(
 }
 
 pub(crate) async fn resolve_commit_candidate(
+    paths: &CodexRetryGatewayManagerPaths,
     commit: &str,
     http: &CodexRetryGatewaySourceHttpConfig,
 ) -> AppResult<CodexRetryGatewayCommitSelection> {
     let requested_commit = normalize_full_sha(commit)?;
-    resolve_commit_selection(&requested_commit, &requested_commit, true, http).await
+    resolve_commit_selection(paths, &requested_commit, &requested_commit, true, http).await
 }
 
 pub(crate) async fn resolve_official_main_candidate(
+    paths: &CodexRetryGatewayManagerPaths,
     http: &CodexRetryGatewaySourceHttpConfig,
 ) -> AppResult<CodexRetryGatewayCommitSelection> {
-    resolve_commit_selection("main", "main", false, http).await
+    resolve_commit_selection(paths, "main", "main", false, http).await
 }
 
 async fn resolve_commit_selection(
+    paths: &CodexRetryGatewayManagerPaths,
+    requested_commit: &str,
+    commit_ref: &str,
+    require_official_ancestor: bool,
+    http: &CodexRetryGatewaySourceHttpConfig,
+) -> AppResult<CodexRetryGatewayCommitSelection> {
+    if use_local_git(http) {
+        if let git_source::LocalGitResult::Ready(selection) =
+            git_source::resolve_commit(paths, commit_ref, require_official_ancestor).await?
+        {
+            let trust_state =
+                if selection.canonical_commit == CODEX_RETRY_GATEWAY_RECOMMENDED_COMMIT {
+                    CodexRetryGatewayTrustState::AioReviewedRecommendation
+                } else {
+                    CodexRetryGatewayTrustState::OfficialMainUnreviewed
+                };
+            return Ok(CodexRetryGatewayCommitSelection {
+                requested_commit: requested_commit.trim().to_string(),
+                canonical_commit: selection.canonical_commit,
+                official_main_commit: selection.official_main_commit,
+                summary: selection.summary,
+                trust_state,
+            });
+        }
+    }
+    resolve_commit_selection_via_rest(
+        requested_commit,
+        commit_ref,
+        require_official_ancestor,
+        http,
+    )
+    .await
+}
+
+async fn resolve_commit_selection_via_rest(
     requested_commit: &str,
     commit_ref: &str,
     require_official_ancestor: bool,
@@ -171,6 +210,10 @@ async fn resolve_commit_selection(
         summary,
         trust_state,
     })
+}
+
+fn use_local_git(http: &CodexRetryGatewaySourceHttpConfig) -> bool {
+    http == &CodexRetryGatewaySourceHttpConfig::default()
 }
 
 pub(crate) async fn install_source_commit(
@@ -344,12 +387,20 @@ async fn ensure_commit_is_official_main_ancestor(
 }
 
 pub(crate) async fn official_commit_distance(
+    paths: &CodexRetryGatewayManagerPaths,
     candidate: &str,
     main: &str,
     http: &CodexRetryGatewaySourceHttpConfig,
 ) -> AppResult<Option<u32>> {
     let candidate = normalize_full_sha(candidate)?;
     let main = normalize_full_sha(main)?;
+    if use_local_git(http) {
+        if let git_source::LocalGitResult::Ready(distance) =
+            git_source::official_commit_distance(paths, &candidate, &main).await?
+        {
+            return Ok(distance);
+        }
+    }
     let client = build_github_client()?;
     compare_official_commits(&client, http, &candidate, &main).await
 }
@@ -959,6 +1010,8 @@ pub(crate) fn public_source_error(error: &AppError) -> CodexRetryGatewayError {
                 | "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED"
                 | "CODEX_RETRY_GATEWAY_SOURCE_SERVER_ERROR"
                 | "CODEX_RETRY_GATEWAY_SOURCE_HTTP_ERROR"
+                | "CODEX_RETRY_GATEWAY_SOURCE_GIT_FAILED"
+                | "CODEX_RETRY_GATEWAY_SOURCE_GIT_TIMEOUT"
         ),
     }
 }
@@ -1344,11 +1397,16 @@ mod tests {
             let _ = axum::serve(listener, router).await;
         });
 
-        let selection = resolve_official_main_candidate(&CodexRetryGatewaySourceHttpConfig {
-            api_base_url: format!("http://127.0.0.1:{port}"),
-            download_base_url: "http://127.0.0.1:1".to_string(),
-            allowed_hosts: vec!["127.0.0.1".to_string()],
-        })
+        let root = tempdir().unwrap();
+        let paths = CodexRetryGatewayManagerPaths::from_root(root.path().join("gateway"));
+        let selection = resolve_official_main_candidate(
+            &paths,
+            &CodexRetryGatewaySourceHttpConfig {
+                api_base_url: format!("http://127.0.0.1:{port}"),
+                download_base_url: "http://127.0.0.1:1".to_string(),
+                allowed_hosts: vec!["127.0.0.1".to_string()],
+            },
+        )
         .await
         .unwrap();
         assert_eq!(selection.requested_commit, "main");
@@ -1384,7 +1442,10 @@ mod tests {
             let _ = axum::serve(listener, router).await;
         });
 
+        let root = tempdir().unwrap();
+        let paths = CodexRetryGatewayManagerPaths::from_root(root.path().join("gateway"));
         let distance = official_commit_distance(
+            &paths,
             CURRENT_SHA,
             MAIN_SHA,
             &CodexRetryGatewaySourceHttpConfig {

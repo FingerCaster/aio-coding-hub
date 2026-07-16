@@ -135,7 +135,23 @@ export function formatCodexRetryGatewayProviderSyncResult(result: CodexProviderS
 export function formatCodexRetryGatewayError(error: CodexRetryGatewayError | null): string | null {
   if (!error) return null;
   const code = error.code?.trim();
-  return code ? `${error.message}（${code}）` : error.message;
+  const message = code ? (getCodexRetryGatewayErrorGuidance(code) ?? error.message) : error.message;
+  return code ? `${message}（${code}）` : message;
+}
+
+export function getCodexRetryGatewayErrorGuidance(code: string): string | null {
+  const guidance: Record<string, string> = {
+    CODEX_RETRY_GATEWAY_SOURCE_GIT_FAILED:
+      "本地 Git 无法同步官方网关仓库，请检查 Git 网络或代理配置后重试。",
+    CODEX_RETRY_GATEWAY_SOURCE_GIT_TIMEOUT:
+      "本地 Git 同步官方网关仓库超时，请检查网络或代理后重试。",
+    CODEX_RETRY_GATEWAY_SOURCE_GIT_CACHE_INVALID:
+      "外部网关的 Git 缓存无效，请卸载并清理外部网关数据后重试。",
+    CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED:
+      "GitHub 匿名 API 请求已限流，请稍后重试；安装本地 Git 后可避免该限制。",
+    CODEX_RETRY_GATEWAY_SOURCE_FORBIDDEN: "GitHub 拒绝了提交校验请求，请检查网络或代理后重试。",
+  };
+  return guidance[code] ?? null;
 }
 
 export function resolveRepositoryUrl(repository: string): string | null {

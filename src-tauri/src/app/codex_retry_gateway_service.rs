@@ -117,10 +117,11 @@ pub(crate) async fn check_update(
 }
 
 pub(crate) async fn validate_commit(
+    app: &tauri::AppHandle,
     request: CodexRetryGatewayValidateCommitRequest,
 ) -> AppResult<CodexRetryGatewayCommitValidation> {
     let _lifecycle = super::gateway_lifecycle_lock::lock().await;
-    codex_retry_gateway::validate_selected_commit(request).await
+    codex_retry_gateway::validate_selected_commit(app, request).await
 }
 
 pub(crate) async fn apply_commit(

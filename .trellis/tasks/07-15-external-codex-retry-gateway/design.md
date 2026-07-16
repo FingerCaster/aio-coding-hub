@@ -333,10 +333,17 @@ enabled.
 
 - The repository identity is compiled as
   `nonononull/codex-retry-gateway`; callers never supply a URL.
-- Manual input is an exact 40-hex SHA. Resolve official `main` and use GitHub's
-  commit/compare APIs to prove the candidate is `main` or its ancestor at that
-  verification time.
-- Only GitHub API and GitHub/codeload download hosts are allowed. Redirects to
+- Manual input is an exact 40-hex SHA. Prefer the user's local Git executable
+  with an AIO-owned bare cache of the fixed official repository, then use the
+  fetched commit graph to prove the candidate is `main` or its ancestor at that
+  verification time. Never trust or reuse an existing user checkout.
+- Git execution disables credential prompts, hooks, system/global config,
+  protocol substitution, replace refs, grafts, alternates, and shallow graphs.
+  If Git is unavailable, GitHub commit/compare REST is a limited fallback;
+  Git execution/network failures stay actionable Git errors and do not silently
+  change verification mode.
+- Only the fixed official Git HTTPS URL, GitHub API fallback, and
+  GitHub/codeload download hosts are allowed. Redirects to
   other hosts, forks, branch-only commits, abbreviated SHAs, and mutable ref
   execution are rejected.
 - Store the resolved main SHA and verification time with the source manifest.

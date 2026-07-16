@@ -127,8 +127,9 @@ pub(crate) async fn runtime_update_candidate<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<Option<CodexRetryGatewayUpdateCandidate>> {
     let status = current_status(app).await?;
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
     let http = CodexRetryGatewaySourceHttpConfig::default();
-    let selection = resolve_official_main_candidate(&http).await?;
+    let selection = resolve_official_main_candidate(&paths, &http).await?;
     let current_commit = status
         .active_commit
         .clone()
@@ -138,7 +139,7 @@ pub(crate) async fn runtime_update_candidate<R: tauri::Runtime>(
     }
     let commits_ahead = match current_commit.as_deref() {
         Some(current) if normalize_full_sha(current).is_ok() => {
-            official_commit_distance(current, &selection.canonical_commit, &http).await?
+            official_commit_distance(&paths, current, &selection.canonical_commit, &http).await?
         }
         _ => None,
     };
@@ -154,10 +155,13 @@ pub(crate) async fn runtime_update_candidate<R: tauri::Runtime>(
     }))
 }
 
-pub(crate) async fn validate_selected_commit(
+pub(crate) async fn validate_selected_commit<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     request: CodexRetryGatewayValidateCommitRequest,
 ) -> AppResult<CodexRetryGatewayCommitValidation> {
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
     Ok(validate_commit_request(
+        &paths,
         &request.commit,
         &CodexRetryGatewaySourceHttpConfig::default(),
     )
@@ -307,6 +311,7 @@ pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
         ));
     }
     let candidate = validate_commit_request(
+        &CodexRetryGatewayManagerPaths::from_app(app)?,
         &request.commit,
         &CodexRetryGatewaySourceHttpConfig::default(),
     )
@@ -904,6 +909,7 @@ async fn ensure_runtime_process<R: tauri::Runtime>(
         installed
     } else {
         let selection = validate_commit_request(
+            paths,
             &selected_commit,
             &CodexRetryGatewaySourceHttpConfig::default(),
         )

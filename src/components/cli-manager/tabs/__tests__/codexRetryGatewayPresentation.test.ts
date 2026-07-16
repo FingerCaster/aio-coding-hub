@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
 import {
+  formatCodexRetryGatewayError,
   formatCodexRetryGatewayNodeSource,
   formatCodexRetryGatewayProviderSync,
   formatCodexRetryGatewayProviderSyncResult,
@@ -55,6 +56,26 @@ describe("codexRetryGatewayPresentation", () => {
       "https://github.com/nonononull/codex-retry-gateway"
     );
     expect(resolveRepositoryUrl("not a repo")).toBeNull();
+  });
+
+  it.each([
+    [
+      "CODEX_RETRY_GATEWAY_SOURCE_GIT_FAILED",
+      "本地 Git 无法同步官方网关仓库，请检查 Git 网络或代理配置后重试。",
+    ],
+    [
+      "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED",
+      "GitHub 匿名 API 请求已限流，请稍后重试；安装本地 Git 后可避免该限制。",
+    ],
+  ])("shows actionable source guidance for %s", (code, expected) => {
+    expect(
+      formatCodexRetryGatewayError({
+        code,
+        category: "source_resolution",
+        message: "raw failure",
+        retryable: true,
+      })
+    ).toBe(`${expected}（${code}）`);
   });
 
   it("keeps exhaustive fixtures for every generated foundation enum", () => {

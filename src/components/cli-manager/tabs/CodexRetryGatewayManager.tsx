@@ -47,6 +47,7 @@ import {
   formatCodexRetryGatewayTone,
   formatCodexRetryGatewayTrustState,
   getGatewayToneClass,
+  getCodexRetryGatewayErrorGuidance,
   isCodexRetryGatewayProtected,
   resolveRepositoryUrl,
 } from "./codexRetryGatewayPresentation";
@@ -205,6 +206,10 @@ function requirementsSatisfied(
 }
 
 function getProviderSyncAlignedToast(formatted: ReturnType<typeof formatActionFailureToast>) {
+  if (formatted.error_code) {
+    const guidance = getCodexRetryGatewayErrorGuidance(formatted.error_code);
+    if (guidance) return guidance.replace(/[。；]$/, "");
+  }
   if (formatted.error_code === "CODEX_RETRY_GATEWAY_STALE_GENERATION") {
     return "网关状态已发生变化，请刷新状态后重试";
   }

@@ -112,6 +112,15 @@ that `null`; it is not a missing-result error.
 - ZIP extraction enforces its single-file and aggregate byte budgets against
   bytes actually read and written, not only entry-declared uncompressed sizes.
   Archive paths reject non-portable Windows alternate-data-stream segments.
+- Official commit resolution prefers the user's local Git executable and an
+  AIO-owned bare cache under the gateway data root. Fetch only the fixed
+  `https://github.com/nonononull/codex-retry-gateway.git` main ref, then prove
+  exact full-SHA ancestry from the fetched graph. Never reuse a user checkout.
+- Local Git runs without credential prompts, hooks, system/global config,
+  non-HTTPS protocols, replace refs, grafts, alternates, or shallow graphs.
+  Reset the cache config before fetch. Fall back to bounded anonymous REST only
+  when Git is unavailable; a Git timeout, network failure, or corrupt cache
+  remains a Git error instead of silently changing verification authority.
 - Release jobs build locally first, unpack each installer and portable artifact
   with platform-native tools, and reject external gateway source paths, its
   entrypoint/dependency tree, or a bundled Node runtime before the first
@@ -135,6 +144,9 @@ that `null`; it is not a missing-result error.
 | Health/status process IDs differ | Treat the process as unowned/unhealthy |
 | Manual Node override is a link, directory, relative path, or Node < 18 | Reject and preserve prior selection |
 | Node selection changes while desired state is enabled | Reject without changing settings, process, or generation |
+| Local Git executable is unavailable | Use bounded GitHub REST fallback and preserve its rate-limit classification |
+| Local Git fetch times out or fails | Keep source/route state unchanged and show Git network/proxy guidance; do not fall back silently |
+| Git cache contains graph/config overrides | Reject as `SOURCE_GIT_CACHE_INVALID`; never use its ancestry result |
 
 ### 5. Good / Base / Bad Cases
 
@@ -147,12 +159,16 @@ that `null`; it is not a missing-result error.
 - Good: Rust hashes an internal `u64` route generation into a deterministic
   public fingerprint no larger than `2^53 - 1`; TypeScript round-trips it
   unchanged in the enable request.
+- Good: AIO fetches official `main` into its own bare cache and accepts an exact
+  ancestor SHA without consuming anonymous REST quota.
 - Bad: restore the first route or Provider Sync snapshot before discovering
   that a later backup is missing. This creates an unrecoverable mixed state.
 - Bad: infer an applied route from commented TOML text, the manifest, or a
   healthy listener without verifying auth and the effective origin.
 - Bad: reuse one bridge launch URL for iframe and browser, or revoke the browser
   session when the AIO frame unmounts.
+- Bad: trust a user's existing clone, allow `url.*.insteadOf`, or interpret a
+  failed Git fetch as proof that a commit is not on official main.
 
 ### 6. Tests Required
 
@@ -178,6 +194,9 @@ that `null`; it is not a missing-result error.
   result is at most `2^53 - 1`. Component tests assert stale/invalid generation
   failures show refresh-and-retry guidance while retaining the raw Console
   diagnostic.
+- Git source tests construct a temporary commit graph and assert an official
+  main ancestor succeeds while a side-branch commit fails. REST mock tests stay
+  independent and cover fallback status/rate-limit classification.
 - Process tests require matching health/status PIDs and prove exited children
   are reaped. Run generated bindings, full Rust, precommit, prepush, build, and
   installer-content gates before release.
@@ -219,4 +238,12 @@ Ok(u64::from_le_bytes(prefix))
 
 // Correct: the public value round-trips through a JavaScript number exactly.
 Ok(u64::from_le_bytes(prefix) & ((1_u64 << 53) - 1))
+```
+
+For official commit trust, using an arbitrary checkout is wrong:
+
+```text
+Wrong: user clone/remotes -> merge-base -> execute
+Correct: fixed official HTTPS URL -> isolated AIO bare cache -> fetch main ->
+         exact-SHA merge-base -> bounded codeload download
 ```

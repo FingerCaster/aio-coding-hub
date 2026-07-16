@@ -388,6 +388,25 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
     await waitFor(() => expect(toast).toHaveBeenCalledWith(expectedToast));
   });
 
+  it.each([
+    [
+      "CODEX_RETRY_GATEWAY_SOURCE_GIT_FAILED: fetch failed",
+      "本地 Git 无法同步官方网关仓库，请检查 Git 网络或代理配置后重试",
+    ],
+    [
+      "CODEX_RETRY_GATEWAY_SOURCE_RATE_LIMITED: GitHub commit request failed with status 403 Forbidden",
+      "GitHub 匿名 API 请求已限流，请稍后重试；安装本地 Git 后可避免该限制",
+    ],
+  ])("shows actionable source update guidance for %s", async (error, expectedToast) => {
+    const user = userEvent.setup();
+    mutations.checkUpdate.mutateAsync.mockRejectedValue(new Error(error));
+    renderManager();
+
+    await user.click(screen.getByRole("button", { name: "检查更新" }));
+
+    await waitFor(() => expect(toast).toHaveBeenCalledWith(expectedToast));
+  });
+
   it("checks for an update and applies the exact confirmed candidate", async () => {
     const user = userEvent.setup();
     const candidate = {
