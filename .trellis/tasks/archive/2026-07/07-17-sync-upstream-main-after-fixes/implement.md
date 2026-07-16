@@ -56,3 +56,36 @@
 - [ ] 未提交 merge 验证失败时保留证据并 abort merge，不重写前四项提交。
 - [ ] 已提交 merge 需要回滚时整体 revert merge commit，不 reset/rebase 历史。
 - [ ] 产品语义冲突未决时保持暂停并等待用户，不自行选边。
+
+## 完成证据（2026-07-17）
+
+- 固定输入：pre-merge HEAD `4499c71d17e3d51544e57fdebabb1831b9676d37`，
+  upstream SHA `419086fb36a4976e30d384add2fec086d99e648c`，merge-base
+  `057c06821b5159fda202bce5cfbf1ef3afb410f9`；merge-base 到 upstream 共 6 个提交。
+- 真实 merge commit：`9e5da3461e2db200a488cef17ac85ecd52c0d6e2`；两个 parent 依次为
+  pre-merge HEAD 和固定 upstream SHA。固定 upstream SHA、merge-base、四项子任务的实现提交
+  `9c4d875c`、`ebb0cfe2`、`82e82e7b`、`86680415` 及对应归档提交
+  `3abbcdaa`、`8cd8956e`、`b8eb2555`、`4499c71d` 均为 merge commit 祖先。
+- 冲突处理：审阅 71 个同路径 overlap，人工解析 31 个文本冲突；保留 fork provider gate、
+  request-scoped attempt budget、Codex config、Query/NewAPI/Skill bundle 契约、版本 `0.60.26`、
+  FingerCaster updater/pubkey，并带入固定 upstream SHA 的 Grok、Image Gen、CLI、usage、OAuth、
+  audit/plugin/support-matrix 等全部 6 个提交。
+- Image Gen 信任边界：下载逐跳 no-redirect、公开地址校验、DNS pinning、重定向和响应体上限；
+  保存由 Rust native dialog 授权并写入；历史读取/清理/删除和 asset scope 以 canonical storage
+  root 为唯一权限根，DB 路径仅作不可信候选。契约记录于
+  `.trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md` 并已更新索引。
+- 聚焦回归：Image Gen Rust 38/38、frontend 207/207；Grok Rust 81/81、frontend 142/142；
+  provider availability 17/17；failover Rust 16/16、frontend 44/44；Query/provider frontend
+  103/103；NewAPI 27/27；config migrate 26/26；Codex library 44/44、integration 5/5、
+  frontend 41/41。
+- 完整门槛：`pnpm check:generated-bindings`、`pnpm check:plugin-api-contract`、
+  `pnpm audit:deps`（435 packages，high=0，critical=0）、support-matrix check、
+  `pnpm check:precommit:full`（13/13）、`pnpm check:prepush`（15/15）、`pnpm build`
+  （3544 modules）、完整 locked Cargo test（library 2040 passed、3 ignored，全部 integration
+  suites 通过）、locked all-target clippy `-D warnings`、`git diff --check` 与 cached diff check
+  均通过。
+- Remote/负向审计：`origin` fetch/push 均为 `https://github.com/FingerCaster/aio-coding-hub.git`；
+  `upstream` fetch 为 dyndynjyxa 仓库且 push URL 为 `DISABLED`。未 fetch、push、调用 `gh`、
+  修改 remote 或合并到 main；活动产品代码不存在 `DeniedByCircuit`、
+  `session_bound_provider_circuit_denied`、`codex_retry_gateway` 或已移除的 continuation repair /
+  reasoning guard 产品面。
