@@ -87,6 +87,14 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   };
 }
 
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function renderCard(
   partialProvider: Partial<ProviderSummary> = {},
   extraProps: Partial<SortableProviderCardProps> = {}
@@ -167,6 +175,71 @@ describe("pages/providers/SortableProviderCard", () => {
     expect(screen.getByText("日 1.00/10.0 USD")).toBeInTheDocument();
     expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
     expect(providerOAuthFetchLimits).not.toHaveBeenCalled();
+  });
+
+  it("keeps manual refresh loading and error presentation on the account query lifecycle", async () => {
+    const manualRefresh = deferred<Awaited<ReturnType<typeof providerAccountUsageFetch>>>();
+    const usage = {
+      adapter_kind: "newapi" as const,
+      status: "available" as const,
+      freshness: "fresh" as const,
+      plan_name: null,
+      balance: 1,
+      plan_remaining: null,
+      used: 2,
+      total: 3,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    };
+    vi.mocked(providerAccountUsageFetch)
+      .mockResolvedValueOnce(usage)
+      .mockImplementationOnce(() => manualRefresh.promise);
+
+    renderCard({
+      id: 14,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    const refreshButton = await screen.findByRole("button", {
+      name: /刷新账户用量，账户: 可用 · 余额 1.00 USD/,
+    });
+    fireEvent.click(refreshButton);
+
+    await waitFor(() => {
+      expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+      expect(refreshButton).toBeDisabled();
+      expect(refreshButton).toHaveAccessibleName("刷新账户用量，账户: 刷新中");
+    });
+
+    manualRefresh.resolve({ ...usage, balance: 8 });
+    await waitFor(() => {
+      expect(refreshButton).toBeEnabled();
+      expect(refreshButton).toHaveAccessibleName(/刷新账户用量，账户: 可用 · 余额 8.00 USD/);
+    });
+
+    vi.mocked(providerAccountUsageFetch).mockRejectedValueOnce(new Error("manual refresh failed"));
+    fireEvent.click(refreshButton);
+    await waitFor(() => {
+      expect(refreshButton).toBeEnabled();
+      expect(refreshButton).toHaveTextContent("manual refresh failed");
+    });
   });
 
   it("renders subscription account usage as a summary with daily weekly and monthly chips", async () => {

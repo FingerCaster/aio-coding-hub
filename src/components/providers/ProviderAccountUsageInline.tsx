@@ -1,5 +1,4 @@
 import { RefreshCw } from "lucide-react";
-import { useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { refreshProviderAccountUsage, useProviderAccountUsageQuery } from "../../query/providers";
 import type {
@@ -140,15 +139,14 @@ export function ProviderAccountUsageInline({
 }) {
   const configured = isProviderAccountUsageConfigured(provider);
   const queryClient = useQueryClient();
-  const { data = null } = useProviderAccountUsageQuery(provider, configured);
-  const [refreshing, setRefreshing] = useState(false);
-  const [refreshError, setRefreshError] = useState<string | null>(null);
+  const { data = null, error, isFetching } = useProviderAccountUsageQuery(provider, configured);
 
   if (!configured) return null;
 
   const display = buildUsageDisplay(data);
+  const refreshError = !isFetching && error ? formatUnknownError(error) : null;
   const text = refreshError ?? display.summary;
-  const metrics = refreshError || refreshing ? [] : display.metrics;
+  const metrics = refreshError || isFetching ? [] : display.metrics;
   const tone = refreshError
     ? "text-amber-700 dark:text-amber-400"
     : resultTone(data?.status ?? "unsupported");
@@ -159,15 +157,11 @@ export function ProviderAccountUsageInline({
         type="button"
         onClick={(event) => {
           event.stopPropagation();
-          if (refreshing) return;
-          setRefreshing(true);
-          setRefreshError(null);
-          void refreshProviderAccountUsage(queryClient, provider.id)
-            .catch((error) => setRefreshError(formatUnknownError(error)))
-            .finally(() => setRefreshing(false));
+          if (isFetching) return;
+          void refreshProviderAccountUsage(queryClient, provider.id).catch(() => undefined);
         }}
-        disabled={refreshing}
-        aria-label={`刷新账户用量，${refreshing ? "账户: 刷新中" : [text, ...metrics].join("，")}`}
+        disabled={isFetching}
+        aria-label={`刷新账户用量，${isFetching ? "账户: 刷新中" : [text, ...metrics].join("，")}`}
         className={cn(
           "inline-flex min-w-0 max-w-full shrink items-start gap-1 rounded-sm font-mono text-xs text-left transition-colors disabled:cursor-not-allowed disabled:opacity-60",
           tone,
@@ -176,11 +170,11 @@ export function ProviderAccountUsageInline({
         title={refreshError ?? display.title}
       >
         <RefreshCw
-          className={cn("mt-0.5 h-3 w-3 shrink-0", refreshing && "animate-spin")}
+          className={cn("mt-0.5 h-3 w-3 shrink-0", isFetching && "animate-spin")}
           aria-hidden="true"
         />
         <span className="flex min-w-0 max-w-full flex-col gap-1">
-          <span className="min-w-0 max-w-full truncate">{refreshing ? "账户: 刷新中" : text}</span>
+          <span className="min-w-0 max-w-full truncate">{isFetching ? "账户: 刷新中" : text}</span>
           {metrics.length ? (
             <span className="flex max-w-full flex-nowrap gap-1.5 overflow-hidden">
               {metrics.map((metric) => (

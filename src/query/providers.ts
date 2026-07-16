@@ -1,5 +1,11 @@
-import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import type { QueryClient } from "@tanstack/react-query";
+import {
+  keepPreviousData,
+  queryOptions,
+  useMutation,
+  useQuery,
+  useQueryClient,
+} from "@tanstack/react-query";
+import type { QueryClient, QueryFunctionContext } from "@tanstack/react-query";
 import { useCallback, useMemo, useState } from "react";
 import {
   defaultRouteProvidersList,
@@ -153,14 +159,32 @@ export function readProviderAccountUsageCache(
   return state?.data ?? null;
 }
 
+type ProviderAccountUsageQueryKey = ReturnType<typeof providerAccountUsageKeys.detail>;
+
+function fetchProviderAccountUsageQuery({
+  queryKey,
+}: QueryFunctionContext<ProviderAccountUsageQueryKey>) {
+  return providerAccountUsageFetch(validateProviderId(queryKey[1]));
+}
+
+export function providerAccountUsageQueryOptions(providerId: number) {
+  const normalizedProviderId = validateProviderId(providerId);
+
+  return queryOptions({
+    queryKey: providerAccountUsageKeys.detail(normalizedProviderId),
+    queryFn: fetchProviderAccountUsageQuery,
+    staleTime: Infinity,
+    retry: false,
+  });
+}
+
 export async function refreshProviderAccountUsage(
   queryClient: QueryClient,
   providerId: number
 ): Promise<ProviderAccountUsageResult | null> {
-  const normalizedProviderId = validateProviderId(providerId);
-  const next = await providerAccountUsageFetch(normalizedProviderId);
-  queryClient.setQueryData(providerAccountUsageKeys.detail(normalizedProviderId), next);
-  return next;
+  const options = providerAccountUsageQueryOptions(providerId);
+  await queryClient.cancelQueries({ queryKey: options.queryKey, exact: true });
+  return queryClient.fetchQuery({ ...options, staleTime: 0 });
 }
 
 export async function resetProviderOAuthCodexQuota(
@@ -442,6 +466,7 @@ export function useOAuthLimitsQuery(providerId: number, enabled: boolean) {
 
 export function useProviderAccountUsageQuery(provider: ProviderSummary, enabled = true) {
   const normalizedProviderId = validateProviderId(provider.id);
+  const options = providerAccountUsageQueryOptions(normalizedProviderId);
   const configured = isProviderAccountUsageConfigured(provider);
   const config = readProviderAccountUsageConfig(provider.extension_values);
   const autoFetchEnabled = enabled && provider.enabled && configured;
@@ -449,12 +474,9 @@ export function useProviderAccountUsageQuery(provider: ProviderSummary, enabled 
     autoFetchEnabled && config.timedRefreshEnabled ? config.refreshIntervalSeconds * 1000 : false;
 
   return useQuery({
-    queryKey: providerAccountUsageKeys.detail(normalizedProviderId),
-    queryFn: () => providerAccountUsageFetch(normalizedProviderId),
+    ...options,
     enabled: autoFetchEnabled,
-    staleTime: Infinity,
     refetchInterval,
-    retry: false,
     meta: {
       configured: enabled && configured,
     },

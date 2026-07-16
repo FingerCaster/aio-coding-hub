@@ -10,6 +10,8 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Gateway failover route contract](./gateway-failover-route-contract.md):
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.
+- [Provider account-usage query contract](./provider-account-usage-query-contract.md):
+  one TanStack Query owner for automatic, timed, and forced manual refreshes.
 
 ## Pre-Development Checklist
 
@@ -23,6 +25,13 @@ When changing a Codex `config.toml` field:
 4. Search for every complete `CodexConfigState` fixture before regenerating
    bindings.
 
+When changing provider account-usage fetching:
+
+1. Read [Provider account-usage query contract](./provider-account-usage-query-contract.md).
+2. Trace automatic, timed, and manual entry points through the same query key,
+   options, cache owner, and component state.
+3. Test uncancellable IPC Promises with deliberately reversed completion order.
+
 ## Quality Check
 
 - Regenerate and verify `src/generated/bindings.ts` from Rust source.
@@ -33,3 +42,5 @@ When changing a Codex `config.toml` field:
   `pnpm check:generated-bindings`.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
+- When changing account-usage refresh, verify forced fetches, late-result
+  suppression, loading/error state, and provider/cache isolation together.

@@ -1,6 +1,9 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
-import type { ProviderSummary } from "../../services/providers/providers";
+import type {
+  ProviderAccountUsageResult,
+  ProviderSummary,
+} from "../../services/providers/providers";
 import {
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
@@ -18,6 +21,7 @@ import {
 import { gatewayCircuitResetProvider } from "../../services/gateway/gateway";
 import {
   fetchProviderOAuthStatus,
+  providerAccountUsageQueryOptions,
   readProviderOAuthLimitsCache,
   readProviderAccountUsageCache,
   refreshProviderAccountUsage,
@@ -108,6 +112,40 @@ function makeProvider(
     extension_values: partial.extension_values ?? [],
     api_key_configured: partial.api_key_configured ?? false,
   };
+}
+
+function makeAccountUsage(balance: number): ProviderAccountUsageResult {
+  return {
+    adapter_kind: "newapi",
+    status: balance > 0 ? "available" : "zero_balance",
+    freshness: "fresh",
+    plan_name: null,
+    balance,
+    plan_remaining: null,
+    used: 2,
+    total: 3,
+    unit: "USD",
+    unit_note: null,
+    daily_used: null,
+    daily_total: null,
+    weekly_used: null,
+    weekly_total: null,
+    monthly_used: null,
+    monthly_total: null,
+    expires_at: null,
+    last_fetched_at: 1_700_000_000,
+    message: null,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T | PromiseLike<T>) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, resolve, reject };
 }
 
 describe("query/providers", () => {
@@ -284,31 +322,11 @@ describe("query/providers", () => {
     );
   });
 
-  it("auto-fetches provider account usage and keeps manual refresh scoped to its own cache", async () => {
+  it("shares account usage query options and forces a fresh manual IPC request", async () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
 
-    const accountUsage = {
-      adapter_kind: "newapi" as const,
-      status: "available" as const,
-      freshness: "fresh" as const,
-      plan_name: null,
-      balance: 1,
-      plan_remaining: null,
-      used: 2,
-      total: 3,
-      unit: "USD",
-      unit_note: "NewAPI quota uses the default 500000 quota-per-USD divisor.",
-      daily_used: null,
-      daily_total: null,
-      weekly_used: null,
-      weekly_total: null,
-      monthly_used: null,
-      monthly_total: null,
-      expires_at: null,
-      last_fetched_at: 1_700_000_000,
-      message: null,
-    };
+    const accountUsage = makeAccountUsage(1);
     vi.mocked(providerAccountUsageFetch).mockResolvedValue(accountUsage);
 
     const client = createTestQueryClient();
@@ -339,14 +357,205 @@ describe("query/providers", () => {
     expect(client.getQueryData(providerAccountUsageKeys.detail(12))).toEqual(accountUsage);
     expect(readProviderAccountUsageCache(client, 12)).toEqual(accountUsage);
 
+    const sharedOptions = providerAccountUsageQueryOptions(12);
+    const query = client.getQueryCache().find({ queryKey: sharedOptions.queryKey, exact: true });
+    expect(query?.options.queryFn).toBe(sharedOptions.queryFn);
+    expect(providerAccountUsageQueryOptions(12).queryFn).toBe(sharedOptions.queryFn);
+
     const refreshedAccountUsage = { ...accountUsage, balance: 4 };
     vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce(refreshedAccountUsage);
+    const cancelSpy = vi.spyOn(client, "cancelQueries");
+    const fetchSpy = vi.spyOn(client, "fetchQuery");
     await expect(refreshProviderAccountUsage(client, 12)).resolves.toEqual(refreshedAccountUsage);
 
     expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+    expect(cancelSpy).toHaveBeenCalledWith({ queryKey: sharedOptions.queryKey, exact: true });
+    expect(fetchSpy).toHaveBeenCalledWith(
+      expect.objectContaining({
+        queryKey: sharedOptions.queryKey,
+        queryFn: sharedOptions.queryFn,
+        staleTime: 0,
+        retry: false,
+      })
+    );
     expect(client.getQueryData(providerAccountUsageKeys.detail(12))).toEqual(refreshedAccountUsage);
     expect(readProviderAccountUsageCache(client, 12)).toEqual(refreshedAccountUsage);
     expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
+  });
+
+  it("keeps a manual result authoritative when an uncancellable initial request finishes late", async () => {
+    setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
+
+    const initialOld = deferred<ProviderAccountUsageResult | null>();
+    const manualNew = deferred<ProviderAccountUsageResult | null>();
+    vi.mocked(providerAccountUsageFetch)
+      .mockImplementationOnce(() => initialOld.promise)
+      .mockImplementationOnce(() => manualNew.promise);
+
+    const client = createTestQueryClient();
+    const provider = makeProvider({
+      id: 16,
+      cli_key: "codex",
+      name: "Initial race",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi" },
+          updatedAt: 1,
+        },
+      ],
+    });
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
+
+    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1));
+    let manualPromise!: Promise<ProviderAccountUsageResult | null>;
+    act(() => {
+      manualPromise = refreshProviderAccountUsage(client, provider.id);
+    });
+    await waitFor(() => {
+      expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+      expect(result.current.isFetching).toBe(true);
+    });
+
+    const newUsage = makeAccountUsage(9);
+    await act(async () => {
+      manualNew.resolve(newUsage);
+      await manualPromise;
+    });
+    await waitFor(() => {
+      expect(result.current.data).toEqual(newUsage);
+      expect(result.current.isFetching).toBe(false);
+    });
+
+    await act(async () => {
+      initialOld.resolve(makeAccountUsage(0));
+      await initialOld.promise;
+      await Promise.resolve();
+    });
+    expect(result.current.data).toEqual(newUsage);
+    expect(client.getQueryData(providerAccountUsageKeys.detail(provider.id))).toEqual(newUsage);
+  });
+
+  it("keeps a manual result authoritative when an uncancellable timed refetch finishes late", async () => {
+    setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
+
+    const initialUsage = makeAccountUsage(1);
+    const timedOld = deferred<ProviderAccountUsageResult | null>();
+    const manualNew = deferred<ProviderAccountUsageResult | null>();
+    vi.mocked(providerAccountUsageFetch)
+      .mockResolvedValueOnce(initialUsage)
+      .mockImplementationOnce(() => timedOld.promise)
+      .mockImplementationOnce(() => manualNew.promise);
+
+    const client = createTestQueryClient();
+    const provider = makeProvider({
+      id: 17,
+      cli_key: "codex",
+      name: "Timed race",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: {
+            adapterKind: "newapi",
+            timedRefreshEnabled: true,
+            refreshIntervalSeconds: 60,
+          },
+          updatedAt: 1,
+        },
+      ],
+    });
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
+    await waitFor(() => expect(result.current.data).toEqual(initialUsage));
+
+    act(() => {
+      void result.current.refetch();
+    });
+    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2));
+
+    let manualPromise!: Promise<ProviderAccountUsageResult | null>;
+    act(() => {
+      manualPromise = refreshProviderAccountUsage(client, provider.id);
+    });
+    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(3));
+
+    const newUsage = makeAccountUsage(11);
+    await act(async () => {
+      manualNew.resolve(newUsage);
+      await manualPromise;
+    });
+    await waitFor(() => expect(result.current.data).toEqual(newUsage));
+    await act(async () => {
+      timedOld.resolve(makeAccountUsage(0));
+      await timedOld.promise;
+      await Promise.resolve();
+    });
+
+    expect(result.current.data).toEqual(newUsage);
+    expect(client.getQueryData(providerAccountUsageKeys.detail(provider.id))).toEqual(newUsage);
+  });
+
+  it("serializes repeated manual entry points by canceling the older same-key fetch", async () => {
+    setTauriRuntime();
+    vi.mocked(providerAccountUsageFetch).mockClear();
+
+    const first = deferred<ProviderAccountUsageResult | null>();
+    const second = deferred<ProviderAccountUsageResult | null>();
+    vi.mocked(providerAccountUsageFetch)
+      .mockImplementationOnce(() => first.promise)
+      .mockImplementationOnce(() => second.promise);
+
+    const client = createTestQueryClient();
+    const firstRefresh = refreshProviderAccountUsage(client, 18);
+    const firstRefreshCanceled = expect(firstRefresh).rejects.toThrow("CancelledError");
+    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1));
+    const secondRefresh = refreshProviderAccountUsage(client, 18);
+    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2));
+
+    const secondUsage = makeAccountUsage(12);
+    second.resolve(secondUsage);
+    await expect(secondRefresh).resolves.toEqual(secondUsage);
+    first.resolve(makeAccountUsage(2));
+    await first.promise;
+    await firstRefreshCanceled;
+
+    expect(client.getQueryData(providerAccountUsageKeys.detail(18))).toEqual(secondUsage);
+  });
+
+  it("keeps manual account refresh isolated from availability, mutations, and other caches", async () => {
+    setTauriRuntime();
+    vi.clearAllMocks();
+
+    const client = createTestQueryClient();
+    const otherUsage = makeAccountUsage(23);
+    const providerList = [makeProvider({ id: 19, cli_key: "codex", name: "Isolated" })];
+    const gatewayState = { untouched: true };
+    client.setQueryData(providerAccountUsageKeys.detail(20), otherUsage);
+    client.setQueryData(providersKeys.list("codex"), providerList);
+    client.setQueryData(gatewayKeys.circuits(), gatewayState);
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce(makeAccountUsage(7));
+
+    await refreshProviderAccountUsage(client, 19);
+
+    expect(providerTestAvailability).not.toHaveBeenCalled();
+    expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
+    expect(providerUpsert).not.toHaveBeenCalled();
+    expect(providerSetEnabled).not.toHaveBeenCalled();
+    expect(providerDelete).not.toHaveBeenCalled();
+    expect(providerDuplicate).not.toHaveBeenCalled();
+    expect(providersReorder).not.toHaveBeenCalled();
+    expect(providerOAuthFetchLimits).not.toHaveBeenCalled();
+    expect(providerOAuthResetCodexQuota).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalled();
+    expect(client.getQueryData(providerAccountUsageKeys.detail(20))).toEqual(otherUsage);
+    expect(client.getQueryData(providersKeys.list("codex"))).toEqual(providerList);
+    expect(client.getQueryData(gatewayKeys.circuits())).toEqual(gatewayState);
   });
 
   it("auto-fetches initial account usage even when timed refresh is disabled", async () => {
