@@ -112,6 +112,8 @@ that `null`; it is not a missing-result error.
 - ZIP extraction enforces its single-file and aggregate byte budgets against
   bytes actually read and written, not only entry-declared uncompressed sizes.
   Archive paths reject non-portable Windows alternate-data-stream segments.
+  GitHub codeload's explicit single top-level directory entry is valid; a
+  top-level file or a second top-level directory remains invalid.
 - Official commit resolution prefers the user's local Git executable and an
   AIO-owned bare cache under the gateway data root. Fetch only the fixed
   `https://github.com/nonononull/codex-retry-gateway.git` main ref, then prove
@@ -147,6 +149,8 @@ that `null`; it is not a missing-result error.
 | Local Git executable is unavailable | Use bounded GitHub REST fallback and preserve its rate-limit classification |
 | Local Git fetch times out or fails | Keep source/route state unchanged and show Git network/proxy guidance; do not fall back silently |
 | Git cache contains graph/config overrides | Reject as `SOURCE_GIT_CACHE_INVALID`; never use its ancestry result |
+| Codeload ZIP begins with its explicit root directory entry | Accept it and extract only descendants of that one root |
+| ZIP contains a top-level file or multiple roots | Reject as `SOURCE_ARCHIVE_INVALID` before writing extracted content |
 
 ### 5. Good / Base / Bad Cases
 
@@ -197,6 +201,8 @@ that `null`; it is not a missing-result error.
 - Git source tests construct a temporary commit graph and assert an official
   main ancestor succeeds while a side-branch commit fails. REST mock tests stay
   independent and cover fallback status/rate-limit classification.
+- Archive tests include an explicit root-directory entry matching codeload,
+  plus negative top-level-file and multiple-root cases.
 - Process tests require matching health/status PIDs and prove exited children
   are reaped. Run generated bindings, full Rust, precommit, prepush, build, and
   installer-content gates before release.

@@ -354,6 +354,8 @@ Reuse or factor the existing GitHub archive and plugin-package safeguards:
 
 - bounded response, timeout, redirect count, archive entries, per-file size,
   expanded total size, and compression ratio;
+- accept GitHub codeload's explicit single root-directory entry while rejecting
+  top-level files or archives with more than one root directory;
 - reject absolute paths, traversal, symlink/reparse entries, duplicate
   normalized paths, and multiple unexpected roots;
 - require expected gateway/start-script layout and run bounded Node syntax

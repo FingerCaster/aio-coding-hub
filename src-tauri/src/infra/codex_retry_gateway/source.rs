@@ -616,12 +616,6 @@ fn extract_source_zip(zip_bytes: &[u8], staging_dir: &Path) -> AppResult<PathBuf
             }
         }
         let normalized = normalize_zip_entry(file.name())?;
-        if normalized.components().count() < 2 {
-            return Err(AppError::new(
-                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID",
-                "source archive must contain a single top-level directory",
-            ));
-        }
         let mut components = normalized.components();
         let current_root = components
             .next()
@@ -647,6 +641,12 @@ fn extract_source_zip(zip_bytes: &[u8], staging_dir: &Path) -> AppResult<PathBuf
         }
         let relative = components.as_path();
         if relative.as_os_str().is_empty() {
+            if !file.is_dir() {
+                return Err(AppError::new(
+                    "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID",
+                    "source archive must contain files inside a single top-level directory",
+                ));
+            }
             continue;
         }
         if !seen_paths.insert(archive_duplicate_key(relative)) {
@@ -1240,6 +1240,57 @@ mod tests {
             error.code(),
             "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_COMPRESSION_RATIO"
         );
+    }
+
+    #[test]
+    fn source_archive_accepts_an_explicit_single_root_directory_entry() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::FileOptions::<()>::default();
+            writer.add_directory("root/", options).unwrap();
+            writer.start_file("root/gateway.mjs", options).unwrap();
+            writer.write_all(b"gateway").unwrap();
+            writer.finish().unwrap();
+        }
+        let staging = tempdir().unwrap();
+        let root = extract_source_zip(cursor.get_ref(), staging.path()).unwrap();
+        assert_eq!(root, staging.path().join("root"));
+        assert_eq!(std::fs::read(root.join("gateway.mjs")).unwrap(), b"gateway");
+    }
+
+    #[test]
+    fn source_archive_rejects_a_top_level_file() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::FileOptions::<()>::default();
+            writer.start_file("gateway.mjs", options).unwrap();
+            writer.write_all(b"gateway").unwrap();
+            writer.finish().unwrap();
+        }
+        let staging = tempdir().unwrap();
+        let error = extract_source_zip(cursor.get_ref(), staging.path()).unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID");
+        assert!(error.to_string().contains("single top-level directory"));
+    }
+
+    #[test]
+    fn source_archive_rejects_multiple_root_directories() {
+        let mut cursor = Cursor::new(Vec::new());
+        {
+            let mut writer = zip::ZipWriter::new(&mut cursor);
+            let options = zip::write::FileOptions::<()>::default();
+            writer.start_file("root-a/gateway.mjs", options).unwrap();
+            writer.write_all(b"a").unwrap();
+            writer.start_file("root-b/gateway.mjs", options).unwrap();
+            writer.write_all(b"b").unwrap();
+            writer.finish().unwrap();
+        }
+        let staging = tempdir().unwrap();
+        let error = extract_source_zip(cursor.get_ref(), staging.path()).unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID");
+        assert!(error.to_string().contains("multiple top-level directories"));
     }
 
     #[test]
