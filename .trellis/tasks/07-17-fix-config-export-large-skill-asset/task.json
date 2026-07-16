@@ -3,7 +3,7 @@
   "name": "fix-config-export-large-skill-asset",
   "title": "修复配置导出被大体积 Skill 资源阻断",
   "description": "在现有 8 MiB 单 Skill 总预算内支持大于 1 MiB 的必要资源完整导出/导入，并保留 64 MiB bundle 与全部路径安全边界。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

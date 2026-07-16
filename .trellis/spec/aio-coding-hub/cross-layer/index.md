@@ -13,6 +13,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Provider account-usage query contract](./provider-account-usage-query-contract.md):
   one TanStack Query owner for automatic, timed, and forced manual refreshes,
   plus the bounded, same-origin NewAPI model-token billing protocol.
+- [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md):
+  bounded installed/local Skill export, Base64 serialization, import
+  validation, and validation-before-write filesystem restoration.
 
 ## Pre-Development Checklist
 
@@ -41,6 +44,17 @@ When changing provider account-usage fetching:
    no upstream body/message, credential, PII, live host, token name, or actual
    account amount.
 
+When changing config migration Skill payload handling:
+
+1. Read [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md).
+2. Trace installed and local Skill files through bounded export, Base64,
+   bundle reading, decoded validation, metadata validation, and filesystem
+   activation.
+3. Confirm the single-file raw cap, derived Base64 cap, and decoded total are
+   symmetric across export and import.
+4. Confirm path, duplicate, file-count, symlink, special-file, metadata,
+   `SKILL.md`, and import-file limits remain enforced before partial output.
+
 ## Quality Check
 
 - Regenerate and verify `src/generated/bindings.ts` from Rust source.
@@ -60,3 +74,7 @@ When changing provider account-usage fetching:
 - Audit account-usage diffs for credential, PII, host, upstream-message/body,
   token-name, and actual-account-value leakage, and verify routing, circuit,
   availability, order, and enablement remain untouched.
+- When changing config migration Skill payloads, verify export/import boundary
+  symmetry, failure before target-directory creation or file writes, v1/v2 and
+  installed/local compatibility, and file-count, total-size, Base64, path,
+  symlink, cycle, special-file, metadata, and import-bundle safety negatives.

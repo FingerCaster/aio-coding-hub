@@ -102,6 +102,25 @@ fn write_skill_md(dir: &Path, name: &str, description: &str) {
     .expect("write skill md");
 }
 
+fn synthetic_bytes(len: usize) -> Vec<u8> {
+    (0..len)
+        .map(|index| ((index * 31 + 17) % 251) as u8)
+        .collect()
+}
+
+fn synthetic_png_like_bytes(len: usize) -> Vec<u8> {
+    assert!(len >= 8);
+    let mut bytes = synthetic_bytes(len);
+    bytes[..8].copy_from_slice(b"\x89PNG\r\n\x1a\n");
+    bytes
+}
+
+fn assert_synthetic_bytes(bytes: &[u8]) {
+    for (index, byte) in bytes.iter().enumerate() {
+        assert_eq!(*byte, ((index * 31 + 17) % 251) as u8, "byte {index}");
+    }
+}
+
 fn make_test_bundle(schema_version: u32) -> ConfigBundle {
     ConfigBundle {
         schema_version,
@@ -655,21 +674,138 @@ fn export_skill_dir_files_rejects_symlink_escape() {
 }
 
 #[test]
-fn export_skill_dir_files_rejects_oversized_file() {
+fn config_skill_file_budget_matches_existing_safety_budgets() {
+    assert_eq!(CONFIG_SKILL_FILE_MAX_BYTES, CONFIG_SKILL_TOTAL_MAX_BYTES);
+    assert_eq!(CONFIG_SKILL_TOTAL_MAX_BYTES, 8 * 1024 * 1024);
+    assert_eq!(CONFIG_SKILL_FILE_COUNT_MAX, 256);
+    assert_eq!(CONFIG_IMPORT_FILE_MAX_BYTES, 64 * 1024 * 1024);
+    assert_eq!(CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES, 64 * 1024);
+    assert_eq!(CONFIG_SKILL_MD_MAX_BYTES, 256 * 1024);
+}
+
+#[test]
+fn export_skill_dir_files_accepts_file_above_legacy_one_mib_limit() {
     let temp = tempfile::tempdir().expect("tempdir");
     let skill_dir = temp.path().join("local-review");
     write_skill_md(&skill_dir, "Local Review", "Local review skill");
+    let legacy_limit = 1024 * 1024;
     std::fs::write(
         skill_dir.join("large.bin"),
-        vec![b'x'; CONFIG_SKILL_FILE_MAX_BYTES + 1],
+        synthetic_bytes(legacy_limit + 1),
     )
     .expect("write large file");
 
-    let Err(err) = export_skill_dir_files(&skill_dir, true) else {
-        panic!("oversized skill file should fail");
-    };
+    let files = export_skill_dir_files(&skill_dir, true).expect("export skill files");
+    let file = files
+        .iter()
+        .find(|file| file.relative_path == "large.bin")
+        .expect("large file export");
 
-    assert!(err.to_string().contains("too large"));
+    assert_eq!(
+        BASE64_STANDARD
+            .decode(file.content_base64.as_bytes())
+            .expect("decode large file"),
+        synthetic_bytes(legacy_limit + 1)
+    );
+}
+
+#[test]
+fn nested_png_like_asset_round_trips_byte_for_byte() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("synthetic-skill");
+    let assets_dir = skill_dir.join("assets").join("nested");
+    write_skill_md(&skill_dir, "Synthetic Skill", "Synthetic fixture");
+    std::fs::create_dir_all(&assets_dir).expect("create assets dir");
+    let expected = synthetic_png_like_bytes(2 * 1024 * 1024 + 17);
+    std::fs::write(assets_dir.join("fixture.png"), &expected).expect("write synthetic asset");
+
+    let files = export_skill_dir_files(&skill_dir, true).expect("export nested asset");
+    let target = temp.path().join("imported-skill");
+    write_skill_files_to_dir(&target, &files, None).expect("import nested asset");
+
+    let actual = std::fs::read(target.join("assets/nested/fixture.png"))
+        .expect("read imported synthetic asset");
+    assert_eq!(actual, expected);
+}
+
+#[test]
+fn exact_eight_mib_single_file_round_trips() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source).expect("create source dir");
+    std::fs::write(
+        source.join("payload.bin"),
+        synthetic_bytes(CONFIG_SKILL_FILE_MAX_BYTES),
+    )
+    .expect("write boundary payload");
+
+    let files = export_skill_dir_files(&source, true).expect("export boundary payload");
+    let target = temp.path().join("target");
+    write_skill_files_to_dir(&target, &files, None).expect("import boundary payload");
+    drop(files);
+
+    let actual = std::fs::read(target.join("payload.bin")).expect("read boundary payload");
+    assert_eq!(actual.len(), CONFIG_SKILL_FILE_MAX_BYTES);
+    assert_synthetic_bytes(&actual);
+}
+
+#[test]
+fn eight_mib_plus_one_is_rejected_on_export_and_import_before_writing() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source).expect("create source dir");
+    std::fs::write(
+        source.join("payload.bin"),
+        synthetic_bytes(CONFIG_SKILL_FILE_MAX_BYTES + 1),
+    )
+    .expect("write oversized payload");
+
+    let Err(export_err) = export_skill_dir_files(&source, true) else {
+        panic!("oversized payload export should fail");
+    };
+    assert!(export_err.to_string().contains("too large"));
+
+    let target = temp.path().join("target");
+    let files = vec![SkillFileExport {
+        relative_path: "payload.bin".to_string(),
+        content_base64: BASE64_STANDARD.encode(synthetic_bytes(CONFIG_SKILL_FILE_MAX_BYTES + 1)),
+    }];
+    let import_err = write_skill_files_to_dir(&target, &files, None)
+        .expect_err("oversized payload import should fail");
+    assert!(import_err.to_string().contains("too large"));
+    assert!(!target.exists());
+}
+
+#[test]
+fn aggregate_payload_above_eight_mib_is_rejected_on_export_and_import() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source).expect("create source dir");
+    let first_len = CONFIG_SKILL_TOTAL_MAX_BYTES / 2;
+    let second_len = first_len + 1;
+    std::fs::write(source.join("a.bin"), synthetic_bytes(first_len)).expect("write first file");
+    std::fs::write(source.join("b.bin"), synthetic_bytes(second_len)).expect("write second file");
+
+    let Err(export_err) = export_skill_dir_files(&source, true) else {
+        panic!("aggregate export payload should fail");
+    };
+    assert!(export_err.to_string().contains("payload too large"));
+
+    let files = vec![
+        SkillFileExport {
+            relative_path: "a.bin".to_string(),
+            content_base64: BASE64_STANDARD.encode(synthetic_bytes(first_len)),
+        },
+        SkillFileExport {
+            relative_path: "b.bin".to_string(),
+            content_base64: BASE64_STANDARD.encode(synthetic_bytes(second_len)),
+        },
+    ];
+    let target = temp.path().join("target");
+    let import_err = write_skill_files_to_dir(&target, &files, None)
+        .expect_err("aggregate import payload should fail");
+    assert!(import_err.to_string().contains("payload too large"));
+    assert!(!target.exists());
 }
 
 #[test]
@@ -691,12 +827,49 @@ fn write_skill_files_to_dir_rejects_too_many_files_before_creating_dir() {
 }
 
 #[test]
-fn write_skill_files_to_dir_rejects_oversized_base64_before_creating_dir() {
+fn export_skill_dir_files_rejects_too_many_files() {
     let temp = tempfile::tempdir().expect("tempdir");
-    let target = temp.path().join("local-review");
+    let source = temp.path().join("synthetic-source");
+    std::fs::create_dir_all(&source).expect("create source dir");
+    for index in 0..=CONFIG_SKILL_FILE_COUNT_MAX {
+        std::fs::write(source.join(format!("{index:03}.txt")), b"x").expect("write synthetic file");
+    }
+
+    let Err(err) = export_skill_dir_files(&source, true) else {
+        panic!("too many exported skill files should fail");
+    };
+
+    assert!(err.to_string().contains("too many skill files"));
+}
+
+#[test]
+fn write_skill_files_to_dir_rejects_base64_above_derived_limit_before_creating_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("synthetic-target");
+    let derived_base64_limit = CONFIG_SKILL_FILE_MAX_BYTES.div_ceil(3) * 4;
     let files = vec![SkillFileExport {
         relative_path: "large.bin".to_string(),
-        content_base64: BASE64_STANDARD.encode(vec![b'x'; CONFIG_SKILL_FILE_MAX_BYTES + 1]),
+        content_base64: "A".repeat(derived_base64_limit + 1),
+    }];
+
+    let err =
+        write_skill_files_to_dir(&target, &files, None).expect_err("oversized base64 should fail");
+
+    assert!(err.to_string().contains("too large"));
+    assert!(!target.exists());
+}
+
+#[test]
+fn write_skill_files_to_dir_rejects_decoded_file_above_limit_before_creating_dir() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("synthetic-target");
+    let derived_base64_limit = CONFIG_SKILL_FILE_MAX_BYTES.div_ceil(3) * 4;
+    let content_base64 = BASE64_STANDARD.encode(synthetic_bytes(CONFIG_SKILL_FILE_MAX_BYTES + 1));
+    assert_eq!(content_base64.len(), derived_base64_limit);
+    assert!(content_base64.len() <= derived_base64_limit);
+    let files = vec![SkillFileExport {
+        relative_path: "large.bin".to_string(),
+        content_base64,
     }];
 
     let err = write_skill_files_to_dir(&target, &files, None)
@@ -704,4 +877,95 @@ fn write_skill_files_to_dir_rejects_oversized_base64_before_creating_dir() {
 
     assert!(err.to_string().contains("too large"));
     assert!(!target.exists());
+}
+
+#[test]
+fn write_skill_files_to_dir_rejects_duplicate_traversal_and_long_paths_before_creating_dir() {
+    let duplicate = vec![
+        SkillFileExport {
+            relative_path: "same.txt".to_string(),
+            content_base64: BASE64_STANDARD.encode(b"first"),
+        },
+        SkillFileExport {
+            relative_path: "same.txt".to_string(),
+            content_base64: BASE64_STANDARD.encode(b"second"),
+        },
+    ];
+    let invalid_cases = vec![
+        ("duplicate", duplicate),
+        (
+            "traversal",
+            vec![SkillFileExport {
+                relative_path: "../escape.txt".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"escape"),
+            }],
+        ),
+        (
+            "absolute",
+            vec![SkillFileExport {
+                relative_path: format!("{}absolute.txt", std::path::MAIN_SEPARATOR),
+                content_base64: BASE64_STANDARD.encode(b"absolute"),
+            }],
+        ),
+        (
+            "long",
+            vec![SkillFileExport {
+                relative_path: "x".repeat(CONFIG_SKILL_RELATIVE_PATH_MAX_CHARS + 1),
+                content_base64: BASE64_STANDARD.encode(b"long"),
+            }],
+        ),
+    ];
+
+    for (case, files) in invalid_cases {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join(case);
+        write_skill_files_to_dir(&target, &files, None)
+            .expect_err("invalid path should fail before writing");
+        assert!(!target.exists(), "target created for {case}");
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn export_skill_dir_files_rejects_non_utf8_path() {
+    use std::os::unix::ffi::OsStringExt;
+
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("synthetic-skill");
+    write_skill_md(&skill_dir, "Synthetic Skill", "Synthetic fixture");
+    std::fs::write(skill_dir.join(OsString::from_vec(vec![0xff])), b"invalid")
+        .expect("write non-utf8 file");
+
+    let err = export_skill_dir_files(&skill_dir, true).expect_err("non-utf8 path should fail");
+    assert!(err.to_string().contains("invalid utf-8 skill path"));
+}
+
+#[cfg(unix)]
+#[test]
+fn export_skill_dir_files_handles_symlink_directory_cycle() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("synthetic-skill");
+    let nested = skill_dir.join("nested");
+    write_skill_md(&skill_dir, "Synthetic Skill", "Synthetic fixture");
+    std::fs::create_dir_all(&nested).expect("create nested dir");
+    std::os::unix::fs::symlink(&skill_dir, nested.join("cycle")).expect("create cycle symlink");
+
+    let files = export_skill_dir_files(&skill_dir, true).expect("cycle should terminate");
+    assert_eq!(files.len(), 1);
+    assert_eq!(files[0].relative_path, "SKILL.md");
+}
+
+#[cfg(unix)]
+#[test]
+fn export_skill_dir_files_rejects_special_file() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("synthetic-skill");
+    write_skill_md(&skill_dir, "Synthetic Skill", "Synthetic fixture");
+    let _listener = std::os::unix::net::UnixListener::bind(skill_dir.join("special.sock"))
+        .expect("create unix socket");
+
+    let err = export_skill_dir_files(&skill_dir, true).expect_err("special file should fail");
+    assert!(err
+        .to_string()
+        .contains("SKILL_EXPORT_BLOCKED_SPECIAL_FILE"));
 }
