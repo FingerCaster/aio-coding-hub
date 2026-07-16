@@ -1,5 +1,4 @@
 import type { GatewayEventName } from "../../constants/gatewayEvents";
-import type { CodexRetryGatewayEventName } from "../../constants/codexRetryGatewayEvents";
 import { observePromiseLikeRejection, type MaybePromiseLike } from "../../utils/promiseLike";
 import { logToConsole } from "../consoleLog";
 import { listenDesktopEvent } from "../desktop/event";
@@ -10,7 +9,6 @@ export type GatewayEventSubscription = {
 };
 
 type Handler = (payload: unknown) => MaybePromiseLike<void>;
-type SubscribedGatewayEventName = GatewayEventName | CodexRetryGatewayEventName;
 
 type Entry = {
   handlers: Set<Handler>;
@@ -19,17 +17,13 @@ type Entry = {
   disposed: boolean;
 };
 
-const entries = new Map<SubscribedGatewayEventName, Entry>();
+const entries = new Map<GatewayEventName, Entry>();
 
-function logHandlerError(event: SubscribedGatewayEventName, error: unknown) {
+function logHandlerError(event: GatewayEventName, error: unknown) {
   logToConsole("warn", "网关事件处理失败", { event, error: String(error) }, "gateway:event_bus");
 }
 
-function dispatchHandlers(
-  event: SubscribedGatewayEventName,
-  handlers: Set<Handler>,
-  payload: unknown
-) {
+function dispatchHandlers(event: GatewayEventName, handlers: Set<Handler>, payload: unknown) {
   for (const handler of [...handlers]) {
     try {
       const result = handler(payload);
@@ -40,7 +34,7 @@ function dispatchHandlers(
   }
 }
 
-function getOrCreateEntry(event: SubscribedGatewayEventName): Entry {
+function getOrCreateEntry(event: GatewayEventName): Entry {
   const existing = entries.get(event);
   if (existing && !existing.disposed) return existing;
 
@@ -54,14 +48,14 @@ function getOrCreateEntry(event: SubscribedGatewayEventName): Entry {
   return created;
 }
 
-function disposeEntry(event: SubscribedGatewayEventName, entry: Entry) {
+function disposeEntry(event: GatewayEventName, entry: Entry) {
   entry.disposed = true;
   if (entry.unlisten) entry.unlisten();
   entry.unlisten = null;
   if (entries.get(event) === entry) entries.delete(event);
 }
 
-function ensureListening(event: SubscribedGatewayEventName, entry: Entry): Promise<void> {
+function ensureListening(event: GatewayEventName, entry: Entry): Promise<void> {
   if (entry.init) return entry.init;
 
   entry.init = listenDesktopEvent(event, (payload) => {
@@ -88,7 +82,7 @@ function ensureListening(event: SubscribedGatewayEventName, entry: Entry): Promi
 }
 
 export function subscribeGatewayEvent(
-  event: SubscribedGatewayEventName,
+  event: GatewayEventName,
   handler: (payload: unknown) => MaybePromiseLike<void>
 ): GatewayEventSubscription {
   const entry = getOrCreateEntry(event);

@@ -6,11 +6,16 @@ import {
 import type { CliKey } from "../providers/providers";
 import { invokeGeneratedIpc, mapGeneratedCommandResponse } from "../generatedIpc";
 import { narrowGeneratedStringUnion, type Override } from "../generatedTypeUtils";
-import type { CliProxyStatus } from "./cliProxyStatus";
-
-export { createCliProxyStatus, type CliProxyStatus } from "./cliProxyStatus";
 
 const CLI_KEY_VALUES = ["claude", "codex", "gemini"] as const satisfies readonly CliKey[];
+
+export type CliProxyStatus = Override<
+  GeneratedCliProxyStatus,
+  {
+    cli_key: CliKey;
+    current_gateway_origin?: string | null;
+  }
+>;
 
 export type CliProxyResult = Override<
   GeneratedCliProxyResult,

@@ -1,5 +1,0 @@
-{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Run Rust backend and gateway quality checks."}
-{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Ensure runtime fail-open behavior does not change provider retry or circuit contracts."}
-{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify command and generated binding consistency for runtime status and lifecycle."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit trust, filesystem, process, network bridge, event, and frontend boundaries."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"Check runtime implementation against the reviewed external contract and source evidence."}

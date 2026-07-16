@@ -25,8 +25,8 @@ import { normalizeCustomCodexHome, buildConfigTomlPath } from "../../../utils/co
 import { isWindowsRuntime } from "../../../utils/platform";
 import { cn } from "../../../utils/cn";
 import { confirmDesktopDialog } from "../../../services/desktop/confirm";
+import { openDesktopUrl } from "../../../services/desktop/opener";
 import { CliVersionBadge } from "../CliVersionBadge";
-import { CodexRetryGatewayManager } from "./CodexRetryGatewayManager";
 import { Button } from "../../../ui/Button";
 import { Card } from "../../../ui/Card";
 import { Input } from "../../../ui/Input";
@@ -52,6 +52,7 @@ import {
   FolderOpen,
   RefreshCw,
   Settings,
+  ShieldCheck,
   Terminal,
 } from "lucide-react";
 
@@ -68,6 +69,7 @@ const MODEL_REASONING_EFFORT_DESCRIPTION =
 const PLAN_MODE_REASONING_EFFORT_LABEL = "计划模式推理强度 (plan_mode_reasoning_effort)";
 const WEB_SEARCH_MODE_LABEL = "网络搜索模式 (web_search)";
 const PERSONALITY_LABEL = "输出风格 (personality)";
+const CODEX_RETRY_GATEWAY_REPOSITORY_URL = "https://github.com/nonononull/codex-retry-gateway";
 
 function parsePositiveInt(v: string | undefined): number | null {
   if (v == null) return null;
@@ -324,8 +326,6 @@ export type CliManagerCodexTabProps = {
   ) => Promise<boolean> | boolean;
   persistCodexOauthCompatibleProxyMode?: (enabled: boolean) => Promise<boolean> | boolean;
   pickCodexHomeDirectory?: (initialPath?: string) => Promise<string | null> | string | null;
-  onOpenGatewayDetailsRoute?: () => void;
-  showRetryGatewayManager?: boolean;
 };
 
 type PersistConfigLocationResult = "saved" | "validation_failed" | "persist_failed";
@@ -513,6 +513,35 @@ function CodexInfoGrid({
         </div>
       </div>
     </div>
+  );
+}
+
+function CodexRetryGatewayRecommendation() {
+  return (
+    <Card className="border-sky-200 bg-sky-50/70 dark:border-sky-900 dark:bg-sky-950/30">
+      <div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
+        <div className="flex min-w-0 items-center gap-3">
+          <div className="flex h-10 w-10 shrink-0 items-center justify-center rounded-md border border-sky-200 bg-white text-sky-700 dark:border-sky-800 dark:bg-sky-950 dark:text-sky-300">
+            <ShieldCheck className="h-5 w-5" aria-hidden="true" />
+          </div>
+          <div className="min-w-0">
+            <h3 className="text-sm font-semibold text-foreground">降智拦截网关推荐</h3>
+            <p className="mt-1 break-words text-xs text-muted-foreground">
+              nonononull/codex-retry-gateway
+            </p>
+          </div>
+        </div>
+        <Button
+          type="button"
+          variant="secondary"
+          className="shrink-0 gap-2 self-start sm:self-auto"
+          onClick={() => void openDesktopUrl(CODEX_RETRY_GATEWAY_REPOSITORY_URL)}
+        >
+          <ExternalLink className="h-4 w-4" aria-hidden="true" />
+          查看仓库
+        </Button>
+      </div>
+    </Card>
   );
 }
 
@@ -2053,8 +2082,6 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
     persistCodexConfig,
     syncCodexProvider,
     codexProviderSyncing = false,
-    onOpenGatewayDetailsRoute,
-    showRetryGatewayManager = false,
   } = props;
 
   return (
@@ -2085,9 +2112,7 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
         )}
       </Card>
 
-      {codexConfig && showRetryGatewayManager ? (
-        <CodexRetryGatewayManager onOpenDetailsRoute={onOpenGatewayDetailsRoute} />
-      ) : null}
+      <CodexRetryGatewayRecommendation />
 
       {codexConfig ? (
         <div className="space-y-4">

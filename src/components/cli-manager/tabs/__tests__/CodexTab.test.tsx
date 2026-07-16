@@ -3,6 +3,7 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cliManagerCodexConfigTomlValidate } from "../../../../services/cli/cliManager";
+import { openDesktopUrl } from "../../../../services/desktop/opener";
 import { CliManagerCodexTab } from "../CodexTab";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
 
@@ -25,10 +26,8 @@ vi.mock("../../../../ui/CodeEditor", () => ({
   ),
 }));
 
-vi.mock("../CodexRetryGatewayManager", () => ({
-  CodexRetryGatewayManager: () => (
-    <section data-testid="mock-codex-retry-gateway">retry gateway manager</section>
-  ),
+vi.mock("../../../../services/desktop/opener", () => ({
+  openDesktopUrl: vi.fn().mockResolvedValue(true),
 }));
 
 vi.mock("../../../../services/cli/cliManager", async () => {
@@ -179,6 +178,8 @@ function renderApprovalReviewerSettings({
 describe("components/cli-manager/tabs/CodexTab", () => {
   beforeEach(() => {
     vi.mocked(confirm).mockReset();
+    vi.mocked(openDesktopUrl).mockReset();
+    vi.mocked(openDesktopUrl).mockResolvedValue(true);
     vi.mocked(cliManagerCodexConfigTomlValidate).mockResolvedValue({
       ok: true,
       error: null,
@@ -407,11 +408,16 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(screen.queryByLabelText("降智拦截统计时间范围")).not.toBeInTheDocument();
   });
 
-  it("renders the retry gateway as an unframed sibling instead of nesting it in the Codex card", () => {
-    renderTab({ showRetryGatewayManager: true });
+  it("renders the retry gateway recommendation and opens the official repository", () => {
+    renderTab();
 
-    const gateway = screen.getByTestId("mock-codex-retry-gateway");
-    expect(gateway.closest(".rounded-2xl")).toBeNull();
+    expect(screen.getByText("降智拦截网关推荐")).toBeInTheDocument();
+    expect(screen.getByText("nonononull/codex-retry-gateway")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "查看仓库" }));
+    expect(openDesktopUrl).toHaveBeenCalledWith(
+      "https://github.com/nonononull/codex-retry-gateway"
+    );
   });
 
   it("renders unavailable state and keeps a loaded config editable when CLI is unavailable", () => {

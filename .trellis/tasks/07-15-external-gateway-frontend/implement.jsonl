@@ -1,6 +1,0 @@
-{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Frontend consumes generated Rust route/runtime contracts and must preserve cross-layer types."}
-{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Preserve Codex config, Provider Sync confirmation, unknown values, and explicit-action semantics."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace command, query, event, confirmation, route, iframe, and UI state boundaries."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing CLI manager, Provider Sync, dialog, query, and route patterns."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"External UI, status, restore interception, and management bridge contract."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Authoritative list of legacy frontend guard surfaces to remove and adjacent UI to retain."}

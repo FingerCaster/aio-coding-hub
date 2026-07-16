@@ -1,8 +1,3 @@
-{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Root Rust backend and gateway retry pre-development contract."}
-{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve ordinary provider retry, failover, discovery, and circuit semantics while removing the local guard."}
-{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Shared Rust, generated binding, frontend adapter, and UI contract checklist."}
-{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Preserve Codex config patch, raw TOML, generated binding, and Provider Sync behavior."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace route, runtime, command, event, generated binding, and UI boundaries end to end."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing download, process, config, provider-sync, and status helpers before adding abstractions."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"Reviewed external repository contract, trust model, update flow, and integration evidence."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Authoritative active-source inventory for local guard removal and retained adjacent behavior."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve generic retry/failover behavior while confirming local guard removal."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Preserve approvals_reviewer and the ordinary generated Codex config boundary."}
+{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Drive negative searches for both removed implementations."}

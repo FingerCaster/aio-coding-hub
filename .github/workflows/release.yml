@@ -289,10 +289,16 @@ jobs:
           TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
 
       - id: tauri
-        name: Build (Tauri; no upload)
+        name: Build & upload (Tauri)
         uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
+        env:
+          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         with:
+          releaseId: ${{ needs.release-please.outputs.release_id }}
+          tagName: ${{ needs.release-please.outputs.tag_name }}
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
+          # Avoid matrix race on the shared `latest.json` asset; we generate/upload it in a dedicated job.
+          includeUpdaterJson: false
       - name: Prepare stable updater assets (+ macOS zip)
         shell: bash
         run: |
@@ -400,69 +406,6 @@ jobs:
 
           echo "Wayland AppImage: $out"
           ls -lh "$out"
-
-      - name: Extract and scan Windows release bundles
-        if: startsWith(matrix.updater_platform, 'windows-')
-        shell: pwsh
-        run: |
-          $scanRoot = Join-Path $env:RUNNER_TEMP "aio-release-scan"
-          $msiRoot = Join-Path $scanRoot "msi"
-          $portableRoot = Join-Path $scanRoot "portable"
-          New-Item -ItemType Directory -Path $msiRoot,$portableRoot -Force | Out-Null
-
-          $msi = Get-ChildItem stable-assets -Filter "*.msi" | Select-Object -First 1
-          $portable = Get-ChildItem stable-assets -Filter "*-portable.zip" | Select-Object -First 1
-          if (-not $msi -or -not $portable) {
-            throw "Missing Windows MSI or portable ZIP before bundle inventory scan."
-          }
-          $msiExtract = Start-Process -FilePath msiexec.exe `
-            -ArgumentList @('/a', "`"$($msi.FullName)`"", '/qn', "TARGETDIR=`"$msiRoot`"") `
-            -Wait -PassThru
-          if ($msiExtract.ExitCode -ne 0) {
-            throw "MSI administrative extraction failed: $($msiExtract.ExitCode)"
-          }
-          Expand-Archive -LiteralPath $portable.FullName -DestinationPath $portableRoot -Force
-          node scripts/check-release-bundle-inventory.mjs --root $msiRoot --root $portableRoot
-
-      - name: Extract and scan macOS release bundles
-        if: startsWith(matrix.updater_platform, 'darwin-')
-        shell: bash
-        run: |
-          set -euo pipefail
-          scan_root="$(mktemp -d)"
-          tar_root="$scan_root/tar"
-          zip_root="$scan_root/zip"
-          mkdir -p "$tar_root" "$zip_root"
-          tarball="$(find stable-assets -maxdepth 1 -name '*.tar.gz' -type f | head -n 1)"
-          portable="$(find stable-assets -maxdepth 1 -name '*.zip' -type f | head -n 1)"
-          test -n "$tarball" && test -n "$portable"
-          tar -xzf "$tarball" -C "$tar_root"
-          ditto -x -k "$portable" "$zip_root"
-          node scripts/check-release-bundle-inventory.mjs --root "$tar_root" --root "$zip_root"
-
-      - name: Extract and scan Linux release bundles
-        if: startsWith(matrix.updater_platform, 'linux-')
-        shell: bash
-        run: |
-          set -euo pipefail
-          scan_root="$(mktemp -d)"
-          roots=()
-          index=0
-          while IFS= read -r appimage; do
-            app_root="$scan_root/appimage-$index"
-            mkdir -p "$app_root"
-            appimage_abs="$(realpath "$appimage")"
-            (cd "$app_root" && chmod +x "$appimage_abs" && "$appimage_abs" --appimage-extract >/dev/null)
-            roots+=(--root "$app_root/squashfs-root")
-            index=$((index + 1))
-          done < <(find stable-assets -maxdepth 1 -name '*.AppImage' -type f)
-          deb="$(find stable-assets -maxdepth 1 -name '*.deb' -type f | head -n 1)"
-          test -n "$deb" && test "$index" -gt 0
-          deb_root="$scan_root/deb"
-          mkdir -p "$deb_root"
-          dpkg-deb -x "$deb" "$deb_root"
-          roots+=(--root "$deb_root")
-          node scripts/check-release-bundle-inventory.mjs "${roots[@]}"
 
       - name: Upload stable assets (workflow artifact)
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2

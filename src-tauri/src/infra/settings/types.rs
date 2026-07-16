@@ -7,14 +7,6 @@ fn default_codex_provider_test_model() -> String {
     DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
 }
 
-fn default_codex_retry_gateway_selected_commit() -> String {
-    DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT.to_string()
-}
-
-fn default_codex_retry_gateway_port() -> u16 {
-    DEFAULT_CODEX_RETRY_GATEWAY_PORT
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayListenMode {
@@ -145,14 +137,6 @@ pub struct AppSettings {
     pub codex_oauth_compatible_proxy_mode: bool,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
-    #[serde(default)]
-    pub codex_retry_gateway_enabled: bool,
-    #[serde(default = "default_codex_retry_gateway_selected_commit")]
-    pub codex_retry_gateway_selected_commit: String,
-    #[serde(default = "default_codex_retry_gateway_port")]
-    pub codex_retry_gateway_preferred_port: u16,
-    #[serde(default)]
-    pub codex_retry_gateway_node_override: String,
     pub auto_start: bool,
     // Start with window hidden when auto-starting (silent startup).
     pub start_minimized: bool,
@@ -240,12 +224,6 @@ impl Default for AppSettings {
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
-            codex_retry_gateway_enabled: DEFAULT_CODEX_RETRY_GATEWAY_ENABLED,
-            codex_retry_gateway_selected_commit: DEFAULT_CODEX_RETRY_GATEWAY_SELECTED_COMMIT
-                .to_string(),
-            codex_retry_gateway_preferred_port: DEFAULT_CODEX_RETRY_GATEWAY_PORT,
-            codex_retry_gateway_node_override: DEFAULT_CODEX_RETRY_GATEWAY_NODE_OVERRIDE
-                .to_string(),
             auto_start: false,
             start_minimized: false,
             tray_enabled: true,

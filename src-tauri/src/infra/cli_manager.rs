@@ -2,7 +2,6 @@
 
 use crate::shared::fs::{read_optional_file_with_max_len, write_file_atomic_if_changed};
 use serde::Serialize;
-use std::collections::HashSet;
 #[cfg(not(windows))]
 use std::ffi::OsStr;
 use std::ffi::OsString;
@@ -475,14 +474,30 @@ fn version_probe_path(
         .map_err(|err| format!("failed to build PATH for version probe: {err}").into())
 }
 
-fn executable_search_dirs<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> crate::shared::error::AppResult<Vec<PathBuf>> {
+fn find_exe_in_path(names: &[String]) -> Option<PathBuf> {
+    let path = std::env::var_os("PATH")?;
+    let raw = path.to_string_lossy().to_string();
+    let sep = if cfg!(windows) { ';' } else { ':' };
+    for part in raw.split(sep) {
+        let dir = PathBuf::from(part);
+        if let Some(p) = find_exe_in_dir(&dir, names) {
+            return Some(p);
+        }
+    }
+    None
+}
+
+fn scan_executable(
+    app: &tauri::AppHandle,
+    cmd: &str,
+) -> crate::shared::error::AppResult<Option<PathBuf>> {
+    let names = exe_names_for(cmd);
+    if let Some(p) = find_exe_in_path(&names) {
+        return Ok(Some(p));
+    }
+
     let home = home_dir(app)?;
-    let mut candidates = std::env::var_os("PATH")
-        .map(|path| std::env::split_paths(&path).collect::<Vec<_>>())
-        .unwrap_or_default();
-    candidates.extend([
+    let mut candidates: Vec<PathBuf> = vec![
         home.join(".local").join("bin"),
         home.join(".npm-global").join("bin"),
         home.join(".pnpm-global").join("bin"),
@@ -491,7 +506,7 @@ fn executable_search_dirs<R: tauri::Runtime>(
         home.join(".bun").join("bin"),
         home.join("n").join("bin"),
         home.join(".cargo").join("bin"),
-    ]);
+    ];
 
     #[cfg(not(windows))]
     for dir in platform_extra_path_dirs() {
@@ -507,6 +522,12 @@ fn executable_search_dirs<R: tauri::Runtime>(
         }
     }
 
+    for dir in candidates {
+        if let Some(p) = find_exe_in_dir(&dir, &names) {
+            return Ok(Some(p));
+        }
+    }
+
     #[cfg(not(windows))]
     {
         // Best-effort: scan nvm bins (~/.nvm/versions/node/*/bin)
@@ -517,23 +538,16 @@ fn executable_search_dirs<R: tauri::Runtime>(
                     if idx > 30 {
                         break;
                     }
-                    candidates.push(entry.path().join("bin"));
+                    let p = entry.path().join("bin");
+                    if let Some(exe) = find_exe_in_dir(&p, &names) {
+                        return Ok(Some(exe));
+                    }
                 }
             }
         }
     }
 
-    Ok(candidates)
-}
-
-fn scan_executable<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    cmd: &str,
-) -> crate::shared::error::AppResult<Option<PathBuf>> {
-    let names = exe_names_for(cmd);
-    Ok(executable_search_dirs(app)?
-        .into_iter()
-        .find_map(|dir| find_exe_in_dir(&dir, &names)))
+    Ok(None)
 }
 
 fn shell_env_path() -> Option<PathBuf> {
@@ -591,7 +605,7 @@ fn run_in_login_shell(shell: &Path, script: &str) -> crate::shared::error::AppRe
     }
 }
 
-pub(crate) fn resolve_executable_via_login_shell(
+fn resolve_executable_via_login_shell(
     cmd: &str,
 ) -> crate::shared::error::AppResult<Option<PathBuf>> {
     let Some(shell) = shell_env_path() else {
@@ -614,28 +628,6 @@ pub(crate) fn resolve_executable_via_login_shell(
     }
 
     Ok(None)
-}
-
-pub(crate) fn resolve_executable_candidates<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    cmd: &str,
-) -> crate::shared::error::AppResult<Vec<PathBuf>> {
-    let names = exe_names_for(cmd);
-    let mut seen = HashSet::new();
-    let mut candidates = Vec::new();
-    if let Ok(Some(path)) = resolve_executable_via_login_shell(cmd) {
-        seen.insert(path.to_string_lossy().to_ascii_lowercase());
-        candidates.push(path);
-    }
-    for dir in executable_search_dirs(app)? {
-        let Some(path) = find_exe_in_dir(&dir, &names) else {
-            continue;
-        };
-        if seen.insert(path.to_string_lossy().to_ascii_lowercase()) {
-            candidates.push(path);
-        }
-    }
-    Ok(candidates)
 }
 
 fn run_version(exe: &Path) -> crate::shared::error::AppResult<String> {

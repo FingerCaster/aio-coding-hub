@@ -7,7 +7,6 @@ import { setTauriRuntime } from "../../test/utils/tauriRuntime";
 import { createTestQueryClient } from "../../test/utils/reactQuery";
 import { tauriInvoke } from "../../test/mocks/tauri";
 import { setCliProxyStatusAllState } from "../../test/msw/state";
-import { createCliProxyStatus } from "../../services/cli/cliProxy";
 import { useCliProxy } from "../useCliProxy";
 
 vi.mock("sonner", () => ({ toast: vi.fn() }));
@@ -30,9 +29,9 @@ describe("hooks/useCliProxy (msw integration)", () => {
   it("runs through invoke->fetch->msw handlers and toggles state via user-event", async () => {
     setTauriRuntime();
     setCliProxyStatusAllState([
-      createCliProxyStatus({ cli_key: "claude", enabled: false }),
-      createCliProxyStatus({ cli_key: "codex", enabled: false }),
-      createCliProxyStatus({ cli_key: "gemini", enabled: false }),
+      { cli_key: "claude", enabled: false, base_origin: null, applied_to_current_gateway: null },
+      { cli_key: "codex", enabled: false, base_origin: null, applied_to_current_gateway: null },
+      { cli_key: "gemini", enabled: false, base_origin: null, applied_to_current_gateway: null },
     ]);
 
     const client = createTestQueryClient();

@@ -501,10 +501,7 @@ function checkPackageScripts() {
     );
   }
 
-  if (
-    scripts["check:support-matrix"] !==
-    "node scripts/support-matrix.mjs check && node scripts/check-release-bundle-inventory.selftest.mjs"
-  ) {
+  if (scripts["check:support-matrix"] !== "node scripts/support-matrix.mjs check") {
     throw new Error("package.json must expose check:support-matrix.");
   }
 
@@ -604,46 +601,6 @@ function checkWorkflowContracts() {
     "node scripts/support-matrix.mjs prepare-stable-assets \\",
     "stable asset preparation delegation"
   );
-  assertWorkflowContains(
-    releaseWorkflow,
-    "name: Build (Tauri; no upload)",
-    "local-only Tauri release build"
-  );
-  assertWorkflowContains(
-    releaseWorkflow,
-    "node scripts/check-release-bundle-inventory.mjs",
-    "release bundle inventory gate"
-  );
-  const tauriBuildStart = releaseWorkflow.indexOf("name: Build (Tauri; no upload)");
-  const stableAssetPreparation = releaseWorkflow.indexOf(
-    "name: Prepare stable updater assets (+ macOS zip)",
-    tauriBuildStart
-  );
-  const tauriBuildStep = releaseWorkflow.slice(tauriBuildStart, stableAssetPreparation);
-  if (tauriBuildStep.includes("releaseId:") || tauriBuildStep.includes("tagName:")) {
-    throw new Error(
-      "Workflow contract drifted: Tauri build must not upload release assets before bundle inventory validation."
-    );
-  }
-  const lastInventoryGate = releaseWorkflow.lastIndexOf(
-    "node scripts/check-release-bundle-inventory.mjs"
-  );
-  const inventoryGateCount = releaseWorkflow.match(
-    /node scripts\/check-release-bundle-inventory\.mjs/g
-  )?.length;
-  const firstAssetUpload = releaseWorkflow.indexOf(
-    "name: Upload stable assets (workflow artifact)"
-  );
-  if (
-    inventoryGateCount !== 3 ||
-    lastInventoryGate === -1 ||
-    firstAssetUpload === -1 ||
-    lastInventoryGate > firstAssetUpload
-  ) {
-    throw new Error(
-      "Workflow contract drifted: every release bundle inventory gate must run before asset upload."
-    );
-  }
   assertWorkflowContains(
     releaseWorkflow,
     "node scripts/support-matrix.mjs generate-latest-json \\",

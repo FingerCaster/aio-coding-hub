@@ -1,7 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { AppErrorCodes } from "../appErrorCodes";
 import { appEventNames } from "../appEvents";
-import { CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME } from "../codexRetryGatewayEvents";
 import { DEFAULT_GATEWAY_PORT } from "../gateway";
 import { GATEWAY_EVENT_TEXT_LIMITS, gatewayEventNames } from "../gatewayEvents";
 import { GatewayErrorCodes } from "../gatewayErrorCodes";
@@ -26,7 +25,6 @@ import codexRequestClassifierSource from "../../../src-tauri/src/gateway/proxy/h
 import gatewayErrorCodeSource from "../../../src-tauri/src/gateway/proxy/error_code.rs?raw";
 import settingsDefaultsSource from "../../../src-tauri/src/infra/settings/defaults.rs?raw";
 import settingsPersistenceSource from "../../../src-tauri/src/infra/settings/persistence.rs?raw";
-import codexRetryGatewayContractsSource from "../../../src-tauri/src/infra/codex_retry_gateway/contracts.rs?raw";
 
 function extractRustStringConst(source: string, constName: string) {
   const match = source.match(new RegExp(`const\\s+${constName}:\\s*&str\\s*=\\s*"([^"]+)"`));
@@ -101,16 +99,6 @@ describe("cross-layer contracts", () => {
     expect(extractRustStringConst(gatewayEventsSource, "GATEWAY_CIRCUIT_EVENT_NAME")).toBe(
       gatewayEventNames.circuit
     );
-  });
-
-  it("keeps the Codex retry gateway status event distinct and aligned with Rust", () => {
-    expect(
-      extractRustStringConst(
-        codexRetryGatewayContractsSource,
-        "CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME"
-      )
-    ).toBe(CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME);
-    expect(CODEX_RETRY_GATEWAY_STATUS_EVENT_NAME).not.toBe(gatewayEventNames.status);
   });
 
   it("keeps gateway error codes aligned with Rust definitions", () => {

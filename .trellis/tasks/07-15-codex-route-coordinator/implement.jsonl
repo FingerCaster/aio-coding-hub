@@ -1,7 +1,0 @@
-{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Route state crosses Rust, generated bindings, frontend adapters, and UI."}
-{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Canonical Codex config, patch preservation, raw TOML, Provider Sync, and UI contract."}
-{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Root backend quality checklist for gateway routing changes."}
-{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve provider retry and circuit behavior while changing the upstream route chain."}
-{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace Unproxied, DirectAio, and Guarded transitions across all owners."}
-{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing CLI proxy, Provider Sync, backup, and config transaction helpers."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/research.md","reason":"External gateway route and management contracts that the coordinator must satisfy."}

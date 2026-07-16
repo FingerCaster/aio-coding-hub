@@ -444,29 +444,9 @@ async fn restore_previous_runtime(
     }
 
     let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
-    if let Err(err) =
-        crate::app::codex_retry_gateway_service::shutdown_for_aio_stop_unlocked(app).await
-    {
-        tracing::error!(
-            error = %err,
-            "settings update rollback kept the current gateway because the Codex route could not be made safe"
-        );
-        return current_gateway_status(app);
-    }
     crate::app::cleanup::stop_gateway_best_effort_unlocked(app).await;
     match start_gateway_with_settings_unlocked(app, db_state, previous_settings).await {
-        Ok(result) => {
-            if let Err(err) =
-                crate::app::codex_retry_gateway_service::reconcile_after_aio_start_unlocked(app)
-                    .await
-            {
-                tracing::warn!(
-                    error = %err,
-                    "settings update rollback restored AIO with the Codex retry gateway in fail-open mode"
-                );
-            }
-            result.status
-        }
+        Ok(result) => result.status,
         Err(err) => {
             tracing::error!(
                 error = %err,
@@ -807,15 +787,6 @@ pub(crate) async fn settings_set_impl(
                 codex_home_override,
                 codex_oauth_compatible_proxy_mode,
                 codex_provider_test_model,
-                codex_retry_gateway_enabled: previous.codex_retry_gateway_enabled,
-                codex_retry_gateway_selected_commit: previous
-                    .codex_retry_gateway_selected_commit
-                    .clone(),
-                codex_retry_gateway_preferred_port: previous
-                    .codex_retry_gateway_preferred_port,
-                codex_retry_gateway_node_override: previous
-                    .codex_retry_gateway_node_override
-                    .clone(),
                 auto_start: next_auto_start,
                 start_minimized,
                 tray_enabled,
@@ -883,26 +854,12 @@ pub(crate) async fn settings_set_impl(
     let mut committed_settings = candidate_settings.clone();
     if runtime_plan.gateway_rebind_required && previous_gateway_status.running {
         let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
-        crate::app::codex_retry_gateway_service::shutdown_for_aio_stop_unlocked(&app)
-            .await
-            .map_err(|err| format!("Codex 路由无法安全切出，监听地址未重绑：{err}"))?;
         crate::app::cleanup::stop_gateway_best_effort_unlocked(&app).await;
         match start_gateway_with_settings_unlocked(&app, db_state, &committed_settings).await {
             Ok(start_result) => {
                 committed_settings.preferred_port = start_result.effective_preferred_port;
                 gateway_status = start_result.status;
                 gateway_rebound = true;
-                if let Err(error) =
-                    crate::app::codex_retry_gateway_service::reconcile_after_aio_start_unlocked(
-                        &app,
-                    )
-                    .await
-                {
-                    tracing::warn!(
-                        error = %error,
-                        "AIO gateway rebound with Codex retry gateway in fail-open mode"
-                    );
-                }
             }
             Err(rebind_error) => {
                 tracing::error!(
@@ -910,22 +867,13 @@ pub(crate) async fn settings_set_impl(
                     "settings update failed during gateway rebind; restoring previous runtime"
                 );
                 let _ = sync_runtime_side_effects(&app, &previous_settings);
-                match start_gateway_with_settings_unlocked(&app, db_state, &previous_settings).await
+                if let Err(restore_error) =
+                    start_gateway_with_settings_unlocked(&app, db_state, &previous_settings).await
                 {
-                    Ok(_) => {
-                        if let Err(restore_error) = crate::app::codex_retry_gateway_service::reconcile_after_aio_start_unlocked(&app).await {
-                            tracing::warn!(
-                                error = %restore_error,
-                                "settings update rollback restored AIO with the Codex retry gateway in fail-open mode"
-                            );
-                        }
-                    }
-                    Err(restore_error) => {
-                        tracing::error!(
-                            error = %restore_error,
-                            "settings update rollback failed to restore previous gateway runtime"
-                        );
-                    }
+                    tracing::error!(
+                        error = %restore_error,
+                        "settings update rollback failed to restore previous gateway runtime"
+                    );
                 }
                 return Err(format!(
                     "监听地址未生效，新的运行态重绑失败：{rebind_error}"

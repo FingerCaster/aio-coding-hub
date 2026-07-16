@@ -1,6 +1,5 @@
 //! Codex-specific CLI proxy configuration helpers.
 
-use crate::infra::codex_retry_gateway::CodexRouteMode;
 use crate::shared::error::AppResult;
 use std::path::{Path, PathBuf};
 
@@ -12,7 +11,6 @@ use super::{
 };
 
 pub(super) const CODEX_PROVIDER_KEY: &str = "aio";
-const CODEX_REMOTE_COMPACTION_PROVIDER_KEY: &str = "OpenAI";
 
 pub(super) fn codex_config_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
@@ -83,18 +81,11 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
 ) -> AppResult<CliProxyResult> {
     let captured = capture_current_target_state(app, "codex")?;
     let previous_manifest = manifest.clone();
-    let route_state = super::codex_manifest_state_from_manifest(&manifest);
-    let effective_origin = match route_state.route_mode {
-        CodexRouteMode::Guarded => route_state.guarded_origin.as_deref().unwrap_or(base_origin),
-        _ => base_origin,
-    };
-    let previous_effective_origin = match route_state.route_mode {
-        CodexRouteMode::Guarded => route_state.guarded_origin.as_deref(),
-        CodexRouteMode::DirectAio => previous_manifest.base_origin.as_deref(),
-        CodexRouteMode::Unproxied => None,
-    };
-    let target_already_proxy_managed = is_proxy_config_applied(app, effective_origin)
-        || previous_effective_origin.is_some_and(|origin| is_proxy_config_applied(app, origin))
+    let target_already_proxy_managed = is_proxy_config_applied(app, base_origin)
+        || previous_manifest
+            .base_origin
+            .as_deref()
+            .is_some_and(|origin| is_proxy_config_applied(app, origin))
         || is_codex_proxy_target_state(app);
 
     let origin = Some(base_origin.to_string());
@@ -135,7 +126,7 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
         }
 
         if apply_live {
-            if let Err(err) = apply_proxy_config(app, "codex", effective_origin) {
+            if let Err(err) = apply_proxy_config(app, "codex", base_origin) {
                 let _ = write_manifest(app, "codex", &previous_manifest);
                 let _ = restore_file_snapshots(&target_snapshots);
                 return Ok(CliProxyResult::failure(
@@ -177,7 +168,7 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
     }
 
     if apply_live {
-        if let Err(err) = apply_proxy_config(app, "codex", effective_origin) {
+        if let Err(err) = apply_proxy_config(app, "codex", base_origin) {
             let _ = write_manifest(app, "codex", &previous_manifest);
             let _ = restore_file_snapshots(&backup_snapshots);
             let _ = restore_file_snapshots(&target_snapshots);
@@ -208,56 +199,38 @@ pub(super) fn merge_restore_codex_auth_json(
     target_path: &Path,
     backup_path: &Path,
 ) -> AppResult<()> {
-    let current_bytes = read_optional_cli_proxy_file(target_path)?;
-    let backup_bytes = read_cli_proxy_file(backup_path)?;
-    let bytes = merge_restore_codex_auth_json_bytes(current_bytes.as_deref(), &backup_bytes)?;
-    write_cli_proxy_file_atomic(target_path, &bytes)?;
-    Ok(())
-}
-
-/// Merge-restore Codex `config.toml`: revert the proxy-managed root keys
-/// (`model_provider`, `preferred_auth_method`), the managed `aio` / `OpenAI`
-/// provider sections, and `[windows] sandbox` while preserving user changes.
-pub(super) fn merge_restore_codex_config_toml(
-    target_path: &Path,
-    backup_path: &Path,
-) -> AppResult<()> {
-    let current_bytes = read_optional_cli_proxy_file(target_path)?;
-    let backup_bytes = read_cli_proxy_file(backup_path)?;
-    let bytes = merge_restore_codex_config_toml_bytes(current_bytes.as_deref(), &backup_bytes)?;
-    write_cli_proxy_file_atomic(target_path, &bytes)?;
-    Ok(())
-}
-
-pub(super) fn merge_restore_codex_auth_json_bytes(
-    current_bytes: Option<&[u8]>,
-    backup_bytes: &[u8],
-) -> AppResult<Vec<u8>> {
     const PROXY_INSERTED_KEYS: &[&str] = &["OPENAI_API_KEY", "auth_mode"];
     const PROXY_REMOVED_KEYS: &[&str] = &["tokens", "last_refresh"];
 
+    let current_bytes = read_optional_cli_proxy_file(target_path)?;
+    let backup_bytes = read_cli_proxy_file(backup_path)?;
+
     let mut current: serde_json::Value = match current_bytes {
-        Some(bytes) if !bytes.is_empty() => {
-            serde_json::from_slice(bytes).unwrap_or_else(|_| serde_json::json!({}))
+        Some(b) if !b.is_empty() => {
+            serde_json::from_slice(&b).unwrap_or_else(|_| serde_json::json!({}))
         }
         _ => serde_json::json!({}),
     };
 
     let backup: serde_json::Value =
-        serde_json::from_slice(backup_bytes).unwrap_or_else(|_| serde_json::json!({}));
+        serde_json::from_slice(&backup_bytes).unwrap_or_else(|_| serde_json::json!({}));
 
     if let Some(obj) = current.as_object_mut() {
         let backup_obj = backup.as_object();
+
+        // Revert inserted keys
         for key in PROXY_INSERTED_KEYS {
-            if let Some(original) = backup_obj.and_then(|map| map.get(*key)) {
-                obj.insert((*key).to_string(), original.clone());
+            if let Some(original) = backup_obj.and_then(|b| b.get(*key)) {
+                obj.insert(key.to_string(), original.clone());
             } else {
                 obj.remove(*key);
             }
         }
+
+        // Restore keys that the proxy removed
         for key in PROXY_REMOVED_KEYS {
-            if let Some(original) = backup_obj.and_then(|map| map.get(*key)) {
-                obj.insert((*key).to_string(), original.clone());
+            if let Some(original) = backup_obj.and_then(|b| b.get(*key)) {
+                obj.insert(key.to_string(), original.clone());
             }
         }
     }
@@ -265,17 +238,25 @@ pub(super) fn merge_restore_codex_auth_json_bytes(
     let mut bytes = serde_json::to_vec_pretty(&current)
         .map_err(|e| format!("failed to serialize auth.json: {e}"))?;
     bytes.push(b'\n');
-    Ok(bytes)
+    write_cli_proxy_file_atomic(target_path, &bytes)?;
+    Ok(())
 }
 
-pub(super) fn merge_restore_codex_config_toml_bytes(
-    current_bytes: Option<&[u8]>,
-    backup_bytes: &[u8],
-) -> AppResult<Vec<u8>> {
+/// Merge-restore Codex `config.toml`: revert the proxy-managed root keys
+/// (`model_provider`, `preferred_auth_method`) and the `[model_providers.aio]`
+/// section / `[windows] sandbox` while preserving user changes.
+pub(super) fn merge_restore_codex_config_toml(
+    target_path: &Path,
+    backup_path: &Path,
+) -> AppResult<()> {
+    let current_bytes = read_optional_cli_proxy_file(target_path)?;
+    let backup_bytes = read_cli_proxy_file(backup_path)?;
+
     let current_str = current_bytes
-        .map(|bytes| String::from_utf8_lossy(bytes).to_string())
+        .as_deref()
+        .map(|b| String::from_utf8_lossy(b).to_string())
         .unwrap_or_default();
-    let backup_str = String::from_utf8_lossy(backup_bytes).to_string();
+    let backup_str = String::from_utf8_lossy(&backup_bytes).to_string();
 
     let mut lines: Vec<String> = if current_str.is_empty() {
         Vec::new()
@@ -305,9 +286,13 @@ pub(super) fn merge_restore_codex_config_toml_bytes(
         backup_auth_method.as_deref(),
     );
 
-    // The live projection may rewrite either managed provider table. Restore
-    // both from the canonical backup so a routed base_url is never learned.
-    restore_managed_provider_sections(&mut lines, &backup_lines);
+    // --- Remove the proxy-injected `[model_providers.aio]` section ---
+    // If the backup had this section, we leave it; otherwise remove it.
+    let backup_had_aio =
+        !find_model_provider_base_table_indices(&backup_lines, CODEX_PROVIDER_KEY).is_empty();
+    if !backup_had_aio {
+        remove_model_provider_section(&mut lines, CODEX_PROVIDER_KEY);
+    }
 
     // --- Revert `[windows] sandbox` ---
     // If the backup did not have `[windows]` sandbox, remove the one the proxy added.
@@ -318,7 +303,8 @@ pub(super) fn merge_restore_codex_config_toml_bytes(
 
     let mut out = lines.join("\n");
     out.push('\n');
-    Ok(out.into_bytes())
+    write_cli_proxy_file_atomic(target_path, out.as_bytes())?;
+    Ok(())
 }
 
 // -- TOML helpers for merge-restore -----------------------------------------
@@ -386,44 +372,6 @@ pub(super) fn remove_model_provider_section(lines: &mut Vec<String>, provider_ke
     }
 }
 
-fn restore_managed_provider_sections(lines: &mut Vec<String>, backup_lines: &[String]) {
-    let provider_keys = [CODEX_PROVIDER_KEY, CODEX_REMOTE_COMPACTION_PROVIDER_KEY];
-    let insert_at = lines
-        .iter()
-        .position(|line| {
-            provider_keys
-                .iter()
-                .any(|key| is_model_provider_section_header_line(line.trim(), key))
-        })
-        .unwrap_or(lines.len());
-
-    for provider_key in provider_keys {
-        remove_model_provider_section(lines, provider_key);
-    }
-
-    let mut restored = Vec::new();
-    let mut index = 0;
-    while index < backup_lines.len() {
-        if provider_keys
-            .iter()
-            .any(|key| is_model_provider_section_header_line(backup_lines[index].trim(), key))
-        {
-            let end = find_next_table_header(backup_lines, index.saturating_add(1));
-            restored.extend_from_slice(&backup_lines[index..end]);
-            index = end;
-        } else {
-            index += 1;
-        }
-    }
-
-    if !restored.is_empty() {
-        lines.splice(
-            insert_at.min(lines.len())..insert_at.min(lines.len()),
-            restored,
-        );
-    }
-}
-
 /// Check if backup lines contain a `[windows]` section with `sandbox` key.
 pub(super) fn has_windows_sandbox(lines: &[String]) -> bool {
     let Some(start) = lines.iter().position(|l| l.trim() == "[windows]") else {
@@ -488,58 +436,6 @@ fn insert_model_provider_section(
     lines.splice(insert_at..insert_at, section);
 }
 
-fn replace_model_provider_header_provider(
-    line: &str,
-    from_key: &str,
-    to_key: &str,
-) -> Option<String> {
-    let trimmed = line.trim();
-    let indent_len = line.len().saturating_sub(line.trim_start().len());
-    let indent = &line[..indent_len];
-    let replacements = [
-        (
-            format!("[model_providers.{from_key}]"),
-            format!("[model_providers.{to_key}]"),
-        ),
-        (
-            format!("[model_providers.\"{from_key}\"]"),
-            format!("[model_providers.\"{to_key}\"]"),
-        ),
-        (
-            format!("[model_providers.'{from_key}']"),
-            format!("[model_providers.'{to_key}']"),
-        ),
-        (
-            format!("[model_providers.{from_key}."),
-            format!("[model_providers.{to_key}."),
-        ),
-        (
-            format!("[model_providers.\"{from_key}\"."),
-            format!("[model_providers.\"{to_key}\"."),
-        ),
-        (
-            format!("[model_providers.'{from_key}'."),
-            format!("[model_providers.'{to_key}'."),
-        ),
-    ];
-
-    for (prefix, replacement) in replacements {
-        if trimmed.starts_with(&prefix) {
-            let suffix = &trimmed[prefix.len()..];
-            return Some(format!("{indent}{replacement}{suffix}"));
-        }
-    }
-    None
-}
-
-fn rename_model_provider_headers(lines: &mut [String], from_key: &str, to_key: &str) {
-    for line in lines.iter_mut() {
-        if let Some(updated) = replace_model_provider_header_provider(line, from_key, to_key) {
-            *line = updated;
-        }
-    }
-}
-
 pub(super) fn is_model_provider_base_header_line(trimmed: &str, provider_key: &str) -> bool {
     trimmed == format!("[model_providers.{provider_key}]")
         || trimmed == format!("[model_providers.\"{provider_key}\"]")
@@ -563,23 +459,16 @@ pub(super) fn find_model_provider_nested_table_index(
     lines: &[String],
     provider_key: &str,
 ) -> Option<usize> {
-    lines
-        .iter()
-        .position(|line| is_model_provider_nested_header_line(line.trim(), provider_key))
-}
-
-fn is_model_provider_section_header_line(trimmed: &str, provider_key: &str) -> bool {
-    is_model_provider_base_header_line(trimmed, provider_key)
-        || is_model_provider_nested_header_line(trimmed, provider_key)
-}
-
-fn is_model_provider_nested_header_line(trimmed: &str, provider_key: &str) -> bool {
     let prefix_unquoted = format!("[model_providers.{provider_key}.");
     let prefix_double = format!("[model_providers.\"{provider_key}\".");
     let prefix_single = format!("[model_providers.'{provider_key}'.");
-    trimmed.starts_with(&prefix_unquoted)
-        || trimmed.starts_with(&prefix_double)
-        || trimmed.starts_with(&prefix_single)
+
+    lines.iter().position(|line| {
+        let trimmed = line.trim();
+        trimmed.starts_with(&prefix_unquoted)
+            || trimmed.starts_with(&prefix_double)
+            || trimmed.starts_with(&prefix_single)
+    })
 }
 
 fn patch_model_provider_base_table(
@@ -809,12 +698,6 @@ fn build_codex_config_toml_with_auth_strategy(
         .as_deref()
         .map(|b| String::from_utf8_lossy(b).to_string())
         .unwrap_or_default();
-    let provider_key = managed_provider_key_from_config_text(&input)?;
-    let old_provider_key = if provider_key == CODEX_PROVIDER_KEY {
-        CODEX_REMOTE_COMPACTION_PROVIDER_KEY
-    } else {
-        CODEX_PROVIDER_KEY
-    };
 
     let mut lines: Vec<String> = if input.is_empty() {
         Vec::new()
@@ -822,15 +705,13 @@ fn build_codex_config_toml_with_auth_strategy(
         input.lines().map(|l| l.to_string()).collect()
     };
 
-    rename_model_provider_headers(&mut lines, old_provider_key, provider_key);
-    upsert_root_model_provider(&mut lines, provider_key);
+    upsert_root_model_provider(&mut lines, CODEX_PROVIDER_KEY);
     if oauth_compatible {
         remove_root_preferred_auth_method_if_api_key(&mut lines);
     } else {
         upsert_root_preferred_auth_method(&mut lines, "apikey");
     }
-    upsert_model_provider_base_table(&mut lines, provider_key, base_url);
-    remove_model_provider_section(&mut lines, old_provider_key);
+    upsert_model_provider_base_table(&mut lines, CODEX_PROVIDER_KEY, base_url);
     if platform == CodexConfigPlatform::Windows {
         upsert_windows_sandbox(&mut lines);
     }
@@ -871,101 +752,8 @@ pub(super) fn build_codex_auth_json(current: Option<Vec<u8>>) -> AppResult<Vec<u
     Ok(out)
 }
 
-fn managed_provider_key_from_config_text(config_text: &str) -> AppResult<&'static str> {
-    if config_text.trim().is_empty() {
-        return Ok(CODEX_PROVIDER_KEY);
-    }
-    let remote_compaction_enabled = toml::from_str::<toml::Value>(config_text)
-        .ok()
-        .and_then(|value| {
-            value
-                .get("features")
-                .and_then(toml::Value::as_table)
-                .and_then(|table| table.get("remote_compaction"))
-                .and_then(toml::Value::as_bool)
-        })
-        .unwrap_or_else(|| {
-            let compact_true = [
-                "remote_compaction = true",
-                "remote_compaction=true",
-                "features.remote_compaction = true",
-                "features.remote_compaction=true",
-            ];
-            compact_true
-                .iter()
-                .any(|pattern| config_text.contains(pattern))
-        });
-    Ok(if remote_compaction_enabled {
-        CODEX_REMOTE_COMPACTION_PROVIDER_KEY
-    } else {
-        CODEX_PROVIDER_KEY
-    })
-}
-
-pub(super) fn project_codex_config_toml(
-    canonical: &[u8],
-    route_mode: CodexRouteMode,
-    aio_origin: Option<&str>,
-    external_origin: Option<&str>,
-    oauth_compatible: bool,
-    platform: CodexConfigPlatform,
-) -> AppResult<Vec<u8>> {
-    match route_mode {
-        CodexRouteMode::Unproxied => {
-            let mut out = canonical.to_vec();
-            if !out.ends_with(b"\n") {
-                out.push(b'\n');
-            }
-            Ok(out)
-        }
-        CodexRouteMode::DirectAio => {
-            let base_origin = aio_origin.ok_or_else(|| {
-                crate::shared::error::AppError::from(
-                    "CLI_PROXY_INVALID_ROUTE: direct_aio route requires aio_origin",
-                )
-            })?;
-            project_codex_proxy_config(canonical, base_origin, oauth_compatible, platform)
-        }
-        CodexRouteMode::Guarded => {
-            let aio_origin = aio_origin.ok_or_else(|| {
-                crate::shared::error::AppError::from(
-                    "CLI_PROXY_INVALID_ROUTE: guarded route requires aio_origin",
-                )
-            })?;
-            let guarded_origin = external_origin.ok_or_else(|| {
-                crate::shared::error::AppError::from(
-                    "CLI_PROXY_INVALID_ROUTE: guarded route requires external_origin",
-                )
-            })?;
-            if normalize_origin(aio_origin) == normalize_origin(guarded_origin) {
-                return Err(
-                    "CLI_PROXY_INVALID_ROUTE: guarded route origin must differ from aio_origin"
-                        .into(),
-                );
-            }
-            project_codex_proxy_config(canonical, guarded_origin, oauth_compatible, platform)
-        }
-    }
-}
-
-fn project_codex_proxy_config(
-    canonical: &[u8],
-    base_origin: &str,
-    oauth_compatible: bool,
-    platform: CodexConfigPlatform,
-) -> AppResult<Vec<u8>> {
-    let origin = normalize_origin(base_origin);
-    let route_url = format!("{origin}/v1");
-    if oauth_compatible {
-        build_codex_config_toml_oauth_compatible(Some(canonical.to_vec()), &route_url, platform)
-    } else {
-        build_codex_config_toml(Some(canonical.to_vec()), &route_url, platform)
-    }
-}
-
-pub(super) fn normalize_origin(origin: &str) -> String {
-    origin.trim().trim_end_matches('/').to_string()
-}
+/// Provider key used when remote_compaction is enabled (Codex requires "OpenAI" for Remote Compact).
+const CODEX_REMOTE_COMPACTION_PROVIDER_KEY: &str = "OpenAI";
 
 /// Check whether Codex proxy config is currently applied.
 /// Supports both normal mode (provider key = "aio") and remote_compaction mode (provider key = "OpenAI").

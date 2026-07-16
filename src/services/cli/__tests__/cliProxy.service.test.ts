@@ -72,12 +72,6 @@ describe("services/cli/cliProxy", () => {
           base_origin: null,
           current_gateway_origin: null,
           applied_to_current_gateway: null,
-          generation: null,
-          route_mode: null,
-          desired_enabled: null,
-          aio_origin: null,
-          guarded_origin: null,
-          effective_origin: null,
         },
       ],
     });

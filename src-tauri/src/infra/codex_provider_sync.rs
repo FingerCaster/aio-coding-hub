@@ -1,34 +1,20 @@
 //! Usage: Strict Codex provider sync / backup / rollback core.
 
-use crate::infra::codex_retry_gateway::{CodexProviderSyncPlan, CodexRouteMode};
 use crate::shared::error::AppResult;
 use crate::shared::fs::{
-    is_symlink, read_file_with_max_len, read_optional_file_with_max_len, write_file_atomic,
-    write_file_atomic_if_changed,
+    is_symlink, read_optional_file_with_max_len, write_file_atomic_if_changed,
 };
 use crate::shared::time::{now_unix_millis, now_unix_seconds};
 use rusqlite::{Connection, OpenFlags};
-use serde::{Deserialize, Serialize};
+use serde::Serialize;
 use serde_json::{Map, Value};
-use sha2::{Digest, Sha256};
 use std::collections::HashSet;
 use std::fs;
-use std::path::{Component, Path, PathBuf};
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 
 pub const PROVIDER_SYNC_LOCK_FILE: &str = "tmp/provider-sync.lock";
 pub const PROVIDER_SYNC_BACKUP_ROOT: &str = "backups_state/provider-sync";
-const PROVIDER_SYNC_TRANSACTION_ROOT: &str = "tmp/provider-sync-transaction";
-const PROVIDER_SYNC_TRANSACTION_STAGING_PREFIX: &str = "provider-sync-transaction.staging-";
-const PROVIDER_SYNC_TRANSACTION_MANIFEST: &str = "journal.json";
-const PROVIDER_SYNC_TRANSACTION_APPLIED_MARKER: &str = "applied.json";
-const PROVIDER_SYNC_TRANSACTION_QUARANTINE_ROOT: &str = "backups_state/provider-sync-quarantine";
-const PROVIDER_SYNC_TRANSACTION_QUARANTINE_REASON_MAX_CHARS: usize = 4096;
-const PROVIDER_SYNC_TRANSACTION_SCHEMA_VERSION: u32 = 2;
-const PROVIDER_SYNC_TRANSACTION_MANIFEST_MAX_BYTES: usize = 1024 * 1024;
-const PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS: usize = 4096;
-const PROVIDER_SYNC_SNAPSHOT_MAX_BYTES: usize = 128 * 1024 * 1024;
-const PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES: usize = 256 * 1024 * 1024;
 const PROVIDER_SYNC_KEEP_COUNT: usize = 5;
 const PROVIDER_SYNC_MAX_BYTES: usize = 1024 * 1024;
 const MANAGED_PROVIDER_AIO: &str = "aio";
@@ -69,191 +55,11 @@ pub struct CodexProviderSyncContext {
     pub config_bytes: Option<Vec<u8>>,
 }
 
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexProviderSyncRouteContext {
-    pub operation_id: String,
-    pub target_generation: u64,
-    pub target_mode: CodexRouteMode,
-    pub target_live_config_sha256: String,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub(crate) struct CodexProviderSyncCurrentRoute {
-    pub generation: u64,
-    pub mode: CodexRouteMode,
-    pub live_config_sha256: String,
-    pub live_matches_projection: bool,
-    pub auth_matches_projection: bool,
-    pub pending_operation_id: Option<String>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum CodexProviderSyncRecoveryOutcome {
-    None,
-    Restored,
-    Finalized,
-    Quarantined,
-    StaleLockRemoved,
-}
-
 #[derive(Debug, Clone)]
 struct FileSnapshot {
     path: PathBuf,
     existed: bool,
     bytes: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "snake_case")]
-enum ProviderSyncTransactionPhase {
-    Prepared,
-    Applied,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PersistentFileSnapshot {
-    target_rel: String,
-    existed: bool,
-    backup_rel: Option<String>,
-    byte_len: Option<u64>,
-    sha256: Option<String>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct PersistentRouteContext {
-    operation_id: String,
-    target_generation: u64,
-    target_mode: CodexRouteMode,
-    target_live_config_sha256: String,
-}
-
-impl From<CodexProviderSyncRouteContext> for PersistentRouteContext {
-    fn from(value: CodexProviderSyncRouteContext) -> Self {
-        Self {
-            operation_id: value.operation_id,
-            target_generation: value.target_generation,
-            target_mode: value.target_mode,
-            target_live_config_sha256: value.target_live_config_sha256,
-        }
-    }
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ProviderSyncTransactionJournal {
-    schema_version: u32,
-    operation_id: String,
-    phase: ProviderSyncTransactionPhase,
-    target_provider: String,
-    target_config_sha256: String,
-    route: Option<PersistentRouteContext>,
-    backup_dir_rel: String,
-    backup_root_existed: bool,
-    snapshots: Vec<PersistentFileSnapshot>,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
-struct ProviderSyncAppliedMarker {
-    operation_id: String,
-}
-
-#[must_use = "provider sync rollback tokens must be explicitly committed or rolled back"]
-pub(crate) struct CodexProviderSyncRollback {
-    snapshots: Option<Vec<FileSnapshot>>,
-    transaction_home: Option<PathBuf>,
-    backup_home: Option<PathBuf>,
-    backup_dir: Option<PathBuf>,
-    remove_empty_backup_root: bool,
-}
-
-impl CodexProviderSyncRollback {
-    fn new(
-        snapshots: Vec<FileSnapshot>,
-        transaction_home: Option<PathBuf>,
-        backup_home: Option<PathBuf>,
-        backup_dir: Option<PathBuf>,
-        remove_empty_backup_root: bool,
-    ) -> Self {
-        Self {
-            snapshots: Some(snapshots),
-            transaction_home,
-            backup_home,
-            backup_dir,
-            remove_empty_backup_root,
-        }
-    }
-
-    pub(crate) fn commit(mut self) {
-        self.snapshots = None;
-        if let Some(home) = self.transaction_home.take() {
-            if let Err(error) = clear_provider_sync_transaction(&home) {
-                tracing::error!(
-                    error = %error,
-                    "provider sync transaction journal cleanup failed after commit"
-                );
-            }
-        }
-        self.backup_dir = None;
-        self.remove_empty_backup_root = false;
-        if let Some(home) = self.backup_home.take() {
-            match prune_managed_backups(&home) {
-                Ok(Some(warning)) => tracing::warn!(%warning, "provider sync backup prune warning"),
-                Ok(None) => {}
-                Err(error) => tracing::warn!(
-                    error = %error,
-                    "provider sync backup prune failed after transaction commit"
-                ),
-            }
-        }
-    }
-
-    pub(crate) fn rollback(mut self) -> AppResult<()> {
-        self.rollback_inner()
-    }
-
-    fn rollback_inner(&mut self) -> AppResult<()> {
-        let mut errors = Vec::new();
-        if let Some(mut snapshots) = self.snapshots.take() {
-            if let Err(error) = restore_snapshots(&mut snapshots) {
-                errors.push(error.to_string());
-            }
-        }
-        if let (Some(home), Some(backup_dir)) = (self.backup_home.take(), self.backup_dir.take()) {
-            if let Err(error) = remove_created_provider_sync_backup(
-                &home,
-                &backup_dir,
-                self.remove_empty_backup_root,
-            ) {
-                errors.push(error.to_string());
-            }
-        }
-        if errors.is_empty() {
-            if let Some(home) = self.transaction_home.take() {
-                if let Err(error) = clear_provider_sync_transaction(&home) {
-                    errors.push(error.to_string());
-                }
-            }
-        }
-        self.remove_empty_backup_root = false;
-        if errors.is_empty() {
-            Ok(())
-        } else {
-            Err(format!("CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: {}", errors.join("; ")).into())
-        }
-    }
-}
-
-impl Drop for CodexProviderSyncRollback {
-    fn drop(&mut self) {
-        if self.snapshots.is_some() || self.transaction_home.is_some() || self.backup_dir.is_some()
-        {
-            if let Err(error) = self.rollback_inner() {
-                tracing::error!(
-                    error = %error,
-                    "provider sync rollback token failed to restore during drop"
-                );
-            }
-        }
-    }
 }
 
 #[derive(Debug, Clone)]
@@ -308,132 +114,8 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     context: CodexProviderSyncContext,
 ) -> AppResult<CodexProviderSyncResult> {
-    codex_provider_sync_transaction(app, context, |_| Ok(())).map(|(result, _)| result)
-}
-
-pub(crate) fn codex_provider_sync_preflight() -> AppResult<()> {
-    reject_running_codex_for_provider_sync(codex_app_is_running()?)
-}
-
-fn reject_running_codex_for_provider_sync(running: bool) -> AppResult<()> {
-    if running {
-        Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into())
-    } else {
-        Ok(())
-    }
-}
-
-pub(crate) fn codex_provider_sync_transaction<R: tauri::Runtime, T, F>(
-    app: &tauri::AppHandle<R>,
-    context: CodexProviderSyncContext,
-    after_apply: F,
-) -> AppResult<(CodexProviderSyncResult, T)>
-where
-    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
-{
-    let (result, extra, rollback) = codex_provider_sync_transaction_with_target_resolver(
-        app,
-        context,
-        after_apply,
-        resolve_target_provider,
-        false,
-        None,
-    )?;
-    if let Some(rollback) = rollback {
-        rollback.commit();
-    }
-    Ok((result, extra))
-}
-
-pub(crate) fn codex_provider_sync_transaction_reversible<R: tauri::Runtime, T, F>(
-    app: &tauri::AppHandle<R>,
-    context: CodexProviderSyncContext,
-    after_apply: F,
-) -> AppResult<(
-    CodexProviderSyncResult,
-    T,
-    Option<CodexProviderSyncRollback>,
-)>
-where
-    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
-{
-    codex_provider_sync_transaction_with_target_resolver(
-        app,
-        context,
-        after_apply,
-        resolve_target_provider,
-        true,
-        None,
-    )
-}
-
-pub(crate) fn codex_provider_sync_transaction_reversible_for_route<R: tauri::Runtime, T, F>(
-    app: &tauri::AppHandle<R>,
-    context: CodexProviderSyncContext,
-    route_context: CodexProviderSyncRouteContext,
-    after_apply: F,
-) -> AppResult<(
-    CodexProviderSyncResult,
-    T,
-    Option<CodexProviderSyncRollback>,
-)>
-where
-    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
-{
-    codex_provider_sync_transaction_with_target_resolver(
-        app,
-        context,
-        after_apply,
-        resolve_target_provider,
-        true,
-        Some(route_context),
-    )
-}
-
-pub(crate) fn codex_provider_sync_transaction_reversible_for_trusted_route<
-    R: tauri::Runtime,
-    T,
-    F,
->(
-    app: &tauri::AppHandle<R>,
-    context: CodexProviderSyncContext,
-    route_context: CodexProviderSyncRouteContext,
-    after_apply: F,
-) -> AppResult<(
-    CodexProviderSyncResult,
-    T,
-    Option<CodexProviderSyncRollback>,
-)>
-where
-    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
-{
-    codex_provider_sync_transaction_with_target_resolver(
-        app,
-        context,
-        after_apply,
-        resolve_trusted_target_provider,
-        true,
-        Some(route_context),
-    )
-}
-
-fn codex_provider_sync_transaction_with_target_resolver<R: tauri::Runtime, T, F>(
-    app: &tauri::AppHandle<R>,
-    context: CodexProviderSyncContext,
-    after_apply: F,
-    resolve_target: fn(&str) -> AppResult<String>,
-    defer_backup_prune: bool,
-    route_context: Option<CodexProviderSyncRouteContext>,
-) -> AppResult<(
-    CodexProviderSyncResult,
-    T,
-    Option<CodexProviderSyncRollback>,
-)>
-where
-    F: FnOnce(&CodexProviderSyncResult) -> AppResult<T>,
-{
     let home = crate::codex_paths::codex_home_dir(app)?;
-    let target_provider = resolve_target(&context.target_provider)?;
+    let target_provider = resolve_target_provider(&context.target_provider)?;
     if codex_app_is_running()? {
         return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
     }
@@ -454,7 +136,7 @@ where
     }
 
     let current_config = read_optional_file_with_max_len(&config_path, PROVIDER_SYNC_MAX_BYTES)?;
-    let current_config_text = optional_config_bytes_to_utf8(current_config.clone())?;
+    let current_config_text = optional_config_bytes_to_utf8(current_config)?;
     let current_provider = read_current_provider(&current_config_text)?;
 
     let change_set = build_change_set(
@@ -474,7 +156,7 @@ where
         && change_set.global_state_change.is_none()
         && change_set.config_bytes.is_none()
     {
-        let sync_result = CodexProviderSyncResult {
+        return Ok(CodexProviderSyncResult {
             status: "up_to_date".to_string(),
             target_provider,
             trigger: context.trigger,
@@ -485,46 +167,13 @@ where
             sqlite_cwd_rows_updated: 0,
             updated_workspace_roots: Vec::new(),
             warning: None,
-        };
-        let extra = after_apply(&sync_result)?;
-        return Ok((sync_result, extra, None));
+        });
     }
 
-    let backup_root_existed = home.join(PROVIDER_SYNC_BACKUP_ROOT).exists();
     let backup_dir = create_backup(&home, &context, &change_set)?;
     let mut snapshots = snapshot_paths(&home, &config_path, &change_set)?;
-    let operation_id = route_context
-        .as_ref()
-        .map(|route| route.operation_id.clone())
-        .unwrap_or_else(|| format!("provider-sync-{}-{}", now_unix_millis(), std::process::id()));
-    let target_config_sha256 = sha256_hex(
-        change_set
-            .config_bytes
-            .as_deref()
-            .or(current_config.as_deref())
-            .unwrap_or_default(),
-    );
-    if let Err(error) = prepare_provider_sync_transaction(
-        &home,
-        &operation_id,
-        &target_provider,
-        &target_config_sha256,
-        route_context,
-        &backup_dir,
-        backup_root_existed,
-        &snapshots,
-    ) {
-        let cleanup = remove_created_provider_sync_backup(&home, &backup_dir, !backup_root_existed);
-        return match cleanup {
-            Ok(()) => Err(error),
-            Err(cleanup_error) => Err(format!(
-                "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed to prepare transaction: {error}; backup cleanup error: {cleanup_error}"
-            )
-            .into()),
-        };
-    }
     let mut writes_started = false;
-    let result = (|| -> AppResult<(CodexProviderSyncResult, T)> {
+    let result = (|| -> AppResult<CodexProviderSyncResult> {
         if let Some(bytes) = change_set.config_bytes.as_ref() {
             writes_started = true;
             let _ = write_file_atomic_if_changed(&config_path, bytes)?;
@@ -542,7 +191,10 @@ where
             apply_global_state_change(global_state)?;
         }
 
-        let mut sync_result = CodexProviderSyncResult {
+        let warning = prune_managed_backups(&home)
+            .ok()
+            .and_then(|warning| warning);
+        Ok(CodexProviderSyncResult {
             status: "synced".to_string(),
             target_provider,
             trigger: context.trigger,
@@ -556,59 +208,22 @@ where
             sqlite_user_event_rows_updated: sqlite_counts.user_event_rows_updated,
             sqlite_cwd_rows_updated: sqlite_counts.cwd_rows_updated,
             updated_workspace_roots: change_set.updated_workspace_roots,
-            warning: change_set.warning,
-        };
-        let extra = after_apply(&sync_result)?;
-        mark_provider_sync_transaction_applied(&home, &operation_id)?;
-        if !defer_backup_prune {
-            sync_result.warning = prune_managed_backups(&home)
-                .ok()
-                .and_then(|warning| warning)
-                .or(sync_result.warning);
-        }
-        Ok((sync_result, extra))
+            warning: warning.or(change_set.warning),
+        })
     })();
 
     match result {
-        Ok((sync_result, extra)) => Ok((
-            sync_result,
-            extra,
-            writes_started.then(|| {
-                CodexProviderSyncRollback::new(
-                    snapshots,
-                    Some(home.clone()),
-                    defer_backup_prune.then(|| home.clone()),
-                    defer_backup_prune.then(|| backup_dir.clone()),
-                    defer_backup_prune && !backup_root_existed,
-                )
-            }),
-        )),
+        Ok(out) => Ok(out),
         Err(err) => {
-            let mut rollback_errors = Vec::new();
             if writes_started {
                 if let Err(rollback_err) = restore_snapshots(&mut snapshots) {
-                    rollback_errors.push(rollback_err.to_string());
+                    return Err(format!(
+                        "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed to restore snapshots after {err}; rollback error: {rollback_err}"
+                    )
+                    .into());
                 }
             }
-            if let Err(rollback_err) =
-                remove_created_provider_sync_backup(&home, &backup_dir, !backup_root_existed)
-            {
-                rollback_errors.push(rollback_err.to_string());
-            }
-            if rollback_errors.is_empty() {
-                if let Err(rollback_err) = clear_provider_sync_transaction(&home) {
-                    rollback_errors.push(rollback_err.to_string());
-                }
-            }
-            if rollback_errors.is_empty() {
-                Err(err)
-            } else {
-                Err(format!(
-                    "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed after {err}; rollback error: {}",
-                    rollback_errors.join("; ")
-                )
-                .into())
-            }
+            Err(err)
         }
     }
 }
@@ -649,14 +264,10 @@ pub fn codex_provider_sync_from_config_bytes<R: tauri::Runtime>(
     )
 }
 
-pub(crate) fn codex_provider_identity_from_config_text(config_text: &str) -> AppResult<String> {
-    Ok(read_current_provider(config_text)?.ok_or_else(|| {
-        "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".to_string()
-    })?)
-}
-
 pub fn codex_provider_target_from_config_text(config_text: &str) -> AppResult<String> {
-    let current_provider = codex_provider_identity_from_config_text(config_text)?;
+    let current_provider = read_current_provider(config_text)?.ok_or_else(|| {
+        "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".to_string()
+    })?;
     resolve_target_provider(&current_provider)
 }
 
@@ -671,52 +282,6 @@ pub fn codex_provider_target_from_current_config_text(config_text: &str) -> AppR
     Ok(read_current_provider(config_text)?.unwrap_or_else(|| MANAGED_PROVIDER_AIO.to_string()))
 }
 
-pub(crate) fn codex_provider_sync_plan_for_target(
-    current_config_text: &str,
-    target_provider: &str,
-) -> AppResult<CodexProviderSyncPlan> {
-    codex_provider_sync_plan_for_target_with_resolver(
-        current_config_text,
-        target_provider,
-        resolve_target_provider,
-    )
-}
-
-pub(crate) fn codex_provider_sync_plan_for_trusted_target(
-    current_config_text: &str,
-    target_provider: &str,
-) -> AppResult<CodexProviderSyncPlan> {
-    codex_provider_sync_plan_for_target_with_resolver(
-        current_config_text,
-        target_provider,
-        resolve_trusted_target_provider,
-    )
-}
-
-fn codex_provider_sync_plan_for_target_with_resolver(
-    current_config_text: &str,
-    target_provider: &str,
-    resolve_target: fn(&str) -> AppResult<String>,
-) -> AppResult<CodexProviderSyncPlan> {
-    let current_provider = read_current_provider(current_config_text)?;
-    let target_provider = resolve_target(target_provider)?;
-    let change_required = current_provider.as_deref() != Some(target_provider.as_str());
-    Ok(CodexProviderSyncPlan {
-        current_provider,
-        target_provider,
-        change_required,
-        codex_must_be_closed: change_required,
-    })
-}
-
-pub(crate) fn codex_provider_sync_plan_for_config_text(
-    current_config_text: &str,
-    target_config_text: &str,
-) -> AppResult<CodexProviderSyncPlan> {
-    let target_provider = codex_provider_target_from_config_text(target_config_text)?;
-    codex_provider_sync_plan_for_target(current_config_text, &target_provider)
-}
-
 fn resolve_target_provider(input: &str) -> AppResult<String> {
     let trimmed = input.trim();
     match trimmed {
@@ -726,16 +291,6 @@ fn resolve_target_provider(input: &str) -> AppResult<String> {
         )
         .into()),
     }
-}
-
-fn resolve_trusted_target_provider(input: &str) -> AppResult<String> {
-    let trimmed = input.trim();
-    if trimmed.is_empty() {
-        return Err(
-            "CODEX_PROVIDER_SYNC_INVALID_TARGET: unsupported provider target=(missing)".into(),
-        );
-    }
-    Ok(trimmed.to_string())
 }
 
 fn read_current_provider(text: &str) -> AppResult<Option<String>> {
@@ -1091,9 +646,6 @@ fn rewrite_rollout_session_meta_providers(
     let text = String::from_utf8(bytes.to_vec())
         .map_err(|_| "SEC_INVALID_INPUT: rollout jsonl must be valid UTF-8".to_string())?;
     let mut out = String::with_capacity(text.len());
-    // The complete file is atomically replaced, so a provider may grow or shrink.
-    // Only parsed session_meta rows are reserialized; every other JSONL segment
-    // and its original line ending remain byte-for-byte unchanged.
     for segment in text.split_inclusive('\n') {
         let (line, ending) = split_line_ending(segment);
         let next_line = match serde_json::from_str::<Value>(line) {
@@ -1568,51 +1120,24 @@ fn snapshot_paths(
     change_set: &SyncChangeSet,
 ) -> AppResult<Vec<FileSnapshot>> {
     let mut snapshots = Vec::new();
-    let mut aggregate_bytes = 0usize;
-    push_snapshot_with_budget(&mut snapshots, config_path, &mut aggregate_bytes)?;
-    push_snapshot_with_budget(
-        &mut snapshots,
-        &home.join("config.toml.bak"),
-        &mut aggregate_bytes,
-    )?;
+    snapshots.push(snapshot_path(config_path)?);
+    snapshots.push(snapshot_path(&home.join("config.toml.bak"))?);
     for change in &change_set.session_changes {
-        push_snapshot_with_budget(&mut snapshots, &change.path, &mut aggregate_bytes)?;
+        snapshots.push(snapshot_path(&change.path)?);
     }
     for change in &change_set.sqlite_changes {
         for path in codex_sqlite_sidecar_paths(&change.path) {
-            push_snapshot_with_budget(&mut snapshots, &path, &mut aggregate_bytes)?;
+            snapshots.push(snapshot_path(&path)?);
         }
     }
     if let Some(change) = change_set.global_state_change.as_ref() {
-        push_snapshot_with_budget(&mut snapshots, &change.path, &mut aggregate_bytes)?;
-        push_snapshot_with_budget(&mut snapshots, &change.bak_path, &mut aggregate_bytes)?;
-    }
-    if snapshots.len() > PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync snapshot count exceeds {}",
-            PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS
-        )
-        .into());
+        snapshots.push(snapshot_path(&change.path)?);
+        snapshots.push(snapshot_path(&change.bak_path)?);
     }
     Ok(snapshots)
 }
 
-#[cfg(test)]
 fn snapshot_path(path: &Path) -> AppResult<FileSnapshot> {
-    let mut aggregate_bytes = 0usize;
-    snapshot_path_with_budget(path, &mut aggregate_bytes)
-}
-
-fn push_snapshot_with_budget(
-    snapshots: &mut Vec<FileSnapshot>,
-    path: &Path,
-    aggregate_bytes: &mut usize,
-) -> AppResult<()> {
-    snapshots.push(snapshot_path_with_budget(path, aggregate_bytes)?);
-    Ok(())
-}
-
-fn snapshot_path_with_budget(path: &Path, aggregate_bytes: &mut usize) -> AppResult<FileSnapshot> {
     let Some(metadata) = non_symlink_metadata(path, "Codex provider sync snapshot")? else {
         return Ok(FileSnapshot {
             path: path.to_path_buf(),
@@ -1627,33 +1152,8 @@ fn snapshot_path_with_budget(path: &Path, aggregate_bytes: &mut usize) -> AppRes
         )
         .into());
     };
-    if metadata.len() > PROVIDER_SYNC_SNAPSHOT_MAX_BYTES as u64 {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync snapshot exceeds {} bytes path={}",
-            PROVIDER_SYNC_SNAPSHOT_MAX_BYTES,
-            path.display()
-        )
-        .into());
-    }
-    if (*aggregate_bytes as u64).saturating_add(metadata.len())
-        > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES as u64
-    {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync snapshot aggregate exceeds {} bytes",
-            PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
-        )
-        .into());
-    }
-    let bytes = read_file_with_max_len(path, PROVIDER_SYNC_SNAPSHOT_MAX_BYTES)?;
-    let next_aggregate = aggregate_bytes.saturating_add(bytes.len());
-    if next_aggregate > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync snapshot aggregate exceeds {} bytes",
-            PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
-        )
-        .into());
-    }
-    *aggregate_bytes = next_aggregate;
+    let bytes =
+        fs::read(path).map_err(|e| format!("failed to snapshot {}: {e}", path.display()))?;
     Ok(FileSnapshot {
         path: path.to_path_buf(),
         existed: true,
@@ -1673,859 +1173,6 @@ fn restore_snapshots(snapshots: &mut [FileSnapshot]) -> AppResult<()> {
                 format!("failed to remove restored {}: {e}", snapshot.path.display())
             })?;
         }
-    }
-    Ok(())
-}
-
-fn sha256_hex(bytes: &[u8]) -> String {
-    format!("{:x}", Sha256::digest(bytes))
-}
-
-fn validated_relative_path(value: &str, label: &str) -> AppResult<PathBuf> {
-    if value.is_empty() {
-        return Err(format!("SEC_INVALID_INPUT: {label} must not be empty").into());
-    }
-    let path = PathBuf::from(value);
-    if path
-        .components()
-        .any(|component| !matches!(component, Component::Normal(_)))
-    {
-        return Err(format!(
-            "SEC_INVALID_INPUT: {label} must be a normalized relative path={value}"
-        )
-        .into());
-    }
-    Ok(path)
-}
-
-fn path_relative_to_home(home: &Path, path: &Path, label: &str) -> AppResult<String> {
-    let relative = path.strip_prefix(home).map_err(|_| {
-        format!(
-            "SEC_INVALID_INPUT: {label} resolved outside Codex home path={}",
-            path.display()
-        )
-    })?;
-    let mut parts = Vec::new();
-    for component in relative.components() {
-        let Component::Normal(value) = component else {
-            return Err(format!(
-                "SEC_INVALID_INPUT: {label} must be a normalized relative path={}",
-                path.display()
-            )
-            .into());
-        };
-        parts.push(
-            value
-                .to_str()
-                .ok_or_else(|| {
-                    format!(
-                        "SEC_INVALID_INPUT: {label} path is not valid Unicode path={}",
-                        path.display()
-                    )
-                })?
-                .to_string(),
-        );
-    }
-    let normalized = parts.join("/");
-    let _ = validated_relative_path(&normalized, label)?;
-    Ok(normalized)
-}
-
-fn provider_sync_transaction_root(home: &Path) -> PathBuf {
-    home.join(PROVIDER_SYNC_TRANSACTION_ROOT)
-}
-
-fn provider_sync_transaction_manifest_path(home: &Path) -> PathBuf {
-    provider_sync_transaction_root(home).join(PROVIDER_SYNC_TRANSACTION_MANIFEST)
-}
-
-fn provider_sync_transaction_applied_path(home: &Path) -> PathBuf {
-    provider_sync_transaction_root(home).join(PROVIDER_SYNC_TRANSACTION_APPLIED_MARKER)
-}
-
-#[allow(clippy::too_many_arguments)]
-fn prepare_provider_sync_transaction(
-    home: &Path,
-    operation_id: &str,
-    target_provider: &str,
-    target_config_sha256: &str,
-    route_context: Option<CodexProviderSyncRouteContext>,
-    backup_dir: &Path,
-    backup_root_existed: bool,
-    snapshots: &[FileSnapshot],
-) -> AppResult<()> {
-    if snapshots.len() > PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync snapshot count exceeds {}",
-            PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS
-        )
-        .into());
-    }
-    let mut aggregate_bytes = 0usize;
-    for snapshot in snapshots {
-        match (snapshot.existed, snapshot.bytes.as_deref()) {
-            (true, Some(bytes)) => {
-                if bytes.len() > PROVIDER_SYNC_SNAPSHOT_MAX_BYTES {
-                    return Err(format!(
-                        "SEC_INVALID_INPUT: provider sync snapshot exceeds {} bytes path={}",
-                        PROVIDER_SYNC_SNAPSHOT_MAX_BYTES,
-                        snapshot.path.display()
-                    )
-                    .into());
-                }
-                aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
-                if aggregate_bytes > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES {
-                    return Err(format!(
-                        "SEC_INVALID_INPUT: provider sync snapshot aggregate exceeds {} bytes",
-                        PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
-                    )
-                    .into());
-                }
-            }
-            (false, None) => {}
-            _ => {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_SNAPSHOT_INVALID: snapshot existence metadata is inconsistent path={}",
-                    snapshot.path.display()
-                )
-                .into())
-            }
-        }
-    }
-
-    let root = provider_sync_transaction_root(home);
-    if root.exists() {
-        return Err(format!(
-            "CODEX_PROVIDER_SYNC_RECOVERY_REQUIRED: pending transaction exists at {}",
-            root.display()
-        )
-        .into());
-    }
-    cleanup_provider_sync_transaction_staging(home)?;
-
-    let tmp_root = home.join("tmp");
-    ensure_safe_operational_dir(&tmp_root, "Codex provider sync transaction parent")?;
-    fs::create_dir_all(&tmp_root).map_err(|error| {
-        format!(
-            "failed to create provider sync transaction parent {}: {error}",
-            tmp_root.display()
-        )
-    })?;
-    let staging = tmp_root.join(format!(
-        "{PROVIDER_SYNC_TRANSACTION_STAGING_PREFIX}{}-{}",
-        std::process::id(),
-        now_unix_millis()
-    ));
-    fs::create_dir(&staging).map_err(|error| {
-        format!(
-            "failed to create provider sync transaction staging {}: {error}",
-            staging.display()
-        )
-    })?;
-
-    let prepared = (|| -> AppResult<ProviderSyncTransactionJournal> {
-        let files_root = staging.join("files");
-        fs::create_dir(&files_root).map_err(|error| {
-            format!(
-                "failed to create provider sync snapshot root {}: {error}",
-                files_root.display()
-            )
-        })?;
-        let mut persistent_snapshots = Vec::with_capacity(snapshots.len());
-        for (index, snapshot) in snapshots.iter().enumerate() {
-            let target_rel =
-                path_relative_to_home(home, &snapshot.path, "Codex provider sync snapshot target")?;
-            let (backup_rel, byte_len, sha256) = if snapshot.existed {
-                let bytes = snapshot.bytes.as_deref().ok_or_else(|| {
-                    format!(
-                        "CODEX_PROVIDER_SYNC_SNAPSHOT_INVALID: existing snapshot has no bytes path={}",
-                        snapshot.path.display()
-                    )
-                })?;
-                let relative = format!("files/{index:08}.bin");
-                write_file_atomic(&staging.join(&relative), bytes)?;
-                (
-                    Some(relative),
-                    Some(bytes.len() as u64),
-                    Some(sha256_hex(bytes)),
-                )
-            } else {
-                (None, None, None)
-            };
-            persistent_snapshots.push(PersistentFileSnapshot {
-                target_rel,
-                existed: snapshot.existed,
-                backup_rel,
-                byte_len,
-                sha256,
-            });
-        }
-
-        Ok(ProviderSyncTransactionJournal {
-            schema_version: PROVIDER_SYNC_TRANSACTION_SCHEMA_VERSION,
-            operation_id: operation_id.to_string(),
-            phase: ProviderSyncTransactionPhase::Prepared,
-            target_provider: target_provider.to_string(),
-            target_config_sha256: target_config_sha256.to_string(),
-            route: route_context.map(Into::into),
-            backup_dir_rel: path_relative_to_home(
-                home,
-                backup_dir,
-                "Codex provider sync backup directory",
-            )?,
-            backup_root_existed,
-            snapshots: persistent_snapshots,
-        })
-    })();
-
-    let journal = match prepared {
-        Ok(journal) => journal,
-        Err(error) => {
-            let _ = fs::remove_dir_all(&staging);
-            return Err(error);
-        }
-    };
-    let mut bytes = serde_json::to_vec_pretty(&journal)
-        .map_err(|error| format!("failed to serialize provider sync transaction: {error}"))?;
-    bytes.push(b'\n');
-    if let Err(error) = write_file_atomic(&staging.join(PROVIDER_SYNC_TRANSACTION_MANIFEST), &bytes)
-    {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(error);
-    }
-    if let Err(error) = fs::rename(&staging, &root) {
-        let _ = fs::remove_dir_all(&staging);
-        return Err(format!(
-            "failed to publish provider sync transaction {}: {error}",
-            root.display()
-        )
-        .into());
-    }
-    Ok(())
-}
-
-fn read_provider_sync_transaction(
-    home: &Path,
-) -> AppResult<Option<ProviderSyncTransactionJournal>> {
-    let root = provider_sync_transaction_root(home);
-    let Some(metadata) = non_symlink_metadata(&root, "Codex provider sync transaction root")?
-    else {
-        return Ok(None);
-    };
-    if !metadata.is_dir() {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync transaction root is not a directory path={}",
-            root.display()
-        )
-        .into());
-    }
-    ensure_safe_operational_dir(&root, "Codex provider sync transaction root")?;
-    let manifest_path = provider_sync_transaction_manifest_path(home);
-    let bytes = read_optional_file_with_max_len(
-        &manifest_path,
-        PROVIDER_SYNC_TRANSACTION_MANIFEST_MAX_BYTES,
-    )?
-    .ok_or_else(|| {
-        format!(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: transaction manifest is missing path={}",
-            manifest_path.display()
-        )
-    })?;
-    let mut journal: ProviderSyncTransactionJournal =
-        serde_json::from_slice(&bytes).map_err(|error| {
-            format!(
-                "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: invalid transaction manifest {}: {error}",
-                manifest_path.display()
-            )
-        })?;
-    if journal.schema_version != PROVIDER_SYNC_TRANSACTION_SCHEMA_VERSION {
-        return Err(format!(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: unsupported transaction schema version={}",
-            journal.schema_version
-        )
-        .into());
-    }
-    if journal.phase != ProviderSyncTransactionPhase::Prepared {
-        return Err(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: transaction manifest must start in prepared phase"
-                .into(),
-        );
-    }
-    if journal.operation_id.trim().is_empty()
-        || journal.target_config_sha256.len() != 64
-        || !journal
-            .target_config_sha256
-            .bytes()
-            .all(|byte| byte.is_ascii_hexdigit())
-    {
-        return Err(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: invalid transaction identity or target hash"
-                .into(),
-        );
-    }
-
-    let _ = validated_relative_path(
-        &journal.backup_dir_rel,
-        "Codex provider sync backup directory",
-    )?;
-    if journal.snapshots.len() > PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS {
-        return Err(format!(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot count exceeds {}",
-            PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS
-        )
-        .into());
-    }
-    let mut targets = HashSet::new();
-    let mut backups = HashSet::new();
-    let mut aggregate_bytes = 0u64;
-    for snapshot in &journal.snapshots {
-        let _ =
-            validated_relative_path(&snapshot.target_rel, "Codex provider sync snapshot target")?;
-        if !targets.insert(snapshot.target_rel.clone()) {
-            return Err(format!(
-                "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: duplicate snapshot target {}",
-                snapshot.target_rel
-            )
-            .into());
-        }
-        match (
-            snapshot.existed,
-            snapshot.backup_rel.as_deref(),
-            snapshot.byte_len,
-            snapshot.sha256.as_deref(),
-        ) {
-            (true, Some(relative), Some(byte_len), Some(sha256)) => {
-                let path = validated_relative_path(
-                    relative,
-                    "Codex provider sync snapshot backup",
-                )?;
-                if path.components().next()
-                    != Some(Component::Normal(std::ffi::OsStr::new("files")))
-                    || !backups.insert(path)
-                {
-                    return Err(format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot backup is outside files root or duplicated path={relative}"
-                    )
-                    .into());
-                }
-                if byte_len > PROVIDER_SYNC_SNAPSHOT_MAX_BYTES as u64 {
-                    return Err(format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot exceeds {} bytes target={}",
-                        PROVIDER_SYNC_SNAPSHOT_MAX_BYTES, snapshot.target_rel
-                    )
-                    .into());
-                }
-                aggregate_bytes = aggregate_bytes.saturating_add(byte_len);
-                if aggregate_bytes > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES as u64 {
-                    return Err(format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot aggregate exceeds {} bytes",
-                        PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
-                    )
-                    .into());
-                }
-                if sha256.len() != 64 || !sha256.bytes().all(|byte| byte.is_ascii_hexdigit()) {
-                    return Err(format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot hash is invalid target={}",
-                        snapshot.target_rel
-                    )
-                    .into());
-                }
-            }
-            (false, None, None, None) => {}
-            _ => {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot existence metadata is inconsistent target={}",
-                    snapshot.target_rel
-                )
-                .into())
-            }
-        }
-    }
-
-    let applied_path = provider_sync_transaction_applied_path(home);
-    if let Some(bytes) = read_optional_file_with_max_len(
-        &applied_path,
-        PROVIDER_SYNC_TRANSACTION_MANIFEST_MAX_BYTES,
-    )? {
-        let marker: ProviderSyncAppliedMarker =
-            serde_json::from_slice(&bytes).map_err(|error| {
-                format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: invalid applied marker {}: {error}",
-                    applied_path.display()
-                )
-            })?;
-        if marker.operation_id != journal.operation_id {
-            return Err(
-                "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: applied marker operation does not match journal"
-                    .into(),
-            );
-        }
-        journal.phase = ProviderSyncTransactionPhase::Applied;
-    }
-    Ok(Some(journal))
-}
-
-fn mark_provider_sync_transaction_applied(home: &Path, operation_id: &str) -> AppResult<()> {
-    let journal = read_provider_sync_transaction(home)?.ok_or_else(|| {
-        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: transaction disappeared before apply".to_string()
-    })?;
-    if journal.operation_id != operation_id {
-        return Err(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: transaction operation changed before apply"
-                .into(),
-        );
-    }
-    let marker = ProviderSyncAppliedMarker {
-        operation_id: operation_id.to_string(),
-    };
-    let mut bytes = serde_json::to_vec_pretty(&marker)
-        .map_err(|error| format!("failed to serialize provider sync applied marker: {error}"))?;
-    bytes.push(b'\n');
-    write_file_atomic(&provider_sync_transaction_applied_path(home), &bytes)
-}
-
-struct PreparedPersistentProviderSyncSnapshot {
-    target: PathBuf,
-    existed: bool,
-    bytes: Option<Vec<u8>>,
-}
-
-fn preflight_persistent_provider_sync_snapshots(
-    home: &Path,
-    journal: &ProviderSyncTransactionJournal,
-) -> AppResult<Vec<PreparedPersistentProviderSyncSnapshot>> {
-    let transaction_root = provider_sync_transaction_root(home);
-    let mut aggregate_bytes = 0usize;
-    let mut prepared = Vec::with_capacity(journal.snapshots.len());
-    for snapshot in &journal.snapshots {
-        let target = home.join(validated_relative_path(
-            &snapshot.target_rel,
-            "Codex provider sync snapshot target",
-        )?);
-        if let Some(parent) = target.parent() {
-            ensure_safe_operational_dir(parent, "Codex provider sync recovery target parent")?;
-        }
-        if let Some(metadata) =
-            non_symlink_metadata(&target, "Codex provider sync recovery target")?
-        {
-            if !metadata.is_file() {
-                return Err(format!(
-                    "SEC_INVALID_INPUT: provider sync recovery target is not a file path={}",
-                    target.display()
-                )
-                .into());
-            }
-        }
-        let bytes = if snapshot.existed {
-            let backup = transaction_root.join(validated_relative_path(
-                snapshot.backup_rel.as_deref().ok_or_else(|| {
-                    format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot backup missing target={}",
-                        snapshot.target_rel
-                    )
-                })?,
-                "Codex provider sync snapshot backup",
-            )?);
-            let Some(metadata) =
-                non_symlink_metadata(&backup, "Codex provider sync persistent snapshot backup")?
-            else {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot backup missing path={}",
-                    backup.display()
-                )
-                .into());
-            };
-            if !metadata.is_file() {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot backup is not a file path={}",
-                    backup.display()
-                )
-                .into());
-            }
-            let expected_len = snapshot.byte_len.ok_or_else(|| {
-                format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot length missing target={}",
-                    snapshot.target_rel
-                )
-            })?;
-            if metadata.len() != expected_len {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot length mismatch path={} expected={} actual={}",
-                    backup.display(),
-                    expected_len,
-                    metadata.len()
-                )
-                .into());
-            }
-            let bytes = read_file_with_max_len(&backup, PROVIDER_SYNC_SNAPSHOT_MAX_BYTES)?;
-            if bytes.len() as u64 != expected_len {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot changed while reading path={}",
-                    backup.display()
-                )
-                .into());
-            }
-            let expected_sha256 = snapshot.sha256.as_deref().ok_or_else(|| {
-                format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot hash missing target={}",
-                    snapshot.target_rel
-                )
-            })?;
-            if sha256_hex(&bytes) != expected_sha256 {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot hash mismatch path={}",
-                    backup.display()
-                )
-                .into());
-            }
-            aggregate_bytes = aggregate_bytes.saturating_add(bytes.len());
-            if aggregate_bytes > PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES {
-                return Err(format!(
-                    "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: snapshot aggregate exceeds {} bytes",
-                    PROVIDER_SYNC_SNAPSHOT_AGGREGATE_MAX_BYTES
-                )
-                .into());
-            }
-            Some(bytes)
-        } else {
-            None
-        };
-        prepared.push(PreparedPersistentProviderSyncSnapshot {
-            target,
-            existed: snapshot.existed,
-            bytes,
-        });
-    }
-    Ok(prepared)
-}
-
-fn restore_persistent_provider_sync_snapshots(
-    home: &Path,
-    journal: &ProviderSyncTransactionJournal,
-) -> AppResult<()> {
-    let prepared = preflight_persistent_provider_sync_snapshots(home, journal)?;
-    for snapshot in prepared.into_iter().rev() {
-        if snapshot.existed {
-            write_file_atomic(
-                &snapshot.target,
-                snapshot.bytes.as_deref().ok_or_else(|| {
-                    format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: preflight bytes missing path={}",
-                        snapshot.target.display()
-                    )
-                })?,
-            )?;
-        } else {
-            match fs::remove_file(&snapshot.target) {
-                Ok(()) => {}
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!(
-                        "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: failed to remove created target {}: {error}",
-                        snapshot.target.display()
-                    )
-                    .into())
-                }
-            }
-        }
-    }
-    Ok(())
-}
-
-fn applied_provider_sync_matches_current_state(
-    home: &Path,
-    journal: &ProviderSyncTransactionJournal,
-    current_route: Option<&CodexProviderSyncCurrentRoute>,
-) -> AppResult<bool> {
-    if journal.phase != ProviderSyncTransactionPhase::Applied {
-        return Ok(false);
-    }
-    if let Some(expected) = journal.route.as_ref() {
-        let Some(current) = current_route else {
-            return Ok(false);
-        };
-        if current.generation != expected.target_generation
-            || current.mode != expected.target_mode
-            || current.live_config_sha256 != expected.target_live_config_sha256
-            || !current.live_matches_projection
-            || !current.auth_matches_projection
-            || current
-                .pending_operation_id
-                .as_ref()
-                .is_some_and(|operation_id| operation_id != &expected.operation_id)
-        {
-            return Ok(false);
-        }
-    }
-    let config_path = home.join("config.toml");
-    let config = read_optional_file_with_max_len(&config_path, PROVIDER_SYNC_MAX_BYTES)?;
-    Ok(sha256_hex(config.as_deref().unwrap_or_default()) == journal.target_config_sha256)
-}
-
-pub(crate) fn recover_interrupted_provider_sync<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    current_route: Option<&CodexProviderSyncCurrentRoute>,
-) -> AppResult<CodexProviderSyncRecoveryOutcome> {
-    let home = crate::codex_paths::codex_home_dir(app)?;
-    recover_interrupted_provider_sync_from_home(&home, current_route, None)
-}
-
-pub(crate) fn has_pending_provider_sync_recovery<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-) -> AppResult<bool> {
-    let home = crate::codex_paths::codex_home_dir(app)?;
-    Ok(read_provider_sync_transaction(&home)?.is_some())
-}
-
-fn recover_interrupted_provider_sync_from_home(
-    home: &Path,
-    current_route: Option<&CodexProviderSyncCurrentRoute>,
-    codex_running_override: Option<bool>,
-) -> AppResult<CodexProviderSyncRecoveryOutcome> {
-    let journal = match read_provider_sync_transaction(home) {
-        Ok(journal) => journal,
-        Err(error) => {
-            quarantine_corrupt_provider_sync_transaction(home, &error.to_string())?;
-            cleanup_provider_sync_transaction_staging(home)?;
-            let _ = remove_stale_provider_sync_lock(home)?;
-            return Ok(CodexProviderSyncRecoveryOutcome::Quarantined);
-        }
-    };
-    let Some(journal) = journal else {
-        cleanup_provider_sync_transaction_staging(home)?;
-        return if remove_stale_provider_sync_lock(home)? {
-            Ok(CodexProviderSyncRecoveryOutcome::StaleLockRemoved)
-        } else {
-            Ok(CodexProviderSyncRecoveryOutcome::None)
-        };
-    };
-
-    let outcome = if applied_provider_sync_matches_current_state(home, &journal, current_route)? {
-        if let Err(error) = prune_managed_backups(home) {
-            tracing::warn!(error = %error, "provider sync backup prune failed during recovery");
-        }
-        CodexProviderSyncRecoveryOutcome::Finalized
-    } else {
-        let codex_running = match codex_running_override {
-            Some(running) => running,
-            None => codex_app_is_running()?,
-        };
-        reject_running_codex_for_provider_sync(codex_running)?;
-        if let Err(error) = restore_persistent_provider_sync_snapshots(home, &journal) {
-            quarantine_corrupt_provider_sync_transaction(home, &error.to_string())?;
-            cleanup_provider_sync_transaction_staging(home)?;
-            let _ = remove_stale_provider_sync_lock(home)?;
-            return Ok(CodexProviderSyncRecoveryOutcome::Quarantined);
-        }
-        let backup_dir = home.join(validated_relative_path(
-            &journal.backup_dir_rel,
-            "Codex provider sync backup directory",
-        )?);
-        remove_created_provider_sync_backup(home, &backup_dir, !journal.backup_root_existed)?;
-        CodexProviderSyncRecoveryOutcome::Restored
-    };
-
-    clear_provider_sync_transaction(home)?;
-    cleanup_provider_sync_transaction_staging(home)?;
-    let _ = remove_stale_provider_sync_lock(home)?;
-    Ok(outcome)
-}
-
-fn quarantine_corrupt_provider_sync_transaction(home: &Path, reason: &str) -> AppResult<PathBuf> {
-    let transaction_root = provider_sync_transaction_root(home);
-    let metadata = fs::symlink_metadata(&transaction_root).map_err(|error| {
-        format!(
-            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: failed to inspect corrupt transaction {}: {error}",
-            transaction_root.display()
-        )
-    })?;
-    if metadata.file_type().is_symlink() {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync transaction root is a link path={}",
-            transaction_root.display()
-        )
-        .into());
-    }
-
-    let quarantine_root = home.join(PROVIDER_SYNC_TRANSACTION_QUARANTINE_ROOT);
-    ensure_safe_operational_dir(
-        &quarantine_root,
-        "Codex provider sync transaction quarantine root",
-    )?;
-    fs::create_dir_all(&quarantine_root).map_err(|error| {
-        format!(
-            "failed to create provider sync transaction quarantine root {}: {error}",
-            quarantine_root.display()
-        )
-    })?;
-    let quarantine_dir = quarantine_root.join(format!(
-        "{}-{}",
-        crate::infra::codex_retry_gateway::now_unix_ms(),
-        crate::infra::codex_retry_gateway::random_hex(8)
-    ));
-    fs::create_dir(&quarantine_dir).map_err(|error| {
-        format!(
-            "failed to create provider sync transaction quarantine {}: {error}",
-            quarantine_dir.display()
-        )
-    })?;
-
-    let reason = reason
-        .chars()
-        .take(PROVIDER_SYNC_TRANSACTION_QUARANTINE_REASON_MAX_CHARS)
-        .collect::<String>();
-    let mut quarantine_metadata = serde_json::to_vec_pretty(&serde_json::json!({
-        "schema_version": 1,
-        "reason": reason,
-    }))
-    .map_err(|error| format!("failed to serialize provider sync quarantine metadata: {error}"))?;
-    quarantine_metadata.push(b'\n');
-    write_file_atomic(
-        &quarantine_dir.join("quarantine.json"),
-        &quarantine_metadata,
-    )?;
-    let retained_transaction = quarantine_dir.join("transaction");
-    fs::rename(&transaction_root, &retained_transaction).map_err(|error| {
-        format!(
-            "failed to quarantine provider sync transaction {}: {error}",
-            transaction_root.display()
-        )
-    })?;
-    tracing::warn!(
-        quarantine = %quarantine_dir.display(),
-        "quarantined corrupt provider sync transaction and retained it for diagnosis"
-    );
-    Ok(quarantine_dir)
-}
-
-fn clear_provider_sync_transaction(home: &Path) -> AppResult<()> {
-    let root = provider_sync_transaction_root(home);
-    let Some(metadata) = non_symlink_metadata(&root, "Codex provider sync transaction root")?
-    else {
-        return Ok(());
-    };
-    if !metadata.is_dir() {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync transaction root is not a directory path={}",
-            root.display()
-        )
-        .into());
-    }
-    fs::remove_dir_all(&root).map_err(|error| {
-        format!(
-            "failed to clear provider sync transaction {}: {error}",
-            root.display()
-        )
-        .into()
-    })
-}
-
-fn cleanup_provider_sync_transaction_staging(home: &Path) -> AppResult<()> {
-    let tmp_root = home.join("tmp");
-    let Some(metadata) =
-        non_symlink_metadata(&tmp_root, "Codex provider sync transaction staging parent")?
-    else {
-        return Ok(());
-    };
-    if !metadata.is_dir() {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync transaction staging parent is not a directory path={}",
-            tmp_root.display()
-        )
-        .into());
-    }
-    for entry in fs::read_dir(&tmp_root)
-        .map_err(|error| format!("failed to read {}: {error}", tmp_root.display()))?
-    {
-        let path = entry
-            .map_err(|error| format!("failed to read {}: {error}", tmp_root.display()))?
-            .path();
-        let matches_prefix = path
-            .file_name()
-            .and_then(|name| name.to_str())
-            .is_some_and(|name| name.starts_with(PROVIDER_SYNC_TRANSACTION_STAGING_PREFIX));
-        if !matches_prefix {
-            continue;
-        }
-        let Some(metadata) =
-            non_symlink_metadata(&path, "Codex provider sync transaction staging directory")?
-        else {
-            continue;
-        };
-        if !metadata.is_dir() {
-            return Err(format!(
-                "SEC_INVALID_INPUT: provider sync transaction staging path is not a directory path={}",
-                path.display()
-            )
-            .into());
-        }
-        fs::remove_dir_all(&path).map_err(|error| {
-            format!(
-                "failed to remove provider sync transaction staging {}: {error}",
-                path.display()
-            )
-        })?;
-    }
-    Ok(())
-}
-
-fn remove_stale_provider_sync_lock(home: &Path) -> AppResult<bool> {
-    let lock_path = home.join(PROVIDER_SYNC_LOCK_FILE);
-    let Some(metadata) = non_symlink_metadata(&lock_path, "Codex provider sync lock")? else {
-        return Ok(false);
-    };
-    if !metadata.is_dir() {
-        return Err(format!(
-            "SEC_INVALID_INPUT: provider sync lock is not a directory path={}",
-            lock_path.display()
-        )
-        .into());
-    }
-    fs::remove_dir_all(&lock_path).map_err(|error| {
-        format!(
-            "failed to remove stale lock {}: {error}",
-            lock_path.display()
-        )
-    })?;
-    Ok(true)
-}
-
-fn remove_created_provider_sync_backup(
-    home: &Path,
-    backup_dir: &Path,
-    remove_empty_root: bool,
-) -> AppResult<()> {
-    if !backup_dir.exists() {
-        return Ok(());
-    }
-    let root = home.join(PROVIDER_SYNC_BACKUP_ROOT);
-    if backup_dir.parent() != Some(root.as_path())
-        || managed_backup_created_at(backup_dir)?.is_none()
-    {
-        return Err(format!(
-            "SEC_INVALID_INPUT: refusing to remove unverified provider sync backup {}",
-            backup_dir.display()
-        )
-        .into());
-    }
-    fs::remove_dir_all(backup_dir).map_err(|error| {
-        format!(
-            "failed to remove rolled-back provider sync backup {}: {error}",
-            backup_dir.display()
-        )
-    })?;
-    if remove_empty_root
-        && fs::read_dir(&root)
-            .map_err(|error| format!("failed to inspect backup root {}: {error}", root.display()))?
-            .next()
-            .is_none()
-    {
-        fs::remove_dir(&root).map_err(|error| {
-            format!(
-                "failed to remove rolled-back provider sync backup root {}: {error}",
-                root.display()
-            )
-        })?;
     }
     Ok(())
 }

@@ -3,11 +3,10 @@ import type { CliKey } from "../services/providers/providers";
 import {
   cliProxySetEnabled,
   cliProxyStatusAll,
-  createCliProxyStatus,
   type CliProxyStatus,
   validateCliProxyCliKey,
 } from "../services/cli/cliProxy";
-import { cliProxyKeys, codexRetryGatewayKeys } from "./keys";
+import { cliProxyKeys } from "./keys";
 
 export function useCliProxyStatusAllQuery(options?: { enabled?: boolean }) {
   return useQuery({
@@ -34,11 +33,12 @@ export function useCliProxySetEnabledMutation() {
         const exists = cur.some((row) => row.cli_key === cliKey);
         if (!exists) {
           return [
-            createCliProxyStatus({
+            {
               cli_key: cliKey,
               enabled: input.enabled,
+              base_origin: null,
               applied_to_current_gateway: input.enabled ? true : null,
-            }),
+            },
             ...cur,
           ];
         }
@@ -62,7 +62,6 @@ export function useCliProxySetEnabledMutation() {
     },
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
-      queryClient.invalidateQueries({ queryKey: codexRetryGatewayKeys.status() });
     },
   });
 }
