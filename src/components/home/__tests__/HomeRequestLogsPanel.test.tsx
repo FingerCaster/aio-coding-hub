@@ -1534,7 +1534,7 @@ describe("components/home/HomeRequestLogsPanel", () => {
 
     // spot-check some conditional text rendering paths
     expect(screen.getAllByText("未知").length).toBeGreaterThan(0);
-    expect(screen.getByText("切换 2 次")).toBeInTheDocument();
+    expect(screen.getByText("2 家 · 切换 1 次 · 尝试 2 次")).toBeInTheDocument();
     expect(screen.getByText("会话复用")).toBeInTheDocument();
     expect(screen.getByText("x1.50")).toBeInTheDocument();
     expect(screen.getByRole("button", { name: /500 已中断/ })).toBeInTheDocument();
@@ -1824,10 +1824,10 @@ describe("components/home/HomeRequestLogsPanel", () => {
     fireEvent.click(screen.getByRole("switch", { name: "最近使用记录简洁模式" }));
 
     // 标签文本应包含切换摘要
-    expect(screen.getByText("切换 4 次")).toBeInTheDocument();
+    expect(screen.getByText("2 家 · 切换 1 次 · 尝试 4 次")).toBeInTheDocument();
 
     // 鼠标悬停触发 tooltip 显示富文本内容
-    const routeLabel = screen.getByText("切换 4 次");
+    const routeLabel = screen.getByText("2 家 · 切换 1 次 · 尝试 4 次");
     await user.hover(routeLabel);
 
     // tooltip 路径概览中应显示 provider 名称

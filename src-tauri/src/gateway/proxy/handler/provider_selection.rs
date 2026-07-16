@@ -141,7 +141,8 @@ pub(super) fn resolve_session_bound_provider_id(
             } else {
                 let allow = circuit.should_allow(bound_provider_id, created_at).allow;
                 if !allow {
-                    providers.retain(|provider| provider.id != bound_provider_id);
+                    // Keep the provider in the candidate list so the common failover gate owns
+                    // the authoritative circuit decision and records the skipped attempt.
                     return None;
                 }
             }

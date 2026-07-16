@@ -3,7 +3,7 @@
   "name": "fix-multi-provider-failover-503",
   "title": "修复多供应商故障转移提前返回 503",
   "description": "修复会话绑定供应商在统一 gate 前被静默移除造成的 503 链路漏记，并校正切换/尝试展示。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

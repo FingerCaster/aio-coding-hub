@@ -1,7 +1,7 @@
 // Usage:
 // - 链路 tooltip 的富文本内容组件，展示请求路径概览 + 每个 provider 的尝试详情。
 // - 由 `buildRequestRouteMeta` 在 requestLogPresentation.ts 中调用。
-// - skipped 的 provider 不在 hops 中，仅通过标签 [跳过*N] 提示。
+// - skipped provider 也是 route hop，并在详情中明确标记为未发出上游请求。
 
 import type { RequestLogRouteHop } from "../../services/gateway/requestLogs";
 import { cn } from "../../utils/cn";

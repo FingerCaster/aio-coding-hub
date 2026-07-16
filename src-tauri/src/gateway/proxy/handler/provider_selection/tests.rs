@@ -309,7 +309,7 @@ fn default_mode_switches_to_enabled_provider_after_bound_provider_disabled_and_c
 }
 
 #[test]
-fn sort_mode_ignores_global_provider_enabled_but_open_circuit_prevents_session_reuse() {
+fn sort_mode_retains_open_bound_provider_for_the_common_gate() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("test.db");
     let db = crate::db::init_for_tests(&db_path).expect("init db");
@@ -340,7 +340,7 @@ fn sort_mode_ignores_global_provider_enabled_but_open_circuit_prevents_session_r
         Some(&[p1.id, p2.id]),
     );
 
-    assert_eq!(ids(&enabled), vec![p2.id]);
+    assert_eq!(ids(&enabled), vec![p1.id, p2.id]);
     assert_eq!(selected, None);
     assert_eq!(
         session.get_bound_provider("claude", "sess_1", now),

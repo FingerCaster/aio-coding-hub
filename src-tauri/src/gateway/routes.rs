@@ -3104,6 +3104,292 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_records_all_session_bound_gate_skips_without_upstream_calls() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-route-all-gate-skips.sqlite"))
+            .expect("init test db");
+        let unavailable_body = r#"{"error":{"message":"must not be called"}}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, unavailable_body)
+                .await;
+        let (bound_url, bound_calls, bound_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, unavailable_body)
+                .await;
+        let (third_url, third_calls, third_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, unavailable_body)
+                .await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Open", first_url, 0);
+        let bound_id = insert_codex_provider_with_priority(&db, "Bound Open", bound_url, 1);
+        let third_id = insert_codex_provider_with_priority(&db, "Third Open", third_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        for provider_id in [first_id, bound_id, third_id] {
+            circuit.record_failure(provider_id, now, None);
+        }
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000001";
+        session.bind_success("codex", session_id, bound_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            session.clone(),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
+            .body(Body::from(
+                r#"{"model":"gpt-all-gate-skips","messages":[{"role":"user","content":"hello"},{"role":"assistant","content":"hi"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::AllProvidersUnavailable.as_str())
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 3);
+        assert!(attempts
+            .iter()
+            .all(|attempt| attempt.get("outcome").and_then(Value::as_str) == Some("skipped")));
+        let mut attempted_provider_ids: Vec<i64> = attempts
+            .iter()
+            .filter_map(|attempt| attempt.get("provider_id").and_then(Value::as_i64))
+            .collect();
+        attempted_provider_ids.sort_unstable();
+        let mut expected_provider_ids = vec![first_id, bound_id, third_id];
+        expected_provider_ids.sort_unstable();
+        assert_eq!(attempted_provider_ids, expected_provider_ids);
+
+        let provider_chain: Value =
+            serde_json::from_str(log.provider_chain_json.as_deref().expect("provider chain"))
+                .expect("provider chain json");
+        let chain = provider_chain.as_array().expect("provider chain array");
+        assert_eq!(chain.len(), 3);
+        assert!(chain
+            .iter()
+            .all(|hop| hop.get("outcome").and_then(Value::as_str) == Some("skipped")));
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(bound_id)
+        );
+        for call_count in [&first_calls, &bound_calls, &third_calls] {
+            assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+
+        first_task.abort();
+        bound_task.abort();
+        third_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_gate_skips_do_not_consume_ready_provider_cap() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-route-skips-ready-cap.sqlite"))
+            .expect("init test db");
+        let unavailable_body = r#"{"error":{"message":"must not be called"}}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, unavailable_body)
+                .await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, unavailable_body)
+                .await;
+        let success_body = r#"{"id":"third-ok","object":"chat.completion","choices":[]}"#;
+        let (third_url, third_calls, third_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Open", first_url, 0);
+        let second_id = insert_codex_provider_with_priority(&db, "Second Open", second_url, 1);
+        let third_id = insert_codex_provider_with_priority(&db, "Third Ready", third_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(first_id, now, None);
+        circuit.record_failure(second_id, now, None);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-skips-ready-cap","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 3);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(first_id)
+        );
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(second_id)
+        );
+        assert_eq!(
+            attempts[1].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(
+            attempts[2].get("provider_id").and_then(Value::as_i64),
+            Some(third_id)
+        );
+        assert_eq!(
+            attempts[2].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(third_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        first_task.abort();
+        second_task.abort();
+        third_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_ready_provider_cap_stops_before_third_ready_provider() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ready-cap-boundary.sqlite"),
+        )
+        .expect("init test db");
+        let failure_body = r#"{"error":{"message":"upstream failure"}}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let success_body = r#"{"id":"must-not-run","object":"chat.completion","choices":[]}"#;
+        let (third_url, third_calls, third_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Ready", first_url, 0);
+        let second_id = insert_codex_provider_with_priority(&db, "Second Ready", second_url, 1);
+        insert_codex_provider_with_priority(&db, "Third Ready", third_url, 2);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-ready-cap-boundary","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(first_id)
+        );
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(second_id)
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(third_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        first_task.abort();
+        second_task.abort();
+        third_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn mock_runtime_router_large_known_length_5xx_uses_bounded_error_preview() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");

@@ -754,8 +754,8 @@ describe("components/home/requestLogPresentation", () => {
       hasFailover: false,
       attemptCount: 5,
     });
-    expect(skippedAndRetry.label).toBe("跳过 2 个 + 重试");
-    expect(skippedAndRetry.summary).toBe("跳过 2 个候选，并重试 3 次");
+    expect(skippedAndRetry.label).toBe("2 家 · 切换 1 次 · 尝试 5 次");
+    expect(skippedAndRetry.summary).toBe("2 家供应商，切换 1 次，共 5 次尝试后结束");
     expect(skippedAndRetry.tooltipText).toContain("未知（已跳过，尝试 2 次）");
     expect(skippedAndRetry.tooltipText).toContain("Provider B（504，上游超时，尝试 3 次）");
 
@@ -768,8 +768,13 @@ describe("components/home/requestLogPresentation", () => {
       hasFailover: true,
       attemptCount: 2,
     });
-    expect(failover.label).toBe("切换 2 次");
-    expect(failover.summary).toBe("切换 2 次后成功");
+    expect(failover).toMatchObject({
+      providerCount: 2,
+      transitionCount: 1,
+      attemptCount: 2,
+      label: "2 家 · 切换 1 次 · 尝试 2 次",
+      summary: "2 家供应商，切换 1 次，共 2 次尝试后成功",
+    });
 
     const failedFailover = buildRequestRouteMeta({
       route: [
@@ -780,7 +785,7 @@ describe("components/home/requestLogPresentation", () => {
       hasFailover: true,
       attemptCount: 2,
     });
-    expect(failedFailover.summary).toBe("切换 2 次后结束");
+    expect(failedFailover.summary).toBe("2 家供应商，切换 1 次，共 2 次尝试后结束");
 
     const skippedOnly = buildRequestRouteMeta({
       route: [
@@ -797,8 +802,41 @@ describe("components/home/requestLogPresentation", () => {
       hasFailover: false,
       attemptCount: 3,
     });
-    expect(skippedOnly.label).toBe("跳过 2 个");
-    expect(skippedOnly.summary).toBe("跳过 2 个候选");
+    expect(skippedOnly.label).toBe("2 家 · 切换 1 次 · 尝试 3 次");
+    expect(skippedOnly.summary).toBe("2 家供应商，切换 1 次，共 3 次尝试后成功");
+
+    const threeProvidersWithSkipsAndRetry = buildRequestRouteMeta({
+      route: [
+        createRequestLogRouteHop({
+          provider_name: "Provider A",
+          ok: false,
+          skipped: true,
+          attempts: 1,
+        }),
+        createRequestLogRouteHop({
+          provider_name: "Provider B",
+          ok: false,
+          status: 500,
+          attempts: 2,
+        }),
+        createRequestLogRouteHop({
+          provider_name: "Provider C",
+          ok: true,
+          status: 200,
+          attempts: 1,
+        }),
+      ],
+      status: 200,
+      hasFailover: true,
+      attemptCount: 4,
+    });
+    expect(threeProvidersWithSkipsAndRetry).toMatchObject({
+      providerCount: 3,
+      transitionCount: 2,
+      attemptCount: 4,
+      label: "3 家 · 切换 2 次 · 尝试 4 次",
+      summary: "3 家供应商，切换 2 次，共 4 次尝试后成功",
+    });
 
     const implicitAttempts = buildRequestRouteMeta({
       route: [

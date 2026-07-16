@@ -7,6 +7,9 @@ TypeScript bindings, frontend adapters, and React UI.
 
 - [Codex config contract](./codex-config-contract.md): typed config fields,
   patch semantics, raw TOML validation, generated bindings, and UI behavior.
+- [Gateway failover route contract](./gateway-failover-route-contract.md):
+  common provider-gate ownership, Ready-provider limits, persisted attempts,
+  route hops, and UI count semantics.
 
 ## Pre-Development Checklist
 
@@ -28,3 +31,5 @@ When changing a Codex `config.toml` field:
 - Verify unrelated patches preserve fields that they do not own.
 - Run focused tests, `pnpm typecheck`, `pnpm lint`, `pnpm tauri:fmt`, and
   `pnpm check:generated-bindings`.
+- When changing gateway selection or failover, verify skipped candidates,
+  Ready-provider limits, route projection, and attempt/transition labels together.
