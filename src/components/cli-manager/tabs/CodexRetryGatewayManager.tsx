@@ -903,7 +903,7 @@ export function CodexRetryGatewayManager({
                           size="sm"
                           variant="secondary"
                           onClick={() => void onPickNode()}
-                          disabled={Boolean(managerBusy)}
+                          disabled={Boolean(managerBusy) || currentStatus.desired_enabled}
                         >
                           选择 Node
                         </Button>
@@ -912,11 +912,16 @@ export function CodexRetryGatewayManager({
                           size="sm"
                           variant="secondary"
                           onClick={() => void onResetNode()}
-                          disabled={Boolean(managerBusy)}
+                          disabled={Boolean(managerBusy) || currentStatus.desired_enabled}
                         >
                           恢复自动
                         </Button>
                       </div>
+                      {currentStatus.desired_enabled ? (
+                        <div className="text-xs text-muted-foreground">
+                          请先关闭拦截网关，再修改 Node.js 运行时。
+                        </div>
+                      ) : null}
                     </div>
                   </div>
 

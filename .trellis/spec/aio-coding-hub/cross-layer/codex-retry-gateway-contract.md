@@ -55,6 +55,12 @@ that `null`; it is not a missing-result error.
 - Every chain-affecting operation uses `gateway_lifecycle_lock`. Enable,
   disable, CLI-proxy changes, external restore, update, startup recovery, and
   provider-mode changes must not use an independent lifecycle lock.
+- Starting and health-checking the external process does not commit enablement.
+  The enable transaction captures the complete prior settings and manager
+  state before runtime mutation. If guarded-route activation fails, it stops
+  the candidate process and restores desired state, commit metadata, effective
+  port, process record, and recovery metadata while advancing generation
+  monotonically.
 - Startup order is fixed: reconcile the persisted Codex route, take over any
   pending managed-process launch, then reconcile desired runtime state. A
   quarantined route journal becomes a public warning without skipping the
@@ -69,6 +75,11 @@ that `null`; it is not a missing-result error.
   Corrupt or oversized journals/snapshots are moved under the owned quarantine
   root and retained for diagnosis; they must not permanently block direct-AIO
   fail-open.
+- Corrupt Provider Sync journals or snapshots follow the same fail-open rule.
+  Move the complete transaction under the owned Provider Sync quarantine root,
+  clear its stale lock, surface a recovery warning, and continue the pending
+  route journal. Never partially restore Provider Sync targets before deciding
+  to quarantine.
 - Provider Sync snapshots are bounded before persistence and recovery: at most
   4096 entries, 128 MiB per file, and 256 MiB aggregate. Schema 2 records byte
   length and SHA-256; recovery preflights every backup before the first target
@@ -85,10 +96,21 @@ that `null`; it is not a missing-result error.
 - Automatic Node discovery may canonicalize a package-manager symlink to a
   concrete executable. A manual override rejects symlink/reparse input before
   probing and never replaces a prior valid override on failure.
+- Node selection is not a hot runtime switch. Reject manual/automatic Node
+  changes while external desired state is enabled. A successful disabled-state
+  change advances manager generation so old enable plans and late status
+  responses become stale before the next launch.
 - Official gateway health and status must agree on the same non-zero top-level
   `process_id`; any nested state PID, when present, must also agree. Spawned
   children are asynchronously reaped so an exited PID cannot retain a stale
   Windows process identity.
+- ZIP extraction enforces its single-file and aggregate byte budgets against
+  bytes actually read and written, not only entry-declared uncompressed sizes.
+  Archive paths reject non-portable Windows alternate-data-stream segments.
+- Release jobs build locally first, unpack each installer and portable artifact
+  with platform-native tools, and reject external gateway source paths, its
+  entrypoint/dependency tree, or a bundled Node runtime before the first
+  workflow-artifact or GitHub Release upload.
 
 ### 4. Validation & Error Matrix
 
@@ -98,12 +120,14 @@ that `null`; it is not a missing-result error.
 | Guarded config, auth, or origin drift | `cli_proxy_applied=false`; never report guarded protection |
 | Corrupt route journal | Quarantine it, surface `TRANSITION_CORRUPT`, continue safe reconciliation |
 | Any rollback snapshot is missing, oversized, or hash-invalid | Fail before writing any target |
+| Provider Sync recovery material is corrupt during route recovery | Quarantine it, warn, and continue the route journal |
 | Bridge view ID is not exactly 32 hex characters | `CODEX_RETRY_GATEWAY_BRIDGE_SESSION_INVALID` |
 | Revoke succeeds with Tauri `null` | Resolve successfully in service/query layers |
 | Launch token is missing, expired, or reused | HTTP 410; do not create a cookie session |
 | API request is cross-site or a mutation lacks exact origin | HTTP 403 |
 | Health/status process IDs differ | Treat the process as unowned/unhealthy |
 | Manual Node override is a link, directory, relative path, or Node < 18 | Reject and preserve prior selection |
+| Node selection changes while desired state is enabled | Reject without changing settings, process, or generation |
 
 ### 5. Good / Base / Bad Cases
 
@@ -123,10 +147,15 @@ that `null`; it is not a missing-result error.
 ### 6. Tests Required
 
 - Rust lifecycle tests assert route -> pending launch -> desired runtime order,
-  enable result propagation, and direct-route-before-stop ordering.
+  enable result propagation, complete runtime metadata rollback after guarded
+  route failure, monotonic rollback generation, and direct-route-before-stop
+  ordering.
 - CLI-proxy and Provider Sync tests corrupt the last snapshot and assert every
   target remains byte-for-byte unchanged; cover count, size, hash, duplicate,
   and quarantine bounds.
+- A cross-transaction test keeps both Provider Sync and route journals pending,
+  corrupts Provider Sync recovery material, and proves quarantine does not
+  prevent verified route recovery or its public warning.
 - Provider Sync JSONL tests cover provider names that grow/shrink, CRLF, unknown
   rows, malformed rows, and a final line without a newline.
 - Bridge tests cover single-use launch tokens, origin/fetch-site/referrer rules,
@@ -138,6 +167,10 @@ that `null`; it is not a missing-result error.
 - Process tests require matching health/status PIDs and prove exited children
   are reaped. Run generated bindings, full Rust, precommit, prepush, build, and
   installer-content gates before release.
+- Node tests cover enabled-state rejection, disabled-state generation advance,
+  stale plan invalidation, and UI controls that explain the disable-first rule.
+  The installer-content gate has a self-test and workflow-order contract that
+  prevents any upload-capable build step from preceding it.
 
 ### 7. Wrong vs Correct
 

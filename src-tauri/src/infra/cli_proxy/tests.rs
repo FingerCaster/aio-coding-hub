@@ -2225,7 +2225,7 @@ remote_compaction = false
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn interrupted_managed_provider_change_restores_route_and_runtime_snapshots() {
+async fn corrupt_provider_sync_transaction_is_quarantined_before_route_recovery() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
     let store = FakeTransitionStore::default();
@@ -2306,6 +2306,10 @@ remote_compaction = false
         crate::infra::codex_provider_sync::has_pending_provider_sync_recovery(&handle)
             .expect("provider journal status")
     );
+    let codex_home = crate::codex_paths::codex_home_dir(&handle).expect("Codex home");
+    let provider_transaction_root = codex_home.join("tmp/provider-sync-transaction");
+    std::fs::write(provider_transaction_root.join("journal.json"), b"{")
+        .expect("corrupt provider sync journal");
     std::fs::write(&manifest_path, b"{").expect("corrupt partial manifest");
 
     let file_store = crate::infra::codex_retry_gateway::FileCodexRetryGatewayTransitionStore::new(
@@ -2314,6 +2318,13 @@ remote_compaction = false
     let reconciled =
         reconcile_pending_route(&handle, &file_store).expect("recover interrupted provider change");
     assert_eq!(reconciled.pending_transition_reconciled, Some(false));
+    assert!(
+        reconciled
+            .recovery_warning
+            .as_deref()
+            .is_some_and(|warning| warning.contains("CODEX_PROVIDER_SYNC_TRANSITION_CORRUPT")),
+        "{reconciled:?}"
+    );
     assert_eq!(reconciled.route.route_mode, CodexRouteMode::Guarded);
     assert!(reconciled.route.live_matches_projection);
     assert!(reconciled.route.auth_matches_projection);
@@ -2331,6 +2342,15 @@ remote_compaction = false
         !crate::infra::codex_provider_sync::has_pending_provider_sync_recovery(&handle)
             .expect("provider journal cleared")
     );
+    let quarantine_root = codex_home.join("backups_state/provider-sync-quarantine");
+    let quarantine = std::fs::read_dir(&quarantine_root)
+        .expect("read provider sync quarantine")
+        .next()
+        .expect("provider sync quarantine entry")
+        .expect("read provider sync quarantine entry")
+        .path();
+    assert!(quarantine.join("transaction").is_dir());
+    assert!(quarantine.join("quarantine.json").is_file());
     crate::test_support::codex_provider_sync_set_running_override_for_tests(None);
 }
 

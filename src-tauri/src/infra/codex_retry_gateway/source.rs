@@ -14,7 +14,7 @@ use reqwest::{Client, StatusCode, Url};
 use serde::Deserialize;
 use sha2::{Digest, Sha256};
 use std::collections::HashSet;
-use std::io::{Cursor, Read};
+use std::io::{Cursor, Read, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::time::{Duration, Instant};
@@ -548,6 +548,7 @@ fn extract_source_zip(zip_bytes: &[u8], staging_dir: &Path) -> AppResult<PathBuf
     let mut root_name: Option<String> = None;
     let mut extracted_bytes = 0_u64;
     let mut seen_paths = HashSet::new();
+    let mut actual_extracted_bytes = 0_u64;
     for index in 0..archive.len() {
         let file = archive.by_index(index).map_err(|err| {
             AppError::new(
@@ -673,26 +674,70 @@ fn extract_source_zip(zip_bytes: &[u8], staging_dir: &Path) -> AppResult<PathBuf
                 format!("failed to create {}: {err}", output_path.display()),
             )
         })?;
-        let remaining_limit = SOURCE_ZIP_MAX_FILE_BYTES.min(SOURCE_ZIP_MAX_EXTRACTED_BYTES);
-        let copied = {
-            let mut limited = file.by_ref().take(remaining_limit + 1);
-            std::io::copy(&mut limited, &mut output)
+        copy_zip_entry_with_budget(
+            &mut file,
+            &mut output,
+            &mut actual_extracted_bytes,
+            SOURCE_ZIP_MAX_FILE_BYTES,
+            SOURCE_ZIP_MAX_EXTRACTED_BYTES,
+            &output_path,
+        )?;
+    }
+
+    Ok(root)
+}
+
+fn copy_zip_entry_with_budget<R: Read, W: Write>(
+    input: &mut R,
+    output: &mut W,
+    actual_extracted_bytes: &mut u64,
+    max_file_bytes: u64,
+    max_total_bytes: u64,
+    output_path: &Path,
+) -> AppResult<u64> {
+    let remaining_total = max_total_bytes.saturating_sub(*actual_extracted_bytes);
+    let hard_limit = max_file_bytes.min(remaining_total);
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 16 * 1024];
+
+    loop {
+        let read = input.read(&mut buffer).map_err(|err| {
+            AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_EXTRACT_FAILED",
+                format!("failed to read {}: {err}", output_path.display()),
+            )
+        })?;
+        if read == 0 {
+            break;
         }
-        .map_err(|err| {
+        let next = copied.checked_add(read as u64).ok_or_else(|| {
+            AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
+                "source archive extracted content size overflowed",
+            )
+        })?;
+        if next > hard_limit {
+            return Err(AppError::new(
+                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
+                "source archive actual extracted content exceeds limits",
+            ));
+        }
+        output.write_all(&buffer[..read]).map_err(|err| {
             AppError::new(
                 "CODEX_RETRY_GATEWAY_SOURCE_EXTRACT_FAILED",
                 format!("failed to write {}: {err}", output_path.display()),
             )
         })?;
-        if copied > remaining_limit {
-            return Err(AppError::new(
-                "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
-                "source archive extracted content exceeds limits",
-            ));
-        }
+        copied = next;
     }
 
-    Ok(root)
+    *actual_extracted_bytes = actual_extracted_bytes.checked_add(copied).ok_or_else(|| {
+        AppError::new(
+            "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE",
+            "source archive actual extracted content size overflowed",
+        )
+    })?;
+    Ok(copied)
 }
 
 fn archive_entry_exceeds_compression_ratio(uncompressed: u64, compressed: u64) -> bool {
@@ -724,7 +769,15 @@ fn normalize_zip_entry(name: &str) -> AppResult<PathBuf> {
     let mut clean = PathBuf::new();
     for component in path.components() {
         match component {
-            Component::Normal(segment) => clean.push(segment),
+            Component::Normal(segment) => {
+                if segment.to_string_lossy().contains(':') {
+                    return Err(AppError::new(
+                        "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID",
+                        "source archive contains a non-portable path segment",
+                    ));
+                }
+                clean.push(segment);
+            }
             Component::CurDir => {}
             Component::ParentDir | Component::RootDir | Component::Prefix(_) => {
                 return Err(AppError::new(
@@ -1039,7 +1092,6 @@ mod tests {
     use axum::extract::Path as AxumPath;
     use axum::routing::get;
     use axum::{Json, Router};
-    use std::io::Write;
     use tempfile::tempdir;
 
     #[test]
@@ -1135,6 +1187,43 @@ mod tests {
             error.code(),
             "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_COMPRESSION_RATIO"
         );
+    }
+
+    #[test]
+    fn actual_archive_copy_enforces_the_aggregate_budget_before_writing_overflow() {
+        let mut actual_total = 0_u64;
+        let mut first_output = Vec::new();
+        let first = copy_zip_entry_with_budget(
+            &mut Cursor::new(b"123456"),
+            &mut first_output,
+            &mut actual_total,
+            8,
+            10,
+            Path::new("first"),
+        )
+        .unwrap();
+        assert_eq!(first, 6);
+        assert_eq!(actual_total, 6);
+
+        let mut overflow_output = Vec::new();
+        let error = copy_zip_entry_with_budget(
+            &mut Cursor::new(b"abcdef"),
+            &mut overflow_output,
+            &mut actual_total,
+            8,
+            10,
+            Path::new("overflow"),
+        )
+        .unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_TOO_LARGE");
+        assert!(overflow_output.is_empty());
+        assert_eq!(actual_total, 6);
+    }
+
+    #[test]
+    fn source_archive_rejects_windows_alternate_data_stream_paths() {
+        let error = normalize_zip_entry("root/scripts/gateway.mjs:payload").unwrap_err();
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_SOURCE_ARCHIVE_INVALID");
     }
 
     #[cfg(windows)]

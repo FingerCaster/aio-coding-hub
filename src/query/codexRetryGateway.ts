@@ -127,15 +127,6 @@ export function useCodexRetryGatewaySetNodeOverrideMutation() {
   return useMutation({
     mutationFn: (request: CodexRetryGatewaySetNodeOverrideRequest) =>
       codexRetryGatewaySetNodeOverride(request),
-    onSuccess: (nodeStatus, request) => {
-      queryClient.setQueryData<CodexRetryGatewayStatusType | null>(
-        codexRetryGatewayKeys.status(),
-        (current) => {
-          if (!current || current.generation !== request.generation) return current;
-          return { ...current, node_status: nodeStatus };
-        }
-      );
-    },
     onSettled: () => {
       void queryClient.invalidateQueries({ queryKey: codexRetryGatewayKeys.status() });
     },

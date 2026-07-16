@@ -447,7 +447,6 @@ async fn enable_gateway_unlocked(
     app: &tauri::AppHandle,
     request: CodexRetryGatewaySetEnabledRequest,
 ) -> AppResult<CodexRetryGatewaySetEnabledResult> {
-    let before = codex_retry_gateway::current_status(app).await?;
     let prepared = prepare_enable_plan_unlocked(app).await?;
     if request.plan_generation != prepared.public.generation {
         return Err(stale_generation_error(
@@ -473,6 +472,7 @@ async fn enable_gateway_unlocked(
         .await?;
     }
 
+    let runtime_rollback = codex_retry_gateway::capture_runtime_enable_rollback(app).await?;
     let enable_result = start_then_verified_route(
         || {
             codex_retry_gateway::set_runtime_enabled(
@@ -485,22 +485,7 @@ async fn enable_gateway_unlocked(
             )
         },
         || route_guarded_if_healthy_unlocked(app, CodexRetryGatewayOperationKind::Enable),
-        || async {
-            if before.desired_enabled {
-                return Ok(());
-            }
-            let current = codex_retry_gateway::current_status(app).await?;
-            codex_retry_gateway::set_runtime_enabled(
-                app,
-                CodexRetryGatewaySetEnabledRequest {
-                    enabled: false,
-                    plan_generation: current.generation,
-                    confirmation: Default::default(),
-                },
-            )
-            .await?;
-            Ok(())
-        },
+        || codex_retry_gateway::rollback_runtime_enable(app, runtime_rollback),
     )
     .await;
     let (_, provider_sync) = match enable_result {

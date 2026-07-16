@@ -34,7 +34,7 @@
     "plugin-sdk:typecheck": "pnpm --filter @aio-coding-hub/plugin-sdk typecheck",
     "create-aio-plugin:test": "pnpm --filter create-aio-plugin test",
     "test:e2e": "vitest run src/e2e",
-    "check:support-matrix": "node scripts/support-matrix.mjs check",
+    "check:support-matrix": "node scripts/support-matrix.mjs check && node scripts/check-release-bundle-inventory.selftest.mjs",
     "check:homebrew-cask": "node scripts/support-matrix.homebrew-cask.selftest.mjs",
     "check:precommit": "node scripts/run-checks.mjs precommit",
     "check:prepush": "node scripts/run-checks.mjs prepush",

@@ -64,6 +64,10 @@ struct RuntimeRollbackState {
     restart_process: bool,
 }
 
+pub(crate) struct RuntimeEnableRollback {
+    state: RuntimeRollbackState,
+}
+
 fn lifecycle_callback_slot() -> &'static RwLock<Arc<dyn CodexRetryGatewayLifecycleCallback>> {
     LIFECYCLE_CALLBACK.get_or_init(|| RwLock::new(Arc::new(RuntimeFailClosedCallback)))
 }
@@ -247,6 +251,50 @@ pub(crate) async fn set_runtime_enabled<R: tauri::Runtime>(
     }
 }
 
+pub(crate) async fn capture_runtime_enable_rollback<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<RuntimeEnableRollback> {
+    let settings = crate::settings::read(app)?;
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
+    let manager = read_manager_state(&paths)?;
+    let restart_process = if let Some(record) = manager.process_record.as_ref() {
+        reconcile_runtime_process(&paths, Some(record), manager.effective_port)
+            .await?
+            .managed
+            .is_some()
+    } else {
+        false
+    };
+    Ok(RuntimeEnableRollback {
+        state: RuntimeRollbackState {
+            settings,
+            manager,
+            restart_process,
+        },
+    })
+}
+
+pub(crate) async fn rollback_runtime_enable<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    rollback: RuntimeEnableRollback,
+) -> AppResult<()> {
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
+    let current = read_manager_state(&paths)?;
+    let prior_record = rollback.state.manager.process_record.as_ref();
+    let current_record = current.process_record.as_ref();
+    let prior_process_still_running =
+        rollback.state.restart_process && current_record == prior_record;
+
+    if current_record.is_some() && current_record != prior_record {
+        stop_verified_record_for_change(&paths, &current, "enable rollback").await?;
+    }
+
+    let mut state = rollback.state;
+    state.manager.generation = current.generation.saturating_add(1);
+    state.restart_process = state.restart_process && !prior_process_still_running;
+    rollback_runtime_state(app, &paths, &state).await
+}
+
 pub(crate) async fn apply_selected_commit<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     request: CodexRetryGatewayApplyCommitRequest,
@@ -391,7 +439,31 @@ pub(crate) async fn set_runtime_node_override<R: tauri::Runtime>(
             "node override generation no longer matches the runtime state",
         ));
     }
-    crate::infra::codex_retry_gateway::node::set_node_override(app, request.executable.as_deref())
+    if status.desired_enabled {
+        return Err(AppError::new(
+            "CODEX_RETRY_GATEWAY_NODE_CHANGE_REQUIRES_DISABLED",
+            "disable the reasoning guard gateway before changing its Node.js runtime",
+        ));
+    }
+
+    let previous_settings = crate::settings::read(app)?;
+    let paths = CodexRetryGatewayManagerPaths::from_app(app)?;
+    let mut manager = read_manager_state(&paths)?;
+    let node_status = crate::infra::codex_retry_gateway::node::set_node_override(
+        app,
+        request.executable.as_deref(),
+    )?;
+    manager.generation = manager.generation.saturating_add(1);
+    if let Err(error) = write_manager_state(&paths, &manager) {
+        return match crate::settings::write(app, &previous_settings) {
+            Ok(_) => Err(error),
+            Err(rollback_error) => Err(AppError::new(
+                error.code(),
+                format!("{error}; failed to restore Node selection: {rollback_error}"),
+            )),
+        };
+    }
+    Ok(node_status)
 }
 
 pub(crate) async fn retry_runtime_recovery<R: tauri::Runtime>(
@@ -1465,6 +1537,153 @@ mod tests {
         manager.recovery_paused = true;
         write_manager_state(&ctx.paths, &manager).unwrap();
         assert!(!runtime_recovery_due(&ctx.app).unwrap());
+    }
+
+    #[tokio::test]
+    async fn enable_rollback_restores_complete_metadata_with_monotonic_generation() {
+        let ctx = RuntimeTestContext::new();
+        let prior_active = "1".repeat(40);
+        let prior_previous = "2".repeat(40);
+        let prior_verified = "3".repeat(40);
+        let prior_settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: false,
+            codex_retry_gateway_selected_commit: prior_active.clone(),
+            codex_retry_gateway_preferred_port: 4620,
+            ..Default::default()
+        };
+        crate::settings::write(&ctx.app, &prior_settings).unwrap();
+        let prior_manager = CodexRetryGatewayManagerState {
+            generation: 7,
+            active_commit: Some(prior_active.clone()),
+            previous_commit: Some(prior_previous.clone()),
+            effective_port: Some(4620),
+            verified_main_commit: Some(prior_verified.clone()),
+            recovery_failure_count: 4,
+            recovery_next_retry_at_ms: Some(123_456),
+            recovery_paused: true,
+            last_error: Some(runtime_public_error_message("PRIOR_ERROR", "prior failure")),
+            ..Default::default()
+        };
+        write_manager_state(&ctx.paths, &prior_manager).unwrap();
+        let rollback = capture_runtime_enable_rollback(&ctx.app).await.unwrap();
+
+        let enabled_settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: true,
+            codex_retry_gateway_selected_commit: "4".repeat(40),
+            codex_retry_gateway_preferred_port: 4630,
+            ..Default::default()
+        };
+        crate::settings::write(&ctx.app, &enabled_settings).unwrap();
+        write_manager_state(
+            &ctx.paths,
+            &CodexRetryGatewayManagerState {
+                generation: 8,
+                active_commit: Some("4".repeat(40)),
+                previous_commit: Some(prior_active),
+                effective_port: Some(4630),
+                verified_main_commit: Some("5".repeat(40)),
+                recovery_failure_count: 0,
+                recovery_next_retry_at_ms: None,
+                recovery_paused: false,
+                last_error: None,
+                ..Default::default()
+            },
+        )
+        .unwrap();
+
+        rollback_runtime_enable(&ctx.app, rollback).await.unwrap();
+
+        let settings = crate::settings::read(&ctx.app).unwrap();
+        assert!(!settings.codex_retry_gateway_enabled);
+        assert_eq!(
+            settings.codex_retry_gateway_selected_commit,
+            prior_settings.codex_retry_gateway_selected_commit
+        );
+        assert_eq!(settings.codex_retry_gateway_preferred_port, 4620);
+        let manager = read_manager_state(&ctx.paths).unwrap();
+        assert_eq!(manager.generation, 9);
+        assert_eq!(manager.active_commit, Some("1".repeat(40)));
+        assert_eq!(manager.previous_commit, Some(prior_previous));
+        assert_eq!(manager.effective_port, Some(4620));
+        assert_eq!(manager.verified_main_commit, Some(prior_verified));
+        assert_eq!(manager.recovery_failure_count, 4);
+        assert_eq!(manager.recovery_next_retry_at_ms, Some(123_456));
+        assert!(manager.recovery_paused);
+        assert_eq!(
+            manager.last_error.as_ref().map(|error| error.code.as_str()),
+            Some("PRIOR_ERROR")
+        );
+        assert!(manager.process_record.is_none());
+    }
+
+    #[tokio::test]
+    async fn node_override_change_advances_generation_and_invalidates_old_plan() {
+        let ctx = RuntimeTestContext::new();
+        let manager = CodexRetryGatewayManagerState {
+            generation: 4,
+            ..Default::default()
+        };
+        write_manager_state(&ctx.paths, &manager).unwrap();
+
+        set_runtime_node_override(
+            &ctx.app,
+            CodexRetryGatewaySetNodeOverrideRequest {
+                generation: 4,
+                executable: None,
+            },
+        )
+        .await
+        .unwrap();
+
+        assert_eq!(read_manager_state(&ctx.paths).unwrap().generation, 5);
+        let error = set_runtime_node_override(
+            &ctx.app,
+            CodexRetryGatewaySetNodeOverrideRequest {
+                generation: 4,
+                executable: None,
+            },
+        )
+        .await
+        .expect_err("the pre-change generation must be stale");
+        assert_eq!(error.code(), "CODEX_RETRY_GATEWAY_STALE_GENERATION");
+    }
+
+    #[tokio::test]
+    async fn node_override_change_is_rejected_while_gateway_is_enabled() {
+        let ctx = RuntimeTestContext::new();
+        let settings = crate::settings::AppSettings {
+            codex_retry_gateway_enabled: true,
+            codex_retry_gateway_node_override: "C:/existing-node.exe".to_string(),
+            ..Default::default()
+        };
+        crate::settings::write(&ctx.app, &settings).unwrap();
+        let manager = CodexRetryGatewayManagerState {
+            generation: 6,
+            ..Default::default()
+        };
+        write_manager_state(&ctx.paths, &manager).unwrap();
+
+        let error = set_runtime_node_override(
+            &ctx.app,
+            CodexRetryGatewaySetNodeOverrideRequest {
+                generation: 6,
+                executable: None,
+            },
+        )
+        .await
+        .expect_err("enabled gateway must reject Node changes");
+
+        assert_eq!(
+            error.code(),
+            "CODEX_RETRY_GATEWAY_NODE_CHANGE_REQUIRES_DISABLED"
+        );
+        assert_eq!(
+            crate::settings::read(&ctx.app)
+                .unwrap()
+                .codex_retry_gateway_node_override,
+            "C:/existing-node.exe"
+        );
+        assert_eq!(read_manager_state(&ctx.paths).unwrap().generation, 6);
     }
 
     #[tokio::test]

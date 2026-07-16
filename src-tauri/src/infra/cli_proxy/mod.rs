@@ -2039,6 +2039,17 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
         app,
         provider_route.as_ref(),
     )?;
+    let recovery_warning = if provider_recovery
+        == crate::infra::codex_provider_sync::CodexProviderSyncRecoveryOutcome::Quarantined
+    {
+        let provider_warning = "CODEX_PROVIDER_SYNC_TRANSITION_CORRUPT: quarantined invalid Provider Sync recovery artifacts; continuing route recovery";
+        Some(match recovery_warning {
+            Some(route_warning) => format!("{route_warning}; {provider_warning}"),
+            None => provider_warning.to_string(),
+        })
+    } else {
+        recovery_warning
+    };
     if provider_recovery
         != crate::infra::codex_provider_sync::CodexProviderSyncRecoveryOutcome::None
     {
@@ -2084,11 +2095,15 @@ pub(crate) fn reconcile_pending_route<R: tauri::Runtime, S: CodexRetryGatewayTra
     let snapshot_bytes = match preflight_persistent_codex_route_snapshot_bytes(store, &transition) {
         Ok(bytes) => bytes,
         Err(error) => {
-            let recovery_warning = quarantine_corrupt_route_transition(store, &error)?;
+            let route_warning = quarantine_corrupt_route_transition(store, &error)?;
+            let recovery_warning = Some(match recovery_warning {
+                Some(provider_warning) => format!("{provider_warning}; {route_warning}"),
+                None => route_warning,
+            });
             return Ok(CodexRouteReconcileResult {
                 route: verify_route(app)?,
                 pending_transition_reconciled: None,
-                recovery_warning: Some(recovery_warning),
+                recovery_warning,
             });
         }
     };

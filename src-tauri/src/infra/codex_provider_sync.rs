@@ -22,6 +22,8 @@ const PROVIDER_SYNC_TRANSACTION_ROOT: &str = "tmp/provider-sync-transaction";
 const PROVIDER_SYNC_TRANSACTION_STAGING_PREFIX: &str = "provider-sync-transaction.staging-";
 const PROVIDER_SYNC_TRANSACTION_MANIFEST: &str = "journal.json";
 const PROVIDER_SYNC_TRANSACTION_APPLIED_MARKER: &str = "applied.json";
+const PROVIDER_SYNC_TRANSACTION_QUARANTINE_ROOT: &str = "backups_state/provider-sync-quarantine";
+const PROVIDER_SYNC_TRANSACTION_QUARANTINE_REASON_MAX_CHARS: usize = 4096;
 const PROVIDER_SYNC_TRANSACTION_SCHEMA_VERSION: u32 = 2;
 const PROVIDER_SYNC_TRANSACTION_MANIFEST_MAX_BYTES: usize = 1024 * 1024;
 const PROVIDER_SYNC_TRANSACTION_MAX_SNAPSHOTS: usize = 4096;
@@ -90,6 +92,7 @@ pub(crate) enum CodexProviderSyncRecoveryOutcome {
     None,
     Restored,
     Finalized,
+    Quarantined,
     StaleLockRemoved,
 }
 
@@ -2279,7 +2282,16 @@ fn recover_interrupted_provider_sync_from_home(
     current_route: Option<&CodexProviderSyncCurrentRoute>,
     codex_running_override: Option<bool>,
 ) -> AppResult<CodexProviderSyncRecoveryOutcome> {
-    let Some(journal) = read_provider_sync_transaction(home)? else {
+    let journal = match read_provider_sync_transaction(home) {
+        Ok(journal) => journal,
+        Err(error) => {
+            quarantine_corrupt_provider_sync_transaction(home, &error.to_string())?;
+            cleanup_provider_sync_transaction_staging(home)?;
+            let _ = remove_stale_provider_sync_lock(home)?;
+            return Ok(CodexProviderSyncRecoveryOutcome::Quarantined);
+        }
+    };
+    let Some(journal) = journal else {
         cleanup_provider_sync_transaction_staging(home)?;
         return if remove_stale_provider_sync_lock(home)? {
             Ok(CodexProviderSyncRecoveryOutcome::StaleLockRemoved)
@@ -2299,7 +2311,12 @@ fn recover_interrupted_provider_sync_from_home(
             None => codex_app_is_running()?,
         };
         reject_running_codex_for_provider_sync(codex_running)?;
-        restore_persistent_provider_sync_snapshots(home, &journal)?;
+        if let Err(error) = restore_persistent_provider_sync_snapshots(home, &journal) {
+            quarantine_corrupt_provider_sync_transaction(home, &error.to_string())?;
+            cleanup_provider_sync_transaction_staging(home)?;
+            let _ = remove_stale_provider_sync_lock(home)?;
+            return Ok(CodexProviderSyncRecoveryOutcome::Quarantined);
+        }
         let backup_dir = home.join(validated_relative_path(
             &journal.backup_dir_rel,
             "Codex provider sync backup directory",
@@ -2312,6 +2329,73 @@ fn recover_interrupted_provider_sync_from_home(
     cleanup_provider_sync_transaction_staging(home)?;
     let _ = remove_stale_provider_sync_lock(home)?;
     Ok(outcome)
+}
+
+fn quarantine_corrupt_provider_sync_transaction(home: &Path, reason: &str) -> AppResult<PathBuf> {
+    let transaction_root = provider_sync_transaction_root(home);
+    let metadata = fs::symlink_metadata(&transaction_root).map_err(|error| {
+        format!(
+            "CODEX_PROVIDER_SYNC_RECOVERY_FAILED: failed to inspect corrupt transaction {}: {error}",
+            transaction_root.display()
+        )
+    })?;
+    if metadata.file_type().is_symlink() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: provider sync transaction root is a link path={}",
+            transaction_root.display()
+        )
+        .into());
+    }
+
+    let quarantine_root = home.join(PROVIDER_SYNC_TRANSACTION_QUARANTINE_ROOT);
+    ensure_safe_operational_dir(
+        &quarantine_root,
+        "Codex provider sync transaction quarantine root",
+    )?;
+    fs::create_dir_all(&quarantine_root).map_err(|error| {
+        format!(
+            "failed to create provider sync transaction quarantine root {}: {error}",
+            quarantine_root.display()
+        )
+    })?;
+    let quarantine_dir = quarantine_root.join(format!(
+        "{}-{}",
+        crate::infra::codex_retry_gateway::now_unix_ms(),
+        crate::infra::codex_retry_gateway::random_hex(8)
+    ));
+    fs::create_dir(&quarantine_dir).map_err(|error| {
+        format!(
+            "failed to create provider sync transaction quarantine {}: {error}",
+            quarantine_dir.display()
+        )
+    })?;
+
+    let reason = reason
+        .chars()
+        .take(PROVIDER_SYNC_TRANSACTION_QUARANTINE_REASON_MAX_CHARS)
+        .collect::<String>();
+    let mut quarantine_metadata = serde_json::to_vec_pretty(&serde_json::json!({
+        "schema_version": 1,
+        "reason": reason,
+    }))
+    .map_err(|error| format!("failed to serialize provider sync quarantine metadata: {error}"))?;
+    quarantine_metadata.push(b'\n');
+    write_file_atomic(
+        &quarantine_dir.join("quarantine.json"),
+        &quarantine_metadata,
+    )?;
+    let retained_transaction = quarantine_dir.join("transaction");
+    fs::rename(&transaction_root, &retained_transaction).map_err(|error| {
+        format!(
+            "failed to quarantine provider sync transaction {}: {error}",
+            transaction_root.display()
+        )
+    })?;
+    tracing::warn!(
+        quarantine = %quarantine_dir.display(),
+        "quarantined corrupt provider sync transaction and retained it for diagnosis"
+    );
+    Ok(quarantine_dir)
 }
 
 fn clear_provider_sync_transaction(home: &Path) -> AppResult<()> {

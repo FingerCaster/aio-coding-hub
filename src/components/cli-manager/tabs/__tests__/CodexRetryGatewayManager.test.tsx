@@ -423,6 +423,7 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
   it("selects and resets Node with the current generation", async () => {
     const user = userEvent.setup();
     vi.mocked(openDesktopSinglePath).mockResolvedValueOnce("C:\\Tools\\node-v22\\node.exe");
+    statusQuery.data = createCodexRetryGatewayStatus({ desired_enabled: false });
     renderManager();
 
     await user.click(screen.getByRole("button", { name: "选择 Node" }));
@@ -439,6 +440,15 @@ describe("components/cli-manager/tabs/CodexRetryGatewayManager", () => {
         executable: null,
       });
     });
+  });
+
+  it("requires the gateway to be disabled before changing Node", () => {
+    statusQuery.data = createCodexRetryGatewayStatus({ desired_enabled: true });
+    renderManager();
+
+    expect(screen.getByRole("button", { name: "选择 Node" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "恢复自动" })).toBeDisabled();
+    expect(screen.getByText("请先关闭拦截网关，再修改 Node.js 运行时。")).toBeInTheDocument();
   });
 
   it("retries recovery and only uninstalls after explicit data-removal confirmation", async () => {

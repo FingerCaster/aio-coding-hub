@@ -350,21 +350,22 @@ fn assert_persistent_snapshot_targets_remain_unmodified(targets: &[PathBuf; 2]) 
 }
 
 #[test]
-fn persistent_snapshot_recovery_rejects_hash_corruption_before_any_restore() {
+fn persistent_snapshot_recovery_quarantines_hash_corruption_before_any_restore() {
     let (home, targets) = persistent_snapshot_corruption_fixture();
     let backup = provider_sync_transaction_root(home.path()).join("files/00000001.bin");
     std::fs::write(&backup, b"corrupt!" /* same length as before-1 */)
         .expect("corrupt backup without changing length");
 
-    let error = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
-        .expect_err("hash-corrupt snapshot must fail recovery");
+    let outcome = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+        .expect("hash-corrupt snapshot must be quarantined");
 
-    assert!(error.to_string().contains("hash mismatch"), "{error}");
+    assert_eq!(outcome, CodexProviderSyncRecoveryOutcome::Quarantined);
     assert_persistent_snapshot_targets_remain_unmodified(&targets);
+    assert_provider_sync_transaction_quarantined(home.path());
 }
 
 #[test]
-fn persistent_snapshot_recovery_rejects_missing_and_truncated_backups_before_restore() {
+fn persistent_snapshot_recovery_quarantines_missing_and_truncated_backups_before_restore() {
     for corruption in ["missing", "truncated"] {
         let (home, targets) = persistent_snapshot_corruption_fixture();
         let backup = provider_sync_transaction_root(home.path()).join("files/00000001.bin");
@@ -374,19 +375,21 @@ fn persistent_snapshot_recovery_rejects_missing_and_truncated_backups_before_res
             std::fs::write(&backup, b"short").expect("truncate backup");
         }
 
-        let error = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
-            .expect_err("invalid snapshot backup must fail recovery");
+        let outcome = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+            .expect("invalid snapshot backup must be quarantined");
 
-        assert!(
-            error.to_string().contains("snapshot"),
-            "{corruption}: {error}"
+        assert_eq!(
+            outcome,
+            CodexProviderSyncRecoveryOutcome::Quarantined,
+            "{corruption}"
         );
         assert_persistent_snapshot_targets_remain_unmodified(&targets);
+        assert_provider_sync_transaction_quarantined(home.path());
     }
 }
 
 #[test]
-fn persistent_snapshot_recovery_rejects_oversized_declared_snapshot_before_read() {
+fn persistent_snapshot_recovery_quarantines_oversized_declared_snapshot_before_read() {
     let (home, targets) = persistent_snapshot_corruption_fixture();
     let manifest_path = provider_sync_transaction_manifest_path(home.path());
     let mut manifest: serde_json::Value =
@@ -400,11 +403,25 @@ fn persistent_snapshot_recovery_rejects_oversized_declared_snapshot_before_read(
     )
     .expect("write oversized declaration");
 
-    let error = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
-        .expect_err("oversized declared snapshot must fail recovery");
+    let outcome = recover_interrupted_provider_sync_from_home(home.path(), None, Some(false))
+        .expect("oversized declared snapshot must be quarantined");
 
-    assert!(error.to_string().contains("snapshot exceeds"), "{error}");
+    assert_eq!(outcome, CodexProviderSyncRecoveryOutcome::Quarantined);
     assert_persistent_snapshot_targets_remain_unmodified(&targets);
+    assert_provider_sync_transaction_quarantined(home.path());
+}
+
+fn assert_provider_sync_transaction_quarantined(home: &Path) {
+    assert!(!provider_sync_transaction_root(home).exists());
+    let quarantine_root = home.join(PROVIDER_SYNC_TRANSACTION_QUARANTINE_ROOT);
+    let quarantines = std::fs::read_dir(&quarantine_root)
+        .expect("read provider sync quarantine root")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read provider sync quarantine entries");
+    assert_eq!(quarantines.len(), 1);
+    let quarantine = quarantines[0].path();
+    assert!(quarantine.join("transaction").is_dir());
+    assert!(quarantine.join("quarantine.json").is_file());
 }
 
 #[test]

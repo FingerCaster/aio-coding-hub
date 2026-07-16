@@ -44,11 +44,12 @@ pub(crate) use process::{
 };
 #[allow(unused_imports)]
 pub(crate) use runtime::{
-    apply_selected_commit, build_enable_plan, create_details_session, current_status,
-    ensure_runtime_uninstall_ready, install_lifecycle_callback, reconcile_pending_runtime_launch,
-    record_route_recovery_warning, record_runtime_recovery_failure, require_enable_confirmations,
-    retry_runtime_recovery, revoke_details_session, rollback_selected_commit, runtime_recovery_due,
-    runtime_update_candidate, set_runtime_enabled, set_runtime_node_override,
+    apply_selected_commit, build_enable_plan, capture_runtime_enable_rollback,
+    create_details_session, current_status, ensure_runtime_uninstall_ready,
+    install_lifecycle_callback, reconcile_pending_runtime_launch, record_route_recovery_warning,
+    record_runtime_recovery_failure, require_enable_confirmations, retry_runtime_recovery,
+    revoke_details_session, rollback_runtime_enable, rollback_selected_commit,
+    runtime_recovery_due, runtime_update_candidate, set_runtime_enabled, set_runtime_node_override,
     stop_runtime_for_shutdown, uninstall_runtime, validate_selected_commit,
 };
 #[allow(unused_imports)]
@@ -57,4 +58,4 @@ pub(crate) use source::{
     CodexRetryGatewayCommitSelection, CodexRetryGatewayInstalledSource,
     CodexRetryGatewaySourceHttpConfig,
 };
-pub(crate) use util::metadata_is_symlink_or_reparse;
+pub(crate) use util::{metadata_is_symlink_or_reparse, now_unix_ms, random_hex};
