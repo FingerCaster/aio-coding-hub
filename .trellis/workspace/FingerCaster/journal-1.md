@@ -243,3 +243,38 @@ Removed the unreleased managed external gateway integration, retained only the o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 8: 完成第五轮终审 findings 修复
+
+**Date**: 2026-07-17
+**Task**: 完成第五轮终审 findings 修复
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/sequential-task-acceptance`
+
+### Summary
+
+关闭 Skill 顶层可信根、Settings CAS 副作用、failover gate 顺序、OAuth capability 脱敏、Grok continuation 生产回归与父任务证据矛盾。聚焦测试、Rust lib/integration、前端 287 files/2491 tests、bindings 二次零漂移、typecheck/lint/format/build、all-target Clippy、git diff --check、20 manifests validate、precommit-full 13/13、prepush 15/15 均通过。本机仅有 x86_64-pc-windows-msvc，未联网安装 Unix target，已完成 Unix cfg/rustix no-follow API 静态审计。仅归档 round-5，父任务保持 in_progress，未启动 Max 终审。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `18b027c5c77a6fbda614582e14603e0cedd927f4` | (see git log) |
+| `0b6ee075a90aafdc87e1a45778dae1d5e83d8831` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

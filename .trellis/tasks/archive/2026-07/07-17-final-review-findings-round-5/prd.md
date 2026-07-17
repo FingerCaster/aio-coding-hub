@@ -86,7 +86,7 @@ settings CAS 副作用、方案 A common gate、OAuth capability 日志、Grok c
       format/build、all-target Clippy、`git diff --check`、`task.py validate --all`、
       `pnpm check:precommit:full` 与 `pnpm check:prepush` 全部通过。
 - [x] 无 Unix target 时不联网安装，记录限制并完成 cfg/API 静态审计。
-- [ ] 工作提交后仅归档 round-5，记录 journal 并提交；最终证据包含三个 hash、clean/预期
+- [x] 工作提交后仅归档 round-5，记录 journal 并提交；最终证据包含三个 hash、clean/预期
       `git status`、父状态与 `upstream` push URL，且未启动 Max 终审。
 
 ## Out Of Scope
