@@ -79,10 +79,10 @@ pub(super) fn export_skill_dir_files(
     let canonical_root = dir
         .canonicalize()
         .map_err(|e| format!("failed to resolve {}: {e}", dir.display()))?;
-    visited_dirs.insert(canonical_root.clone());
+    let root = ExportDir::open_root(&canonical_root)?;
+    visited_dirs.insert(root.identity()?);
     collect_skill_dir_files(
-        &canonical_root,
-        &canonical_root,
+        &root,
         Path::new(""),
         &mut collector,
         &mut visited_dirs,
@@ -98,7 +98,7 @@ struct SkillFileCollector {
 }
 
 impl SkillFileCollector {
-    fn push_file(&mut self, relative_path: &Path, source_path: &Path) -> AppResult<()> {
+    fn push_file(&mut self, relative_path: &Path, mut source: std::fs::File) -> AppResult<()> {
         if self.files.len() >= CONFIG_SKILL_FILE_COUNT_MAX {
             return Err(format!(
                 "SEC_INVALID_INPUT: too many skill files (max {CONFIG_SKILL_FILE_COUNT_MAX})"
@@ -112,7 +112,25 @@ impl SkillFileCollector {
         } else {
             CONFIG_SKILL_FILE_MAX_BYTES
         };
-        let content = read_file_with_max_len(source_path, file_limit)?;
+        let metadata = source
+            .metadata()
+            .map_err(|e| format!("failed to inspect skill file handle: {e}"))?;
+        if !metadata.is_file() || metadata.len() > file_limit as u64 {
+            return Err(format!(
+                "SEC_INVALID_INPUT: skill file too large (max {file_limit} bytes)"
+            )
+            .into());
+        }
+        ensure_export_file_single_link(&source)?;
+        let mut content = Vec::with_capacity(metadata.len() as usize);
+        std::io::Read::read_to_end(&mut source, &mut content)
+            .map_err(|e| format!("failed to read skill file handle: {e}"))?;
+        if content.len() > file_limit {
+            return Err(format!(
+                "SEC_INVALID_INPUT: skill file too large (max {file_limit} bytes)"
+            )
+            .into());
+        }
         let next_total = self
             .total_bytes
             .checked_add(content.len())
@@ -134,24 +152,20 @@ impl SkillFileCollector {
 }
 
 fn collect_skill_dir_files(
-    root_dir: &Path,
-    dir: &Path,
+    dir: &ExportDir,
     relative_root: &Path,
     files: &mut SkillFileCollector,
-    visited_dirs: &mut HashSet<PathBuf>,
+    visited_dirs: &mut HashSet<ExportIdentity>,
     skip_source_marker: bool,
 ) -> AppResult<()> {
-    let mut entries = Vec::new();
-    let read_dir =
-        std::fs::read_dir(dir).map_err(|e| format!("failed to read dir {}: {e}", dir.display()))?;
-    for entry in read_dir {
-        entries
-            .push(entry.map_err(|e| format!("failed to read dir entry {}: {e}", dir.display()))?);
-    }
-    entries.sort_by_key(|entry| entry.file_name());
+    let mut entries = dir.entries()?;
+    entries.sort_by(|left, right| left.name.cmp(&right.name));
+
+    #[cfg(test)]
+    run_after_skill_export_enumeration_test_hook();
 
     for entry in entries {
-        let name = entry.file_name();
+        let name = entry.name;
         let name_str = name.to_string_lossy();
         if platform_path_component_eq(&name_str, SKILL_MANAGED_MARKER_FILE) {
             continue;
@@ -160,52 +174,24 @@ fn collect_skill_dir_files(
             continue;
         }
 
-        let entry_path = entry.path();
         let relative_path = relative_root.join(&name);
-        let file_type = entry
-            .file_type()
-            .map_err(|e| format!("failed to read file type {}: {e}", entry_path.display()))?;
-
-        if file_type.is_symlink() {
-            let resolved = resolved_symlink_target(&entry_path)?;
-            let canonical = resolved.canonicalize().map_err(|e| {
-                format!(
-                    "failed to resolve symlink target {}: {e}",
-                    resolved.display()
-                )
-            })?;
-            ensure_skill_path_within_root(root_dir, &canonical)?;
-            let resolved_meta = std::fs::metadata(&canonical)
-                .map_err(|e| format!("failed to read metadata {}: {e}", canonical.display()))?;
-            if resolved_meta.is_dir() {
-                if visited_dirs.insert(canonical.clone()) {
-                    collect_skill_dir_files(
-                        root_dir,
-                        &canonical,
-                        &relative_path,
-                        files,
-                        visited_dirs,
-                        skip_source_marker,
-                    )?;
-                }
-            } else if resolved_meta.is_file() {
-                files.push_file(&relative_path, &canonical)?;
-            } else {
-                return Err(
-                    format!("SKILL_EXPORT_BLOCKED_SPECIAL_FILE: {}", canonical.display()).into(),
-                );
+        if entry.is_link {
+            if dir.link_targets_visited_directory(&name, visited_dirs)? {
+                continue;
             }
-            continue;
+            return Err(format!(
+                "SKILL_EXPORT_BLOCKED_SYMLINK_ESCAPE: {}",
+                relative_path.display()
+            )
+            .into());
         }
 
-        if file_type.is_dir() {
-            let canonical = entry_path.canonicalize().map_err(|e| {
-                format!("failed to resolve directory {}: {e}", entry_path.display())
-            })?;
-            if visited_dirs.insert(canonical.clone()) {
+        if entry.is_directory {
+            let child = dir.open_dir(&name, entry.identity)?;
+            let identity = child.identity()?;
+            if visited_dirs.insert(identity) {
                 collect_skill_dir_files(
-                    root_dir,
-                    &canonical,
+                    &child,
                     &relative_path,
                     files,
                     visited_dirs,
@@ -214,37 +200,403 @@ fn collect_skill_dir_files(
             }
             continue;
         }
-
-        if !file_type.is_file() {
+        if !entry.is_file {
             return Err(format!(
                 "SKILL_EXPORT_BLOCKED_SPECIAL_FILE: {}",
-                entry_path.display()
+                relative_path.display()
             )
             .into());
         }
-
-        files.push_file(&relative_path, &entry_path)?;
+        let file = dir.open_file(&name, entry.identity)?;
+        files.push_file(&relative_path, file)?;
     }
 
     Ok(())
 }
 
-fn ensure_skill_path_within_root(root_dir: &Path, path: &Path) -> AppResult<()> {
-    if path.starts_with(root_dir) {
-        return Ok(());
-    }
-
-    Err(format!("SKILL_EXPORT_BLOCKED_SYMLINK_ESCAPE: {}", path.display()).into())
+#[derive(Clone, Copy, Debug, Hash, PartialEq, Eq)]
+struct ExportIdentity {
+    volume: u64,
+    file: u64,
 }
 
-fn resolved_symlink_target(path: &Path) -> AppResult<PathBuf> {
-    let target = std::fs::read_link(path)
-        .map_err(|e| format!("failed to read symlink {}: {e}", path.display()))?;
-    Ok(if target.is_absolute() {
-        target
-    } else {
-        path.parent().unwrap_or_else(|| Path::new(".")).join(target)
+#[derive(Debug)]
+struct ExportEntry {
+    name: std::ffi::OsString,
+    identity: ExportIdentity,
+    is_file: bool,
+    is_directory: bool,
+    is_link: bool,
+}
+
+#[derive(Debug)]
+struct ExportDir {
+    handle: std::fs::File,
+    display_path: PathBuf,
+    root_path: PathBuf,
+}
+
+impl ExportDir {
+    fn open_root(path: &Path) -> AppResult<Self> {
+        let handle = open_export_root(path)?;
+        Ok(Self {
+            handle,
+            display_path: path.to_path_buf(),
+            root_path: path.to_path_buf(),
+        })
+    }
+
+    fn identity(&self) -> AppResult<ExportIdentity> {
+        export_identity(&self.handle)
+    }
+
+    fn entries(&self) -> AppResult<Vec<ExportEntry>> {
+        export_entries(&self.handle)
+    }
+
+    fn open_dir(&self, name: &std::ffi::OsStr, expected: ExportIdentity) -> AppResult<Self> {
+        let handle = open_export_child(&self.handle, name, true)?;
+        if export_identity(&handle)? != expected {
+            return Err("SEC_INVALID_INPUT: skill export directory identity changed"
+                .to_string()
+                .into());
+        }
+        Ok(Self {
+            handle,
+            display_path: self.display_path.join(name),
+            root_path: self.root_path.clone(),
+        })
+    }
+
+    fn open_file(
+        &self,
+        name: &std::ffi::OsStr,
+        expected: ExportIdentity,
+    ) -> AppResult<std::fs::File> {
+        let handle = open_export_child(&self.handle, name, false)?;
+        if export_identity(&handle)? != expected {
+            return Err("SEC_INVALID_INPUT: skill export file identity changed"
+                .to_string()
+                .into());
+        }
+        ensure_export_file_single_link(&handle)?;
+        Ok(handle)
+    }
+
+    fn link_targets_visited_directory(
+        &self,
+        name: &std::ffi::OsStr,
+        visited: &HashSet<ExportIdentity>,
+    ) -> AppResult<bool> {
+        let candidate = self.display_path.join(name);
+        let canonical = candidate
+            .canonicalize()
+            .map_err(|e| format!("failed to resolve symlink {}: {e}", candidate.display()))?;
+        if !canonical.starts_with(&self.root_path) {
+            return Ok(false);
+        }
+        let handle = open_export_root(&canonical)?;
+        Ok(handle.metadata().map(|meta| meta.is_dir()).unwrap_or(false)
+            && visited.contains(&export_identity(&handle)?))
+    }
+}
+
+#[cfg(unix)]
+fn open_export_root(path: &Path) -> AppResult<std::fs::File> {
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| "SEC_INVALID_INPUT: skill export directory cannot be opened".to_string())?;
+    Ok(fd.into())
+}
+
+#[cfg(unix)]
+fn export_identity(file: &std::fs::File) -> AppResult<ExportIdentity> {
+    let stat = rustix::fs::fstat(file)
+        .map_err(|_| "SEC_INVALID_INPUT: skill export identity cannot be read".to_string())?;
+    Ok(ExportIdentity {
+        volume: stat.st_dev as u64,
+        file: stat.st_ino as u64,
     })
+}
+
+#[cfg(unix)]
+fn export_entries(dir: &std::fs::File) -> AppResult<Vec<ExportEntry>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut entries = rustix::fs::Dir::read_from(dir)
+        .map_err(|e| format!("failed to enumerate skill directory handle: {e}"))?;
+    let mut output = Vec::new();
+    while let Some(entry) = entries.next() {
+        let entry = entry.map_err(|e| format!("failed to read skill directory entry: {e}"))?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        let stat = rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("failed to inspect skill directory entry: {e}"))?;
+        let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+        output.push(ExportEntry {
+            name: std::ffi::OsStr::from_bytes(name.to_bytes()).to_os_string(),
+            identity: ExportIdentity {
+                volume: stat.st_dev as u64,
+                file: stat.st_ino as u64,
+            },
+            is_file: file_type == rustix::fs::FileType::RegularFile,
+            is_directory: file_type == rustix::fs::FileType::Directory,
+            is_link: file_type == rustix::fs::FileType::Symlink,
+        });
+    }
+    Ok(output)
+}
+
+#[cfg(unix)]
+fn open_export_child(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    directory: bool,
+) -> AppResult<std::fs::File> {
+    let mut flags =
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+    if directory {
+        flags |= rustix::fs::OFlags::DIRECTORY;
+    }
+    let fd = rustix::fs::openat(parent, name, flags, rustix::fs::Mode::empty())
+        .map_err(|_| "SEC_INVALID_INPUT: skill export entry cannot be opened".to_string())?;
+    Ok(fd.into())
+}
+
+#[cfg(unix)]
+fn ensure_export_file_single_link(file: &std::fs::File) -> AppResult<()> {
+    let stat = rustix::fs::fstat(file)
+        .map_err(|_| "SEC_INVALID_INPUT: skill export file cannot be inspected".to_string())?;
+    if stat.st_nlink != 1 {
+        return Err("SEC_INVALID_INPUT: skill export hard links are not allowed"
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn open_export_root(path: &Path) -> AppResult<std::fs::File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+    let meta = std::fs::symlink_metadata(path)
+        .map_err(|_| "SEC_INVALID_INPUT: skill export root cannot be inspected".to_string())?;
+    if !meta.is_dir() || meta.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(
+            "SEC_INVALID_INPUT: skill export root cannot be a reparse point"
+                .to_string()
+                .into(),
+        );
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|e| format!("SEC_INVALID_INPUT: skill export root cannot be opened: {e}").into())
+}
+
+#[cfg(windows)]
+fn export_identity(file: &std::fs::File) -> AppResult<ExportIdentity> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
+        return Err("SEC_INVALID_INPUT: skill export identity cannot be read"
+            .to_string()
+            .into());
+    }
+    let info = unsafe { info.assume_init() };
+    Ok(ExportIdentity {
+        volume: u64::from(info.dwVolumeSerialNumber),
+        file: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
+}
+
+#[cfg(windows)]
+fn export_entries(dir: &std::fs::File) -> AppResult<Vec<ExportEntry>> {
+    use std::os::windows::ffi::OsStringExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_FILES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdBothDirectoryInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_ID_BOTH_DIR_INFO,
+    };
+    let volume = export_identity(dir)?.volume;
+    let mut output = Vec::new();
+    loop {
+        let mut buffer = vec![0_u64; (64 * 1024) / std::mem::size_of::<u64>()];
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                dir.as_raw_handle() as _,
+                FileIdBothDirectoryInfo,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * std::mem::size_of::<u64>()) as u32,
+            )
+        };
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_MORE_FILES {
+                break;
+            }
+            return Err(
+                format!("failed to enumerate skill directory handle: os error {error}").into(),
+            );
+        }
+        let mut offset = 0usize;
+        loop {
+            let info = unsafe {
+                &*buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<FILE_ID_BOTH_DIR_INFO>()
+            };
+            let len = info.FileNameLength as usize / std::mem::size_of::<u16>();
+            let name = unsafe { std::slice::from_raw_parts(info.FileName.as_ptr(), len) };
+            if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
+                let attributes = info.FileAttributes;
+                output.push(ExportEntry {
+                    name: std::ffi::OsString::from_wide(name),
+                    identity: ExportIdentity {
+                        volume,
+                        file: info.FileId as u64,
+                    },
+                    is_file: attributes & (FILE_ATTRIBUTE_DIRECTORY | FILE_ATTRIBUTE_REPARSE_POINT)
+                        == 0,
+                    is_directory: attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+                        && attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0,
+                    is_link: attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0,
+                });
+            }
+            if info.NextEntryOffset == 0 {
+                break;
+            }
+            offset = offset
+                .checked_add(info.NextEntryOffset as usize)
+                .ok_or_else(|| {
+                    "SEC_INVALID_INPUT: invalid skill directory entry offset".to_string()
+                })?;
+        }
+    }
+    Ok(output)
+}
+
+#[cfg(windows)]
+fn open_export_child(
+    parent: &std::fs::File,
+    name: &std::ffi::OsStr,
+    directory: bool,
+) -> AppResult<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        NtCreateFile, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows_sys::Win32::Foundation::{GENERIC_READ, HANDLE, UNICODE_STRING};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+    let mut name = name.encode_wide().collect::<Vec<_>>();
+    let byte_len = u16::try_from(name.len() * std::mem::size_of::<u16>())
+        .map_err(|_| "SEC_INVALID_INPUT: skill export entry name is too long".to_string())?;
+    let unicode = UNICODE_STRING {
+        Length: byte_len,
+        MaximumLength: byte_len,
+        Buffer: name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle() as _,
+        ObjectName: &unicode,
+        Attributes: 0,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut io_status = std::mem::MaybeUninit::<IO_STATUS_BLOCK>::zeroed();
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            GENERIC_READ
+                | FILE_READ_ATTRIBUTES
+                | SYNCHRONIZE
+                | if directory { FILE_LIST_DIRECTORY } else { 0 },
+            &attributes,
+            io_status.as_mut_ptr(),
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            FILE_OPEN_REPARSE_POINT
+                | FILE_SYNCHRONOUS_IO_NONALERT
+                | if directory {
+                    FILE_DIRECTORY_FILE
+                } else {
+                    FILE_NON_DIRECTORY_FILE
+                },
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 || handle.is_null() {
+        return Err(format!("SEC_INVALID_INPUT: skill export entry cannot be opened relative to root handle: ntstatus {status:#x}").into());
+    }
+    Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
+}
+
+#[cfg(windows)]
+fn ensure_export_file_single_link(file: &std::fs::File) -> AppResult<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0
+        || unsafe { info.assume_init() }.nNumberOfLinks != 1
+    {
+        return Err("SEC_INVALID_INPUT: skill export hard links are not allowed"
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+type AfterSkillExportEnumerationHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_SKILL_EXPORT_ENUMERATION_TEST_HOOK: std::cell::RefCell<Option<AfterSkillExportEnumerationHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_after_skill_export_enumeration_test_hook(hook: AfterSkillExportEnumerationHook) {
+    AFTER_SKILL_EXPORT_ENUMERATION_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_after_skill_export_enumeration_test_hook() {
+    let hook = AFTER_SKILL_EXPORT_ENUMERATION_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
 }
 
 fn relative_path_string(path: &Path) -> AppResult<String> {

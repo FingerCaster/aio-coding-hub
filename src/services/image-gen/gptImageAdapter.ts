@@ -116,35 +116,11 @@ export function buildEditsParts(req: GptImageRequest): {
 // ---------- 响应解析 ----------
 
 /** 错误消息提取链：error.message → detail（字符串/数组）→ error（字符串）→ message → HTTP {status}。 */
-export function extractApiErrorMessage(bodyText: string, status: number): string {
-  const fallback = `HTTP ${status}`;
-  let parsed: unknown = null;
-  try {
-    parsed = JSON.parse(bodyText);
-  } catch {
-    parsed = null;
-  }
-  if (parsed && typeof parsed === "object") {
-    const record = parsed as Record<string, unknown>;
-    const error = record.error;
-    if (error && typeof error === "object") {
-      const message = (error as Record<string, unknown>).message;
-      if (typeof message === "string" && message.trim()) return message;
-    }
-    const detail = record.detail;
-    if (typeof detail === "string" && detail.trim()) return detail;
-    if (Array.isArray(detail) && detail.length > 0) {
-      return detail
-        .map((item) => (typeof item === "string" ? item : JSON.stringify(item)))
-        .join("; ");
-    }
-    if (typeof error === "string" && error.trim()) return error;
-    const message = record.message;
-    if (typeof message === "string" && message.trim()) return message;
-  }
-  const text = bodyText.trim();
-  if (text) return `${fallback}: ${text.slice(0, 200)}`;
-  return fallback;
+export function extractApiErrorMessage(_bodyText: string, status: number): string {
+  // Failure bodies are untrusted and may contain credentials. Rust consumes
+  // them with an 8 KiB cap and sends only a safe status summary; keep this
+  // adapter fail-closed if an older or compromised backend returns raw text.
+  return `HTTP ${status}`.slice(0, 512);
 }
 
 export function outputMimeFor(format: GptImageOutputFormat): string {

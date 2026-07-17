@@ -1,6 +1,7 @@
 use super::skill_fs::{
-    cli_skills_root, export_skill_dir_files, ssot_skills_root, validate_installed_skill_key,
-    write_skill_files_to_dir, SkillSourceMetadataFile,
+    cli_skills_root, export_skill_dir_files, set_after_skill_export_enumeration_test_hook,
+    ssot_skills_root, validate_installed_skill_key, write_skill_files_to_dir,
+    SkillSourceMetadataFile,
 };
 use super::*;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -943,6 +944,86 @@ fn export_skill_dir_files_rejects_symlink_escape() {
     assert!(err
         .to_string()
         .contains("SKILL_EXPORT_BLOCKED_SYMLINK_ESCAPE"));
+}
+
+#[test]
+fn export_skill_dir_files_rejects_hardlink_swap_after_handle_enumeration() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("skill");
+    write_skill_md(&skill_dir, "Handle Bound", "Handle bound export");
+    let payload = skill_dir.join("payload.bin");
+    let moved = skill_dir.join("payload-original.bin");
+    let outside = temp.path().join("outside.bin");
+    std::fs::write(&payload, b"trusted-root-bytes").expect("trusted payload");
+    std::fs::write(&outside, b"SYNTHETIC_SECRET_OUTSIDE").expect("outside payload");
+    let hook_payload = payload.clone();
+    let hook_moved = moved.clone();
+    let hook_outside = outside.clone();
+    set_after_skill_export_enumeration_test_hook(Box::new(move || {
+        std::fs::rename(&hook_payload, &hook_moved).expect("move enumerated payload");
+        std::fs::hard_link(&hook_outside, &hook_payload).expect("replace with hardlink");
+    }));
+
+    let error = match export_skill_dir_files(&skill_dir, true) {
+        Ok(_) => panic!("enumerated file identity replacement must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+    assert_eq!(
+        std::fs::read(&outside).expect("outside remains unchanged"),
+        b"SYNTHETIC_SECRET_OUTSIDE"
+    );
+}
+
+#[test]
+fn export_skill_dir_files_rejects_directory_rebind_after_handle_enumeration() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("skill");
+    let nested = skill_dir.join("assets");
+    write_skill_md(&skill_dir, "Handle Bound", "Handle bound export");
+    std::fs::create_dir_all(&nested).expect("nested");
+    std::fs::write(nested.join("inside.bin"), b"trusted-root-bytes").expect("inside");
+    let moved = skill_dir.join("assets-original");
+    let outside = temp.path().join("outside-dir");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(outside.join("outside.bin"), b"SYNTHETIC_SECRET_OUTSIDE").expect("outside");
+    let hook_nested = nested.clone();
+    let hook_moved = moved.clone();
+    let hook_outside = outside.clone();
+    set_after_skill_export_enumeration_test_hook(Box::new(move || {
+        std::fs::rename(&hook_nested, &hook_moved).expect("move enumerated directory");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&hook_outside, &hook_nested).expect("directory symlink");
+        #[cfg(windows)]
+        junction::create(&hook_outside, &hook_nested).expect("directory junction");
+    }));
+
+    let error = match export_skill_dir_files(&skill_dir, true) {
+        Ok(_) => panic!("enumerated directory replacement must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+    assert_eq!(
+        std::fs::read(outside.join("outside.bin")).expect("outside remains unchanged"),
+        b"SYNTHETIC_SECRET_OUTSIDE"
+    );
+}
+
+#[test]
+fn skill_root_sensitive_looking_bytes_round_trip_without_content_filtering() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("skill");
+    write_skill_md(&skill_dir, "Opaque Bytes", "No content filtering");
+    let expected = b"prefix\0SYNTHETIC_SECRET\xffcredential-looking-suffix";
+    std::fs::write(skill_dir.join("opaque.bin"), expected).expect("opaque bytes");
+
+    let files = export_skill_dir_files(&skill_dir, true).expect("export root-owned bytes");
+    let target = temp.path().join("imported");
+    write_skill_files_to_dir(&target, &files, None).expect("import root-owned bytes");
+    assert_eq!(
+        std::fs::read(target.join("opaque.bin")).expect("round-tripped bytes"),
+        expected
+    );
 }
 
 #[test]

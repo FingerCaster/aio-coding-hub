@@ -1,0 +1,20 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Apply the required shared cross-layer and reuse thinking guides before changing shared filesystem, settings, IPC, and archive mechanisms."}
+{"file": ".trellis/spec/guides/code-reuse-thinking-guide.md", "reason": "Reuse the existing NT/openat/identity, sanitizer, budget, and settings primitives instead of adding parallel security implementations."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Trace history hydration, transport errors, OAuth capability logging, generated bindings, and persistence across Rust, IPC, TypeScript, and UI."}
+{"file": ".trellis/spec/aio-coding-hub/backend/index.md", "reason": "Apply root Rust backend quality requirements and preserve the established common-gate behavior."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "Apply the complete root cross-layer pre-development and generated-binding quality checklist."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md", "reason": "Implement handle-bound history reads/writes, pre-IPC hydration budgets, and bounded secret-free generation failures."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md", "reason": "Implement root-handle Skill export traversal while preserving byte-exact root-internal content without sensitive-content filtering, plus all existing caps and compatibility."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/provider-oauth-device-flow-contract.md", "reason": "Treat flowId as a bearer capability and preserve OAuth ownership, cancellation, and secret-free diagnostics."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "Apply lock-owned field mutation and unrelated-field preservation patterns to all production settings writers."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md", "reason": "Preserve user-selected option A common-gate skipped/continue/full-503 semantics and forbid DeniedByCircuit early removal."}
+{"file": ".trellis/tasks/archive/2026-07/07-17-final-review-findings-round-3/research/provider-selection-product-decision.md", "reason": "Carry forward the explicit option A product decision while closing round-4 findings."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md", "reason": "Apply field-owned locked RMW, whole-snapshot CAS, and concurrency-safe rollback to every production settings writer."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md", "reason": "Implement exact self-reference rewriting and full JSONL validation before archive auto-commit."}
+{"file": "src/templates/markdown/spec/cross-layer/settings-ownership-rollback-contract.md", "reason": "Keep the shipped settings ownership code-spec template synchronized with the executable project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/trellis-task-context-archive-contract.md", "reason": "Keep the shipped Trellis archive code-spec template synchronized with the executable project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/config-migration-skill-bundle-contract.md", "reason": "Synchronize the shipped Skill authority and byte-exact export contract template."}
+{"file": "src/templates/markdown/spec/cross-layer/image-gen-trust-boundary-contract.md", "reason": "Synchronize the shipped history authority, hydration budget, and bounded failure contract template."}
+{"file": "src/templates/markdown/spec/cross-layer/provider-oauth-device-flow-contract.md", "reason": "Synchronize the shipped OAuth capability-redaction contract template."}
+{"file": "src/templates/markdown/spec/cross-layer/index.md", "reason": "Synchronize the shipped cross-layer index and all relative contract links."}
+{"file": ".trellis/tasks/07-17-final-review-findings-round-4/research/break-loop-retrospective.md", "reason": "Carry the round-4 root-cause clusters and failed-approach evidence into final implementation review."}

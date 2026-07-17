@@ -88,15 +88,10 @@ def cmd_validate(args: argparse.Namespace) -> int:
     """Validate JSONL context files."""
     repo_root = get_repo_root()
     if getattr(args, "all", False):
-        manifests = sorted(
-            path
-            for path in (repo_root / ".trellis" / "tasks").rglob("*.jsonl")
-            if path.name in {"implement.jsonl", "check.jsonl"}
-        )
         print(colored("=== Validating All Context Files ===", Colors.BLUE))
         print(f"Task root: {repo_root / '.trellis' / 'tasks'}")
         print()
-        total_errors = sum(_validate_jsonl(path, repo_root) for path in manifests)
+        manifests, total_errors = validate_all_context_manifests_with_count(repo_root)
         print()
         if total_errors == 0:
             print(colored(f"✓ All validations passed ({len(manifests)} manifests)", Colors.GREEN))
@@ -131,6 +126,19 @@ def cmd_validate(args: argparse.Namespace) -> int:
     else:
         print(colored(f"✗ Validation failed ({total_errors} errors)", Colors.RED))
         return 1
+
+
+def validate_all_context_manifests_with_count(repo_root: Path) -> tuple[list[Path], int]:
+    manifests = sorted(
+        path
+        for path in (repo_root / ".trellis" / "tasks").rglob("*.jsonl")
+        if path.name in {"implement.jsonl", "check.jsonl"}
+    )
+    return manifests, sum(_validate_jsonl(path, repo_root) for path in manifests)
+
+
+def validate_all_context_manifests(repo_root: Path) -> int:
+    return validate_all_context_manifests_with_count(repo_root)[1]
 
 
 def _validate_jsonl(jsonl_file: Path, repo_root: Path) -> int:

@@ -455,7 +455,6 @@ export async function providerOAuthPollDeviceFlow(
   return invokeGeneratedIpc<GeneratedProviderOAuthDeviceCodePollResult>({
     title: "轮询设备码登录失败",
     cmd: "provider_oauth_poll_device_flow",
-    args: { flowId: normalizedFlowId },
     invoke: () =>
       commands.providerOauthPollDeviceFlow({
         flowId: normalizedFlowId,
@@ -471,7 +470,6 @@ export async function providerOAuthCancelDeviceFlow(
   return invokeGeneratedIpc<GeneratedProviderOAuthDeviceCodeCancelResult>({
     title: "取消设备码登录失败",
     cmd: "provider_oauth_cancel_device_flow",
-    args: { flowId: normalizedFlowId },
     invoke: () =>
       commands.providerOauthCancelDeviceFlow(normalizedFlowId) as Promise<
         GeneratedCommandResult<GeneratedProviderOAuthDeviceCodeCancelResult>

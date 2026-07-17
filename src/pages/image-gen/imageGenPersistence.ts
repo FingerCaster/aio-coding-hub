@@ -8,7 +8,11 @@ import type {
   ImageGenTaskRow,
 } from "../../generated/bindings";
 import { extFromMime, type GptImageRequest } from "../../services/image-gen/gptImageAdapter";
-import { IMAGE_GEN_ADAPTER_ID, imageGenReadImage } from "../../services/image-gen/service";
+import {
+  IMAGE_GEN_ADAPTER_ID,
+  imageGenHydrateImages,
+  imageGenReadImage,
+} from "../../services/image-gen/service";
 import type { ImageGenRefImage, ImageGenUsage } from "../../services/image-gen/types";
 import type { ImageGenTask, ImageGenTaskImage, ImageGenTaskRefPath } from "./useImageGenController";
 
@@ -200,10 +204,12 @@ export async function taskImageFromFileRow(
     used: 0,
     max: HISTORY_HYDRATE_MAX_BYTES,
     perImageMax: HISTORY_THUMB_MAX_BYTES,
-  }
+  },
+  hydratedThumbs?: ReadonlyMap<string, { mime: string; dataB64: string }>
 ): Promise<ImageGenTaskImage> {
+  const hydrated = file.thumbPath ? hydratedThumbs?.get(file.thumbPath) : undefined;
   const thumbSrc = file.thumbPath
-    ? fetchedImageDataUrl(await readImageWithBudget(file.thumbPath, budget))
+    ? fetchedImageDataUrl(hydrated ?? (await readImageWithBudget(file.thumbPath, budget)))
     : null;
   return {
     kind: "disk",
@@ -221,13 +227,14 @@ export async function taskFromRow(
     used: 0,
     max: HISTORY_HYDRATE_MAX_BYTES,
     perImageMax: HISTORY_THUMB_MAX_BYTES,
-  }
+  },
+  hydratedThumbs?: ReadonlyMap<string, { mime: string; dataB64: string }>
 ): Promise<ImageGenTask | null> {
   let request: GptImageRequest;
   try {
     request = parseRequestSnapshot(row.requestJson);
-  } catch (err) {
-    console.warn("[image-gen] 跳过无法解析的历史任务行", row.id, err);
+  } catch {
+    console.warn("[image-gen] HISTORY_ROW_INVALID_REQUEST_JSON", row.id);
     return null;
   }
   let usage: ImageGenUsage | undefined;
@@ -239,7 +246,8 @@ export async function taskFromRow(
     }
   }
   const images: ImageGenTaskImage[] = [];
-  for (const file of row.images) images.push(await taskImageFromFileRow(file, budget));
+  for (const file of row.images)
+    images.push(await taskImageFromFileRow(file, budget, hydratedThumbs));
   return {
     id: row.id,
     prompt: row.prompt,
@@ -263,8 +271,25 @@ export async function tasksFromRows(rows: ImageGenTaskRow[]): Promise<ImageGenTa
     max: HISTORY_HYDRATE_MAX_BYTES,
     perImageMax: HISTORY_THUMB_MAX_BYTES,
   };
-  const tasks = await mapWithConcurrency(rows, HISTORY_HYDRATE_CONCURRENCY, (row) =>
-    taskFromRow(row, budget)
+  const validRows = rows.filter((row) => {
+    try {
+      parseRequestSnapshot(row.requestJson);
+      return true;
+    } catch {
+      console.warn("[image-gen] HISTORY_ROW_INVALID_REQUEST_JSON", row.id);
+      return false;
+    }
+  });
+  const thumbPaths = validRows.flatMap((row) =>
+    row.images.flatMap((file) => (file.thumbPath ? [file.thumbPath] : []))
+  );
+  const hydrated = thumbPaths.length > 0 ? await imageGenHydrateImages(thumbPaths) : [];
+  if (hydrated.length !== thumbPaths.length) {
+    throw new Error("SYSTEM_ERROR: image history hydration result count mismatch");
+  }
+  const hydratedThumbs = new Map(thumbPaths.map((path, index) => [path, hydrated[index]]));
+  const tasks = await mapWithConcurrency(validRows, HISTORY_HYDRATE_CONCURRENCY, (row) =>
+    taskFromRow(row, budget, hydratedThumbs)
   );
   return tasks.filter((task): task is ImageGenTask => task !== null);
 }

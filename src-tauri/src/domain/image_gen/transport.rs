@@ -144,6 +144,12 @@ fn truncate_excerpt(text: &str) -> String {
     text.chars().take(MAX_ERROR_EXCERPT_CHARS).collect()
 }
 
+pub(super) fn safe_failure_summary(status: u16) -> String {
+    truncate_excerpt(&format!(
+        "HTTP {status}: upstream image generation request failed"
+    ))
+}
+
 async fn read_body_with_limit(
     response: &mut reqwest::Response,
     limit: usize,
@@ -174,6 +180,13 @@ async fn read_http_response(
     mut response: reqwest::Response,
 ) -> Result<ImageGenHttpResponse, String> {
     let status = response.status().as_u16();
+    if !response.status().is_success() {
+        let _ = read_body_with_limit(&mut response, MAX_ERROR_RESPONSE_BYTES).await;
+        return Ok(ImageGenHttpResponse {
+            status,
+            body_text: safe_failure_summary(status),
+        });
+    }
     let body = read_body_capped(&mut response).await?;
     Ok(ImageGenHttpResponse {
         status,

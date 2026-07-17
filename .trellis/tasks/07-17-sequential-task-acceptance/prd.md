@@ -3,7 +3,7 @@
 ## Goal
 
 在已完成的前置任务 `07-15-external-codex-retry-gateway` 之后，严格按
-`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 父任务最终审核` 修复、同步并关闭三轮终审发现。
+`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 父任务最终审核` 修复、同步并关闭四轮终审发现。
 每个子任务必须独立实现、检查、提交并归档，前一项未通过时不得
 启动后一项。
 
@@ -34,7 +34,8 @@
 6. `07-17-final-review-security-boundaries`
 7. `07-17-final-review-findings-round-2`
 8. `07-17-final-review-findings-round-3`
-9. 父任务最终 max 审核
+9. `07-17-final-review-findings-round-4`
+10. 父任务最终 max 审核
 
 每个子任务只有在前一任务的验收标准、质量检查、提交与归档全部完成后才可执行
 `task.py start`。父子关系不替代此依赖门槛。
@@ -50,7 +51,8 @@
 | 5 | `07-17-sync-upstream-main-after-fixes` | archived; conflict audit linked |
 | 6 | `07-17-final-review-security-boundaries` | archived |
 | 7 | `07-17-final-review-findings-round-2` | archived; F1-F8 and evidence closure complete |
-| 8 | `07-17-final-review-findings-round-3` | in progress; user selected common-gate option A |
+| 8 | `07-17-final-review-findings-round-3` | archived; user selected common-gate option A |
+| 9 | `07-17-final-review-findings-round-4` | in progress; nine findings implemented and full gates passed |
 
 ### R2. 多供应商失败链路
 
@@ -125,6 +127,8 @@
       max 只读终审给出最终结论。
 - [ ] 子任务 8 关闭第三轮 findings，并按用户决策 A 保留 provider selection common-gate skipped/
       continue/完整 503 语义；全部门禁通过后才重新进入独立 max 终审。
+- [ ] 子任务 9 关闭第四轮九项 findings，完成 handle-bound filesystem authority、settings owner/CAS、
+      pre-IPC budgets、安全日志与 archive 自动校验，并保持 Skill 根内内容逐字节导出。
 - [ ] 全过程没有并发子代理、未泄露密钥/PII、未向任何 remote 推送。
 
 ## Out of Scope

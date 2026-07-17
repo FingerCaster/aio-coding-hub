@@ -2083,6 +2083,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async imageGenHydrateImages(paths: string[]): Promise<Result<ImageGenFetchedImage[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("image_gen_hydrate_images", { paths }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async imageGenStorageGet(): Promise<Result<ImageGenStorageView, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("image_gen_storage_get") };

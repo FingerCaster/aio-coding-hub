@@ -17,8 +17,8 @@ pub use defaults::{
 pub(crate) use migration::sanitize_upstream_retry_policy;
 pub(crate) use persistence::validate_bounds;
 pub use persistence::{
-    clear_cache, log_retention_days_fail_open, read, request_log_retention_days_fail_open, update,
-    write,
+    clear_cache, compare_and_swap, log_retention_days_fail_open, read,
+    request_log_retention_days_fail_open, update, write,
 };
 pub use types::{
     AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, UpstreamRetryPolicy,

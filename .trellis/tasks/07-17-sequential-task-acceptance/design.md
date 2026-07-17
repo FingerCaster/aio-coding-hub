@@ -2,7 +2,7 @@
 
 ## Architecture
 
-父任务只负责顺序、跨任务约束和最终验收；八个子任务分别拥有独立的实现、测试、提交与
+父任务只负责顺序、跨任务约束和最终验收；九个子任务分别拥有独立的实现、测试、提交与
 归档边界。主会话是唯一协调者，不派生并发代理。
 
 ```text
@@ -15,6 +15,7 @@ planning validated
   -> child 6 first final-review security regression / archive
   -> child 7 second final-review findings / archive
   -> child 8 third final-review findings + explicit product decision / archive
+  -> child 9 fourth final-review security/concurrency findings / archive
   -> parent independent max review / archive only after approval
 ```
 
@@ -30,7 +31,8 @@ planning validated
 | 6 | Final review security boundaries | First review's filesystem/network/config hardening |
 | 7 | Final review findings round 2 | Eight findings, evidence closure and stable pagination |
 | 8 | Final review findings round 3 | Ten blocking findings, including one explicit user product-decision gate |
-| 9 | Parent | Independent max review and merge-readiness decision |
+| 9 | Final review findings round 4 | Nine filesystem, settings, IPC-budget, logging and archive-integrity findings |
+| 10 | Parent | Independent max review and merge-readiness decision |
 
 ## Cross-Task Contracts
 

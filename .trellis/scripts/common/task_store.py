@@ -498,6 +498,29 @@ def cmd_archive(args: argparse.Namespace) -> int:
     if "archived_to" in result:
         archive_dest = Path(result["archived_to"])
         year_month = archive_dest.parent.name
+        try:
+            _rewrite_archived_context_paths(task_dir, archive_dest, repo_root)
+        except (OSError, UnicodeError, json.JSONDecodeError) as error:
+            print(
+                colored(
+                    f"Archive moved, but archived context rewrite failed: {error}. "
+                    "No archive commit was created.",
+                    Colors.RED,
+                ),
+                file=sys.stderr,
+            )
+            return 1
+        from .task_context import validate_all_context_manifests
+        if validate_all_context_manifests(repo_root) != 0:
+            print(
+                colored(
+                    "Archive moved and context paths were rewritten, but full JSONL validation failed. "
+                    "No archive commit was created.",
+                    Colors.RED,
+                ),
+                file=sys.stderr,
+            )
+            return 1
         print(colored(f"Archived: {dir_name} -> archive/{year_month}/", Colors.GREEN), file=sys.stderr)
 
         # Auto-commit unless --no-commit
@@ -522,6 +545,37 @@ def cmd_archive(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+def _rewrite_archived_context_paths(
+    original_task_dir: Path,
+    archive_dest: Path,
+    repo_root: Path,
+) -> None:
+    """Rewrite only self-references in an archived task's JSONL manifests."""
+    old_prefix = original_task_dir.relative_to(repo_root).as_posix()
+    new_prefix = archive_dest.relative_to(repo_root).as_posix()
+    for name in ("implement.jsonl", "check.jsonl"):
+        manifest = archive_dest / name
+        if not manifest.is_file():
+            continue
+        rewritten: list[str] = []
+        changed = False
+        for raw_line in manifest.read_text(encoding="utf-8").splitlines():
+            if not raw_line.strip():
+                rewritten.append(raw_line)
+                continue
+            data = json.loads(raw_line)
+            file_path = data.get("file")
+            if isinstance(file_path, str) and (
+                file_path == old_prefix or file_path.startswith(f"{old_prefix}/")
+            ):
+                data["file"] = f"{new_prefix}{file_path[len(old_prefix):]}"
+                raw_line = json.dumps(data, ensure_ascii=False)
+                changed = True
+            rewritten.append(raw_line)
+        if changed:
+            manifest.write_text("\n".join(rewritten) + "\n", encoding="utf-8")
 
 
 def _auto_commit_archive(

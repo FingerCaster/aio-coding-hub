@@ -9,13 +9,16 @@ use crate::db;
 use crate::shared::error::{db_err, AppResult};
 use base64::Engine as _;
 use rusqlite::OptionalExtension;
-use std::io::Write as _;
+use std::io::{Read as _, Write as _};
 use std::path::{Path, PathBuf};
 
 use super::transport::ImageGenFetchedImage;
 
 const MAX_PERSIST_TOTAL_BYTES: usize = 96 * 1024 * 1024;
 const MAX_READ_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
+pub(crate) const HISTORY_HYDRATE_PER_IMAGE_BYTES: u64 = 4 * 1024 * 1024;
+pub(crate) const HISTORY_HYDRATE_TOTAL_BYTES: u64 = 32 * 1024 * 1024;
+const MAX_HYDRATE_REFERENCES: usize = 512;
 const MAX_TASK_ID_CHARS: usize = 128;
 const MAX_LIST_LIMIT: u32 = 100;
 const MAX_CURSOR_BYTES: usize = 512;
@@ -212,12 +215,10 @@ fn decode_payload_files(
     Ok(decoded)
 }
 
-fn write_task_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
-    let mut file = std::fs::OpenOptions::new()
-        .write(true)
-        .create_new(true)
-        .open(dir.join(name))
-        .map_err(|e| format!("SYSTEM_ERROR: failed to create task file {name}: {e}"))?;
+fn write_task_file(dir: &ValidatedTaskDir, name: &str, bytes: &[u8]) -> Result<(), String> {
+    #[cfg(test)]
+    run_before_persist_file_create_test_hook();
+    let mut file = create_validated_task_file(dir, name)?;
     file.write_all(bytes)
         .map_err(|e| format!("SYSTEM_ERROR: failed to write task file {name}: {e}"))
 }
@@ -455,7 +456,7 @@ struct ValidatedTaskDir {
     task_handle: std::fs::File,
 }
 
-type ReferencedTaskPaths = Vec<(String, PathBuf)>;
+type ReferencedTaskPaths = Vec<(String, PathBuf, FileIdentity)>;
 type ValidatedRawTask = (ImageGenTaskRow, ReferencedTaskPaths, ValidatedTaskDir);
 
 impl ValidatedTaskDir {
@@ -939,6 +940,123 @@ fn open_windows_child_no_follow(
 }
 
 #[cfg(windows)]
+fn open_windows_file_relative(
+    parent: &std::fs::File,
+    name: &str,
+    create: bool,
+) -> AppResult<std::fs::File> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        NtCreateFile, FILE_CREATE, FILE_NON_DIRECTORY_FILE, FILE_OPEN, FILE_OPEN_REPARSE_POINT,
+        FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE, HANDLE, UNICODE_STRING};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_READ_ATTRIBUTES, FILE_SHARE_READ, FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let mut name = std::ffi::OsStr::new(name).encode_wide().collect::<Vec<_>>();
+    let byte_len = name
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| "SEC_INVALID_INPUT: stored image filename is too long".to_string())?;
+    let unicode = UNICODE_STRING {
+        Length: byte_len,
+        MaximumLength: byte_len,
+        Buffer: name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle() as _,
+        ObjectName: &unicode,
+        Attributes: 0,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut io_status = std::mem::MaybeUninit::<IO_STATUS_BLOCK>::zeroed();
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            if create {
+                GENERIC_WRITE | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+            } else {
+                GENERIC_READ | FILE_READ_ATTRIBUTES | SYNCHRONIZE
+            },
+            &attributes,
+            io_status.as_mut_ptr(),
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE,
+            if create { FILE_CREATE } else { FILE_OPEN },
+            FILE_NON_DIRECTORY_FILE | FILE_OPEN_REPARSE_POINT | FILE_SYNCHRONOUS_IO_NONALERT,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 || handle.is_null() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: stored image file cannot be {} relative to its trusted task handle: ntstatus {status:#x}",
+            if create { "created" } else { "opened" }
+        )
+        .into());
+    }
+    Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
+}
+
+#[cfg(unix)]
+fn create_validated_task_file(
+    validated: &ValidatedTaskDir,
+    filename: &str,
+) -> Result<std::fs::File, String> {
+    let fd = rustix::fs::openat(
+        &validated.task_handle,
+        filename,
+        rustix::fs::OFlags::WRONLY
+            | rustix::fs::OFlags::CREATE
+            | rustix::fs::OFlags::EXCL
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::RUSR | rustix::fs::Mode::WUSR,
+    )
+    .map_err(|e| format!("SYSTEM_ERROR: failed to create task file {filename}: {e}"))?;
+    Ok(fd.into())
+}
+
+#[cfg(windows)]
+fn create_validated_task_file(
+    validated: &ValidatedTaskDir,
+    filename: &str,
+) -> Result<std::fs::File, String> {
+    open_windows_file_relative(&validated.task_handle, filename, true).map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+type BeforePersistFileCreateHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_PERSIST_FILE_CREATE_TEST_HOOK: std::cell::RefCell<Option<BeforePersistFileCreateHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_before_persist_file_create_test_hook(hook: BeforePersistFileCreateHook) {
+    BEFORE_PERSIST_FILE_CREATE_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_persist_file_create_test_hook() {
+    let hook = BEFORE_PERSIST_FILE_CREATE_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(windows)]
 fn windows_handle_attributes(file: &std::fs::File) -> AppResult<u32> {
     use std::os::windows::io::AsRawHandle as _;
     use windows_sys::Win32::Storage::FileSystem::{
@@ -1116,12 +1234,12 @@ pub(crate) fn task_persist(
         for (index, bytes) in images.iter().enumerate() {
             let mime = &payload.images[index].mime;
             let file = format!("image-{}.{}", index + 1, ext_for_mime(mime));
-            write_task_file(&task_dir, &file, bytes)?;
+            write_task_file(&owned_task_dir, &file, bytes)?;
             let thumb = match thumbs.get(index) {
                 Some(thumb_bytes) => {
                     let thumb_mime = &payload.thumbs[index].mime;
                     let thumb_file = format!("thumb-{}.{}", index + 1, ext_for_mime(thumb_mime));
-                    write_task_file(&task_dir, &thumb_file, thumb_bytes)?;
+                    write_task_file(&owned_task_dir, &thumb_file, thumb_bytes)?;
                     Some(thumb_file)
                 }
                 None => None,
@@ -1137,7 +1255,7 @@ pub(crate) fn task_persist(
         for (index, bytes) in ref_images.iter().enumerate() {
             let mime = &payload.ref_images[index].mime;
             let file = format!("ref-{}.{}", index + 1, ext_for_mime(mime));
-            write_task_file(&task_dir, &file, bytes)?;
+            write_task_file(&owned_task_dir, &file, bytes)?;
             stored_refs.push(StoredFile {
                 file,
                 thumb: None,
@@ -1288,20 +1406,20 @@ fn validate_stored_file(
     task_dir: &Path,
     task_id: &str,
     stored: StoredFile,
-    referenced_paths: &mut Vec<(String, PathBuf)>,
+    referenced_paths: &mut ReferencedTaskPaths,
 ) -> AppResult<ImageGenTaskFileRow> {
     let file = safe_stored_file_name(&stored.file)
         .ok_or_else(|| "SEC_INVALID_INPUT: unsafe stored image filename".to_string())?;
-    let path = validate_stored_file_path(task_dir, file)?;
+    let (path, identity) = validate_stored_file_path(task_dir, file)?;
     let reference = format!("{task_id}/{file}");
-    referenced_paths.push((reference.clone(), path));
+    referenced_paths.push((reference.clone(), path, identity));
 
     let thumb_path = if let Some(thumb) = stored.thumb {
         let thumb = safe_stored_file_name(&thumb)
             .ok_or_else(|| "SEC_INVALID_INPUT: unsafe stored thumbnail filename".to_string())?;
-        let path = validate_stored_file_path(task_dir, thumb)?;
+        let (path, identity) = validate_stored_file_path(task_dir, thumb)?;
         let reference = format!("{task_id}/{thumb}");
-        referenced_paths.push((reference.clone(), path));
+        referenced_paths.push((reference.clone(), path, identity));
         Some(reference)
     } else {
         None
@@ -1313,7 +1431,10 @@ fn validate_stored_file(
     })
 }
 
-fn validate_stored_file_path(task_dir: &Path, filename: &str) -> AppResult<PathBuf> {
+fn validate_stored_file_path(
+    task_dir: &Path,
+    filename: &str,
+) -> AppResult<(PathBuf, FileIdentity)> {
     let candidate = task_dir.join(filename);
     validate_no_follow_components(&candidate)?;
     let canonical = std::fs::canonicalize(&candidate)
@@ -1326,7 +1447,13 @@ fn validate_stored_file_path(task_dir: &Path, filename: &str) -> AppResult<PathB
                 .into(),
         );
     }
-    Ok(canonical)
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(&canonical)
+        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be opened".to_string())?;
+    ensure_single_link_file(&file)?;
+    let identity = file_identity_from_handle(&file)?;
+    Ok((canonical, identity))
 }
 
 fn validate_raw_task(storage_roots: &[PathBuf], raw: RawTaskRow) -> AppResult<ValidatedRawTask> {
@@ -1657,7 +1784,74 @@ pub(crate) fn read_image_with_roots(
     storage_roots: &[PathBuf],
     reference: &str,
 ) -> AppResult<ImageGenFetchedImage> {
+    let mut images = read_images_with_budget_with_roots(
+        db,
+        storage_roots,
+        std::slice::from_ref(&reference.to_string()),
+        MAX_READ_IMAGE_BYTES,
+        MAX_READ_IMAGE_BYTES,
+    )?;
+    images.pop().ok_or_else(|| {
+        "SYSTEM_ERROR: image read returned no result"
+            .to_string()
+            .into()
+    })
+}
+
+pub(crate) fn read_images_with_budget_with_roots(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    references: &[String],
+    per_image_max: u64,
+    aggregate_max: u64,
+) -> AppResult<Vec<ImageGenFetchedImage>> {
+    if references.len() > MAX_HYDRATE_REFERENCES || per_image_max == 0 || aggregate_max == 0 {
+        return Err("SEC_INVALID_INPUT: invalid image history hydration budget"
+            .to_string()
+            .into());
+    }
     let storage_roots = canonical_storage_roots(storage_roots)?;
+    let mut used = 0_u64;
+    let mut output = Vec::with_capacity(references.len());
+    for reference in references {
+        let (mime, mut file, len) = open_image_reference(db, &storage_roots, reference)?;
+        let next = used.checked_add(len).ok_or_else(|| {
+            crate::shared::error::AppError::from(
+                "SEC_INVALID_INPUT: image history hydration budget exceeded".to_string(),
+            )
+        })?;
+        if len > per_image_max || next > aggregate_max {
+            return Err("SEC_INVALID_INPUT: image history hydration budget exceeded"
+                .to_string()
+                .into());
+        }
+        used = next;
+        #[cfg(test)]
+        run_before_history_file_read_test_hook();
+        let mut bytes = Vec::with_capacity(len as usize);
+        std::io::Read::take(&mut file, len.saturating_add(1))
+            .read_to_end(&mut bytes)
+            .map_err(|e| format!("SYSTEM_ERROR: failed to read image file: {e}"))?;
+        if bytes.len() as u64 > len {
+            return Err(
+                "SEC_INVALID_INPUT: stored image file size changed during read"
+                    .to_string()
+                    .into(),
+            );
+        }
+        output.push(ImageGenFetchedImage {
+            mime,
+            data_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        });
+    }
+    Ok(output)
+}
+
+fn open_image_reference(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    reference: &str,
+) -> AppResult<(String, std::fs::File, u64)> {
     let reference = reference.trim();
     let (task_id, filename) = reference
         .split_once('/')
@@ -1675,14 +1869,17 @@ pub(crate) fn read_image_with_roots(
         .optional()
         .map_err(|e| db_err!("failed to query image gen task: {e}"))?
         .ok_or_else(|| "SEC_INVALID_INPUT: image reference task was not found".to_string())?;
-    let (_, referenced_paths, validated_task) = validate_raw_task(&storage_roots, raw)?;
-    referenced_paths
+    let (_, referenced_paths, validated_task) = validate_raw_task(storage_roots, raw)?;
+    let expected_identity = referenced_paths
         .into_iter()
-        .find(|(candidate, _)| candidate == reference)
+        .find(|(candidate, _, _)| candidate == reference)
+        .map(|(_, _, identity)| identity)
         .ok_or_else(|| {
             "SEC_INVALID_INPUT: image reference is not present in trusted metadata".to_string()
         })?;
-    let mut file = open_validated_task_file(&validated_task, filename)?;
+    #[cfg(test)]
+    run_before_history_read_open_test_hook();
+    let file = open_validated_task_file(&validated_task, filename, expected_identity)?;
     let metadata = file
         .metadata()
         .map_err(|e| format!("SYSTEM_ERROR: failed to stat image file: {e}"))?;
@@ -1691,26 +1888,18 @@ pub(crate) fn read_image_with_roots(
             .to_string()
             .into());
     }
-    if metadata.len() > MAX_READ_IMAGE_BYTES {
-        return Err(format!(
-            "SEC_INVALID_INPUT: image file exceeds {MAX_READ_IMAGE_BYTES} bytes limit"
-        )
-        .into());
-    }
-
-    let mut bytes = Vec::with_capacity(metadata.len() as usize);
-    std::io::Read::read_to_end(&mut file, &mut bytes)
-        .map_err(|e| format!("SYSTEM_ERROR: failed to read image file: {e}"))?;
-    Ok(ImageGenFetchedImage {
-        mime: mime_for_ext(Path::new(filename)).to_string(),
-        data_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
-    })
+    Ok((
+        mime_for_ext(Path::new(filename)).to_string(),
+        file,
+        metadata.len(),
+    ))
 }
 
 #[cfg(unix)]
 fn open_validated_task_file(
     validated: &ValidatedTaskDir,
     filename: &str,
+    expected_identity: FileIdentity,
 ) -> AppResult<std::fs::File> {
     validated.revalidate()?;
     let fd = rustix::fs::openat(
@@ -1720,33 +1909,26 @@ fn open_validated_task_file(
         rustix::fs::Mode::empty(),
     )
     .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be opened".to_string())?;
-    Ok(fd.into())
+    let file: std::fs::File = fd.into();
+    ensure_single_link_file(&file)?;
+    if file_identity_from_handle(&file)? != expected_identity {
+        return Err("SEC_INVALID_INPUT: stored image file identity changed"
+            .to_string()
+            .into());
+    }
+    Ok(file)
 }
 
 #[cfg(windows)]
 fn open_validated_task_file(
     validated: &ValidatedTaskDir,
     filename: &str,
+    expected_identity: FileIdentity,
 ) -> AppResult<std::fs::File> {
-    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
-    use windows_sys::Win32::Storage::FileSystem::{
-        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
-        FILE_SHARE_WRITE,
-    };
+    use std::os::windows::fs::MetadataExt as _;
+    use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
 
-    validated.revalidate()?;
-    let task_lock = open_trusted_dir(&validated.path)?;
-    if file_identity_from_handle(&task_lock)? != validated.task_identity {
-        return Err("SEC_INVALID_INPUT: image gen task identity changed"
-            .to_string()
-            .into());
-    }
-    let file = std::fs::OpenOptions::new()
-        .read(true)
-        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
-        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
-        .open(validated.path.join(filename))
-        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be opened".to_string())?;
+    let file = open_windows_file_relative(&validated.task_handle, filename, false)?;
     let metadata = file
         .metadata()
         .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be inspected".to_string())?;
@@ -1757,7 +1939,84 @@ fn open_validated_task_file(
                 .into(),
         );
     }
+    ensure_single_link_file(&file)?;
+    if file_identity_from_handle(&file)? != expected_identity {
+        return Err("SEC_INVALID_INPUT: stored image file identity changed"
+            .to_string()
+            .into());
+    }
     Ok(file)
+}
+
+#[cfg(unix)]
+fn ensure_single_link_file(file: &std::fs::File) -> AppResult<()> {
+    let stat = rustix::fs::fstat(file)
+        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be inspected".to_string())?;
+    if stat.st_nlink != 1 {
+        return Err("SEC_INVALID_INPUT: stored image file cannot be a hard link"
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn ensure_single_link_file(file: &std::fs::File) -> AppResult<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) };
+    if ok == 0 || unsafe { info.assume_init() }.nNumberOfLinks != 1 {
+        return Err("SEC_INVALID_INPUT: stored image file cannot be a hard link"
+            .to_string()
+            .into());
+    }
+    Ok(())
+}
+
+#[cfg(test)]
+type BeforeHistoryReadOpenHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_HISTORY_READ_OPEN_TEST_HOOK: std::cell::RefCell<Option<BeforeHistoryReadOpenHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_before_history_read_open_test_hook(hook: BeforeHistoryReadOpenHook) {
+    BEFORE_HISTORY_READ_OPEN_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_history_read_open_test_hook() {
+    let hook = BEFORE_HISTORY_READ_OPEN_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+type BeforeHistoryFileReadHook = Box<dyn FnMut() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_HISTORY_FILE_READ_TEST_HOOK: std::cell::RefCell<Option<BeforeHistoryFileReadHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_before_history_file_read_test_hook(hook: BeforeHistoryFileReadHook) {
+    BEFORE_HISTORY_FILE_READ_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_history_file_read_test_hook() {
+    BEFORE_HISTORY_FILE_READ_TEST_HOOK.with(|current| {
+        if let Some(hook) = current.borrow_mut().as_mut() {
+            hook();
+        }
+    });
 }
 
 /// Storage usage view. Size is computed by walking DB-recorded task dirs.

@@ -50,6 +50,8 @@
 - [x] Finish child 7, then verify commit/archive order is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7.
 - [ ] Finish child 8 after implementing explicit provider-selection decision A and full gates, then verify order
       is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8.
+- [ ] Finish child 9 after closing round-4 findings and full gates, then verify order is exactly
+      1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9.
 - [ ] Run the independent max read-only final review; do not archive the parent before it passes.
 - [x] Run `pnpm build`, `pnpm check:precommit:full`, `pnpm check:prepush` and any focused commands
       listed by child tasks that are not included in aggregate gates.
@@ -72,9 +74,16 @@
 
 ### 8. Third final-review findings
 
-- [ ] Close nine non-conflicting findings under `.trellis/tasks/07-17-final-review-findings-round-3`.
+- [x] Close nine non-conflicting findings under `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-3`.
 - [x] Record explicit user decision A: retain common-gate skipped/continue/full-503 behavior.
-- [ ] Rerun focused and full gates, then commit/archive child 8 while keeping this parent `in_progress`.
+- [x] Rerun focused and full gates, then commit/archive child 8 while keeping this parent `in_progress`.
+
+### 9. Fourth final-review findings
+
+- [x] Implement all nine findings under `.trellis/tasks/07-17-final-review-findings-round-4`, including the
+      explicit Skill root-authority-only product decision and template-synchronized executable specs.
+- [x] Run focused tests plus `check:precommit:full` and `check:prepush` while keeping this parent `in_progress`.
+- [x] Commit and archive child 9, record journal evidence, then return to independent Max read-only review.
 
 ## Stop And Rollback Rules
 

@@ -543,16 +543,30 @@ pub(crate) fn set<R: tauri::Runtime>(
     preferences: GrokProxyPreferences,
 ) -> crate::shared::error::AppResult<GrokConfigState> {
     let preferences = validate_preferences(preferences)?;
-    let previous_settings = crate::settings::read(app)?;
     inspect(app)?;
-    let mut next_settings = previous_settings.clone();
-    next_settings.grok_proxy_preferences = Some(preferences);
-    crate::settings::write(app, &next_settings)?;
+    #[cfg(test)]
+    run_before_grok_settings_update_test_hook();
+    let committed_preferences = Some(preferences);
+    let (_, previous_preferences) = crate::settings::update(app, |latest| {
+        let previous = latest.grok_proxy_preferences.clone();
+        latest.grok_proxy_preferences = committed_preferences.clone();
+        Ok(previous)
+    })?;
+    #[cfg(test)]
+    run_after_grok_settings_update_test_hook();
 
     match get(app) {
         Ok(state) => Ok(state),
         Err(error) => {
-            if let Err(rollback_error) = crate::settings::write(app, &previous_settings) {
+            let rollback = crate::settings::update(app, |latest| {
+                if latest.grok_proxy_preferences == committed_preferences {
+                    latest.grok_proxy_preferences = previous_preferences.clone();
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            });
+            if let Err(rollback_error) = rollback {
                 return Err(format!(
                     "GROK_PREFERENCES_TRANSACTION_ROLLBACK_FAILED: {error}; settings rollback failed: {rollback_error}"
                 )
@@ -560,6 +574,41 @@ pub(crate) fn set<R: tauri::Runtime>(
             }
             Err(error)
         }
+    }
+}
+
+#[cfg(test)]
+type GrokSettingsTestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_GROK_SETTINGS_UPDATE_TEST_HOOK: std::cell::RefCell<Option<GrokSettingsTestHook>> = const { std::cell::RefCell::new(None) };
+    static AFTER_GROK_SETTINGS_UPDATE_TEST_HOOK: std::cell::RefCell<Option<GrokSettingsTestHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_before_grok_settings_update_test_hook(hook: GrokSettingsTestHook) {
+    BEFORE_GROK_SETTINGS_UPDATE_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn set_after_grok_settings_update_test_hook(hook: GrokSettingsTestHook) {
+    AFTER_GROK_SETTINGS_UPDATE_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_grok_settings_update_test_hook() {
+    let hook = BEFORE_GROK_SETTINGS_UPDATE_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+fn run_after_grok_settings_update_test_hook() {
+    let hook = AFTER_GROK_SETTINGS_UPDATE_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
     }
 }
 
@@ -869,6 +918,104 @@ fn model_profile_u64(document: &DocumentMut, profile: &str, key: &str) -> Option
 mod tests {
     use super::*;
     use std::sync::Arc;
+
+    struct TestEnvRestore(Vec<(&'static str, Option<std::ffi::OsString>)>);
+
+    impl TestEnvRestore {
+        fn set(values: &[(&'static str, &std::ffi::OsStr)]) -> Self {
+            let original = values
+                .iter()
+                .map(|(key, _)| (*key, std::env::var_os(key)))
+                .collect();
+            for (key, value) in values {
+                std::env::set_var(key, value);
+            }
+            Self(original)
+        }
+    }
+
+    impl Drop for TestEnvRestore {
+        fn drop(&mut self) {
+            for (key, value) in self.0.drain(..).rev() {
+                match value {
+                    Some(value) => std::env::set_var(key, value),
+                    None => std::env::remove_var(key),
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn production_grok_writer_preserves_concurrent_image_root_and_cas_rollback() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let temp = tempfile::tempdir().expect("tempdir");
+        let grok_home = temp.path().join("grok-home");
+        let home = temp.path().join("app-home");
+        std::fs::create_dir_all(&grok_home).expect("grok home");
+        let _restore = TestEnvRestore::set(&[
+            ("GROK_HOME", grok_home.as_os_str()),
+            ("AIO_CODING_HUB_HOME_DIR", home.as_os_str()),
+            (
+                "AIO_CODING_HUB_DOTDIR_NAME",
+                std::ffi::OsStr::new(".aio-grok-settings-owner-test"),
+            ),
+        ]);
+        crate::settings::clear_cache();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        crate::settings::write(&handle, &crate::settings::AppSettings::default())
+            .expect("seed settings");
+
+        let hook_app = handle.clone();
+        set_before_grok_settings_update_test_hook(Box::new(move || {
+            crate::settings::update(&hook_app, |latest| {
+                latest.image_gen_storage_dir = Some("concurrent-root".to_string());
+                latest.image_gen_storage_roots = vec!["concurrent-root".to_string()];
+                Ok(())
+            })
+            .expect("production-adjacent root writer");
+        }));
+        let requested = GrokProxyPreferences {
+            model_id: "grok-requested".to_string(),
+            ..Default::default()
+        };
+        set(&handle, requested.clone()).expect("real grok writer");
+        let persisted = crate::settings::read(&handle).expect("settings");
+        assert_eq!(
+            persisted.image_gen_storage_dir.as_deref(),
+            Some("concurrent-root")
+        );
+        assert_eq!(persisted.grok_proxy_preferences, Some(requested));
+
+        let hook_app = handle.clone();
+        let invalid_config = grok_home.join("config.toml");
+        let concurrent = GrokProxyPreferences {
+            model_id: "grok-concurrent".to_string(),
+            ..Default::default()
+        };
+        let hook_concurrent = concurrent.clone();
+        set_after_grok_settings_update_test_hook(Box::new(move || {
+            crate::settings::update(&hook_app, |latest| {
+                latest.grok_proxy_preferences = Some(hook_concurrent.clone());
+                Ok(())
+            })
+            .expect("concurrent grok owner update");
+            std::fs::write(&invalid_config, "invalid = [")
+                .expect("force post-commit inspection failure");
+        }));
+        let attempted = GrokProxyPreferences {
+            model_id: "grok-attempted".to_string(),
+            ..Default::default()
+        };
+        set(&handle, attempted).expect_err("post-commit inspection must fail");
+        let persisted = crate::settings::read(&handle).expect("settings after CAS rollback");
+        assert_eq!(persisted.grok_proxy_preferences, Some(concurrent));
+        assert_eq!(
+            persisted.image_gen_storage_dir.as_deref(),
+            Some("concurrent-root")
+        );
+        crate::settings::clear_cache();
+    }
 
     #[test]
     fn resolves_default_and_overridden_grok_home() {

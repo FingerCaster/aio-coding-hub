@@ -134,9 +134,23 @@ pub(super) fn sync_all_cli_runtime<R: tauri::Runtime>(
 fn restore_settings_after_failed_import<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     previous_settings: &settings::AppSettings,
-) {
-    if let Err(err) = settings::write(app, previous_settings) {
-        tracing::warn!(error = %err, "config import rollback: failed to restore settings");
+    committed_settings: Option<&settings::AppSettings>,
+) -> bool {
+    let Some(committed_settings) = committed_settings else {
+        return false;
+    };
+    match settings::compare_and_swap(app, committed_settings, previous_settings) {
+        Ok((_, true)) => true,
+        Ok((_, false)) => {
+            tracing::warn!(
+                "config import rollback: settings changed concurrently; preserving the newer snapshot"
+            );
+            false
+        }
+        Err(err) => {
+            tracing::warn!(error = %err, "config import rollback: failed to restore settings");
+            false
+        }
     }
 }
 
@@ -144,11 +158,13 @@ pub(super) fn rollback_after_failed_import<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     db: &db::Db,
     previous_settings: &settings::AppSettings,
+    committed_settings: Option<&settings::AppSettings>,
     runtime_backups: Vec<CliRuntimeBackup>,
     skill_fs_guard: Option<&mut SkillFsImportGuard>,
 ) {
-    restore_settings_after_failed_import(app, previous_settings);
-    crate::app::autostart::restore_auto_start_best_effort(app, previous_settings.auto_start);
+    if restore_settings_after_failed_import(app, previous_settings, committed_settings) {
+        crate::app::autostart::restore_auto_start_best_effort(app, previous_settings.auto_start);
+    }
 
     if let Some(guard) = skill_fs_guard {
         guard.rollback();

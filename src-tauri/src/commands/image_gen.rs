@@ -247,6 +247,16 @@ pub(crate) async fn image_gen_read_image(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn image_gen_hydrate_images(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    paths: Vec<String>,
+) -> Result<Vec<ImageGenFetchedImage>, String> {
+    image_gen_service::hydrate_images(app, db_state, paths).await
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn image_gen_storage_get(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,

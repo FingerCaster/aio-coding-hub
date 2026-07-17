@@ -5,6 +5,7 @@ import { gptImageAdapter } from "../../../services/image-gen/gptImageAdapter";
 import {
   imageGenConfigGet,
   imageGenConfigSet,
+  imageGenHydrateImages,
   imageGenReadImage,
   imageGenSaveImage,
   imageGenStorageCleanup,
@@ -51,6 +52,7 @@ vi.mock("../../../services/image-gen/service", async () => {
     imageGenTasksList: vi.fn(),
     imageGenTaskDelete: vi.fn(),
     imageGenTasksClear: vi.fn(),
+    imageGenHydrateImages: vi.fn(),
     imageGenReadImage: vi.fn(),
     imageGenStorageGet: vi.fn(),
     imageGenStorageSetDir: vi.fn(),
@@ -241,6 +243,9 @@ describe("pages/image-gen/useImageGenController", () => {
     vi.mocked(imageGenTaskDelete).mockResolvedValue(null);
     vi.mocked(imageGenTasksClear).mockResolvedValue(0);
     vi.mocked(imageGenStorageCleanup).mockResolvedValue(0);
+    vi.mocked(imageGenHydrateImages).mockImplementation(async (paths) =>
+      paths.map(() => ({ mime: "image/png", dataB64: btoa("stored-image") }))
+    );
     vi.mocked(imageGenReadImage).mockResolvedValue({
       mime: "image/png",
       dataB64: btoa("stored-image"),
@@ -346,6 +351,33 @@ describe("pages/image-gen/useImageGenController", () => {
     const retried = result.current.tasks[0];
     expect(retried.status).toBe("done");
     expect(retried.error).toBeUndefined();
+  });
+
+  it("redacts and bounds generation failures before task persistence", async () => {
+    vi.mocked(gptImageAdapter.generate).mockRejectedValueOnce(
+      new Error(`HTTP 500: token=SYNTHETIC_SECRET ${"x".repeat(2_000)}`)
+    );
+    vi.mocked(imageGenTaskPersist).mockImplementation(async (payload) =>
+      makeRow({
+        id: payload.id,
+        status: "error",
+        error: payload.error,
+        requestJson: payload.requestJson,
+        images: [],
+      })
+    );
+    const { result } = await renderController();
+    act(() => result.current.setPrompt("secret-free failure"));
+    await act(async () => result.current.submit());
+    await waitFor(() => expect(imageGenTaskPersist).toHaveBeenCalled());
+
+    const taskError = result.current.tasks[0].error ?? "";
+    const persistCalls = vi.mocked(imageGenTaskPersist).mock.calls;
+    const persisted = persistCalls[persistCalls.length - 1]?.[0];
+    expect(taskError).not.toContain("SYNTHETIC_SECRET");
+    expect(taskError.length).toBeLessThanOrEqual(512);
+    expect(persisted?.error).not.toContain("SYNTHETIC_SECRET");
+    expect(persisted?.error?.length).toBeLessThanOrEqual(512);
   });
 
   it("retry resets startedAt while keeping createdAt", async () => {
@@ -1450,8 +1482,9 @@ describe("pages/image-gen/useImageGenController", () => {
       expect(result.current.tasks).toHaveLength(1);
     });
 
-    expect(imageGenReadImage).toHaveBeenCalledTimes(1);
-    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/thumb-1.webp");
+    expect(imageGenHydrateImages).toHaveBeenCalledTimes(1);
+    expect(imageGenHydrateImages).toHaveBeenCalledWith(["row-1/thumb-1.webp"]);
+    expect(imageGenReadImage).not.toHaveBeenCalled();
     expect(diskImage(result.current.tasks[0].images[0]).src).toBeNull();
     expect(result.current.tasks[0].refThumbs).toEqual([]);
 

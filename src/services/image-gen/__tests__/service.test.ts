@@ -6,6 +6,7 @@ import {
   imageGenConfigGet,
   imageGenConfigSet,
   imageGenFetchImage,
+  imageGenHydrateImages,
   imageGenPostJson,
   imageGenPostMultipart,
   imageGenReadImage,
@@ -40,6 +41,7 @@ vi.mock("../../../generated/bindings", async () => {
       imageGenTaskDelete: vi.fn(),
       imageGenTasksClear: vi.fn(),
       imageGenReadImage: vi.fn(),
+      imageGenHydrateImages: vi.fn(),
       imageGenStorageGet: vi.fn(),
       imageGenStorageSetDir: vi.fn(),
       imageGenStorageCleanup: vi.fn(),
@@ -327,6 +329,13 @@ describe("services/image-gen/service", () => {
       error: "SEC_PATH: outside storage dir",
     });
     await expect(imageGenReadImage("/etc/passwd")).rejects.toThrow("SEC_PATH");
+  });
+
+  it("imageGenHydrateImages uses the backend-budgeted batch command", async () => {
+    const fetched = [{ mime: "image/webp", dataB64: btoa("thumb") }];
+    vi.mocked(commands.imageGenHydrateImages).mockResolvedValue({ status: "ok", data: fetched });
+    await expect(imageGenHydrateImages(["t1/thumb-1.webp"])).resolves.toEqual(fetched);
+    expect(commands.imageGenHydrateImages).toHaveBeenCalledWith(["t1/thumb-1.webp"]);
   });
 
   it("imageGenStorage get/setDir/cleanup round-trip the storage view and counts", async () => {

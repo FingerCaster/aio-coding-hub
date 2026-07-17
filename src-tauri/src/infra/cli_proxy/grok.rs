@@ -55,9 +55,9 @@ fn apply_proxy_config_locked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     base_origin: &str,
 ) -> AppResult<()> {
-    let previous_settings = crate::settings::read(app)?;
-    let mut next_settings = previous_settings.clone();
-    let preferences = match previous_settings.grok_proxy_preferences.clone() {
+    let current_preferences = crate::settings::read(app)?.grok_proxy_preferences;
+    let mut committed_preferences = None;
+    let preferences = match current_preferences.clone() {
         Some(preferences) => crate::grok_config::validate_preferences(preferences)?,
         None => {
             let candidate = match crate::grok_config::inspect(app) {
@@ -70,9 +70,21 @@ fn apply_proxy_config_locked<R: tauri::Runtime>(
                 }
             };
             let candidate = crate::grok_config::validate_preferences(candidate)?;
-            next_settings.grok_proxy_preferences = Some(candidate.clone());
-            crate::settings::write(app, &next_settings)?;
-            candidate
+            let candidate_value = Some(candidate.clone());
+            let (_, (effective, changed)) = crate::settings::update(app, |latest| {
+                if latest.grok_proxy_preferences.is_none() {
+                    latest.grok_proxy_preferences = candidate_value.clone();
+                    return Ok((candidate.clone(), true));
+                }
+                Ok((
+                    latest.grok_proxy_preferences.clone().unwrap_or_default(),
+                    false,
+                ))
+            })?;
+            if changed {
+                committed_preferences = Some(candidate_value);
+            }
+            effective
         }
     };
 
@@ -85,8 +97,13 @@ fn apply_proxy_config_locked<R: tauri::Runtime>(
         if is_invalid_config_error(&error) {
             preserve_invalid_config(app);
         }
-        if previous_settings.grok_proxy_preferences.is_none() {
-            crate::settings::write(app, &previous_settings)?;
+        if let Some(committed) = committed_preferences {
+            crate::settings::update(app, |latest| {
+                if latest.grok_proxy_preferences == committed {
+                    latest.grok_proxy_preferences = current_preferences.clone();
+                }
+                Ok(())
+            })?;
         }
         return Err(error);
     }
@@ -100,7 +117,6 @@ pub(super) fn set_preferences<R: tauri::Runtime>(
 ) -> AppResult<crate::grok_config::GrokConfigState> {
     let preferences = crate::grok_config::validate_preferences(preferences)?;
     let _guard = transaction_lock()?;
-    let previous_settings = crate::settings::read(app)?;
     let manifest = super::read_manifest(app, "grok")?;
 
     let Some(base_origin) = manifest
@@ -111,9 +127,12 @@ pub(super) fn set_preferences<R: tauri::Runtime>(
         return crate::grok_config::set(app, preferences);
     };
 
-    let mut next_settings = previous_settings.clone();
-    next_settings.grok_proxy_preferences = Some(preferences.clone());
-    crate::settings::write(app, &next_settings)?;
+    let committed_preferences = Some(preferences.clone());
+    let (_, previous_preferences) = crate::settings::update(app, |latest| {
+        let previous = latest.grok_proxy_preferences.clone();
+        latest.grok_proxy_preferences = committed_preferences.clone();
+        Ok(previous)
+    })?;
 
     if let Err(error) = crate::grok_config::apply_proxy_profile(
         app,
@@ -121,7 +140,13 @@ pub(super) fn set_preferences<R: tauri::Runtime>(
         &preferences,
         super::PLACEHOLDER_KEY,
     ) {
-        if let Err(rollback_error) = crate::settings::write(app, &previous_settings) {
+        let rollback = crate::settings::update(app, |latest| {
+            if latest.grok_proxy_preferences == committed_preferences {
+                latest.grok_proxy_preferences = previous_preferences.clone();
+            }
+            Ok(())
+        });
+        if let Err(rollback_error) = rollback {
             return Err(format!(
                 "GROK_PREFERENCES_TRANSACTION_ROLLBACK_FAILED: {error}; settings rollback failed: {rollback_error}"
             )

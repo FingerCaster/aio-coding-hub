@@ -1,9 +1,9 @@
 use super::config::{config_connection, config_get, config_set};
 use super::transport::{
     build_request_url, decode_multipart_files, ensure_image_redirect_budget, is_disallowed_ip,
-    is_image_content_type, resolve_image_redirect, resolve_timeout, safe_reqwest_error,
-    validate_fetch_image_url, validate_multipart_fields, validate_multipart_files,
-    validate_public_addrs, validate_request_path, ImageGenMultipartFile,
+    is_image_content_type, post_json, post_multipart, resolve_image_redirect, resolve_timeout,
+    safe_failure_summary, safe_reqwest_error, validate_fetch_image_url, validate_multipart_fields,
+    validate_multipart_files, validate_public_addrs, validate_request_path, ImageGenMultipartFile,
 };
 use crate::db;
 use std::net::{IpAddr, SocketAddr};
@@ -139,6 +139,111 @@ fn request_path_allowlist_accepts_only_image_endpoints() {
             assert!(!err.contains(path), "rejected path leaked: {err}");
         }
     }
+}
+
+#[test]
+fn generation_failure_summary_is_fixed_bounded_and_secret_free() {
+    let summary = safe_failure_summary(422);
+    assert_eq!(
+        summary,
+        "HTTP 422: upstream image generation request failed"
+    );
+    assert!(summary.chars().count() <= 512);
+    assert!(!summary.contains("SYNTHETIC_SECRET"));
+}
+
+fn spawn_image_gen_failure_server(body: Vec<u8>) -> (String, std::thread::JoinHandle<()>) {
+    use std::io::{Read as _, Write as _};
+    let listener = std::net::TcpListener::bind("127.0.0.1:0").expect("bind failure server");
+    let address = listener.local_addr().expect("failure server address");
+    let worker = std::thread::spawn(move || {
+        let (mut socket, _) = listener.accept().expect("accept failure request");
+        socket
+            .set_read_timeout(Some(std::time::Duration::from_secs(2)))
+            .expect("read timeout");
+        let mut request = Vec::new();
+        let mut chunk = [0_u8; 4096];
+        let (header_end, content_length) = loop {
+            let read = socket.read(&mut chunk).expect("read request headers");
+            if read == 0 {
+                panic!("request closed before headers completed");
+            }
+            request.extend_from_slice(&chunk[..read]);
+            if let Some(offset) = request.windows(4).position(|window| window == b"\r\n\r\n") {
+                let header_end = offset + 4;
+                let headers = String::from_utf8_lossy(&request[..header_end]);
+                let content_length = headers
+                    .lines()
+                    .find_map(|line| {
+                        line.split_once(':').and_then(|(name, value)| {
+                            name.eq_ignore_ascii_case("content-length")
+                                .then(|| value.trim().parse::<usize>().ok())
+                                .flatten()
+                        })
+                    })
+                    .unwrap_or(0);
+                break (header_end, content_length);
+            }
+        };
+        while request.len() < header_end + content_length {
+            let read = socket.read(&mut chunk).expect("read request body");
+            if read == 0 {
+                break;
+            }
+            request.extend_from_slice(&chunk[..read]);
+        }
+        write!(
+            socket,
+            "HTTP/1.1 422 Unprocessable Entity\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            body.len()
+        )
+        .expect("response headers");
+        let _ = socket.write_all(&body);
+    });
+    (format!("http://{address}"), worker)
+}
+
+#[tokio::test]
+async fn json_and_multipart_failures_use_bounded_secret_free_transport_summary() {
+    let secret_body = format!(
+        "{{\"error\":{{\"message\":\"SYNTHETIC_SECRET{}\"}}}}",
+        "x".repeat(9 * 1024)
+    )
+    .into_bytes();
+    let client = reqwest::Client::builder().build().expect("client");
+
+    let (base_url, worker) = spawn_image_gen_failure_server(secret_body.clone());
+    let json = post_json(
+        &client,
+        &base_url,
+        "synthetic-key",
+        "/v1/images/generations",
+        &serde_json::json!({"prompt": "test"}),
+        Some(5),
+    )
+    .await
+    .expect("bounded JSON failure response");
+    worker.join().expect("JSON server");
+    assert_eq!(json.status, 422);
+    assert_eq!(json.body_text, safe_failure_summary(422));
+    assert!(!json.body_text.contains("SYNTHETIC_SECRET"));
+
+    let (base_url, worker) = spawn_image_gen_failure_server(secret_body);
+    let multipart = post_multipart(
+        &client,
+        &base_url,
+        "synthetic-key",
+        "/v1/images/edits",
+        &[("prompt".to_string(), "test".to_string())],
+        &[],
+        Some(5),
+    )
+    .await
+    .expect("bounded multipart failure response");
+    worker.join().expect("multipart server");
+    assert_eq!(multipart.status, 422);
+    assert_eq!(multipart.body_text, safe_failure_summary(422));
+    assert!(!multipart.body_text.contains("SYNTHETIC_SECRET"));
 }
 
 // -- base url validation & join --
@@ -528,7 +633,9 @@ fn timeout_defaults_to_600_and_clamps_to_1_900() {
 // -- history --
 
 use super::history::{
-    ensure_writable_dir, read_image, read_image_with_roots, set_before_quarantine_test_hook,
+    ensure_writable_dir, read_image, read_image_with_roots, read_images_with_budget_with_roots,
+    set_before_history_file_read_test_hook, set_before_history_read_open_test_hook,
+    set_before_persist_file_create_test_hook, set_before_quarantine_test_hook,
     set_persist_failure_point, storage_cleanup, storage_cleanup_with_roots, storage_stats,
     storage_stats_with_roots, task_delete, task_persist, tasks_clear, tasks_list,
     tasks_list_with_roots, tasks_page_with_roots, ImageGenTaskFilePayload,
@@ -903,6 +1010,99 @@ fn history_read_image_rejects_out_of_bounds_paths() {
             .expect_err("symlink escape should fail");
         assert!(err.to_string().contains("SEC_INVALID_INPUT"));
     }
+}
+
+#[test]
+fn history_read_rejects_same_name_hardlink_swap_after_validation() {
+    let (_db_dir, db) = test_db("image-gen-history-read-hardlink-swap.db");
+    let outer = tempfile::tempdir().expect("outer");
+    let storage = outer.path().join("storage");
+    std::fs::create_dir_all(&storage).expect("storage");
+    task_persist(&db, &storage, done_task_payload("t1", 1)).expect("persist");
+
+    let image = storage.join("t1/image-1.png");
+    let moved = storage.join("t1/image-original.png");
+    let outside = outer.path().join("outside.png");
+    std::fs::write(&outside, b"SYNTHETIC_SECRET_OUTSIDE").expect("outside");
+    let hook_image = image.clone();
+    let hook_moved = moved.clone();
+    let hook_outside = outside.clone();
+    set_before_history_read_open_test_hook(Box::new(move || {
+        std::fs::rename(&hook_image, &hook_moved).expect("move validated image");
+        std::fs::hard_link(&hook_outside, &hook_image).expect("same-name hardlink swap");
+    }));
+
+    let error = read_image(&db, &storage, "t1/image-1.png")
+        .expect_err("identity-changing hardlink swap must fail closed");
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+    assert_eq!(
+        std::fs::read(&outside).expect("outside remains readable"),
+        b"SYNTHETIC_SECRET_OUTSIDE"
+    );
+}
+
+#[test]
+fn history_batch_hydration_reserves_budget_before_starting_next_read() {
+    let (_db_dir, db) = test_db("image-gen-history-hydrate-budget.db");
+    let storage = tempfile::tempdir().expect("storage");
+    let mut payload = done_task_payload("t1", 1);
+    payload.images = vec![
+        file_payload(b"abc", "image/png"),
+        file_payload(b"def", "image/png"),
+    ];
+    payload.thumbs.clear();
+    payload.ref_images.clear();
+    task_persist(&db, storage.path(), payload).expect("persist");
+
+    let reads = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+    let hook_reads = reads.clone();
+    set_before_history_file_read_test_hook(Box::new(move || {
+        hook_reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    }));
+    let roots = vec![storage.path().to_path_buf()];
+    let references = vec!["t1/image-1.png".to_string(), "t1/image-2.png".to_string()];
+    let error = read_images_with_budget_with_roots(&db, &roots, &references, 4, 4)
+        .expect_err("aggregate budget must reject the second image before reading it");
+    assert!(error.to_string().contains("hydration budget exceeded"));
+    assert_eq!(reads.load(std::sync::atomic::Ordering::SeqCst), 1);
+}
+
+#[test]
+fn history_persist_writes_through_validated_task_handle_after_path_rebind() {
+    let (_db_dir, db) = test_db("image-gen-history-persist-path-rebind.db");
+    let outer = tempfile::tempdir().expect("outer");
+    let storage = outer.path().join("storage");
+    let outside = outer.path().join("outside");
+    std::fs::create_dir_all(&outside).expect("outside");
+    let sentinel = outside.join("sentinel");
+    std::fs::write(&sentinel, b"outside-unchanged").expect("sentinel");
+    let task = storage.join("t1");
+    let moved = storage.join("owned-moved");
+    let hook_task = task.clone();
+    let hook_moved = moved.clone();
+    let hook_outside = outside.clone();
+    set_before_persist_file_create_test_hook(Box::new(move || {
+        std::fs::rename(&hook_task, &hook_moved).expect("move owned task dir");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&hook_outside, &hook_task).expect("rebind task symlink");
+        #[cfg(windows)]
+        junction::create(&hook_outside, &hook_task).expect("rebind task junction");
+    }));
+
+    task_persist(&db, &storage, done_task_payload("t1", 1))
+        .expect_err("rebound task path must fail final validation");
+    assert_eq!(
+        std::fs::read(&sentinel).expect("outside sentinel"),
+        b"outside-unchanged"
+    );
+    assert!(!outside.join("image-1.png").exists());
+    assert!(!outside.join("thumb-1.webp").exists());
+    assert!(!outside.join("ref-1.png").exists());
+    let conn = db.open_connection().expect("db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 0);
 }
 
 #[test]

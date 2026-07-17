@@ -574,6 +574,21 @@ where
     Ok((settings, output))
 }
 
+pub fn compare_and_swap<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    expected: &AppSettings,
+    replacement: &AppSettings,
+) -> AppResult<(AppSettings, bool)> {
+    let expected = canonical_settings_json(expected)?;
+    update(app, |latest| {
+        if canonical_settings_json(latest)? != expected {
+            return Ok(false);
+        }
+        *latest = replacement.clone();
+        Ok(true)
+    })
+}
+
 pub fn clear_cache() {
     let cache = SETTINGS_CACHE.get_or_init(|| RwLock::new(None));
     if let Ok(mut guard) = cache.write() {

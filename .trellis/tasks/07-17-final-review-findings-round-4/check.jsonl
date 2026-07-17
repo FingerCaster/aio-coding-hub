@@ -1,0 +1,19 @@
+{"file": ".trellis/spec/guides/index.md", "reason": "Check the diff against required shared thinking and systematic same-category coverage."}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "Verify every Rust/IPC/TypeScript/persistence boundary and production consumer together."}
+{"file": ".trellis/spec/aio-coding-hub/backend/index.md", "reason": "Run the complete Rust backend quality checklist and common-gate regression checks."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "Run all applicable cross-layer, generated-binding, frontend, and Rust checks."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md", "reason": "Verify same-handle filesystem authority, budget-before-read/IPC, bounded errors, DB rollback, and secret-free logs."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md", "reason": "Verify deterministic replacement tests, root-outside exclusion, and byte-exact root-internal round-trip without any content-sensitive filtering."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/provider-oauth-device-flow-contract.md", "reason": "Verify poll/cancel capability redaction and all existing OAuth ownership contracts."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md", "reason": "Verify field-owned lock-internal RMW and CAS rollback preserve concurrent settings changes."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md", "reason": "Verify option A common-gate behavior remains unchanged and DeniedByCircuit is not introduced."}
+{"file": ".trellis/tasks/archive/2026-07/07-17-final-review-findings-round-3/research/provider-selection-product-decision.md", "reason": "Audit the implementation against the user's recorded option A decision."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md", "reason": "Verify real production writers preserve unrelated fields and CAS rollback does not overwrite concurrent updates."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md", "reason": "Verify archive rewrites only self references and validates every active/archive manifest before commit."}
+{"file": "src/templates/markdown/spec/cross-layer/settings-ownership-rollback-contract.md", "reason": "Verify the shipped settings ownership code-spec template exactly matches the project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/trellis-task-context-archive-contract.md", "reason": "Verify the shipped Trellis archive code-spec template exactly matches the project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/config-migration-skill-bundle-contract.md", "reason": "Verify the shipped Skill contract template hash matches the project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/image-gen-trust-boundary-contract.md", "reason": "Verify the shipped Image Gen contract template hash matches the project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/provider-oauth-device-flow-contract.md", "reason": "Verify the shipped OAuth contract template hash matches the project contract."}
+{"file": "src/templates/markdown/spec/cross-layer/index.md", "reason": "Verify the shipped cross-layer index hash and relative links match the project contract."}
+{"file": ".trellis/tasks/07-17-final-review-findings-round-4/research/break-loop-retrospective.md", "reason": "Check that every identified root-cause cluster has an executable regression and spec contract."}

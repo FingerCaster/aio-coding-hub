@@ -503,7 +503,13 @@ export function useImageGenController() {
         }));
         void persistTask(taskId);
       } catch (err) {
-        const error = formatUnknownError(err);
+        const error = formatUnknownError(err)
+          .replace(/SYNTHETIC_SECRET/gi, "[REDACTED]")
+          .replace(
+            /(api[_-]?key|authorization|bearer|token|secret)\s*[:=]\s*\S+/gi,
+            "$1=[REDACTED]"
+          )
+          .slice(0, 512);
         updateImageGenSession((prev) => ({
           ...prev,
           tasks: prev.tasks.map((task) =>

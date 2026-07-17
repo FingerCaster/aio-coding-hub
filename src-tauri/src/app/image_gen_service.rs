@@ -163,6 +163,26 @@ pub(crate) async fn read_image(
     .map_err(Into::into)
 }
 
+pub(crate) async fn hydrate_images(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    paths: Vec<String>,
+) -> Result<Vec<image_gen::ImageGenFetchedImage>, String> {
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
+    blocking::run("image_gen_hydrate_images", move || {
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::read_images_with_budget_with_roots(
+            &db,
+            &storage_roots,
+            &paths,
+            image_gen::HISTORY_HYDRATE_PER_IMAGE_BYTES,
+            image_gen::HISTORY_HYDRATE_TOTAL_BYTES,
+        )
+    })
+    .await
+    .map_err(Into::into)
+}
+
 pub(crate) async fn storage_get(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,

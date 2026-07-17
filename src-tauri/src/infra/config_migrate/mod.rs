@@ -369,15 +369,25 @@ pub fn config_import<R: tauri::Runtime>(
         true,
     );
 
-    if let Err(err) = settings::write(app, &settings_to_write) {
+    let settings_committed =
+        settings::compare_and_swap(app, &previous_settings, &settings_to_write);
+    if !matches!(settings_committed, Ok((_, true))) {
         rollback::rollback_after_failed_import(
             app,
             db,
             &previous_settings,
+            None,
             runtime_backups,
             skill_fs_guard.as_mut(),
         );
-        return Err(err);
+        return match settings_committed {
+            Ok(_) => Err(
+                "SETTINGS_CONCURRENT_UPDATE: settings changed during config import"
+                    .to_string()
+                    .into(),
+            ),
+            Err(error) => Err(error),
+        };
     }
 
     if let Err(err) = rollback::sync_all_cli_runtime(app, &tx) {
@@ -386,6 +396,7 @@ pub fn config_import<R: tauri::Runtime>(
             app,
             db,
             &previous_settings,
+            Some(&settings_to_write),
             runtime_backups,
             skill_fs_guard.as_mut(),
         );
@@ -397,6 +408,7 @@ pub fn config_import<R: tauri::Runtime>(
             app,
             db,
             &previous_settings,
+            Some(&settings_to_write),
             runtime_backups,
             skill_fs_guard.as_mut(),
         );

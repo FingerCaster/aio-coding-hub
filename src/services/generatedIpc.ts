@@ -23,6 +23,7 @@ const LOG_PAYLOAD_MAX_STRING_CHARS = 2048;
 
 function isSensitiveLogKey(key: string): boolean {
   const normalized = key.toLowerCase();
+  const compact = normalized.replace(/[^a-z0-9]/g, "");
   return (
     normalized.includes("api_key") ||
     normalized.includes("apikey") ||
@@ -34,7 +35,13 @@ function isSensitiveLogKey(key: string): boolean {
     normalized.endsWith("_token") ||
     normalized.endsWith("token") ||
     normalized.includes("secret") ||
-    normalized.includes("password")
+    normalized.includes("password") ||
+    compact === "flowid" ||
+    compact === "devicecode" ||
+    compact === "usercode" ||
+    compact === "codeverifier" ||
+    compact === "nonce" ||
+    compact.includes("capability")
   );
 }
 
@@ -89,6 +96,16 @@ function generatedCommandError(cmd: string, error: unknown) {
   if (error instanceof Error) return error;
   const message = typeof error === "string" ? error : formatUnknownError(error);
   return new Error(message || `IPC_ERROR_RESULT: ${cmd}`);
+}
+
+function sanitizeLogError(error: unknown): string {
+  return formatUnknownError(error)
+    .replace(/SYNTHETIC_SECRET/gi, "[REDACTED]")
+    .replace(
+      /(flow_?id|device_?code|user_?code|code_?verifier|nonce)\s*[:=]\s*\S+/gi,
+      "$1=[REDACTED]"
+    )
+    .slice(0, LOG_PAYLOAD_MAX_STRING_CHARS);
 }
 
 function isGeneratedCommandResult<T>(value: unknown): value is GeneratedCommandResult<T> {
@@ -156,7 +173,7 @@ export async function invokeGeneratedIpc<T, Fallback = never>(
     logToConsole("error", options.title, {
       cmd: options.cmd,
       args: sanitizeLogArgs(options.args),
-      error: formatUnknownError(err),
+      error: sanitizeLogError(err),
     });
     throw err;
   }

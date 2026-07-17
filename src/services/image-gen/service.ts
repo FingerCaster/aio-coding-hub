@@ -192,6 +192,15 @@ export async function imageGenReadImage(path: string): Promise<ImageGenFetchedIm
   });
 }
 
+export async function imageGenHydrateImages(paths: string[]): Promise<ImageGenFetchedImage[]> {
+  return invokeGeneratedIpc<ImageGenFetchedImage[]>({
+    title: "读取本地图片失败",
+    cmd: "image_gen_hydrate_images",
+    args: { paths },
+    invoke: () => commands.imageGenHydrateImages(paths),
+  });
+}
+
 export async function imageGenStorageGet(): Promise<ImageGenStorageView> {
   return invokeGeneratedIpc<ImageGenStorageView>({
     title: "读取存储信息失败",

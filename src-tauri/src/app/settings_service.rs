@@ -430,9 +430,11 @@ async fn write_settings_snapshot(
             settings::update(&app, |latest| {
                 let image_gen_storage_dir = latest.image_gen_storage_dir.clone();
                 let image_gen_storage_roots = latest.image_gen_storage_roots.clone();
+                let grok_proxy_preferences = latest.grok_proxy_preferences.clone();
                 *latest = next_settings;
                 latest.image_gen_storage_dir = image_gen_storage_dir;
                 latest.image_gen_storage_roots = image_gen_storage_roots;
+                latest.grok_proxy_preferences = grok_proxy_preferences;
                 Ok(())
             })
             .map(|(settings, ())| settings)
@@ -440,6 +442,34 @@ async fn write_settings_snapshot(
     })
     .await
     .map_err(Into::into)
+}
+
+fn settings_service_owned_equal(
+    left: &settings::AppSettings,
+    right: &settings::AppSettings,
+) -> bool {
+    let mut left = left.clone();
+    let mut right = right.clone();
+    left.image_gen_storage_dir = None;
+    right.image_gen_storage_dir = None;
+    left.image_gen_storage_roots.clear();
+    right.image_gen_storage_roots.clear();
+    left.grok_proxy_preferences = None;
+    right.grok_proxy_preferences = None;
+    serde_json::to_value(left).ok() == serde_json::to_value(right).ok()
+}
+
+fn restore_settings_service_owned_fields(
+    latest: &mut settings::AppSettings,
+    previous: settings::AppSettings,
+) {
+    let image_gen_storage_dir = latest.image_gen_storage_dir.clone();
+    let image_gen_storage_roots = latest.image_gen_storage_roots.clone();
+    let grok_proxy_preferences = latest.grok_proxy_preferences.clone();
+    *latest = previous;
+    latest.image_gen_storage_dir = image_gen_storage_dir;
+    latest.image_gen_storage_roots = image_gen_storage_roots;
+    latest.grok_proxy_preferences = grok_proxy_preferences;
 }
 
 async fn restore_previous_runtime(
@@ -472,23 +502,45 @@ async fn rollback_settings_transaction(
     app: &tauri::AppHandle,
     db_state: &DbInitState,
     previous_settings: &settings::AppSettings,
+    committed_settings: &settings::AppSettings,
     previous_gateway_status: &crate::gateway::GatewayStatus,
 ) -> crate::gateway::GatewayStatus {
     let rollback_result = blocking::run("settings_set_rollback", {
         let app = app.clone();
         let previous_settings = previous_settings.clone();
-        move || settings::write(&app, &previous_settings)
+        let committed_settings = committed_settings.clone();
+        move || {
+            settings::update(&app, |latest| {
+                if settings_service_owned_equal(latest, &committed_settings) {
+                    restore_settings_service_owned_fields(latest, previous_settings.clone());
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })
+        }
     })
     .await;
 
-    if let Err(rollback_error) = rollback_result {
-        tracing::error!(
-            error = %rollback_error,
-            "settings update rollback failed to restore settings.json"
-        );
+    match rollback_result {
+        Ok((_, true)) => {
+            restore_previous_runtime(app, db_state, previous_settings, previous_gateway_status)
+                .await
+        }
+        Ok((_, false)) => {
+            tracing::warn!(
+                "settings update rollback skipped because owned fields changed concurrently"
+            );
+            current_gateway_status(app)
+        }
+        Err(rollback_error) => {
+            tracing::error!(
+                error = %rollback_error,
+                "settings update rollback failed to restore settings.json"
+            );
+            current_gateway_status(app)
+        }
     }
-
-    restore_previous_runtime(app, db_state, previous_settings, previous_gateway_status).await
 }
 
 async fn sync_cli_proxy_for_settings(
@@ -902,7 +954,7 @@ pub(crate) async fn settings_set_impl(
         Ok(written) => written,
         Err(write_error) => {
             if gateway_rebound {
-                rollback_settings_transaction(
+                restore_previous_runtime(
                     &app,
                     db_state,
                     &previous_settings,
@@ -924,6 +976,7 @@ pub(crate) async fn settings_set_impl(
                 &app,
                 db_state,
                 &previous_settings,
+                &final_settings,
                 &previous_gateway_status,
             )
             .await;
@@ -932,7 +985,18 @@ pub(crate) async fn settings_set_impl(
             ));
         }
 
-        let _ = write_settings_snapshot(&app, &previous_settings).await;
+        let rollback_candidate = final_settings.clone();
+        let previous = previous_settings.clone();
+        let app_for_rollback = app.clone();
+        let _ = blocking::run("settings_set_rollback", move || {
+            settings::update(&app_for_rollback, |latest| {
+                if settings_service_owned_equal(latest, &rollback_candidate) {
+                    restore_settings_service_owned_fields(latest, previous.clone());
+                }
+                Ok(())
+            })
+        })
+        .await;
         let _ = sync_runtime_side_effects(&app, &previous_settings);
         return Err(format!("保存设置失败：{sync_error}"));
     }

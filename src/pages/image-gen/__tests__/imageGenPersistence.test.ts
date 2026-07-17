@@ -1,12 +1,11 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
 import type { ImageGenTaskRow } from "../../../services/image-gen/service";
-import { imageGenReadImage } from "../../../services/image-gen/service";
+import { imageGenHydrateImages, imageGenReadImage } from "../../../services/image-gen/service";
 import {
   base64ToBlob,
   blobToBase64,
   buildPersistPayload,
   generateThumbnailB64,
-  HISTORY_HYDRATE_CONCURRENCY,
   loadTaskAssets,
   mergeTasksByCreatedAt,
   parseRequestSnapshot,
@@ -24,7 +23,7 @@ vi.mock("../../../services/image-gen/service", async () => {
   const actual = await vi.importActual<typeof import("../../../services/image-gen/service")>(
     "../../../services/image-gen/service"
   );
-  return { ...actual, imageGenReadImage: vi.fn() };
+  return { ...actual, imageGenHydrateImages: vi.fn(), imageGenReadImage: vi.fn() };
 });
 
 function makeRow(overrides: Partial<ImageGenTaskRow> = {}): ImageGenTaskRow {
@@ -283,28 +282,24 @@ describe("pages/image-gen/imageGenPersistence", () => {
     expect(loaded.refThumbs[0]).toContain(btoa("row-1/ref-1.png"));
   });
 
-  it("caps concurrent thumbnail hydration workers", async () => {
-    let active = 0;
-    let maxActive = 0;
-    vi.mocked(imageGenReadImage).mockImplementation(async () => {
-      active += 1;
-      maxActive = Math.max(maxActive, active);
-      await new Promise((resolve) => window.setTimeout(resolve, 5));
-      active -= 1;
-      return { mime: "image/webp", dataB64: btoa("thumb") };
-    });
+  it("hydrates the first page through one backend-budgeted production command", async () => {
+    vi.mocked(imageGenHydrateImages).mockImplementation(async (paths) =>
+      paths.map((path) => ({ mime: "image/webp", dataB64: btoa(path) }))
+    );
     const rows = Array.from({ length: 12 }, (_, index) => makeRow({ id: `row-${index}` }));
 
     await tasksFromRows(rows);
 
-    expect(maxActive).toBeGreaterThan(1);
-    expect(maxActive).toBeLessThanOrEqual(HISTORY_HYDRATE_CONCURRENCY);
+    expect(imageGenHydrateImages).toHaveBeenCalledTimes(1);
+    expect(imageGenHydrateImages).toHaveBeenCalledWith(rows.map((row) => row.images[0].thumbPath));
+    expect(imageGenReadImage).not.toHaveBeenCalled();
   });
 
   it("taskFromRow returns null for unparsable request snapshots", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
     await expect(taskFromRow(makeRow({ requestJson: "not-json{" }))).resolves.toBeNull();
     expect(warnSpy).toHaveBeenCalled();
+    expect(JSON.stringify(warnSpy.mock.calls)).not.toContain("not-json");
   });
 
   it("mergeTasksByCreatedAt dedupes by id (store wins) and sorts ascending", () => {

@@ -204,24 +204,26 @@ describe("services/image-gen/gptImageAdapter", () => {
 
   describe("extractApiErrorMessage", () => {
     it("prefers error.message", () => {
-      expect(extractApiErrorMessage('{"error":{"message":"bad key"}}', 401)).toBe("bad key");
+      expect(extractApiErrorMessage('{"error":{"message":"SYNTHETIC_SECRET"}}', 401)).toBe(
+        "HTTP 401"
+      );
     });
 
     it("falls back to detail string", () => {
-      expect(extractApiErrorMessage('{"detail":"denied"}', 403)).toBe("denied");
+      expect(extractApiErrorMessage('{"detail":"denied"}', 403)).toBe("HTTP 403");
     });
 
     it("joins detail arrays", () => {
-      expect(extractApiErrorMessage('{"detail":["a",{"msg":"b"}]}', 422)).toBe('a; {"msg":"b"}');
+      expect(extractApiErrorMessage('{"detail":["a",{"msg":"b"}]}', 422)).toBe("HTTP 422");
     });
 
     it("falls back to error string then message", () => {
-      expect(extractApiErrorMessage('{"error":"plain"}', 400)).toBe("plain");
-      expect(extractApiErrorMessage('{"message":"msg"}', 400)).toBe("msg");
+      expect(extractApiErrorMessage('{"error":"plain"}', 400)).toBe("HTTP 400");
+      expect(extractApiErrorMessage('{"message":"msg"}', 400)).toBe("HTTP 400");
     });
 
     it("uses HTTP status with raw text for non-JSON bodies", () => {
-      expect(extractApiErrorMessage("gateway exploded", 500)).toBe("HTTP 500: gateway exploded");
+      expect(extractApiErrorMessage("gateway exploded SYNTHETIC_SECRET", 500)).toBe("HTTP 500");
     });
 
     it("uses bare HTTP status for empty bodies", () => {
@@ -388,7 +390,7 @@ describe("services/image-gen/gptImageAdapter", () => {
         status: 429,
         bodyText: '{"error":{"message":"rate limited"}}',
       });
-      await expect(gptImageAdapter.generate(makeRequest())).rejects.toThrow("rate limited");
+      await expect(gptImageAdapter.generate(makeRequest())).rejects.toThrow("HTTP 429");
     });
 
     it("routes url-only entries through imageGenFetchImage", async () => {

@@ -57,6 +57,9 @@ describe("services/generatedIpc", () => {
         args: {
           input: {
             apiKey: "sk-secret",
+            flowId: "flow-capability",
+            flow_id: "flow-capability-snake",
+            nonce: "confirm-capability",
             nested: {
               refreshToken: "rt-secret",
               safe: "ok",
@@ -72,6 +75,9 @@ describe("services/generatedIpc", () => {
       args: {
         input: {
           apiKey: "[REDACTED]",
+          flowId: "[REDACTED]",
+          flow_id: "[REDACTED]",
+          nonce: "[REDACTED]",
           nested: {
             refreshToken: "[REDACTED]",
             safe: "ok",

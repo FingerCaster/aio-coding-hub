@@ -48,12 +48,12 @@ pub(crate) fn app_start_gateway(
         if start_result.effective_preferred_port != requested_port
             && requested_port == cfg.preferred_port
         {
-            if let Ok(mut current) = settings::read(app) {
-                if current.preferred_port != start_result.effective_preferred_port {
+            let _ = settings::update(app, |current| {
+                if current.preferred_port == cfg.preferred_port {
                     current.preferred_port = start_result.effective_preferred_port;
-                    let _ = settings::write(app, &current);
                 }
-            }
+                Ok(())
+            });
         }
 
         Ok(start_result.status)
