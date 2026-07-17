@@ -641,6 +641,7 @@ describe("services/providers/providers", () => {
       status: "ok",
       data: {
         completed: true,
+        slow_down: false,
         provider_id: 10,
         provider_type: "codex_oauth",
         expires_at: 1700000000,
@@ -650,6 +651,7 @@ describe("services/providers/providers", () => {
     const result = await providerOAuthPollDeviceFlow(10, " flow_123 ", "device_123", "ABCD-EFGH");
     expect(result).toEqual({
       completed: true,
+      slow_down: false,
       provider_id: 10,
       provider_type: "codex_oauth",
       expires_at: 1700000000,

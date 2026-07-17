@@ -31,6 +31,10 @@ pub(crate) async fn provider_oauth_cancel_device_flow(
 ) -> Result<ProviderOAuthDeviceCodeCancelResult, String>;
 ```
 
+The generated poll result has required fields `completed: boolean`,
+`slow_down: boolean`, `provider_id: number`, `provider_type: string`, and
+`expires_at: number | null`.
+
 Remote responses pass through the internal bounded adapter:
 
 ```rust
@@ -51,9 +55,14 @@ async fn read_device_json_value(
 - Remote polling intervals are clamped to 1 through 60 seconds before the
   three-second safety margin is added with saturating arithmetic. Values such
   as `u64::MAX` produce 63, never panic or wrap.
-- Reject non-positive expiry durations. Expiry and delay arithmetic uses
-  checked or saturating operations so remote numeric extremes cannot wrap.
-- `authorization_pending` keeps the current flow and returns incomplete.
+- Device-code `expires_in` is bounded to `1..=86400` seconds. Token
+  `expires_in` is required and bounded to `1..=31536000` seconds. Missing,
+  zero, negative, overflowing, or larger values fail before token persistence.
+  Epoch addition uses checked arithmetic.
+- `authorization_pending` keeps the current flow and returns incomplete with
+  `slow_down=false`. RFC 8628 `slow_down` returns incomplete with
+  `slow_down=true`. The frontend adds 5000 ms to its current polling interval
+  before the next poll and retains every increase.
   Expired, denied, or other recognized terminal token responses cancel only
   the matching current flow. Malformed input persists no token. Successful
   token persistence atomically completes the same flow; a stale or explicitly
@@ -69,8 +78,11 @@ async fn read_device_json_value(
 | Response exceeds 256 KiB | Fail bounded read; expose none of the body |
 | Response is invalid JSON, not an object, or has empty required fields | Fail safely; persist no token |
 | Remote interval is 0, 5, or `u64::MAX` | Poll interval is respectively 4, 8, or 63 seconds |
+| Device expiry is 0 or greater than 86400 | Reject the start result and cancel the matching flow |
+| Token expiry is missing, non-positive, greater than 31536000, or overflows epoch addition | Reject; persist no token and do not complete the flow |
 | Grok success token type is missing or not `Bearer` | Terminal failure; persist no token |
 | `authorization_pending` | Return incomplete and retain current flow ownership |
+| `slow_down` after current interval `N` | Return `slow_down=true`; next and later intervals are at least `N+5s` |
 | Expired or denied response | Cancel the matching flow and return a safe terminal error |
 | Flow is canceled/replaced while a poll is pending | Late response cannot persist credentials or cancel the replacement flow |
 | Valid success for the current flow | Persist the validated token set and complete exactly that flow |
@@ -79,8 +91,10 @@ async fn read_device_json_value(
 
 - Good: a pending response returns incomplete and preserves the same flow;
   a later valid Bearer response for that flow is persisted exactly once.
-- Good: `u64::MAX` as the remote interval is bounded to 63 seconds and an
-  extreme positive expiry saturates without panic or wrap.
+- Good: `u64::MAX` as the remote interval is bounded to 63 seconds, while an
+  extreme expiry is rejected instead of becoming a non-expiring login.
+- Good: intervals `1s -> slow_down -> pending -> slow_down` produce poll times
+  `0s, 6s, 12s, 23s`.
 - Base: a valid device response supplies non-empty codes and verification URI,
   then normal polling eventually produces a validated token set.
 - Bad: call `response.json()` before applying a body cap, or add the safety
@@ -95,7 +109,10 @@ async fn read_device_json_value(
 - Cover oversized, invalid JSON, non-object, empty required fields, and safe
   non-success status handling for both authorization and token endpoints.
 - Cover zero/default/maximum intervals and expiry extremes without panic or
-  arithmetic wrap.
+  arithmetic wrap; invalid token expiry cannot produce a complete outcome or
+  reach persistence.
+- Cover repeated `slow_down` and pending responses with fake-clock assertions;
+  every increase is at least five seconds and remains in effect.
 - Cover pending, expired, denied, invalid token type, explicit cancellation,
   replacement ownership, and the normal success/persistence path.
 - Use `SYNTHETIC_SECRET` in remote bodies and token-shaped fields; assert it is
@@ -110,6 +127,7 @@ async fn read_device_json_value(
 ```rust
 let payload: DeviceTokenResponse = response.json().await?;
 let delay = Duration::from_secs(payload.interval + 3);
+let expires_at = now.saturating_add(payload.expires_in.unwrap_or(0));
 ```
 
 The response allocation is unbounded and attacker-controlled arithmetic can
@@ -119,8 +137,8 @@ overflow before the delay is constructed.
 
 ```text
 response -> 256 KiB bounded reader -> JSON object/type validation
-         -> required-field validation -> bounded interval/expiry arithmetic
-         -> recheck current flow ownership -> pending or atomic completion
+         -> required-field validation -> bounded Result expiry arithmetic
+         -> recheck ownership -> pending / slow_down(+5s) / atomic completion
 ```
 
 Remote values describe a candidate device-flow transition; bounded parsing and

@@ -247,13 +247,14 @@ describe("services/image-gen/service", () => {
     await expect(imageGenTaskPersist(PERSIST_PAYLOAD)).resolves.toEqual(TASK_ROW);
   });
 
-  it("imageGenTasksList forwards the cursor and returns rows", async () => {
-    vi.mocked(commands.imageGenTasksList).mockResolvedValue({ status: "ok", data: [TASK_ROW] });
-    await expect(imageGenTasksList(null, 50)).resolves.toEqual([TASK_ROW]);
+  it("imageGenTasksList forwards the opaque cursor and returns a page", async () => {
+    const page = { items: [TASK_ROW], nextCursor: "opaque-next" };
+    vi.mocked(commands.imageGenTasksList).mockResolvedValue({ status: "ok", data: page });
+    await expect(imageGenTasksList(null, 50)).resolves.toEqual(page);
     expect(commands.imageGenTasksList).toHaveBeenCalledWith(null, 50);
 
     vi.mocked(commands.imageGenTasksList).mockResolvedValue({ status: "error", error: "db" });
-    await expect(imageGenTasksList(123, 10)).rejects.toThrow("db");
+    await expect(imageGenTasksList("opaque", 10)).rejects.toThrow("db");
   });
 
   it("imageGenTaskDelete tolerates the null result and throws on error", async () => {

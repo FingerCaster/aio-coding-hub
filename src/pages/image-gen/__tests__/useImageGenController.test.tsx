@@ -206,6 +206,10 @@ function makeRowWithRef(): ImageGenTaskRow {
   });
 }
 
+function makePage(items: ImageGenTaskRow[], nextCursor: string | null = null) {
+  return { items, nextCursor };
+}
+
 async function renderController() {
   const rendered = renderHook(() => useImageGenController());
   await waitFor(() => {
@@ -231,7 +235,7 @@ describe("pages/image-gen/useImageGenController", () => {
     // 默认返回已配置视图：提交守卫（Base URL + API Key）在多数用例中应放行。
     vi.mocked(imageGenConfigGet).mockResolvedValue(CONFIGURED_CONFIG);
     // 历史/存储默认空态；persist 默认悬挂（任务保持 memory 形态，落盘流单独测试）。
-    vi.mocked(imageGenTasksList).mockResolvedValue([]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([]));
     vi.mocked(imageGenStorageGet).mockResolvedValue(STORAGE_VIEW);
     vi.mocked(imageGenTaskPersist).mockImplementation(() => new Promise<ImageGenTaskRow>(() => {}));
     vi.mocked(imageGenTaskDelete).mockResolvedValue(null);
@@ -1400,16 +1404,18 @@ describe("pages/image-gen/useImageGenController", () => {
   // ---------- 持久化：hydration 与分页 ----------
 
   it("hydrates the task grid from the database on mount (including failed tasks)", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([
-      makeRow(),
-      makeRow({
-        id: "row-2",
-        status: "error",
-        error: "HTTP 500: boom",
-        images: [],
-        createdAt: 1_700_000_000_500,
-      }),
-    ]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(
+      makePage([
+        makeRow(),
+        makeRow({
+          id: "row-2",
+          status: "error",
+          error: "HTTP 500: boom",
+          images: [],
+          createdAt: 1_700_000_000_500,
+        }),
+      ])
+    );
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(2);
@@ -1443,10 +1449,12 @@ describe("pages/image-gen/useImageGenController", () => {
 
   it("skips rows whose request snapshot cannot be parsed", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    vi.mocked(imageGenTasksList).mockResolvedValue([
-      makeRow({ id: "bad", requestJson: "not-json{" }),
-      makeRow({ id: "good", createdAt: 1_700_000_000_100 }),
-    ]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(
+      makePage([
+        makeRow({ id: "bad", requestJson: "not-json{" }),
+        makeRow({ id: "good", createdAt: 1_700_000_000_100 }),
+      ])
+    );
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
@@ -1455,14 +1463,14 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(warnSpy).toHaveBeenCalled();
   });
 
-  it("loads the next page with the oldest createdAt as the cursor", async () => {
+  it("appends the next page using the backend opaque cursor", async () => {
     const base = 1_700_000_000_000;
     const firstPage = Array.from({ length: HISTORY_PAGE_SIZE }, (_, index) =>
       makeRow({ id: `r${index}`, createdAt: base - index })
     );
     vi.mocked(imageGenTasksList)
-      .mockResolvedValueOnce(firstPage)
-      .mockResolvedValueOnce([makeRow({ id: "older", createdAt: base - 10_000 })]);
+      .mockResolvedValueOnce(makePage(firstPage, "opaque-page-2"))
+      .mockResolvedValueOnce(makePage([makeRow({ id: "older", createdAt: base - 10_000 })]));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(HISTORY_PAGE_SIZE);
@@ -1472,17 +1480,16 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.loadMoreTasks();
     });
-    expect(imageGenTasksList).toHaveBeenLastCalledWith(
-      base - (HISTORY_PAGE_SIZE - 1),
-      HISTORY_PAGE_SIZE
-    );
+    expect(imageGenTasksList).toHaveBeenLastCalledWith("opaque-page-2", HISTORY_PAGE_SIZE);
     expect(result.current.tasks).toHaveLength(HISTORY_PAGE_SIZE + 1);
-    // 返回条数不足一页：没有更多。
+    // 后端未返回 nextCursor：没有更多。
     expect(result.current.hasMore).toBe(false);
   });
 
   it("toasts when loading more history fails", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValueOnce([]).mockRejectedValueOnce(new Error("db"));
+    vi.mocked(imageGenTasksList)
+      .mockResolvedValueOnce(makePage([makeRow()], "opaque-page-2"))
+      .mockRejectedValueOnce(new Error("db"));
     const { result } = await renderController();
     await act(async () => {
       await result.current.loadMoreTasks();
@@ -1493,7 +1500,7 @@ describe("pages/image-gen/useImageGenController", () => {
   // ---------- 持久化：disk 任务的四操作（read_image 读回） ----------
 
   it("retries a disk task by reading reference images back from disk", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRowWithRef()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRowWithRef()]));
     vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("ref") });
     vi.mocked(gptImageAdapter.generate).mockResolvedValue({
       images: [{ mime: "image/png", b64: btoa("new") }],
@@ -1514,7 +1521,7 @@ describe("pages/image-gen/useImageGenController", () => {
 
   it("does not overwrite the persisted done row when a disk-task retry fails", async () => {
     // 独立 id：与其他用例的悬挂 persist（异步 FileReader）隔离，断言只看本任务。
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow({ id: "row-keep" })]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow({ id: "row-keep" })]));
     vi.mocked(gptImageAdapter.generate).mockRejectedValue(new Error("HTTP 500: boom"));
     const { result } = await renderController();
     await waitFor(() => {
@@ -1537,7 +1544,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("aborts a disk-task retry with a toast when the reference file is missing", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRowWithRef()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRowWithRef()]));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
@@ -1553,7 +1560,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("reuses a disk task config by reading reference images back from disk", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRowWithRef()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRowWithRef()]));
     vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("ref") });
     const { result } = await renderController();
     await waitFor(() => {
@@ -1570,7 +1577,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("aborts disk-task reuse without touching the input area when the file is missing", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRowWithRef()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRowWithRef()]));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
@@ -1587,7 +1594,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("sets a disk image as reference by reading it back from disk", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow()]));
     vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("img") });
     const { result } = await renderController();
     await waitFor(() => {
@@ -1604,7 +1611,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("aborts setAsReference with a toast when the disk image file is missing", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow()]));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
@@ -1619,7 +1626,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("downloads a disk image by reading its bytes back from disk", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow()]));
     vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("img") });
     vi.mocked(imageGenSaveImage).mockResolvedValue(true);
     const { result } = await renderController();
@@ -1640,7 +1647,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("aborts a disk-image download with a toast when the file is missing", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow()]));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
@@ -1657,7 +1664,7 @@ describe("pages/image-gen/useImageGenController", () => {
   // ---------- 持久化：删除语义 ----------
 
   it("deletes a persisted task through the backend before touching the store", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow()]));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
@@ -1673,7 +1680,7 @@ describe("pages/image-gen/useImageGenController", () => {
   });
 
   it("keeps the persisted task and toasts when backend deletion fails", async () => {
-    vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow()]));
     vi.mocked(imageGenTaskDelete).mockRejectedValue(new Error("io"));
     const { result } = await renderController();
     await waitFor(() => {
@@ -1704,14 +1711,16 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(result.current.storage).toBeNull();
   });
 
-  it("changes the storage directory through the directory picker", async () => {
+  it("changes the storage directory without dropping hydrated old-root history", async () => {
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow({ id: "old-root-task" })]));
     vi.mocked(openDesktopSinglePath).mockResolvedValue("/new/dir");
     vi.mocked(imageGenStorageSetDir).mockResolvedValue({
       dir: "/new/dir",
-      totalBytes: 0,
-      taskCount: 0,
+      totalBytes: 9,
+      taskCount: 1,
     });
     const { result } = await renderController();
+    await waitFor(() => expect(result.current.tasks).toHaveLength(1));
     await act(async () => {
       await result.current.changeStorageDir();
     });
@@ -1720,6 +1729,8 @@ describe("pages/image-gen/useImageGenController", () => {
     );
     expect(imageGenStorageSetDir).toHaveBeenCalledWith("/new/dir");
     expect(result.current.storage?.dir).toBe("/new/dir");
+    expect(result.current.storage?.taskCount).toBe(1);
+    expect(result.current.tasks[0].id).toBe("old-root-task");
     expect(toast.success).toHaveBeenCalledWith("存储目录已更新");
   });
 

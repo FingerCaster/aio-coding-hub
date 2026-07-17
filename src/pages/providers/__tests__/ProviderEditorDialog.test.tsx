@@ -1786,6 +1786,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
     vi.mocked(providerOAuthPollDeviceFlow).mockResolvedValueOnce({
       completed: true,
+      slow_down: false,
       provider_id: 346,
       provider_type: "grok_oauth",
       expires_at: 1700000000,
@@ -1857,6 +1858,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
     vi.mocked(providerOAuthPollDeviceFlow).mockResolvedValueOnce({
       completed: true,
+      slow_down: false,
       provider_id: 299,
       provider_type: "codex_oauth",
       expires_at: 1700000000,
@@ -1937,6 +1939,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
     let resolvePoll!: (value: {
       completed: boolean;
+      slow_down: boolean;
       provider_id: number;
       provider_type: string;
       expires_at: number | null;
@@ -1992,6 +1995,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     resolvePoll({
       completed: true,
+      slow_down: false,
       provider_id: 301,
       provider_type: "codex_oauth",
       expires_at: 1700000000,
@@ -2044,12 +2048,14 @@ describe("pages/providers/ProviderEditorDialog", () => {
       );
     let resolveOldPoll!: (value: {
       completed: boolean;
+      slow_down: boolean;
       provider_id: number;
       provider_type: string;
       expires_at: number | null;
     }) => void;
     let resolveNewPoll!: (value: {
       completed: boolean;
+      slow_down: boolean;
       provider_id: number;
       provider_type: string;
       expires_at: number | null;
@@ -2110,6 +2116,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     resolveOldPoll({
       completed: true,
+      slow_down: false,
       provider_id: 302,
       provider_type: "codex_oauth",
       expires_at: 1700000000,
@@ -2119,6 +2126,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     resolveNewPoll({
       completed: true,
+      slow_down: false,
       provider_id: 302,
       provider_type: "codex_oauth",
       expires_at: 1700000000,

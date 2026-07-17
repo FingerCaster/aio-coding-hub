@@ -28,6 +28,15 @@ pub(crate) struct OAuthFlowLifecycle {
 /// can no longer persist tokens.
 static ACTIVE_FLOW: Mutex<Option<ActiveOAuthFlow>> = Mutex::new(None);
 
+#[cfg(test)]
+pub(crate) async fn oauth_flow_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
+    static FLOW_TEST_LOCK: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    FLOW_TEST_LOCK
+        .get_or_init(|| tokio::sync::Mutex::new(()))
+        .lock()
+        .await
+}
+
 fn generate_flow_id() -> String {
     use rand::RngCore;
 
@@ -184,7 +193,6 @@ pub(crate) fn build_oauth_http_client(
 mod tests {
     use super::*;
     use std::ffi::OsString;
-    use std::sync::{Mutex, MutexGuard, OnceLock};
 
     struct EnvVarRestore {
         key: &'static str,
@@ -206,14 +214,6 @@ mod tests {
                 None => std::env::remove_var(self.key),
             }
         }
-    }
-
-    fn oauth_flow_test_lock() -> MutexGuard<'static, ()> {
-        static FLOW_TEST_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
-        FLOW_TEST_LOCK
-            .get_or_init(|| Mutex::new(()))
-            .lock()
-            .unwrap_or_else(|err| err.into_inner())
     }
 
     fn reset_oauth_flow_for_test() {
@@ -251,9 +251,9 @@ mod tests {
         assert!(!err.contains("user:"));
     }
 
-    #[test]
-    fn oauth_flow_lifecycle_replaces_current_flow() {
-        let _flow_lock = oauth_flow_test_lock();
+    #[tokio::test]
+    async fn oauth_flow_lifecycle_replaces_current_flow() {
+        let _flow_lock = super::oauth_flow_test_lock().await;
         reset_oauth_flow_for_test();
 
         let first = begin_flow_lifecycle();
@@ -268,9 +268,9 @@ mod tests {
         assert!(!is_current_flow(&second.flow_id));
     }
 
-    #[test]
-    fn oauth_flow_completion_rejects_stale_flow() {
-        let _flow_lock = oauth_flow_test_lock();
+    #[tokio::test]
+    async fn oauth_flow_completion_rejects_stale_flow() {
+        let _flow_lock = super::oauth_flow_test_lock().await;
         reset_oauth_flow_for_test();
 
         let first = begin_flow_lifecycle();

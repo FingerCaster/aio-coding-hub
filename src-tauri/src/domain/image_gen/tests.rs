@@ -229,6 +229,9 @@ fn disallowed_ip_covers_all_non_global_ranges() {
         "0.0.0.0",
         "255.255.255.255",
         "::1",
+        "::2",
+        "::8.8.8.8",
+        "::192.168.0.1",
         "fc00::1",
         "fe80::1",
         "::ffff:192.168.0.1",
@@ -251,6 +254,17 @@ fn disallowed_ip_covers_all_non_global_ranges() {
         let ip: IpAddr = ip.parse().expect("parse ip");
         assert!(!is_disallowed_ip(ip), "should be allowed: {ip}");
     }
+}
+
+#[test]
+fn public_dns_validation_rejects_any_ipv4_compatible_ipv6_answer() {
+    let public: SocketAddr = "[2606:2800:220:1:248:1893:25c8:1946]:443"
+        .parse()
+        .expect("public IPv6");
+    let compatible: SocketAddr = "[::8.8.8.8]:443".parse().expect("compatible IPv6");
+    let error = validate_public_addrs("cdn.example.test", [public, compatible])
+        .expect_err("one non-global DNS answer must reject the host");
+    assert!(error.contains("non-global address"));
 }
 
 #[tokio::test]
@@ -434,6 +448,23 @@ fn multipart_preflight_rejects_all_limits_before_decode() {
     );
 }
 
+#[test]
+fn multipart_invalid_mime_is_rejected_before_large_base64_decode() {
+    let file = ImageGenMultipartFile {
+        field: "image[]".to_string(),
+        filename: "input.png".to_string(),
+        mime: "not a mime".to_string(),
+        data_b64: "!!!!".repeat(2 * 1024 * 1024),
+    };
+
+    let error = decode_multipart_files(&[file]).expect_err("invalid MIME must fail preflight");
+    assert!(
+        error.contains("invalid mime type"),
+        "unexpected error: {error}"
+    );
+    assert!(!error.contains("data_b64"));
+}
+
 #[tokio::test]
 async fn reqwest_transport_error_does_not_echo_credentialed_url() {
     let secret = "SYNTHETIC_SECRET";
@@ -466,8 +497,10 @@ fn timeout_defaults_to_600_and_clamps_to_1_900() {
 // -- history --
 
 use super::history::{
-    ensure_writable_dir, read_image, storage_cleanup, storage_stats, task_delete, task_persist,
-    tasks_clear, tasks_list, ImageGenTaskFilePayload, ImageGenTaskPersistPayload,
+    ensure_writable_dir, read_image, read_image_with_roots, storage_cleanup,
+    storage_cleanup_with_roots, storage_stats, storage_stats_with_roots, task_delete, task_persist,
+    tasks_clear, tasks_list, tasks_list_with_roots, tasks_page_with_roots, ImageGenTaskFilePayload,
+    ImageGenTaskPersistPayload,
 };
 use base64::Engine as _;
 
@@ -614,19 +647,138 @@ fn history_persists_failed_task_and_paginates_newest_first() {
 }
 
 #[test]
-fn history_persist_upserts_on_id_conflict() {
+fn history_opaque_cursor_paginates_same_timestamp_without_gaps_or_duplicates() {
+    let (_db_dir, db) = test_db("image-gen-history-opaque-pagination.db");
+    let storage = tempfile::tempdir().expect("storage tempdir");
+    for index in 0..55 {
+        task_persist(
+            &db,
+            storage.path(),
+            done_task_payload(&format!("t{index:03}"), 1_700_000_000_000),
+        )
+        .expect("persist same-timestamp task");
+    }
+    let roots = vec![storage.path().to_path_buf()];
+    let mut cursor = None;
+    let mut ids = Vec::new();
+    let mut page_sizes = Vec::new();
+    loop {
+        let page = tasks_page_with_roots(&db, &roots, cursor.as_deref(), 20).expect("page");
+        page_sizes.push(page.items.len());
+        ids.extend(page.items.into_iter().map(|task| task.id));
+        let Some(next) = page.next_cursor else {
+            break;
+        };
+        cursor = Some(next);
+    }
+
+    assert_eq!(page_sizes, vec![20, 20, 15]);
+    let expected = (0..55)
+        .rev()
+        .map(|index| format!("t{index:03}"))
+        .collect::<Vec<_>>();
+    assert_eq!(ids, expected);
+    let unique = ids.iter().collect::<std::collections::HashSet<_>>();
+    assert_eq!(unique.len(), ids.len());
+}
+
+#[test]
+fn history_opaque_cursor_rejects_invalid_and_legacy_values() {
+    let (_db_dir, db) = test_db("image-gen-history-invalid-cursor.db");
+    let storage = tempfile::tempdir().expect("storage tempdir");
+    task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
+    let roots = vec![storage.path().to_path_buf()];
+    let unknown_version = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(br#"{"v":2,"created_at":1,"id":"t1"}"#);
+    let invalid_id = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .encode(br#"{"v":1,"created_at":1,"id":"../escape"}"#);
+
+    for cursor in ["1", "!!!", unknown_version.as_str(), invalid_id.as_str()] {
+        let error = tasks_page_with_roots(&db, &roots, Some(cursor), 20)
+            .expect_err("invalid cursor must fail closed");
+        assert!(error.to_string().contains("cursor") || error.to_string().contains("task id"));
+    }
+}
+
+#[test]
+fn history_persist_rejects_existing_task_id_without_overwriting_files() {
     let (_db_dir, db) = test_db("image-gen-history-upsert.db");
     let storage = tempfile::tempdir().expect("storage tempdir");
 
     task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
+    let original = std::fs::read(storage.path().join("t1/image-1.png")).expect("original image");
     let mut updated = done_task_payload("t1", 2);
     updated.prompt = "a blue square".to_string();
-    task_persist(&db, storage.path(), updated).expect("persist again");
+    let err = task_persist(&db, storage.path(), updated).expect_err("duplicate id must fail");
+    assert!(err.to_string().contains("already exists"));
 
     let listed = tasks_list(&db, storage.path(), None, 50).expect("list");
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].prompt, "a blue square");
-    assert_eq!(listed[0].created_at, 2);
+    assert_eq!(listed[0].prompt, "a red square");
+    assert_eq!(listed[0].created_at, 1);
+    assert_eq!(
+        std::fs::read(storage.path().join("t1/image-1.png")).expect("unchanged image"),
+        original
+    );
+}
+
+#[test]
+fn history_persist_rejects_preexisting_task_directory_and_hardlink_target() {
+    let (_db_dir, db) = test_db("image-gen-history-hardlink.db");
+    let outer = tempfile::tempdir().expect("outer tempdir");
+    let storage = outer.path().join("storage");
+    let task_dir = storage.join("t1");
+    std::fs::create_dir_all(&task_dir).expect("precreate task dir");
+    let outside = outer.path().join("outside.png");
+    std::fs::write(&outside, b"outside-original").expect("write outside file");
+    std::fs::hard_link(&outside, task_dir.join("image-1.png")).expect("create hardlink");
+
+    let err = task_persist(&db, &storage, done_task_payload("t1", 1))
+        .expect_err("preexisting task dir must fail");
+    assert!(err.to_string().contains("already exists"));
+    assert_eq!(
+        std::fs::read(&outside).expect("read outside file"),
+        b"outside-original"
+    );
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn history_persist_rejects_preexisting_symlink_without_touching_target_when_supported() {
+    let (_db_dir, db) = test_db("image-gen-history-symlink.db");
+    let outer = tempfile::tempdir().expect("outer tempdir");
+    let storage = outer.path().join("storage");
+    std::fs::create_dir_all(&storage).expect("create storage");
+    let outside_dir = outer.path().join("outside-task");
+    std::fs::create_dir_all(&outside_dir).expect("create outside dir");
+    let outside = outside_dir.join("image-1.png");
+    std::fs::write(&outside, b"outside-original").expect("write outside file");
+    let link = storage.join("t1");
+
+    #[cfg(unix)]
+    let linked = std::os::unix::fs::symlink(&outside_dir, &link).is_ok();
+    #[cfg(windows)]
+    let linked = std::os::windows::fs::symlink_dir(&outside_dir, &link).is_ok();
+
+    if !linked {
+        return;
+    }
+    let err = task_persist(&db, &storage, done_task_payload("t1", 1))
+        .expect_err("symlink task dir must fail");
+    assert!(err.to_string().contains("already exists"));
+    assert_eq!(
+        std::fs::read(&outside).expect("read outside file"),
+        b"outside-original"
+    );
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 0);
 }
 
 #[test]
@@ -727,6 +879,48 @@ fn history_read_image_rejects_db_recorded_dirs_outside_current_trusted_root() {
     let err = read_image(&db, new_storage.path(), "t1/image-1.png")
         .expect_err("DB path outside the trusted root must fail closed");
     assert!(err.to_string().contains("SEC_INVALID_INPUT"));
+}
+
+#[test]
+fn history_tasks_remain_operable_across_allowlisted_storage_roots() {
+    let (_db_dir, db) = test_db("image-gen-history-multiple-roots.db");
+    let old_storage = tempfile::tempdir().expect("old storage");
+    let new_storage = tempfile::tempdir().expect("new storage");
+    task_persist(&db, old_storage.path(), done_task_payload("old", 1)).expect("persist old");
+    task_persist(&db, new_storage.path(), done_task_payload("new", 2)).expect("persist new");
+    let roots = vec![
+        old_storage.path().to_path_buf(),
+        new_storage.path().to_path_buf(),
+    ];
+
+    let listed = tasks_list_with_roots(&db, &roots, None, 50).expect("list both roots");
+    assert_eq!(
+        listed
+            .iter()
+            .map(|task| task.id.as_str())
+            .collect::<Vec<_>>(),
+        vec!["new", "old"]
+    );
+    let fetched = read_image_with_roots(&db, &roots, "old/image-1.png")
+        .expect("read old task after root switch");
+    assert_eq!(fetched.data_b64, b64(b"png-bytes"));
+    let stats =
+        storage_stats_with_roots(&db, new_storage.path(), &roots).expect("multi-root stats");
+    assert_eq!(stats.task_count, 2);
+    assert_eq!(stats.dir, new_storage.path().to_string_lossy());
+
+    assert_eq!(
+        storage_cleanup_with_roots(&db, &roots, 1).expect("cleanup across roots"),
+        1
+    );
+    assert!(!old_storage.path().join("old").exists());
+    assert!(new_storage.path().join("new").exists());
+    assert_eq!(
+        tasks_list_with_roots(&db, &roots, None, 50)
+            .expect("list after cleanup")
+            .len(),
+        1
+    );
 }
 
 #[test]

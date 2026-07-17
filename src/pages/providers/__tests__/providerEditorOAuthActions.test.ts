@@ -70,6 +70,7 @@ function makeDevicePoll(
 ): ProviderOAuthDeviceCodePollResult {
   return {
     completed: partial.completed ?? true,
+    slow_down: partial.slow_down ?? false,
     provider_id: partial.provider_id ?? 9,
     provider_type: partial.provider_type ?? "codex_oauth",
     expires_at: partial.expires_at ?? null,
@@ -475,6 +476,41 @@ describe("providerEditorOAuthActions", () => {
     expect(runtimeError.ctx.cancelOAuthDeviceFlow).toHaveBeenCalledWith("flow-error");
     expect(runtimeError.ctx.setOauthDeviceError).toHaveBeenCalledWith("Error: poll down");
     expect(toast).toHaveBeenCalledWith("设备码登录失败：Error: poll down");
+  });
+
+  it("increases every subsequent device poll interval by five seconds on slow_down", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(1_700_000_000_000);
+    vi.mocked(openDesktopUrl).mockResolvedValue(true);
+    vi.mocked(providerOAuthStartDeviceFlow).mockResolvedValueOnce(
+      makeDeviceStart({ flow_id: "flow-slow", interval: 1, expires_in: 60 })
+    );
+    const pollTimes: number[] = [];
+    vi.mocked(providerOAuthPollDeviceFlow)
+      .mockImplementationOnce(async () => {
+        pollTimes.push(Date.now());
+        return makeDevicePoll({ completed: false, slow_down: true });
+      })
+      .mockImplementationOnce(async () => {
+        pollTimes.push(Date.now());
+        return makeDevicePoll({ completed: false });
+      })
+      .mockImplementationOnce(async () => {
+        pollTimes.push(Date.now());
+        return makeDevicePoll({ completed: false, slow_down: true });
+      })
+      .mockImplementationOnce(async () => {
+        pollTimes.push(Date.now());
+        return makeDevicePoll({ completed: true });
+      });
+    vi.mocked(providerOAuthFetchLimits).mockResolvedValueOnce(null);
+
+    const { ctx } = makeCtx({ mode: "edit", editingProviderId: 12 });
+    const promise = handleOAuthDeviceLogin(ctx);
+    await vi.runAllTimersAsync();
+    await promise;
+
+    expect(pollTimes.map((time) => time - pollTimes[0])).toEqual([0, 6_000, 12_000, 23_000]);
   });
 
   it("handles OAuth refresh and disconnect success, failure, and missing provider guards", async () => {

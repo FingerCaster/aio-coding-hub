@@ -2,7 +2,7 @@
 
 ## Architecture
 
-父任务只负责顺序、跨任务约束和最终验收；五个子任务分别拥有独立的实现、测试、提交与
+父任务只负责顺序、跨任务约束和最终验收；七个子任务分别拥有独立的实现、测试、提交与
 归档边界。主会话是唯一协调者，不派生并发代理。
 
 ```text
@@ -12,7 +12,9 @@ planning validated
   -> child 3 start / implement / check / commit / archive
   -> child 4 start / implement / check / commit / archive
   -> child 5 fetch+merge upstream / check / commit / archive
-  -> parent integration check / archive
+  -> child 6 first final-review security regression / archive
+  -> child 7 second final-review findings / archive
+  -> parent independent max review / archive only after approval
 ```
 
 ## Task Ownership
@@ -24,7 +26,9 @@ planning validated
 | 3 | NewAPI response | NewAPI endpoint/auth/field normalization and safe errors |
 | 4 | Config export | Skill file budgets and export/import symmetry |
 | 5 | Upstream sync | Exact upstream SHA, semantic conflict handling, full merge validation |
-| 6 | Parent | Cross-child regression and release-ready integration evidence |
+| 6 | Final review security boundaries | First review's filesystem/network/config hardening |
+| 7 | Final review findings round 2 | Eight findings, evidence closure and stable pagination |
+| 8 | Parent | Independent max review and merge-readiness decision |
 
 ## Cross-Task Contracts
 

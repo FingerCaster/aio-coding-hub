@@ -110,13 +110,13 @@ pub(crate) async fn task_persist(
 pub(crate) async fn tasks_list(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
-    before_created_at: Option<i64>,
+    cursor: Option<String>,
     limit: u32,
-) -> Result<Vec<image_gen::ImageGenTaskRow>, String> {
+) -> Result<image_gen::ImageGenTasksPage, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_tasks_list", move || {
-        let storage_dir = image_gen::storage_dir_from_settings(&app)?;
-        image_gen::tasks_list(&db, &storage_dir, before_created_at, limit)
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::tasks_page_with_roots(&db, &storage_roots, cursor.as_deref(), limit)
     })
     .await
     .map_err(Into::into)
@@ -129,8 +129,8 @@ pub(crate) async fn task_delete(
 ) -> Result<(), String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_task_delete", move || {
-        let storage_dir = image_gen::storage_dir_from_settings(&app)?;
-        image_gen::task_delete(&db, &storage_dir, &id)
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::task_delete_with_roots(&db, &storage_roots, &id)
     })
     .await
     .map_err(Into::into)
@@ -142,8 +142,8 @@ pub(crate) async fn tasks_clear(
 ) -> Result<u32, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_tasks_clear", move || {
-        let storage_dir = image_gen::storage_dir_from_settings(&app)?;
-        image_gen::tasks_clear(&db, &storage_dir)
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::tasks_clear_with_roots(&db, &storage_roots)
     })
     .await
     .map_err(Into::into)
@@ -156,8 +156,8 @@ pub(crate) async fn read_image(
 ) -> Result<image_gen::ImageGenFetchedImage, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_read_image", move || {
-        let storage_dir = image_gen::storage_dir_from_settings(&app)?;
-        image_gen::read_image(&db, &storage_dir, &path)
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::read_image_with_roots(&db, &storage_roots, &path)
     })
     .await
     .map_err(Into::into)
@@ -170,7 +170,8 @@ pub(crate) async fn storage_get(
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_storage_get", move || {
         let storage_dir = image_gen::storage_dir_from_settings(&app)?;
-        image_gen::storage_stats(&db, &storage_dir)
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::storage_stats_with_roots(&db, &storage_dir, &storage_roots)
     })
     .await
     .map_err(Into::into)
@@ -199,10 +200,25 @@ pub(crate) async fn storage_set_dir(
                     .into());
             }
             image_gen::ensure_writable_dir(&path)?;
-            let view = image_gen::storage_stats(&db, &path)?;
-
             let mut settings = crate::settings::read(&app_for_write)?;
-            settings.image_gen_storage_dir = Some(path.to_string_lossy().to_string());
+            let previous_dir = image_gen::storage_dir_from_settings(&app_for_write)?;
+            let mut roots = settings
+                .image_gen_storage_roots
+                .iter()
+                .map(std::path::PathBuf::from)
+                .collect::<Vec<_>>();
+            roots.push(previous_dir);
+            roots.push(path.clone());
+            let roots = image_gen::canonical_storage_roots(&roots)?;
+            let canonical_path = std::fs::canonicalize(&path)
+                .map_err(|e| format!("SEC_INVALID_INPUT: storage dir cannot be resolved: {e}"))?;
+            let view = image_gen::storage_stats_with_roots(&db, &canonical_path, &roots)?;
+
+            settings.image_gen_storage_dir = Some(canonical_path.to_string_lossy().to_string());
+            settings.image_gen_storage_roots = roots
+                .iter()
+                .map(|root| root.to_string_lossy().to_string())
+                .collect();
             crate::settings::write(&app_for_write, &settings)?;
 
             Ok(view)
@@ -221,8 +237,8 @@ pub(crate) async fn storage_cleanup(
 ) -> Result<u32, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_storage_cleanup", move || {
-        let storage_dir = image_gen::storage_dir_from_settings(&app)?;
-        image_gen::storage_cleanup(&db, &storage_dir, keep_count)
+        let storage_roots = image_gen::storage_roots_from_settings(&app)?;
+        image_gen::storage_cleanup_with_roots(&db, &storage_roots, keep_count)
     })
     .await
     .map_err(Into::into)

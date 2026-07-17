@@ -10,9 +10,11 @@ mod transport;
 
 pub(crate) use config::{config_connection, config_get, config_set, ImageGenConfigView};
 pub(crate) use history::{
-    ensure_writable_dir, read_image, storage_cleanup, storage_dir_from_settings, storage_stats,
-    task_delete, task_persist, tasks_clear, tasks_list, ImageGenStorageView,
-    ImageGenTaskPersistPayload, ImageGenTaskRow,
+    canonical_storage_roots, ensure_writable_dir, read_image_with_roots,
+    storage_cleanup_with_roots, storage_dir_from_settings, storage_roots_from_settings,
+    storage_stats_with_roots, task_delete_with_roots, task_persist, tasks_clear_with_roots,
+    tasks_page_with_roots, ImageGenStorageView, ImageGenTaskPersistPayload, ImageGenTaskRow,
+    ImageGenTasksPage,
 };
 pub(crate) use transport::{
     fetch_image, post_json, post_multipart, ImageGenFetchedImage, ImageGenHttpResponse,

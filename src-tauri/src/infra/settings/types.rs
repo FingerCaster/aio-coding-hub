@@ -141,6 +141,10 @@ pub struct AppSettings {
     // Image generation storage directory override. None/empty = default
     // `<app data dir>/image-gen`.
     pub image_gen_storage_dir: Option<String>,
+    // Canonical roots retained for previously persisted Image Gen tasks. DB
+    // paths remain untrusted and must match one of these settings-owned roots.
+    #[serde(default)]
+    pub image_gen_storage_roots: Vec<String>,
     pub auto_start: bool,
     // Start with window hidden when auto-starting (silent startup).
     pub start_minimized: bool,
@@ -230,6 +234,7 @@ impl Default for AppSettings {
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
             grok_proxy_preferences: None,
             image_gen_storage_dir: None,
+            image_gen_storage_roots: Vec::new(),
             auto_start: false,
             start_minimized: false,
             tray_enabled: true,

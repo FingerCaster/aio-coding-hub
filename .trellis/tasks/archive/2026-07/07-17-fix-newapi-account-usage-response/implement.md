@@ -42,3 +42,10 @@
 
 - [ ] Confirm account usage remains display-only.
 - [ ] Commit and archive child 3; do not start child 4 until complete.
+
+## Post-fix live acceptance evidence
+
+- Completed on 2026-07-17 under child `07-17-final-review-findings-round-2` using the locally configured
+  `muyuan` provider and three read-only GETs. All response classes, field types, finite/formula assertions
+  passed without persisting secrets, host, query, body, PII or account values.
+- Evidence: `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-2/research/muyuan-post-fix-readonly-validation.md`.

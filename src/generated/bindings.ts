@@ -2049,14 +2049,11 @@ export const commands = {
     }
   },
   async imageGenTasksList(
-    beforeCreatedAt: number | null,
+    cursor: string | null,
     limit: number
-  ): Promise<Result<ImageGenTaskRow[], string>> {
+  ): Promise<Result<ImageGenTasksPage, string>> {
     try {
-      return {
-        status: "ok",
-        data: await TAURI_INVOKE("image_gen_tasks_list", { beforeCreatedAt, limit }),
-      };
+      return { status: "ok", data: await TAURI_INVOKE("image_gen_tasks_list", { cursor, limit }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -3102,6 +3099,7 @@ export type ImageGenTaskRow = {
   createdAt: number;
   elapsedMs: number | null;
 };
+export type ImageGenTasksPage = { items: ImageGenTaskRow[]; nextCursor: string | null };
 export type InstalledSkillSummary = {
   id: number;
   skill_key: string;
@@ -3691,6 +3689,7 @@ export type ProviderOAuthDeviceCodePollInput = {
 };
 export type ProviderOAuthDeviceCodePollResult = {
   completed: boolean;
+  slow_down: boolean;
   provider_id: number;
   provider_type: string;
   expires_at: number | null;

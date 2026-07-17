@@ -789,6 +789,7 @@ pub(crate) async fn settings_set_impl(
                 codex_provider_test_model,
                 grok_proxy_preferences: previous.grok_proxy_preferences.clone(),
                 image_gen_storage_dir: previous.image_gen_storage_dir.clone(),
+                image_gen_storage_roots: previous.image_gen_storage_roots.clone(),
                 auto_start: next_auto_start,
                 start_minimized,
                 tray_enabled,

@@ -5,6 +5,8 @@ use serde::Deserialize;
 
 const OAUTH_DEVICE_RESPONSE_BODY_LIMIT: usize = 256 * 1024;
 const OAUTH_DEVICE_INTERVAL_MAX_SECS: u64 = 60;
+const OAUTH_DEVICE_EXPIRES_IN_MAX_SECS: u64 = 24 * 60 * 60;
+const OAUTH_TOKEN_EXPIRES_IN_MAX_SECS: i64 = 365 * 24 * 60 * 60;
 
 const CODEX_DEVICE_AUTH_USERCODE_URL: &str =
     "https://auth.openai.com/api/accounts/deviceauth/usercode";
@@ -122,6 +124,7 @@ pub(crate) struct ProviderOAuthDeviceCodePollInput {
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 pub(crate) struct ProviderOAuthDeviceCodePollResult {
     pub completed: bool,
+    pub slow_down: bool,
     pub provider_id: i64,
     pub provider_type: String,
     pub expires_at: Option<i64>,
@@ -253,16 +256,26 @@ fn supports_device_code_login(cli_key: &str) -> bool {
     matches!(cli_key, "codex" | "grok")
 }
 
-fn compute_expires_at_from_secs(expires_in: Option<i64>) -> Option<i64> {
-    let seconds = expires_in?;
-    if seconds <= 0 {
-        return None;
+fn validate_device_expires_in(seconds: u64, context: &str) -> Result<u64, String> {
+    if !(1..=OAUTH_DEVICE_EXPIRES_IN_MAX_SECS).contains(&seconds) {
+        return Err(format!("{context} returned invalid expires_in"));
+    }
+    Ok(seconds)
+}
+
+fn compute_expires_at_from_secs(expires_in: Option<i64>) -> Result<i64, String> {
+    let seconds =
+        expires_in.ok_or_else(|| "OAuth token response missing expires_in".to_string())?;
+    if !(1..=OAUTH_TOKEN_EXPIRES_IN_MAX_SECS).contains(&seconds) {
+        return Err("OAuth token response returned invalid expires_in".to_string());
     }
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
-        .ok()?
-        .as_secs() as i64;
-    Some(now.saturating_add(seconds))
+        .map_err(|_| "SYSTEM_ERROR: system clock is before Unix epoch".to_string())?
+        .as_secs();
+    let now = i64::try_from(now).map_err(|_| "SYSTEM_ERROR: system clock overflow".to_string())?;
+    now.checked_add(seconds)
+        .ok_or_else(|| "OAuth token expiry overflow".to_string())
 }
 
 async fn read_device_json_value(
@@ -563,9 +576,15 @@ pub(crate) async fn provider_oauth_start_device_flow(
         return Err("device code response missing required fields".to_string());
     }
 
-    let expires_in = payload
-        .expires_in
-        .unwrap_or(CODEX_DEVICE_CODE_DEFAULT_EXPIRES_IN);
+    let expires_in = validate_device_expires_in(
+        payload
+            .expires_in
+            .unwrap_or(CODEX_DEVICE_CODE_DEFAULT_EXPIRES_IN),
+        "device code response",
+    )
+    .inspect_err(|_| {
+        crate::gateway::oauth::cancel_flow(&flow_id);
+    })?;
     let interval = parse_codex_device_interval(payload.interval.as_ref());
 
     Ok(ProviderOAuthDeviceCodeStartResult {
@@ -631,9 +650,15 @@ async fn start_grok_device_flow(
         .ok_or_else(|| "grok device code response missing verification_uri".to_string())?
         .to_string();
 
-    let expires_in = payload
-        .expires_in
-        .unwrap_or(GROK_DEVICE_CODE_DEFAULT_EXPIRES_IN);
+    let expires_in = validate_device_expires_in(
+        payload
+            .expires_in
+            .unwrap_or(GROK_DEVICE_CODE_DEFAULT_EXPIRES_IN),
+        "grok device code response",
+    )
+    .inspect_err(|_| {
+        crate::gateway::oauth::cancel_flow(&flow_id);
+    })?;
     let interval = bounded_device_interval(
         payload
             .interval
@@ -698,15 +723,25 @@ pub(crate) async fn provider_oauth_poll_device_flow(
         )
         .await?
         {
-            None => {
+            DeviceTokenPollOutcome::Pending => {
                 return Ok(ProviderOAuthDeviceCodePollResult {
                     completed: false,
+                    slow_down: false,
                     provider_id,
                     provider_type: adapter.provider_type().to_string(),
                     expires_at: None,
                 });
             }
-            Some(token_set) => token_set,
+            DeviceTokenPollOutcome::SlowDown => {
+                return Ok(ProviderOAuthDeviceCodePollResult {
+                    completed: false,
+                    slow_down: true,
+                    provider_id,
+                    provider_type: adapter.provider_type().to_string(),
+                    expires_at: None,
+                });
+            }
+            DeviceTokenPollOutcome::Complete(token_set) => token_set,
         }
     } else {
         let poll_response = client
@@ -727,6 +762,7 @@ pub(crate) async fn provider_oauth_poll_device_flow(
         if status == reqwest::StatusCode::FORBIDDEN || status == reqwest::StatusCode::NOT_FOUND {
             return Ok(ProviderOAuthDeviceCodePollResult {
                 completed: false,
+                slow_down: false,
                 provider_id,
                 provider_type: adapter.provider_type().to_string(),
                 expires_at: None,
@@ -762,7 +798,7 @@ pub(crate) async fn provider_oauth_poll_device_flow(
         crate::gateway::oauth::provider_trait::OAuthTokenSet {
             access_token: token_set.access_token,
             refresh_token: token_set.refresh_token,
-            expires_at: compute_expires_at_from_secs(token_set.expires_in),
+            expires_at: Some(compute_expires_at_from_secs(token_set.expires_in)?),
             id_token: token_set.id_token,
         }
     };
@@ -805,6 +841,7 @@ pub(crate) async fn provider_oauth_poll_device_flow(
 
     Ok(ProviderOAuthDeviceCodePollResult {
         completed: true,
+        slow_down: false,
         provider_id,
         provider_type: provider_type.to_string(),
         expires_at: token_expires_at,
@@ -812,14 +849,20 @@ pub(crate) async fn provider_oauth_poll_device_flow(
 }
 
 /// Poll xAI token endpoint for RFC 8628 device authorization.
-/// Returns `Ok(None)` while the user has not yet approved (`authorization_pending` / `slow_down`).
+#[derive(Debug)]
+enum DeviceTokenPollOutcome {
+    Pending,
+    SlowDown,
+    Complete(crate::gateway::oauth::provider_trait::OAuthTokenSet),
+}
+
 async fn poll_grok_device_token(
     client: &reqwest::Client,
     token_url: &str,
     client_id: &str,
     device_code: &str,
     flow_id: &str,
-) -> Result<Option<crate::gateway::oauth::provider_trait::OAuthTokenSet>, String> {
+) -> Result<DeviceTokenPollOutcome, String> {
     use crate::gateway::oauth::adapters::grok::{grok_client_version, GROK_CLIENT_SURFACE_UI};
 
     let client_version = grok_client_version();
@@ -855,7 +898,8 @@ async fn poll_grok_device_token(
         .filter(|e| !e.is_empty())
     {
         match error {
-            "authorization_pending" | "slow_down" => return Ok(None),
+            "authorization_pending" => return Ok(DeviceTokenPollOutcome::Pending),
+            "slow_down" => return Ok(DeviceTokenPollOutcome::SlowDown),
             "expired_token" => {
                 crate::gateway::oauth::cancel_flow(flow_id);
                 return Err("Device code 已过期，请重新开始登录。".to_string());
@@ -897,12 +941,17 @@ async fn poll_grok_device_token(
         return Err("grok device token response has invalid token_type".to_string());
     }
 
-    Ok(Some(crate::gateway::oauth::provider_trait::OAuthTokenSet {
-        access_token,
-        refresh_token: payload.refresh_token,
-        expires_at: compute_expires_at_from_secs(payload.expires_in),
-        id_token: payload.id_token,
-    }))
+    let expires_at = compute_expires_at_from_secs(payload.expires_in).inspect_err(|_| {
+        crate::gateway::oauth::cancel_flow(flow_id);
+    })?;
+    Ok(DeviceTokenPollOutcome::Complete(
+        crate::gateway::oauth::provider_trait::OAuthTokenSet {
+            access_token,
+            refresh_token: payload.refresh_token,
+            expires_at: Some(expires_at),
+            id_token: payload.id_token,
+        },
+    ))
 }
 
 #[tauri::command]
@@ -1227,15 +1276,7 @@ pub(super) fn should_retry_oauth_limits_after_refresh(err: &str) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::OnceLock;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
-    async fn device_flow_test_lock() -> tokio::sync::MutexGuard<'static, ()> {
-        static LOCK: OnceLock<tokio::sync::Mutex<()>> = OnceLock::new();
-        LOCK.get_or_init(|| tokio::sync::Mutex::new(()))
-            .lock()
-            .await
-    }
 
     async fn spawn_json_response(
         status: &str,
@@ -1265,10 +1306,7 @@ mod tests {
     async fn poll_grok_fixture(
         status: &str,
         body: serde_json::Value,
-    ) -> (
-        String,
-        Result<Option<crate::gateway::oauth::provider_trait::OAuthTokenSet>, String>,
-    ) {
+    ) -> (String, Result<DeviceTokenPollOutcome, String>) {
         let lifecycle = crate::gateway::oauth::begin_flow_lifecycle();
         let flow_id = lifecycle.flow_id;
         let (url, server) = spawn_json_response(status, body.to_string()).await;
@@ -1335,9 +1373,18 @@ mod tests {
             parse_codex_device_interval(Some(&serde_json::json!(u64::MAX))),
             63
         );
-        assert_eq!(compute_expires_at_from_secs(Some(0)), None);
-        assert_eq!(compute_expires_at_from_secs(Some(-1)), None);
-        assert_eq!(compute_expires_at_from_secs(Some(i64::MAX)), Some(i64::MAX));
+        assert!(validate_device_expires_in(0, "fixture").is_err());
+        assert_eq!(
+            validate_device_expires_in(OAUTH_DEVICE_EXPIRES_IN_MAX_SECS, "fixture")
+                .expect("max device expiry"),
+            OAUTH_DEVICE_EXPIRES_IN_MAX_SECS
+        );
+        assert!(validate_device_expires_in(u64::MAX, "fixture").is_err());
+        assert!(compute_expires_at_from_secs(None).is_err());
+        assert!(compute_expires_at_from_secs(Some(0)).is_err());
+        assert!(compute_expires_at_from_secs(Some(-1)).is_err());
+        assert!(compute_expires_at_from_secs(Some(i64::MAX)).is_err());
+        assert!(compute_expires_at_from_secs(Some(3600)).is_ok());
     }
 
     #[tokio::test]
@@ -1367,14 +1414,26 @@ mod tests {
 
     #[tokio::test]
     async fn grok_device_poll_handles_pending_expired_denied_and_success_ownership() {
-        let _guard = device_flow_test_lock().await;
+        let _guard = crate::gateway::oauth::oauth_flow_test_lock().await;
         let (pending_flow, pending) = poll_grok_fixture(
             "400 Bad Request",
             serde_json::json!({"error":"authorization_pending"}),
         )
         .await;
-        assert!(pending.expect("pending result").is_none());
+        assert!(matches!(
+            pending.expect("pending result"),
+            DeviceTokenPollOutcome::Pending
+        ));
         assert!(crate::gateway::oauth::is_current_flow(&pending_flow));
+
+        let (slow_flow, slow) =
+            poll_grok_fixture("400 Bad Request", serde_json::json!({"error":"slow_down"})).await;
+        assert!(matches!(
+            slow.expect("slow_down result"),
+            DeviceTokenPollOutcome::SlowDown
+        ));
+        assert!(crate::gateway::oauth::is_current_flow(&slow_flow));
+        crate::gateway::oauth::cancel_flow(&slow_flow);
 
         let (expired_flow, expired) = poll_grok_fixture(
             "400 Bad Request",
@@ -1404,9 +1463,9 @@ mod tests {
             }),
         )
         .await;
-        let token = success
-            .expect("success result")
-            .expect("completed token response");
+        let DeviceTokenPollOutcome::Complete(token) = success.expect("success result") else {
+            panic!("expected completed token response");
+        };
         assert_eq!(token.access_token, "SYNTHETIC_ACCESS_TOKEN");
         assert_eq!(
             token.refresh_token.as_deref(),
@@ -1419,7 +1478,7 @@ mod tests {
 
     #[tokio::test]
     async fn grok_device_poll_rejects_invalid_token_type_and_cancels_flow() {
-        let _guard = device_flow_test_lock().await;
+        let _guard = crate::gateway::oauth::oauth_flow_test_lock().await;
         let (flow_id, result) = poll_grok_fixture(
             "200 OK",
             serde_json::json!({"access_token":"SYNTHETIC_SECRET", "token_type":"MAC"}),
@@ -1428,6 +1487,36 @@ mod tests {
         let error = result.expect_err("invalid token type must fail");
         assert!(error.contains("invalid token_type"));
         assert!(!error.contains("SYNTHETIC_SECRET"));
+        assert!(!crate::gateway::oauth::is_current_flow(&flow_id));
+    }
+
+    #[tokio::test]
+    async fn grok_device_poll_rejects_invalid_token_expiry_and_cancels_flow() {
+        let _guard = crate::gateway::oauth::oauth_flow_test_lock().await;
+        for expires_in in [0_i64, -1, OAUTH_TOKEN_EXPIRES_IN_MAX_SECS + 1] {
+            let (flow_id, result) = poll_grok_fixture(
+                "200 OK",
+                serde_json::json!({
+                    "access_token":"SYNTHETIC_SECRET",
+                    "token_type":"Bearer",
+                    "expires_in": expires_in
+                }),
+            )
+            .await;
+            let error = result.expect_err("invalid token expiry must fail");
+            assert!(error.contains("invalid expires_in"));
+            assert!(!error.contains("SYNTHETIC_SECRET"));
+            assert!(!crate::gateway::oauth::is_current_flow(&flow_id));
+        }
+
+        let (flow_id, result) = poll_grok_fixture(
+            "200 OK",
+            serde_json::json!({"access_token":"SYNTHETIC_SECRET", "token_type":"Bearer"}),
+        )
+        .await;
+        assert!(result
+            .expect_err("missing token expiry must fail")
+            .contains("missing expires_in"));
         assert!(!crate::gateway::oauth::is_current_flow(&flow_id));
     }
 }

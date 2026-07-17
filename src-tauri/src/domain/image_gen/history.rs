@@ -9,6 +9,7 @@ use crate::db;
 use crate::shared::error::{db_err, AppResult};
 use base64::Engine as _;
 use rusqlite::OptionalExtension;
+use std::io::Write as _;
 use std::path::{Path, PathBuf};
 
 use super::transport::ImageGenFetchedImage;
@@ -17,6 +18,9 @@ const MAX_PERSIST_TOTAL_BYTES: usize = 96 * 1024 * 1024;
 const MAX_READ_IMAGE_BYTES: u64 = 64 * 1024 * 1024;
 const MAX_TASK_ID_CHARS: usize = 128;
 const MAX_LIST_LIMIT: u32 = 100;
+const MAX_CURSOR_BYTES: usize = 512;
+const CURSOR_VERSION: u8 = 1;
+const MAX_TRUSTED_STORAGE_ROOTS: usize = 64;
 
 pub(crate) const IMAGE_GEN_STORAGE_DIR_NAME: &str = "image-gen";
 
@@ -75,6 +79,21 @@ pub(crate) struct ImageGenTaskRow {
 
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
+pub(crate) struct ImageGenTasksPage {
+    pub items: Vec<ImageGenTaskRow>,
+    pub next_cursor: Option<String>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ImageGenTasksCursor {
+    v: u8,
+    created_at: i64,
+    id: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct ImageGenStorageView {
     pub dir: String,
     pub total_bytes: i64,
@@ -106,6 +125,20 @@ pub(crate) fn storage_dir_from_settings<R: tauri::Runtime>(
         Some(dir) => Ok(PathBuf::from(dir)),
         None => Ok(crate::app_paths::app_data_dir(app)?.join(IMAGE_GEN_STORAGE_DIR_NAME)),
     }
+}
+
+pub(crate) fn storage_roots_from_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> AppResult<Vec<PathBuf>> {
+    let settings = crate::settings::read(app)?;
+    let current = storage_dir_from_settings(app)?;
+    let mut roots = settings
+        .image_gen_storage_roots
+        .iter()
+        .map(PathBuf::from)
+        .collect::<Vec<_>>();
+    roots.push(current);
+    canonical_storage_roots(&roots)
 }
 
 fn validate_task_id(id: &str) -> Result<&str, String> {
@@ -180,7 +213,12 @@ fn decode_payload_files(
 }
 
 fn write_task_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
-    std::fs::write(dir.join(name), bytes)
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(dir.join(name))
+        .map_err(|e| format!("SYSTEM_ERROR: failed to create task file {name}: {e}"))?;
+    file.write_all(bytes)
         .map_err(|e| format!("SYSTEM_ERROR: failed to write task file {name}: {e}"))
 }
 
@@ -199,9 +237,37 @@ pub(crate) fn canonical_storage_root(storage_dir: &Path) -> AppResult<PathBuf> {
     Ok(root)
 }
 
-fn validate_task_dir(storage_root: &Path, dir: &str, id: &str) -> AppResult<PathBuf> {
+pub(crate) fn canonical_storage_roots(storage_roots: &[PathBuf]) -> AppResult<Vec<PathBuf>> {
+    if storage_roots.len() > MAX_TRUSTED_STORAGE_ROOTS {
+        return Err("SEC_INVALID_INPUT: too many image gen storage roots"
+            .to_string()
+            .into());
+    }
+    let mut canonical = Vec::with_capacity(storage_roots.len());
+    for root in storage_roots {
+        if !root.is_absolute() {
+            return Err("SEC_INVALID_INPUT: image gen storage root must be absolute"
+                .to_string()
+                .into());
+        }
+        if !root.exists() {
+            continue;
+        }
+        let root = canonical_storage_root(root)?;
+        if !canonical.contains(&root) {
+            canonical.push(root);
+        }
+    }
+    if canonical.is_empty() {
+        return Err("SEC_INVALID_INPUT: no trusted image gen storage roots"
+            .to_string()
+            .into());
+    }
+    Ok(canonical)
+}
+
+fn validate_task_dir(storage_roots: &[PathBuf], dir: &str, id: &str) -> AppResult<PathBuf> {
     let id = validate_task_id(id)?;
-    let root = canonical_storage_root(storage_root)?;
     let original = PathBuf::from(dir);
     let link_metadata = std::fs::symlink_metadata(&original)
         .map_err(|_| "SEC_INVALID_INPUT: image gen task dir cannot be resolved".to_string())?;
@@ -212,7 +278,9 @@ fn validate_task_dir(storage_root: &Path, dir: &str, id: &str) -> AppResult<Path
     }
     let candidate = std::fs::canonicalize(&original)
         .map_err(|_| "SEC_INVALID_INPUT: image gen task dir cannot be resolved".to_string())?;
-    if candidate.parent() != Some(root.as_path())
+    if !storage_roots
+        .iter()
+        .any(|root| candidate.parent() == Some(root.as_path()))
         || candidate.file_name().and_then(|value| value.to_str()) != Some(id)
         || !candidate.is_dir()
     {
@@ -268,19 +336,36 @@ pub(crate) fn task_persist(
     ensure_writable_dir(storage_dir)?;
     let storage_root = canonical_storage_root(storage_dir)?;
     let task_dir = storage_root.join(&id);
-    if task_dir.exists()
-        && std::fs::symlink_metadata(&task_dir)
-            .map_err(|e| format!("SYSTEM_ERROR: failed to inspect task dir: {e}"))?
-            .file_type()
-            .is_symlink()
     {
-        return Err("SEC_INVALID_INPUT: task dir cannot be a symlink"
-            .to_string()
-            .into());
+        let conn = db.open_connection()?;
+        let already_exists: bool = conn
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM image_gen_tasks WHERE id = ?1)",
+                rusqlite::params![id],
+                |row| row.get(0),
+            )
+            .map_err(|e| db_err!("failed to check image gen task id: {e}"))?;
+        if already_exists {
+            return Err("SEC_INVALID_INPUT: image gen task id already exists"
+                .to_string()
+                .into());
+        }
     }
-    std::fs::create_dir_all(&task_dir)
-        .map_err(|e| format!("SYSTEM_ERROR: failed to create task dir: {e}"))?;
-    validate_task_dir(&storage_root, &task_dir.to_string_lossy(), &id)?;
+    std::fs::create_dir(&task_dir).map_err(|e| {
+        if e.kind() == std::io::ErrorKind::AlreadyExists {
+            "SEC_INVALID_INPUT: image gen task directory already exists".to_string()
+        } else {
+            format!("SYSTEM_ERROR: failed to create task dir: {e}")
+        }
+    })?;
+    if let Err(error) = validate_task_dir(
+        std::slice::from_ref(&storage_root),
+        &task_dir.to_string_lossy(),
+        &id,
+    ) {
+        let _ = std::fs::remove_dir(&task_dir);
+        return Err(error);
+    }
 
     let write_and_insert = || -> AppResult<()> {
         let mut stored_images = Vec::with_capacity(images.len());
@@ -328,18 +413,6 @@ INSERT INTO image_gen_tasks(
   id, adapter_id, prompt, request_json, status, error, usage_json,
   images_json, ref_images_json, dir, created_at, elapsed_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
-ON CONFLICT(id) DO UPDATE SET
-  adapter_id = excluded.adapter_id,
-  prompt = excluded.prompt,
-  request_json = excluded.request_json,
-  status = excluded.status,
-  error = excluded.error,
-  usage_json = excluded.usage_json,
-  images_json = excluded.images_json,
-  ref_images_json = excluded.ref_images_json,
-  dir = excluded.dir,
-  created_at = excluded.created_at,
-  elapsed_ms = excluded.elapsed_ms
 "#,
             rusqlite::params![
                 id,
@@ -453,11 +526,11 @@ fn validate_stored_file_path(task_dir: &Path, filename: &str) -> AppResult<PathB
 }
 
 fn validate_raw_task(
-    storage_root: &Path,
+    storage_roots: &[PathBuf],
     raw: RawTaskRow,
 ) -> AppResult<(ImageGenTaskRow, Vec<(String, PathBuf)>)> {
     let id = validate_task_id(&raw.id)?.to_string();
-    let task_dir = validate_task_dir(storage_root, &raw.dir, &id)?;
+    let task_dir = validate_task_dir(storage_roots, &raw.dir, &id)?;
     let images = serde_json::from_str::<Vec<StoredFile>>(&raw.images_json)
         .map_err(|_| "SEC_INVALID_INPUT: invalid stored image metadata".to_string())?;
     let ref_images = serde_json::from_str::<Vec<StoredFile>>(&raw.ref_images_json)
@@ -492,7 +565,49 @@ fn validate_raw_task(
 
 const TASK_SELECT_COLUMNS: &str = "id, adapter_id, prompt, request_json, status, error, usage_json, images_json, ref_images_json, dir, created_at, elapsed_ms";
 
+fn decode_tasks_cursor(cursor: Option<&str>) -> AppResult<Option<ImageGenTasksCursor>> {
+    let Some(cursor) = cursor else {
+        return Ok(None);
+    };
+    let cursor = cursor.trim();
+    if cursor.is_empty() || cursor.len() > MAX_CURSOR_BYTES {
+        return Err("SEC_INVALID_INPUT: invalid image gen tasks cursor"
+            .to_string()
+            .into());
+    }
+    let bytes = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(cursor.as_bytes())
+        .map_err(|_| "SEC_INVALID_INPUT: invalid image gen tasks cursor".to_string())?;
+    if bytes.len() > MAX_CURSOR_BYTES {
+        return Err("SEC_INVALID_INPUT: invalid image gen tasks cursor"
+            .to_string()
+            .into());
+    }
+    let decoded: ImageGenTasksCursor = serde_json::from_slice(&bytes)
+        .map_err(|_| "SEC_INVALID_INPUT: invalid image gen tasks cursor".to_string())?;
+    if decoded.v != CURSOR_VERSION {
+        return Err(
+            "SEC_INVALID_INPUT: unsupported image gen tasks cursor version"
+                .to_string()
+                .into(),
+        );
+    }
+    validate_task_id(&decoded.id)?;
+    Ok(Some(decoded))
+}
+
+fn encode_tasks_cursor(row: &ImageGenTaskRow) -> AppResult<String> {
+    let bytes = serde_json::to_vec(&ImageGenTasksCursor {
+        v: CURSOR_VERSION,
+        created_at: row.created_at,
+        id: row.id.clone(),
+    })
+    .map_err(|e| format!("SYSTEM_ERROR: failed to encode image gen tasks cursor: {e}"))?;
+    Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
+}
+
 fn task_get(db: &db::Db, storage_root: &Path, id: &str) -> AppResult<Option<ImageGenTaskRow>> {
+    let roots = canonical_storage_roots(&[storage_root.to_path_buf()])?;
     let conn = db.open_connection()?;
     let raw = conn
         .query_row(
@@ -502,17 +617,29 @@ fn task_get(db: &db::Db, storage_root: &Path, id: &str) -> AppResult<Option<Imag
         )
         .optional()
         .map_err(|e| db_err!("failed to query image gen task: {e}"))?;
-    raw.map(|raw| validate_raw_task(storage_root, raw).map(|(row, _)| row))
+    raw.map(|raw| validate_raw_task(&roots, raw).map(|(row, _)| row))
         .transpose()
 }
 
 /// Newest-first page. `before_created_at = None` starts from the newest row.
+#[cfg(test)]
 pub(crate) fn tasks_list(
     db: &db::Db,
     storage_root: &Path,
     before_created_at: Option<i64>,
     limit: u32,
 ) -> AppResult<Vec<ImageGenTaskRow>> {
+    tasks_list_with_roots(db, &[storage_root.to_path_buf()], before_created_at, limit)
+}
+
+#[cfg(test)]
+pub(crate) fn tasks_list_with_roots(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    before_created_at: Option<i64>,
+    limit: u32,
+) -> AppResult<Vec<ImageGenTaskRow>> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
     let limit = limit.clamp(1, MAX_LIST_LIMIT);
     let conn = db.open_connection()?;
     let mut stmt = conn
@@ -532,14 +659,75 @@ LIMIT ?2
     let mut tasks = Vec::new();
     for row in rows {
         let raw = row.map_err(|e| db_err!("failed to read image gen task row: {e}"))?;
-        tasks.push(validate_raw_task(storage_root, raw)?.0);
+        tasks.push(validate_raw_task(&storage_roots, raw)?.0);
     }
     Ok(tasks)
 }
 
+pub(crate) fn tasks_page_with_roots(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    cursor: Option<&str>,
+    limit: u32,
+) -> AppResult<ImageGenTasksPage> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
+    let cursor = decode_tasks_cursor(cursor)?;
+    let before_created_at = cursor.as_ref().map(|cursor| cursor.created_at);
+    let before_id = cursor.as_ref().map(|cursor| cursor.id.as_str());
+    let limit = limit.clamp(1, MAX_LIST_LIMIT);
+    let query_limit = i64::from(limit) + 1;
+    let conn = db.open_connection()?;
+    let mut stmt = conn
+        .prepare(&format!(
+            r#"
+SELECT {TASK_SELECT_COLUMNS} FROM image_gen_tasks
+WHERE (
+  ?1 IS NULL
+  OR created_at < ?1
+  OR (created_at = ?1 AND id < ?2)
+)
+ORDER BY created_at DESC, id DESC
+LIMIT ?3
+"#
+        ))
+        .map_err(|e| db_err!("failed to prepare image gen tasks page query: {e}"))?;
+    let rows = stmt
+        .query_map(
+            rusqlite::params![before_created_at, before_id, query_limit],
+            row_to_raw_task,
+        )
+        .map_err(|e| db_err!("failed to query image gen tasks page: {e}"))?;
+
+    let mut items = Vec::new();
+    for row in rows {
+        let raw = row.map_err(|e| db_err!("failed to read image gen task page row: {e}"))?;
+        items.push(validate_raw_task(&storage_roots, raw)?.0);
+    }
+    let has_more = items.len() > limit as usize;
+    if has_more {
+        items.pop();
+    }
+    let next_cursor = if has_more {
+        items.last().map(encode_tasks_cursor).transpose()?
+    } else {
+        None
+    };
+    Ok(ImageGenTasksPage { items, next_cursor })
+}
+
 /// Deletes the DB row and the task directory. Missing row / missing dir are
 /// both tolerated (idempotent delete).
+#[cfg(test)]
 pub(crate) fn task_delete(db: &db::Db, storage_root: &Path, id: &str) -> AppResult<()> {
+    task_delete_with_roots(db, &[storage_root.to_path_buf()], id)
+}
+
+pub(crate) fn task_delete_with_roots(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    id: &str,
+) -> AppResult<()> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
     let id = validate_task_id(id)?;
     let conn = db.open_connection()?;
     let dir: Option<String> = conn
@@ -555,7 +743,7 @@ pub(crate) fn task_delete(db: &db::Db, storage_root: &Path, id: &str) -> AppResu
         return Ok(());
     };
 
-    let validated = validate_task_dir(storage_root, &dir, id)?;
+    let validated = validate_task_dir(&storage_roots, &dir, id)?;
     remove_validated_task_dir(&validated)?;
     conn.execute(
         "DELETE FROM image_gen_tasks WHERE id = ?1",
@@ -566,7 +754,13 @@ pub(crate) fn task_delete(db: &db::Db, storage_root: &Path, id: &str) -> AppResu
 }
 
 /// Deletes every task row and its directory. Returns the number of deleted rows.
+#[cfg(test)]
 pub(crate) fn tasks_clear(db: &db::Db, storage_root: &Path) -> AppResult<u32> {
+    tasks_clear_with_roots(db, &[storage_root.to_path_buf()])
+}
+
+pub(crate) fn tasks_clear_with_roots(db: &db::Db, storage_roots: &[PathBuf]) -> AppResult<u32> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
     let conn = db.open_connection()?;
     let pairs = query_id_dir_pairs(
         &conn,
@@ -576,7 +770,7 @@ pub(crate) fn tasks_clear(db: &db::Db, storage_root: &Path) -> AppResult<u32> {
 
     let validated = pairs
         .iter()
-        .map(|(id, dir)| validate_task_dir(storage_root, dir, id))
+        .map(|(id, dir)| validate_task_dir(&storage_roots, dir, id))
         .collect::<AppResult<Vec<_>>>()?;
     for path in &validated {
         remove_validated_task_dir(path)?;
@@ -588,7 +782,17 @@ pub(crate) fn tasks_clear(db: &db::Db, storage_root: &Path) -> AppResult<u32> {
 
 /// Keeps the most recent `keep_count` tasks and deletes the rest (rows + dirs).
 /// Returns the number of deleted tasks.
+#[cfg(test)]
 pub(crate) fn storage_cleanup(db: &db::Db, storage_root: &Path, keep_count: u32) -> AppResult<u32> {
+    storage_cleanup_with_roots(db, &[storage_root.to_path_buf()], keep_count)
+}
+
+pub(crate) fn storage_cleanup_with_roots(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    keep_count: u32,
+) -> AppResult<u32> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
     let conn = db.open_connection()?;
     let pairs = query_id_dir_pairs(
         &conn,
@@ -602,7 +806,7 @@ LIMIT -1 OFFSET ?1
 
     let validated = pairs
         .iter()
-        .map(|(id, dir)| validate_task_dir(storage_root, dir, id))
+        .map(|(id, dir)| validate_task_dir(&storage_roots, dir, id))
         .collect::<AppResult<Vec<_>>>()?;
     for ((id, _), path) in pairs.iter().zip(validated.iter()) {
         remove_validated_task_dir(path)?;
@@ -652,12 +856,21 @@ fn safe_stored_file_name(value: &str) -> Option<&str> {
 /// Reads a stored image back as base64. Security boundary: the canonicalized
 /// path must live strictly inside the current storage dir or a DB-recorded task
 /// dir (canonicalization also rejects `..` traversal and symlink escapes).
+#[cfg(test)]
 pub(crate) fn read_image(
     db: &db::Db,
     storage_dir: &Path,
     reference: &str,
 ) -> AppResult<ImageGenFetchedImage> {
-    let root = canonical_storage_root(storage_dir)?;
+    read_image_with_roots(db, &[storage_dir.to_path_buf()], reference)
+}
+
+pub(crate) fn read_image_with_roots(
+    db: &db::Db,
+    storage_roots: &[PathBuf],
+    reference: &str,
+) -> AppResult<ImageGenFetchedImage> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
     let reference = reference.trim();
     let (task_id, filename) = reference
         .split_once('/')
@@ -675,7 +888,7 @@ pub(crate) fn read_image(
         .optional()
         .map_err(|e| db_err!("failed to query image gen task: {e}"))?
         .ok_or_else(|| "SEC_INVALID_INPUT: image reference task was not found".to_string())?;
-    let (_, referenced_paths) = validate_raw_task(&root, raw)?;
+    let (_, referenced_paths) = validate_raw_task(&storage_roots, raw)?;
     let canonical = referenced_paths
         .into_iter()
         .find_map(|(candidate, path)| (candidate == reference).then_some(path))
@@ -708,7 +921,17 @@ pub(crate) fn read_image(
 /// Storage usage view. Size is computed by walking DB-recorded task dirs.
 // ponytail: orphan dirs (files written but row never landed) are not counted
 // and cannot be reclaimed by cleanup; add an orphan scan if this ever matters.
+#[cfg(test)]
 pub(crate) fn storage_stats(db: &db::Db, storage_dir: &Path) -> AppResult<ImageGenStorageView> {
+    storage_stats_with_roots(db, storage_dir, &[storage_dir.to_path_buf()])
+}
+
+pub(crate) fn storage_stats_with_roots(
+    db: &db::Db,
+    current_storage_dir: &Path,
+    storage_roots: &[PathBuf],
+) -> AppResult<ImageGenStorageView> {
+    let storage_roots = canonical_storage_roots(storage_roots)?;
     let conn = db.open_connection()?;
     let task_count: u32 = conn
         .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
@@ -723,12 +946,12 @@ pub(crate) fn storage_stats(db: &db::Db, storage_dir: &Path) -> AppResult<ImageG
         rusqlite::params![],
     )?;
     for (id, dir) in pairs {
-        let dir = validate_task_dir(storage_dir, &dir, &id)?;
+        let dir = validate_task_dir(&storage_roots, &dir, &id)?;
         total_bytes = total_bytes.saturating_add(dir_size_bytes(&dir));
     }
 
     Ok(ImageGenStorageView {
-        dir: storage_dir.to_string_lossy().to_string(),
+        dir: current_storage_dir.to_string_lossy().to_string(),
         total_bytes,
         task_count,
     })
@@ -757,8 +980,14 @@ pub(crate) fn ensure_writable_dir(dir: &Path) -> AppResult<()> {
     std::fs::create_dir_all(dir)
         .map_err(|e| format!("SEC_INVALID_INPUT: storage dir cannot be created: {e}"))?;
     let probe = dir.join(".aio-write-probe");
-    std::fs::write(&probe, b"probe")
+    let mut file = std::fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&probe)
         .map_err(|e| format!("SEC_INVALID_INPUT: storage dir is not writable: {e}"))?;
+    let write_result = file.write_all(b"probe");
+    drop(file);
     let _ = std::fs::remove_file(&probe);
+    write_result.map_err(|e| format!("SEC_INVALID_INPUT: storage dir is not writable: {e}"))?;
     Ok(())
 }

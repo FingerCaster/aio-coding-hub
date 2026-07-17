@@ -78,7 +78,8 @@ When changing Image Gen network or filesystem behavior:
 3. Keep save-dialog authorization and file writing in one Rust command; the
    renderer supplies data and a suggested filename, never a destination path.
 4. Treat task dirs and stored filenames from SQLite as untrusted candidates and
-   validate them against the canonical settings-derived storage root.
+   validate them against the canonical current/historical settings-owned root
+   allowlist; DB content never adds a root.
 5. Confirm DB content cannot expand read/delete/cleanup or asset-scope authority.
 
 ## Quality Check
@@ -110,5 +111,6 @@ When changing Image Gen network or filesystem behavior:
   and extension checks, canonical root containment, opaque DB-reference reads,
   batch validation-before-delete, and zero Image Gen asset scope.
 - When changing provider device OAuth, verify bounded authorization/token
-  bodies, non-empty typed fields, saturating interval/expiry arithmetic,
-  pending/terminal flow ownership, cancellation, and secret-free diagnostics.
+  bodies, non-empty typed fields, bounded Result expiry arithmetic, cumulative
+  RFC 8628 slow-down intervals, pending/terminal flow ownership, cancellation,
+  no-persistence invalid cases, and secret-free diagnostics.

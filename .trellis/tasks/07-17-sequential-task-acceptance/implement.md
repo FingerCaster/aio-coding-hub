@@ -45,13 +45,28 @@
 
 ## Parent Integration Acceptance
 
-- [ ] Assert child 5 is archived, then activate the parent solely for final integration review.
-- [ ] Verify commit/archive order is exactly 1 -> 2 -> 3 -> 4 -> 5.
+- [x] Child 5 was archived before starting the first final-review security child.
+- [x] Child 6 was implemented, checked, committed and archived before child 7 started.
+- [ ] Finish child 7, then verify commit/archive order is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7.
+- [ ] Run the independent max read-only final review; do not archive the parent before it passes.
 - [ ] Run `pnpm build`, `pnpm check:precommit:full`, `pnpm check:prepush` and any focused commands
       listed by child tasks that are not included in aggregate gates.
 - [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
       made.
 - [ ] Archive the parent only after every acceptance item is evidenced.
+
+## Review children
+
+### 6. First final-review security boundaries
+
+- [x] Closed the first review's security findings, committed `7a668343`, archived in
+      `.trellis/tasks/archive/2026-07/07-17-final-review-security-boundaries`.
+
+### 7. Second final-review findings
+
+- [ ] Close F1-F8 under `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-2`, including post-fix
+      `muyuan` live evidence and the upstream conflict decision audit.
+- [ ] Commit and archive child 7 while keeping this parent `in_progress`.
 
 ## Stop And Rollback Rules
 

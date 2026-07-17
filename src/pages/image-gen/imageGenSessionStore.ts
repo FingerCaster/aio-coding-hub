@@ -13,6 +13,8 @@ export type ImageGenSessionState = {
   hydrated: boolean;
   /** DB 中是否还有更早的历史任务（上次拉取返回满页）。 */
   hasMore: boolean;
+  /** 后端签发的复合分页游标；null 表示没有下一页。 */
+  nextCursor: string | null;
 };
 
 type Listener = () => void;
@@ -23,6 +25,7 @@ const EMPTY_STATE: ImageGenSessionState = {
   prompt: "",
   hydrated: false,
   hasMore: false,
+  nextCursor: null,
 };
 
 let snapshot: ImageGenSessionState = EMPTY_STATE;

@@ -89,3 +89,7 @@
   修改 remote 或合并到 main；活动产品代码不存在 `DeniedByCircuit`、
   `session_bound_provider_circuit_denied`、`codex_retry_gateway` 或已移除的 continuation repair /
   reasoning guard 产品面。
+- 第二轮只读证据补全：`git show --remerge-diff` 可复现 30 个冲突文件、47 个 marker groups，
+  与本文件原“31 个文本冲突”口径无法一一对应。逐文件 blob/行为决策表见
+  `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-2/research/upstream-merge-conflict-decision-audit.md`；
+  该表不杜撰历史用户决定，也未重新 fetch/merge。

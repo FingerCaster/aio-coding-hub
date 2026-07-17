@@ -277,6 +277,9 @@ pub(super) fn validate_multipart_files(files: &[ImageGenMultipartFile]) -> Resul
         if file.mime.trim().is_empty() || file.mime.len() > MAX_MULTIPART_MIME_BYTES {
             return Err(format!("SEC_INVALID_INPUT: file #{index} mime is invalid"));
         }
+        reqwest::multipart::Part::bytes(Vec::new())
+            .mime_str(&file.mime)
+            .map_err(|e| format!("SEC_INVALID_INPUT: invalid mime type for file #{index}: {e}"))?;
         let decoded_len = decoded_base64_len(&file.data_b64, index)?;
         if decoded_len > MAX_MULTIPART_TOTAL_BYTES {
             return Err(format!(
@@ -375,6 +378,9 @@ pub(super) fn is_disallowed_ip(ip: IpAddr) -> bool {
         IpAddr::V6(v6) => {
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return !is_global_ipv4(mapped);
+            }
+            if ipv6_in(v6, [0; 8], 96) {
+                return true;
             }
             !is_global_ipv6(v6)
         }

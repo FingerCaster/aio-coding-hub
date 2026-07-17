@@ -107,7 +107,7 @@ impl SkillFileCollector {
         }
 
         let relative_path = relative_path_string(relative_path)?;
-        let file_limit = if relative_path == "SKILL.md" {
+        let file_limit = if is_skill_md_path(Path::new(&relative_path)) {
             CONFIG_SKILL_MD_MAX_BYTES
         } else {
             CONFIG_SKILL_FILE_MAX_BYTES
@@ -153,10 +153,10 @@ fn collect_skill_dir_files(
     for entry in entries {
         let name = entry.file_name();
         let name_str = name.to_string_lossy();
-        if name_str == SKILL_MANAGED_MARKER_FILE {
+        if platform_path_component_eq(&name_str, SKILL_MANAGED_MARKER_FILE) {
             continue;
         }
-        if skip_source_marker && name_str == SKILL_SOURCE_MARKER_FILE {
+        if skip_source_marker && platform_path_component_eq(&name_str, SKILL_SOURCE_MARKER_FILE) {
             continue;
         }
 
@@ -366,12 +366,27 @@ fn decode_skill_files_for_write(files: &[SkillFileExport]) -> AppResult<Vec<(Pat
         .into());
     }
 
-    let mut seen_paths = HashSet::new();
+    let reserved_paths = [
+        normalized_skill_path(Path::new(SKILL_MANAGED_MARKER_FILE))?,
+        normalized_skill_path(Path::new(SKILL_SOURCE_MARKER_FILE))?,
+    ];
+    let mut seen_paths: Vec<(Vec<String>, bool)> = reserved_paths
+        .into_iter()
+        .map(|path| (path, true))
+        .collect();
     let mut total_bytes = 0_usize;
     let mut decoded_files = Vec::with_capacity(files.len());
     for file in files {
         let relative_path = validate_skill_file_relative_path(&file.relative_path)?;
-        if !seen_paths.insert(relative_path.clone()) {
+        let path_key = normalized_skill_path(&relative_path)?;
+        if let Some((_, reserved)) = seen_paths.iter().find(|(other, _)| other == &path_key) {
+            if *reserved {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: reserved skill marker path {}",
+                    file.relative_path
+                )
+                .into());
+            }
             return Err(format!(
                 "SEC_INVALID_INPUT: duplicate skill file path {}",
                 file.relative_path
@@ -379,16 +394,24 @@ fn decode_skill_files_for_write(files: &[SkillFileExport]) -> AppResult<Vec<(Pat
             .into());
         }
 
-        if seen_paths.iter().any(|other| {
-            other != &relative_path
-                && (other.starts_with(&relative_path) || relative_path.starts_with(other))
+        if let Some((_, reserved)) = seen_paths.iter().find(|(other, _)| {
+            path_components_start_with(other, &path_key)
+                || path_components_start_with(&path_key, other)
         }) {
+            if *reserved {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: reserved skill marker path conflicts with {}",
+                    file.relative_path
+                )
+                .into());
+            }
             return Err(format!(
                 "SEC_INVALID_INPUT: conflicting skill file paths involving {}",
                 file.relative_path
             )
             .into());
         }
+        seen_paths.push((path_key, false));
 
         if file.content_base64.len() > CONFIG_SKILL_FILE_BASE64_MAX_BYTES {
             return Err(format!(
@@ -413,7 +436,7 @@ fn decode_skill_files_for_write(files: &[SkillFileExport]) -> AppResult<Vec<(Pat
             )
             .into());
         }
-        if relative_path == Path::new("SKILL.md") && bytes.len() > CONFIG_SKILL_MD_MAX_BYTES {
+        if is_skill_md_path(&relative_path) && bytes.len() > CONFIG_SKILL_MD_MAX_BYTES {
             return Err(format!(
                 "SEC_INVALID_INPUT: SKILL.md too large (max {CONFIG_SKILL_MD_MAX_BYTES} bytes)"
             )
@@ -432,6 +455,47 @@ fn decode_skill_files_for_write(files: &[SkillFileExport]) -> AppResult<Vec<(Pat
     }
 
     Ok(decoded_files)
+}
+
+fn normalized_skill_path(path: &Path) -> AppResult<Vec<String>> {
+    path.components()
+        .map(|component| match component {
+            Component::Normal(part) => part
+                .to_str()
+                .map(normalize_platform_path_component)
+                .ok_or_else(|| {
+                    "SEC_INVALID_INPUT: invalid utf-8 skill path"
+                        .to_string()
+                        .into()
+                }),
+            _ => Err("SEC_INVALID_INPUT: invalid skill path component"
+                .to_string()
+                .into()),
+        })
+        .collect()
+}
+
+fn path_components_start_with(path: &[String], prefix: &[String]) -> bool {
+    path.len() > prefix.len() && path.starts_with(prefix)
+}
+
+fn is_skill_md_path(path: &Path) -> bool {
+    normalized_skill_path(path)
+        .is_ok_and(|path| path == vec![normalize_platform_path_component("SKILL.md")])
+}
+
+fn platform_path_component_eq(left: &str, right: &str) -> bool {
+    normalize_platform_path_component(left) == normalize_platform_path_component(right)
+}
+
+#[cfg(windows)]
+fn normalize_platform_path_component(value: &str) -> String {
+    value.to_lowercase()
+}
+
+#[cfg(not(windows))]
+fn normalize_platform_path_component(value: &str) -> String {
+    value.to_string()
 }
 
 fn validate_skill_file_relative_path(relative_path: &str) -> AppResult<PathBuf> {

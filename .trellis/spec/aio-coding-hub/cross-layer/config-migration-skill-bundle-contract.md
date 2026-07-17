@@ -96,6 +96,15 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   writer receives typed metadata only after that validation.
 - Paths must remain UTF-8, non-empty, relative, component-safe, and within the
   512-character limit. Traversal and rooted or absolute paths are rejected.
+- Payload paths and the generated `.aio-coding-hub.managed` and
+  `.aio-coding-hub.source.json` marker paths form one preflight conflict graph.
+  Exact, ancestor, or descendant collisions with either marker are rejected;
+  the writer never silently removes or overwrites a payload marker.
+- Path comparison follows the target platform: Windows normalizes every UTF-8
+  component with stable lowercase comparison, while non-Windows keeps
+  case-sensitive components. The same comparison identifies `SKILL.md`, so a
+  Windows alias such as `skill.MD` receives the 256 KiB budget and cannot share
+  an address with `SKILL.md`. Results are independent of payload order.
 - Installed `skill_key` values are directory authority and use one shared
   import/rollback/export validator: exactly one portable `Component::Normal`.
   Separators, `.`/`..`, root/prefix, drive, UNC, and colon forms are rejected
@@ -130,6 +139,10 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
 | Import path is duplicate, empty, traversal, rooted/absolute, or over 512 characters | Reject before target-directory creation |
 | Installed `skill_key` traverses, is absolute, drive/UNC, or contains a separator | Reject before staging/DB activation; preserve old state |
 | Paths contain `a` and `a/b` in either order | Reject before target-directory creation |
+| Payload equals or nests below either generated marker path | Reject before target-directory creation |
+| Windows payload contains `SKILL.md` and `skill.MD` in either order | Reject as a duplicate before target-directory creation |
+| Windows payload contains only oversized `skill.MD` | Reject with the dedicated 256 KiB `SKILL.md` budget |
+| Non-Windows payload contains `SKILL.md` and `skill.MD` | Treat as distinct case-sensitive paths; each retains its applicable budget |
 | Base64 text exceeds the raw-limit-derived cap | Reject before decoding or target-directory creation |
 | Base64 text is within the cap but decodes to 8 MiB + 1 | Reject on decoded size before target-directory creation |
 | Decoded files are individually valid but total 8 MiB + 1 | Reject before target-directory creation |
@@ -147,6 +160,7 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   but smaller than 8 MiB; export and import reproduce every synthetic byte.
 - Good: one synthetic 8 MiB file and no other payload bytes completes a
   bounded round trip.
+- Good: input order does not change duplicate/ancestor/marker conflict results.
 - Base: small `SKILL.md` and text assets keep the existing schema, paths, and
   Base64 representation.
 - Base: installed and local Skill payloads continue to round trip under schema
@@ -157,6 +171,8 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   reconstruct the source Skill.
 - Bad: create the target directory, write early files, and only then discover
   a duplicate path, oversized decoded file, or invalid metadata.
+- Bad: accept a payload marker and later delete/overwrite it while generating
+  local metadata, or compare paths with raw `PathBuf` on Windows.
 - Bad: describe `write_skill_files_to_dir` as a directory transaction that
   rolls back every file after an I/O failure; the helper guarantees
   validation-before-write ordering, not transactional filesystem rollback.
@@ -183,6 +199,8 @@ Keep focused regressions in
   escaped path, staging residue, or partial DB/Skill activation.
 - File/directory ancestor conflicts in both orders and metadata serialization
   overflow before target creation or ordinary file writes.
+- Generated marker collisions, Windows case aliases in both orders, platform-
+  specific `SKILL.md` alias budgets, and explicit non-Windows case behavior.
 
 Run at least:
 
@@ -226,3 +244,7 @@ const CONFIG_SKILL_FILE_BASE64_MAX_BYTES: usize =
 Use the shared raw limit on both export and import, keep the decoded total at
 8 MiB, validate the complete synthetic payload before writing, and require a
 bounded byte-for-byte round trip rather than omission or truncation.
+
+Path correctness uses one normalized component graph for payload paths,
+generated markers, duplicate/ancestor checks, and `SKILL.md` classification;
+do not bolt marker deletion or case handling onto the write phase.

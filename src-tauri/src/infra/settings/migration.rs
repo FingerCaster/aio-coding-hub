@@ -790,6 +790,17 @@ fn migrate_add_image_gen_storage_dir(
     )
 }
 
+fn migrate_add_image_gen_storage_roots(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_ROOTS,
+    )
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -826,6 +837,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_remove_codex_reasoning_guard,
     migrate_add_grok_proxy_preferences,
     migrate_add_image_gen_storage_dir,
+    migrate_add_image_gen_storage_roots,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1512,6 +1524,21 @@ mod tests {
             SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_DIR
         );
         assert_eq!(settings.image_gen_storage_dir, None);
+    }
+
+    #[test]
+    fn migrate_add_image_gen_storage_roots_bumps_schema_with_empty_allowlist() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_DIR,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_image_gen_storage_roots(&mut settings, true));
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_ROOTS
+        );
+        assert!(settings.image_gen_storage_roots.is_empty());
     }
 
     #[test]

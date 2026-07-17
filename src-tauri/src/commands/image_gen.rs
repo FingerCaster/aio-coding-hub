@@ -6,7 +6,7 @@ use crate::app_state::DbInitState;
 use crate::blocking;
 use crate::domain::image_gen::{
     ImageGenConfigView, ImageGenFetchedImage, ImageGenHttpResponse, ImageGenMultipartFile,
-    ImageGenStorageView, ImageGenTaskPersistPayload, ImageGenTaskRow,
+    ImageGenStorageView, ImageGenTaskPersistPayload, ImageGenTaskRow, ImageGenTasksPage,
 };
 use base64::Engine as _;
 use std::path::{Path, PathBuf};
@@ -210,10 +210,10 @@ pub(crate) async fn image_gen_task_persist(
 pub(crate) async fn image_gen_tasks_list(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
-    before_created_at: Option<i64>,
+    cursor: Option<String>,
     limit: u32,
-) -> Result<Vec<ImageGenTaskRow>, String> {
-    image_gen_service::tasks_list(app, db_state, before_created_at, limit).await
+) -> Result<ImageGenTasksPage, String> {
+    image_gen_service::tasks_list(app, db_state, cursor, limit).await
 }
 
 #[tauri::command]

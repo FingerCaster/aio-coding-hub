@@ -9,6 +9,7 @@ import type {
   ImageGenStorageView,
   ImageGenTaskPersistPayload,
   ImageGenTaskRow,
+  ImageGenTasksPage,
   JsonValue,
 } from "../../generated/bindings";
 import { invokeGeneratedIpc } from "../generatedIpc";
@@ -36,6 +37,7 @@ export type {
   ImageGenStorageView,
   ImageGenTaskPersistPayload,
   ImageGenTaskRow,
+  ImageGenTasksPage,
 };
 
 export async function imageGenConfigGet(adapterId: string): Promise<ImageGenConfigView> {
@@ -145,14 +147,14 @@ export async function imageGenTaskPersist(
 }
 
 export async function imageGenTasksList(
-  beforeCreatedAt: number | null,
+  cursor: string | null,
   limit: number
-): Promise<ImageGenTaskRow[]> {
-  return invokeGeneratedIpc<ImageGenTaskRow[]>({
+): Promise<ImageGenTasksPage> {
+  return invokeGeneratedIpc<ImageGenTasksPage>({
     title: "读取生成记录失败",
     cmd: "image_gen_tasks_list",
-    args: { beforeCreatedAt, limit },
-    invoke: () => commands.imageGenTasksList(beforeCreatedAt, limit),
+    args: { cursor, limit },
+    invoke: () => commands.imageGenTasksList(cursor, limit),
   });
 }
 

@@ -3,16 +3,16 @@
 ## Goal
 
 在已完成的前置任务 `07-15-external-codex-retry-gateway` 之后，严格按
-`1 -> 2 -> 3 -> 4 -> 5 -> 父任务集成验收` 修复并验收四项用户问题，最后同步
-`upstream/main`。每个子任务必须独立实现、检查、提交并归档，前一项未通过时不得
+`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 父任务最终审核` 修复、同步并关闭两轮终审发现。
+每个子任务必须独立实现、检查、提交并归档，前一项未通过时不得
 启动后一项。
 
 ## Background
 
 - 当前分支为 `FingerCaster/sequential-task-acceptance`，基线为本地
   `main@2e43ee23572e69e34ce2c4cfb60481b58acf9298`。
-- 父任务和五个子任务当前均为 `planning`；本轮没有运行 `task.py start`，也没有修改
-  业务代码。
+- 子任务 1-6 已依次实现、提交并归档；子任务 7 正在执行第二轮终审修复。父任务保持
+  `in_progress`，最终 max 审核通过前不得归档。
 - 用户已确认前置父任务完成，并授权规划校验通过后由主会话直接进入实现，无需再次
   请求规划确认。当前 max 调研终端只完成规划，主会话随后切换 `gpt-5.6-sol`
   medium 实现终端。
@@ -31,10 +31,24 @@
 3. `07-17-fix-newapi-account-usage-response`
 4. `07-17-fix-config-export-large-skill-asset`
 5. `07-17-sync-upstream-main-after-fixes`
-6. 父任务全范围集成验收
+6. `07-17-final-review-security-boundaries`
+7. `07-17-final-review-findings-round-2`
+8. 父任务最终 max 审核
 
 每个子任务只有在前一任务的验收标准、质量检查、提交与归档全部完成后才可执行
 `task.py start`。父子关系不替代此依赖门槛。
+
+### Current task map (2026-07-17)
+
+| Order | Child | Status |
+| --- | --- | --- |
+| 1 | `07-17-fix-multi-provider-failover-503` | archived |
+| 2 | `07-17-fix-account-balance-manual-refresh` | archived |
+| 3 | `07-17-fix-newapi-account-usage-response` | archived; post-fix live evidence linked |
+| 4 | `07-17-fix-config-export-large-skill-asset` | archived |
+| 5 | `07-17-sync-upstream-main-after-fixes` | archived; conflict audit linked |
+| 6 | `07-17-final-review-security-boundaries` | archived |
+| 7 | `07-17-final-review-findings-round-2` | in_progress |
 
 ### R2. 多供应商失败链路
 
@@ -93,7 +107,7 @@
 
 ## Acceptance Criteria
 
-- [ ] 子任务严格按 1、2、3、4、5 顺序启动，且每一项启动前都有上一项已归档证据。
+- [ ] 子任务严格按 1 至 7 顺序启动，且每一项启动前都有上一项已归档证据。
 - [ ] 子任务 1 的三供应商回归能区分实际请求、gate skip、同供应商 retry 和供应商切换，
       并保留现有网关契约。
 - [ ] 子任务 2 的乱序并发回归证明旧自动响应不能覆盖更新的手动刷新结果，且可用性测试
@@ -105,6 +119,8 @@
 - [ ] 子任务 5 仅在前四项归档后执行，记录不可变 upstream SHA，带入全部不冲突变更，
       且没有覆盖 fork 特有行为。
 - [ ] 父任务最终执行受影响测试、完整 Rust/前端质量门槛和集成行为检查，结果全部通过。
+- [ ] 子任务 6、7 的安全回归、脱敏 live 证据、冲突决策表与稳定分页均完成，随后由独立
+      max 只读终审给出最终结论。
 - [ ] 全过程没有并发子代理、未泄露密钥/PII、未向任何 remote 推送。
 
 ## Out of Scope

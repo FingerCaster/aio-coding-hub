@@ -335,6 +335,7 @@ export async function handleOAuthDeviceLogin(ctx: OAuthActionContext) {
     );
 
     const deadline = Date.now() + start.expires_in * 1000;
+    let pollIntervalMs = start.interval * 1000;
     const pollDeviceFlowUntilComplete = async (): Promise<boolean> => {
       if (Date.now() >= deadline) return false;
 
@@ -389,8 +390,12 @@ export async function handleOAuthDeviceLogin(ctx: OAuthActionContext) {
         return true;
       }
 
+      if (result.slow_down) {
+        pollIntervalMs += 5_000;
+      }
+
       await whenOAuthAttemptCurrent(
-        waitForOAuthDevicePollInterval(ctx, attemptId, start.interval * 1000),
+        waitForOAuthDevicePollInterval(ctx, attemptId, pollIntervalMs),
         isCurrentAttempt,
         rollbackAutoSavedProvider
       );

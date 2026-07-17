@@ -24,7 +24,8 @@
     "07-17-fix-newapi-account-usage-response",
     "07-17-fix-config-export-large-skill-asset",
     "07-17-sync-upstream-main-after-fixes",
-    "07-17-final-review-security-boundaries"
+    "07-17-final-review-security-boundaries",
+    "07-17-final-review-findings-round-2"
   ],
   "parent": null,
   "relatedFiles": [],

@@ -298,33 +298,34 @@ export function useImageGenController() {
   useEffect(() => {
     if (getImageGenSession().hydrated) return;
     void imageGenTasksList(null, HISTORY_PAGE_SIZE)
-      .then(async (rows) => {
-        const restored = (await Promise.all(rows.map((row) => taskFromRow(row)))).filter(
+      .then(async (page) => {
+        const restored = (await Promise.all(page.items.map((row) => taskFromRow(row)))).filter(
           (task): task is ImageGenTask => task !== null
         );
         updateImageGenSession((prev) => ({
           ...prev,
           hydrated: true,
-          hasMore: rows.length === HISTORY_PAGE_SIZE,
+          hasMore: page.nextCursor !== null,
+          nextCursor: page.nextCursor,
           tasks: mergeTasksByCreatedAt(prev.tasks, restored),
         }));
       })
       .catch(() => undefined);
   }, []);
 
-  // 加载更早的历史：以 store 内最早的 persisted 任务 createdAt 为游标。
+  // 加载更早的历史：游标由后端绑定 (created_at,id)，前端不重新推导。
   const loadMoreTasks = useCallback(async () => {
-    const persisted = getImageGenSession().tasks.filter((task) => task.persisted);
-    const before =
-      persisted.length > 0 ? Math.min(...persisted.map((task) => task.createdAt)) : null;
+    const cursor = getImageGenSession().nextCursor;
+    if (!cursor) return;
     try {
-      const rows = await imageGenTasksList(before, HISTORY_PAGE_SIZE);
-      const restored = (await Promise.all(rows.map((row) => taskFromRow(row)))).filter(
+      const page = await imageGenTasksList(cursor, HISTORY_PAGE_SIZE);
+      const restored = (await Promise.all(page.items.map((row) => taskFromRow(row)))).filter(
         (task): task is ImageGenTask => task !== null
       );
       updateImageGenSession((prev) => ({
         ...prev,
-        hasMore: rows.length === HISTORY_PAGE_SIZE,
+        hasMore: page.nextCursor !== null,
+        nextCursor: page.nextCursor,
         tasks: mergeTasksByCreatedAt(prev.tasks, restored),
       }));
     } catch {
@@ -643,7 +644,7 @@ export function useImageGenController() {
     }
     updateImageGenSession((prev) => {
       for (const task of prev.tasks) releaseTaskObjectUrls(task);
-      return { ...prev, tasks: [], hasMore: false };
+      return { ...prev, tasks: [], hasMore: false, nextCursor: null };
     });
     setPreview(null);
     toast.success("已清空任务");

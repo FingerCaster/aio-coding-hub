@@ -27,26 +27,31 @@ pub(crate) async fn image_gen_save_image(
 ) -> Result<bool, String>;
 ```
 
-The filesystem operations receive the trusted settings-derived root:
+History reads receive a settings-owned trusted-root allowlist; the current
+root controls new writes only:
 
 ```rust
 pub(crate) fn canonical_storage_root(storage_dir: &Path) -> AppResult<PathBuf>;
-pub(crate) fn tasks_list(
+pub(crate) fn tasks_page_with_roots(
     db: &db::Db,
-    storage_root: &Path,
-    before_created_at: Option<i64>,
+    storage_roots: &[PathBuf],
+    cursor: Option<&str>,
     limit: u32,
-) -> AppResult<Vec<ImageGenTaskRow>>;
-pub(crate) fn read_image(db: &db::Db, storage_dir: &Path, reference: &str)
+) -> AppResult<ImageGenTasksPage>;
+pub(crate) fn read_image_with_roots(db: &db::Db, storage_roots: &[PathBuf], reference: &str)
     -> AppResult<ImageGenFetchedImage>;
-pub(crate) fn task_delete(db: &db::Db, storage_root: &Path, id: &str) -> AppResult<()>;
-pub(crate) fn tasks_clear(db: &db::Db, storage_root: &Path) -> AppResult<u32>;
-pub(crate) fn storage_cleanup(
+pub(crate) fn task_delete_with_roots(db: &db::Db, storage_roots: &[PathBuf], id: &str)
+    -> AppResult<()>;
+pub(crate) fn storage_cleanup_with_roots(
     db: &db::Db,
-    storage_root: &Path,
+    storage_roots: &[PathBuf],
     keep_count: u32,
 ) -> AppResult<u32>;
 ```
+
+`AppSettings` schema v52 adds `image_gen_storage_roots: Vec<String>`. The IPC
+list command accepts `cursor: string | null` and returns
+`ImageGenTasksPage { items, nextCursor }`.
 
 The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 `dataB64`. It never accepts or returns a renderer-selected destination path.
@@ -71,7 +76,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   response must have an `image/*` content type.
 - Multipart requests validate every field and file before any Base64 decode or
   request construction. Allow at most 32 files and 64 text fields; bound field
-  names, values, filenames, MIME values, and use checked derived decoded sizes.
+  names, values, filenames, MIME values, parse every MIME with the same parser
+  used by multipart construction, and use checked derived decoded sizes.
   Decoded files total at most 64 MiB and text fields total at most 8 MiB.
 - Network and console diagnostics never contain URL credentials, query, or
   fragment. Normalize reqwest errors to operation and safe error category;
@@ -81,11 +87,27 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   then open the native save dialog; then validate the just-authorized result's
   extension and write those already-validated bytes. Dialog cancellation
   returns `false` and writes nothing.
+- Task persistence exclusively creates a new canonical `<current-root>/<id>`
+  directory with `create_dir`, rejects any existing directory/link/task ID,
+  and creates every predictable file with `OpenOptions::create_new(true)`.
+  DB failure removes only the directory created by that attempt. A preexisting
+  symlink, hardlink, ordinary target, or write probe is never followed or
+  overwritten.
 - SQLite `dir`, `images_json`, and `ref_images_json` values are untrusted.
-  Listing canonicalizes the current settings-derived storage root and validates
-  every selected row in full. A task directory must be a non-symlink/reparse
-  direct child of that root whose basename exactly equals the validated task
-  id; one invalid row fails the request instead of being silently skipped.
+  Listing canonicalizes the current plus historical settings-owned roots and
+  validates every selected row in full. A task directory must be a non-symlink/
+  reparse direct child of one allowlisted root whose basename exactly equals
+  the validated task id; one invalid row fails the request instead of being
+  silently skipped. DB values cannot add a root.
+- A successful root switch atomically writes the canonical previous current
+  root, new root, and retained historical roots into settings v52. New tasks use
+  the new current root; list/read/delete/clear/cleanup and stats span all roots.
+  Existing DB rows need no path rewrite or file migration.
+- Pagination order is `(created_at DESC, id DESC)`. The backend alone encodes a
+  version-1 URL-safe Base64 JSON cursor containing both values and seeks with
+  `created_at < C OR (created_at = C AND id < I)`. Null starts the first page;
+  numeric legacy, malformed, oversized, unknown-version, or unsafe-id cursors
+  fail closed. The frontend stores only the returned `nextCursor`.
 - Read access requires both conditions: the canonical file is strictly below
   the trusted root, and a validated single-component filename in that task's
   DB metadata references the same canonical file. List results expose only an
@@ -98,8 +120,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 - Image Gen grants no Tauri asset-protocol filesystem scope at startup or when
   the storage root changes. This is deliberate: Tauri 2 `forbid_directory`
   cannot be reversed by a later allow, so allow/forbid root switching cannot
-  provide transactional rollback. Backend reads are the sole projection; an
-  invalid or failed root change therefore cannot retain or expand old scope.
+  provide transactional rollback. Backend reads are the sole projection;
+  historical roots remain backend-readable but never gain asset scope.
 
 ### 4. Validation & Error Matrix
 
@@ -114,17 +136,23 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 | Error body exceeds 8 KiB | Stop bounded read; do not include the full body in the error |
 | URL query/fragment contains a token or reqwest formats the URL in an error | Omit it from console, request logs, and IPC errors while retaining safe operation/category diagnostics |
 | Multipart count, metadata, derived decoded size, or checked aggregate exceeds its cap | Reject every entry before Base64 decode, form construction, or request send |
+| Multipart MIME is syntactically invalid and Base64 is very large/invalid | Reject MIME before the first Base64 decode |
 | Image body exceeds 32 MiB or content type is not `image/*` | Reject without returning Base64 data |
 | Suggested filename traverses, contains separators, mismatches MIME, or exceeds 128 chars | Reject before showing a dialog |
 | Base64 exceeds derived cap, is invalid, or decodes above 64 MiB | Reject before showing a dialog or writing |
 | Native dialog is cancelled | Return `false`; create no file |
 | Dialog result extension mismatches MIME | Reject; write no file |
 | DB task dir is outside root, nested, wrong-id, missing, symlink, or reparse escape | Reject before filesystem mutation or DB deletion |
+| Persist target directory/file, symlink, or hardlink already exists | Reject before writing; preserve external bytes and create no DB row |
+| DB insert fails after new files were written | Remove only the newly created task directory; leave no DB row |
+| Root changes with existing history | Persist old/new canonical roots together; old tasks remain operable and new tasks use the new root |
+| 51 rows share one `created_at` with page size 20 | Return 20/20/11 without duplicates or omissions using the composite cursor |
+| Cursor is numeric legacy, malformed Base64/JSON, unknown version, or invalid id | Return `SEC_INVALID_INPUT`; never silently reinterpret it |
 | One row in clear/cleanup has an invalid dir | Reject the batch before deleting any selected directory |
 | Requested file is inside root but absent from validated DB metadata | Reject the read |
 | Stored filename contains traversal or multiple components | Reject metadata; do not normalize or silently skip it |
 | DB row is tampered during list or between list and read | Fail the entire request after validation; return no renderer-consumable filesystem path |
-| Startup or storage-root switch | Grant no Image Gen asset scope; old roots remain unauthorized |
+| Startup or storage-root switch | Grant no Image Gen asset scope; historical roots are accessible only through validated backend commands |
 
 ### 5. Good / Base / Bad Cases
 
@@ -134,6 +162,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   Rust opens the dialog and writes only the returned `.png` path.
 - Base: a persisted task under `<canonical-root>/<task-id>` lists an opaque
   reference and reads through the backend normally when safe metadata names it.
+- Good: after switching roots, a new task is written under the new root while
+  an old opaque reference still reads and cleanup can remove it safely.
 - Bad: validate the first URL, let reqwest auto-follow, then inspect the final
   URL after a private redirect has already been contacted.
 - Bad: let the renderer obtain an arbitrary path and pass it to a generic Rust
@@ -142,6 +172,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   DB path to `convertFileSrc`, or authorize DB directories in the asset scope.
 - Bad: delete valid task directories while iterating, then discover a later
   tampered row and leave DB/filesystem state partially advanced.
+- Bad: write with `std::fs::write` to a predictable existing name, trust a DB
+  parent as a new root, or paginate a two-key sort with only a timestamp.
 
 ### 6. Tests Required
 
@@ -153,6 +185,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 - Unit-test multipart overlong Base64, too many files/fields, metadata lengths,
   exact aggregate boundaries and checked overflow. Prove invalid input produces
   no decode/form/send side effect.
+- Pair an invalid MIME with a large invalid Base64 payload and assert the MIME
+  error occurs before decode; keep a normal multipart round-trip regression.
 - Use `SYNTHETIC_SECRET` in query/fragment and reqwest error paths; assert it is
   absent from console/request logs and returned errors while safe diagnostics
   remain.
@@ -166,6 +200,15 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   tampering between list and read. Any invalid selected row fails the list.
 - Prove clear/cleanup validate all selected rows before deleting a valid task,
   and prove failed validation leaves DB rows intact.
+- Test exclusive task-directory/file creation with preexisting ordinary files,
+  hardlinks and platform-gated symlinks/reparse points; external bytes and DB
+  row count remain unchanged. Test DB-failure rollback.
+- Test settings v52 compatibility and a root switch with history: list/read/
+  stats/delete/cleanup span old and new roots, while a DB-only outside root is
+  rejected. The controller retains hydrated old tasks after switching.
+- Insert more than one page of identical timestamps; concatenate all opaque-
+  cursor pages and assert exact sorted IDs once each. Test every invalid cursor
+  class and frontend append with the backend cursor.
 - Test that startup and successful/failed root switches grant no Image Gen
   asset scope, that an old root cannot render after switching, and normal
   history still renders through backend reads.
@@ -199,9 +242,10 @@ URL hop -> validate -> resolve -> reject any unsafe IP -> pin addresses
 suggested filename + MIME + Base64 -> validate -> native save dialog
                                    -> validate authorized extension -> write
 
-settings storage root -> canonical trusted root
-DB task/file metadata -> validate whole row -> opaque reference
+settings current + historical roots -> canonical trusted-root allowlist
+DB task/file metadata -> validate whole row against allowlist -> opaque reference
 opaque reference -> re-query/revalidate -> bounded backend Base64 read
+page cursor -> backend decode/version/id validation -> two-key SQL seek
 asset scope -> no Image Gen filesystem authority
 ```
 

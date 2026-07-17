@@ -1220,6 +1220,74 @@ fn write_skill_files_rejects_file_directory_conflicts_in_both_orders() {
 }
 
 #[test]
+fn write_skill_files_rejects_generated_marker_conflicts_before_creating_dir() {
+    for (case, relative_path) in [
+        ("managed", SKILL_MANAGED_MARKER_FILE),
+        ("source", SKILL_SOURCE_MARKER_FILE),
+        ("managed-child", ".aio-coding-hub.managed/payload"),
+        ("source-child", ".aio-coding-hub.source.json/payload"),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join(case);
+        let files = vec![SkillFileExport {
+            relative_path: relative_path.to_string(),
+            content_base64: BASE64_STANDARD.encode(b"payload"),
+        }];
+        let error = write_skill_files_to_dir(&target, &files, None)
+            .expect_err("generated marker conflict must fail");
+        assert!(error.to_string().contains("reserved skill marker path"));
+        assert!(!target.exists());
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn write_skill_files_rejects_windows_case_aliases_in_both_orders() {
+    for (case, paths) in [
+        ("canonical-first", ["SKILL.md", "skill.MD"]),
+        ("alias-first", ["skill.MD", "SKILL.md"]),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join(case);
+        let files = paths
+            .into_iter()
+            .map(|relative_path| SkillFileExport {
+                relative_path: relative_path.to_string(),
+                content_base64: BASE64_STANDARD.encode(b"x"),
+            })
+            .collect::<Vec<_>>();
+        let error = write_skill_files_to_dir(&target, &files, None)
+            .expect_err("Windows case aliases must conflict");
+        assert!(error.to_string().contains("duplicate skill file path"));
+        assert!(!target.exists());
+    }
+}
+
+#[test]
+fn skill_md_case_alias_uses_platform_specific_budget() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target = temp.path().join("skill-target");
+    let files = vec![SkillFileExport {
+        relative_path: "skill.MD".to_string(),
+        content_base64: BASE64_STANDARD.encode(vec![b'x'; CONFIG_SKILL_MD_MAX_BYTES + 1]),
+    }];
+
+    #[cfg(windows)]
+    {
+        let error = write_skill_files_to_dir(&target, &files, None)
+            .expect_err("Windows SKILL.md alias must use dedicated budget");
+        assert!(error.to_string().contains("SKILL.md too large"));
+        assert!(!target.exists());
+    }
+    #[cfg(not(windows))]
+    {
+        write_skill_files_to_dir(&target, &files, None)
+            .expect("case-distinct non-Windows filename uses ordinary file budget");
+        assert!(target.join("skill.MD").is_file());
+    }
+}
+
+#[test]
 fn skill_md_and_source_metadata_use_dedicated_prewrite_budgets() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source = temp.path().join("source");
