@@ -1,7 +1,6 @@
 //! Skill file system utilities for config export/import.
 
 use crate::shared::error::AppResult;
-use crate::shared::fs::{read_file_with_max_len, read_optional_file_with_max_len};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -41,45 +40,40 @@ pub(super) fn cli_skills_root<R: tauri::Runtime>(
     Ok(PathBuf::from(paths.cli_dir))
 }
 
+// Import rollback moves local directories as path objects; export uses
+// `SkillExportRoot` below so no path returned here becomes read authority.
 pub(super) fn local_skill_dirs(root: &Path) -> AppResult<Vec<PathBuf>> {
     let mut items = Vec::new();
     if !root.exists() {
         return Ok(items);
     }
-
-    let entries = std::fs::read_dir(root)
-        .map_err(|e| format!("failed to read dir {}: {e}", root.display()))?;
-    for entry in entries {
+    for entry in std::fs::read_dir(root)
+        .map_err(|e| format!("failed to read dir {}: {e}", root.display()))?
+    {
         let entry =
             entry.map_err(|e| format!("failed to read dir entry {}: {e}", root.display()))?;
-        let path = entry.path();
         let file_type = entry
             .file_type()
-            .map_err(|e| format!("failed to read file type {}: {e}", path.display()))?;
-        if is_local_skill_dir(&path, &file_type) {
-            items.push(path);
+            .map_err(|e| format!("failed to read file type {}: {e}", entry.path().display()))?;
+        if file_type.is_dir()
+            && entry.path().join("SKILL.md").exists()
+            && !entry.path().join(SKILL_MANAGED_MARKER_FILE).exists()
+        {
+            items.push(entry.path());
         }
     }
     items.sort();
     Ok(items)
 }
 
-fn is_local_skill_dir(path: &Path, file_type: &std::fs::FileType) -> bool {
-    file_type.is_dir()
-        && path.join("SKILL.md").exists()
-        && !path.join(SKILL_MANAGED_MARKER_FILE).exists()
-}
-
+#[cfg(test)]
 pub(super) fn export_skill_dir_files(
     dir: &Path,
     skip_source_marker: bool,
 ) -> AppResult<Vec<SkillFileExport>> {
     let mut collector = SkillFileCollector::default();
     let mut visited_dirs = HashSet::new();
-    let canonical_root = dir
-        .canonicalize()
-        .map_err(|e| format!("failed to resolve {}: {e}", dir.display()))?;
-    let root = ExportDir::open_root(&canonical_root)?;
+    let root = ExportDir::open_root(dir)?;
     visited_dirs.insert(root.identity()?);
     collect_skill_dir_files(
         &root,
@@ -89,6 +83,127 @@ pub(super) fn export_skill_dir_files(
         skip_source_marker,
     )?;
     Ok(collector.files)
+}
+
+pub(super) struct SkillExportRoot {
+    dir: ExportDir,
+}
+
+pub(super) struct CapturedSkillDir {
+    dir: ExportDir,
+    dir_name: String,
+}
+
+impl SkillExportRoot {
+    pub(super) fn open_if_exists(path: &Path) -> AppResult<Option<Self>> {
+        match std::fs::symlink_metadata(path) {
+            Ok(_) => Ok(Some(Self {
+                dir: ExportDir::open_root(path)?,
+            })),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(format!(
+                "SEC_INVALID_INPUT: skill export parent root cannot be inspected: {error}"
+            )
+            .into()),
+        }
+    }
+
+    pub(super) fn capture_named(&self, name: &str) -> AppResult<Option<CapturedSkillDir>> {
+        let entries = self.entries_after_test_hook()?;
+        let Some(entry) = entries
+            .into_iter()
+            .find(|entry| platform_path_component_eq(&entry.name.to_string_lossy(), name))
+        else {
+            return Ok(None);
+        };
+        if entry.is_link || !entry.is_directory {
+            return Err(
+                "SEC_INVALID_INPUT: skill export top-level entry is not a trusted directory"
+                    .to_string()
+                    .into(),
+            );
+        }
+        Ok(Some(self.capture_entry(entry)?))
+    }
+
+    pub(super) fn capture_local_skills(&self) -> AppResult<Vec<CapturedSkillDir>> {
+        let mut entries = self.entries_after_test_hook()?;
+        entries.sort_by(|left, right| left.name.cmp(&right.name));
+        let mut skills = Vec::new();
+        for entry in entries {
+            // Managed Skill links are intentionally not local export authority.
+            if entry.is_link || !entry.is_directory {
+                continue;
+            }
+            skills.push(self.capture_entry(entry)?);
+        }
+        Ok(skills)
+    }
+
+    fn entries_after_test_hook(&self) -> AppResult<Vec<ExportEntry>> {
+        let entries = self.dir.entries()?;
+        #[cfg(test)]
+        run_after_skill_export_enumeration_test_hook();
+        Ok(entries)
+    }
+
+    fn capture_entry(&self, entry: ExportEntry) -> AppResult<CapturedSkillDir> {
+        let dir_name = entry.name.to_str().map(str::to_string).ok_or_else(|| {
+            "SKILL_EXPORT_INVALID_DIR_NAME: local skill dir name invalid".to_string()
+        })?;
+        Ok(CapturedSkillDir {
+            dir: self.dir.open_dir(&entry.name, entry.identity)?,
+            dir_name,
+        })
+    }
+}
+
+impl CapturedSkillDir {
+    pub(super) fn dir_name(&self) -> &str {
+        &self.dir_name
+    }
+
+    pub(super) fn export_files(&self, skip_source_marker: bool) -> AppResult<Vec<SkillFileExport>> {
+        let mut collector = SkillFileCollector::default();
+        let mut visited_dirs = HashSet::new();
+        visited_dirs.insert(self.dir.identity()?);
+        collect_skill_dir_files(
+            &self.dir,
+            Path::new(""),
+            &mut collector,
+            &mut visited_dirs,
+            skip_source_marker,
+        )?;
+        Ok(collector.files)
+    }
+
+    pub(super) fn export_local_files(
+        &self,
+        skip_source_marker: bool,
+    ) -> AppResult<Option<Vec<SkillFileExport>>> {
+        let entries = self.dir.entries()?;
+        let has_skill_md = entries
+            .iter()
+            .any(|entry| platform_path_component_eq(&entry.name.to_string_lossy(), "SKILL.md"));
+        let has_managed_marker = entries.iter().any(|entry| {
+            platform_path_component_eq(&entry.name.to_string_lossy(), SKILL_MANAGED_MARKER_FILE)
+        });
+        if !has_skill_md || has_managed_marker {
+            return Ok(None);
+        }
+        let mut collector = SkillFileCollector::default();
+        let mut visited_dirs = HashSet::new();
+        visited_dirs.insert(self.dir.identity()?);
+        collect_skill_dir_entries(
+            &self.dir,
+            Path::new(""),
+            entries,
+            &mut collector,
+            &mut visited_dirs,
+            skip_source_marker,
+        )?;
+        Ok(Some(collector.files))
+    }
 }
 
 #[derive(Default)]
@@ -109,6 +224,8 @@ impl SkillFileCollector {
         let relative_path = relative_path_string(relative_path)?;
         let file_limit = if is_skill_md_path(Path::new(&relative_path)) {
             CONFIG_SKILL_MD_MAX_BYTES
+        } else if platform_path_component_eq(&relative_path, SKILL_SOURCE_MARKER_FILE) {
+            CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES
         } else {
             CONFIG_SKILL_FILE_MAX_BYTES
         };
@@ -164,6 +281,24 @@ fn collect_skill_dir_files(
     #[cfg(test)]
     run_after_skill_export_enumeration_test_hook();
 
+    collect_skill_dir_entries(
+        dir,
+        relative_root,
+        entries,
+        files,
+        visited_dirs,
+        skip_source_marker,
+    )
+}
+
+fn collect_skill_dir_entries(
+    dir: &ExportDir,
+    relative_root: &Path,
+    entries: Vec<ExportEntry>,
+    files: &mut SkillFileCollector,
+    visited_dirs: &mut HashSet<ExportIdentity>,
+    skip_source_marker: bool,
+) -> AppResult<()> {
     for entry in entries {
         let name = entry.name;
         let name_str = name.to_string_lossy();
@@ -398,12 +533,41 @@ fn open_export_root(path: &Path) -> AppResult<std::fs::File> {
                 .into(),
         );
     }
-    std::fs::OpenOptions::new()
+    let handle = std::fs::OpenOptions::new()
         .read(true)
         .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
         .open(path)
-        .map_err(|e| format!("SEC_INVALID_INPUT: skill export root cannot be opened: {e}").into())
+        .map_err(|e| format!("SEC_INVALID_INPUT: skill export root cannot be opened: {e}"))?;
+    ensure_windows_export_directory_handle(&handle)?;
+    Ok(handle)
+}
+
+#[cfg(windows)]
+fn ensure_windows_export_directory_handle(file: &std::fs::File) -> AppResult<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
+        return Err(
+            "SEC_INVALID_INPUT: skill export root handle cannot be inspected"
+                .to_string()
+                .into(),
+        );
+    }
+    let attributes = unsafe { info.assume_init() }.dwFileAttributes;
+    if attributes & FILE_ATTRIBUTE_DIRECTORY == 0 || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(
+            "SEC_INVALID_INPUT: skill export root handle is not a trusted directory"
+                .to_string()
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 #[cfg(windows)]
@@ -836,7 +1000,7 @@ fn is_skill_md_path(path: &Path) -> bool {
         .is_ok_and(|path| path == vec![normalize_platform_path_component("SKILL.md")])
 }
 
-fn platform_path_component_eq(left: &str, right: &str) -> bool {
+pub(super) fn platform_path_component_eq(left: &str, right: &str) -> bool {
     normalize_platform_path_component(left) == normalize_platform_path_component(right)
 }
 
@@ -953,22 +1117,30 @@ pub(super) fn build_local_skill_source_metadata(
     }
 }
 
-pub(super) fn read_local_skill_source_metadata(
-    path: &Path,
+pub(super) fn read_local_skill_source_metadata_bytes(
+    bytes: Option<&[u8]>,
 ) -> AppResult<Option<SkillSourceMetadataFile>> {
-    let source_path = path.join(SKILL_SOURCE_MARKER_FILE);
-    let Some(bytes) =
-        read_optional_file_with_max_len(&source_path, CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES)?
-    else {
+    let Some(bytes) = bytes else {
         return Ok(None);
     };
-    let metadata = serde_json::from_slice::<SkillSourceMetadataFile>(&bytes)
-        .map_err(|e| format!("failed to parse {}: {e}", source_path.display()))?;
+    if bytes.len() > CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: skill source metadata too large (max {CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES} bytes)"
+        )
+        .into());
+    }
+    let metadata = serde_json::from_slice::<SkillSourceMetadataFile>(bytes)
+        .map_err(|e| format!("failed to parse {SKILL_SOURCE_MARKER_FILE}: {e}"))?;
     Ok(Some(metadata))
 }
 
-pub(super) fn parse_skill_md_metadata(skill_md_path: &Path) -> AppResult<(String, String)> {
-    let bytes = read_file_with_max_len(skill_md_path, CONFIG_SKILL_MD_MAX_BYTES)?;
+pub(super) fn parse_skill_md_metadata_bytes(bytes: Vec<u8>) -> AppResult<(String, String)> {
+    if bytes.len() > CONFIG_SKILL_MD_MAX_BYTES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: skill file too large (max {CONFIG_SKILL_MD_MAX_BYTES} bytes)"
+        )
+        .into());
+    }
     let text = String::from_utf8(bytes)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid UTF-8 in SKILL.md: {e}"))?;
     let text = text.trim_start();

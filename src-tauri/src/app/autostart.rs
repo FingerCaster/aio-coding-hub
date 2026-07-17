@@ -19,6 +19,8 @@ fn sync_auto_start<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     enable_auto_start: bool,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    AUTO_START_SYNC_TEST_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     use tauri::Manager;
     use tauri_plugin_autostart::ManagerExt;
 
@@ -46,7 +48,23 @@ fn sync_auto_start<R: tauri::Runtime>(
     _app: &tauri::AppHandle<R>,
     _enable_auto_start: bool,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    AUTO_START_SYNC_TEST_CALLS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
     Ok(())
+}
+
+#[cfg(test)]
+static AUTO_START_SYNC_TEST_CALLS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+pub(crate) fn reset_auto_start_sync_test_calls() {
+    AUTO_START_SYNC_TEST_CALLS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn auto_start_sync_test_calls() -> usize {
+    AUTO_START_SYNC_TEST_CALLS.load(std::sync::atomic::Ordering::SeqCst)
 }
 
 pub(crate) fn reconcile_auto_start<R: tauri::Runtime>(

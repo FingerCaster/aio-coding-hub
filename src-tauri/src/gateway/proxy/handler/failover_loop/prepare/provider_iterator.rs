@@ -50,6 +50,7 @@ pub(super) struct PreparedProvider {
 /// Counters accumulated across all providers in the iteration loop.
 pub(super) struct IterationCounters {
     pub(super) providers_tried: usize,
+    ready_limit: usize,
     pub(super) earliest_available_unix: Option<i64>,
     pub(super) skipped_open: usize,
     pub(super) skipped_cooldown: usize,
@@ -57,9 +58,10 @@ pub(super) struct IterationCounters {
 }
 
 impl IterationCounters {
-    pub(super) fn new() -> Self {
+    pub(super) fn new(ready_limit: usize) -> Self {
         Self {
             providers_tried: 0,
+            ready_limit,
             earliest_available_unix: None,
             skipped_open: 0,
             skipped_cooldown: 0,
@@ -70,6 +72,7 @@ impl IterationCounters {
 
 pub(super) enum PreparationOutcome {
     Ready(Box<PreparedProvider>),
+    ReadyLimitReached,
     Skipped,
     Terminal(SkipReason),
 }
@@ -329,6 +332,9 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     }
 
     let circuit_snapshot = gate_allow.circuit_after;
+    if counters.providers_tried >= counters.ready_limit {
+        return PreparationOutcome::ReadyLimitReached;
+    }
     counters.providers_tried = counters.providers_tried.saturating_add(1);
     let provider_index = counters.providers_tried as u32;
     let session_reuse = match input.session_bound_provider_id {

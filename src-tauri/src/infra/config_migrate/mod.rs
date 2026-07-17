@@ -362,13 +362,8 @@ pub fn config_import<R: tauri::Runtime>(
         None
     };
 
-    settings_to_write.auto_start = crate::app::autostart::reconcile_auto_start(
-        app,
-        previous_settings.auto_start,
-        settings_to_write.auto_start,
-        true,
-    );
-
+    #[cfg(test)]
+    run_before_config_import_settings_cas_test_hook();
     let settings_committed =
         settings::compare_and_swap(app, &previous_settings, &settings_to_write);
     if !matches!(settings_committed, Ok((_, true))) {
@@ -388,6 +383,47 @@ pub fn config_import<R: tauri::Runtime>(
             ),
             Err(error) => Err(error),
         };
+    }
+
+    let desired_auto_start = settings_to_write.auto_start;
+    let effective_auto_start = crate::app::autostart::reconcile_auto_start(
+        app,
+        previous_settings.auto_start,
+        desired_auto_start,
+        true,
+    );
+    if effective_auto_start != desired_auto_start {
+        let committed_settings = settings_to_write.clone();
+        settings_to_write.auto_start = effective_auto_start;
+        match settings::compare_and_swap(app, &committed_settings, &settings_to_write) {
+            Ok((_, true)) => {}
+            result => {
+                if let Ok(winner) = settings::read(app) {
+                    let _ = crate::app::autostart::reconcile_auto_start(
+                        app,
+                        effective_auto_start,
+                        winner.auto_start,
+                        true,
+                    );
+                }
+                rollback::rollback_after_failed_import(
+                    app,
+                    db,
+                    &previous_settings,
+                    None,
+                    runtime_backups,
+                    skill_fs_guard.as_mut(),
+                );
+                return match result {
+                    Ok(_) => Err(
+                        "SETTINGS_CONCURRENT_UPDATE: settings changed during config import autostart reconciliation"
+                            .to_string()
+                            .into(),
+                    ),
+                    Err(error) => Err(error),
+                };
+            }
+        }
     }
 
     if let Err(err) = rollback::sync_all_cli_runtime(app, &tx) {
@@ -422,4 +458,26 @@ pub fn config_import<R: tauri::Runtime>(
         .set_tray_enabled(settings_to_write.tray_enabled);
 
     Ok(result)
+}
+
+#[cfg(test)]
+type BeforeConfigImportSettingsCasHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_CONFIG_IMPORT_SETTINGS_CAS_TEST_HOOK: std::cell::RefCell<Option<BeforeConfigImportSettingsCasHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_before_config_import_settings_cas_test_hook(hook: BeforeConfigImportSettingsCasHook) {
+    BEFORE_CONFIG_IMPORT_SETTINGS_CAS_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_config_import_settings_cas_test_hook() {
+    let hook =
+        BEFORE_CONFIG_IMPORT_SETTINGS_CAS_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
 }

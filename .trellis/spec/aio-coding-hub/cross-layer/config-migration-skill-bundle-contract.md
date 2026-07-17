@@ -29,6 +29,7 @@ The Skill filesystem entry points in
 `src-tauri/src/infra/config_migrate/skill_fs.rs` are:
 
 ```rust
+#[cfg(test)]
 pub(super) fn export_skill_dir_files(
     dir: &Path,
     skip_source_marker: bool,
@@ -39,6 +40,9 @@ pub(super) fn write_skill_files_to_dir(
     files: &[SkillFileExport],
     source_metadata: Option<&SkillSourceMetadataFile>,
 ) -> AppResult<()>;
+
+pub(super) struct SkillExportRoot { /* trusted parent directory handle */ }
+pub(super) struct CapturedSkillDir { /* relative/no-follow child handle */ }
 ```
 
 The serialized file payload remains:
@@ -116,6 +120,15 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   symlink escapes, Windows junction/reparse points and special files fail closed.
   Visited identities may skip a symlink directory cycle, but no content is read
   through the symlink path.
+- Production installed/local export opens the trusted SSOT/CLI parent root once,
+  enumerates top-level entries from that handle, and opens each Skill child
+  relative/no-follow with identity verification. `is_dir`, `exists`, or
+  `canonicalize` results never become top-level read authority. A top-level
+  symlink/junction is rejected or ignored as non-local authority, and a
+  post-enumeration replacement fails closed.
+- Local `SKILL.md` and source metadata are parsed from the exact bytes collected
+  through the captured Skill handle in the same export pass. Do not reopen either
+  file by path after classifying the directory.
 - Export authority is not content policy. Every byte from a regular single-link
   file proven inside the Skill root is exported byte-for-byte, including
   credential-looking or `SYNTHETIC_SECRET` test content. Do not add sensitive-word
@@ -149,6 +162,9 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
 | Export encounters a special file or a non-UTF-8 path | Reject explicitly |
 | Enumerated file is replaced by a same-name outside hardlink | Reject on relative-open identity/link-count check; export no outside bytes |
 | Enumerated directory is replaced by a symlink/junction | Reject on relative no-follow open/identity check; do not traverse outside |
+| Installed top-level Skill is a symlink/junction | Reject; export no target bytes |
+| Local top-level entry is a symlink/junction | Treat it as no local Skill authority; export no target bytes |
+| Installed/local top-level directory is replaced after parent-handle enumeration | Reject on child identity/no-follow open |
 | Root-owned file contains sensitive-looking arbitrary bytes | Round-trip every byte; perform no content filtering |
 | Import contains 257 files | Reject before target-directory creation |
 | Import path is duplicate, empty, traversal, rooted/absolute, or over 512 characters | Reject before target-directory creation |
@@ -211,6 +227,8 @@ Keep focused regressions in
   that expose those filesystem types.
 - Deterministic post-enumeration file/directory replacement barriers, including
   Windows hardlink/junction, plus a root-owned sensitive-looking binary round trip.
+- Real `config_export` regressions for installed and local top-level
+  symlink/junction and post-parent-enumeration replacement.
 - v1/v2 compatibility, installed/local restoration, dedicated metadata and
   `SKILL.md` bounds, and the 64 MiB import-file read boundary.
 - Import/rollback `skill_key` traversal and Windows drive/UNC forms, proving no

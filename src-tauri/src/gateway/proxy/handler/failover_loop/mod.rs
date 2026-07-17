@@ -301,7 +301,7 @@ where
     run_state.active_requested_model = input.requested_model.clone();
 
     let max_providers_to_try = (input.max_providers_to_try as usize).max(1);
-    let mut counters = provider_iterator::IterationCounters::new();
+    let mut counters = provider_iterator::IterationCounters::new(max_providers_to_try);
     let anthropic_stream_requested =
         original_anthropic_stream_requested(input.introspection_json.as_ref())
             || stream_flag_from_raw_body(&introspection_body);
@@ -309,10 +309,6 @@ where
     let providers: Vec<_> = input.providers.clone();
 
     for provider in providers.iter() {
-        if counters.providers_tried >= max_providers_to_try {
-            break;
-        }
-
         let preparation = provider_iterator::prepare_provider(
             ctx,
             &input,
@@ -326,6 +322,7 @@ where
 
         let mut prepared = match preparation {
             provider_iterator::PreparationOutcome::Ready(p) => *p,
+            provider_iterator::PreparationOutcome::ReadyLimitReached => break,
             provider_iterator::PreparationOutcome::Skipped => continue,
             provider_iterator::PreparationOutcome::Terminal(reason) => {
                 let owned = finalize_owned_from_input(&input);

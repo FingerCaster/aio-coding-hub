@@ -95,17 +95,44 @@ function sanitizeLogArgs(value: Record<string, unknown> | undefined) {
 function generatedCommandError(cmd: string, error: unknown) {
   if (error instanceof Error) return error;
   const message = typeof error === "string" ? error : formatUnknownError(error);
-  return new Error(message || `IPC_ERROR_RESULT: ${cmd}`);
+  const wrapped = new Error(message || `IPC_ERROR_RESULT: ${cmd}`) as Error & { cause?: unknown };
+  wrapped.cause = error;
+  return wrapped;
 }
 
-function sanitizeLogError(error: unknown): string {
-  return formatUnknownError(error)
+function sanitizeSensitiveErrorText(value: string): string {
+  return value
     .replace(/SYNTHETIC_SECRET/gi, "[REDACTED]")
     .replace(
-      /(flow_?id|device_?code|user_?code|code_?verifier|nonce)\s*[:=]\s*\S+/gi,
+      /(["']?(?:flow_?id|device_?code|user_?code|code_?verifier|nonce|[a-z0-9_-]*capability[a-z0-9_-]*)["']?\s*:\s*["'])([^"']*)(["'])/gi,
+      "$1[REDACTED]$3"
+    )
+    .replace(
+      /(flow_?id|device_?code|user_?code|code_?verifier|nonce|[a-z0-9_-]*capability[a-z0-9_-]*)\s*[:=]\s*\S+/gi,
       "$1=[REDACTED]"
     )
     .slice(0, LOG_PAYLOAD_MAX_STRING_CHARS);
+}
+
+function sanitizeLogError(error: unknown): string {
+  let source = error;
+  if (error instanceof Error) {
+    source = (error as Error & { cause?: unknown }).cause ?? error.message;
+  }
+  if (typeof source === "string") {
+    const stringSource = source;
+    try {
+      source = JSON.parse(stringSource) as unknown;
+    } catch {
+      return sanitizeSensitiveErrorText(stringSource);
+    }
+  }
+  try {
+    const redacted = redactLogPayload(source, new WeakSet(), 0);
+    return sanitizeSensitiveErrorText(formatUnknownError(redacted));
+  } catch {
+    return "LOG_ERROR_REDACTION_FAILED";
+  }
 }
 
 function isGeneratedCommandResult<T>(value: unknown): value is GeneratedCommandResult<T> {

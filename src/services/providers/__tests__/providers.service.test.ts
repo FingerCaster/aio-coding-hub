@@ -671,10 +671,10 @@ describe("services/providers/providers", () => {
   });
 
   it("device-flow poll and cancel failures never persist the bearer flow id", async () => {
-    const capability = "SYNTHETIC_SECRET_FLOW_CAPABILITY";
+    const capability = `cap_${crypto.randomUUID().replace(/-/g, "")}`;
     vi.mocked(commands.providerOauthPollDeviceFlow).mockResolvedValueOnce({
       status: "error",
-      error: `flow_id=${capability}`,
+      error: { nested: { flow_id: capability } } as unknown as string,
     });
     await expect(providerOAuthPollDeviceFlow(capability)).rejects.toThrow();
     vi.mocked(commands.providerOauthCancelDeviceFlow).mockResolvedValueOnce({
@@ -685,7 +685,7 @@ describe("services/providers/providers", () => {
 
     const logged = JSON.stringify(vi.mocked(logToConsole).mock.calls.slice(-2));
     expect(logged).not.toContain(capability);
-    expect(logged).not.toContain("SYNTHETIC_SECRET");
+    expect(logged.match(/\[REDACTED\]/g)?.length).toBeGreaterThanOrEqual(2);
   });
 
   it("providerOAuthRefresh uses generated ipc", async () => {

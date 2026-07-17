@@ -48,10 +48,12 @@
 - [x] Child 5 was archived before starting the first final-review security child.
 - [x] Child 6 was implemented, checked, committed and archived before child 7 started.
 - [x] Finish child 7, then verify commit/archive order is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7.
-- [ ] Finish child 8 after implementing explicit provider-selection decision A and full gates, then verify order
+- [x] Finish child 8 after implementing explicit provider-selection decision A and full gates, then verify order
       is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8.
-- [ ] Finish child 9 after closing round-4 findings and full gates, then verify order is exactly
+- [x] Finish child 9 after closing round-4 findings and full gates, then verify order is exactly
       1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9.
+- [ ] Finish child 10 after closing round-5 findings and full gates, then verify order is exactly
+      1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10.
 - [ ] Run the independent max read-only final review; do not archive the parent before it passes.
 - [x] Run `pnpm build`, `pnpm check:precommit:full`, `pnpm check:prepush` and any focused commands
       listed by child tasks that are not included in aggregate gates.
@@ -80,10 +82,18 @@
 
 ### 9. Fourth final-review findings
 
-- [x] Implement all nine findings under `.trellis/tasks/07-17-final-review-findings-round-4`, including the
+- [x] Implement all nine findings under `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-4`, including the
       explicit Skill root-authority-only product decision and template-synchronized executable specs.
 - [x] Run focused tests plus `check:precommit:full` and `check:prepush` while keeping this parent `in_progress`.
 - [x] Commit and archive child 9, record journal evidence, then return to independent Max read-only review.
+
+### 10. Fifth final-review findings
+
+- [ ] Close all six findings under `.trellis/tasks/07-17-final-review-findings-round-5`, including top-level
+      Skill handle authority, settings side-effect ownership, common-gate ordering, structured OAuth
+      sanitization and the Grok production continuation regression.
+- [ ] Run focused and full gates, commit and archive only child 10, then return to the next independent Max
+      read-only review while the parent remains `in_progress`.
 
 ## Stop And Rollback Rules
 

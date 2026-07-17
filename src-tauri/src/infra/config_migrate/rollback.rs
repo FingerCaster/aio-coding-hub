@@ -164,6 +164,15 @@ pub(super) fn rollback_after_failed_import<R: tauri::Runtime>(
 ) {
     if restore_settings_after_failed_import(app, previous_settings, committed_settings) {
         crate::app::autostart::restore_auto_start_best_effort(app, previous_settings.auto_start);
+    } else if let Some(committed_settings) = committed_settings {
+        if let Ok(winner) = settings::read(app) {
+            let _ = crate::app::autostart::reconcile_auto_start(
+                app,
+                committed_settings.auto_start,
+                winner.auto_start,
+                true,
+            );
+        }
     }
 
     if let Some(guard) = skill_fs_guard {

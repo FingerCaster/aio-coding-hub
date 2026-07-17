@@ -55,6 +55,9 @@ fn provider_max_attempts_for_request(
 - Codex model discovery is strict: its caller supplies a one-attempt provider
   limit and the strict path does not add OAuth, `previous_response_id`, or transient
   reservations. Discovery may still fail over and try another provider once.
+- Grok and Codex Responses requests reserve the same single internal
+  `previous_response_id` repair. A matching 400/404 removes the field and
+  retries once; the repair cannot recurse or create a third request.
 - The configured attempt limit is a user-facing baseline. Request-scoped internal
   recovery may raise the effective budget only through the explicit formula
   above; no other subsystem may add implicit capacity.
@@ -93,6 +96,10 @@ fn provider_max_attempts_for_request(
   no retry reason, regardless of the circuit threshold.
 - Route-test Codex model discovery for one call per provider, cross-provider
   failover, and health-neutral circuit snapshots.
+- Route-test a real Grok Responses request against a two-response upstream:
+  first continuation error, then success. Assert exactly two request bodies,
+  removal on the second, final response id/usage, TTFB, and the existing 20 MiB
+  non-SSE boundary.
 - Persistence and frontend cross-layer tests must keep the attempt range
   `1..=20`, circuit range `1..=50`, and total-attempt cap `100` aligned.
 - Run the full Rust suite after changing failover preparation. Focused budget

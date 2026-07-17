@@ -6,13 +6,15 @@ use std::collections::HashMap;
 
 use super::normalize_oauth_refresh_lead_seconds;
 use super::skill_fs::{
-    cli_skills_root, export_skill_dir_files, local_skill_dirs, parse_skill_md_metadata,
-    read_local_skill_source_metadata, ssot_skills_root,
+    cli_skills_root, parse_skill_md_metadata_bytes, read_local_skill_source_metadata_bytes,
+    ssot_skills_root, SkillExportRoot,
 };
 use super::{
     ImageGenConfigExport, InstalledSkillExport, LocalSkillExport, McpServerExport, PromptExport,
     ProviderExport, SkillRepoExport, SortModeExport, SortModeProviderExport, WorkspaceExport,
 };
+use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
+use base64::Engine as _;
 
 pub(super) fn query_exported_at(conn: &Connection) -> AppResult<String> {
     conn.query_row("SELECT strftime('%Y-%m-%dT%H:%M:%fZ', 'now')", [], |row| {
@@ -471,6 +473,7 @@ pub(super) fn export_installed_skills<R: tauri::Runtime>(
     conn: &Connection,
 ) -> AppResult<Vec<InstalledSkillExport>> {
     let ssot_root = ssot_skills_root(app)?;
+    let trusted_root = SkillExportRoot::open_if_exists(&ssot_root)?;
     let mut stmt = conn
         .prepare_cached(
             r#"
@@ -499,14 +502,18 @@ ORDER BY id ASC
         let (skill_id, skill_key, name, description, source_git_url, source_branch, source_subdir) =
             row.map_err(|e| db_err!("failed to read skill export row: {e}"))?;
         let skill_key = super::skill_fs::validate_installed_skill_key(&skill_key)?;
-        let skill_dir = ssot_root.join(&skill_key);
-        if !skill_dir.is_dir() {
+        let Some(skill_dir) = trusted_root
+            .as_ref()
+            .map(|root| root.capture_named(&skill_key))
+            .transpose()?
+            .flatten()
+        else {
             return Err(format!(
                 "SKILL_EXPORT_MISSING_SSOT_DIR: missing installed skill dir {}",
-                skill_dir.display()
+                ssot_root.join(&skill_key).display()
             )
             .into());
-        }
+        };
         items.push(InstalledSkillExport {
             skill_key,
             name,
@@ -515,7 +522,7 @@ ORDER BY id ASC
             source_branch,
             source_subdir,
             enabled_in_workspaces: export_enabled_skill_workspaces(conn, skill_id)?,
-            files: export_skill_dir_files(&skill_dir, true)?,
+            files: skill_dir.export_files(true)?,
         });
     }
     Ok(items)
@@ -558,23 +565,45 @@ pub(super) fn export_local_skills<R: tauri::Runtime>(
         crate::shared::cli_key::cli_keys_with(crate::shared::cli_key::CliCapability::Skills)
     {
         let root = cli_skills_root(app, cli_key)?;
-        if !root.exists() {
+        let Some(trusted_root) = SkillExportRoot::open_if_exists(&root)? else {
             continue;
-        }
+        };
 
-        for path in local_skill_dirs(&root)? {
-            let dir_name = path
-                .file_name()
-                .and_then(|value| value.to_str())
-                .map(str::to_string)
-                .ok_or_else(|| {
-                    format!(
-                        "SKILL_EXPORT_INVALID_DIR_NAME: local skill dir name invalid: {}",
-                        path.display()
+        for skill_dir in trusted_root.capture_local_skills()? {
+            let dir_name = skill_dir.dir_name().to_string();
+            let Some(mut files) = skill_dir.export_local_files(false)? else {
+                continue;
+            };
+            let skill_md = files
+                .iter()
+                .find(|file| {
+                    super::skill_fs::platform_path_component_eq(&file.relative_path, "SKILL.md")
+                })
+                .ok_or_else(|| "SEC_INVALID_INPUT: local Skill is missing SKILL.md".to_string())?;
+            let skill_md_bytes = BASE64_STANDARD
+                .decode(&skill_md.content_base64)
+                .map_err(|e| format!("SEC_INVALID_INPUT: invalid exported SKILL.md Base64: {e}"))?;
+            let source_bytes = files
+                .iter()
+                .find(|file| {
+                    super::skill_fs::platform_path_component_eq(
+                        &file.relative_path,
+                        super::SKILL_SOURCE_MARKER_FILE,
                     )
+                })
+                .map(|file| BASE64_STANDARD.decode(&file.content_base64))
+                .transpose()
+                .map_err(|e| {
+                    format!("SEC_INVALID_INPUT: invalid exported source metadata Base64: {e}")
                 })?;
-            let (name, description) = parse_skill_md_metadata(&path.join("SKILL.md"))?;
-            let source = read_local_skill_source_metadata(&path)?;
+            let (name, description) = parse_skill_md_metadata_bytes(skill_md_bytes)?;
+            let source = read_local_skill_source_metadata_bytes(source_bytes.as_deref())?;
+            files.retain(|file| {
+                !super::skill_fs::platform_path_component_eq(
+                    &file.relative_path,
+                    super::SKILL_SOURCE_MARKER_FILE,
+                )
+            });
 
             items.push(LocalSkillExport {
                 cli_key: cli_key.to_string(),
@@ -584,7 +613,7 @@ pub(super) fn export_local_skills<R: tauri::Runtime>(
                 source_git_url: source.as_ref().map(|value| value.source_git_url.clone()),
                 source_branch: source.as_ref().map(|value| value.source_branch.clone()),
                 source_subdir: source.as_ref().map(|value| value.source_subdir.clone()),
-                files: export_skill_dir_files(&path, true)?,
+                files,
             });
         }
     }

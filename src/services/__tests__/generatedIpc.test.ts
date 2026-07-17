@@ -49,6 +49,28 @@ describe("services/generatedIpc", () => {
     });
   });
 
+  it.each([
+    ["camel object", (capability: string) => ({ error: { flowId: capability } })],
+    ["snake object", (capability: string) => ({ nested: { flow_id: capability } })],
+    ["capability object", (capability: string) => ({ oauthCapability: capability })],
+    ["json string", (capability: string) => JSON.stringify({ flowId: capability })],
+    ["assignment string", (capability: string) => `flow_id=${capability}`],
+  ])("redacts random OAuth capability from %s errors", async (_case, makeError) => {
+    const capability = `cap_${crypto.randomUUID().replace(/-/g, "")}`;
+    await expect(
+      invokeGeneratedIpc({
+        title: "设备授权失败",
+        cmd: "provider_oauth_poll_device_flow",
+        invoke: async () => ({ status: "error", error: makeError(capability) }),
+      })
+    ).rejects.toThrow();
+
+    const calls = vi.mocked(logToConsole).mock.calls;
+    const logged = JSON.stringify(calls[calls.length - 1]);
+    expect(logged).not.toContain(capability);
+    expect(logged).toContain("[REDACTED]");
+  });
+
   it("redacts sensitive log args before forwarding to console logs", async () => {
     await expect(
       invokeGeneratedIpc({

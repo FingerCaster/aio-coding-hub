@@ -49,6 +49,9 @@ buildRequestRouteMeta({
 - `providers_tried` increments only after the common gates and preparation
   produce `Ready`. Therefore `failover_max_providers_to_try` caps Ready
   providers, not inspected candidates or skipped rows.
+- Reaching the Ready-provider cap does not bypass the authoritative gate for
+  later candidates. Later gate denials still emit skipped attempts/routes; the
+  loop stops only when a later candidate itself becomes `Ready` beyond the cap.
 - `attempt_count` is the number of persisted attempt rows. It may include
   retries and skipped rows, so it is not a provider count or switch count.
 - The projected `route` is the source of provider-hop display. Derive
@@ -76,6 +79,7 @@ buildRequestRouteMeta({
 | Candidate is gate-skipped | Zero upstream calls and no Ready-provider budget consumed |
 | All candidates are gate-skipped | HTTP 503 with every candidate in attempts and route |
 | Ready-provider cap is reached | Stop before the next Ready provider |
+| Two Ready providers consume cap 2, then a circuit-open candidate follows | Record the third skipped attempt/route; make no third upstream call |
 | Route has 3 hops and 4 attempt rows | 3 providers, 2 transitions, 4 attempts |
 | Upstream 401/403 body contains a credential-like value | Keep status and safe reason, but persist/log none of the body |
 
@@ -102,6 +106,8 @@ buildRequestRouteMeta({
   candidate, preserved session binding, and zero upstream calls.
 - Route-test that skipped candidates do not consume the Ready-provider cap,
   plus a boundary where the cap stops before the next Ready provider.
+- Route-test the reverse boundary `Ready, Ready, circuit-open/cooldown` at cap
+  2; the third candidate must remain visible as skipped.
 - Use `SYNTHETIC_SECRET` in 401 and 403 bodies; assert console output, attempt
   serialization, and error details omit it without changing failover/auth
   classification or the recorded status.

@@ -76,6 +76,11 @@ async fn read_device_json_value(
   bearer capability: poll/cancel adapters omit it from log args, and the generic
   sanitizer treats both spellings plus nonce, device/user code, code verifier
   and capability-named fields as sensitive.
+- Generic IPC logging recursively redacts structured arrays/objects by sensitive
+  key before stringification. Error wrappers retain the original structured
+  value for logging; JSON/object errors must not be flattened before this pass.
+  String fallback handles quoted JSON and assignment forms without relying on
+  a marker embedded in the capability value.
 
 ### 4. Validation & Error Matrix
 
@@ -94,6 +99,7 @@ async fn read_device_json_value(
 | Provider CLI/type changes while a poll is pending | Reject before persistence; write no token |
 | Poll supplies an unknown, expired, or stale flow id | Reject without a remote request or token write |
 | Poll/cancel IPC fails with a flow capability | Log command category only; redact/omit capability at adapter and sanitizer layers |
+| Error is an object/JSON string with `flowId`, `flow_id`, or capability-like key | Recursively redact before formatting; log none of the random value |
 | Valid success for the current flow | Persist the validated token set and complete exactly that flow |
 
 ### 5. Good / Base / Bad Cases
@@ -129,6 +135,8 @@ async fn read_device_json_value(
   absent from returned errors and captured logs.
 - Force generated poll/cancel failures with a synthetic flow capability and
   assert persisted console arguments contain neither the value nor marker.
+- Use a random capability containing no special marker in string, JSON and
+  nested object errors through the real poll/cancel frontend wrappers.
 - Run the focused OAuth command tests and the full Rust library suite after
   changing the shared bounded reader, flow ownership, or persistence behavior.
 

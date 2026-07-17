@@ -38,6 +38,12 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
   only those owned fields and only while they still equal that committed token.
 - Losing rollback CAS preserves the newer settings and must not restore old gateway runtime, CLI proxy, or
   OS autostart state.
+- Whole-import autostart reconciliation runs only after the settings CAS succeeds. If post-commit
+  reconciliation must correct the persisted value, that correction uses a second CAS; losing it resynchronizes
+  autostart from the canonical winner and never restores the loser's value.
+- Settings-service owned rollback has an explicit `Restored` / concurrent-winner / failure result. Only
+  `Restored` authorizes previous-runtime restoration. Other results keep or resynchronize runtime side effects
+  from the current canonical snapshot.
 - Searching production Rust sources for `settings::write(` must find no writer; fixture/seed calls are the
   only permitted exceptions.
 
@@ -49,6 +55,7 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 | Unrelated owner commits before lock acquisition | Preserve unrelated fields | No error |
 | Whole-import expected snapshot still matches | Replace atomically | CAS returns `true` |
 | Whole-import snapshot drifted | Preserve latest snapshot | `SETTINGS_CONCURRENT_UPDATE` / CAS `false` |
+| Whole-import CAS loses before autostart reconciliation | Preserve winner | No autostart side effect from loser |
 | External side effect fails and committed token still matches | Restore only owned fields | Report original operation failure |
 | External side effect fails after newer owned-field commit | Skip rollback and old runtime restoration | Preserve newer value; safe warning allowed |
 | Atomic settings persistence fails | Leave last durable snapshot authoritative | Return persistence error without partial file |
@@ -70,6 +77,8 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 - Put a hook after a production Grok commit and before forced inspection failure. Commit a newer Grok value and
   prove rollback preserves it and does not restore stale runtime state.
 - Cover whole-import CAS success and `SETTINGS_CONCURRENT_UPDATE` with deterministic interleaving.
+- Force runtime sync failure, commit a newer owner value before rollback, and prove the service syncs the
+  canonical winner rather than previous runtime. Count autostart calls in the real import CAS-loser path.
 - Search production Rust sources for `settings::write(` and allow only test fixtures/seeding.
 - Run settings, gateway, Grok, CLI proxy, config-migration focused suites and the full Rust library suite.
 

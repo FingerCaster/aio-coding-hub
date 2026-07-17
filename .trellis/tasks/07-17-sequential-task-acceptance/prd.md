@@ -3,7 +3,7 @@
 ## Goal
 
 在已完成的前置任务 `07-15-external-codex-retry-gateway` 之后，严格按
-`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 父任务最终审核` 修复、同步并关闭四轮终审发现。
+`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 父任务最终审核` 修复、同步并关闭五轮终审发现。
 每个子任务必须独立实现、检查、提交并归档，前一项未通过时不得
 启动后一项。
 
@@ -11,8 +11,9 @@
 
 - 当前分支为 `FingerCaster/sequential-task-acceptance`，基线为本地
   `main@2e43ee23572e69e34ce2c4cfb60481b58acf9298`。
-- 子任务 1-7 已依次实现、提交并归档；下一步为独立 max 只读终审。父任务保持
-  `in_progress`，最终 max 审核通过前不得归档。
+- 子任务 1-9 已依次实现、提交并归档；第五轮 Max 终审发现由子任务 10 当前修复。
+  子任务 10 完成并归档后才能启动下一次独立 Max 只读终审。父任务保持 `in_progress`，
+  最终 Max 审核通过前不得归档。
 - 用户已确认前置父任务完成，并授权规划校验通过后由主会话直接进入实现，无需再次
   请求规划确认。当前 max 调研终端只完成规划，主会话随后切换 `gpt-5.6-sol`
   medium 实现终端。
@@ -35,7 +36,8 @@
 7. `07-17-final-review-findings-round-2`
 8. `07-17-final-review-findings-round-3`
 9. `07-17-final-review-findings-round-4`
-10. 父任务最终 max 审核
+10. `07-17-final-review-findings-round-5`
+11. 父任务最终 max 审核
 
 每个子任务只有在前一任务的验收标准、质量检查、提交与归档全部完成后才可执行
 `task.py start`。父子关系不替代此依赖门槛。
@@ -52,7 +54,8 @@
 | 6 | `07-17-final-review-security-boundaries` | archived |
 | 7 | `07-17-final-review-findings-round-2` | archived; F1-F8 and evidence closure complete |
 | 8 | `07-17-final-review-findings-round-3` | archived; user selected common-gate option A |
-| 9 | `07-17-final-review-findings-round-4` | in progress; nine findings implemented and full gates passed |
+| 9 | `07-17-final-review-findings-round-4` | archived; nine findings and full gates complete |
+| 10 | `07-17-final-review-findings-round-5` | in progress; closes six findings before next Max review |
 
 ### R2. 多供应商失败链路
 
@@ -111,7 +114,7 @@
 
 ## Acceptance Criteria
 
-- [ ] 子任务严格按 1 至 8 顺序启动，且每一项启动前都有上一项已归档证据。
+- [x] 子任务严格按 1 至 9 顺序启动，且每一项启动前都有上一项已归档证据。
 - [ ] 子任务 1 的三供应商回归能区分实际请求、gate skip、同供应商 retry 和供应商切换，
       并保留现有网关契约。
 - [ ] 子任务 2 的乱序并发回归证明旧自动响应不能覆盖更新的手动刷新结果，且可用性测试
@@ -127,8 +130,10 @@
       max 只读终审给出最终结论。
 - [ ] 子任务 8 关闭第三轮 findings，并按用户决策 A 保留 provider selection common-gate skipped/
       continue/完整 503 语义；全部门禁通过后才重新进入独立 max 终审。
-- [ ] 子任务 9 关闭第四轮九项 findings，完成 handle-bound filesystem authority、settings owner/CAS、
+- [x] 子任务 9 关闭第四轮九项 findings，完成 handle-bound filesystem authority、settings owner/CAS、
       pre-IPC budgets、安全日志与 archive 自动校验，并保持 Skill 根内内容逐字节导出。
+- [ ] 子任务 10 关闭第五轮六项 findings，完成 Skill 顶层可信根、settings 副作用/CAS、方案 A
+      gate 顺序、OAuth capability 脱敏与 Grok continuation 生产回归，再进入独立 Max 终审。
 - [ ] 全过程没有并发子代理、未泄露密钥/PII、未向任何 remote 推送。
 
 ## Out of Scope

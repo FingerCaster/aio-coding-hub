@@ -226,9 +226,66 @@ fn config_import_without_image_gen_configs_keeps_existing_rows() {
     assert_eq!(api_key, "sk-keep-me");
 }
 
+#[test]
+fn config_import_cas_loser_preserves_winner_without_autostart_side_effect() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous settings");
+    let mut imported = previous.clone();
+    imported.auto_start = !previous.auto_start;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(1);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    let winner_retention = imported.log_retention_days.saturating_add(1);
+    let hook_app = app.clone();
+    set_before_config_import_settings_cas_test_hook(Box::new(move || {
+        settings::update(&hook_app, |winner| {
+            winner.log_retention_days = winner_retention;
+            Ok(())
+        })
+        .expect("commit concurrent winner");
+    }));
+    crate::app::autostart::reset_auto_start_sync_test_calls();
+
+    let error = match config_import(&app, &test_app.db, bundle) {
+        Ok(_) => panic!("concurrent update must reject import"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SETTINGS_CONCURRENT_UPDATE"));
+    let canonical = settings::read(&app).expect("canonical winner");
+    assert_eq!(canonical.log_retention_days, winner_retention);
+    assert_eq!(canonical.auto_start, previous.auto_start);
+    assert_eq!(crate::app::autostart::auto_start_sync_test_calls(), 0);
+}
+
 #[cfg(unix)]
 fn create_file_symlink(src: &Path, dst: &Path) {
     std::os::unix::fs::symlink(src, dst).expect("create symlink");
+}
+
+#[cfg(unix)]
+fn create_dir_link(src: &Path, dst: &Path) {
+    std::os::unix::fs::symlink(src, dst).expect("create directory symlink");
+}
+
+#[cfg(windows)]
+fn create_dir_link(src: &Path, dst: &Path) {
+    junction::create(src, dst).expect("create directory junction");
+}
+
+fn insert_installed_skill(conn: &Connection, skill_key: &str) {
+    conn.execute(
+        r#"
+INSERT INTO skills(
+  skill_key, name, normalized_name, description, source_git_url, source_branch, source_subdir,
+  created_at, updated_at
+) VALUES (?1, 'Handle Skill', 'handle-skill', 'Handle-bound export',
+          'https://example.test/repo.git', 'main', 'skills/handle', 1, 1)
+"#,
+        params![skill_key],
+    )
+    .expect("insert installed skill");
 }
 
 #[test]
@@ -944,6 +1001,118 @@ fn export_skill_dir_files_rejects_symlink_escape() {
     assert!(err
         .to_string()
         .contains("SKILL_EXPORT_BLOCKED_SYMLINK_ESCAPE"));
+}
+
+#[test]
+fn config_export_rejects_ssot_top_level_directory_link() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    write_skill_md(outside.path(), "Outside", "Must not be exported");
+    std::fs::write(
+        outside.path().join("opaque.bin"),
+        b"random-outside-capability-bytes",
+    )
+    .expect("outside bytes");
+
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    std::fs::create_dir_all(&ssot_root).expect("create ssot root");
+    create_dir_link(outside.path(), &ssot_root.join("linked-skill"));
+    let conn = test_app.db.open_connection().expect("open db");
+    insert_installed_skill(&conn, "linked-skill");
+
+    let error = match config_export(&app, &test_app.db) {
+        Ok(_) => panic!("top-level link must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("trusted directory"));
+}
+
+#[test]
+fn config_export_ignores_local_top_level_directory_link() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let cli_key =
+        crate::shared::cli_key::cli_keys_with(crate::shared::cli_key::CliCapability::Skills)
+            .next()
+            .expect("skills CLI");
+    let local_root = cli_skills_root(&app, cli_key).expect("local root");
+    std::fs::create_dir_all(&local_root).expect("create local root");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    write_skill_md(outside.path(), "Outside Local", "Must not be exported");
+    std::fs::write(
+        outside.path().join("opaque.bin"),
+        b"random-outside-capability-bytes",
+    )
+    .expect("outside bytes");
+    create_dir_link(outside.path(), &local_root.join("linked-local"));
+
+    let bundle = config_export(&app, &test_app.db).expect("linked local is not authority");
+    assert!(bundle
+        .local_skills
+        .expect("local skill payload")
+        .iter()
+        .all(|skill| skill.dir_name != "linked-local"));
+}
+
+#[test]
+fn config_export_rejects_ssot_top_level_rebind_after_enumeration() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    let skill_dir = ssot_root.join("raced-skill");
+    write_skill_md(&skill_dir, "Trusted", "Original directory");
+    let moved = ssot_root.join("raced-skill-original");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    write_skill_md(outside.path(), "Outside", "Must not be exported");
+    std::fs::write(outside.path().join("opaque.bin"), b"outside-race-bytes")
+        .expect("outside bytes");
+    let hook_skill = skill_dir.clone();
+    let hook_moved = moved.clone();
+    let hook_outside = outside.path().to_path_buf();
+    set_after_skill_export_enumeration_test_hook(Box::new(move || {
+        std::fs::rename(&hook_skill, &hook_moved).expect("move enumerated Skill");
+        create_dir_link(&hook_outside, &hook_skill);
+    }));
+    let conn = test_app.db.open_connection().expect("open db");
+    insert_installed_skill(&conn, "raced-skill");
+
+    let error = match config_export(&app, &test_app.db) {
+        Ok(_) => panic!("rebind must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+}
+
+#[test]
+fn config_export_rejects_local_top_level_rebind_after_enumeration() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let cli_key =
+        crate::shared::cli_key::cli_keys_with(crate::shared::cli_key::CliCapability::Skills)
+            .next()
+            .expect("skills CLI");
+    let local_root = cli_skills_root(&app, cli_key).expect("local root");
+    let skill_dir = local_root.join("raced-local");
+    write_skill_md(&skill_dir, "Trusted Local", "Original directory");
+    let moved = local_root.join("raced-local-original");
+    let outside = tempfile::tempdir().expect("outside tempdir");
+    write_skill_md(outside.path(), "Outside Local", "Must not be exported");
+    std::fs::write(outside.path().join("opaque.bin"), b"outside-race-bytes")
+        .expect("outside bytes");
+    let hook_skill = skill_dir.clone();
+    let hook_moved = moved.clone();
+    let hook_outside = outside.path().to_path_buf();
+    set_after_skill_export_enumeration_test_hook(Box::new(move || {
+        std::fs::rename(&hook_skill, &hook_moved).expect("move enumerated local Skill");
+        create_dir_link(&hook_outside, &hook_skill);
+    }));
+
+    let error = match config_export(&app, &test_app.db) {
+        Ok(_) => panic!("rebind must fail closed"),
+        Err(error) => error,
+    };
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
 }
 
 #[test]

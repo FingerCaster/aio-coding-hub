@@ -368,10 +368,14 @@ fn apply_sensitive_string_update(
     }
 }
 
-fn sync_runtime_side_effects(
-    app: &tauri::AppHandle,
+fn sync_runtime_side_effects<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     next_settings: &settings::AppSettings,
 ) -> Result<(), String> {
+    #[cfg(test)]
+    if let Some(error) = run_settings_runtime_sync_test_hook(next_settings) {
+        return Err(error);
+    }
     if let Some(resident) = app.try_state::<resident::ResidentState>() {
         resident.set_tray_enabled(next_settings.tray_enabled);
     }
@@ -472,6 +476,77 @@ fn restore_settings_service_owned_fields(
     latest.grok_proxy_preferences = grok_proxy_preferences;
 }
 
+enum OwnedSettingsRollback {
+    Restored,
+    ConcurrentWinner(Box<settings::AppSettings>),
+    Failed(String),
+}
+
+async fn rollback_settings_service_owned_fields<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    previous_settings: &settings::AppSettings,
+    committed_settings: &settings::AppSettings,
+) -> OwnedSettingsRollback {
+    let rollback_result = blocking::run("settings_set_rollback", {
+        let app = app.clone();
+        let previous_settings = previous_settings.clone();
+        let committed_settings = committed_settings.clone();
+        move || {
+            settings::update(&app, |latest| {
+                if settings_service_owned_equal(latest, &committed_settings) {
+                    restore_settings_service_owned_fields(latest, previous_settings.clone());
+                    Ok(true)
+                } else {
+                    Ok(false)
+                }
+            })
+        }
+    })
+    .await;
+
+    match rollback_result {
+        Ok((_, true)) => OwnedSettingsRollback::Restored,
+        Ok((winner, false)) => OwnedSettingsRollback::ConcurrentWinner(Box::new(winner)),
+        Err(error) => OwnedSettingsRollback::Failed(error.to_string()),
+    }
+}
+
+fn sync_canonical_runtime_after_lost_rollback<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    winner: Option<settings::AppSettings>,
+) {
+    let canonical = winner.or_else(|| settings::read(app).ok());
+    if let Some(canonical) = canonical {
+        if let Err(error) = sync_runtime_side_effects(app, &canonical) {
+            tracing::error!(
+                error = %error,
+                "settings update rollback lost ownership and canonical runtime resync failed"
+            );
+        }
+    }
+}
+
+async fn rollback_after_runtime_sync_failure<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    previous_settings: &settings::AppSettings,
+    final_settings: &settings::AppSettings,
+) {
+    #[cfg(test)]
+    run_before_settings_runtime_rollback_test_hook();
+    match rollback_settings_service_owned_fields(app, previous_settings, final_settings).await {
+        OwnedSettingsRollback::Restored => {
+            let _ = sync_runtime_side_effects(app, previous_settings);
+        }
+        OwnedSettingsRollback::ConcurrentWinner(winner) => {
+            sync_canonical_runtime_after_lost_rollback(app, Some(*winner));
+        }
+        OwnedSettingsRollback::Failed(error) => {
+            tracing::error!(error = %error, "settings update rollback failed");
+            sync_canonical_runtime_after_lost_rollback(app, None);
+        }
+    }
+}
+
 async fn restore_previous_runtime(
     app: &tauri::AppHandle,
     db_state: &DbInitState,
@@ -505,39 +580,24 @@ async fn rollback_settings_transaction(
     committed_settings: &settings::AppSettings,
     previous_gateway_status: &crate::gateway::GatewayStatus,
 ) -> crate::gateway::GatewayStatus {
-    let rollback_result = blocking::run("settings_set_rollback", {
-        let app = app.clone();
-        let previous_settings = previous_settings.clone();
-        let committed_settings = committed_settings.clone();
-        move || {
-            settings::update(&app, |latest| {
-                if settings_service_owned_equal(latest, &committed_settings) {
-                    restore_settings_service_owned_fields(latest, previous_settings.clone());
-                    Ok(true)
-                } else {
-                    Ok(false)
-                }
-            })
-        }
-    })
-    .await;
-
-    match rollback_result {
-        Ok((_, true)) => {
+    match rollback_settings_service_owned_fields(app, previous_settings, committed_settings).await {
+        OwnedSettingsRollback::Restored => {
             restore_previous_runtime(app, db_state, previous_settings, previous_gateway_status)
                 .await
         }
-        Ok((_, false)) => {
+        OwnedSettingsRollback::ConcurrentWinner(winner) => {
             tracing::warn!(
                 "settings update rollback skipped because owned fields changed concurrently"
             );
+            sync_canonical_runtime_after_lost_rollback(app, Some(*winner));
             current_gateway_status(app)
         }
-        Err(rollback_error) => {
+        OwnedSettingsRollback::Failed(rollback_error) => {
             tracing::error!(
                 error = %rollback_error,
                 "settings update rollback failed to restore settings.json"
             );
+            sync_canonical_runtime_after_lost_rollback(app, None);
             current_gateway_status(app)
         }
     }
@@ -985,19 +1045,7 @@ pub(crate) async fn settings_set_impl(
             ));
         }
 
-        let rollback_candidate = final_settings.clone();
-        let previous = previous_settings.clone();
-        let app_for_rollback = app.clone();
-        let _ = blocking::run("settings_set_rollback", move || {
-            settings::update(&app_for_rollback, |latest| {
-                if settings_service_owned_equal(latest, &rollback_candidate) {
-                    restore_settings_service_owned_fields(latest, previous.clone());
-                }
-                Ok(())
-            })
-        })
-        .await;
-        let _ = sync_runtime_side_effects(&app, &previous_settings);
+        rollback_after_runtime_sync_failure(&app, &previous_settings, &final_settings).await;
         return Err(format!("保存设置失败：{sync_error}"));
     }
 
@@ -1051,6 +1099,63 @@ pub(crate) async fn settings_set_impl(
             gateway_status,
         },
     })
+}
+
+#[cfg(test)]
+type BeforeSettingsRuntimeRollbackTestHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+fn before_settings_runtime_rollback_test_hook(
+) -> &'static std::sync::Mutex<Option<BeforeSettingsRuntimeRollbackTestHook>> {
+    static HOOK: std::sync::OnceLock<
+        std::sync::Mutex<Option<BeforeSettingsRuntimeRollbackTestHook>>,
+    > = std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_before_settings_runtime_rollback_test_hook(hook: BeforeSettingsRuntimeRollbackTestHook) {
+    *before_settings_runtime_rollback_test_hook()
+        .lock()
+        .expect("settings rollback test hook lock") = Some(hook);
+}
+
+#[cfg(test)]
+fn run_before_settings_runtime_rollback_test_hook() {
+    let hook = before_settings_runtime_rollback_test_hook()
+        .lock()
+        .expect("settings rollback test hook lock")
+        .take();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+type SettingsRuntimeSyncTestHook = Box<dyn FnMut(&settings::AppSettings) -> Option<String> + Send>;
+
+#[cfg(test)]
+fn settings_runtime_sync_test_hook(
+) -> &'static std::sync::Mutex<Option<SettingsRuntimeSyncTestHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<SettingsRuntimeSyncTestHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_settings_runtime_sync_test_hook(hook: SettingsRuntimeSyncTestHook) {
+    *settings_runtime_sync_test_hook()
+        .lock()
+        .expect("settings runtime sync test hook lock") = Some(hook);
+}
+
+#[cfg(test)]
+fn run_settings_runtime_sync_test_hook(settings: &settings::AppSettings) -> Option<String> {
+    settings_runtime_sync_test_hook()
+        .lock()
+        .expect("settings runtime sync test hook lock")
+        .as_mut()
+        .and_then(|hook| hook(settings))
 }
 
 pub(crate) async fn settings_gateway_rectifier_set(
@@ -1138,6 +1243,98 @@ async fn wsl_auto_sync_after_settings(app: &tauri::AppHandle) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct SettingsTestEnv {
+        old_home: Option<std::ffi::OsString>,
+        old_dotdir: Option<std::ffi::OsString>,
+        _home: tempfile::TempDir,
+        _lock: std::sync::MutexGuard<'static, ()>,
+    }
+
+    impl SettingsTestEnv {
+        fn new() -> Self {
+            let lock = crate::test_support::test_env_lock();
+            let home = tempfile::tempdir().expect("settings tempdir");
+            let old_home = std::env::var_os("AIO_CODING_HUB_HOME_DIR");
+            let old_dotdir = std::env::var_os("AIO_CODING_HUB_DOTDIR_NAME");
+            std::env::set_var("AIO_CODING_HUB_HOME_DIR", home.path());
+            std::env::set_var(
+                "AIO_CODING_HUB_DOTDIR_NAME",
+                format!(
+                    ".aio-settings-owner-test-{}",
+                    crate::shared::time::now_unix_millis()
+                ),
+            );
+            crate::test_support::clear_settings_cache();
+            Self {
+                old_home,
+                old_dotdir,
+                _home: home,
+                _lock: lock,
+            }
+        }
+    }
+
+    impl Drop for SettingsTestEnv {
+        fn drop(&mut self) {
+            match self.old_home.take() {
+                Some(value) => std::env::set_var("AIO_CODING_HUB_HOME_DIR", value),
+                None => std::env::remove_var("AIO_CODING_HUB_HOME_DIR"),
+            }
+            match self.old_dotdir.take() {
+                Some(value) => std::env::set_var("AIO_CODING_HUB_DOTDIR_NAME", value),
+                None => std::env::remove_var("AIO_CODING_HUB_DOTDIR_NAME"),
+            }
+            crate::test_support::clear_settings_cache();
+        }
+    }
+
+    #[test]
+    fn runtime_sync_failure_preserves_concurrent_owner_winner() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous settings");
+        let mut committed = previous.clone();
+        committed.log_retention_days = previous.log_retention_days.saturating_add(1);
+        settings::compare_and_swap(&handle, &previous, &committed).expect("commit candidate");
+
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let hook_observed = observed.clone();
+        let mut calls = 0usize;
+        set_settings_runtime_sync_test_hook(Box::new(move |settings| {
+            hook_observed
+                .lock()
+                .expect("observed settings")
+                .push(settings.log_retention_days);
+            calls += 1;
+            (calls == 1).then(|| "forced runtime sync failure".to_string())
+        }));
+        assert!(sync_runtime_side_effects(&handle, &committed).is_err());
+
+        let winner_retention = committed.log_retention_days.saturating_add(1);
+        let hook_handle = handle.clone();
+        set_before_settings_runtime_rollback_test_hook(Box::new(move || {
+            settings::update(&hook_handle, |winner| {
+                winner.log_retention_days = winner_retention;
+                Ok(())
+            })
+            .expect("commit concurrent owner winner");
+        }));
+        tauri::async_runtime::block_on(rollback_after_runtime_sync_failure(
+            &handle, &previous, &committed,
+        ));
+
+        let canonical = settings::read(&handle).expect("canonical settings");
+        assert_eq!(canonical.log_retention_days, winner_retention);
+        assert_eq!(
+            *observed.lock().expect("observed settings"),
+            vec![committed.log_retention_days, winner_retention]
+        );
+        *settings_runtime_sync_test_hook()
+            .lock()
+            .expect("settings runtime sync test hook lock") = None;
+    }
 
     #[test]
     fn settings_update_deserializes_cx2cc_fields_from_specta_keys() {

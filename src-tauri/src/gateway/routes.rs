@@ -418,7 +418,9 @@ mod tests {
         (format!("http://{addr}"), rx, task)
     }
 
-    async fn spawn_codex_previous_response_retry_upstream() -> (
+    async fn spawn_previous_response_retry_upstream(
+        success_body: &'static str,
+    ) -> (
         String,
         tokio::sync::mpsc::Receiver<CapturedRawRequest>,
         tokio::task::JoinHandle<()>,
@@ -442,10 +444,7 @@ mod tests {
                         r#"{"error":{"message":"No response found for previous_response_id resp_old","param":"previous_response_id"}}"#,
                     )
                 } else {
-                    (
-                        "200 OK",
-                        r#"{"id":"stub-ok","object":"response","output":[]}"#,
-                    )
+                    ("200 OK", success_body)
                 };
                 let response = format!(
                     "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -1249,6 +1248,91 @@ mod tests {
         assert_eq!(observation.log.output_tokens, Some(7));
         assert_eq!(observation.log.total_tokens, Some(18));
         assert_single_success_attempt(&observation.log, observation.provider_id);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn mock_runtime_router_grok_previous_response_retry_is_single_and_preserves_usage() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "grok", true, "http://127.0.0.1:37123")
+            .expect("enable Grok CLI proxy");
+
+        let success_body = r#"{"id":"resp-grok-after-retry","object":"response","model":"grok-continuation","output":[],"usage":{"input_tokens":13,"output_tokens":5,"total_tokens":18}}"#;
+        let (upstream_base_url, mut captured_rx, upstream_task) =
+            spawn_previous_response_retry_upstream(success_body).await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-route-grok-continuation.sqlite"))
+            .expect("init test db");
+        let provider_id = insert_provider_with_priority(
+            &db,
+            "grok",
+            "Grok Continuation Stub",
+            upstream_base_url,
+            0,
+        );
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/grok/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"grok-continuation","previous_response_id":"resp_old","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let response: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("response JSON");
+        assert_eq!(
+            response.get("id").and_then(Value::as_str),
+            Some("resp-grok-after-retry")
+        );
+
+        let first = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("first request timeout")
+            .expect("first request");
+        let second = tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+            .await
+            .expect("second request timeout")
+            .expect("second request");
+        assert!(String::from_utf8_lossy(&first.body).contains("previous_response_id"));
+        assert!(!String::from_utf8_lossy(&second.body).contains("previous_response_id"));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(2), captured_rx.recv())
+                .await
+                .expect("retry upstream should close")
+                .is_none()
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.input_tokens, Some(13));
+        assert_eq!(log.output_tokens, Some(5));
+        assert_eq!(log.total_tokens, Some(18));
+        assert!(log.ttfb_ms.is_some());
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts JSON");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert!(attempts.iter().all(|attempt| {
+            attempt.get("provider_id").and_then(Value::as_i64) == Some(provider_id)
+        }));
+
+        upstream_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -2447,7 +2531,10 @@ mod tests {
         persist_plugin_detail(&db, &plugin);
 
         let (upstream_base_url, mut captured_rx, upstream_task) =
-            spawn_codex_previous_response_retry_upstream().await;
+            spawn_previous_response_retry_upstream(
+                r#"{"id":"stub-ok","object":"response","output":[]}"#,
+            )
+            .await;
         let provider_id = insert_codex_provider(&db, upstream_base_url);
         let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let executor =
@@ -3942,6 +4029,112 @@ mod tests {
             session.get_bound_provider("codex", session_id, now),
             Some(third_id)
         );
+
+        first_task.abort();
+        second_task.abort();
+        third_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn decision_a_ready_cap_still_records_later_circuit_gate_skip() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ready-cap-gate-skip.sqlite"),
+        )
+        .expect("init test db");
+        let failed_body = r#"{"error":{"message":"ready provider failed"}}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failed_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failed_body).await;
+        let (third_url, third_calls, third_task) =
+            spawn_counting_status_upstream(StatusCode::OK, r#"{"id":"must-not-run"}"#).await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Ready", first_url, 0);
+        let second_id = insert_codex_provider_with_priority(&db, "Second Ready", second_url, 1);
+        let third_id = insert_codex_provider_with_priority(&db, "Third Circuit Open", third_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(third_id, now, None);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-ready-cap-gate-skip","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 3);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(first_id)
+        );
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(second_id)
+        );
+        assert_eq!(
+            attempts[2].get("provider_id").and_then(Value::as_i64),
+            Some(third_id)
+        );
+        assert_eq!(
+            attempts[2].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(
+            attempts[2].get("error_code").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::ProviderCircuitOpen.as_str())
+        );
+        let provider_chain: Value =
+            serde_json::from_str(log.provider_chain_json.as_deref().expect("provider chain"))
+                .expect("provider chain json");
+        let chain = provider_chain.as_array().expect("provider chain array");
+        assert_eq!(chain.len(), 3);
+        assert_eq!(
+            chain[2].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(third_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
 
         first_task.abort();
         second_task.abort();
