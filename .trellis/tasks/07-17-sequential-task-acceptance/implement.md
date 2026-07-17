@@ -48,6 +48,8 @@
 - [x] Child 5 was archived before starting the first final-review security child.
 - [x] Child 6 was implemented, checked, committed and archived before child 7 started.
 - [x] Finish child 7, then verify commit/archive order is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7.
+- [ ] Finish child 8 after implementing explicit provider-selection decision A and full gates, then verify order
+      is exactly 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8.
 - [ ] Run the independent max read-only final review; do not archive the parent before it passes.
 - [x] Run `pnpm build`, `pnpm check:precommit:full`, `pnpm check:prepush` and any focused commands
       listed by child tasks that are not included in aggregate gates.
@@ -67,6 +69,12 @@
 - [x] Close F1-F8 under `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-2`, including post-fix
       `muyuan` live evidence and the upstream conflict decision audit.
 - [x] Commit and archive child 7 while keeping this parent `in_progress`.
+
+### 8. Third final-review findings
+
+- [ ] Close nine non-conflicting findings under `.trellis/tasks/07-17-final-review-findings-round-3`.
+- [x] Record explicit user decision A: retain common-gate skipped/continue/full-503 behavior.
+- [ ] Rerun focused and full gates, then commit/archive child 8 while keeping this parent `in_progress`.
 
 ## Stop And Rollback Rules
 

@@ -7,6 +7,7 @@ Usage:
     python task.py create "<title>" [--slug <name>] [--assignee <dev>] [--priority P0|P1|P2|P3] [--parent <dir>] [--package <pkg>] [--no-start]
     python task.py add-context <dir> <file> <path> [reason] # Add jsonl entry
     python task.py validate <dir>              # Validate jsonl files
+    python task.py validate --all              # Validate all active/archive jsonl files
     python task.py list-context <dir>          # List jsonl entries
     python task.py start <dir>                 # Set active task
     python task.py current [--source]          # Show active task
@@ -310,6 +311,7 @@ Usage:
   python task.py create <title> --no-start          Create without making it active in this session
   python task.py add-context <dir> <jsonl> <path> [reason]  Add entry to jsonl
   python task.py validate <dir>                     Validate jsonl files
+  python task.py validate --all                     Validate all active/archive jsonl files
   python task.py list-context <dir>                 List jsonl entries
   python task.py start <dir>                        Set active task
   python task.py current [--source]                 Show active task
@@ -414,7 +416,12 @@ def main() -> int:
 
     # validate
     p_validate = subparsers.add_parser("validate", help="Validate context files")
-    p_validate.add_argument("dir", help="Task directory")
+    p_validate.add_argument("dir", nargs="?", help="Task directory")
+    p_validate.add_argument(
+        "--all",
+        action="store_true",
+        help="Validate every active and archived task context manifest",
+    )
 
     # list-context
     p_listctx = subparsers.add_parser("list-context", help="List context entries")

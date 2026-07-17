@@ -378,7 +378,7 @@ describe("providerEditorOAuthActions", () => {
 
     expect(ctx.setActiveOAuthDeviceFlow).toHaveBeenCalledWith(1, "flow-1");
     expect(openDesktopUrl).toHaveBeenCalledWith("https://auth.example.com/device");
-    expect(providerOAuthPollDeviceFlow).toHaveBeenCalledWith(9, "flow-1", "device-1", "USER-1");
+    expect(providerOAuthPollDeviceFlow).toHaveBeenCalledWith("flow-1");
     expect(ctx.clearActiveOAuthDeviceFlow).toHaveBeenCalledWith("flow-1");
     expect(ctx.setOauthStatus).toHaveBeenCalledWith(makeStatus());
     expect(toast).toHaveBeenCalledWith("设备码登录成功");

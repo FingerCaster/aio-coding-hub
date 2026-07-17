@@ -87,6 +87,27 @@ def cmd_add_context(args: argparse.Namespace) -> int:
 def cmd_validate(args: argparse.Namespace) -> int:
     """Validate JSONL context files."""
     repo_root = get_repo_root()
+    if getattr(args, "all", False):
+        manifests = sorted(
+            path
+            for path in (repo_root / ".trellis" / "tasks").rglob("*.jsonl")
+            if path.name in {"implement.jsonl", "check.jsonl"}
+        )
+        print(colored("=== Validating All Context Files ===", Colors.BLUE))
+        print(f"Task root: {repo_root / '.trellis' / 'tasks'}")
+        print()
+        total_errors = sum(_validate_jsonl(path, repo_root) for path in manifests)
+        print()
+        if total_errors == 0:
+            print(colored(f"✓ All validations passed ({len(manifests)} manifests)", Colors.GREEN))
+            return 0
+        print(colored(f"✗ Validation failed ({total_errors} errors)", Colors.RED))
+        return 1
+
+    if not args.dir:
+        print(colored("Error: task directory required unless --all is used", Colors.RED))
+        return 1
+
     target_dir = resolve_task_dir(args.dir, repo_root)
 
     if not target_dir.is_dir():

@@ -154,11 +154,17 @@ fn write_file_atomic_with_replacer(
             .map_err(|e| format!("failed to create dir {}: {e}", parent.display()))?;
     }
 
-    let file_name = path.file_name().and_then(|v| v.to_str()).unwrap_or("file");
-    let tmp_path = path.with_file_name(format!("{file_name}.aio-tmp"));
-
-    std::fs::write(&tmp_path, bytes)
-        .map_err(|e| format!("failed to write temp file {}: {e}", tmp_path.display()))?;
+    let (tmp_path, mut temp_file) = create_unique_atomic_temp(path)?;
+    use std::io::Write as _;
+    if let Err(error) = temp_file
+        .write_all(bytes)
+        .and_then(|()| temp_file.sync_all())
+    {
+        drop(temp_file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("failed to write temp file {}: {error}", tmp_path.display()).into());
+    }
+    drop(temp_file);
 
     if let Err(error) = replace(&tmp_path, path) {
         let _ = std::fs::remove_file(&tmp_path);
@@ -166,6 +172,41 @@ fn write_file_atomic_with_replacer(
     }
 
     Ok(())
+}
+
+fn create_unique_atomic_temp(
+    target: &Path,
+) -> crate::shared::error::AppResult<(std::path::PathBuf, std::fs::File)> {
+    use rand::RngCore as _;
+
+    let parent = target.parent().unwrap_or_else(|| Path::new("."));
+    for _ in 0..32 {
+        let random = rand::thread_rng().next_u64();
+        let temp_path = parent.join(format!(
+            ".aio-atomic-{}-{random:016x}.tmp",
+            std::process::id()
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&temp_path)
+        {
+            Ok(file) => return Ok((temp_path, file)),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(format!(
+                    "failed to create atomic temp file {}: {error}",
+                    temp_path.display()
+                )
+                .into())
+            }
+        }
+    }
+    Err(format!(
+        "failed to allocate atomic temp file for {}",
+        target.display()
+    )
+    .into())
 }
 
 pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> crate::shared::error::AppResult<()> {
@@ -269,7 +310,13 @@ mod tests {
 
         assert!(error.to_string().contains("injected replace failure"));
         assert_eq!(std::fs::read(&path).expect("read original"), b"original");
-        assert!(!dir.join("config.toml.aio-tmp").exists());
+        assert!(std::fs::read_dir(&dir)
+            .expect("read temp dir")
+            .all(|entry| !entry
+                .expect("temp entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".aio-atomic-")));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

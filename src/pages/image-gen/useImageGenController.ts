@@ -39,7 +39,9 @@ import {
   mergeTasksByCreatedAt,
   pruneTasksForCleanup,
   readBackReferenceImages,
+  loadTaskAssets,
   taskFromRow,
+  tasksFromRows,
   taskImageSrc,
 } from "./imageGenPersistence";
 import {
@@ -85,7 +87,7 @@ export const DEFAULT_IMAGE_GEN_PARAMS: ImageGenParams = {
 /** 任务图片双形态：memory（刚生成/落盘失败，持 Blob）/ disk（已落盘，asset 协议展示）。 */
 export type ImageGenTaskImage =
   | { kind: "memory"; objectUrl: string; mime: string; blob: Blob }
-  | { kind: "disk"; src: string; thumbSrc: string; path: string; mime: string };
+  | { kind: "disk"; src: string | null; thumbSrc: string | null; path: string; mime: string };
 
 /** 落盘参考图的读回地址（memory 任务为空数组）。 */
 export type ImageGenTaskRefPath = { path: string; mime: string };
@@ -244,7 +246,19 @@ export function useImageGenController() {
 
   // 任务详情弹窗：持 id，派生 task（任务被删时自动关闭渲染）。
   const [detailTaskId, setDetailTaskId] = useState<string | null>(null);
-  const openDetail = useCallback((taskId: string) => setDetailTaskId(taskId), []);
+  const openDetail = useCallback((taskId: string) => {
+    setDetailTaskId(taskId);
+    const task = getImageGenSession().tasks.find((candidate) => candidate.id === taskId);
+    if (!task?.persisted) return;
+    void loadTaskAssets(task)
+      .then((loaded) => {
+        updateImageGenSession((prev) => ({
+          ...prev,
+          tasks: prev.tasks.map((candidate) => (candidate.id === taskId ? loaded : candidate)),
+        }));
+      })
+      .catch(() => toast.error("图片文件缺失"));
+  }, []);
   const closeDetail = useCallback(() => setDetailTaskId(null), []);
   const detailTask = useMemo(
     () => (detailTaskId ? (tasks.find((task) => task.id === detailTaskId) ?? null) : null),
@@ -299,9 +313,7 @@ export function useImageGenController() {
     if (getImageGenSession().hydrated) return;
     void imageGenTasksList(null, HISTORY_PAGE_SIZE)
       .then(async (page) => {
-        const restored = (await Promise.all(page.items.map((row) => taskFromRow(row)))).filter(
-          (task): task is ImageGenTask => task !== null
-        );
+        const restored = await tasksFromRows(page.items);
         updateImageGenSession((prev) => ({
           ...prev,
           hydrated: true,
@@ -319,9 +331,7 @@ export function useImageGenController() {
     if (!cursor) return;
     try {
       const page = await imageGenTasksList(cursor, HISTORY_PAGE_SIZE);
-      const restored = (await Promise.all(page.items.map((row) => taskFromRow(row)))).filter(
-        (task): task is ImageGenTask => task !== null
-      );
+      const restored = await tasksFromRows(page.items);
       updateImageGenSession((prev) => ({
         ...prev,
         hasMore: page.nextCursor !== null,

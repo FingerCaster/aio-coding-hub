@@ -1,2 +1,2 @@
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check API error ordering, unit conversion, Rust/TypeScript contract, UI rendering, and privacy boundaries together."}
-{"file":".trellis/tasks/07-17-fix-newapi-account-usage-response/research/newapi-muyuan-readonly-validation.md","reason":"Verify fixtures and the final redacted live check match the confirmed provider shapes without leaking secrets or values."}
+{"file":".trellis/tasks/archive/2026-07/07-17-fix-newapi-account-usage-response/research/newapi-muyuan-readonly-validation.md","reason":"Verify fixtures and the final redacted live check match the confirmed provider shapes without leaking secrets or values."}

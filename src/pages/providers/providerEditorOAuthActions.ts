@@ -340,12 +340,7 @@ export async function handleOAuthDeviceLogin(ctx: OAuthActionContext) {
       if (Date.now() >= deadline) return false;
 
       const result = await whenOAuthAttemptCurrent(
-        providerOAuthPollDeviceFlow(
-          targetProviderId,
-          start.flow_id,
-          start.device_code,
-          start.user_code
-        ),
+        providerOAuthPollDeviceFlow(start.flow_id),
         isCurrentAttempt,
         rollbackAutoSavedProvider
       );

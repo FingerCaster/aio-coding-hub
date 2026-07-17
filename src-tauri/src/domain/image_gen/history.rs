@@ -223,8 +223,10 @@ fn write_task_file(dir: &Path, name: &str, bytes: &[u8]) -> Result<(), String> {
 }
 
 pub(crate) fn canonical_storage_root(storage_dir: &Path) -> AppResult<PathBuf> {
+    validate_no_follow_components(storage_dir)?;
     let root = std::fs::canonicalize(storage_dir)
         .map_err(|_| "SEC_INVALID_INPUT: image gen storage root cannot be resolved".to_string())?;
+    validate_no_follow_components(&root)?;
     let metadata = std::fs::metadata(&root)
         .map_err(|_| "SEC_INVALID_INPUT: image gen storage root cannot be inspected".to_string())?;
     if !metadata.is_dir() {
@@ -235,6 +237,243 @@ pub(crate) fn canonical_storage_root(storage_dir: &Path) -> AppResult<PathBuf> {
         );
     }
     Ok(root)
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct FileIdentity {
+    volume: u64,
+    file: u64,
+}
+
+#[cfg(unix)]
+fn open_trusted_dir(path: &Path) -> AppResult<std::fs::File> {
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| "SEC_INVALID_INPUT: trusted image gen directory cannot be opened".to_string())?;
+    Ok(fd.into())
+}
+
+#[cfg(unix)]
+fn open_trusted_task_dir(path: &Path) -> AppResult<std::fs::File> {
+    open_trusted_dir(path)
+}
+
+#[cfg(windows)]
+fn open_trusted_dir(path: &Path) -> AppResult<std::fs::File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "SEC_INVALID_INPUT: trusted image gen path cannot be inspected".to_string())?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(
+            "SEC_INVALID_INPUT: trusted image gen path cannot contain a reparse point"
+                .to_string()
+                .into(),
+        );
+    }
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|e| {
+            format!("SEC_INVALID_INPUT: trusted image gen directory cannot be opened: {e}").into()
+        })
+}
+
+#[cfg(windows)]
+fn open_trusted_task_dir(path: &Path) -> AppResult<std::fs::File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+        FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "SEC_INVALID_INPUT: trusted image gen task cannot be inspected".to_string())?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(
+            "SEC_INVALID_INPUT: trusted image gen task cannot be a reparse point"
+                .to_string()
+                .into(),
+        );
+    }
+    std::fs::OpenOptions::new()
+        .access_mode(GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|e| {
+            format!("SEC_INVALID_INPUT: trusted image gen task cannot be opened: {e}").into()
+        })
+}
+
+#[cfg(windows)]
+fn open_identity_dir(path: &Path) -> AppResult<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_DELETE,
+        FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|e| {
+            format!("SEC_INVALID_INPUT: trusted image gen identity cannot be opened: {e}").into()
+        })
+}
+
+#[cfg(unix)]
+fn open_validated_task_handle(path: &Path) -> AppResult<std::fs::File> {
+    open_trusted_dir(path)
+}
+
+#[cfg(windows)]
+fn open_validated_task_handle(path: &Path) -> AppResult<std::fs::File> {
+    open_identity_dir(path)
+}
+
+#[cfg(unix)]
+fn file_identity_from_handle(file: &std::fs::File) -> AppResult<FileIdentity> {
+    let stat = rustix::fs::fstat(file).map_err(|_| {
+        "SEC_INVALID_INPUT: trusted image gen path identity cannot be read".to_string()
+    })?;
+    Ok(FileIdentity {
+        volume: stat.st_dev as u64,
+        file: stat.st_ino as u64,
+    })
+}
+
+#[cfg(windows)]
+fn file_identity_from_handle(file: &std::fs::File) -> AppResult<FileIdentity> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(
+            "SEC_INVALID_INPUT: trusted image gen path identity cannot be read"
+                .to_string()
+                .into(),
+        );
+    }
+    let info = unsafe { info.assume_init() };
+    Ok(FileIdentity {
+        volume: u64::from(info.dwVolumeSerialNumber),
+        file: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
+}
+
+fn file_identity(path: &Path) -> AppResult<FileIdentity> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|_| "SEC_INVALID_INPUT: trusted image gen path cannot be inspected".to_string())?;
+    if metadata.file_type().is_symlink() {
+        return Err(
+            "SEC_INVALID_INPUT: trusted image gen path cannot contain a link"
+                .to_string()
+                .into(),
+        );
+    }
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+        if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+            return Err(
+                "SEC_INVALID_INPUT: trusted image gen path cannot contain a reparse point"
+                    .to_string()
+                    .into(),
+            );
+        }
+    }
+    if metadata.is_dir() {
+        #[cfg(unix)]
+        let handle = open_trusted_dir(path)?;
+        #[cfg(windows)]
+        let handle = open_identity_dir(path)?;
+        return file_identity_from_handle(&handle);
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .open(path)
+        .map_err(|_| "SEC_INVALID_INPUT: trusted image gen file cannot be opened".to_string())?;
+    file_identity_from_handle(&file)
+}
+
+fn validate_no_follow_components(path: &Path) -> AppResult<()> {
+    if !path.is_absolute() {
+        return Err("SEC_INVALID_INPUT: trusted image gen path must be absolute"
+            .to_string()
+            .into());
+    }
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                current.push(component.as_os_str());
+            }
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                file_identity(&current)?;
+            }
+            std::path::Component::CurDir => {}
+            std::path::Component::ParentDir => {
+                return Err(
+                    "SEC_INVALID_INPUT: trusted image gen path cannot contain traversal"
+                        .to_string()
+                        .into(),
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
+#[derive(Debug)]
+struct ValidatedTaskDir {
+    path: PathBuf,
+    root: PathBuf,
+    root_identity: FileIdentity,
+    task_identity: FileIdentity,
+    root_handle: std::fs::File,
+    task_handle: std::fs::File,
+}
+
+type ReferencedTaskPaths = Vec<(String, PathBuf)>;
+type ValidatedRawTask = (ImageGenTaskRow, ReferencedTaskPaths, ValidatedTaskDir);
+
+impl ValidatedTaskDir {
+    fn revalidate(&self) -> AppResult<()> {
+        validate_no_follow_components(&self.root)?;
+        validate_no_follow_components(&self.path)?;
+        if file_identity(&self.root)? != self.root_identity
+            || file_identity(&self.path)? != self.task_identity
+            || file_identity_from_handle(&self.root_handle)? != self.root_identity
+            || file_identity_from_handle(&self.task_handle)? != self.task_identity
+            || self.path.parent() != Some(self.root.as_path())
+        {
+            return Err("SEC_INVALID_INPUT: image gen storage path identity changed"
+                .to_string()
+                .into());
+        }
+        Ok(())
+    }
 }
 
 pub(crate) fn canonical_storage_roots(storage_roots: &[PathBuf]) -> AppResult<Vec<PathBuf>> {
@@ -266,39 +505,541 @@ pub(crate) fn canonical_storage_roots(storage_roots: &[PathBuf]) -> AppResult<Ve
     Ok(canonical)
 }
 
-fn validate_task_dir(storage_roots: &[PathBuf], dir: &str, id: &str) -> AppResult<PathBuf> {
+fn validate_task_dir(
+    storage_roots: &[PathBuf],
+    dir: &str,
+    id: &str,
+) -> AppResult<ValidatedTaskDir> {
     let id = validate_task_id(id)?;
     let original = PathBuf::from(dir);
-    let link_metadata = std::fs::symlink_metadata(&original)
-        .map_err(|_| "SEC_INVALID_INPUT: image gen task dir cannot be resolved".to_string())?;
-    if link_metadata.file_type().is_symlink() {
-        return Err("SEC_INVALID_INPUT: image gen task dir cannot be a symlink"
-            .to_string()
-            .into());
-    }
+    validate_no_follow_components(&original)?;
     let candidate = std::fs::canonicalize(&original)
         .map_err(|_| "SEC_INVALID_INPUT: image gen task dir cannot be resolved".to_string())?;
-    if !storage_roots
+    validate_no_follow_components(&candidate)?;
+    let root = storage_roots
         .iter()
-        .any(|root| candidate.parent() == Some(root.as_path()))
-        || candidate.file_name().and_then(|value| value.to_str()) != Some(id)
-        || !candidate.is_dir()
-    {
+        .find(|root| candidate.parent() == Some(root.as_path()))
+        .cloned()
+        .ok_or_else(|| {
+            crate::shared::error::AppError::from(
+                "SEC_INVALID_INPUT: image gen task dir is outside the trusted storage root"
+                    .to_string(),
+            )
+        })?;
+    if candidate.file_name().and_then(|value| value.to_str()) != Some(id) || !candidate.is_dir() {
         return Err(
             "SEC_INVALID_INPUT: image gen task dir is outside the trusted storage root"
                 .to_string()
                 .into(),
         );
     }
-    Ok(candidate)
+    let validated = ValidatedTaskDir {
+        root_handle: open_trusted_dir(&root)?,
+        task_handle: open_validated_task_handle(&candidate)?,
+        root_identity: file_identity(&root)?,
+        task_identity: file_identity(&candidate)?,
+        root,
+        path: candidate,
+    };
+    validated.revalidate()?;
+    Ok(validated)
 }
 
-fn remove_validated_task_dir(path: &Path) -> AppResult<()> {
-    match std::fs::remove_dir_all(path) {
-        Ok(()) => Ok(()),
-        Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(()),
-        Err(e) => Err(format!("SYSTEM_ERROR: failed to remove task dir: {e}").into()),
+fn remove_validated_task_dir(validated: &ValidatedTaskDir) -> AppResult<()> {
+    validated.revalidate()?;
+    #[cfg(test)]
+    run_before_quarantine_test_hook();
+    let delete_handle = acquire_delete_task_handle(validated)?;
+    let quarantine_name = unique_quarantine_name(&validated.root)?;
+    rename_task_to_quarantine(validated, &delete_handle, &quarantine_name)?;
+    let quarantine = validated.root.join(&quarantine_name);
+    validate_no_follow_components(&quarantine)?;
+    if file_identity(&quarantine)? != validated.task_identity {
+        return Err("SEC_INVALID_INPUT: image gen quarantine identity mismatch"
+            .to_string()
+            .into());
     }
+    #[cfg(test)]
+    run_after_quarantine_validation_test_hook();
+    if file_identity(&quarantine)? != validated.task_identity
+        || file_identity_from_handle(&delete_handle)? != validated.task_identity
+    {
+        return Err("SEC_INVALID_INPUT: image gen quarantine identity changed"
+            .to_string()
+            .into());
+    }
+    remove_quarantined_task(validated, &delete_handle, &quarantine_name, &quarantine)
+}
+
+#[cfg(unix)]
+fn acquire_delete_task_handle(validated: &ValidatedTaskDir) -> AppResult<std::fs::File> {
+    validated
+        .task_handle
+        .try_clone()
+        .map_err(|e| format!("SYSTEM_ERROR: failed to clone task handle: {e}").into())
+}
+
+#[cfg(windows)]
+fn acquire_delete_task_handle(validated: &ValidatedTaskDir) -> AppResult<std::fs::File> {
+    let handle = open_trusted_task_dir(&validated.path)?;
+    if file_identity_from_handle(&handle)? != validated.task_identity {
+        return Err("SEC_INVALID_INPUT: image gen task identity changed"
+            .to_string()
+            .into());
+    }
+    Ok(handle)
+}
+
+#[cfg(test)]
+type BeforeQuarantineHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_QUARANTINE_TEST_HOOK: std::cell::RefCell<Option<BeforeQuarantineHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_before_quarantine_test_hook(hook: BeforeQuarantineHook) {
+    BEFORE_QUARANTINE_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_quarantine_test_hook() {
+    let hook = BEFORE_QUARANTINE_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+type AfterQuarantineValidationHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static AFTER_QUARANTINE_VALIDATION_TEST_HOOK: std::cell::RefCell<Option<AfterQuarantineValidationHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_after_quarantine_validation_test_hook(hook: AfterQuarantineValidationHook) {
+    AFTER_QUARANTINE_VALIDATION_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_after_quarantine_validation_test_hook() {
+    let hook = AFTER_QUARANTINE_VALIDATION_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+fn unique_quarantine_name(root: &Path) -> AppResult<String> {
+    use rand::RngCore as _;
+    for _ in 0..32 {
+        let mut random = [0_u8; 16];
+        rand::thread_rng().fill_bytes(&mut random);
+        let suffix = random
+            .iter()
+            .map(|byte| format!("{byte:02x}"))
+            .collect::<String>();
+        let name = format!(".aio-quarantine-{suffix}");
+        if std::fs::symlink_metadata(root.join(&name)).is_err() {
+            return Ok(name);
+        }
+    }
+    Err("SYSTEM_ERROR: failed to allocate image gen quarantine name"
+        .to_string()
+        .into())
+}
+
+#[cfg(unix)]
+fn rename_task_to_quarantine(
+    validated: &ValidatedTaskDir,
+    _delete_handle: &std::fs::File,
+    quarantine: &str,
+) -> AppResult<()> {
+    let id = validated
+        .path
+        .file_name()
+        .ok_or_else(|| "SEC_INVALID_INPUT: invalid image gen task dir".to_string())?;
+    rustix::fs::renameat_with(
+        &validated.root_handle,
+        id,
+        &validated.root_handle,
+        quarantine,
+        rustix::fs::RenameFlags::NOREPLACE,
+    )
+    .map_err(|e| format!("SYSTEM_ERROR: failed to quarantine task dir: {e}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn rename_task_to_quarantine(
+    validated: &ValidatedTaskDir,
+    delete_handle: &std::fs::File,
+    quarantine: &str,
+) -> AppResult<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileRenameInfo, SetFileInformationByHandle, FILE_RENAME_INFO,
+    };
+
+    if file_identity_from_handle(delete_handle)? != validated.task_identity {
+        return Err("SEC_INVALID_INPUT: image gen task identity changed"
+            .to_string()
+            .into());
+    }
+    let quarantine_path = validated.root.join(quarantine);
+    let name = quarantine_path
+        .as_os_str()
+        .encode_wide()
+        .collect::<Vec<_>>();
+    let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
+    let byte_len = header + name.len() * std::mem::size_of::<u16>();
+    let mut buffer = vec![0_u64; byte_len.div_ceil(std::mem::size_of::<u64>())];
+    let info = buffer.as_mut_ptr().cast::<FILE_RENAME_INFO>();
+    unsafe {
+        (*info).Anonymous.ReplaceIfExists = 0;
+        (*info).RootDirectory = std::ptr::null_mut();
+        (*info).FileNameLength = (name.len() * std::mem::size_of::<u16>()) as u32;
+        std::ptr::copy_nonoverlapping(
+            name.as_ptr().cast::<u8>(),
+            (*info).FileName.as_mut_ptr().cast::<u8>(),
+            name.len() * std::mem::size_of::<u16>(),
+        );
+    }
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            delete_handle.as_raw_handle() as _,
+            FileRenameInfo,
+            buffer.as_ptr().cast(),
+            byte_len as u32,
+        )
+    };
+    if ok == 0 {
+        let error = unsafe { GetLastError() };
+        return Err(
+            format!("SYSTEM_ERROR: failed to quarantine task dir: os error {error}").into(),
+        );
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_quarantined_task(
+    validated: &ValidatedTaskDir,
+    delete_handle: &std::fs::File,
+    quarantine_name: &str,
+    _quarantine_path: &Path,
+) -> AppResult<()> {
+    remove_dir_contents_at(delete_handle)?;
+    rustix::fs::unlinkat(
+        &validated.root_handle,
+        quarantine_name,
+        rustix::fs::AtFlags::REMOVEDIR,
+    )
+    .map_err(|e| format!("SYSTEM_ERROR: failed to remove quarantined task dir: {e}"))?;
+    Ok(())
+}
+
+#[cfg(unix)]
+fn remove_dir_contents_at(dir: &std::fs::File) -> AppResult<()> {
+    let mut entries = rustix::fs::Dir::read_from(dir)
+        .map_err(|e| format!("SYSTEM_ERROR: failed to read quarantined task dir: {e}"))?;
+    while let Some(entry) = entries.next() {
+        let entry = entry
+            .map_err(|e| format!("SYSTEM_ERROR: failed to read quarantined task entry: {e}"))?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        let stat = rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("SYSTEM_ERROR: failed to inspect quarantined task entry: {e}"))?;
+        if rustix::fs::FileType::from_raw_mode(stat.st_mode) == rustix::fs::FileType::Directory {
+            let child = rustix::fs::openat(
+                dir,
+                name,
+                rustix::fs::OFlags::RDONLY
+                    | rustix::fs::OFlags::DIRECTORY
+                    | rustix::fs::OFlags::NOFOLLOW
+                    | rustix::fs::OFlags::CLOEXEC,
+                rustix::fs::Mode::empty(),
+            )
+            .map_err(|e| format!("SYSTEM_ERROR: failed to open quarantined task entry: {e}"))?;
+            let child: std::fs::File = child.into();
+            remove_dir_contents_at(&child)?;
+            rustix::fs::unlinkat(dir, name, rustix::fs::AtFlags::REMOVEDIR).map_err(|e| {
+                format!("SYSTEM_ERROR: failed to remove quarantined directory: {e}")
+            })?;
+        } else {
+            rustix::fs::unlinkat(dir, name, rustix::fs::AtFlags::empty())
+                .map_err(|e| format!("SYSTEM_ERROR: failed to remove quarantined file: {e}"))?;
+        }
+    }
+    Ok(())
+}
+
+#[cfg(windows)]
+fn remove_quarantined_task(
+    _validated: &ValidatedTaskDir,
+    delete_handle: &std::fs::File,
+    _quarantine_name: &str,
+    _quarantine_path: &Path,
+) -> AppResult<()> {
+    remove_windows_dir_contents(delete_handle)?;
+    delete_windows_handle(delete_handle)
+}
+
+#[cfg(windows)]
+#[derive(Debug)]
+struct WindowsDirectoryEntry {
+    name: Vec<u16>,
+    is_directory: bool,
+    file_id: u64,
+}
+
+#[cfg(windows)]
+fn windows_directory_entries(dir: &std::fs::File) -> AppResult<Vec<WindowsDirectoryEntry>> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_FILES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdBothDirectoryInfo, GetFileInformationByHandleEx, FILE_ATTRIBUTE_DIRECTORY,
+        FILE_ID_BOTH_DIR_INFO,
+    };
+
+    let mut entries = Vec::new();
+    loop {
+        let mut buffer = vec![0_u64; (64 * 1024) / std::mem::size_of::<u64>()];
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                dir.as_raw_handle() as _,
+                FileIdBothDirectoryInfo,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * std::mem::size_of::<u64>()) as u32,
+            )
+        };
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_MORE_FILES {
+                break;
+            }
+            return Err(format!(
+                "SYSTEM_ERROR: failed to enumerate quarantined task handle: os error {error}"
+            )
+            .into());
+        }
+
+        let mut offset = 0usize;
+        loop {
+            let info = unsafe {
+                &*buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<FILE_ID_BOTH_DIR_INFO>()
+            };
+            let name_len = info.FileNameLength as usize / std::mem::size_of::<u16>();
+            let name = unsafe { std::slice::from_raw_parts(info.FileName.as_ptr(), name_len) };
+            if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
+                entries.push(WindowsDirectoryEntry {
+                    name: name.to_vec(),
+                    is_directory: info.FileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0,
+                    file_id: info.FileId as u64,
+                });
+            }
+            if info.NextEntryOffset == 0 {
+                break;
+            }
+            offset = offset
+                .checked_add(info.NextEntryOffset as usize)
+                .ok_or_else(|| "SYSTEM_ERROR: invalid quarantined task entry offset".to_string())?;
+            if offset >= buffer.len() * std::mem::size_of::<u64>() {
+                return Err("SYSTEM_ERROR: invalid quarantined task entry buffer"
+                    .to_string()
+                    .into());
+            }
+        }
+    }
+    Ok(entries)
+}
+
+#[cfg(windows)]
+fn open_windows_child_no_follow(
+    parent: &std::fs::File,
+    name: &mut [u16],
+    is_directory: bool,
+) -> AppResult<std::fs::File> {
+    use std::os::windows::io::{AsRawHandle as _, FromRawHandle as _};
+    use windows_sys::Wdk::Foundation::OBJECT_ATTRIBUTES;
+    use windows_sys::Wdk::Storage::FileSystem::{
+        NtCreateFile, FILE_DIRECTORY_FILE, FILE_NON_DIRECTORY_FILE, FILE_OPEN,
+        FILE_OPEN_REPARSE_POINT, FILE_SYNCHRONOUS_IO_NONALERT,
+    };
+    use windows_sys::Win32::Foundation::{HANDLE, UNICODE_STRING};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES, FILE_SHARE_DELETE, FILE_SHARE_READ,
+        FILE_SHARE_WRITE, SYNCHRONIZE,
+    };
+    use windows_sys::Win32::System::IO::IO_STATUS_BLOCK;
+
+    let byte_len = name
+        .len()
+        .checked_mul(std::mem::size_of::<u16>())
+        .and_then(|value| u16::try_from(value).ok())
+        .ok_or_else(|| "SEC_INVALID_INPUT: quarantined task entry name is too long".to_string())?;
+    let unicode = UNICODE_STRING {
+        Length: byte_len,
+        MaximumLength: byte_len,
+        Buffer: name.as_mut_ptr(),
+    };
+    let attributes = OBJECT_ATTRIBUTES {
+        Length: std::mem::size_of::<OBJECT_ATTRIBUTES>() as u32,
+        RootDirectory: parent.as_raw_handle() as _,
+        ObjectName: &unicode,
+        Attributes: 0,
+        SecurityDescriptor: std::ptr::null(),
+        SecurityQualityOfService: std::ptr::null(),
+    };
+    let mut io_status = std::mem::MaybeUninit::<IO_STATUS_BLOCK>::zeroed();
+    let mut handle: HANDLE = std::ptr::null_mut();
+    let desired_access = DELETE
+        | FILE_READ_ATTRIBUTES
+        | SYNCHRONIZE
+        | if is_directory { FILE_LIST_DIRECTORY } else { 0 };
+    let create_options = FILE_OPEN_REPARSE_POINT
+        | FILE_SYNCHRONOUS_IO_NONALERT
+        | if is_directory {
+            FILE_DIRECTORY_FILE
+        } else {
+            FILE_NON_DIRECTORY_FILE
+        };
+    let status = unsafe {
+        NtCreateFile(
+            &mut handle,
+            desired_access,
+            &attributes,
+            io_status.as_mut_ptr(),
+            std::ptr::null(),
+            0,
+            FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE,
+            FILE_OPEN,
+            create_options,
+            std::ptr::null(),
+            0,
+        )
+    };
+    if status < 0 || handle.is_null() {
+        return Err(format!(
+            "SYSTEM_ERROR: failed to open quarantined task entry relative to trusted handle: ntstatus {status:#x}"
+        )
+        .into());
+    }
+    Ok(unsafe { std::fs::File::from_raw_handle(handle as _) })
+}
+
+#[cfg(windows)]
+fn windows_handle_attributes(file: &std::fs::File) -> AppResult<u32> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    let ok = unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) };
+    if ok == 0 {
+        return Err(
+            "SYSTEM_ERROR: failed to inspect quarantined task entry handle"
+                .to_string()
+                .into(),
+        );
+    }
+    Ok(unsafe { info.assume_init() }.dwFileAttributes)
+}
+
+#[cfg(windows)]
+fn remove_windows_dir_contents(dir: &std::fs::File) -> AppResult<()> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+    };
+
+    let entries = windows_directory_entries(dir)?;
+    #[cfg(test)]
+    run_after_windows_directory_enumeration_test_hook();
+    for mut entry in entries {
+        let child = open_windows_child_no_follow(dir, &mut entry.name, entry.is_directory)?;
+        // A same-name object can replace an enumerated child before relative open.
+        // Bind recursion/deletion to the exact enumerated file ID, not its name.
+        if file_identity_from_handle(&child)?.file != entry.file_id {
+            return Err("SEC_INVALID_INPUT: quarantined task entry identity changed"
+                .to_string()
+                .into());
+        }
+        let attributes = windows_handle_attributes(&child)?;
+        if attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+            && attributes & FILE_ATTRIBUTE_REPARSE_POINT == 0
+        {
+            remove_windows_dir_contents(&child)?;
+        }
+        delete_windows_handle(&child)?;
+    }
+    Ok(())
+}
+
+#[cfg(all(test, windows))]
+type AfterWindowsDirectoryEnumerationHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(all(test, windows))]
+thread_local! {
+    static AFTER_WINDOWS_DIRECTORY_ENUMERATION_TEST_HOOK: std::cell::RefCell<Option<AfterWindowsDirectoryEnumerationHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(all(test, windows))]
+pub(super) fn set_after_windows_directory_enumeration_test_hook(
+    hook: AfterWindowsDirectoryEnumerationHook,
+) {
+    AFTER_WINDOWS_DIRECTORY_ENUMERATION_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(all(test, windows))]
+fn run_after_windows_directory_enumeration_test_hook() {
+    let hook =
+        AFTER_WINDOWS_DIRECTORY_ENUMERATION_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(windows)]
+fn delete_windows_handle(file: &std::fs::File) -> AppResult<()> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::GetLastError;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileDispositionInfoEx, SetFileInformationByHandle, FILE_DISPOSITION_FLAG_DELETE,
+        FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE, FILE_DISPOSITION_FLAG_POSIX_SEMANTICS,
+        FILE_DISPOSITION_INFO_EX,
+    };
+
+    let disposition = FILE_DISPOSITION_INFO_EX {
+        Flags: FILE_DISPOSITION_FLAG_DELETE
+            | FILE_DISPOSITION_FLAG_POSIX_SEMANTICS
+            | FILE_DISPOSITION_FLAG_IGNORE_READONLY_ATTRIBUTE,
+    };
+    let ok = unsafe {
+        SetFileInformationByHandle(
+            file.as_raw_handle() as _,
+            FileDispositionInfoEx,
+            (&disposition as *const FILE_DISPOSITION_INFO_EX).cast(),
+            std::mem::size_of::<FILE_DISPOSITION_INFO_EX>() as u32,
+        )
+    };
+    if ok == 0 {
+        let error = unsafe { GetLastError() };
+        return Err(format!(
+            "SYSTEM_ERROR: failed to delete quarantined task handle: os error {error}"
+        )
+        .into());
+    }
+    Ok(())
 }
 
 /// Writes task files to `{storage_dir}/{id}` then upserts the DB row.
@@ -358,16 +1099,19 @@ pub(crate) fn task_persist(
             format!("SYSTEM_ERROR: failed to create task dir: {e}")
         }
     })?;
-    if let Err(error) = validate_task_dir(
+    let owned_task_dir = match validate_task_dir(
         std::slice::from_ref(&storage_root),
         &task_dir.to_string_lossy(),
         &id,
     ) {
-        let _ = std::fs::remove_dir(&task_dir);
-        return Err(error);
-    }
+        Ok(validated) => validated,
+        Err(error) => {
+            let _ = std::fs::remove_dir(&task_dir);
+            return Err(error);
+        }
+    };
 
-    let write_and_insert = || -> AppResult<()> {
+    let write_insert_and_validate = || -> AppResult<ImageGenTaskRow> {
         let mut stored_images = Vec::with_capacity(images.len());
         for (index, bytes) in images.iter().enumerate() {
             let mime = &payload.images[index].mime;
@@ -406,41 +1150,106 @@ pub(crate) fn task_persist(
         let ref_images_json = serde_json::to_string(&stored_refs)
             .map_err(|e| format!("SYSTEM_ERROR: failed to serialize ref_images_json: {e}"))?;
 
-        let conn = db.open_connection()?;
-        conn.execute(
-            r#"
+        #[cfg(test)]
+        maybe_inject_persist_failure(PersistFailurePoint::BeforeInsert, &task_dir)?;
+
+        let mut conn = db.open_connection()?;
+        let transaction = conn
+            .transaction()
+            .map_err(|e| db_err!("failed to begin image gen task transaction: {e}"))?;
+        transaction
+            .execute(
+                r#"
 INSERT INTO image_gen_tasks(
   id, adapter_id, prompt, request_json, status, error, usage_json,
   images_json, ref_images_json, dir, created_at, elapsed_ms
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 "#,
-            rusqlite::params![
-                id,
-                adapter_id,
-                payload.prompt,
-                payload.request_json,
-                payload.status,
-                payload.error,
-                payload.usage_json,
-                images_json,
-                ref_images_json,
-                task_dir.to_string_lossy().to_string(),
-                payload.created_at,
-                payload.elapsed_ms,
-            ],
-        )
-        .map_err(|e| db_err!("failed to upsert image gen task: {e}"))?;
-        Ok(())
+                rusqlite::params![
+                    id,
+                    adapter_id,
+                    payload.prompt,
+                    payload.request_json,
+                    payload.status,
+                    payload.error,
+                    payload.usage_json,
+                    images_json,
+                    ref_images_json,
+                    task_dir.to_string_lossy().to_string(),
+                    payload.created_at,
+                    payload.elapsed_ms,
+                ],
+            )
+            .map_err(|e| db_err!("failed to upsert image gen task: {e}"))?;
+        #[cfg(test)]
+        maybe_inject_persist_failure(PersistFailurePoint::PostInsertValidation, &task_dir)?;
+        let raw = transaction
+            .query_row(
+                &format!("SELECT {TASK_SELECT_COLUMNS} FROM image_gen_tasks WHERE id = ?1"),
+                rusqlite::params![id],
+                row_to_raw_task,
+            )
+            .optional()
+            .map_err(|e| db_err!("failed to read persisted image gen task: {e}"))?
+            .ok_or_else(|| {
+                crate::shared::error::AppError::from(
+                    "DB_ERROR: persisted image gen task not found".to_string(),
+                )
+            })?;
+        let row = validate_raw_task(std::slice::from_ref(&storage_root), raw)?.0;
+        transaction
+            .commit()
+            .map_err(|e| db_err!("failed to commit image gen task: {e}"))?;
+        Ok(row)
     };
 
-    if let Err(err) = write_and_insert() {
-        // Roll back the on-disk side so no orphan dir survives a failed persist.
-        let _ = std::fs::remove_dir_all(&task_dir);
-        return Err(err);
+    match write_insert_and_validate() {
+        Ok(row) => Ok(row),
+        Err(error) => {
+            let _ = remove_validated_task_dir(&owned_task_dir);
+            Err(error)
+        }
     }
+}
 
-    task_get(db, &storage_root, &id)?
-        .ok_or_else(|| "DB_ERROR: persisted image gen task not found".into())
+#[cfg(test)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum PersistFailurePoint {
+    BeforeInsert,
+    PostInsertValidation,
+}
+
+#[cfg(test)]
+thread_local! {
+    static PERSIST_FAILURE_POINT: std::cell::Cell<Option<PersistFailurePoint>> = const { std::cell::Cell::new(None) };
+}
+
+#[cfg(test)]
+pub(super) fn set_persist_failure_point(point: PersistFailurePoint) {
+    PERSIST_FAILURE_POINT.set(Some(point));
+}
+
+#[cfg(test)]
+fn maybe_inject_persist_failure(point: PersistFailurePoint, task_dir: &Path) -> AppResult<()> {
+    let should_inject = PERSIST_FAILURE_POINT.with(|current| {
+        if current.get() == Some(point) {
+            current.set(None);
+            true
+        } else {
+            false
+        }
+    });
+    if !should_inject {
+        return Ok(());
+    }
+    if point == PersistFailurePoint::PostInsertValidation {
+        std::fs::remove_file(task_dir.join("image-1.png"))
+            .map_err(|e| format!("SYSTEM_ERROR: failed to inject post-insert validation: {e}"))?;
+        return Ok(());
+    }
+    Err("DB_ERROR: injected before-insert failure"
+        .to_string()
+        .into())
 }
 
 struct RawTaskRow {
@@ -506,15 +1315,10 @@ fn validate_stored_file(
 
 fn validate_stored_file_path(task_dir: &Path, filename: &str) -> AppResult<PathBuf> {
     let candidate = task_dir.join(filename);
-    let link_metadata = std::fs::symlink_metadata(&candidate)
-        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be resolved".to_string())?;
-    if link_metadata.file_type().is_symlink() {
-        return Err("SEC_INVALID_INPUT: stored image file cannot be a symlink"
-            .to_string()
-            .into());
-    }
+    validate_no_follow_components(&candidate)?;
     let canonical = std::fs::canonicalize(&candidate)
         .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be resolved".to_string())?;
+    validate_no_follow_components(&canonical)?;
     if canonical.parent() != Some(task_dir) || !canonical.is_file() {
         return Err(
             "SEC_INVALID_INPUT: stored image file is outside its task directory"
@@ -525,10 +1329,7 @@ fn validate_stored_file_path(task_dir: &Path, filename: &str) -> AppResult<PathB
     Ok(canonical)
 }
 
-fn validate_raw_task(
-    storage_roots: &[PathBuf],
-    raw: RawTaskRow,
-) -> AppResult<(ImageGenTaskRow, Vec<(String, PathBuf)>)> {
+fn validate_raw_task(storage_roots: &[PathBuf], raw: RawTaskRow) -> AppResult<ValidatedRawTask> {
     let id = validate_task_id(&raw.id)?.to_string();
     let task_dir = validate_task_dir(storage_roots, &raw.dir, &id)?;
     let images = serde_json::from_str::<Vec<StoredFile>>(&raw.images_json)
@@ -538,11 +1339,11 @@ fn validate_raw_task(
     let mut referenced_paths = Vec::new();
     let images = images
         .into_iter()
-        .map(|stored| validate_stored_file(&task_dir, &id, stored, &mut referenced_paths))
+        .map(|stored| validate_stored_file(&task_dir.path, &id, stored, &mut referenced_paths))
         .collect::<AppResult<Vec<_>>>()?;
     let ref_images = ref_images
         .into_iter()
-        .map(|stored| validate_stored_file(&task_dir, &id, stored, &mut referenced_paths))
+        .map(|stored| validate_stored_file(&task_dir.path, &id, stored, &mut referenced_paths))
         .collect::<AppResult<Vec<_>>>()?;
     Ok((
         ImageGenTaskRow {
@@ -560,6 +1361,7 @@ fn validate_raw_task(
             elapsed_ms: raw.elapsed_ms,
         },
         referenced_paths,
+        task_dir,
     ))
 }
 
@@ -604,21 +1406,6 @@ fn encode_tasks_cursor(row: &ImageGenTaskRow) -> AppResult<String> {
     })
     .map_err(|e| format!("SYSTEM_ERROR: failed to encode image gen tasks cursor: {e}"))?;
     Ok(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(bytes))
-}
-
-fn task_get(db: &db::Db, storage_root: &Path, id: &str) -> AppResult<Option<ImageGenTaskRow>> {
-    let roots = canonical_storage_roots(&[storage_root.to_path_buf()])?;
-    let conn = db.open_connection()?;
-    let raw = conn
-        .query_row(
-            &format!("SELECT {TASK_SELECT_COLUMNS} FROM image_gen_tasks WHERE id = ?1"),
-            rusqlite::params![id],
-            row_to_raw_task,
-        )
-        .optional()
-        .map_err(|e| db_err!("failed to query image gen task: {e}"))?;
-    raw.map(|raw| validate_raw_task(&roots, raw).map(|(row, _)| row))
-        .transpose()
 }
 
 /// Newest-first page. `before_created_at = None` starts from the newest row.
@@ -888,15 +1675,16 @@ pub(crate) fn read_image_with_roots(
         .optional()
         .map_err(|e| db_err!("failed to query image gen task: {e}"))?
         .ok_or_else(|| "SEC_INVALID_INPUT: image reference task was not found".to_string())?;
-    let (_, referenced_paths) = validate_raw_task(&storage_roots, raw)?;
-    let canonical = referenced_paths
+    let (_, referenced_paths, validated_task) = validate_raw_task(&storage_roots, raw)?;
+    referenced_paths
         .into_iter()
-        .find_map(|(candidate, path)| (candidate == reference).then_some(path))
+        .find(|(candidate, _)| candidate == reference)
         .ok_or_else(|| {
             "SEC_INVALID_INPUT: image reference is not present in trusted metadata".to_string()
         })?;
-
-    let metadata = std::fs::metadata(&canonical)
+    let mut file = open_validated_task_file(&validated_task, filename)?;
+    let metadata = file
+        .metadata()
         .map_err(|e| format!("SYSTEM_ERROR: failed to stat image file: {e}"))?;
     if !metadata.is_file() {
         return Err("SEC_INVALID_INPUT: image path is not a file"
@@ -910,12 +1698,66 @@ pub(crate) fn read_image_with_roots(
         .into());
     }
 
-    let bytes = std::fs::read(&canonical)
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    std::io::Read::read_to_end(&mut file, &mut bytes)
         .map_err(|e| format!("SYSTEM_ERROR: failed to read image file: {e}"))?;
     Ok(ImageGenFetchedImage {
-        mime: mime_for_ext(&canonical).to_string(),
+        mime: mime_for_ext(Path::new(filename)).to_string(),
         data_b64: base64::engine::general_purpose::STANDARD.encode(&bytes),
     })
+}
+
+#[cfg(unix)]
+fn open_validated_task_file(
+    validated: &ValidatedTaskDir,
+    filename: &str,
+) -> AppResult<std::fs::File> {
+    validated.revalidate()?;
+    let fd = rustix::fs::openat(
+        &validated.task_handle,
+        filename,
+        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be opened".to_string())?;
+    Ok(fd.into())
+}
+
+#[cfg(windows)]
+fn open_validated_task_file(
+    validated: &ValidatedTaskDir,
+    filename: &str,
+) -> AppResult<std::fs::File> {
+    use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+        FILE_SHARE_WRITE,
+    };
+
+    validated.revalidate()?;
+    let task_lock = open_trusted_dir(&validated.path)?;
+    if file_identity_from_handle(&task_lock)? != validated.task_identity {
+        return Err("SEC_INVALID_INPUT: image gen task identity changed"
+            .to_string()
+            .into());
+    }
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(validated.path.join(filename))
+        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be opened".to_string())?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be inspected".to_string())?;
+    if metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0 || !metadata.is_file() {
+        return Err(
+            "SEC_INVALID_INPUT: stored image file cannot be a reparse point"
+                .to_string()
+                .into(),
+        );
+    }
+    Ok(file)
 }
 
 /// Storage usage view. Size is computed by walking DB-recorded task dirs.
@@ -947,7 +1789,8 @@ pub(crate) fn storage_stats_with_roots(
     )?;
     for (id, dir) in pairs {
         let dir = validate_task_dir(&storage_roots, &dir, &id)?;
-        total_bytes = total_bytes.saturating_add(dir_size_bytes(&dir));
+        dir.revalidate()?;
+        total_bytes = total_bytes.saturating_add(dir_size_bytes(&dir.path));
     }
 
     Ok(ImageGenStorageView {

@@ -445,12 +445,8 @@ export async function providerOAuthStartDeviceFlow(
 }
 
 export async function providerOAuthPollDeviceFlow(
-  providerId: number,
-  flowId: string,
-  deviceCode: string,
-  userCode: string
+  flowId: string
 ): Promise<GeneratedProviderOAuthDeviceCodePollResult> {
-  const normalizedProviderId = validateProviderId(providerId);
   const normalizedFlowId = flowId.trim();
   if (!normalizedFlowId) {
     throw new Error("SEC_INVALID_INPUT: invalid flowId");
@@ -459,13 +455,10 @@ export async function providerOAuthPollDeviceFlow(
   return invokeGeneratedIpc<GeneratedProviderOAuthDeviceCodePollResult>({
     title: "轮询设备码登录失败",
     cmd: "provider_oauth_poll_device_flow",
-    args: { providerId: normalizedProviderId, flowId: normalizedFlowId, deviceCode, userCode },
+    args: { flowId: normalizedFlowId },
     invoke: () =>
       commands.providerOauthPollDeviceFlow({
-        providerId: normalizedProviderId,
         flowId: normalizedFlowId,
-        deviceCode,
-        userCode,
       }) as Promise<GeneratedCommandResult<GeneratedProviderOAuthDeviceCodePollResult>>,
   });
 }

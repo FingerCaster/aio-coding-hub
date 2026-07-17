@@ -6,12 +6,15 @@ import {
   blobToBase64,
   buildPersistPayload,
   generateThumbnailB64,
+  HISTORY_HYDRATE_CONCURRENCY,
+  loadTaskAssets,
   mergeTasksByCreatedAt,
   parseRequestSnapshot,
   pruneTasksForCleanup,
   readBackReferenceImages,
   stripRequestSnapshot,
   taskFromRow,
+  tasksFromRows,
   taskImageSrc,
   taskImageThumbSrc,
 } from "../imageGenPersistence";
@@ -209,7 +212,7 @@ describe("pages/image-gen/imageGenPersistence", () => {
     expect(payload.refImages).toEqual([]);
   });
 
-  it("taskFromRow maps validated opaque references through backend reads", async () => {
+  it("taskFromRow hydrates thumbnails without reading originals or references", async () => {
     vi.mocked(imageGenReadImage).mockImplementation(async (reference) => ({
       mime: reference.endsWith(".webp") ? "image/webp" : "image/png",
       dataB64: btoa(reference),
@@ -229,19 +232,21 @@ describe("pages/image-gen/imageGenPersistence", () => {
       startedAt: row.createdAt,
       elapsedMs: 1200,
       usage: { totalTokens: 5 },
-      refThumbs: [`data:image/png;base64,${btoa("row-1/ref-1.png")}`],
+      refThumbs: [],
       refPaths: [{ path: "row-1/ref-1.png", mime: "image/png" }],
     });
     expect(task?.images[0]).toEqual({
       kind: "disk",
-      src: `data:image/png;base64,${btoa("row-1/image-1.png")}`,
+      src: null,
       thumbSrc: `data:image/webp;base64,${btoa("row-1/thumb-1.webp")}`,
       path: "row-1/image-1.png",
       mime: "image/png",
     });
+    expect(imageGenReadImage).toHaveBeenCalledTimes(1);
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/thumb-1.webp");
   });
 
-  it("taskFromRow falls back to the full image when the thumb is missing and tolerates bad usage", async () => {
+  it("taskFromRow leaves a missing thumbnail lazy and tolerates bad usage", async () => {
     vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("image") });
     const row = makeRow({
       status: "error",
@@ -255,7 +260,45 @@ describe("pages/image-gen/imageGenPersistence", () => {
     expect(task?.error).toBe("boom");
     expect(task?.usage).toBeUndefined();
     expect(task?.elapsedMs).toBeUndefined();
-    expect(taskImageThumbSrc(task!.images[0])).toBe(`data:image/png;base64,${btoa("image")}`);
+    expect(taskImageThumbSrc(task!.images[0])).toBe("");
+    expect(imageGenReadImage).not.toHaveBeenCalled();
+  });
+
+  it("loads original and reference images only on demand", async () => {
+    vi.mocked(imageGenReadImage).mockImplementation(async (reference) => ({
+      mime: "image/png",
+      dataB64: btoa(reference),
+    }));
+    const task = await taskFromRow(
+      makeRow({ refImages: [{ path: "row-1/ref-1.png", thumbPath: null, mime: "image/png" }] })
+    );
+    expect(task).not.toBeNull();
+    vi.mocked(imageGenReadImage).mockClear();
+
+    const loaded = await loadTaskAssets(task!);
+
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/image-1.png");
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/ref-1.png");
+    expect(taskImageSrc(loaded.images[0])).toContain(btoa("row-1/image-1.png"));
+    expect(loaded.refThumbs[0]).toContain(btoa("row-1/ref-1.png"));
+  });
+
+  it("caps concurrent thumbnail hydration workers", async () => {
+    let active = 0;
+    let maxActive = 0;
+    vi.mocked(imageGenReadImage).mockImplementation(async () => {
+      active += 1;
+      maxActive = Math.max(maxActive, active);
+      await new Promise((resolve) => window.setTimeout(resolve, 5));
+      active -= 1;
+      return { mime: "image/webp", dataB64: btoa("thumb") };
+    });
+    const rows = Array.from({ length: 12 }, (_, index) => makeRow({ id: `row-${index}` }));
+
+    await tasksFromRows(rows);
+
+    expect(maxActive).toBeGreaterThan(1);
+    expect(maxActive).toBeLessThanOrEqual(HISTORY_HYDRATE_CONCURRENCY);
   });
 
   it("taskFromRow returns null for unparsable request snapshots", async () => {

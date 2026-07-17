@@ -128,10 +128,16 @@ fn request_path_allowlist_accepts_only_image_endpoints() {
         "/v1/images/generations/../chat",
         "v1/images/generations",
         "/v1/images/edits/",
+        "/v1/images/generations?api_key=SYNTHETIC_SECRET",
+        "/v1/images/edits#SYNTHETIC_SECRET",
         "",
     ] {
         let err = validate_request_path(path).expect_err("path should be rejected");
         assert!(err.contains("SEC_INVALID_INPUT"), "unexpected error: {err}");
+        assert!(!err.contains("SYNTHETIC_SECRET"), "secret leaked: {err}");
+        if !path.is_empty() {
+            assert!(!err.contains(path), "rejected path leaked: {err}");
+        }
     }
 }
 
@@ -237,6 +243,10 @@ fn disallowed_ip_covers_all_non_global_ranges() {
         "::ffff:192.168.0.1",
         "::ffff:100.64.0.1",
         "::ffff:198.18.0.1",
+        "64:ff9b::127.0.0.1",
+        "64:ff9b::192.168.0.1",
+        "2002:7f00:1::",
+        "2002:c0a8:1::",
         "2001:db8::1",
         "2001:2::1",
     ] {
@@ -250,6 +260,8 @@ fn disallowed_ip_covers_all_non_global_ranges() {
         "192.0.0.9",
         "2606:2800:220:1:248:1893:25c8:1946",
         "::ffff:8.8.8.8",
+        "64:ff9b::8.8.8.8",
+        "2002:0808:0808::",
     ] {
         let ip: IpAddr = ip.parse().expect("parse ip");
         assert!(!is_disallowed_ip(ip), "should be allowed: {ip}");
@@ -265,6 +277,25 @@ fn public_dns_validation_rejects_any_ipv4_compatible_ipv6_answer() {
     let error = validate_public_addrs("cdn.example.test", [public, compatible])
         .expect_err("one non-global DNS answer must reject the host");
     assert!(error.contains("non-global address"));
+}
+
+#[test]
+fn public_dns_validation_classifies_embedded_ipv4_in_ipv6_answers() {
+    let pure_aaaa: SocketAddr = "[2606:2800:220:1:248:1893:25c8:1946]:443"
+        .parse()
+        .expect("public IPv6");
+    let public_nat64: SocketAddr = "[64:ff9b::8.8.8.8]:443".parse().expect("public NAT64");
+    let private_nat64: SocketAddr = "[64:ff9b::10.0.0.1]:443".parse().expect("private NAT64");
+    let loopback_6to4: SocketAddr = "[2002:7f00:1::]:443".parse().expect("loopback 6to4");
+    let public_a: SocketAddr = "93.184.216.34:443".parse().expect("public IPv4");
+
+    assert_eq!(
+        validate_public_addrs("cdn.example.test", [pure_aaaa, public_nat64])
+            .expect("pure and translated public AAAA answers"),
+        vec![pure_aaaa, public_nat64]
+    );
+    assert!(validate_public_addrs("cdn.example.test", [public_a, private_nat64]).is_err());
+    assert!(validate_public_addrs("cdn.example.test", [pure_aaaa, loopback_6to4]).is_err());
 }
 
 #[tokio::test]
@@ -497,10 +528,15 @@ fn timeout_defaults_to_600_and_clamps_to_1_900() {
 // -- history --
 
 use super::history::{
-    ensure_writable_dir, read_image, read_image_with_roots, storage_cleanup,
-    storage_cleanup_with_roots, storage_stats, storage_stats_with_roots, task_delete, task_persist,
-    tasks_clear, tasks_list, tasks_list_with_roots, tasks_page_with_roots, ImageGenTaskFilePayload,
-    ImageGenTaskPersistPayload,
+    ensure_writable_dir, read_image, read_image_with_roots, set_before_quarantine_test_hook,
+    set_persist_failure_point, storage_cleanup, storage_cleanup_with_roots, storage_stats,
+    storage_stats_with_roots, task_delete, task_persist, tasks_clear, tasks_list,
+    tasks_list_with_roots, tasks_page_with_roots, ImageGenTaskFilePayload,
+    ImageGenTaskPersistPayload, PersistFailurePoint,
+};
+#[cfg(windows)]
+use super::history::{
+    set_after_quarantine_validation_test_hook, set_after_windows_directory_enumeration_test_hook,
 };
 use base64::Engine as _;
 
@@ -982,6 +1018,213 @@ fn history_clear_validates_all_db_dirs_before_any_delete() {
 }
 
 #[test]
+fn history_parent_link_rebinding_blocks_read_delete_clear_and_cleanup() {
+    let (_db_dir, db) = test_db("image-gen-history-parent-rebind.db");
+    let outer = tempfile::tempdir().expect("outer");
+    let base = outer.path().join("base");
+    let storage = base.join("storage");
+    std::fs::create_dir_all(&storage).expect("create storage");
+    task_persist(&db, &storage, done_task_payload("t1", 1)).expect("persist");
+
+    let original = outer.path().join("original");
+    std::fs::rename(&base, &original).expect("move trusted parent");
+    let attacker = outer.path().join("attacker");
+    let attacker_task = attacker.join("storage").join("t1");
+    std::fs::create_dir_all(&attacker_task).expect("create attacker task");
+    for (name, bytes) in [
+        ("image-1.png", b"outside-image".as_slice()),
+        ("thumb-1.webp", b"outside-thumb".as_slice()),
+        ("ref-1.png", b"outside-ref".as_slice()),
+    ] {
+        std::fs::write(attacker_task.join(name), bytes).expect("write outside sentinel");
+    }
+
+    #[cfg(unix)]
+    std::os::unix::fs::symlink(&attacker, &base).expect("create parent symlink");
+    #[cfg(windows)]
+    junction::create(&attacker, &base).expect("create parent junction");
+
+    assert!(read_image(&db, &storage, "t1/image-1.png").is_err());
+    assert!(task_delete(&db, &storage, "t1").is_err());
+    assert!(tasks_clear(&db, &storage).is_err());
+    assert!(storage_cleanup(&db, &storage, 0).is_err());
+    assert_eq!(
+        std::fs::read(attacker_task.join("image-1.png")).expect("outside image"),
+        b"outside-image"
+    );
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 1);
+    drop(conn);
+
+    #[cfg(unix)]
+    std::fs::remove_file(&base).expect("remove parent symlink");
+    #[cfg(windows)]
+    junction::delete(&base).expect("remove parent junction");
+    std::fs::rename(&original, &base).expect("restore trusted parent");
+}
+
+#[test]
+fn history_delete_rechecks_task_identity_after_validation_barrier() {
+    let (_db_dir, db) = test_db("image-gen-history-delete-barrier.db");
+    let storage = tempfile::tempdir().expect("storage");
+    let outside = tempfile::tempdir().expect("outside");
+    task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
+    let task_path = storage.path().join("t1");
+    let moved_path = storage.path().join("moved-original");
+    let outside_task = outside.path().join("outside-task");
+    std::fs::create_dir_all(&outside_task).expect("outside task");
+    let sentinel = outside_task.join("sentinel");
+    std::fs::write(&sentinel, b"outside-stays").expect("outside sentinel");
+    let hook_task_path = task_path.clone();
+    let hook_moved_path = moved_path.clone();
+    let hook_outside_task = outside_task.clone();
+    set_before_quarantine_test_hook(Box::new(move || {
+        std::fs::rename(&hook_task_path, &hook_moved_path).expect("swap task after validation");
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&hook_outside_task, &hook_task_path)
+            .expect("create task symlink");
+        #[cfg(windows)]
+        junction::create(&hook_outside_task, &hook_task_path).expect("create task junction");
+    }));
+
+    task_delete(&db, storage.path(), "t1").expect_err("identity swap must fail closed");
+    assert_eq!(
+        std::fs::read(&sentinel).expect("outside sentinel"),
+        b"outside-stays"
+    );
+    assert!(moved_path.exists());
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 1);
+    drop(conn);
+
+    #[cfg(windows)]
+    if task_path.exists() {
+        junction::delete(&task_path).expect("remove task junction");
+    }
+}
+
+#[cfg(windows)]
+#[test]
+fn history_delete_rejects_quarantine_rebinding_after_identity_validation() {
+    let (_db_dir, db) = test_db("image-gen-history-quarantine-barrier.db");
+    let storage = tempfile::tempdir().expect("storage");
+    let outside = tempfile::tempdir().expect("outside");
+    task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
+    let outside_task = outside.path().join("outside-task");
+    std::fs::create_dir_all(&outside_task).expect("outside task");
+    let sentinel = outside_task.join("sentinel");
+    std::fs::write(&sentinel, b"outside-stays").expect("outside sentinel");
+    let moved_quarantine = storage.path().join("moved-quarantine");
+    let hook_root = storage.path().to_path_buf();
+    let hook_outside = outside_task.clone();
+    let hook_moved = moved_quarantine.clone();
+    set_after_quarantine_validation_test_hook(Box::new(move || {
+        let quarantine = std::fs::read_dir(&hook_root)
+            .expect("read storage root")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".aio-quarantine-"))
+            })
+            .expect("quarantine exists after rename");
+        std::fs::rename(&quarantine, &hook_moved).expect("move validated quarantine");
+        junction::create(&hook_outside, &quarantine).expect("replace quarantine with junction");
+    }));
+
+    task_delete(&db, storage.path(), "t1").expect_err("quarantine rebinding must fail closed");
+    assert_eq!(
+        std::fs::read(&sentinel).expect("outside sentinel"),
+        b"outside-stays"
+    );
+    assert!(moved_quarantine.join("image-1.png").exists());
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 1);
+    drop(conn);
+
+    let rebound = std::fs::read_dir(storage.path())
+        .expect("read storage cleanup")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".aio-quarantine-"))
+        })
+        .expect("rebound junction remains");
+    junction::delete(&rebound).expect("remove rebound quarantine junction");
+}
+
+#[cfg(windows)]
+#[test]
+fn history_delete_rejects_child_replacement_between_handle_enumeration_and_open() {
+    let (_db_dir, db) = test_db("image-gen-history-child-file-id-barrier.db");
+    let storage = tempfile::tempdir().expect("storage");
+    let outside = tempfile::tempdir().expect("outside");
+    task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
+    let sentinel = outside.path().join("sentinel");
+    std::fs::write(&sentinel, b"outside-stays").expect("outside sentinel");
+    let hook_root = storage.path().to_path_buf();
+    let hook_sentinel = sentinel.clone();
+    set_after_windows_directory_enumeration_test_hook(Box::new(move || {
+        let quarantine = std::fs::read_dir(&hook_root)
+            .expect("read storage root")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .find(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".aio-quarantine-"))
+            })
+            .expect("quarantine exists during handle enumeration");
+        let children = std::fs::read_dir(&quarantine)
+            .expect("read quarantine children")
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .collect::<Vec<_>>();
+        for child in children {
+            let name = child.file_name().expect("child name").to_owned();
+            let moved = quarantine.join(format!("moved-{}", name.to_string_lossy()));
+            std::fs::rename(&child, moved).expect("move enumerated child");
+            std::fs::hard_link(&hook_sentinel, &child)
+                .expect("replace enumerated child with outside hardlink");
+        }
+    }));
+
+    task_delete(&db, storage.path(), "t1").expect_err("child file-id replacement must fail closed");
+    assert_eq!(
+        std::fs::read(&sentinel).expect("outside sentinel"),
+        b"outside-stays"
+    );
+    let quarantine = std::fs::read_dir(storage.path())
+        .expect("read storage root")
+        .filter_map(Result::ok)
+        .map(|entry| entry.path())
+        .find(|path| {
+            path.file_name()
+                .and_then(|name| name.to_str())
+                .is_some_and(|name| name.starts_with(".aio-quarantine-"))
+        })
+        .expect("quarantine remains after fail-closed delete");
+    assert!(quarantine.join("moved-image-1.png").exists());
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 1);
+}
+
+#[test]
 fn history_read_rejects_tampered_stored_filename_even_inside_root() {
     let (_db_dir, db) = test_db("image-gen-history-tampered-file.db");
     let storage = tempfile::tempdir().expect("storage");
@@ -1078,6 +1321,41 @@ fn history_persist_removes_task_dir_when_db_write_fails() {
         !storage.path().join("t1").exists(),
         "task dir must be rolled back after db failure"
     );
+}
+
+#[test]
+fn history_persist_before_insert_failure_removes_owned_dir_without_db_row() {
+    let (_db_dir, db) = test_db("image-gen-history-before-insert.db");
+    let storage = tempfile::tempdir().expect("storage tempdir");
+    set_persist_failure_point(PersistFailurePoint::BeforeInsert);
+
+    task_persist(&db, storage.path(), done_task_payload("t1", 1))
+        .expect_err("injected before-insert failure");
+
+    assert!(!storage.path().join("t1").exists());
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 0);
+}
+
+#[test]
+fn history_persist_post_insert_validation_failure_rolls_back_row_and_owned_dir() {
+    let (_db_dir, db) = test_db("image-gen-history-post-insert.db");
+    let storage = tempfile::tempdir().expect("storage tempdir");
+    set_persist_failure_point(PersistFailurePoint::PostInsertValidation);
+
+    let error = task_persist(&db, storage.path(), done_task_payload("t1", 1))
+        .expect_err("post-insert validation failure");
+
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+    assert!(!storage.path().join("t1").exists());
+    let conn = db.open_connection().expect("open db");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 0);
 }
 
 #[cfg(unix)]

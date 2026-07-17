@@ -153,6 +153,24 @@ describe("services/image-gen/service", () => {
     ).rejects.toThrow("网络错误");
   });
 
+  it("imageGenPostJson does not log a rejected path query or fragment", async () => {
+    const secret = "SYNTHETIC_SECRET_JSON";
+    const path = `/v1/images/generations?api_key=${secret}#${secret}`;
+    vi.mocked(commands.imageGenPostJson).mockResolvedValue({
+      status: "error",
+      error: "SEC_INVALID_INPUT: image generation endpoint is not allowed",
+    });
+    const error = await imageGenPostJson(IMAGE_GEN_ADAPTER_ID, path, {}).catch(
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(secret);
+    const logged = JSON.stringify(vi.mocked(logToConsole).mock.calls);
+    expect(logged).toContain('"endpoint":"invalid"');
+    expect(logged).not.toContain(secret);
+    expect(commands.imageGenPostJson).toHaveBeenCalledWith(IMAGE_GEN_ADAPTER_ID, path, {}, null);
+  });
+
   it("imageGenPostMultipart forwards fields and files", async () => {
     const response = { status: 200, bodyText: "{}" };
     vi.mocked(commands.imageGenPostMultipart).mockResolvedValue({ status: "ok", data: response });
@@ -166,6 +184,30 @@ describe("services/image-gen/service", () => {
       "/v1/images/edits",
       fields,
       files,
+      null
+    );
+  });
+
+  it("imageGenPostMultipart does not log a rejected path query or fragment", async () => {
+    const secret = "SYNTHETIC_SECRET_MULTIPART";
+    const path = `/v1/images/edits?token=${secret}#${secret}`;
+    vi.mocked(commands.imageGenPostMultipart).mockResolvedValue({
+      status: "error",
+      error: "SEC_INVALID_INPUT: image generation endpoint is not allowed",
+    });
+    const error = await imageGenPostMultipart(IMAGE_GEN_ADAPTER_ID, path, [], []).catch(
+      (caught: unknown) => caught
+    );
+    expect(error).toBeInstanceOf(Error);
+    expect((error as Error).message).not.toContain(secret);
+    const logged = JSON.stringify(vi.mocked(logToConsole).mock.calls);
+    expect(logged).toContain('"endpoint":"invalid"');
+    expect(logged).not.toContain(secret);
+    expect(commands.imageGenPostMultipart).toHaveBeenCalledWith(
+      IMAGE_GEN_ADAPTER_ID,
+      path,
+      [],
+      [],
       null
     );
   });

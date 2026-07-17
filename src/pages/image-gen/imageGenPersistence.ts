@@ -42,12 +42,12 @@ export function base64ToBlob(b64: string, mime: string): Blob {
 
 /** 任务图片的原图显示 URL：memory 为 objectURL，disk 为 asset 协议 URL。 */
 export function taskImageSrc(image: ImageGenTaskImage): string {
-  return image.kind === "memory" ? image.objectUrl : image.src;
+  return image.kind === "memory" ? image.objectUrl : (image.src ?? image.thumbSrc ?? "");
 }
 
 /** 任务图片的缩略图显示 URL：disk 无缩略图时回退原图。 */
 export function taskImageThumbSrc(image: ImageGenTaskImage): string {
-  return image.kind === "memory" ? image.objectUrl : image.thumbSrc;
+  return image.kind === "memory" ? image.objectUrl : (image.thumbSrc ?? image.src ?? "");
 }
 
 // ---------- 缩略图（前端 canvas 生成，Rust 不引 image crate） ----------
@@ -153,19 +153,76 @@ function fetchedImageDataUrl(image: { mime: string; dataB64: string }): string {
   return `data:${image.mime};base64,${image.dataB64}`;
 }
 
-export async function taskImageFromFileRow(file: ImageGenTaskFileRow): Promise<ImageGenTaskImage> {
-  const src = fetchedImageDataUrl(await imageGenReadImage(file.path));
+export const HISTORY_HYDRATE_CONCURRENCY = 4;
+export const HISTORY_HYDRATE_MAX_BYTES = 32 * 1024 * 1024;
+export const HISTORY_THUMB_MAX_BYTES = 4 * 1024 * 1024;
+const HISTORY_ON_DEMAND_CONCURRENCY = 2;
+const HISTORY_ON_DEMAND_MAX_BYTES = 128 * 1024 * 1024;
+
+type ReadBudget = { used: number; max: number; perImageMax: number };
+
+function decodedBase64Bytes(dataB64: string): number {
+  const padding = dataB64.endsWith("==") ? 2 : dataB64.endsWith("=") ? 1 : 0;
+  return Math.floor(dataB64.length / 4) * 3 - padding;
+}
+
+async function readImageWithBudget(path: string, budget: ReadBudget) {
+  const image = await imageGenReadImage(path);
+  const bytes = decodedBase64Bytes(image.dataB64);
+  if (bytes > budget.perImageMax || budget.used + bytes > budget.max) {
+    throw new Error("SEC_INVALID_INPUT: image history hydration budget exceeded");
+  }
+  budget.used += bytes;
+  return image;
+}
+
+async function mapWithConcurrency<T, R>(
+  values: readonly T[],
+  concurrency: number,
+  map: (value: T, index: number) => Promise<R>
+): Promise<R[]> {
+  const results = new Array<R>(values.length);
+  let next = 0;
+  const workers = Array.from({ length: Math.min(concurrency, values.length) }, async () => {
+    while (next < values.length) {
+      const index = next;
+      next += 1;
+      results[index] = await map(values[index], index);
+    }
+  });
+  await Promise.all(workers);
+  return results;
+}
+
+export async function taskImageFromFileRow(
+  file: ImageGenTaskFileRow,
+  budget: ReadBudget = {
+    used: 0,
+    max: HISTORY_HYDRATE_MAX_BYTES,
+    perImageMax: HISTORY_THUMB_MAX_BYTES,
+  }
+): Promise<ImageGenTaskImage> {
+  const thumbSrc = file.thumbPath
+    ? fetchedImageDataUrl(await readImageWithBudget(file.thumbPath, budget))
+    : null;
   return {
     kind: "disk",
-    src,
-    thumbSrc: file.thumbPath ? fetchedImageDataUrl(await imageGenReadImage(file.thumbPath)) : src,
+    src: null,
+    thumbSrc,
     path: file.path,
     mime: file.mime,
   };
 }
 
 /** DB 行映射为 disk 形态任务；请求快照解析失败的行降级跳过（console 容忍，不阻断其余行）。 */
-export async function taskFromRow(row: ImageGenTaskRow): Promise<ImageGenTask | null> {
+export async function taskFromRow(
+  row: ImageGenTaskRow,
+  budget: ReadBudget = {
+    used: 0,
+    max: HISTORY_HYDRATE_MAX_BYTES,
+    perImageMax: HISTORY_THUMB_MAX_BYTES,
+  }
+): Promise<ImageGenTask | null> {
   let request: GptImageRequest;
   try {
     request = parseRequestSnapshot(row.requestJson);
@@ -181,8 +238,8 @@ export async function taskFromRow(row: ImageGenTaskRow): Promise<ImageGenTask | 
       usage = undefined;
     }
   }
-  const images = await Promise.all(row.images.map(taskImageFromFileRow));
-  const refImages = await Promise.all(row.refImages.map((file) => imageGenReadImage(file.path)));
+  const images: ImageGenTaskImage[] = [];
+  for (const file of row.images) images.push(await taskImageFromFileRow(file, budget));
   return {
     id: row.id,
     prompt: row.prompt,
@@ -191,13 +248,48 @@ export async function taskFromRow(row: ImageGenTaskRow): Promise<ImageGenTask | 
     error: row.error ?? undefined,
     usage,
     images,
-    refThumbs: refImages.map(fetchedImageDataUrl),
+    refThumbs: [],
     refPaths: row.refImages.map((file) => ({ path: file.path, mime: file.mime })),
     createdAt: row.createdAt,
     startedAt: row.createdAt,
     elapsedMs: row.elapsedMs ?? undefined,
     persisted: true,
   };
+}
+
+export async function tasksFromRows(rows: ImageGenTaskRow[]): Promise<ImageGenTask[]> {
+  const budget: ReadBudget = {
+    used: 0,
+    max: HISTORY_HYDRATE_MAX_BYTES,
+    perImageMax: HISTORY_THUMB_MAX_BYTES,
+  };
+  const tasks = await mapWithConcurrency(rows, HISTORY_HYDRATE_CONCURRENCY, (row) =>
+    taskFromRow(row, budget)
+  );
+  return tasks.filter((task): task is ImageGenTask => task !== null);
+}
+
+export async function loadTaskAssets(task: ImageGenTask): Promise<ImageGenTask> {
+  const budget: ReadBudget = {
+    used: 0,
+    max: HISTORY_ON_DEMAND_MAX_BYTES,
+    perImageMax: HISTORY_ON_DEMAND_MAX_BYTES,
+  };
+  const images = await mapWithConcurrency(
+    task.images,
+    HISTORY_ON_DEMAND_CONCURRENCY,
+    async (image) => {
+      if (image.kind === "memory" || image.src) return image;
+      const fetched = await readImageWithBudget(image.path, budget);
+      return { ...image, src: fetchedImageDataUrl(fetched) };
+    }
+  );
+  const refThumbs = await mapWithConcurrency(
+    task.refPaths,
+    HISTORY_ON_DEMAND_CONCURRENCY,
+    async (ref) => fetchedImageDataUrl(await readImageWithBudget(ref.path, budget))
+  );
+  return { ...task, images, refThumbs };
 }
 
 // ---------- store 合并/清理 ----------
@@ -228,10 +320,13 @@ export function pruneTasksForCleanup(tasks: ImageGenTask[], keepCount: number): 
 export async function readBackReferenceImages(
   refPaths: ImageGenTaskRefPath[]
 ): Promise<ImageGenRefImage[]> {
-  return Promise.all(
-    refPaths.map(async (ref) => {
-      const image = await imageGenReadImage(ref.path);
-      return { mime: image.mime, b64: image.dataB64 };
-    })
-  );
+  const budget: ReadBudget = {
+    used: 0,
+    max: HISTORY_ON_DEMAND_MAX_BYTES,
+    perImageMax: HISTORY_ON_DEMAND_MAX_BYTES,
+  };
+  return mapWithConcurrency(refPaths, HISTORY_ON_DEMAND_CONCURRENCY, async (ref) => {
+    const image = await readImageWithBudget(ref.path, budget);
+    return { mime: image.mime, b64: image.dataB64 };
+  });
 }

@@ -200,28 +200,34 @@ pub(crate) async fn storage_set_dir(
                     .into());
             }
             image_gen::ensure_writable_dir(&path)?;
-            let mut settings = crate::settings::read(&app_for_write)?;
-            let previous_dir = image_gen::storage_dir_from_settings(&app_for_write)?;
-            let mut roots = settings
-                .image_gen_storage_roots
-                .iter()
-                .map(std::path::PathBuf::from)
-                .collect::<Vec<_>>();
-            roots.push(previous_dir);
-            roots.push(path.clone());
-            let roots = image_gen::canonical_storage_roots(&roots)?;
             let canonical_path = std::fs::canonicalize(&path)
                 .map_err(|e| format!("SEC_INVALID_INPUT: storage dir cannot be resolved: {e}"))?;
-            let view = image_gen::storage_stats_with_roots(&db, &canonical_path, &roots)?;
-
-            settings.image_gen_storage_dir = Some(canonical_path.to_string_lossy().to_string());
-            settings.image_gen_storage_roots = roots
-                .iter()
-                .map(|root| root.to_string_lossy().to_string())
-                .collect();
-            crate::settings::write(&app_for_write, &settings)?;
-
-            Ok(view)
+            let default_dir = crate::app_paths::app_data_dir(&app_for_write)?.join("image-gen");
+            crate::settings::update(&app_for_write, |settings| {
+                let previous_dir = settings
+                    .image_gen_storage_dir
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|value| !value.is_empty())
+                    .map(std::path::PathBuf::from)
+                    .unwrap_or_else(|| default_dir.clone());
+                let mut roots = settings
+                    .image_gen_storage_roots
+                    .iter()
+                    .map(std::path::PathBuf::from)
+                    .collect::<Vec<_>>();
+                roots.push(previous_dir);
+                roots.push(canonical_path.clone());
+                let roots = image_gen::canonical_storage_roots(&roots)?;
+                let view = image_gen::storage_stats_with_roots(&db, &canonical_path, &roots)?;
+                settings.image_gen_storage_dir = Some(canonical_path.to_string_lossy().to_string());
+                settings.image_gen_storage_roots = roots
+                    .iter()
+                    .map(|root| root.to_string_lossy().to_string())
+                    .collect();
+                Ok(view)
+            })
+            .map(|(_, view)| view)
         },
     )
     .await

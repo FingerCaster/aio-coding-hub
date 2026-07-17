@@ -48,6 +48,9 @@ async fn read_device_json_value(
 
 - Device authorization and token polling responses use the shared bounded JSON
   reader with a 256 KiB body cap. Do not call unbounded `text()` or `json()`.
+- The active flow is a server-owned capability binding `flow_id`, provider id,
+  CLI/provider type, device code, user code, and deadline. Poll IPC accepts only
+  `flow_id`; callers cannot resubmit or redirect any bound ownership field.
 - A successful body must be a JSON object of the expected response type.
   Required device code, user code, verification URI, and access-token fields
   are non-empty after trimming. Grok token success additionally requires the
@@ -85,6 +88,8 @@ async fn read_device_json_value(
 | `slow_down` after current interval `N` | Return `slow_down=true`; next and later intervals are at least `N+5s` |
 | Expired or denied response | Cancel the matching flow and return a safe terminal error |
 | Flow is canceled/replaced while a poll is pending | Late response cannot persist credentials or cancel the replacement flow |
+| Provider CLI/type changes while a poll is pending | Reject before persistence; write no token |
+| Poll supplies an unknown, expired, or stale flow id | Reject without a remote request or token write |
 | Valid success for the current flow | Persist the validated token set and complete exactly that flow |
 
 ### 5. Good / Base / Bad Cases
@@ -114,7 +119,8 @@ async fn read_device_json_value(
 - Cover repeated `slow_down` and pending responses with fake-clock assertions;
   every increase is at least five seconds and remains in effect.
 - Cover pending, expired, denied, invalid token type, explicit cancellation,
-  replacement ownership, and the normal success/persistence path.
+  replacement ownership, provider/CLI drift, code binding, cross-provider
+  isolation, and the normal success/persistence path.
 - Use `SYNTHETIC_SECRET` in remote bodies and token-shaped fields; assert it is
   absent from returned errors and captured logs.
 - Run the focused OAuth command tests and the full Rust library suite after

@@ -28,10 +28,11 @@ where
     R: tauri::Runtime,
     F: FnOnce(&mut settings::AppSettings) -> crate::shared::error::AppResult<()>,
 {
-    let mut settings = read_settings_for_update(app)?;
-    settings.schema_version = settings::SCHEMA_VERSION;
-    mutate(&mut settings)?;
-    settings::write(app, &settings).map(|value| SettingsView::from(&value))
+    settings::update(app, |settings| {
+        settings.schema_version = settings::SCHEMA_VERSION;
+        mutate(settings)
+    })
+    .map(|(value, ())| SettingsView::from(&value))
 }
 
 /// Encapsulates all fields for the `settings_set` command.
@@ -425,7 +426,17 @@ async fn write_settings_snapshot(
     let next_settings = next_settings.clone();
     blocking::run("settings_set_write", {
         let app = app.clone();
-        move || settings::write(&app, &next_settings)
+        move || {
+            settings::update(&app, |latest| {
+                let image_gen_storage_dir = latest.image_gen_storage_dir.clone();
+                let image_gen_storage_roots = latest.image_gen_storage_roots.clone();
+                *latest = next_settings;
+                latest.image_gen_storage_dir = image_gen_storage_dir;
+                latest.image_gen_storage_roots = image_gen_storage_roots;
+                Ok(())
+            })
+            .map(|(settings, ())| settings)
+        }
     })
     .await
     .map_err(Into::into)

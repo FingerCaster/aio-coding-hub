@@ -6,7 +6,6 @@ use reqwest::header::{HeaderMap, HeaderValue, AUTHORIZATION, CONTENT_TYPE, LOCAT
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::time::Duration;
 
-const ALLOWED_IMAGE_GEN_PATHS: &[&str] = &["/v1/images/generations", "/v1/images/edits"];
 const MAX_RESPONSE_BYTES: usize = 32 * 1024 * 1024;
 const MAX_MULTIPART_TOTAL_BYTES: usize = 64 * 1024 * 1024;
 const MAX_MULTIPART_FILES: usize = 32;
@@ -61,11 +60,26 @@ pub(super) fn resolve_timeout(timeout_secs: Option<u32>) -> Duration {
     Duration::from_secs(secs)
 }
 
-pub(super) fn validate_request_path(path: &str) -> Result<&str, String> {
-    if ALLOWED_IMAGE_GEN_PATHS.contains(&path) {
-        Ok(path)
-    } else {
-        Err(format!("SEC_INVALID_INPUT: path is not allowed: {path}"))
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ImageGenEndpoint {
+    Generations,
+    Edits,
+}
+
+impl ImageGenEndpoint {
+    fn path(self) -> &'static str {
+        match self {
+            Self::Generations => "/v1/images/generations",
+            Self::Edits => "/v1/images/edits",
+        }
+    }
+}
+
+pub(super) fn validate_request_path(path: &str) -> Result<ImageGenEndpoint, String> {
+    match path {
+        "/v1/images/generations" => Ok(ImageGenEndpoint::Generations),
+        "/v1/images/edits" => Ok(ImageGenEndpoint::Edits),
+        _ => Err("SEC_INVALID_INPUT: image generation endpoint is not allowed".to_string()),
     }
 }
 
@@ -175,8 +189,8 @@ pub(crate) async fn post_json(
     body: &serde_json::Value,
     timeout_secs: Option<u32>,
 ) -> Result<ImageGenHttpResponse, String> {
-    let path = validate_request_path(path)?;
-    let url = build_request_url(base_url, path)?;
+    let endpoint = validate_request_path(path)?;
+    let url = build_request_url(base_url, endpoint.path())?;
     let headers = auth_headers(api_key)?;
     let body_bytes = serde_json::to_vec(body)
         .map_err(|e| format!("SYSTEM_ERROR: failed to encode body JSON: {e}"))?;
@@ -354,8 +368,8 @@ pub(crate) async fn post_multipart(
     files: &[ImageGenMultipartFile],
     timeout_secs: Option<u32>,
 ) -> Result<ImageGenHttpResponse, String> {
-    let path = validate_request_path(path)?;
-    let url = build_request_url(base_url, path)?;
+    let endpoint = validate_request_path(path)?;
+    let url = build_request_url(base_url, endpoint.path())?;
     let headers = auth_headers(api_key)?;
     validate_multipart_fields(fields)?;
     let form = build_multipart_form(fields, decode_multipart_files(files)?)?;
@@ -379,12 +393,28 @@ pub(super) fn is_disallowed_ip(ip: IpAddr) -> bool {
             if let Some(mapped) = v6.to_ipv4_mapped() {
                 return !is_global_ipv4(mapped);
             }
+            if let Some(embedded) = embedded_ipv4_for_translation(v6) {
+                return !is_global_ipv4(embedded);
+            }
             if ipv6_in(v6, [0; 8], 96) {
                 return true;
             }
             !is_global_ipv6(v6)
         }
     }
+}
+
+fn embedded_ipv4_for_translation(ip: Ipv6Addr) -> Option<Ipv4Addr> {
+    let octets = ip.octets();
+    if ipv6_in(ip, [0x0064, 0xff9b, 0, 0, 0, 0, 0, 0], 96) {
+        return Some(Ipv4Addr::new(
+            octets[12], octets[13], octets[14], octets[15],
+        ));
+    }
+    if ipv6_in(ip, [0x2002, 0, 0, 0, 0, 0, 0, 0], 16) {
+        return Some(Ipv4Addr::new(octets[2], octets[3], octets[4], octets[5]));
+    }
+    None
 }
 
 fn ipv4_in(ip: Ipv4Addr, network: [u8; 4], prefix: u32) -> bool {

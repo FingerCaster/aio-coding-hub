@@ -71,6 +71,9 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   reqwest client with `resolve_to_addrs`. The connection must not perform a
   second unconstrained DNS lookup. A redirect creates a newly validated and
   newly pinned client for its target.
+- IPv4-mapped/compatible, NAT64 `64:ff9b::/96`, and 6to4 `2002::/16`
+  addresses are classified through the same IPv4 global-address predicate.
+  Known conversion forms that cannot be classified reliably fail closed.
 - Image response bytes are capped at 32 MiB. Non-success diagnostic bodies are
   capped at 8 KiB before the 512-character excerpt is formed. A successful
   response must have an `image/*` content type.
@@ -103,6 +106,9 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   root, new root, and retained historical roots into settings v52. New tasks use
   the new current root; list/read/delete/clear/cleanup and stats span all roots.
   Existing DB rows need no path rewrite or file migration.
+- Settings mutations use one process-wide locked read-modify-validate-write
+  operation. Storage switching and ordinary settings saves mutate the latest
+  locked snapshot instead of writing a previously read candidate.
 - Pagination order is `(created_at DESC, id DESC)`. The backend alone encodes a
   version-1 URL-safe Base64 JSON cursor containing both values and seeks with
   `created_at < C OR (created_at = C AND id < I)`. Null starts the first page;
@@ -114,9 +120,22 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   opaque `<task-id>/<filename>` reference. The renderer resolves it through
   `image_gen_read_image`, which re-queries and revalidates the whole row before
   returning bounded Base64; it never passes the value to `convertFileSrc`.
+- Root/task/file traversal rejects every symlink or Windows reparse component
+  and binds operations to stable filesystem identities. Reads consume the
+  already-validated file handle. Destructive operations atomically rename the
+  validated task into a unique quarantine under the trusted root using the
+  trusted directory handle, verify identity, then recursively delete there.
+  Reopening the original path after validation is not an acceptable boundary.
 - Delete, clear, and cleanup validate every selected task directory before the
   first recursive deletion. On validation or filesystem failure, DB rows are
   not deleted first. A DB path alone never grants read, deletion, or scope.
+- Persistence keeps INSERT, final row read, and final path validation in one
+  SQLite transaction. Any failure rolls back the row and removes only the task
+  directory exclusively created by that persist attempt.
+- Frontend history hydration reads thumbnails only with explicit concurrency
+  and decoded-byte budgets. Full output and reference images remain opaque
+  paths until detail, preview, download, or reference reuse requests them
+  through the bounded backend reader.
 - Image Gen grants no Tauri asset-protocol filesystem scope at startup or when
   the storage root changes. This is deliberate: Tauri 2 `forbid_directory`
   cannot be reversed by a later allow, so allow/forbid root switching cannot
@@ -145,6 +164,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 | DB task dir is outside root, nested, wrong-id, missing, symlink, or reparse escape | Reject before filesystem mutation or DB deletion |
 | Persist target directory/file, symlink, or hardlink already exists | Reject before writing; preserve external bytes and create no DB row |
 | DB insert fails after new files were written | Remove only the newly created task directory; leave no DB row |
+| Final row/path validation fails after INSERT | Roll back INSERT and remove only the newly created task directory |
+| Trusted root parent or task path is rebound after validation | Handle-relative read/quarantine fails closed; preserve outside bytes and DB rows |
 | Root changes with existing history | Persist old/new canonical roots together; old tasks remain operable and new tasks use the new root |
 | 51 rows share one `created_at` with page size 20 | Return 20/20/11 without duplicates or omissions using the composite cursor |
 | Cursor is numeric legacy, malformed Base64/JSON, unknown version, or invalid id | Return `SEC_INVALID_INPUT`; never silently reinterpret it |
@@ -178,7 +199,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 ### 6. Tests Required
 
 - Unit-test URL credentials, scheme, port, private IPv4/IPv6, IPv4-mapped IPv6,
-  public IP literals, CGNAT, benchmark, documentation/reserved ranges, relative
+  NAT64/6to4 embedded public/private/loopback IPv4, public IP literals, CGNAT,
+  benchmark, documentation/reserved ranges, relative
   redirects, unsafe redirect targets, redirect loops/limits, content type,
   error-body cap, and image-body cap. Keep a test proving hostname DNS resolving
   to localhost is rejected before an HTTP request.
@@ -200,6 +222,9 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   tampering between list and read. Any invalid selected row fails the list.
 - Prove clear/cleanup validate all selected rows before deleting a valid task,
   and prove failed validation leaves DB rows intact.
+- Add deterministic post-validation replacement hooks for read/delete and
+  platform-gated parent symlink/junction/reparse tests across read/delete/
+  clear/cleanup; outside bytes and rows remain unchanged.
 - Test exclusive task-directory/file creation with preexisting ordinary files,
   hardlinks and platform-gated symlinks/reparse points; external bytes and DB
   row count remain unchanged. Test DB-failure rollback.
@@ -214,6 +239,9 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   history still renders through backend reads.
 - Regenerate bindings, then run Image Gen Rust/frontend suites, full Rust tests,
   typecheck, lint, format checks, Clippy, and `git diff --check`.
+- Frontend-test that hydration does not read full output/reference bytes,
+  detail loading reads them on demand, and concurrency/aggregate byte limits
+  are enforced.
 
 ### 7. Wrong vs Correct
 

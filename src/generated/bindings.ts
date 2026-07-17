@@ -3681,12 +3681,7 @@ export type ProviderLimitUsageRow = {
   window_monthly_start_ts: number;
 };
 export type ProviderOAuthDeviceCodeCancelResult = { cancelled: boolean };
-export type ProviderOAuthDeviceCodePollInput = {
-  providerId: number;
-  flowId: string;
-  deviceCode: string;
-  userCode: string;
-};
+export type ProviderOAuthDeviceCodePollInput = { flowId: string };
 export type ProviderOAuthDeviceCodePollResult = {
   completed: boolean;
   slow_down: boolean;

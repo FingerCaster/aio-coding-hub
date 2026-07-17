@@ -1,4 +1,4 @@
 {"file":"AGENTS.md","reason":"检查 origin/upstream 权限、显式 gh 目标、非冲突带入和产品冲突暂停是否全部满足。"}
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"确认 upstream merge 未破坏 provider budget、模型发现和跨请求 circuit accounting。"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查自动合并后的跨层产品语义，而不只检查文本冲突和编译结果。"}
-{"file":".trellis/tasks/07-17-sync-upstream-main-after-fixes/research/upstream-sync-policy.md","reason":"核对固定 SHA、祖先关系、四项回归、remote 状态、冲突证据和回滚边界。"}
+{"file":".trellis/tasks/archive/2026-07/07-17-sync-upstream-main-after-fixes/research/upstream-sync-policy.md","reason":"核对固定 SHA、祖先关系、四项回归、remote 状态、冲突证据和回滚边界。"}

@@ -117,6 +117,10 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   import completes validation before creating the target directory or writing
   files. This does not promise directory-level transactional rollback if a
   filesystem I/O failure occurs after writing begins.
+- Each atomic file write creates a randomized same-directory temporary file
+  with `create_new`. Temporary cleanup removes only that writer-owned file;
+  legal payload names such as `a.aio-tmp` or
+  `.aio-coding-hub.source.json.aio-tmp` are never reserved or overwritten.
 - `SKILL.md` uses its 256 KiB budget on export/import/restore. Source metadata
   is serialized, checked for completeness and the 64 KiB cap, and held in the
   prepared payload before any ordinary file write.
@@ -151,6 +155,7 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
 | Local source metadata is partial, invalid, or oversized | Reject before activating imported Skill state |
 | `SKILL.md` exceeds 256 KiB | Reject its dedicated bounded read |
 | Config import file exceeds 64 MiB | Reject before UTF-8 or JSON parsing |
+| Payload contains names resembling the atomic temporary suffix | Preserve every byte regardless of input order |
 | v1 bundle omits full Skill payload | Preserve legacy installed/local state |
 | v2 bundle omits installed or local payload | Reject as invalid input |
 
@@ -201,6 +206,9 @@ Keep focused regressions in
   overflow before target creation or ordinary file writes.
 - Generated marker collisions, Windows case aliases in both orders, platform-
   specific `SKILL.md` alias budgets, and explicit non-Windows case behavior.
+- Writer order tests for `a.aio-tmp` plus `a`, and a real
+  `export_skill_dir_files` to `write_skill_files_to_dir` byte-for-byte round trip
+  containing temporary-like names.
 
 Run at least:
 

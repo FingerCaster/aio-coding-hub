@@ -1001,6 +1001,83 @@ fn nested_png_like_asset_round_trips_byte_for_byte() {
 }
 
 #[test]
+fn atomic_temp_like_skill_names_round_trip_in_both_orders() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let metadata = SkillSourceMetadataFile {
+        source_git_url: "https://example.invalid/repo.git".to_string(),
+        source_branch: "main".to_string(),
+        source_subdir: "skills/example".to_string(),
+    };
+    let make_files = || {
+        vec![
+            SkillFileExport {
+                relative_path: ".aio-coding-hub.source.json.aio-tmp".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"payload-marker-temp-name"),
+            },
+            SkillFileExport {
+                relative_path: "a.aio-tmp".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"payload-a-temp"),
+            },
+            SkillFileExport {
+                relative_path: "a".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"payload-a"),
+            },
+        ]
+    };
+    let reversed = make_files().into_iter().rev().collect::<Vec<_>>();
+
+    for (index, ordered) in [make_files(), reversed].into_iter().enumerate() {
+        let target = temp.path().join(format!("target-{index}"));
+        write_skill_files_to_dir(&target, &ordered, Some(&metadata))
+            .expect("temp-like legal payload names must import");
+        assert_eq!(
+            std::fs::read(target.join(".aio-coding-hub.source.json.aio-tmp"))
+                .expect("read marker-like payload"),
+            b"payload-marker-temp-name"
+        );
+        assert_eq!(
+            std::fs::read(target.join("a.aio-tmp")).expect("read a temp payload"),
+            b"payload-a-temp"
+        );
+        assert_eq!(
+            std::fs::read(target.join("a")).expect("read a payload"),
+            b"payload-a"
+        );
+        assert!(target.join(".aio-coding-hub.source.json").is_file());
+    }
+}
+
+#[test]
+fn exporter_to_importer_round_trips_atomic_temp_like_skill_names() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source).expect("create source");
+    let expected = [
+        (
+            ".aio-coding-hub.source.json.aio-tmp",
+            b"exported-marker-temp-name".as_slice(),
+        ),
+        ("a.aio-tmp", b"exported-a-temp".as_slice()),
+        ("a", b"exported-a".as_slice()),
+    ];
+    for (name, bytes) in expected {
+        std::fs::write(source.join(name), bytes).expect("write source payload");
+    }
+
+    let exported = export_skill_dir_files(&source, true).expect("export real skill directory");
+    let target = temp.path().join("target");
+    write_skill_files_to_dir(&target, &exported, None).expect("import exported skill payload");
+
+    for (name, bytes) in expected {
+        assert_eq!(
+            std::fs::read(target.join(name)).expect("read imported payload"),
+            bytes,
+            "round-trip bytes for {name}"
+        );
+    }
+}
+
+#[test]
 fn exact_eight_mib_single_file_round_trips() {
     let temp = tempfile::tempdir().expect("tempdir");
     let source = temp.path().join("source");

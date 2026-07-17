@@ -533,9 +533,7 @@ describe("services/providers/providers", () => {
     await expect(providerDuplicate(1.5)).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(providerOAuthStartFlow("not-a-cli", 1)).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(providerOAuthStartDeviceFlow(0)).rejects.toThrow("SEC_INVALID_INPUT");
-    await expect(providerOAuthPollDeviceFlow(1, "", "device", "user")).rejects.toThrow(
-      "SEC_INVALID_INPUT"
-    );
+    await expect(providerOAuthPollDeviceFlow("")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(providerOAuthRefresh(0)).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(providerOAuthResetCodexQuota(0)).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(providerOAuthDisconnect(0)).rejects.toThrow("SEC_INVALID_INPUT");
@@ -648,7 +646,7 @@ describe("services/providers/providers", () => {
       } as any,
     });
 
-    const result = await providerOAuthPollDeviceFlow(10, " flow_123 ", "device_123", "ABCD-EFGH");
+    const result = await providerOAuthPollDeviceFlow(" flow_123 ");
     expect(result).toEqual({
       completed: true,
       slow_down: false,
@@ -657,10 +655,7 @@ describe("services/providers/providers", () => {
       expires_at: 1700000000,
     });
     expect(commands.providerOauthPollDeviceFlow).toHaveBeenCalledWith({
-      providerId: 10,
       flowId: "flow_123",
-      deviceCode: "device_123",
-      userCode: "ABCD-EFGH",
     });
   });
 

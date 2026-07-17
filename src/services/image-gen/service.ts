@@ -29,6 +29,12 @@ function safeUrlForLog(value: string): string {
   }
 }
 
+function imageGenEndpointForLog(path: string): "generations" | "edits" | "invalid" {
+  if (path === "/v1/images/generations") return "generations";
+  if (path === "/v1/images/edits") return "edits";
+  return "invalid";
+}
+
 export type {
   ImageGenConfigView,
   ImageGenFetchedImage,
@@ -78,8 +84,8 @@ export async function imageGenPostJson(
   return invokeGeneratedIpc<ImageGenHttpResponse>({
     title: "生图请求失败",
     cmd: "image_gen_post_json",
-    // body 含 prompt 与潜在大 payload，不进日志。
-    args: { adapterId, path },
+    // body 与拒绝的原始 path 可能含 secret，不进日志。
+    args: { adapterId, endpoint: imageGenEndpointForLog(path) },
     invoke: () => commands.imageGenPostJson(adapterId, path, body, timeoutSecs),
   });
 }
@@ -94,8 +100,8 @@ export async function imageGenPostMultipart(
   return invokeGeneratedIpc<ImageGenHttpResponse>({
     title: "生图编辑请求失败",
     cmd: "image_gen_post_multipart",
-    // files 含 base64 图片数据，不进日志。
-    args: { adapterId, path, fileCount: files.length },
+    // fields/files 与拒绝的原始 path 可能含 secret，不进日志。
+    args: { adapterId, endpoint: imageGenEndpointForLog(path), fileCount: files.length },
     invoke: () => commands.imageGenPostMultipart(adapterId, path, fields, files, timeoutSecs),
   });
 }

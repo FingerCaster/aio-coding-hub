@@ -1827,12 +1827,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(vi.mocked(openDesktopUrl)).toHaveBeenCalledWith("https://accounts.x.ai/device")
     );
     await waitFor(() =>
-      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith(
-        346,
-        "flow_123",
-        "grok_device_123",
-        "WXYZ-1234"
-      )
+      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith("flow_123")
     );
     await waitFor(() => expect(vi.mocked(toast)).toHaveBeenCalledWith("设备码登录成功"));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith("grok"));
@@ -1907,12 +1902,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(vi.mocked(openDesktopUrl)).toHaveBeenCalledWith("https://auth.openai.com/codex/device")
     );
     await waitFor(() =>
-      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith(
-        299,
-        "flow_123",
-        "device_123",
-        "ABCD-EFGH"
-      )
+      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith("flow_123")
     );
     await waitFor(() => expect(vi.mocked(toast)).toHaveBeenCalledWith("设备码登录成功"));
     await waitFor(() => expect(onSaved).toHaveBeenCalledWith("codex"));
@@ -1971,12 +1961,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     fireEvent.click(dialog.getByRole("button", { name: "设备码登录" }));
 
     await waitFor(() =>
-      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith(
-        301,
-        "flow_close",
-        "device_close",
-        "CLOSE-1"
-      )
+      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith("flow_close")
     );
 
     rerender(
@@ -2093,12 +2078,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "设备码登录" }));
     await waitFor(() =>
-      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith(
-        302,
-        "flow_old",
-        "device_old",
-        "OLD-1"
-      )
+      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith("flow_old")
     );
 
     fireEvent.click(screen.getByRole("button", { name: "设备码登录" }));
@@ -2106,12 +2086,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
       expect(vi.mocked(providerOAuthCancelDeviceFlow)).toHaveBeenCalledWith("flow_old")
     );
     await waitFor(() =>
-      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith(
-        302,
-        "flow_new",
-        "device_new",
-        "NEW-1"
-      )
+      expect(vi.mocked(providerOAuthPollDeviceFlow)).toHaveBeenCalledWith("flow_new")
     );
 
     resolveOldPoll({

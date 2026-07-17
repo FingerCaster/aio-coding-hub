@@ -1,2 +1,2 @@
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Keep one owner for the IPC result, TanStack Query cache, component loading state, and display-only boundary."}
-{"file":".trellis/tasks/07-17-fix-account-balance-manual-refresh/research/manual-refresh-race.md","reason":"Implement the confirmed response-order race and exact cache/availability boundaries."}
+{"file":".trellis/tasks/archive/2026-07/07-17-fix-account-balance-manual-refresh/research/manual-refresh-race.md","reason":"Implement the confirmed response-order race and exact cache/availability boundaries."}

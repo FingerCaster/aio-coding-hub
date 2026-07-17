@@ -1266,9 +1266,9 @@ describe("pages/image-gen/useImageGenController", () => {
 
     const task = result.current.tasks[0];
     const image = diskImage(task.images[0]);
-    expect(image.src).toBe(`data:image/png;base64,${btoa("stored-image")}`);
-    // jsdom 无 createImageBitmap：缩略图生成失败仍落盘，thumbSrc 回退原图。
-    expect(image.thumbSrc).toBe(image.src);
+    // persist 返回的后端行按首屏 hydration 语义映射，不主动读回原图。
+    expect(image.src).toBeNull();
+    expect(image.thumbSrc).toBeNull();
     expect(task.usage).toEqual({ totalTokens: 42 });
     // 旧 objectURL 已释放（本用例唯一创建的 URL 即生成图）。
     const generatedUrl = vi.mocked(URL.createObjectURL).mock.results[0].value as string;
@@ -1312,7 +1312,7 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(payload.refImages).toEqual([{ mime: "image/png", dataB64: refB64 }]);
 
     const task = result.current.tasks[0];
-    expect(task.refThumbs[0]).toBe(`data:image/png;base64,${btoa("stored-image")}`);
+    expect(task.refThumbs).toEqual([]);
     expect(task.refPaths).toEqual([{ path: `${task.id}/ref-1.png`, mime: "image/png" }]);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(refUrl);
   });
@@ -1432,11 +1432,38 @@ describe("pages/image-gen/useImageGenController", () => {
     });
     expect(diskImage(done.images[0])).toMatchObject({
       path: "row-1/image-1.png",
-      src: `data:image/png;base64,${btoa("stored-image")}`,
+      src: null,
       thumbSrc: `data:image/png;base64,${btoa("stored-image")}`,
     });
     expect(failed).toMatchObject({ id: "row-2", status: "error", error: "HTTP 500: boom" });
     expect(result.current.hasMore).toBe(false);
+  });
+
+  it("loads full images and references only when persisted task detail opens", async () => {
+    vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRowWithRef()]));
+    vi.mocked(imageGenReadImage).mockImplementation(async (path) => ({
+      mime: "image/png",
+      dataB64: btoa(path),
+    }));
+    const { result } = await renderController();
+    await waitFor(() => {
+      expect(result.current.tasks).toHaveLength(1);
+    });
+
+    expect(imageGenReadImage).toHaveBeenCalledTimes(1);
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/thumb-1.webp");
+    expect(diskImage(result.current.tasks[0].images[0]).src).toBeNull();
+    expect(result.current.tasks[0].refThumbs).toEqual([]);
+
+    act(() => {
+      result.current.openDetail("row-1");
+    });
+    await waitFor(() => {
+      expect(diskImage(result.current.tasks[0].images[0]).src).toContain(btoa("row-1/image-1.png"));
+      expect(result.current.tasks[0].refThumbs[0]).toContain(btoa("row-1/ref-1.png"));
+    });
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/image-1.png");
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/ref-1.png");
   });
 
   it("does not re-hydrate on remount once the store is hydrated", async () => {

@@ -161,7 +161,7 @@ pub(super) fn canonical_settings_json(settings: &AppSettings) -> AppResult<serde
     Ok(serialized)
 }
 
-pub fn read<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppSettings> {
+fn read_unlocked<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppSettings> {
     let cache = SETTINGS_CACHE.get_or_init(|| RwLock::new(None));
     let path = settings_path(app)?;
 
@@ -180,13 +180,13 @@ pub fn read<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppSettin
             legacy_path
         } else {
             let settings = AppSettings::default();
-            let _ = write(app, &settings);
+            let _ = write_unlocked(app, &settings);
             cache_settings(&path, &settings);
             return Ok(settings);
         }
     } else {
         let settings = AppSettings::default();
-        let _ = write(app, &settings);
+        let _ = write_unlocked(app, &settings);
         cache_settings(&path, &settings);
         return Ok(settings);
     };
@@ -197,11 +197,15 @@ pub fn read<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppSettin
     validate_bounds(&settings)?;
 
     if repaired || load_path != path {
-        let _ = write(app, &settings);
+        let _ = write_unlocked(app, &settings);
     }
 
     cache_settings(&path, &settings);
     Ok(settings)
+}
+
+pub fn read<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<AppSettings> {
+    read_unlocked(app)
 }
 
 pub fn log_retention_days_fail_open<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> u32 {
@@ -485,7 +489,7 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
     Ok(())
 }
 
-pub fn write<R: tauri::Runtime>(
+fn write_unlocked<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     settings: &AppSettings,
 ) -> AppResult<AppSettings> {
@@ -513,9 +517,6 @@ pub fn write<R: tauri::Runtime>(
 
     validate_bounds(&settings)?;
 
-    let _write_guard = SETTINGS_WRITE_LOCK
-        .get_or_init(|| Mutex::new(()))
-        .lock_or_recover();
     let path = settings_path(app)?;
     let tmp_path = path.with_file_name("settings.json.tmp");
     let backup_path = path.with_file_name("settings.json.bak");
@@ -547,6 +548,30 @@ pub fn write<R: tauri::Runtime>(
 
     cache_settings(&path, &settings);
     Ok(settings)
+}
+
+pub fn write<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    settings: &AppSettings,
+) -> AppResult<AppSettings> {
+    let _write_guard = SETTINGS_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock_or_recover();
+    write_unlocked(app, settings)
+}
+
+pub fn update<R, T, F>(app: &tauri::AppHandle<R>, mutate: F) -> AppResult<(AppSettings, T)>
+where
+    R: tauri::Runtime,
+    F: FnOnce(&mut AppSettings) -> AppResult<T>,
+{
+    let _write_guard = SETTINGS_WRITE_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock_or_recover();
+    let mut settings = read_unlocked(app)?;
+    let output = mutate(&mut settings)?;
+    let settings = write_unlocked(app, &settings)?;
+    Ok((settings, output))
 }
 
 pub fn clear_cache() {
@@ -700,6 +725,149 @@ mod tests {
         let persisted = read(&handle).expect("read settings");
         assert!((20_000..=20_719).contains(&persisted.preferred_port));
         assert!(settings_path(&handle).expect("settings path").exists());
+        clear_settings_cache();
+    }
+
+    #[test]
+    fn atomic_updates_merge_two_concurrent_storage_switches() {
+        let _env_lock = test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvVarRestore::set("AIO_CODING_HUB_HOME_DIR", home.path());
+        let _dotdir_restore = EnvVarRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-coding-hub-settings-update-switch-test",
+        );
+        clear_settings_cache();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        write(&handle, &AppSettings::default()).expect("seed settings");
+        let (a_entered_tx, a_entered_rx) = std::sync::mpsc::channel();
+        let (release_a_tx, release_a_rx) = std::sync::mpsc::channel();
+        let first = {
+            let app = handle.clone();
+            std::thread::spawn(move || {
+                update(&app, |settings| {
+                    a_entered_tx.send(()).expect("signal A entered mutation");
+                    release_a_rx.recv().expect("release A mutation");
+                    settings.image_gen_storage_roots.push("root-a".to_string());
+                    settings.image_gen_storage_dir = Some("root-a".to_string());
+                    Ok(())
+                })
+                .expect("first storage update");
+            })
+        };
+        a_entered_rx.recv().expect("A holds update lock");
+        let (b_starting_tx, b_starting_rx) = std::sync::mpsc::channel();
+        let (b_entered_tx, b_entered_rx) = std::sync::mpsc::channel();
+        let second = {
+            let app = handle.clone();
+            std::thread::spawn(move || {
+                b_starting_tx.send(()).expect("signal B starting update");
+                update(&app, |settings| {
+                    assert!(settings
+                        .image_gen_storage_roots
+                        .contains(&"root-a".to_string()));
+                    b_entered_tx.send(()).expect("signal B entered mutation");
+                    settings.image_gen_storage_roots.push("root-b".to_string());
+                    settings.image_gen_storage_dir = Some("root-b".to_string());
+                    Ok(())
+                })
+                .expect("second storage update");
+            })
+        };
+        b_starting_rx.recv().expect("B is about to call update");
+        assert!(b_entered_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        release_a_tx.send(()).expect("release A");
+        b_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("B enters after A commits");
+        first.join().expect("first storage worker");
+        second.join().expect("second storage worker");
+
+        let persisted = read(&handle).expect("read merged settings");
+        assert!(persisted
+            .image_gen_storage_roots
+            .contains(&"root-a".to_string()));
+        assert!(persisted
+            .image_gen_storage_roots
+            .contains(&"root-b".to_string()));
+        assert_eq!(persisted.image_gen_storage_dir.as_deref(), Some("root-b"));
+        clear_settings_cache();
+    }
+
+    #[test]
+    fn atomic_storage_switch_and_ordinary_update_preserve_both_fields() {
+        let _env_lock = test_env_lock();
+        let home = tempfile::tempdir().expect("tempdir");
+        let _home_restore = EnvVarRestore::set("AIO_CODING_HUB_HOME_DIR", home.path());
+        let _dotdir_restore = EnvVarRestore::set(
+            "AIO_CODING_HUB_DOTDIR_NAME",
+            ".aio-coding-hub-settings-update-mixed-test",
+        );
+        clear_settings_cache();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        write(&handle, &AppSettings::default()).expect("seed settings");
+        let (a_entered_tx, a_entered_rx) = std::sync::mpsc::channel();
+        let (release_a_tx, release_a_rx) = std::sync::mpsc::channel();
+        let storage_worker = {
+            let app = handle.clone();
+            std::thread::spawn(move || {
+                update(&app, |settings| {
+                    a_entered_tx
+                        .send(())
+                        .expect("signal storage mutation entered");
+                    release_a_rx.recv().expect("release storage mutation");
+                    settings.image_gen_storage_dir = Some("new-root".to_string());
+                    settings
+                        .image_gen_storage_roots
+                        .push("new-root".to_string());
+                    Ok(())
+                })
+                .expect("storage switch");
+            })
+        };
+        a_entered_rx.recv().expect("storage update holds lock");
+        let (ordinary_starting_tx, ordinary_starting_rx) = std::sync::mpsc::channel();
+        let (ordinary_entered_tx, ordinary_entered_rx) = std::sync::mpsc::channel();
+        let ordinary_worker = {
+            let app = handle.clone();
+            std::thread::spawn(move || {
+                ordinary_starting_tx
+                    .send(())
+                    .expect("signal ordinary update starting");
+                update(&app, |settings| {
+                    assert_eq!(settings.image_gen_storage_dir.as_deref(), Some("new-root"));
+                    ordinary_entered_tx
+                        .send(())
+                        .expect("signal ordinary mutation entered");
+                    settings.preferred_port = 42_123;
+                    Ok(())
+                })
+                .expect("ordinary settings update");
+            })
+        };
+        ordinary_starting_rx
+            .recv()
+            .expect("ordinary worker about to call update");
+        assert!(ordinary_entered_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        release_a_tx.send(()).expect("release storage update");
+        ordinary_entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("ordinary mutation enters after storage commit");
+        storage_worker.join().expect("storage worker");
+        ordinary_worker.join().expect("ordinary worker");
+
+        let persisted = read(&handle).expect("read merged settings");
+        assert_eq!(persisted.preferred_port, 42_123);
+        assert_eq!(persisted.image_gen_storage_dir.as_deref(), Some("new-root"));
+        assert!(persisted
+            .image_gen_storage_roots
+            .contains(&"new-root".to_string()));
         clear_settings_cache();
     }
 

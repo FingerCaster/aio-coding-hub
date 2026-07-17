@@ -3723,7 +3723,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mock_runtime_router_records_all_session_bound_gate_skips_without_upstream_calls() {
+    async fn decision_a_records_all_session_bound_gate_skips_and_final_503_diagnostics() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -3838,7 +3838,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mock_runtime_router_gate_skips_do_not_consume_ready_provider_cap() {
+    async fn decision_a_session_bound_gate_skip_continues_without_consuming_ready_cap() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -3881,6 +3881,9 @@ mod tests {
         let now = crate::gateway::util::now_unix_seconds() as i64;
         circuit.record_failure(first_id, now, None);
         circuit.record_failure(second_id, now, None);
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000002";
+        session.bind_success("codex", session_id, second_id, None, now);
 
         let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
         let router = build_router(gateway_state_with_parts(
@@ -3888,12 +3891,13 @@ mod tests {
             db,
             log_tx,
             circuit,
-            Arc::new(session_manager::SessionManager::new()),
+            session.clone(),
         ));
         let request = Request::builder()
             .method(Method::POST)
             .uri("/v1/chat/completions")
             .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
             .body(Body::from(
                 r#"{"model":"gpt-skips-ready-cap","messages":[{"role":"user","content":"hello"}]}"#,
             ))
@@ -3932,6 +3936,12 @@ mod tests {
         assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
         assert_eq!(third_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        // Gate denial itself does not clear the binding; the later successful
+        // fallback legitimately advances it to the provider that served the session.
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(third_id)
+        );
 
         first_task.abort();
         second_task.abort();

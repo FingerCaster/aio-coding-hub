@@ -1,3 +1,3 @@
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve generic retry/failover behavior while confirming local guard removal."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Preserve approvals_reviewer and the ordinary generated Codex config boundary."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Drive negative searches for both removed implementations."}
+{"file":".trellis/tasks/archive/2026-07/07-15-external-codex-retry-gateway/inventory.md","reason":"Drive negative searches for both removed implementations."}

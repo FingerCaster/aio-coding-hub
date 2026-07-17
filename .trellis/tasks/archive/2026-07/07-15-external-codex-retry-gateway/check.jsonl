@@ -1,3 +1,3 @@
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Verify generic retry and provider behavior did not regress."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Verify generated bindings and Codex settings remain coherent."}
-{"file":".trellis/tasks/07-15-external-codex-retry-gateway/inventory.md","reason":"Verify managed gateway and local guard negative-search boundaries."}
+{"file":".trellis/tasks/archive/2026-07/07-15-external-codex-retry-gateway/inventory.md","reason":"Verify managed gateway and local guard negative-search boundaries."}

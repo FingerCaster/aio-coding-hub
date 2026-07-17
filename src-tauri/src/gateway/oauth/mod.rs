@@ -15,6 +15,17 @@ use tokio::sync::watch;
 struct ActiveOAuthFlow {
     flow_id: String,
     _abort: watch::Sender<()>,
+    device: Option<DeviceOAuthFlowBinding>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct DeviceOAuthFlowBinding {
+    pub(crate) provider_id: i64,
+    pub(crate) cli_key: String,
+    pub(crate) provider_type: String,
+    pub(crate) device_code: String,
+    pub(crate) user_code: String,
+    pub(crate) deadline_unix: i64,
 }
 
 pub(crate) struct OAuthFlowLifecycle {
@@ -56,11 +67,52 @@ pub(crate) fn begin_flow_lifecycle() -> OAuthFlowLifecycle {
     *guard = Some(ActiveOAuthFlow {
         flow_id: flow_id.clone(),
         _abort: tx,
+        device: None,
     });
     OAuthFlowLifecycle {
         flow_id,
         abort_rx: rx,
     }
+}
+
+pub(crate) fn bind_device_flow(
+    flow_id: &str,
+    binding: DeviceOAuthFlowBinding,
+) -> crate::shared::error::AppResult<()> {
+    let mut guard = ACTIVE_FLOW.lock().unwrap_or_else(|e| e.into_inner());
+    let active = guard
+        .as_mut()
+        .filter(|active| active.flow_id == flow_id)
+        .ok_or_else(|| {
+            crate::shared::error::AppError::from(
+                "OAuth flow cancelled: login attempt is no longer current".to_string(),
+            )
+        })?;
+    active.device = Some(binding);
+    Ok(())
+}
+
+pub(crate) fn current_device_flow(
+    flow_id: &str,
+    now_unix: i64,
+) -> crate::shared::error::AppResult<DeviceOAuthFlowBinding> {
+    let mut guard = ACTIVE_FLOW.lock().unwrap_or_else(|e| e.into_inner());
+    let binding = guard
+        .as_ref()
+        .filter(|active| active.flow_id == flow_id)
+        .and_then(|active| active.device.clone())
+        .ok_or_else(|| {
+            crate::shared::error::AppError::from(
+                "OAuth flow cancelled: login attempt is no longer current".to_string(),
+            )
+        })?;
+    if now_unix >= binding.deadline_unix {
+        *guard = None;
+        return Err(crate::shared::error::AppError::from(
+            "OAuth device flow expired".to_string(),
+        ));
+    }
+    Ok(binding)
 }
 
 pub(crate) fn is_current_flow(flow_id: &str) -> bool {
@@ -94,6 +146,37 @@ pub(crate) fn complete_current_flow<T>(
     {
         return Err(crate::shared::error::AppError::from(
             "OAuth flow cancelled: login attempt is no longer current".to_string(),
+        ));
+    }
+
+    let result = complete();
+    if result.is_ok() {
+        *guard = None;
+    }
+    result
+}
+
+pub(crate) fn complete_current_device_flow<T>(
+    flow_id: &str,
+    expected: &DeviceOAuthFlowBinding,
+    now_unix: i64,
+    complete: impl FnOnce() -> crate::shared::error::AppResult<T>,
+) -> crate::shared::error::AppResult<T> {
+    let mut guard = ACTIVE_FLOW.lock().unwrap_or_else(|e| e.into_inner());
+    let Some(active) = guard.as_ref().filter(|active| active.flow_id == flow_id) else {
+        return Err(crate::shared::error::AppError::from(
+            "OAuth flow cancelled: login attempt is no longer current".to_string(),
+        ));
+    };
+    if active.device.as_ref() != Some(expected) {
+        return Err(crate::shared::error::AppError::from(
+            "OAuth device flow ownership changed".to_string(),
+        ));
+    }
+    if now_unix >= expected.deadline_unix {
+        *guard = None;
+        return Err(crate::shared::error::AppError::from(
+            "OAuth device flow expired".to_string(),
         ));
     }
 
@@ -286,5 +369,88 @@ mod tests {
         });
         assert!(current.is_ok());
         assert!(!is_current_flow(&second.flow_id));
+    }
+
+    #[tokio::test]
+    async fn device_flow_binding_is_server_owned_and_expires_fail_closed() {
+        let _flow_lock = super::oauth_flow_test_lock().await;
+        reset_oauth_flow_for_test();
+        let lifecycle = begin_flow_lifecycle();
+        let binding = DeviceOAuthFlowBinding {
+            provider_id: 41,
+            cli_key: "codex".to_string(),
+            provider_type: "openai".to_string(),
+            device_code: "bound-device".to_string(),
+            user_code: "bound-user".to_string(),
+            deadline_unix: 200,
+        };
+        bind_device_flow(&lifecycle.flow_id, binding.clone()).expect("bind device flow");
+
+        assert_eq!(
+            current_device_flow(&lifecycle.flow_id, 199).expect("current binding"),
+            binding
+        );
+        assert!(current_device_flow("different-flow", 199).is_err());
+        assert!(current_device_flow(&lifecycle.flow_id, 200).is_err());
+        assert!(!is_current_flow(&lifecycle.flow_id));
+    }
+
+    #[tokio::test]
+    async fn device_flow_completion_rechecks_binding_and_never_runs_on_failure() {
+        let _flow_lock = super::oauth_flow_test_lock().await;
+        reset_oauth_flow_for_test();
+        let lifecycle = begin_flow_lifecycle();
+        let binding = DeviceOAuthFlowBinding {
+            provider_id: 41,
+            cli_key: "codex".to_string(),
+            provider_type: "openai".to_string(),
+            device_code: "bound-device".to_string(),
+            user_code: "bound-user".to_string(),
+            deadline_unix: 200,
+        };
+        bind_device_flow(&lifecycle.flow_id, binding.clone()).expect("bind device flow");
+
+        let mut wrong_provider = binding.clone();
+        wrong_provider.provider_id = 42;
+        let mut called = false;
+        assert!(
+            complete_current_device_flow(&lifecycle.flow_id, &wrong_provider, 199, || {
+                called = true;
+                Ok::<_, crate::shared::error::AppError>(())
+            })
+            .is_err()
+        );
+        assert!(!called);
+
+        let mut wrong_cli = binding.clone();
+        wrong_cli.cli_key = "grok".to_string();
+        assert!(
+            complete_current_device_flow(&lifecycle.flow_id, &wrong_cli, 199, || {
+                called = true;
+                Ok::<_, crate::shared::error::AppError>(())
+            })
+            .is_err()
+        );
+        assert!(!called);
+
+        let mut wrong_codes = binding.clone();
+        wrong_codes.device_code = "changed".to_string();
+        assert!(
+            complete_current_device_flow(&lifecycle.flow_id, &wrong_codes, 199, || {
+                called = true;
+                Ok::<_, crate::shared::error::AppError>(())
+            })
+            .is_err()
+        );
+        assert!(!called);
+
+        assert!(
+            complete_current_device_flow(&lifecycle.flow_id, &binding, 200, || {
+                called = true;
+                Ok::<_, crate::shared::error::AppError>(())
+            })
+            .is_err()
+        );
+        assert!(!called);
     }
 }
