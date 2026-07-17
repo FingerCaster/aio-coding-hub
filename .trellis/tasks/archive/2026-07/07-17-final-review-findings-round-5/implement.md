@@ -51,7 +51,7 @@
 
 - [x] 确认 `upstream` push URL 为 `DISABLED`、父状态为 `in_progress`，且未执行 remote 操作。
 - [x] 从当前 PowerShell 动态解析 `node`/`pnpm` 所在目录补 `PATH`，提交工作改动。
-- [ ] 仅归档 `07-17-final-review-findings-round-5`，不得归档父任务或启动 Max 终审；提交归档。
+- [x] 仅归档 `07-17-final-review-findings-round-5`，不得归档父任务或启动 Max 终审；提交归档。
 - [ ] 用 `add_session.py` 记录 journal（含工作与归档 hash、测试和平台限制），提交 journal。
 - [ ] 最终核对三个 hash、测试摘要、`git status`、父状态与 `upstream` push URL，输出
       `ROUND5_READY_FOR_MAX_REVIEW`。
