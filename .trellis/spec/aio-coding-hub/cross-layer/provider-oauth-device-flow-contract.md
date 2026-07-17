@@ -1,0 +1,127 @@
+# Provider OAuth Device-Flow Contract
+
+## Scenario: Change Codex Or Grok Device Authorization
+
+### 1. Scope / Trigger
+
+Use this contract when changing Codex or Grok device authorization start/poll
+requests, response parsing, polling intervals, expiry arithmetic, flow
+cancellation, or token persistence. These paths consume untrusted remote JSON
+and coordinate one process-owned OAuth flow across repeated IPC calls.
+
+### 2. Signatures
+
+The generated IPC start, poll, and cancel boundaries are implemented by:
+
+```rust
+pub(crate) async fn provider_oauth_start_device_flow(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    provider_id: i64,
+) -> Result<ProviderOAuthDeviceCodeStartResult, String>;
+
+pub(crate) async fn provider_oauth_poll_device_flow(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    input: ProviderOAuthDeviceCodePollInput,
+) -> Result<ProviderOAuthDeviceCodePollResult, String>;
+
+pub(crate) async fn provider_oauth_cancel_device_flow(
+    flow_id: String,
+) -> Result<ProviderOAuthDeviceCodeCancelResult, String>;
+```
+
+Remote responses pass through the internal bounded adapter:
+
+```rust
+async fn read_device_json_value(
+    response: reqwest::Response,
+    context: &str,
+) -> Result<(reqwest::StatusCode, Option<serde_json::Value>), String>;
+```
+
+### 3. Contracts
+
+- Device authorization and token polling responses use the shared bounded JSON
+  reader with a 256 KiB body cap. Do not call unbounded `text()` or `json()`.
+- A successful body must be a JSON object of the expected response type.
+  Required device code, user code, verification URI, and access-token fields
+  are non-empty after trimming. Grok token success additionally requires the
+  `Bearer` token type.
+- Remote polling intervals are clamped to 1 through 60 seconds before the
+  three-second safety margin is added with saturating arithmetic. Values such
+  as `u64::MAX` produce 63, never panic or wrap.
+- Reject non-positive expiry durations. Expiry and delay arithmetic uses
+  checked or saturating operations so remote numeric extremes cannot wrap.
+- `authorization_pending` keeps the current flow and returns incomplete.
+  Expired, denied, or other recognized terminal token responses cancel only
+  the matching current flow. Malformed input persists no token. Successful
+  token persistence atomically completes the same flow; a stale or explicitly
+  canceled flow cannot commit tokens.
+- Returned errors and logs contain safe operation/status diagnostics only.
+  They never reproduce a remote body, URL, device code, access/refresh token,
+  ID token, or upstream error description.
+
+### 4. Validation & Error Matrix
+
+| Input / condition | Required result |
+| --- | --- |
+| Response exceeds 256 KiB | Fail bounded read; expose none of the body |
+| Response is invalid JSON, not an object, or has empty required fields | Fail safely; persist no token |
+| Remote interval is 0, 5, or `u64::MAX` | Poll interval is respectively 4, 8, or 63 seconds |
+| Grok success token type is missing or not `Bearer` | Terminal failure; persist no token |
+| `authorization_pending` | Return incomplete and retain current flow ownership |
+| Expired or denied response | Cancel the matching flow and return a safe terminal error |
+| Flow is canceled/replaced while a poll is pending | Late response cannot persist credentials or cancel the replacement flow |
+| Valid success for the current flow | Persist the validated token set and complete exactly that flow |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a pending response returns incomplete and preserves the same flow;
+  a later valid Bearer response for that flow is persisted exactly once.
+- Good: `u64::MAX` as the remote interval is bounded to 63 seconds and an
+  extreme positive expiry saturates without panic or wrap.
+- Base: a valid device response supplies non-empty codes and verification URI,
+  then normal polling eventually produces a validated token set.
+- Bad: call `response.json()` before applying a body cap, or add the safety
+  margin to an attacker-controlled interval before clamping it.
+- Bad: persist a token before rechecking flow ownership, allowing a canceled
+  or replaced request to commit late credentials.
+- Bad: include the remote error description or token-shaped response fields in
+  an IPC error or diagnostic log.
+
+### 6. Tests Required
+
+- Cover oversized, invalid JSON, non-object, empty required fields, and safe
+  non-success status handling for both authorization and token endpoints.
+- Cover zero/default/maximum intervals and expiry extremes without panic or
+  arithmetic wrap.
+- Cover pending, expired, denied, invalid token type, explicit cancellation,
+  replacement ownership, and the normal success/persistence path.
+- Use `SYNTHETIC_SECRET` in remote bodies and token-shaped fields; assert it is
+  absent from returned errors and captured logs.
+- Run the focused OAuth command tests and the full Rust library suite after
+  changing the shared bounded reader, flow ownership, or persistence behavior.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let payload: DeviceTokenResponse = response.json().await?;
+let delay = Duration::from_secs(payload.interval + 3);
+```
+
+The response allocation is unbounded and attacker-controlled arithmetic can
+overflow before the delay is constructed.
+
+#### Correct
+
+```text
+response -> 256 KiB bounded reader -> JSON object/type validation
+         -> required-field validation -> bounded interval/expiry arithmetic
+         -> recheck current flow ownership -> pending or atomic completion
+```
+
+Remote values describe a candidate device-flow transition; bounded parsing and
+current-flow ownership must both succeed before they can affect local state.

@@ -7,8 +7,10 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 
 use super::skill_fs::{
-    build_local_skill_source_metadata, cli_skills_root, local_skill_dirs, remove_dir_if_exists,
-    ssot_skills_root, validate_local_dir_name, write_skill_files_to_dir,
+    build_local_skill_source_metadata, cli_skills_root, local_skill_dirs,
+    prepare_skill_files_for_write, remove_dir_if_exists, ssot_skills_root,
+    validate_installed_skill_key, validate_local_dir_name, write_prepared_skill_files_to_dir,
+    PreparedSkillFiles,
 };
 use super::{InstalledSkillExport, LocalSkillExport};
 
@@ -171,6 +173,10 @@ pub(super) fn apply_skill_fs_import<R: tauri::Runtime>(
     installed_skills: &[InstalledSkillExport],
     local_skills: &[LocalSkillExport],
 ) -> AppResult<SkillFsImportGuard> {
+    let PreparedSkillFsImport {
+        installed,
+        mut local,
+    } = prepare_skill_fs_import(installed_skills, local_skills)?;
     let app_data_dir = crate::app_paths::app_data_dir(app)?;
     let import_id = crate::shared::time::now_unix_seconds();
     let ssot_root = ssot_skills_root(app)?;
@@ -187,23 +193,9 @@ pub(super) fn apply_skill_fs_import<R: tauri::Runtime>(
         std::fs::create_dir_all(&ssot_stage_dir)
             .map_err(|e| format!("failed to create {}: {e}", ssot_stage_dir.display()))?;
 
-        let mut seen_skill_keys = HashSet::new();
-        for skill in installed_skills {
-            let skill_key = skill.skill_key.trim();
-            if skill_key.is_empty() {
-                return Err("SEC_INVALID_INPUT: installed skill_key is required"
-                    .to_string()
-                    .into());
-            }
-            if !seen_skill_keys.insert(skill_key.to_string()) {
-                return Err(format!(
-                    "SEC_INVALID_INPUT: duplicate installed skill_key={skill_key}"
-                )
-                .into());
-            }
-
-            let skill_dir = ssot_stage_dir.join(skill_key);
-            write_skill_files_to_dir(&skill_dir, &skill.files, None)?;
+        for (skill_key, files) in installed {
+            let skill_dir = ssot_stage_dir.join(&skill_key);
+            write_prepared_skill_files_to_dir(&skill_dir, files)?;
             if !skill_dir.join("SKILL.md").exists() {
                 return Err(format!(
                     "SEC_INVALID_INPUT: installed skill missing SKILL.md: {skill_key}"
@@ -272,17 +264,9 @@ pub(super) fn apply_skill_fs_import<R: tauri::Runtime>(
                 });
             }
 
-            let mut seen_dir_names = HashSet::new();
-            for local_skill in local_skills.iter().filter(|value| value.cli_key == cli_key) {
-                let dir_name = validate_local_dir_name(&local_skill.dir_name)?;
-                if !seen_dir_names.insert(dir_name.clone()) {
-                    return Err(format!(
-                        "SEC_INVALID_INPUT: duplicate local skill dir_name for cli_key={cli_key}: {dir_name}"
-                    )
-                    .into());
-                }
-
-                let target_dir = root.join(&dir_name);
+            for local_skill in local.iter_mut().filter(|value| value.cli_key == cli_key) {
+                let dir_name = &local_skill.dir_name;
+                let target_dir = root.join(dir_name);
                 if target_dir.exists() {
                     return Err(format!(
                         "SKILL_IMPORT_LOCAL_CONFLICT: target local skill dir already exists: {}",
@@ -291,12 +275,10 @@ pub(super) fn apply_skill_fs_import<R: tauri::Runtime>(
                     .into());
                 }
 
-                let source_metadata = build_local_skill_source_metadata(local_skill)?;
-                write_skill_files_to_dir(
-                    &target_dir,
-                    &local_skill.files,
-                    source_metadata.as_ref(),
-                )?;
+                let files = local_skill.files.take().ok_or_else(|| {
+                    "SYSTEM_ERROR: prepared local skill payload already consumed".to_string()
+                })?;
+                write_prepared_skill_files_to_dir(&target_dir, files)?;
                 if !target_dir.join("SKILL.md").exists() {
                     return Err(format!(
                         "SEC_INVALID_INPUT: local skill missing SKILL.md: cli_key={cli_key}, dir_name={dir_name}"
@@ -317,4 +299,75 @@ pub(super) fn apply_skill_fs_import<R: tauri::Runtime>(
     }
 
     Ok(guard)
+}
+
+struct PreparedLocalSkill {
+    cli_key: String,
+    dir_name: String,
+    files: Option<PreparedSkillFiles>,
+}
+
+struct PreparedSkillFsImport {
+    installed: Vec<(String, PreparedSkillFiles)>,
+    local: Vec<PreparedLocalSkill>,
+}
+
+fn prepare_skill_fs_import(
+    installed_skills: &[InstalledSkillExport],
+    local_skills: &[LocalSkillExport],
+) -> AppResult<PreparedSkillFsImport> {
+    let mut seen_skill_keys = HashSet::new();
+    let mut installed = Vec::with_capacity(installed_skills.len());
+    for skill in installed_skills {
+        let skill_key = validate_installed_skill_key(&skill.skill_key)?;
+        if !seen_skill_keys.insert(skill_key.clone()) {
+            return Err(
+                format!("SEC_INVALID_INPUT: duplicate installed skill_key={skill_key}").into(),
+            );
+        }
+        let files = prepare_skill_files_for_write(&skill.files, None)?;
+        if !skill
+            .files
+            .iter()
+            .any(|file| file.relative_path == "SKILL.md")
+        {
+            return Err(format!(
+                "SEC_INVALID_INPUT: installed skill missing SKILL.md: {skill_key}"
+            )
+            .into());
+        }
+        installed.push((skill_key, files));
+    }
+
+    let mut seen_local_names = HashSet::new();
+    let mut local = Vec::with_capacity(local_skills.len());
+    for skill in local_skills {
+        let dir_name = validate_local_dir_name(&skill.dir_name)?;
+        if !seen_local_names.insert((skill.cli_key.clone(), dir_name.clone())) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: duplicate local skill dir_name for cli_key={}: {dir_name}",
+                skill.cli_key
+            )
+            .into());
+        }
+        let source_metadata = build_local_skill_source_metadata(skill)?;
+        let files = prepare_skill_files_for_write(&skill.files, source_metadata.as_ref())?;
+        if !skill
+            .files
+            .iter()
+            .any(|file| file.relative_path == "SKILL.md")
+        {
+            return Err(format!(
+                "SEC_INVALID_INPUT: local skill missing SKILL.md: cli_key={}, dir_name={dir_name}",
+                skill.cli_key
+            )
+            .into());
+        }
+        local.push(PreparedLocalSkill {
+            cli_key: skill.cli_key.clone(),
+            dir_name,
+            files: Some(files),
+        });
+    }
+    Ok(PreparedSkillFsImport { installed, local })
 }

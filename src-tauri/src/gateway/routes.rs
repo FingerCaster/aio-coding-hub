@@ -1327,7 +1327,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn mock_runtime_router_grok_top_level_error_preserves_status_and_preview() {
+    async fn mock_runtime_router_grok_auth_error_preserves_status_without_body() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -1346,7 +1346,7 @@ mod tests {
         let db = db::init_for_tests(&db_dir.path().join("gateway-route-grok-error.sqlite"))
             .expect("init test db");
         let upstream_body =
-            r#"{"code":"unauthenticated:no-credentials","error":"No credentials presented."}"#;
+            r#"{"code":"unauthenticated:no-credentials","error":"SYNTHETIC_SECRET"}"#;
         let (upstream_base_url, upstream_task) =
             spawn_status_json_upstream("401 Unauthorized", upstream_body).await;
         let provider_id =
@@ -1397,17 +1397,20 @@ mod tests {
         assert!(attempts[0]
             .get("reason")
             .and_then(Value::as_str)
-            .is_some_and(|reason| reason.contains("No credentials presented.")));
+            .is_some_and(|reason| reason == "status=401"));
+        assert!(!log.attempts_json.contains("SYNTHETIC_SECRET"));
         let error_details: Value = serde_json::from_str(
             log.error_details_json
                 .as_deref()
                 .expect("error details JSON"),
         )
         .expect("valid error details JSON");
-        assert!(error_details
-            .get("upstream_body_preview")
-            .and_then(Value::as_str)
-            .is_some_and(|preview| preview.contains("No credentials presented.")));
+        assert!(error_details.get("upstream_body_preview").is_none());
+        assert!(!log
+            .error_details_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SYNTHETIC_SECRET"));
         upstream_task.abort();
     }
 

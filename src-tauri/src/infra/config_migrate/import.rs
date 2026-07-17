@@ -5,6 +5,7 @@ use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
 use super::export::load_active_workspace_ids;
+use super::skill_fs::validate_installed_skill_key;
 use super::{
     bool_to_int, normalize_oauth_refresh_lead_seconds, prompts_for_import, ConfigImportResult,
     InstalledSkillExport, LocalSkillExport, McpServerExport, ProviderExport, SkillRepoExport,
@@ -560,13 +561,8 @@ fn import_installed_skills(
     let mut seen_skill_keys = HashSet::new();
 
     for skill in installed_skills {
-        let skill_key = skill.skill_key.trim();
-        if skill_key.is_empty() {
-            return Err("SEC_INVALID_INPUT: installed skill_key is required"
-                .to_string()
-                .into());
-        }
-        if !seen_skill_keys.insert(skill_key.to_string()) {
+        let skill_key = validate_installed_skill_key(&skill.skill_key)?;
+        if !seen_skill_keys.insert(skill_key.clone()) {
             return Err(
                 format!("SEC_INVALID_INPUT: duplicate installed skill_key={skill_key}").into(),
             );
@@ -588,7 +584,7 @@ INSERT INTO skills(
 ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?8)
 "#,
             params![
-                skill_key,
+                &skill_key,
                 &skill.name,
                 normalized_name,
                 &skill.description,

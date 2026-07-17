@@ -298,10 +298,10 @@ export function useImageGenController() {
   useEffect(() => {
     if (getImageGenSession().hydrated) return;
     void imageGenTasksList(null, HISTORY_PAGE_SIZE)
-      .then((rows) => {
-        const restored = rows
-          .map((row) => taskFromRow(row))
-          .filter((task): task is ImageGenTask => task !== null);
+      .then(async (rows) => {
+        const restored = (await Promise.all(rows.map((row) => taskFromRow(row)))).filter(
+          (task): task is ImageGenTask => task !== null
+        );
         updateImageGenSession((prev) => ({
           ...prev,
           hydrated: true,
@@ -319,9 +319,9 @@ export function useImageGenController() {
       persisted.length > 0 ? Math.min(...persisted.map((task) => task.createdAt)) : null;
     try {
       const rows = await imageGenTasksList(before, HISTORY_PAGE_SIZE);
-      const restored = rows
-        .map((row) => taskFromRow(row))
-        .filter((task): task is ImageGenTask => task !== null);
+      const restored = (await Promise.all(rows.map((row) => taskFromRow(row)))).filter(
+        (task): task is ImageGenTask => task !== null
+      );
       updateImageGenSession((prev) => ({
         ...prev,
         hasMore: rows.length === HISTORY_PAGE_SIZE,
@@ -437,7 +437,7 @@ export function useImageGenController() {
         }
         // 落盘期间被重试：等重试完成后按新结果重新落盘（同 id upsert）。
         if (current.status === "loading") return;
-        const restored = taskFromRow(row);
+        const restored = await taskFromRow(row);
         if (!restored) return;
         updateImageGenSession((prev) => ({
           ...prev,

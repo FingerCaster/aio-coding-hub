@@ -121,9 +121,9 @@ function diskImage(image: ImageGenTaskImage) {
   return image;
 }
 
-/** 从 persist payload 构造 Rust 会返回的行视图（路径按任务目录布局）。 */
+/** 从 persist payload 构造 Rust 会返回的后端校验引用。 */
 function rowFromPayload(payload: ImageGenTaskPersistPayload): ImageGenTaskRow {
-  const dir = `/store/${payload.id}`;
+  const dir = payload.id;
   return {
     id: payload.id,
     adapterId: payload.adapterId ?? "gpt-image",
@@ -133,12 +133,12 @@ function rowFromPayload(payload: ImageGenTaskPersistPayload): ImageGenTaskRow {
     error: payload.error,
     usageJson: payload.usageJson,
     images: payload.images.map((image, index) => ({
-      path: `${dir}/image-${index + 1}.png`,
+      path: `${payload.id}/image-${index + 1}.png`,
       thumbPath: payload.thumbs[index] ? `${dir}/thumb-${index + 1}.webp` : null,
       mime: image.mime,
     })),
     refImages: payload.refImages.map((ref, index) => ({
-      path: `${dir}/ref-${index + 1}.png`,
+      path: `${payload.id}/ref-${index + 1}.png`,
       thumbPath: null,
       mime: ref.mime,
     })),
@@ -173,13 +173,13 @@ function makeRow(overrides: Partial<ImageGenTaskRow> = {}): ImageGenTaskRow {
     usageJson: null,
     images: [
       {
-        path: "/store/row-1/image-1.png",
-        thumbPath: "/store/row-1/thumb-1.webp",
+        path: "row-1/image-1.png",
+        thumbPath: "row-1/thumb-1.webp",
         mime: "image/png",
       },
     ],
     refImages: [],
-    dir: "/store/row-1",
+    dir: "row-1",
     createdAt: 1_700_000_000_000,
     elapsedMs: 1200,
     ...overrides,
@@ -202,7 +202,7 @@ function makeRowWithRef(): ImageGenTaskRow {
         moderation: "auto",
       },
     }),
-    refImages: [{ path: "/store/row-1/ref-1.png", thumbPath: null, mime: "image/png" }],
+    refImages: [{ path: "row-1/ref-1.png", thumbPath: null, mime: "image/png" }],
   });
 }
 
@@ -237,6 +237,10 @@ describe("pages/image-gen/useImageGenController", () => {
     vi.mocked(imageGenTaskDelete).mockResolvedValue(null);
     vi.mocked(imageGenTasksClear).mockResolvedValue(0);
     vi.mocked(imageGenStorageCleanup).mockResolvedValue(0);
+    vi.mocked(imageGenReadImage).mockResolvedValue({
+      mime: "image/png",
+      dataB64: btoa("stored-image"),
+    });
   });
 
   it("hydrates connection config from the backend", async () => {
@@ -1258,7 +1262,7 @@ describe("pages/image-gen/useImageGenController", () => {
 
     const task = result.current.tasks[0];
     const image = diskImage(task.images[0]);
-    expect(image.src).toBe(`asset://localhost//store/${task.id}/image-1.png`);
+    expect(image.src).toBe(`data:image/png;base64,${btoa("stored-image")}`);
     // jsdom 无 createImageBitmap：缩略图生成失败仍落盘，thumbSrc 回退原图。
     expect(image.thumbSrc).toBe(image.src);
     expect(task.usage).toEqual({ totalTokens: 42 });
@@ -1304,8 +1308,8 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(payload.refImages).toEqual([{ mime: "image/png", dataB64: refB64 }]);
 
     const task = result.current.tasks[0];
-    expect(task.refThumbs[0].startsWith("asset://")).toBe(true);
-    expect(task.refPaths).toEqual([{ path: `/store/${task.id}/ref-1.png`, mime: "image/png" }]);
+    expect(task.refThumbs[0]).toBe(`data:image/png;base64,${btoa("stored-image")}`);
+    expect(task.refPaths).toEqual([{ path: `${task.id}/ref-1.png`, mime: "image/png" }]);
     expect(URL.revokeObjectURL).toHaveBeenCalledWith(refUrl);
   });
 
@@ -1421,9 +1425,9 @@ describe("pages/image-gen/useImageGenController", () => {
       prompt: "历史任务",
     });
     expect(diskImage(done.images[0])).toMatchObject({
-      path: "/store/row-1/image-1.png",
-      src: "asset://localhost//store/row-1/image-1.png",
-      thumbSrc: "asset://localhost//store/row-1/thumb-1.webp",
+      path: "row-1/image-1.png",
+      src: `data:image/png;base64,${btoa("stored-image")}`,
+      thumbSrc: `data:image/png;base64,${btoa("stored-image")}`,
     });
     expect(failed).toMatchObject({ id: "row-2", status: "error", error: "HTTP 500: boom" });
     expect(result.current.hasMore).toBe(false);
@@ -1502,7 +1506,7 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.retry("row-1");
     });
-    expect(imageGenReadImage).toHaveBeenCalledWith("/store/row-1/ref-1.png");
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/ref-1.png");
     const request = vi.mocked(gptImageAdapter.generate).mock.calls[0][0];
     expect(request.referenceImages).toEqual([{ mime: "image/png", b64: btoa("ref") }]);
     expect(result.current.tasks[0].status).toBe("done");
@@ -1534,11 +1538,11 @@ describe("pages/image-gen/useImageGenController", () => {
 
   it("aborts a disk-task retry with a toast when the reference file is missing", async () => {
     vi.mocked(imageGenTasksList).mockResolvedValue([makeRowWithRef()]);
-    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("SEC_PATH: not found"));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
     });
+    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("SEC_PATH: not found"));
 
     await act(async () => {
       await result.current.retry("row-1");
@@ -1567,11 +1571,11 @@ describe("pages/image-gen/useImageGenController", () => {
 
   it("aborts disk-task reuse without touching the input area when the file is missing", async () => {
     vi.mocked(imageGenTasksList).mockResolvedValue([makeRowWithRef()]);
-    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("missing"));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
     });
+    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("missing"));
 
     await act(async () => {
       await result.current.reuseTask("row-1");
@@ -1593,7 +1597,7 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.setAsReference(result.current.tasks[0].images[0]);
     });
-    expect(imageGenReadImage).toHaveBeenCalledWith("/store/row-1/image-1.png");
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/image-1.png");
     expect(result.current.referenceImages).toHaveLength(1);
     expect(result.current.referenceImages[0].b64).toBe(btoa("img"));
     expect(toast.success).toHaveBeenCalledWith("已设为参考图");
@@ -1601,11 +1605,11 @@ describe("pages/image-gen/useImageGenController", () => {
 
   it("aborts setAsReference with a toast when the disk image file is missing", async () => {
     vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
-    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("missing"));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
     });
+    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("missing"));
 
     await act(async () => {
       await result.current.setAsReference(result.current.tasks[0].images[0]);
@@ -1626,7 +1630,7 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.downloadImage(result.current.tasks[0].images[0]);
     });
-    expect(imageGenReadImage).toHaveBeenCalledWith("/store/row-1/image-1.png");
+    expect(imageGenReadImage).toHaveBeenCalledWith("row-1/image-1.png");
     expect(imageGenSaveImage).toHaveBeenCalledWith(
       expect.stringMatching(/^image-\d+\.png$/),
       "image/png",
@@ -1637,11 +1641,11 @@ describe("pages/image-gen/useImageGenController", () => {
 
   it("aborts a disk-image download with a toast when the file is missing", async () => {
     vi.mocked(imageGenTasksList).mockResolvedValue([makeRow()]);
-    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("missing"));
     const { result } = await renderController();
     await waitFor(() => {
       expect(result.current.tasks).toHaveLength(1);
     });
+    vi.mocked(imageGenReadImage).mockRejectedValue(new Error("missing"));
 
     await act(async () => {
       await result.current.downloadImage(result.current.tasks[0].images[0]);

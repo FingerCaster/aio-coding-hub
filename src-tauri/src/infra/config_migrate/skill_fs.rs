@@ -107,7 +107,12 @@ impl SkillFileCollector {
         }
 
         let relative_path = relative_path_string(relative_path)?;
-        let content = read_file_with_max_len(source_path, CONFIG_SKILL_FILE_MAX_BYTES)?;
+        let file_limit = if relative_path == "SKILL.md" {
+            CONFIG_SKILL_MD_MAX_BYTES
+        } else {
+            CONFIG_SKILL_FILE_MAX_BYTES
+        };
+        let content = read_file_with_max_len(source_path, file_limit)?;
         let next_total = self
             .total_bytes
             .checked_add(content.len())
@@ -277,19 +282,57 @@ fn relative_path_string(path: &Path) -> AppResult<String> {
     Ok(relative_path)
 }
 
+#[cfg(test)]
 pub(super) fn write_skill_files_to_dir(
     dir: &Path,
     files: &[SkillFileExport],
     source_metadata: Option<&SkillSourceMetadataFile>,
 ) -> AppResult<()> {
-    let decoded_files = decode_skill_files_for_write(files)?;
+    let prepared = prepare_skill_files_for_write(files, source_metadata)?;
+    write_prepared_skill_files_to_dir(dir, prepared)
+}
 
+#[derive(Debug)]
+pub(super) struct PreparedSkillFiles {
+    decoded_files: Vec<(PathBuf, Vec<u8>)>,
+    source_metadata_bytes: Option<Vec<u8>>,
+}
+
+pub(super) fn prepare_skill_files_for_write(
+    files: &[SkillFileExport],
+    source_metadata: Option<&SkillSourceMetadataFile>,
+) -> AppResult<PreparedSkillFiles> {
+    let decoded_files = decode_skill_files_for_write(files)?;
+    let source_metadata_bytes = source_metadata
+        .map(|metadata| -> AppResult<Vec<u8>> {
+            let bytes = serde_json::to_vec_pretty(metadata)
+                .map_err(|e| format!("SYSTEM_ERROR: failed to serialize source metadata: {e}"))?;
+            if bytes.len() > CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: skill source metadata too large (max {CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES} bytes)"
+                )
+                .into());
+            }
+            Ok(bytes)
+        })
+        .transpose()?;
+
+    Ok(PreparedSkillFiles {
+        decoded_files,
+        source_metadata_bytes,
+    })
+}
+
+pub(super) fn write_prepared_skill_files_to_dir(
+    dir: &Path,
+    prepared: PreparedSkillFiles,
+) -> AppResult<()> {
     if dir.exists() {
         return Err(format!("SKILL_IMPORT_DIR_ALREADY_EXISTS: {}", dir.display()).into());
     }
     std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
 
-    for (relative_path, bytes) in decoded_files {
+    for (relative_path, bytes) in prepared.decoded_files {
         let target = dir.join(&relative_path);
         if let Some(parent) = target.parent() {
             std::fs::create_dir_all(parent)
@@ -305,9 +348,7 @@ pub(super) fn write_skill_files_to_dir(
     }
 
     let source_marker = dir.join(SKILL_SOURCE_MARKER_FILE);
-    if let Some(metadata) = source_metadata {
-        let bytes = serde_json::to_vec_pretty(metadata)
-            .map_err(|e| format!("SYSTEM_ERROR: failed to serialize source metadata: {e}"))?;
+    if let Some(bytes) = prepared.source_metadata_bytes {
         crate::shared::fs::write_file_atomic(&source_marker, &bytes)?;
     } else if source_marker.exists() {
         std::fs::remove_file(&source_marker)
@@ -338,6 +379,17 @@ fn decode_skill_files_for_write(files: &[SkillFileExport]) -> AppResult<Vec<(Pat
             .into());
         }
 
+        if seen_paths.iter().any(|other| {
+            other != &relative_path
+                && (other.starts_with(&relative_path) || relative_path.starts_with(other))
+        }) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: conflicting skill file paths involving {}",
+                file.relative_path
+            )
+            .into());
+        }
+
         if file.content_base64.len() > CONFIG_SKILL_FILE_BASE64_MAX_BYTES {
             return Err(format!(
                 "SEC_INVALID_INPUT: skill file {} too large (max {CONFIG_SKILL_FILE_MAX_BYTES} bytes)",
@@ -358,6 +410,12 @@ fn decode_skill_files_for_write(files: &[SkillFileExport]) -> AppResult<Vec<(Pat
             return Err(format!(
                 "SEC_INVALID_INPUT: skill file {} too large (max {CONFIG_SKILL_FILE_MAX_BYTES} bytes)",
                 file.relative_path
+            )
+            .into());
+        }
+        if relative_path == Path::new("SKILL.md") && bytes.len() > CONFIG_SKILL_MD_MAX_BYTES {
+            return Err(format!(
+                "SEC_INVALID_INPUT: SKILL.md too large (max {CONFIG_SKILL_MD_MAX_BYTES} bytes)"
             )
             .into());
         }
@@ -384,6 +442,13 @@ fn validate_skill_file_relative_path(relative_path: &str) -> AppResult<PathBuf> 
         .into());
     }
 
+    if relative_path.contains('\\') || relative_path.contains(':') {
+        return Err(format!(
+            "SEC_INVALID_INPUT: invalid skill relative path {}",
+            relative_path
+        )
+        .into());
+    }
     let path = Path::new(relative_path);
     if path.as_os_str().is_empty() {
         return Err("SEC_INVALID_INPUT: empty skill relative path"
@@ -423,6 +488,25 @@ pub(super) fn validate_local_dir_name(dir_name: &str) -> AppResult<String> {
         || trimmed.contains('\\')
     {
         return Err(format!("SEC_INVALID_INPUT: invalid local skill dir_name={dir_name}").into());
+    }
+    Ok(trimmed.to_string())
+}
+
+pub(super) fn validate_installed_skill_key(skill_key: &str) -> AppResult<String> {
+    let trimmed = skill_key.trim();
+    let path = Path::new(trimmed);
+    let mut components = path.components();
+    let is_single_normal =
+        matches!(components.next(), Some(Component::Normal(_))) && components.next().is_none();
+    if trimmed.is_empty()
+        || trimmed == "."
+        || trimmed == ".."
+        || trimmed.contains('/')
+        || trimmed.contains('\\')
+        || trimmed.contains(':')
+        || !is_single_normal
+    {
+        return Err(format!("SEC_INVALID_INPUT: invalid installed skill_key={skill_key}").into());
     }
     Ok(trimmed.to_string())
 }

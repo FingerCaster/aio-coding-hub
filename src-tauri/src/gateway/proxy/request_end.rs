@@ -318,6 +318,14 @@ fn bounded_log_attempt(mut attempt: FailoverAttempt) -> FailoverAttempt {
         truncate_chars(attempt.provider_name, REQUEST_END_LOG_SHORT_TEXT_MAX_CHARS);
     attempt.base_url = truncate_chars(attempt.base_url, REQUEST_END_LOG_URL_MAX_CHARS);
     attempt.outcome = truncate_chars(attempt.outcome, REQUEST_END_LOG_SHORT_TEXT_MAX_CHARS);
+    if matches!(attempt.status, Some(401 | 403)) {
+        attempt.reason = attempt.reason.map(|reason| {
+            reason
+                .split_once("upstream_body=")
+                .map(|(base, _)| base.trim().trim_end_matches(',').trim().to_string())
+                .unwrap_or(reason)
+        });
+    }
     attempt.reason = truncate_optional_text(attempt.reason, REQUEST_END_LOG_REASON_MAX_CHARS);
     attempt
 }
@@ -614,13 +622,15 @@ fn build_error_details_json(
                     REQUEST_END_LOG_REASON_MAX_CHARS,
                 );
             }
-            if let Some(upstream_body_preview) = upstream_body_preview {
-                insert_text_if_present(
-                    &mut obj,
-                    "upstream_body_preview",
-                    upstream_body_preview,
-                    REQUEST_END_LOG_REASON_MAX_CHARS,
-                );
+            if !matches!(last_attempt.status, Some(401 | 403)) {
+                if let Some(upstream_body_preview) = upstream_body_preview {
+                    insert_text_if_present(
+                        &mut obj,
+                        "upstream_body_preview",
+                        upstream_body_preview,
+                        REQUEST_END_LOG_REASON_MAX_CHARS,
+                    );
+                }
             }
             if let Some(matched_rule) = matched_rule {
                 insert_text_if_present(
@@ -672,9 +682,19 @@ fn build_request_end_payload(
     } = parts;
 
     let provider_chain_json = provider_chain_json.or_else(|| build_provider_chain_json(&attempts));
-    let error_details_json =
-        error_details_json.or_else(|| build_error_details_json(error_code, &attempts));
-    let attempts_json = attempts_json.unwrap_or_else(|| serialize_attempts(&attempts));
+    let has_authentication_attempt = attempts
+        .iter()
+        .any(|attempt| matches!(attempt.status, Some(401 | 403)));
+    let error_details_json = if has_authentication_attempt {
+        build_error_details_json(error_code, &attempts)
+    } else {
+        error_details_json.or_else(|| build_error_details_json(error_code, &attempts))
+    };
+    let attempts_json = if has_authentication_attempt {
+        serialize_attempts(&attempts)
+    } else {
+        attempts_json.unwrap_or_else(|| serialize_attempts(&attempts))
+    };
     let log_args = RequestLogEnqueueArgs {
         trace_id,
         cli_key,
@@ -1162,6 +1182,62 @@ mod tests {
         assert_eq!(log_args.attempts_json, expected_attempts_json);
         assert_eq!(cloned_attempts.len(), 1);
         assert_eq!(cloned_attempts[0].provider_id, 7);
+    }
+
+    #[test]
+    fn authentication_attempt_persistence_strips_upstream_body_defensively() {
+        let mut attempt = sample_attempt();
+        attempt.status = Some(403);
+        attempt.reason = Some("status=403, upstream_body=SYNTHETIC_SECRET".to_string());
+        let attempts_json = serialize_attempts(&[attempt.clone()]);
+        assert!(attempts_json.contains("status=403"));
+        assert!(!attempts_json.contains("SYNTHETIC_SECRET"));
+        let details =
+            build_error_details_json(Some("GW_UPSTREAM_4XX"), &[attempt]).expect("error details");
+        assert!(!details.contains("SYNTHETIC_SECRET"));
+        assert!(!details.contains("upstream_body_preview"));
+    }
+
+    #[test]
+    fn authentication_attempt_discards_precomputed_json_with_upstream_body() {
+        let mut attempt = sample_attempt();
+        attempt.status = Some(401);
+        attempt.reason = Some("status=401, upstream_body=SYNTHETIC_SECRET".to_string());
+        let (log_args, _) = build_request_end_payload(RequestEndPayloadParts {
+            trace_id: "trace-auth".to_string(),
+            cli_key: "codex".to_string(),
+            session_id: None,
+            method: "POST".to_string(),
+            path: "/v1/responses".to_string(),
+            query: None,
+            excluded_from_stats: false,
+            special_settings_json: None,
+            status: Some(401),
+            error_code: Some("GW_UPSTREAM_4XX"),
+            duration_ms: 1,
+            ttfb_ms: None,
+            visible_ttfb_ms: None,
+            attempts: vec![attempt],
+            attempts_json: Some("[{\"status\":401,\"reason\":\"SYNTHETIC_SECRET\"}]".to_string()),
+            requested_model: None,
+            created_at_ms: 1,
+            last_activity_ms: None,
+            activity_details_json: None,
+            created_at: 1,
+            usage_metrics: None,
+            usage: None,
+            provider_chain_json: None,
+            error_details_json: Some(
+                "{\"upstream_body_preview\":\"SYNTHETIC_SECRET\"}".to_string(),
+            ),
+        });
+
+        assert!(!log_args.attempts_json.contains("SYNTHETIC_SECRET"));
+        assert!(!log_args
+            .error_details_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SYNTHETIC_SECRET"));
     }
 
     #[test]

@@ -1,7 +1,6 @@
 // Usage: 生图历史持久化前端侧辅助（纯函数 + 缩略图生成 + 读回）。文件写入、DB 行与路径校验
 // 全部在 Rust（image_gen_* 命令）；本模块负责 payload 构造、DB 行 → 任务映射与显示 URL 转换。
 
-import { convertDesktopFileSrc as convertFileSrc } from "../../services/desktop/assetUrl";
 import type {
   ImageGenTaskFilePayload,
   ImageGenTaskFileRow,
@@ -150,19 +149,23 @@ export async function buildPersistPayload(task: ImageGenTask): Promise<ImageGenT
 
 // ---------- DB 行 → 任务 ----------
 
-export function taskImageFromFileRow(file: ImageGenTaskFileRow): ImageGenTaskImage {
-  const src = convertFileSrc(file.path);
+function fetchedImageDataUrl(image: { mime: string; dataB64: string }): string {
+  return `data:${image.mime};base64,${image.dataB64}`;
+}
+
+export async function taskImageFromFileRow(file: ImageGenTaskFileRow): Promise<ImageGenTaskImage> {
+  const src = fetchedImageDataUrl(await imageGenReadImage(file.path));
   return {
     kind: "disk",
     src,
-    thumbSrc: file.thumbPath ? convertFileSrc(file.thumbPath) : src,
+    thumbSrc: file.thumbPath ? fetchedImageDataUrl(await imageGenReadImage(file.thumbPath)) : src,
     path: file.path,
     mime: file.mime,
   };
 }
 
 /** DB 行映射为 disk 形态任务；请求快照解析失败的行降级跳过（console 容忍，不阻断其余行）。 */
-export function taskFromRow(row: ImageGenTaskRow): ImageGenTask | null {
+export async function taskFromRow(row: ImageGenTaskRow): Promise<ImageGenTask | null> {
   let request: GptImageRequest;
   try {
     request = parseRequestSnapshot(row.requestJson);
@@ -178,6 +181,8 @@ export function taskFromRow(row: ImageGenTaskRow): ImageGenTask | null {
       usage = undefined;
     }
   }
+  const images = await Promise.all(row.images.map(taskImageFromFileRow));
+  const refImages = await Promise.all(row.refImages.map((file) => imageGenReadImage(file.path)));
   return {
     id: row.id,
     prompt: row.prompt,
@@ -185,8 +190,8 @@ export function taskFromRow(row: ImageGenTaskRow): ImageGenTask | null {
     status: row.status === "error" ? "error" : "done",
     error: row.error ?? undefined,
     usage,
-    images: row.images.map(taskImageFromFileRow),
-    refThumbs: row.refImages.map((file) => convertFileSrc(file.path)),
+    images,
+    refThumbs: refImages.map(fetchedImageDataUrl),
     refPaths: row.refImages.map((file) => ({ path: file.path, mime: file.mime })),
     createdAt: row.createdAt,
     startedAt: row.createdAt,

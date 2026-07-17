@@ -13,6 +13,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Provider account-usage query contract](./provider-account-usage-query-contract.md):
   one TanStack Query owner for automatic, timed, and forced manual refreshes,
   plus the bounded, same-origin NewAPI model-token billing protocol.
+- [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
+  bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
+  cancellation, and token persistence.
 - [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md):
   bounded installed/local Skill export, Base64 serialization, import
   validation, and validation-before-write filesystem restoration.
@@ -46,6 +49,15 @@ When changing provider account-usage fetching:
 6. Confirm account usage remains display-only and that fixtures/specs contain
    no upstream body/message, credential, PII, live host, token name, or actual
    account amount.
+
+When changing Codex or Grok device authorization:
+
+1. Read [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md).
+2. Trace start and poll responses through the bounded reader, object/type and
+   required-field validation, interval/expiry arithmetic, flow ownership, and
+   token persistence.
+3. Test pending, terminal, cancellation/replacement, and successful completion
+   separately; remote bodies and tokens must not enter errors or logs.
 
 When changing config migration Skill payload handling:
 
@@ -93,6 +105,10 @@ When changing Image Gen network or filesystem behavior:
   installed/local compatibility, and file-count, total-size, Base64, path,
   symlink, cycle, special-file, metadata, and import-bundle safety negatives.
 - When changing Image Gen, verify no-redirect per-hop DNS pinning, private-host
-  negatives, body/redirect caps, backend-owned save cancellation and extension
-  checks, canonical root containment, DB-reference validation, batch
-  validation-before-delete, and root-only asset scope.
+  and non-global-address negatives, body/redirect caps, URL/error redaction,
+  multipart decode-before-allocation budgets, backend-owned save cancellation
+  and extension checks, canonical root containment, opaque DB-reference reads,
+  batch validation-before-delete, and zero Image Gen asset scope.
+- When changing provider device OAuth, verify bounded authorization/token
+  bodies, non-empty typed fields, saturating interval/expiry arithmetic,
+  pending/terminal flow ownership, cancellation, and secret-free diagnostics.

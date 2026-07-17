@@ -146,7 +146,6 @@ pub(crate) fn build_newapi_billing_urls(base_url: &str)
     -> Result<NewapiBillingUrls, String>;
 
 pub(crate) async fn fetch_newapi_account_usage(
-    client: &reqwest::Client,
     base_url: &str,
     api_key: &str,
     fetched_at: i64,
@@ -163,9 +162,10 @@ pub(crate) fn parse_newapi_billing_responses(
 ```
 
 `build_newapi_billing_urls` produces one same-origin public status URL and two
-same-origin billing URLs. `fetch_newapi_account_usage` owns the bounded GET
-sequence and `parse_newapi_billing_responses` owns all-or-nothing validation and
-normalization. The existing generated IPC DTO remains the frontend boundary.
+same-origin billing URLs. `fetch_newapi_account_usage` constructs its own
+no-redirect client and owns the bounded GET sequence, so a caller cannot weaken
+redirect policy. `parse_newapi_billing_responses` owns all-or-nothing validation
+and normalization. The existing generated IPC DTO remains the frontend boundary.
 
 ### 3. Contracts
 
@@ -302,7 +302,7 @@ GET {origin}/v1/dashboard/billing/usage         Authorization: Bearer <model-key
 ```rust
 // Internally normalizes three same-origin URLs, performs bounded requests,
 // and returns a snapshot only after complete response validation.
-fetch_newapi_account_usage(client, base_url, model_key, fetched_at, now).await
+fetch_newapi_account_usage(base_url, model_key, fetched_at, now).await
 ```
 
 The NewAPI client refuses redirects, every URL remains on the normalized

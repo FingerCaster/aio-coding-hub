@@ -177,6 +177,22 @@ describe("services/image-gen/service", () => {
     expect(commands.imageGenFetchImage).toHaveBeenCalledWith("https://cdn.example.com/a.png", null);
   });
 
+  it("imageGenFetchImage never logs URL credentials query or fragment", async () => {
+    const secret = "SYNTHETIC_SECRET";
+    const url = `https://user:${secret}@cdn.example.com/a.png?token=${secret}#${secret}`;
+    vi.mocked(commands.imageGenFetchImage).mockResolvedValue({
+      status: "error",
+      error: "HTTP_ERROR: request failed",
+    });
+    await expect(imageGenFetchImage(url)).rejects.toThrow("request failed");
+    expect(commands.imageGenFetchImage).toHaveBeenCalledWith(url, null);
+    const logged = JSON.stringify(vi.mocked(logToConsole).mock.calls);
+    expect(logged).toContain("https://cdn.example.com/a.png");
+    expect(logged).not.toContain(secret);
+    expect(logged).not.toContain("token=");
+    expect(logged).not.toContain("user:");
+  });
+
   it("imageGenSaveImage saves and throws on failure", async () => {
     vi.mocked(commands.imageGenSaveImage).mockResolvedValue({ status: "ok", data: true });
     await expect(imageGenSaveImage("a.png", "image/png", "AA")).resolves.toBe(true);
@@ -211,11 +227,9 @@ describe("services/image-gen/service", () => {
     status: "done",
     error: null,
     usageJson: null,
-    images: [
-      { path: "/store/t1/image-1.png", thumbPath: "/store/t1/thumb-1.webp", mime: "image/png" },
-    ],
+    images: [{ path: "t1/image-1.png", thumbPath: "t1/thumb-1.webp", mime: "image/png" }],
     refImages: [],
-    dir: "/store/t1",
+    dir: "t1",
     createdAt: 1_700_000_000_000,
     elapsedMs: 900,
   };
@@ -259,11 +273,11 @@ describe("services/image-gen/service", () => {
     await expect(imageGenTasksClear()).rejects.toThrow("io");
   });
 
-  it("imageGenReadImage returns bytes and throws on out-of-scope paths", async () => {
+  it("imageGenReadImage returns bytes for opaque references and rejects invalid references", async () => {
     const fetched = { mime: "image/png", dataB64: "AA" };
     vi.mocked(commands.imageGenReadImage).mockResolvedValue({ status: "ok", data: fetched });
-    await expect(imageGenReadImage("/store/t1/image-1.png")).resolves.toEqual(fetched);
-    expect(commands.imageGenReadImage).toHaveBeenCalledWith("/store/t1/image-1.png");
+    await expect(imageGenReadImage("t1/image-1.png")).resolves.toEqual(fetched);
+    expect(commands.imageGenReadImage).toHaveBeenCalledWith("t1/image-1.png");
 
     vi.mocked(commands.imageGenReadImage).mockResolvedValue({
       status: "error",

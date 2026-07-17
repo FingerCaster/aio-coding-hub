@@ -15,6 +15,19 @@ import { invokeGeneratedIpc } from "../generatedIpc";
 
 export const IMAGE_GEN_ADAPTER_ID = "gpt-image";
 
+function safeUrlForLog(value: string): string {
+  try {
+    const url = new URL(value);
+    url.username = "";
+    url.password = "";
+    url.search = "";
+    url.hash = "";
+    return url.toString();
+  } catch {
+    return "[INVALID_URL]";
+  }
+}
+
 export type {
   ImageGenConfigView,
   ImageGenFetchedImage,
@@ -44,7 +57,12 @@ export async function imageGenConfigSet(
     title: "保存生图配置失败",
     cmd: "image_gen_config_set",
     // apiKey 不进日志：仅记录是否携带新值。
-    args: { adapterId, baseUrl, model, apiKey: apiKey == null ? null : "[REDACTED]" },
+    args: {
+      adapterId,
+      baseUrl: safeUrlForLog(baseUrl),
+      model,
+      apiKey: apiKey == null ? null : "[REDACTED]",
+    },
     invoke: () => commands.imageGenConfigSet(adapterId, baseUrl, model, apiKey),
   });
 }
@@ -87,7 +105,7 @@ export async function imageGenFetchImage(
   return invokeGeneratedIpc<ImageGenFetchedImage>({
     title: "下载生成图片失败",
     cmd: "image_gen_fetch_image",
-    args: { url },
+    args: { url: safeUrlForLog(url) },
     invoke: () => commands.imageGenFetchImage(url, timeoutSecs),
   });
 }

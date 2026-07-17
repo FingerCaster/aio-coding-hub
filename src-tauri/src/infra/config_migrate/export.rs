@@ -498,6 +498,7 @@ ORDER BY id ASC
     for row in rows {
         let (skill_id, skill_key, name, description, source_git_url, source_branch, source_subdir) =
             row.map_err(|e| db_err!("failed to read skill export row: {e}"))?;
+        let skill_key = super::skill_fs::validate_installed_skill_key(&skill_key)?;
         let skill_dir = ssot_root.join(&skill_key);
         if !skill_dir.is_dir() {
             return Err(format!(
@@ -572,10 +573,7 @@ pub(super) fn export_local_skills<R: tauri::Runtime>(
                         path.display()
                     )
                 })?;
-            let (name, description) = match parse_skill_md_metadata(&path.join("SKILL.md")) {
-                Ok(value) => value,
-                Err(_) => (dir_name.clone(), String::new()),
-            };
+            let (name, description) = parse_skill_md_metadata(&path.join("SKILL.md"))?;
             let source = read_local_skill_source_metadata(&path)?;
 
             items.push(LocalSkillExport {

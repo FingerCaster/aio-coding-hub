@@ -1,7 +1,8 @@
 use super::config::{config_connection, config_get, config_set};
 use super::transport::{
     build_request_url, decode_multipart_files, ensure_image_redirect_budget, is_disallowed_ip,
-    is_image_content_type, resolve_image_redirect, resolve_timeout, validate_fetch_image_url,
+    is_image_content_type, resolve_image_redirect, resolve_timeout, safe_reqwest_error,
+    validate_fetch_image_url, validate_multipart_fields, validate_multipart_files,
     validate_public_addrs, validate_request_path, ImageGenMultipartFile,
 };
 use crate::db;
@@ -192,10 +193,9 @@ fn build_request_url_deduplicates_v1_suffix() {
 #[test]
 fn fetch_image_url_rejects_http_and_private_hosts() {
     assert!(validate_fetch_image_url("https://cdn.example.com/img.png").is_ok());
-    assert!(validate_fetch_image_url("https://93.184.216.34/img.png").is_ok());
-
     for url in [
         "http://cdn.example.com/img.png",
+        "https://93.184.216.34/img.png",
         "https://127.0.0.1/img.png",
         "https://10.0.0.8/img.png",
         "https://192.168.1.2/img.png",
@@ -211,19 +211,31 @@ fn fetch_image_url_rejects_http_and_private_hosts() {
 }
 
 #[test]
-fn disallowed_ip_covers_loopback_private_and_v6_locals() {
+fn disallowed_ip_covers_all_non_global_ranges() {
     for ip in [
         "127.0.0.1",
         "10.1.2.3",
         "172.16.0.1",
         "192.168.0.1",
         "169.254.10.10",
+        "100.64.0.1",
+        "100.127.255.254",
+        "198.18.0.1",
+        "198.19.255.254",
+        "192.0.2.1",
+        "198.51.100.1",
+        "203.0.113.1",
+        "240.0.0.1",
         "0.0.0.0",
         "255.255.255.255",
         "::1",
         "fc00::1",
         "fe80::1",
         "::ffff:192.168.0.1",
+        "::ffff:100.64.0.1",
+        "::ffff:198.18.0.1",
+        "2001:db8::1",
+        "2001:2::1",
     ] {
         let ip: IpAddr = ip.parse().expect("parse ip");
         assert!(is_disallowed_ip(ip), "should be disallowed: {ip}");
@@ -232,7 +244,9 @@ fn disallowed_ip_covers_loopback_private_and_v6_locals() {
     for ip in [
         "93.184.216.34",
         "8.8.8.8",
+        "192.0.0.9",
         "2606:2800:220:1:248:1893:25c8:1946",
+        "::ffff:8.8.8.8",
     ] {
         let ip: IpAddr = ip.parse().expect("parse ip");
         assert!(!is_disallowed_ip(ip), "should be allowed: {ip}");
@@ -244,7 +258,10 @@ async fn fetch_image_rejects_localhost_hostname() {
     let err = super::fetch_image("https://localhost/img.png", Some(5))
         .await
         .expect_err("localhost should be rejected before any request");
-    assert!(err.contains("private address"), "unexpected error: {err}");
+    assert!(
+        err.contains("non-global address"),
+        "unexpected error: {err}"
+    );
 }
 
 #[test]
@@ -355,6 +372,87 @@ fn multipart_files_reject_invalid_base64_and_empty_metadata() {
     assert!(err.contains("filename is required"));
 }
 
+#[test]
+fn multipart_preflight_rejects_all_limits_before_decode() {
+    let small = ImageGenMultipartFile {
+        field: "image[]".to_string(),
+        filename: "input.png".to_string(),
+        mime: "image/png".to_string(),
+        data_b64: "aGVsbG8=".to_string(),
+    };
+    let too_many = vec![small.clone(); 33];
+    assert!(validate_multipart_files(&too_many)
+        .expect_err("too many files")
+        .contains("too many multipart files"));
+
+    for (label, file) in [
+        (
+            "field",
+            ImageGenMultipartFile {
+                field: "x".repeat(129),
+                ..small.clone()
+            },
+        ),
+        (
+            "filename",
+            ImageGenMultipartFile {
+                filename: "x".repeat(256),
+                ..small.clone()
+            },
+        ),
+        (
+            "mime",
+            ImageGenMultipartFile {
+                mime: "x".repeat(129),
+                ..small.clone()
+            },
+        ),
+    ] {
+        assert!(
+            validate_multipart_files(&[file]).is_err(),
+            "accepted overlong {label}"
+        );
+    }
+
+    let oversized = ImageGenMultipartFile {
+        data_b64: "A".repeat((64_usize * 1024 * 1024).div_ceil(3) * 4 + 4),
+        ..small.clone()
+    };
+    let error = decode_multipart_files(&[
+        ImageGenMultipartFile {
+            data_b64: "!!!!".to_string(),
+            ..small
+        },
+        oversized,
+    ])
+    .expect_err("preflight must reject aggregate before decoding earlier invalid data");
+    assert!(error.contains("exceed"), "unexpected error: {error}");
+
+    assert!(validate_multipart_fields(&[("x".repeat(129), "value".to_string())]).is_err());
+    assert!(
+        validate_multipart_fields(&[("name".to_string(), "x".repeat(1024 * 1024 + 1))]).is_err()
+    );
+}
+
+#[tokio::test]
+async fn reqwest_transport_error_does_not_echo_credentialed_url() {
+    let secret = "SYNTHETIC_SECRET";
+    let error = reqwest::Client::builder()
+        .proxy(reqwest::Proxy::all("http://127.0.0.1:9").expect("proxy"))
+        .build()
+        .expect("client")
+        .get(format!(
+            "https://example.test/image?token={secret}#fragment"
+        ))
+        .send()
+        .await
+        .expect_err("closed local proxy must fail");
+    let safe = safe_reqwest_error("download image", &error);
+    assert!(!safe.contains(secret));
+    assert!(!safe.contains("token="));
+    assert!(safe.contains("HTTP_ERROR: download image"));
+}
+
 // -- timeout --
 
 #[test]
@@ -372,7 +470,6 @@ use super::history::{
     tasks_clear, tasks_list, ImageGenTaskFilePayload, ImageGenTaskPersistPayload,
 };
 use base64::Engine as _;
-use std::path::Path;
 
 fn b64(bytes: &[u8]) -> String {
     base64::engine::general_purpose::STANDARD.encode(bytes)
@@ -418,7 +515,7 @@ fn history_persist_list_read_delete_full_chain() {
     assert_eq!(row.status, "done");
     assert_eq!(row.created_at, 100);
     assert_eq!(row.elapsed_ms, Some(1234));
-    assert_eq!(row.dir, task_dir.to_string_lossy().to_string());
+    assert_eq!(row.dir, "task-1");
     assert_eq!(
         std::fs::read(task_dir.join("image-1.png")).expect("image file"),
         b"png-bytes"
@@ -432,16 +529,13 @@ fn history_persist_list_read_delete_full_chain() {
         b"ref-bytes"
     );
 
-    let listed = tasks_list(&db, None, 50).expect("list tasks");
+    let listed = tasks_list(&db, storage.path(), None, 50).expect("list tasks");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].images.len(), 1);
-    assert_eq!(
-        listed[0].images[0].path,
-        task_dir.join("image-1.png").to_string_lossy().to_string()
-    );
+    assert_eq!(listed[0].images[0].path, "task-1/image-1.png");
     assert_eq!(
         listed[0].images[0].thumb_path.as_deref(),
-        Some(task_dir.join("thumb-1.webp").to_string_lossy().as_ref())
+        Some("task-1/thumb-1.webp")
     );
     assert_eq!(listed[0].images[0].mime, "image/png");
     assert_eq!(listed[0].ref_images.len(), 1);
@@ -461,7 +555,7 @@ fn history_persist_list_read_delete_full_chain() {
 
     task_delete(&db, storage.path(), "task-1").expect("delete task");
     assert!(!task_dir.exists());
-    assert!(tasks_list(&db, None, 50)
+    assert!(tasks_list(&db, storage.path(), None, 50)
         .expect("list after delete")
         .is_empty());
 
@@ -486,7 +580,7 @@ fn history_persists_failed_task_and_paginates_newest_first() {
         task_persist(&db, storage.path(), payload).expect("persist");
     }
 
-    let first_page = tasks_list(&db, None, 2).expect("first page");
+    let first_page = tasks_list(&db, storage.path(), None, 2).expect("first page");
     assert_eq!(
         first_page.iter().map(|t| t.id.as_str()).collect::<Vec<_>>(),
         vec!["t3", "t2"]
@@ -500,7 +594,8 @@ fn history_persists_failed_task_and_paginates_newest_first() {
     // Request snapshot survives for relay debugging.
     assert_eq!(first_page[1].request_json, r#"{"size":"1024x1024"}"#);
 
-    let second_page = tasks_list(&db, Some(first_page[1].created_at), 2).expect("second page");
+    let second_page =
+        tasks_list(&db, storage.path(), Some(first_page[1].created_at), 2).expect("second page");
     assert_eq!(
         second_page
             .iter()
@@ -510,7 +605,12 @@ fn history_persists_failed_task_and_paginates_newest_first() {
     );
 
     // limit 0 is clamped to 1.
-    assert_eq!(tasks_list(&db, None, 0).expect("clamped list").len(), 1);
+    assert_eq!(
+        tasks_list(&db, storage.path(), None, 0)
+            .expect("clamped list")
+            .len(),
+        1
+    );
 }
 
 #[test]
@@ -523,7 +623,7 @@ fn history_persist_upserts_on_id_conflict() {
     updated.prompt = "a blue square".to_string();
     task_persist(&db, storage.path(), updated).expect("persist again");
 
-    let listed = tasks_list(&db, None, 50).expect("list");
+    let listed = tasks_list(&db, storage.path(), None, 50).expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].prompt, "a blue square");
     assert_eq!(listed[0].created_at, 2);
@@ -566,7 +666,9 @@ fn history_persist_rejects_invalid_input() {
     assert!(err.to_string().contains("exceeds"));
 
     // Nothing persisted, no stray dirs.
-    assert!(tasks_list(&db, None, 50).expect("list").is_empty());
+    assert!(tasks_list(&db, storage.path(), None, 50)
+        .expect("list")
+        .is_empty());
     assert!(!storage.path().join("t1").exists());
 }
 
@@ -622,9 +724,7 @@ fn history_read_image_rejects_db_recorded_dirs_outside_current_trusted_root() {
     let new_storage = tempfile::tempdir().expect("new storage");
 
     task_persist(&db, old_storage.path(), done_task_payload("t1", 1)).expect("persist");
-    let image_path = old_storage.path().join("t1").join("image-1.png");
-
-    let err = read_image(&db, new_storage.path(), &image_path.to_string_lossy())
+    let err = read_image(&db, new_storage.path(), "t1/image-1.png")
         .expect_err("DB path outside the trusted root must fail closed");
     assert!(err.to_string().contains("SEC_INVALID_INPUT"));
 }
@@ -650,7 +750,12 @@ fn history_tampered_db_dir_cannot_delete_outside_root_or_remove_row() {
     let err = task_delete(&db, storage.path(), "t1").expect_err("delete must fail closed");
     assert!(err.to_string().contains("trusted storage root"));
     assert!(outside_task.join("sentinel").exists());
-    assert_eq!(tasks_list(&db, None, 50).expect("row remains").len(), 1);
+    assert!(tasks_list(&db, storage.path(), None, 50).is_err());
+    let conn = db.open_connection().expect("open db after failed delete");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 1);
 }
 
 #[test]
@@ -674,7 +779,12 @@ fn history_clear_validates_all_db_dirs_before_any_delete() {
     assert!(storage.path().join("good").exists());
     assert!(storage.path().join("bad").exists());
     assert!(outside_task.exists());
-    assert_eq!(tasks_list(&db, None, 50).expect("rows remain").len(), 2);
+    assert!(tasks_list(&db, storage.path(), None, 50).is_err());
+    let conn = db.open_connection().expect("open db after failed clear");
+    let count: i64 = conn
+        .query_row("SELECT COUNT(*) FROM image_gen_tasks", [], |row| row.get(0))
+        .expect("row count");
+    assert_eq!(count, 2);
 }
 
 #[test]
@@ -682,7 +792,6 @@ fn history_read_rejects_tampered_stored_filename_even_inside_root() {
     let (_db_dir, db) = test_db("image-gen-history-tampered-file.db");
     let storage = tempfile::tempdir().expect("storage");
     task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
-    let image_path = storage.path().join("t1").join("image-1.png");
     let conn = db.open_connection().expect("open db");
     conn.execute(
         "UPDATE image_gen_tasks SET images_json = ?1 WHERE id = 't1'",
@@ -691,7 +800,12 @@ fn history_read_rejects_tampered_stored_filename_even_inside_root() {
     .expect("tamper file metadata");
     drop(conn);
 
-    let err = read_image(&db, storage.path(), &image_path.to_string_lossy())
+    let list_err = tasks_list(&db, storage.path(), None, 50)
+        .expect_err("unsafe DB filename must fail the entire list");
+    assert!(list_err
+        .to_string()
+        .contains("unsafe stored image filename"));
+    let err = read_image(&db, storage.path(), "t1/image-1.png")
         .expect_err("unsafe DB filename must fail closed");
     assert!(err.to_string().contains("unsafe stored image filename"));
 }
@@ -710,14 +824,19 @@ fn history_cleanup_and_clear_boundaries() {
         storage_cleanup(&db, storage.path(), 10).expect("cleanup keep 10"),
         0
     );
-    assert_eq!(tasks_list(&db, None, 50).expect("list").len(), 3);
+    assert_eq!(
+        tasks_list(&db, storage.path(), None, 50)
+            .expect("list")
+            .len(),
+        3
+    );
 
     // keep_count 1: the two oldest tasks (rows + dirs) are deleted.
     assert_eq!(
         storage_cleanup(&db, storage.path(), 1).expect("cleanup keep 1"),
         2
     );
-    let remaining = tasks_list(&db, None, 50).expect("list");
+    let remaining = tasks_list(&db, storage.path(), None, 50).expect("list");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].id, "t3");
     assert!(!storage.path().join("t1").exists());
@@ -730,7 +849,9 @@ fn history_cleanup_and_clear_boundaries() {
         storage_cleanup(&db, storage.path(), 0).expect("cleanup keep 0"),
         2
     );
-    assert!(tasks_list(&db, None, 50).expect("list").is_empty());
+    assert!(tasks_list(&db, storage.path(), None, 50)
+        .expect("list")
+        .is_empty());
     assert!(!storage.path().join("t3").exists());
     assert!(!storage.path().join("t4").exists());
 
@@ -738,7 +859,9 @@ fn history_cleanup_and_clear_boundaries() {
     task_persist(&db, storage.path(), done_task_payload("t5", 5)).expect("persist");
     task_persist(&db, storage.path(), done_task_payload("t6", 6)).expect("persist");
     assert_eq!(tasks_clear(&db, storage.path()).expect("clear"), 2);
-    assert!(tasks_list(&db, None, 50).expect("list").is_empty());
+    assert!(tasks_list(&db, storage.path(), None, 50)
+        .expect("list")
+        .is_empty());
     assert!(!storage.path().join("t5").exists());
     assert!(!storage.path().join("t6").exists());
 }
@@ -797,11 +920,12 @@ fn history_task_row_serialization_has_no_sensitive_fields() {
     let storage = tempfile::tempdir().expect("storage tempdir");
     task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
 
-    let listed = tasks_list(&db, None, 50).expect("list");
+    let listed = tasks_list(&db, storage.path(), None, 50).expect("list");
     let json = serde_json::to_string(&listed[0]).expect("serialize row");
-    // Rows carry paths + metadata only; never api keys or raw image payloads.
+    // Rows carry opaque references + metadata only; never paths, keys or image payloads.
     assert!(!json.contains("api_key"));
     assert!(!json.contains("apiKey"));
     assert!(!json.contains("dataB64"));
-    let _ = Path::new(&listed[0].dir);
+    assert_eq!(listed[0].dir, "t1");
+    assert!(!json.contains(&storage.path().to_string_lossy().to_string()));
 }

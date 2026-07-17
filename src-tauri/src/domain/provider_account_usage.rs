@@ -378,7 +378,6 @@ pub(crate) fn newapi_usage_date_range(
 }
 
 pub(crate) async fn fetch_newapi_account_usage(
-    client: &reqwest::Client,
     base_url: &str,
     api_key: &str,
     fetched_at: i64,
@@ -391,6 +390,24 @@ pub(crate) async fn fetch_newapi_account_usage(
                 Some(ProviderAccountUsageAdapterKind::Newapi),
                 ProviderAccountUsageStatus::ConfigurationRequired,
                 message,
+            );
+        }
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent(format!(
+            "aio-coding-hub-provider-account-usage/{}",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return newapi_failed_result(
+                ProviderAccountUsageStatus::QueryFailed,
+                fetched_at,
+                "NewAPI 账户用量查询失败",
             );
         }
     };
@@ -1034,6 +1051,55 @@ mod tests {
         (format!("http://{address}"), requests, task)
     }
 
+    async fn spawn_subscription_redirect(
+        target: &str,
+    ) -> (String, Arc<Mutex<Vec<String>>>, tokio::task::JoinHandle<()>) {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind redirect server");
+        let address = listener.local_addr().expect("redirect server address");
+        let requests = Arc::new(Mutex::new(Vec::new()));
+        let captured = requests.clone();
+        let target = target.to_string();
+        let task = tokio::spawn(async move {
+            for index in 0..2 {
+                let (mut stream, _) = listener.accept().await.expect("accept request");
+                let mut request = Vec::new();
+                let mut buffer = [0_u8; 1024];
+                loop {
+                    let read = stream.read(&mut buffer).await.expect("read request");
+                    if read == 0 {
+                        break;
+                    }
+                    request.extend_from_slice(&buffer[..read]);
+                    if request.windows(4).any(|window| window == b"\r\n\r\n") {
+                        break;
+                    }
+                }
+                captured
+                    .lock()
+                    .await
+                    .push(String::from_utf8_lossy(&request).into_owned());
+                let response = if index == 0 {
+                    let body = json!({ "data": { "quota_display_type": "USD" } }).to_string();
+                    format!(
+                        "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+                        body.len()
+                    )
+                } else {
+                    format!(
+                        "HTTP/1.1 302 Found\r\nLocation: {target}\r\nContent-Type: application/json\r\nContent-Length: 2\r\nConnection: close\r\n\r\n{{}}"
+                    )
+                };
+                stream
+                    .write_all(response.as_bytes())
+                    .await
+                    .expect("write response");
+            }
+        });
+        (format!("http://{address}"), requests, task)
+    }
+
     #[test]
     fn sub2api_accepts_plan_name_shapes_and_numeric_strings() {
         let body = json!({
@@ -1472,6 +1538,42 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn newapi_rejects_credentialed_and_invalid_base_urls_without_requests() {
+        let listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind zero-request server");
+        let address = listener.local_addr().expect("server address");
+        let no_request = tokio::spawn(async move {
+            tokio::time::timeout(std::time::Duration::from_millis(300), listener.accept())
+                .await
+                .is_err()
+        });
+
+        let credentialed = fetch_newapi_account_usage(
+            &format!("http://user:SYNTHETIC_SECRET@{address}"),
+            "SYNTHETIC_KEY",
+            1,
+            1,
+        )
+        .await;
+        let invalid = fetch_newapi_account_usage("not a url", "SYNTHETIC_KEY", 1, 1).await;
+        assert_eq!(
+            credentialed.status,
+            ProviderAccountUsageStatus::ConfigurationRequired
+        );
+        assert_eq!(
+            invalid.status,
+            ProviderAccountUsageStatus::ConfigurationRequired
+        );
+        assert!(no_request.await.expect("zero-request task"));
+        assert!(!credentialed
+            .message
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SYNTHETIC_SECRET"));
+    }
+
     #[test]
     fn newapi_date_window_tracks_payment_method_semantics() {
         let now = Utc
@@ -1508,25 +1610,14 @@ mod tests {
             (200, json!({ "total_usage": 250 }).to_string()),
         ];
         let (base, requests, server) = spawn_http_sequence(responses).await;
-        let client = reqwest::Client::builder()
-            .no_proxy()
-            .redirect(reqwest::redirect::Policy::none())
-            .build()
-            .unwrap();
         let now = Utc
             .with_ymd_and_hms(2026, 7, 17, 12, 0, 0)
             .single()
             .unwrap()
             .timestamp();
 
-        let result = fetch_newapi_account_usage(
-            &client,
-            &format!("{base}/v1"),
-            "synthetic-test-key",
-            now,
-            now,
-        )
-        .await;
+        let result =
+            fetch_newapi_account_usage(&format!("{base}/v1"), "synthetic-test-key", now, now).await;
         server.await.unwrap();
 
         assert_eq!(result.status, ProviderAccountUsageStatus::Available);
@@ -1570,16 +1661,9 @@ mod tests {
             (500, json!({ "success": false }).to_string()),
         ];
         let (base, requests, server) = spawn_http_sequence(responses).await;
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-
-        let result = fetch_newapi_account_usage(
-            &client,
-            &base,
-            "synthetic-test-key",
-            1_800_000_000,
-            1_800_000_000,
-        )
-        .await;
+        let result =
+            fetch_newapi_account_usage(&base, "synthetic-test-key", 1_800_000_000, 1_800_000_000)
+                .await;
         server.await.unwrap();
 
         assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
@@ -1602,16 +1686,9 @@ mod tests {
             ),
         ];
         let (base, requests, server) = spawn_http_sequence(responses).await;
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-
-        let result = fetch_newapi_account_usage(
-            &client,
-            &base,
-            "synthetic-test-key",
-            1_800_000_000,
-            1_800_000_000,
-        )
-        .await;
+        let result =
+            fetch_newapi_account_usage(&base, "synthetic-test-key", 1_800_000_000, 1_800_000_000)
+                .await;
         server.await.unwrap();
 
         assert_eq!(result.status, ProviderAccountUsageStatus::AuthFailed);
@@ -1634,21 +1711,101 @@ mod tests {
             "x".repeat(NEWAPI_STATUS_BODY_LIMIT)
         );
         let (base, requests, server) = spawn_http_sequence(vec![(200, oversized)]).await;
-        let client = reqwest::Client::builder().no_proxy().build().unwrap();
-
-        let result = fetch_newapi_account_usage(
-            &client,
-            &base,
-            "synthetic-test-key",
-            1_800_000_000,
-            1_800_000_000,
-        )
-        .await;
+        let result =
+            fetch_newapi_account_usage(&base, "synthetic-test-key", 1_800_000_000, 1_800_000_000)
+                .await;
         server.await.unwrap();
 
         assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
         assert!(result.balance.is_none());
         assert_eq!(requests.lock().await.len(), 1);
+    }
+
+    #[tokio::test]
+    async fn newapi_http_contract_enforces_subscription_and_usage_caps_all_or_nothing() {
+        let valid_status = json!({ "data": { "quota_display_type": "USD" } }).to_string();
+        let valid_subscription = json!({
+            "hard_limit_usd": 12.5,
+            "has_payment_method": true,
+            "access_until": 1_900_000_000
+        })
+        .to_string();
+        for (responses, expected_requests) in [
+            (
+                vec![
+                    (200, valid_status.clone()),
+                    (
+                        200,
+                        format!(
+                            "{{\"padding\":\"{}\"}}",
+                            "x".repeat(NEWAPI_SUBSCRIPTION_BODY_LIMIT)
+                        ),
+                    ),
+                ],
+                2,
+            ),
+            (
+                vec![
+                    (200, valid_status.clone()),
+                    (200, valid_subscription.clone()),
+                    (
+                        200,
+                        format!(
+                            "{{\"padding\":\"{}\"}}",
+                            "x".repeat(NEWAPI_USAGE_BODY_LIMIT)
+                        ),
+                    ),
+                ],
+                3,
+            ),
+        ] {
+            let (base, requests, server) = spawn_http_sequence(responses).await;
+            let result =
+                fetch_newapi_account_usage(&base, "SYNTHETIC_KEY", 1_800_000_000, 1_800_000_000)
+                    .await;
+            server.await.expect("server");
+            assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
+            assert!(result.balance.is_none());
+            assert!(result.total.is_none());
+            assert_eq!(requests.lock().await.len(), expected_requests);
+        }
+    }
+
+    #[tokio::test]
+    async fn newapi_real_redirect_is_not_followed_and_bearer_is_not_forwarded() {
+        let target_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind redirect target");
+        let target_addr = target_listener.local_addr().expect("target addr");
+        let target = tokio::spawn(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                target_listener.accept(),
+            )
+            .await
+            .is_ok()
+        });
+        let (base, requests, server) =
+            spawn_subscription_redirect(&format!("http://{target_addr}/capture")).await;
+        let result = fetch_newapi_account_usage(
+            &base,
+            "SYNTHETIC_BEARER_SECRET",
+            1_800_000_000,
+            1_800_000_000,
+        )
+        .await;
+        server.await.expect("redirect server");
+        assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
+        assert!(
+            !target.await.expect("target task"),
+            "redirect target was contacted"
+        );
+        let requests = requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer synthetic_bearer_secret"));
     }
 
     #[test]

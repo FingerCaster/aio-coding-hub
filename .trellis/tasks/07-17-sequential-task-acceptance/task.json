@@ -3,7 +3,7 @@
   "name": "sequential-task-acceptance",
   "title": "规划多任务串行执行与验收",
   "description": "严格串行修复四项用户问题，最后同步 upstream/main 并执行父任务集成验收。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",
@@ -23,7 +23,8 @@
     "07-17-fix-account-balance-manual-refresh",
     "07-17-fix-newapi-account-usage-response",
     "07-17-fix-config-export-large-skill-asset",
-    "07-17-sync-upstream-main-after-fixes"
+    "07-17-sync-upstream-main-after-fixes",
+    "07-17-final-review-security-boundaries"
   ],
   "parent": null,
   "relatedFiles": [],

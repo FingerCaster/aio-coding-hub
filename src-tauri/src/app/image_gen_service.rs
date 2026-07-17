@@ -5,8 +5,6 @@
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::blocking;
 use crate::domain::image_gen;
-use std::path::Path;
-use tauri::Manager;
 
 pub(crate) async fn config_get(
     app: tauri::AppHandle,
@@ -95,41 +93,6 @@ pub(crate) async fn fetch_image(
 
 // --- Task history persistence ---
 
-/// Grants the asset protocol access to an image gen directory. Failure is
-/// non-fatal (images will not render until restart); path-only warn log.
-fn allow_asset_dir<R: tauri::Runtime>(app: &tauri::AppHandle<R>, dir: &Path) {
-    let Ok(root) = image_gen::canonical_storage_root(dir) else {
-        tracing::warn!(dir = %dir.display(), "image gen asset scope rejected invalid storage root");
-        return;
-    };
-    if let Err(err) = app.asset_protocol_scope().allow_directory(&root, true) {
-        tracing::warn!(
-            dir = %root.display(),
-            "image gen asset scope allow_directory failed: {err}"
-        );
-    }
-}
-
-/// Startup grant: only the canonical current storage root. DB task paths never
-/// grant additional filesystem authority.
-pub(crate) async fn allow_startup_asset_scope(app: &tauri::AppHandle, db: &crate::db::Db) {
-    let app_for_read = app.clone();
-    let _ = db;
-    let root = blocking::run("image_gen_asset_scope_root", move || {
-        let root = image_gen::storage_dir_from_settings(&app_for_read)?;
-        image_gen::ensure_writable_dir(&root)?;
-        image_gen::canonical_storage_root(&root)
-    })
-    .await;
-
-    match root {
-        Ok(root) => allow_asset_dir(app, &root),
-        Err(err) => {
-            tracing::warn!("image gen asset scope startup init failed: {err}");
-        }
-    }
-}
-
 pub(crate) async fn task_persist(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
@@ -150,9 +113,10 @@ pub(crate) async fn tasks_list(
     before_created_at: Option<i64>,
     limit: u32,
 ) -> Result<Vec<image_gen::ImageGenTaskRow>, String> {
-    let db = ensure_db_ready(app, db_state.inner()).await?;
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("image_gen_tasks_list", move || {
-        image_gen::tasks_list(&db, before_created_at, limit)
+        let storage_dir = image_gen::storage_dir_from_settings(&app)?;
+        image_gen::tasks_list(&db, &storage_dir, before_created_at, limit)
     })
     .await
     .map_err(Into::into)
@@ -247,7 +211,6 @@ pub(crate) async fn storage_set_dir(
     .await
     .map_err(String::from)?;
 
-    allow_asset_dir(&app, Path::new(&view.dir));
     Ok(view)
 }
 

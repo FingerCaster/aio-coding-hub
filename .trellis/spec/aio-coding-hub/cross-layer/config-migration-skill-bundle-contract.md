@@ -96,6 +96,11 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   writer receives typed metadata only after that validation.
 - Paths must remain UTF-8, non-empty, relative, component-safe, and within the
   512-character limit. Traversal and rooted or absolute paths are rejected.
+- Installed `skill_key` values are directory authority and use one shared
+  import/rollback/export validator: exactly one portable `Component::Normal`.
+  Separators, `.`/`..`, root/prefix, drive, UNC, and colon forms are rejected
+  before staging creation. File paths also reject portable file/directory
+  ancestor conflicts (`a` with `a/b`) in either input order.
 - Recursive export rejects symlink escape and special files. Canonical visited
   directories prevent symlink directory cycles from recursing indefinitely.
 - Input and security validation failure is explicit and all-or-nothing with
@@ -103,6 +108,9 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
   import completes validation before creating the target directory or writing
   files. This does not promise directory-level transactional rollback if a
   filesystem I/O failure occurs after writing begins.
+- `SKILL.md` uses its 256 KiB budget on export/import/restore. Source metadata
+  is serialized, checked for completeness and the 64 KiB cap, and held in the
+  prepared payload before any ordinary file write.
 - Schema v1 continues to preserve legacy Skill state. Schema v2 continues to
   require and restore the complete installed/local Skill payload.
 
@@ -120,6 +128,8 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
 | Export encounters a special file or a non-UTF-8 path | Reject explicitly |
 | Import contains 257 files | Reject before target-directory creation |
 | Import path is duplicate, empty, traversal, rooted/absolute, or over 512 characters | Reject before target-directory creation |
+| Installed `skill_key` traverses, is absolute, drive/UNC, or contains a separator | Reject before staging/DB activation; preserve old state |
+| Paths contain `a` and `a/b` in either order | Reject before target-directory creation |
 | Base64 text exceeds the raw-limit-derived cap | Reject before decoding or target-directory creation |
 | Base64 text is within the cap but decodes to 8 MiB + 1 | Reject on decoded size before target-directory creation |
 | Decoded files are individually valid but total 8 MiB + 1 | Reject before target-directory creation |
@@ -169,6 +179,10 @@ Keep focused regressions in
   that expose those filesystem types.
 - v1/v2 compatibility, installed/local restoration, dedicated metadata and
   `SKILL.md` bounds, and the 64 MiB import-file read boundary.
+- Import/rollback `skill_key` traversal and Windows drive/UNC forms, proving no
+  escaped path, staging residue, or partial DB/Skill activation.
+- File/directory ancestor conflicts in both orders and metadata serialization
+  overflow before target creation or ordinary file writes.
 
 Run at least:
 

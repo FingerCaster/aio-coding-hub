@@ -376,9 +376,11 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
             status,
             resp.as_ref().and_then(|r| r.content_length()),
         ) || matches!(status.as_u16(), 402 | 429));
-    // Error classification and diagnostic capture are separate concerns: statuses such as 401
-    // intentionally skip rule matching, but their bounded body is still useful in request logs.
+    // Error classification and diagnostic capture are separate concerns. Authentication bodies
+    // may be scanned in memory when required, but must never reach console or persisted previews.
+    let persist_error_body_preview = !matches!(status.as_u16(), 401 | 403);
     let need_error_body_preview = !is_count_tokens
+        && persist_error_body_preview
         && (status.is_client_error() || status.is_server_error())
         && !need_client_error_scan;
     let need_codex_previous_response_id_scan = !is_count_tokens
@@ -400,7 +402,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                     error_body_scan_limit_usize(),
                 );
                 // CX2CC: log upstream error body to console for debugging.
-                if cx2cc_active && retry_index == 1 {
+                if cx2cc_active && retry_index == 1 && persist_error_body_preview {
                     let preview = String::from_utf8_lossy(&body_for_scan);
                     let truncated: String = preview.chars().take(500).collect();
                     emit_gateway_log(
@@ -416,7 +418,9 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                     );
                 }
                 // Extract a bounded body preview for diagnostics on upstream errors.
-                if status.is_server_error() || status.is_client_error() {
+                if persist_error_body_preview
+                    && (status.is_server_error() || status.is_client_error())
+                {
                     let preview = String::from_utf8_lossy(&body_for_scan);
                     let truncated: String = preview.chars().take(500).collect();
                     if !truncated.is_empty() {
@@ -494,7 +498,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         category = ErrorCategory::NonRetryableClientError;
         decision = FailoverDecision::Abort;
         // Extract body preview for diagnostic logging when aborting unmatched 4xx.
-        if upstream_body_preview.is_none() {
+        if persist_error_body_preview && upstream_body_preview.is_none() {
             if let Some(ref bytes) = abort_body_bytes {
                 let preview = String::from_utf8_lossy(bytes);
                 let truncated: String = preview.chars().take(500).collect();

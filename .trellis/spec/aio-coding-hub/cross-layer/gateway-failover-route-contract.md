@@ -59,6 +59,11 @@ buildRequestRouteMeta({
   `GW_ALL_PROVIDERS_UNAVAILABLE` / HTTP 503 and preserve every denied provider
   in both attempts and route. Do not manufacture an upstream call to make the
   failure observable.
+- Upstream 401 and 403 bodies are authentication material and must never enter
+  console diagnostics, persisted attempt reasons, `attempts_json`, or
+  `error_details_json`. The bounded body may remain in memory only as needed by
+  existing failover/auth classification. Serialization defensively strips a
+  supplied 401/403 preview even when an earlier layer accidentally included it.
 
 ### 4. Validation & Error Matrix
 
@@ -72,6 +77,7 @@ buildRequestRouteMeta({
 | All candidates are gate-skipped | HTTP 503 with every candidate in attempts and route |
 | Ready-provider cap is reached | Stop before the next Ready provider |
 | Route has 3 hops and 4 attempt rows | 3 providers, 2 transitions, 4 attempts |
+| Upstream 401/403 body contains a credential-like value | Keep status and safe reason, but persist/log none of the body |
 
 ### 5. Good / Base / Bad Cases
 
@@ -96,6 +102,9 @@ buildRequestRouteMeta({
   candidate, preserved session binding, and zero upstream calls.
 - Route-test that skipped candidates do not consume the Ready-provider cap,
   plus a boundary where the cap stops before the next Ready provider.
+- Use `SYNTHETIC_SECRET` in 401 and 403 bodies; assert console output, attempt
+  serialization, and error details omit it without changing failover/auth
+  classification or the recorded status.
 - Keep model-discovery strict-attempt and health-neutral circuit tests passing;
   shared gate changes must not broaden those requests.
 - Frontend-test provider, transition, and attempt counts with skips and retries.

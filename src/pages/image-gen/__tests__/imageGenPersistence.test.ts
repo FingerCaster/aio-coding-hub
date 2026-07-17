@@ -35,13 +35,13 @@ function makeRow(overrides: Partial<ImageGenTaskRow> = {}): ImageGenTaskRow {
     usageJson: null,
     images: [
       {
-        path: "/store/row-1/image-1.png",
-        thumbPath: "/store/row-1/thumb-1.webp",
+        path: "row-1/image-1.png",
+        thumbPath: "row-1/thumb-1.webp",
         mime: "image/png",
       },
     ],
     refImages: [],
-    dir: "/store/row-1",
+    dir: "row-1",
     createdAt: 1_700_000_000_000,
     elapsedMs: 1200,
     ...overrides,
@@ -209,12 +209,16 @@ describe("pages/image-gen/imageGenPersistence", () => {
     expect(payload.refImages).toEqual([]);
   });
 
-  it("taskFromRow maps a row into a persisted disk task", () => {
+  it("taskFromRow maps validated opaque references through backend reads", async () => {
+    vi.mocked(imageGenReadImage).mockImplementation(async (reference) => ({
+      mime: reference.endsWith(".webp") ? "image/webp" : "image/png",
+      dataB64: btoa(reference),
+    }));
     const row = makeRow({
       usageJson: JSON.stringify({ totalTokens: 5 }),
-      refImages: [{ path: "/store/row-1/ref-1.png", thumbPath: null, mime: "image/png" }],
+      refImages: [{ path: "row-1/ref-1.png", thumbPath: null, mime: "image/png" }],
     });
-    const task = taskFromRow(row);
+    const task = await taskFromRow(row);
     expect(task).not.toBeNull();
     expect(task).toMatchObject({
       id: "row-1",
@@ -225,37 +229,38 @@ describe("pages/image-gen/imageGenPersistence", () => {
       startedAt: row.createdAt,
       elapsedMs: 1200,
       usage: { totalTokens: 5 },
-      refThumbs: ["asset://localhost//store/row-1/ref-1.png"],
-      refPaths: [{ path: "/store/row-1/ref-1.png", mime: "image/png" }],
+      refThumbs: [`data:image/png;base64,${btoa("row-1/ref-1.png")}`],
+      refPaths: [{ path: "row-1/ref-1.png", mime: "image/png" }],
     });
     expect(task?.images[0]).toEqual({
       kind: "disk",
-      src: "asset://localhost//store/row-1/image-1.png",
-      thumbSrc: "asset://localhost//store/row-1/thumb-1.webp",
-      path: "/store/row-1/image-1.png",
+      src: `data:image/png;base64,${btoa("row-1/image-1.png")}`,
+      thumbSrc: `data:image/webp;base64,${btoa("row-1/thumb-1.webp")}`,
+      path: "row-1/image-1.png",
       mime: "image/png",
     });
   });
 
-  it("taskFromRow falls back to the full image when the thumb is missing and tolerates bad usage", () => {
+  it("taskFromRow falls back to the full image when the thumb is missing and tolerates bad usage", async () => {
+    vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("image") });
     const row = makeRow({
       status: "error",
       error: "boom",
       usageJson: "not-json{",
       elapsedMs: null,
-      images: [{ path: "/store/row-1/image-1.png", thumbPath: null, mime: "image/png" }],
+      images: [{ path: "row-1/image-1.png", thumbPath: null, mime: "image/png" }],
     });
-    const task = taskFromRow(row);
+    const task = await taskFromRow(row);
     expect(task?.status).toBe("error");
     expect(task?.error).toBe("boom");
     expect(task?.usage).toBeUndefined();
     expect(task?.elapsedMs).toBeUndefined();
-    expect(taskImageThumbSrc(task!.images[0])).toBe("asset://localhost//store/row-1/image-1.png");
+    expect(taskImageThumbSrc(task!.images[0])).toBe(`data:image/png;base64,${btoa("image")}`);
   });
 
-  it("taskFromRow returns null for unparsable request snapshots", () => {
+  it("taskFromRow returns null for unparsable request snapshots", async () => {
     const warnSpy = vi.spyOn(console, "warn").mockImplementation(() => {});
-    expect(taskFromRow(makeRow({ requestJson: "not-json{" }))).toBeNull();
+    await expect(taskFromRow(makeRow({ requestJson: "not-json{" }))).resolves.toBeNull();
     expect(warnSpy).toHaveBeenCalled();
   });
 

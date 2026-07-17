@@ -86,25 +86,21 @@ pub(crate) async fn provider_account_usage_fetch(
         ));
     }
 
-    let mut client_builder = reqwest::Client::builder()
+    if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi {
+        let fetched_at = crate::shared::time::now_unix_seconds();
+        return Ok(fetch_newapi_account_usage(base_url, &api_key, fetched_at, fetched_at).await);
+    }
+
+    let client = reqwest::Client::builder()
         .timeout(std::time::Duration::from_secs(15))
         .user_agent(format!(
             "aio-coding-hub-provider-account-usage/{}",
             env!("CARGO_PKG_VERSION")
-        ));
-    if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi {
-        client_builder = client_builder.redirect(reqwest::redirect::Policy::none());
-    }
-    let client = client_builder
+        ))
         .build()
         .map_err(|err| format!("SYSTEM_ERROR: failed to build HTTP client: {err}"))?;
 
     let fetched_at = crate::shared::time::now_unix_seconds();
-    if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi {
-        return Ok(
-            fetch_newapi_account_usage(&client, base_url, &api_key, fetched_at, fetched_at).await,
-        );
-    }
 
     let url = match build_account_usage_url(base_url, config.adapter_kind) {
         Ok(url) => url,

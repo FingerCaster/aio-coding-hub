@@ -49,9 +49,9 @@ pub(crate) struct ImageGenTaskPersistPayload {
 #[derive(Debug, Clone, serde::Serialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct ImageGenTaskFileRow {
-    /// Absolute path of the stored file.
+    /// Opaque backend-validated reference (`task-id/filename`), never a path.
     pub path: String,
-    /// Absolute path of the thumbnail (generated images only).
+    /// Opaque backend-validated thumbnail reference.
     pub thumb_path: Option<String>,
     pub mime: String,
 }
@@ -366,30 +366,27 @@ ON CONFLICT(id) DO UPDATE SET
         return Err(err);
     }
 
-    task_get(db, &id)?.ok_or_else(|| "DB_ERROR: persisted image gen task not found".into())
+    task_get(db, &storage_root, &id)?
+        .ok_or_else(|| "DB_ERROR: persisted image gen task not found".into())
 }
 
-fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImageGenTaskRow> {
-    let images_json: String = row.get("images_json")?;
-    let ref_images_json: String = row.get("ref_images_json")?;
-    let dir: String = row.get("dir")?;
-    let dir_path = PathBuf::from(&dir);
+struct RawTaskRow {
+    id: String,
+    adapter_id: String,
+    prompt: String,
+    request_json: String,
+    status: String,
+    error: Option<String>,
+    usage_json: Option<String>,
+    images_json: String,
+    ref_images_json: String,
+    dir: String,
+    created_at: i64,
+    elapsed_ms: Option<i64>,
+}
 
-    let to_rows = |json: &str| -> Vec<ImageGenTaskFileRow> {
-        serde_json::from_str::<Vec<StoredFile>>(json)
-            .unwrap_or_default()
-            .into_iter()
-            .map(|stored| ImageGenTaskFileRow {
-                path: dir_path.join(&stored.file).to_string_lossy().to_string(),
-                thumb_path: stored
-                    .thumb
-                    .map(|thumb| dir_path.join(thumb).to_string_lossy().to_string()),
-                mime: stored.mime,
-            })
-            .collect()
-    };
-
-    Ok(ImageGenTaskRow {
+fn row_to_raw_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<RawTaskRow> {
+    Ok(RawTaskRow {
         id: row.get("id")?,
         adapter_id: row.get("adapter_id")?,
         prompt: row.get("prompt")?,
@@ -397,30 +394,122 @@ fn row_to_task(row: &rusqlite::Row<'_>) -> rusqlite::Result<ImageGenTaskRow> {
         status: row.get("status")?,
         error: row.get("error")?,
         usage_json: row.get("usage_json")?,
-        images: to_rows(&images_json),
-        ref_images: to_rows(&ref_images_json),
-        dir,
+        images_json: row.get("images_json")?,
+        ref_images_json: row.get("ref_images_json")?,
+        dir: row.get("dir")?,
         created_at: row.get("created_at")?,
         elapsed_ms: row.get("elapsed_ms")?,
     })
 }
 
+fn validate_stored_file(
+    task_dir: &Path,
+    task_id: &str,
+    stored: StoredFile,
+    referenced_paths: &mut Vec<(String, PathBuf)>,
+) -> AppResult<ImageGenTaskFileRow> {
+    let file = safe_stored_file_name(&stored.file)
+        .ok_or_else(|| "SEC_INVALID_INPUT: unsafe stored image filename".to_string())?;
+    let path = validate_stored_file_path(task_dir, file)?;
+    let reference = format!("{task_id}/{file}");
+    referenced_paths.push((reference.clone(), path));
+
+    let thumb_path = if let Some(thumb) = stored.thumb {
+        let thumb = safe_stored_file_name(&thumb)
+            .ok_or_else(|| "SEC_INVALID_INPUT: unsafe stored thumbnail filename".to_string())?;
+        let path = validate_stored_file_path(task_dir, thumb)?;
+        let reference = format!("{task_id}/{thumb}");
+        referenced_paths.push((reference.clone(), path));
+        Some(reference)
+    } else {
+        None
+    };
+    Ok(ImageGenTaskFileRow {
+        path: reference,
+        thumb_path,
+        mime: stored.mime,
+    })
+}
+
+fn validate_stored_file_path(task_dir: &Path, filename: &str) -> AppResult<PathBuf> {
+    let candidate = task_dir.join(filename);
+    let link_metadata = std::fs::symlink_metadata(&candidate)
+        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be resolved".to_string())?;
+    if link_metadata.file_type().is_symlink() {
+        return Err("SEC_INVALID_INPUT: stored image file cannot be a symlink"
+            .to_string()
+            .into());
+    }
+    let canonical = std::fs::canonicalize(&candidate)
+        .map_err(|_| "SEC_INVALID_INPUT: stored image file cannot be resolved".to_string())?;
+    if canonical.parent() != Some(task_dir) || !canonical.is_file() {
+        return Err(
+            "SEC_INVALID_INPUT: stored image file is outside its task directory"
+                .to_string()
+                .into(),
+        );
+    }
+    Ok(canonical)
+}
+
+fn validate_raw_task(
+    storage_root: &Path,
+    raw: RawTaskRow,
+) -> AppResult<(ImageGenTaskRow, Vec<(String, PathBuf)>)> {
+    let id = validate_task_id(&raw.id)?.to_string();
+    let task_dir = validate_task_dir(storage_root, &raw.dir, &id)?;
+    let images = serde_json::from_str::<Vec<StoredFile>>(&raw.images_json)
+        .map_err(|_| "SEC_INVALID_INPUT: invalid stored image metadata".to_string())?;
+    let ref_images = serde_json::from_str::<Vec<StoredFile>>(&raw.ref_images_json)
+        .map_err(|_| "SEC_INVALID_INPUT: invalid stored reference metadata".to_string())?;
+    let mut referenced_paths = Vec::new();
+    let images = images
+        .into_iter()
+        .map(|stored| validate_stored_file(&task_dir, &id, stored, &mut referenced_paths))
+        .collect::<AppResult<Vec<_>>>()?;
+    let ref_images = ref_images
+        .into_iter()
+        .map(|stored| validate_stored_file(&task_dir, &id, stored, &mut referenced_paths))
+        .collect::<AppResult<Vec<_>>>()?;
+    Ok((
+        ImageGenTaskRow {
+            id: id.clone(),
+            adapter_id: raw.adapter_id,
+            prompt: raw.prompt,
+            request_json: raw.request_json,
+            status: raw.status,
+            error: raw.error,
+            usage_json: raw.usage_json,
+            images,
+            ref_images,
+            dir: id,
+            created_at: raw.created_at,
+            elapsed_ms: raw.elapsed_ms,
+        },
+        referenced_paths,
+    ))
+}
+
 const TASK_SELECT_COLUMNS: &str = "id, adapter_id, prompt, request_json, status, error, usage_json, images_json, ref_images_json, dir, created_at, elapsed_ms";
 
-fn task_get(db: &db::Db, id: &str) -> AppResult<Option<ImageGenTaskRow>> {
+fn task_get(db: &db::Db, storage_root: &Path, id: &str) -> AppResult<Option<ImageGenTaskRow>> {
     let conn = db.open_connection()?;
-    conn.query_row(
-        &format!("SELECT {TASK_SELECT_COLUMNS} FROM image_gen_tasks WHERE id = ?1"),
-        rusqlite::params![id],
-        row_to_task,
-    )
-    .optional()
-    .map_err(|e| db_err!("failed to query image gen task: {e}"))
+    let raw = conn
+        .query_row(
+            &format!("SELECT {TASK_SELECT_COLUMNS} FROM image_gen_tasks WHERE id = ?1"),
+            rusqlite::params![id],
+            row_to_raw_task,
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to query image gen task: {e}"))?;
+    raw.map(|raw| validate_raw_task(storage_root, raw).map(|(row, _)| row))
+        .transpose()
 }
 
 /// Newest-first page. `before_created_at = None` starts from the newest row.
 pub(crate) fn tasks_list(
     db: &db::Db,
+    storage_root: &Path,
     before_created_at: Option<i64>,
     limit: u32,
 ) -> AppResult<Vec<ImageGenTaskRow>> {
@@ -437,12 +526,13 @@ LIMIT ?2
         ))
         .map_err(|e| db_err!("failed to prepare image gen tasks query: {e}"))?;
     let rows = stmt
-        .query_map(rusqlite::params![before_created_at, limit], row_to_task)
+        .query_map(rusqlite::params![before_created_at, limit], row_to_raw_task)
         .map_err(|e| db_err!("failed to query image gen tasks: {e}"))?;
 
     let mut tasks = Vec::new();
     for row in rows {
-        tasks.push(row.map_err(|e| db_err!("failed to read image gen task row: {e}"))?);
+        let raw = row.map_err(|e| db_err!("failed to read image gen task row: {e}"))?;
+        tasks.push(validate_raw_task(storage_root, raw)?.0);
     }
     Ok(tasks)
 }
@@ -547,53 +637,16 @@ fn query_id_dir_pairs(
 
 fn safe_stored_file_name(value: &str) -> Option<&str> {
     let path = Path::new(value);
-    if value.is_empty() || path.file_name().and_then(|name| name.to_str()) != Some(value) {
+    if value.is_empty()
+        || value.contains('/')
+        || value.contains('\\')
+        || value.contains(':')
+        || path.file_name().and_then(|name| name.to_str()) != Some(value)
+        || path.components().count() != 1
+    {
         return None;
     }
     Some(value)
-}
-
-fn referenced_image_paths(db: &db::Db, storage_root: &Path) -> AppResult<Vec<PathBuf>> {
-    let conn = db.open_connection()?;
-    let mut stmt = conn
-        .prepare("SELECT id, dir, images_json, ref_images_json FROM image_gen_tasks")
-        .map_err(|e| db_err!("failed to prepare image gen file references: {e}"))?;
-    let rows = stmt
-        .query_map([], |row| {
-            Ok((
-                row.get::<_, String>(0)?,
-                row.get::<_, String>(1)?,
-                row.get::<_, String>(2)?,
-                row.get::<_, String>(3)?,
-            ))
-        })
-        .map_err(|e| db_err!("failed to query image gen file references: {e}"))?;
-    let mut paths = Vec::new();
-    for row in rows {
-        let (id, dir, images_json, refs_json) =
-            row.map_err(|e| db_err!("failed to read image gen file reference: {e}"))?;
-        let task_dir = validate_task_dir(storage_root, &dir, &id)?;
-        for stored in serde_json::from_str::<Vec<StoredFile>>(&images_json)
-            .map_err(|_| "SEC_INVALID_INPUT: invalid stored image metadata".to_string())?
-            .into_iter()
-            .chain(
-                serde_json::from_str::<Vec<StoredFile>>(&refs_json).map_err(|_| {
-                    "SEC_INVALID_INPUT: invalid stored reference metadata".to_string()
-                })?,
-            )
-        {
-            let file = safe_stored_file_name(&stored.file)
-                .ok_or_else(|| "SEC_INVALID_INPUT: unsafe stored image filename".to_string())?;
-            paths.push(task_dir.join(file));
-            if let Some(thumb) = stored.thumb {
-                let thumb = safe_stored_file_name(&thumb).ok_or_else(|| {
-                    "SEC_INVALID_INPUT: unsafe stored thumbnail filename".to_string()
-                })?;
-                paths.push(task_dir.join(thumb));
-            }
-        }
-    }
-    Ok(paths)
 }
 
 /// Reads a stored image back as base64. Security boundary: the canonicalized
@@ -602,34 +655,33 @@ fn referenced_image_paths(db: &db::Db, storage_root: &Path) -> AppResult<Vec<Pat
 pub(crate) fn read_image(
     db: &db::Db,
     storage_dir: &Path,
-    path: &str,
+    reference: &str,
 ) -> AppResult<ImageGenFetchedImage> {
-    let path = path.trim();
-    if path.is_empty() {
-        return Err("SEC_INVALID_INPUT: path is required".to_string().into());
-    }
-    let canonical = std::fs::canonicalize(path)
-        .map_err(|_| String::from("SEC_INVALID_INPUT: image path cannot be resolved"))?;
-
     let root = canonical_storage_root(storage_dir)?;
-    if !canonical.starts_with(&root) || canonical == root {
-        return Err(
-            "SEC_INVALID_INPUT: image path is outside the image gen storage"
-                .to_string()
-                .into(),
-        );
-    }
-    let referenced = referenced_image_paths(db, &root)?
+    let reference = reference.trim();
+    let (task_id, filename) = reference
+        .split_once('/')
+        .ok_or_else(|| "SEC_INVALID_INPUT: invalid image reference".to_string())?;
+    validate_task_id(task_id)?;
+    safe_stored_file_name(filename)
+        .ok_or_else(|| "SEC_INVALID_INPUT: invalid image reference".to_string())?;
+    let conn = db.open_connection()?;
+    let raw = conn
+        .query_row(
+            &format!("SELECT {TASK_SELECT_COLUMNS} FROM image_gen_tasks WHERE id = ?1"),
+            rusqlite::params![task_id],
+            row_to_raw_task,
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to query image gen task: {e}"))?
+        .ok_or_else(|| "SEC_INVALID_INPUT: image reference task was not found".to_string())?;
+    let (_, referenced_paths) = validate_raw_task(&root, raw)?;
+    let canonical = referenced_paths
         .into_iter()
-        .filter_map(|candidate| std::fs::canonicalize(candidate).ok())
-        .any(|candidate| candidate == canonical);
-    if !referenced {
-        return Err(
-            "SEC_INVALID_INPUT: image path is not referenced by a trusted task"
-                .to_string()
-                .into(),
-        );
-    }
+        .find_map(|(candidate, path)| (candidate == reference).then_some(path))
+        .ok_or_else(|| {
+            "SEC_INVALID_INPUT: image reference is not present in trusted metadata".to_string()
+        })?;
 
     let metadata = std::fs::metadata(&canonical)
         .map_err(|e| format!("SYSTEM_ERROR: failed to stat image file: {e}"))?;

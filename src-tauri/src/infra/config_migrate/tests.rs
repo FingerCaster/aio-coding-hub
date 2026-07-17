@@ -1,5 +1,6 @@
 use super::skill_fs::{
-    cli_skills_root, export_skill_dir_files, ssot_skills_root, write_skill_files_to_dir,
+    cli_skills_root, export_skill_dir_files, ssot_skills_root, validate_installed_skill_key,
+    write_skill_files_to_dir, SkillSourceMetadataFile,
 };
 use super::*;
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
@@ -857,6 +858,74 @@ fn validate_local_skills_for_import_rejects_unknown_cli_key() {
         .contains("SEC_INVALID_INPUT: unknown local skill cli_key=cursor"));
 }
 
+#[test]
+fn installed_skill_key_requires_one_portable_normal_component() {
+    assert_eq!(
+        validate_installed_skill_key(" valid-skill ").expect("valid key"),
+        "valid-skill"
+    );
+    for invalid in [
+        "",
+        ".",
+        "..",
+        "../escape",
+        "nested/escape",
+        "nested\\escape",
+        "/absolute",
+        "C:\\absolute",
+        "C:/absolute",
+        "\\\\server\\share",
+    ] {
+        assert!(
+            validate_installed_skill_key(invalid).is_err(),
+            "accepted invalid key {invalid:?}"
+        );
+    }
+}
+
+#[test]
+fn config_import_rejects_traversal_skill_key_without_fs_or_db_activation() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    write_skill_md(&ssot_root.join("existing"), "Existing", "keep");
+    let app_data = crate::app_paths::app_data_dir(&app).expect("app data");
+    let escaped = app_data.join("escape");
+
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.installed_skills = Some(vec![InstalledSkillExport {
+        skill_key: "../escape".to_string(),
+        name: "Escape".to_string(),
+        description: String::new(),
+        source_git_url: "https://example.test/repo.git".to_string(),
+        source_branch: "main".to_string(),
+        source_subdir: "skills/escape".to_string(),
+        enabled_in_workspaces: Vec::new(),
+        files: vec![SkillFileExport {
+            relative_path: "SKILL.md".to_string(),
+            content_base64: BASE64_STANDARD.encode(b"---\nname: Escape\n---\n"),
+        }],
+    }]);
+    bundle.local_skills = Some(Vec::new());
+
+    let Err(error) = config_import(&app, &test_app.db, bundle) else {
+        panic!("traversal must fail");
+    };
+    assert!(error.to_string().contains("invalid installed skill_key"));
+    assert!(!escaped.exists());
+    assert!(ssot_root.join("existing").join("SKILL.md").exists());
+    assert_eq!(
+        test_app
+            .db
+            .open_connection()
+            .expect("open db")
+            .query_row("SELECT COUNT(1) FROM skills", [], |row| row
+                .get::<_, i64>(0))
+            .expect("skill count"),
+        0
+    );
+}
+
 #[cfg(unix)]
 #[test]
 fn export_skill_dir_files_rejects_symlink_escape() {
@@ -1126,6 +1195,69 @@ fn write_skill_files_to_dir_rejects_duplicate_traversal_and_long_paths_before_cr
             .expect_err("invalid path should fail before writing");
         assert!(!target.exists(), "target created for {case}");
     }
+}
+
+#[test]
+fn write_skill_files_rejects_file_directory_conflicts_in_both_orders() {
+    for (case, paths) in [
+        ("parent-first", ["assets", "assets/image.png"]),
+        ("child-first", ["assets/image.png", "assets"]),
+    ] {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let target = temp.path().join(case);
+        let files = paths
+            .into_iter()
+            .map(|relative_path| SkillFileExport {
+                relative_path: relative_path.to_string(),
+                content_base64: BASE64_STANDARD.encode(b"x"),
+            })
+            .collect::<Vec<_>>();
+        let error = write_skill_files_to_dir(&target, &files, None)
+            .expect_err("file/directory conflict must fail");
+        assert!(error.to_string().contains("conflicting skill file paths"));
+        assert!(!target.exists());
+    }
+}
+
+#[test]
+fn skill_md_and_source_metadata_use_dedicated_prewrite_budgets() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let source = temp.path().join("source");
+    std::fs::create_dir_all(&source).expect("create source");
+    std::fs::write(
+        source.join("SKILL.md"),
+        vec![b'x'; CONFIG_SKILL_MD_MAX_BYTES + 1],
+    )
+    .expect("write oversized SKILL.md");
+    assert!(export_skill_dir_files(&source, true).is_err());
+
+    let files = vec![SkillFileExport {
+        relative_path: "SKILL.md".to_string(),
+        content_base64: BASE64_STANDARD.encode(vec![b'x'; CONFIG_SKILL_MD_MAX_BYTES + 1]),
+    }];
+    let skill_target = temp.path().join("skill-target");
+    let error = write_skill_files_to_dir(&skill_target, &files, None)
+        .expect_err("oversized SKILL.md must fail");
+    assert!(error.to_string().contains("SKILL.md too large"));
+    assert!(!skill_target.exists());
+
+    let metadata = SkillSourceMetadataFile {
+        source_git_url: "x".repeat(CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES),
+        source_branch: "main".to_string(),
+        source_subdir: "skill".to_string(),
+    };
+    let metadata_target = temp.path().join("metadata-target");
+    let error = write_skill_files_to_dir(
+        &metadata_target,
+        &[SkillFileExport {
+            relative_path: "ordinary.txt".to_string(),
+            content_base64: BASE64_STANDARD.encode(b"ordinary"),
+        }],
+        Some(&metadata),
+    )
+    .expect_err("oversized metadata must fail");
+    assert!(error.to_string().contains("source metadata too large"));
+    assert!(!metadata_target.exists());
 }
 
 #[cfg(unix)]

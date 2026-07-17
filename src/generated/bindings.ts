@@ -3061,11 +3061,11 @@ export type ImageGenStorageView = { dir: string; totalBytes: number; taskCount: 
 export type ImageGenTaskFilePayload = { mime: string; dataB64: string };
 export type ImageGenTaskFileRow = {
   /**
-   * Absolute path of the stored file.
+   * Opaque backend-validated reference (`task-id/filename`), never a path.
    */
   path: string;
   /**
-   * Absolute path of the thumbnail (generated images only).
+   * Opaque backend-validated thumbnail reference.
    */
   thumbPath: string | null;
   mime: string;
