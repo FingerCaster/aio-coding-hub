@@ -90,7 +90,7 @@
 - [x] AC7 F7 的脱敏 live 证据、冲突决策表、父任务映射及 secret/task validation 完整。
 - [x] AC8 F8 的同时间戳 51+ 行、多页、非法游标及前端追加测试通过。
 - [x] 聚焦 Rust/Vitest、binding 生成/一致性检查和完整仓库门禁全部通过。
-- [ ] 子任务提交并归档、journal 已记录、父任务仍 `in_progress`、工作树干净且无远程操作。
+- [x] 子任务提交并归档、journal 已记录、父任务仍 `in_progress`、工作树干净且无远程操作。
 
 ## Validation Commands
 

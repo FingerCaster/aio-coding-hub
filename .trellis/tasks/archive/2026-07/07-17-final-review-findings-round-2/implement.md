@@ -47,9 +47,9 @@
 ## Finish
 
 - [x] 完成 trellis-update-spec 判断和 7-section executable contract。
-- [ ] 动态补齐 node/pnpm PATH，提交本轮全部代码/测试/spec/task 工件。
-- [ ] 读取并执行 `trellis-finish-work`，归档本子任务并记录 journal；父任务不归档。
-- [ ] 确认工作树干净、父任务 `in_progress`、upstream push `DISABLED`、Orca 单终端。
+- [x] 动态补齐 node/pnpm PATH，提交本轮全部代码/测试/spec/task 工件。
+- [x] 读取并执行 `trellis-finish-work`，归档本子任务并记录 journal；父任务不归档。
+- [x] 确认工作树干净、父任务 `in_progress`、upstream push `DISABLED`、Orca 单终端。
 
 ## Validation Evidence
 

@@ -11,7 +11,7 @@
 
 - 当前分支为 `FingerCaster/sequential-task-acceptance`，基线为本地
   `main@2e43ee23572e69e34ce2c4cfb60481b58acf9298`。
-- 子任务 1-6 已依次实现、提交并归档；子任务 7 正在执行第二轮终审修复。父任务保持
+- 子任务 1-7 已依次实现、提交并归档；下一步为独立 max 只读终审。父任务保持
   `in_progress`，最终 max 审核通过前不得归档。
 - 用户已确认前置父任务完成，并授权规划校验通过后由主会话直接进入实现，无需再次
   请求规划确认。当前 max 调研终端只完成规划，主会话随后切换 `gpt-5.6-sol`
@@ -48,7 +48,7 @@
 | 4 | `07-17-fix-config-export-large-skill-asset` | archived |
 | 5 | `07-17-sync-upstream-main-after-fixes` | archived; conflict audit linked |
 | 6 | `07-17-final-review-security-boundaries` | archived |
-| 7 | `07-17-final-review-findings-round-2` | in_progress |
+| 7 | `07-17-final-review-findings-round-2` | archived; F1-F8 and evidence closure complete |
 
 ### R2. 多供应商失败链路
 
