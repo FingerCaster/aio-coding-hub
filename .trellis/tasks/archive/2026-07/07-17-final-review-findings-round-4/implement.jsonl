@@ -17,4 +17,4 @@
 {"file": "src/templates/markdown/spec/cross-layer/image-gen-trust-boundary-contract.md", "reason": "Synchronize the shipped history authority, hydration budget, and bounded failure contract template."}
 {"file": "src/templates/markdown/spec/cross-layer/provider-oauth-device-flow-contract.md", "reason": "Synchronize the shipped OAuth capability-redaction contract template."}
 {"file": "src/templates/markdown/spec/cross-layer/index.md", "reason": "Synchronize the shipped cross-layer index and all relative contract links."}
-{"file": ".trellis/tasks/07-17-final-review-findings-round-4/research/break-loop-retrospective.md", "reason": "Carry the round-4 root-cause clusters and failed-approach evidence into final implementation review."}
+{"file": ".trellis/tasks/archive/2026-07/07-17-final-review-findings-round-4/research/break-loop-retrospective.md", "reason": "Carry the round-4 root-cause clusters and failed-approach evidence into final implementation review."}

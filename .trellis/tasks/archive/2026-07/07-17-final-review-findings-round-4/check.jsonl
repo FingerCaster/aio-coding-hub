@@ -16,4 +16,4 @@
 {"file": "src/templates/markdown/spec/cross-layer/image-gen-trust-boundary-contract.md", "reason": "Verify the shipped Image Gen contract template hash matches the project contract."}
 {"file": "src/templates/markdown/spec/cross-layer/provider-oauth-device-flow-contract.md", "reason": "Verify the shipped OAuth contract template hash matches the project contract."}
 {"file": "src/templates/markdown/spec/cross-layer/index.md", "reason": "Verify the shipped cross-layer index hash and relative links match the project contract."}
-{"file": ".trellis/tasks/07-17-final-review-findings-round-4/research/break-loop-retrospective.md", "reason": "Check that every identified root-cause cluster has an executable regression and spec contract."}
+{"file": ".trellis/tasks/archive/2026-07/07-17-final-review-findings-round-4/research/break-loop-retrospective.md", "reason": "Check that every identified root-cause cluster has an executable regression and spec contract."}
