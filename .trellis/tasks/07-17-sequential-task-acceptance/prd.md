@@ -23,7 +23,8 @@
   通过前不得归档。
 - 子任务 12（Round 7）已在 `8bbc619a` 完成实现，并在 `29133ac0` 归档；其后新的 Sol 终审
   发现一项历史用户决定断言缺乏记录证据的 P2。子任务 13（Round 8）已完成该事实修正并归档于
-  `356fe32`；其新的独立 Sol final review 仍待执行，父任务继续保持 `in_progress`。
+  `356fe32`。该 SHA 仅是 child archive；后续父任务事实投影提交 `2a89a4f` 及其后的投影也属于
+  待审核最终状态。新的独立 Sol final review 仍待执行，父任务继续保持 `in_progress`。
 - 用户已确认前置父任务完成，并授权规划校验通过后直接进入实现，无需再次请求规划确认。
   已发生的 Round 6 实现记录保留其真实 `gpt-5.6-luna / effort=max` 模型，已完成的 child 11
   执行记录保留其真实 `gpt-5.6-terra / effort=max` 模型；从 Round 7 起，剩余实现和检查改由
@@ -82,7 +83,7 @@
 | 10 | `07-17-final-review-findings-round-5` | archived; six findings and full gates complete |
 | 11 | `07-17-final-review-findings-round-6` | archived at `a2abe128`; F1-F23 and full gates closed, F24 excluded by user decision |
 | 12 | `07-18-final-review-findings-round-7` | archived at `29133ac0`; its fresh Sol review found the unsupported historical-decision P2 |
-| 13 | `07-18-final-review-findings-round-8` | archived at `356fe32`; factual-record correction complete, new independent Sol review pending |
+| 13 | `07-18-final-review-findings-round-8` | archived at `356fe32`; child archive is not the final-review anchor, new independent Sol review pending |
 
 ### R2. 多供应商失败链路
 
@@ -178,8 +179,10 @@
 - [x] 子任务 12 已关闭冻结提交 `35db0f32` 的有效 findings，在 `8bbc619a` 完成实现并于
       `29133ac0` 归档；其后新的 Sol 终审发现本轮待纠正的历史决定断言 P2。
 - [x] 子任务 13 仅纠正该 P2 和 Round 7/8 任务事实投影，并在 `356fe32` 完成归档。
-- [ ] 子任务 13 归档后重新冻结并完成最终 Sol max 审核；全过程
-  不泄露密钥/PII、不向任何 remote 推送，父任务才可归档。
+- [ ] 所有 parent fact-projection 提交完成后，协调会话必须在启动新的独立 Sol 审查工作树时
+      记录最终父任务 tip 的不可变 SHA，并冻结、审查该 SHA；不得只使用 child archive
+      `356fe32`。审核无 P0-P2 前不得通过或归档父任务、合并 `main`，全过程不泄露密钥/PII、
+      不向任何 remote 推送。
 
 ## Out of Scope
 

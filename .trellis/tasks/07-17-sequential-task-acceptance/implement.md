@@ -84,7 +84,9 @@
       unsupported historical-user-decision P2.
 - [x] Complete and archive child 13 as the sole Round 8 factual-record correction at `356fe32` while the parent
       remains `in_progress`.
-- [ ] Freeze `356fe32` and run a new independent Sol max read-only review before passing the parent.
+- [ ] After every parent fact-projection commit is complete, the coordinator starts a new independent Sol review
+      worktree, records the immutable SHA of the final parent tip, and freezes and reviews exactly that SHA;
+      child archive `356fe32` alone is not a valid final-review anchor.
 - [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
       made.
 - [ ] Archive the parent only after every acceptance item is evidenced.
@@ -148,8 +150,8 @@
 
 - [x] Correct only the two unsupported historical-decision assertions and the parent Round 7/8 projection, then
       commit and archive only child 13 at `356fe32` while the parent remains `in_progress`.
-- [ ] Freeze `356fe32` for a new independent Sol max read-only review; do not pass or archive the parent before
-      that review reports no P0-P2.
+- [ ] Apply the final-parent-tip freeze rule in Parent Integration Acceptance. Do not pass or archive the parent,
+      or merge `main`, before that independent Sol review reports no P0-P2.
 
 ## Stop And Rollback Rules
 
