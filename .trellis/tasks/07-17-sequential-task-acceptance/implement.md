@@ -8,7 +8,13 @@
       implementation and checks without a concurrent execution agent. The frozen-commit review used fresh,
       isolated Codex `gpt-5.6-sol / effort=max` and Claude `claude-opus-4-8 / effort=max` sessions; they did
       not exchange results or modify tracked files/task state/branch/remote. Do not reuse the Terra execution
-      session for review. Pi is not part of this accepted review record.
+      session for review. This is historical evidence only. From 2026-07-18 onward, every new frozen review
+      uses only a fresh Codex `gpt-5.6-sol / effort=max` session; do not launch Claude, Pi, or any other
+      review agent.
+- [ ] Round 7 implementation and checks use one fresh Orca-managed Codex `gpt-5.6-sol / effort=max` execution
+      terminal. Its prompt is closed to the approved PRD/design/implement checklist: no unrelated exploration,
+      finding hunting, refactor, architecture alternatives, or scope expansion; a required scope change stops
+      for coordinator adjudication. Do not reuse that execution session for final review.
 - [x] Record that the already completed Round 6 independent read-only review producing F9-F15 used a
       new Codex `gpt-5.6-sol / effort=max` session; this is separate from both the historical Luna work and
       the remaining Terra execution terminal.
@@ -75,8 +81,8 @@
       aggregated and evidence-checked before passing; do not archive the parent before that summary passes.
 - [x] The focused and full gates required by child 11, including `pnpm build`, `pnpm check:precommit:full`
       and `pnpm check:prepush`, passed and are recorded in the archived child evidence.
-- [ ] Reproduce and classify the frozen-review candidates, commit the factual-record correction, then freeze
-      that commit and run the final independent Sol + Claude review before passing the parent.
+- [ ] Reproduce and classify the frozen-review candidates, complete child 12 and its factual-record correction,
+      then freeze that commit and run the final Sol max review before passing the parent.
 - [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
       made.
 - [ ] Archive the parent only after every acceptance item is evidenced.

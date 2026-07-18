@@ -1,0 +1,5 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Check that retry, persistence, filesystem, settings, and task evidence changes preserve end-to-end ownership and failure behavior."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"Verify no retry implementation weakens create-only directories, handle-relative file operations, or historical task integrity."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Verify aggregate budget failure occurs before unbounded Base64 retention and does not omit legal Skill bytes."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Verify stale generation cannot roll back a newer same-value autostart owner and that canonical side effects converge correctly."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"Verify task artifact reconciliation and repository-wide manifest validation remain coherent before archive."}

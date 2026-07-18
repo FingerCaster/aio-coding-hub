@@ -1,0 +1,6 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Coordinate the frontend retry lifecycle, backend filesystem ownership, config exporter, settings rollback, and task evidence without crossing ownership boundaries."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"Preserve immutable task-directory creation, trusted reads, and persistence rollback while changing retry identity semantics."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Retain byte-for-byte Skill export/import, 8 MiB per-Skill limits, and filesystem trust rules while adding a shared export budget."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Apply generation-token ownership and field-aware rollback rules to the config-import ABA correction."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"Reconcile archived child evidence without breaking global context-manifest validation or parent lifecycle semantics."}
+{"file":".trellis/tasks/07-17-sequential-task-acceptance/research/integration-evidence-summary.md","reason":"Keep the parent sequence, user-reported boundaries, upstream exclusion, and evidence constraints intact."}
