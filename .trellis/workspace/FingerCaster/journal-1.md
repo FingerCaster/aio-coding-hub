@@ -269,7 +269,13 @@ Removed the unreleased managed external gateway integration, retained only the o
 
 ### Testing
 
-- Validation was not recorded for this session.
+- 归档 round-5 implement 已记录：config migration/export/Skill filesystem、settings service/config
+  import/autostart/runtime rollback、failover production router/attempt-route、generated IPC/OAuth
+  poll/cancel、Grok production router continuation 与 usage/response-id/TTFB/body-limit 聚焦回归
+  通过。
+- 完整 Rust library/integration、完整前端、bindings 二次零漂移、typecheck、lint、format、build、
+  all-target Clippy、git diff --check、task.py validate --all、check:precommit:full、check:prepush
+  均通过；本机无 Unix target，按归档 implement 记录完成 Unix cfg/rustix no-follow API 静态审计。
 
 ### Status
 
