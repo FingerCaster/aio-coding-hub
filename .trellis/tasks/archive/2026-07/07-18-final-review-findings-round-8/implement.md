@@ -22,6 +22,6 @@
       and the parent task; run `git diff --check`.
 - [x] Run `python .trellis/scripts/task.py validate --all`; do not run unrelated build/test gates because no
       production code or test inputs changed.
-- [ ] Commit the factual-record correction, archive only Round 8, and confirm the execution worktree is clean.
+- [x] Commit the factual-record correction, archive only Round 8, and confirm the execution worktree is clean.
 - [ ] Freeze the archive commit and request a separate fresh Sol max read-only final review. Only after no
       P0-P2 may the coordinator update the parent final facts; never merge `main` without user confirmation.
