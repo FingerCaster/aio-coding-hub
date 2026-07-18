@@ -82,7 +82,7 @@ fn take_first_chars(value: &str, max_chars: usize) -> String {
     value.chars().take(max_chars).collect()
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ProviderUpsertParams {
     pub provider_id: Option<i64>,
     pub cli_key: String,
@@ -110,6 +110,9 @@ pub struct ProviderUpsertParams {
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
     pub extension_values: Option<Vec<ProviderExtensionValuesInput>>,
+    pub account_usage_credentials_patch:
+        Option<crate::domain::provider_account_usage::ProviderAccountUsageCredentialsPatch>,
+    pub account_usage_credentials_copy_from_provider_id: Option<i64>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub upstream_retry_policy_override_specified: bool,
 }
@@ -316,6 +319,16 @@ pub struct ProviderSummary {
     pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub api_key_configured: bool,
+    pub newapi_account_user_id: Option<String>,
+    pub newapi_account_access_token_configured: bool,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProviderAccountUsageFetchContext {
+    pub base_urls: Vec<String>,
+    pub auth_mode: String,
+    pub source_provider_id: Option<i64>,
+    pub extension_values: Vec<ProviderExtensionValues>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]

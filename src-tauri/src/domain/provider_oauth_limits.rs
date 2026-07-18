@@ -398,6 +398,8 @@ INSERT INTO provider_oauth_limit_snapshots(
                 bridge_type: None,
                 stream_idle_timeout_seconds: None,
                 extension_values: None,
+                account_usage_credentials_patch: None,
+                account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override: None,
                 upstream_retry_policy_override_specified: false,
             },

@@ -113,6 +113,7 @@ type ProviderUpsertFieldMap = {
   bridgeType: "bridgeType";
   streamIdleTimeoutSeconds: "streamIdleTimeoutSeconds";
   extensionValues: "extensionValues";
+  accountUsageCredentials: "accountUsageCredentials";
   upstreamRetryPolicyOverride: "upstreamRetryPolicyOverride";
   upstreamRetryPolicyOverrideSpecified: "upstreamRetryPolicyOverrideSpecified";
 };
@@ -207,6 +208,7 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
     sourceProviderId,
     bridgeType: input.bridgeType ?? null,
     extensionValues: input.extensionValues ?? null,
+    accountUsageCredentials: input.accountUsageCredentials ?? null,
     upstreamRetryPolicyOverride: null,
   } satisfies Omit<GeneratedProviderUpsertInput, "streamIdleTimeoutSeconds">;
 
@@ -260,6 +262,20 @@ export async function providerUpsert(input: ProviderUpsertInput) {
   const logPayload = {
     ...payload,
     apiKey: payload.apiKey == null ? payload.apiKey : "[REDACTED]",
+    accountUsageCredentials:
+      payload.accountUsageCredentials == null
+        ? payload.accountUsageCredentials
+        : {
+            ...payload.accountUsageCredentials,
+            newApiUserId:
+              payload.accountUsageCredentials.newApiUserId == null
+                ? payload.accountUsageCredentials.newApiUserId
+                : "[REDACTED]",
+            newApiAccessToken:
+              payload.accountUsageCredentials.newApiAccessToken == null
+                ? payload.accountUsageCredentials.newApiAccessToken
+                : "[REDACTED]",
+          },
   };
 
   return invokeGeneratedIpc<ProviderSummary>({

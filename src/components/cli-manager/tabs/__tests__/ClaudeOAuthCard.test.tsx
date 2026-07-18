@@ -60,6 +60,9 @@ function makeProvider(overrides: Partial<ProviderSummary> = {}): ProviderSummary
     availability_test_model: null,
     api_key_configured: overrides.api_key_configured ?? false,
     ...overrides,
+    newapi_account_user_id: overrides.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured:
+      overrides.newapi_account_access_token_configured ?? false,
     model_mapping: overrides.model_mapping ?? { default_model: null, exact: {} },
     stream_idle_timeout_seconds: overrides.stream_idle_timeout_seconds ?? null,
     extension_values: overrides.extension_values ?? [],

@@ -112,6 +112,8 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     api_key_configured: partial.api_key_configured ?? false,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     extension_values: partial.extension_values ?? [],
+    newapi_account_user_id: partial.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured: partial.newapi_account_access_token_configured ?? false,
   };
 }
 

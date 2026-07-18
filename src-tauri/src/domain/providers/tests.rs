@@ -550,6 +550,8 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         bridge_type: None,
         stream_idle_timeout_seconds: None,
         extension_values: None,
+        account_usage_credentials_patch: None,
+        account_usage_credentials_copy_from_provider_id: None,
         upstream_retry_policy_override: None,
         upstream_retry_policy_override_specified: false,
     }
@@ -586,6 +588,72 @@ fn upsert_seeds_provider_account_usage_extension_owner_without_visible_plugin() 
         plugins.iter().all(|plugin| plugin.plugin_id
             != crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID),
         "internal owner must remain hidden from the visible plugin list"
+    );
+}
+
+#[test]
+fn provider_summary_hides_account_token_and_local_copy_keeps_private_credentials() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_account_usage_credentials.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut source_params = default_provider_params("account-source");
+    source_params.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+        namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+        values: serde_json::json!({
+            "adapterKind": "newapi",
+            "newApiQueryMode": "account",
+            "newApiUserId": "999",
+            "newApiAccessToken": "SYNTHETIC_EXTENSION_SECRET"
+        }),
+    }]);
+    source_params.account_usage_credentials_patch = Some(
+        crate::domain::provider_account_usage::ProviderAccountUsageCredentialsPatch {
+            new_api_user_id: Some("00042".to_string()),
+            new_api_access_token: Some("SYNTHETIC_ACCOUNT_SECRET".to_string()),
+            clear_new_api_access_token: false,
+        },
+    );
+    let source = upsert(&db, source_params).expect("save source");
+    assert_eq!(source.newapi_account_user_id.as_deref(), Some("42"));
+    assert!(source.newapi_account_access_token_configured);
+    let extension_json = source.extension_values[0].values.to_string();
+    assert!(!extension_json.contains("UserId"));
+    assert!(!extension_json.contains("AccessToken"));
+    assert!(!extension_json.contains("SYNTHETIC"));
+
+    let mut copy_params = default_provider_params("account-copy");
+    copy_params.extension_values = Some(
+        source
+            .extension_values
+            .iter()
+            .map(|value| ProviderExtensionValuesInput {
+                plugin_id: value.plugin_id.clone(),
+                namespace: value.namespace.clone(),
+                values: value.values.clone(),
+            })
+            .collect(),
+    );
+    copy_params.account_usage_credentials_copy_from_provider_id = Some(source.id);
+    let copy = upsert(&db, copy_params).expect("save local copy");
+    assert_eq!(copy.newapi_account_user_id.as_deref(), Some("42"));
+    assert!(copy.newapi_account_access_token_configured);
+
+    let conn = db.open_connection().expect("open db");
+    let source_credentials =
+        crate::domain::provider_account_usage::load_account_usage_credentials(&conn, source.id)
+            .expect("source credentials");
+    let copy_credentials =
+        crate::domain::provider_account_usage::load_account_usage_credentials(&conn, copy.id)
+            .expect("copy credentials");
+    assert_eq!(
+        source_credentials.new_api_access_token,
+        copy_credentials.new_api_access_token
+    );
+    assert_eq!(
+        copy_credentials.new_api_access_token.as_deref(),
+        Some("SYNTHETIC_ACCOUNT_SECRET")
     );
 }
 
@@ -912,6 +980,8 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             stream_idle_timeout_seconds: None,
             model_mapping: None,
             extension_values: None,
+            account_usage_credentials_patch: None,
+            account_usage_credentials_copy_from_provider_id: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         },

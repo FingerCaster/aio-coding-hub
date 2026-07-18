@@ -159,8 +159,10 @@ fn make_test_bundle(schema_version: u32) -> ConfigBundle {
         }],
         mcp_servers: Vec::new(),
         skill_repos: Vec::new(),
-        installed_skills: (schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION).then(Vec::new),
-        local_skills: (schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION).then(Vec::new),
+        installed_skills: (schema_version >= CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION)
+            .then(Vec::new),
+        local_skills: (schema_version >= CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION)
+            .then(Vec::new),
         image_gen_configs: None,
     }
 }
@@ -359,6 +361,168 @@ fn config_export_import_round_trips_image_gen_configs() {
     assert_eq!(base_url, "https://img.example.com/v1");
     assert_eq!(model, "gpt-image-2");
     assert_eq!(api_key, "sk-image-secret");
+}
+
+#[test]
+fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let provider = crate::providers::upsert(
+        &test_app.db,
+        crate::providers::ProviderUpsertParams {
+            provider_id: None,
+            cli_key: "codex".to_string(),
+            name: "account-backup".to_string(),
+            base_urls: vec!["https://example.invalid/v1".to_string()],
+            base_url_mode: crate::providers::ProviderBaseUrlMode::Order,
+            auth_mode: Some(crate::providers::ProviderAuthMode::ApiKey),
+            api_key: Some("SYNTHETIC_MODEL_KEY".to_string()),
+            enabled: true,
+            cost_multiplier: 1.0,
+            priority: Some(100),
+            claude_models: None,
+            model_mapping: None,
+            availability_test_model: None,
+            limit_5h_usd: None,
+            limit_daily_usd: None,
+            daily_reset_mode: Some(crate::providers::DailyResetMode::Fixed),
+            daily_reset_time: Some("00:00:00".to_string()),
+            limit_weekly_usd: None,
+            limit_monthly_usd: None,
+            limit_total_usd: None,
+            tags: None,
+            note: None,
+            source_provider_id: None,
+            bridge_type: None,
+            stream_idle_timeout_seconds: None,
+            extension_values: Some(vec![crate::providers::ProviderExtensionValuesInput {
+                plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                    .to_string(),
+                namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+                    .to_string(),
+                values: serde_json::json!({
+                    "adapterKind": "newapi",
+                    "newApiQueryMode": "account",
+                    "newApiUserId": "999",
+                    "systemAccessToken": "SYNTHETIC_EXTENSION_SECRET",
+                    "timedRefreshEnabled": false,
+                    "refreshIntervalSeconds": 120
+                }),
+            }]),
+            account_usage_credentials_patch: Some(
+                crate::domain::provider_account_usage::ProviderAccountUsageCredentialsPatch {
+                    new_api_user_id: Some("00042".to_string()),
+                    new_api_access_token: Some("SYNTHETIC_ACCOUNT_SECRET".to_string()),
+                    clear_new_api_access_token: false,
+                },
+            ),
+            account_usage_credentials_copy_from_provider_id: None,
+            upstream_retry_policy_override: None,
+            upstream_retry_policy_override_specified: false,
+        },
+    )
+    .expect("seed account provider");
+
+    let mut v2_bundle = config_export(&app, &test_app.db).expect("export v2 probe");
+    v2_bundle.schema_version = CONFIG_BUNDLE_SCHEMA_VERSION_V2;
+    let prepared_v2 = prepare_config_import(v2_bundle).expect("prepare v2 probe");
+    assert!(prepared_v2.imports_full_skill_payload);
+    assert!(!prepared_v2.imports_account_usage_snapshot);
+    assert!(prepared_v2.providers[0].account_usage_config.is_none());
+    assert!(prepared_v2.providers[0].account_usage_credentials.is_none());
+
+    let bundle = config_export(&app, &test_app.db).expect("export v3");
+    assert_eq!(bundle.schema_version, CONFIG_BUNDLE_SCHEMA_VERSION);
+    let exported_provider = bundle
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == Some(provider.id))
+        .expect("exported account provider");
+    assert_eq!(
+        exported_provider
+            .account_usage_config
+            .as_ref()
+            .and_then(|value| value.get("newApiQueryMode"))
+            .and_then(serde_json::Value::as_str),
+        Some("account")
+    );
+    let config_json = exported_provider
+        .account_usage_config
+        .as_ref()
+        .expect("account config")
+        .to_string();
+    assert!(!config_json.contains("UserId"));
+    assert!(!config_json.contains("AccessToken"));
+    assert!(!config_json.contains("SYNTHETIC"));
+    let credentials = exported_provider
+        .account_usage_credentials
+        .as_ref()
+        .expect("account credentials snapshot");
+    assert_eq!(credentials.newapi_user_id.as_deref(), Some("42"));
+    assert_eq!(
+        credentials.newapi_access_token_plaintext.as_deref(),
+        Some("SYNTHETIC_ACCOUNT_SECRET")
+    );
+
+    config_import(&app, &test_app.db, bundle).expect("import v3");
+    let restored = crate::providers::list_by_cli(&test_app.db, "codex")
+        .expect("list restored providers")
+        .into_iter()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("restored account provider");
+    assert_eq!(restored.newapi_account_user_id.as_deref(), Some("42"));
+    assert!(restored.newapi_account_access_token_configured);
+    let config = crate::domain::provider_account_usage::config_from_extension_values(
+        &restored.extension_values,
+    );
+    assert_eq!(
+        config,
+        crate::domain::provider_account_usage::ProviderAccountUsageConfigState::Configured(
+            crate::domain::provider_account_usage::ProviderAccountUsageConfig {
+                adapter_kind:
+                    crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Newapi,
+                new_api_query_mode: crate::domain::provider_account_usage::NewapiQueryMode::Account,
+            }
+        )
+    );
+    let conn = test_app.db.open_connection().expect("open restored db");
+    let restored_credentials =
+        crate::domain::provider_account_usage::load_account_usage_credentials(&conn, restored.id)
+            .expect("restored private credentials");
+    assert_eq!(
+        restored_credentials.new_api_access_token.as_deref(),
+        Some("SYNTHETIC_ACCOUNT_SECRET")
+    );
+    drop(conn);
+
+    let mut invalid_bundle = config_export(&app, &test_app.db).expect("export invalid probe");
+    let invalid_credentials = invalid_bundle
+        .providers
+        .iter_mut()
+        .find(|candidate| candidate.name == "account-backup")
+        .and_then(|candidate| candidate.account_usage_credentials.as_mut())
+        .expect("invalid account credentials snapshot");
+    invalid_credentials.newapi_user_id = Some("9223372036854775808".to_string());
+    let error = config_import(&app, &test_app.db, invalid_bundle)
+        .expect_err("out-of-range account User ID must roll back");
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+    assert!(!error.to_string().contains("SYNTHETIC_ACCOUNT_SECRET"));
+
+    let preserved = crate::providers::list_by_cli(&test_app.db, "codex")
+        .expect("list preserved providers")
+        .into_iter()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("preserved account provider");
+    assert_eq!(preserved.newapi_account_user_id.as_deref(), Some("42"));
+    assert!(preserved.newapi_account_access_token_configured);
+    let conn = test_app.db.open_connection().expect("open preserved db");
+    let preserved_credentials =
+        crate::domain::provider_account_usage::load_account_usage_credentials(&conn, preserved.id)
+            .expect("preserved private credentials");
+    assert_eq!(
+        preserved_credentials.new_api_access_token.as_deref(),
+        Some("SYNTHETIC_ACCOUNT_SECRET")
+    );
 }
 
 #[test]
@@ -1547,6 +1711,7 @@ INSERT INTO skills(
 #[test]
 fn validate_bundle_schema_version_accepts_current_version() {
     assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION).is_ok());
+    assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION_V2).is_ok());
     assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION_V1).is_ok());
 }
 
@@ -1960,6 +2125,8 @@ fn config_import_v2_restores_full_prompt_and_skill_payload() {
             source_provider_id: None,
             source_provider_cli_key: None,
             bridge_type: None,
+            account_usage_config: None,
+            account_usage_credentials: None,
         }],
         sort_modes: Vec::new(),
         sort_mode_active: HashMap::new(),
@@ -2027,7 +2194,7 @@ fn config_import_v2_restores_full_prompt_and_skill_payload() {
                 },
             ],
         }]),
-        ..make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION)
+        ..make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION_V2)
     };
 
     let result = config_import(&app, &test_app.db, bundle).expect("config import");
@@ -2292,7 +2459,7 @@ WHERE s.skill_key = 'existing-skill'
 fn config_import_v2_rejects_missing_installed_skills_payload() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
-    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION_V2);
     bundle.installed_skills = None;
 
     let Err(err) = config_import(&app, &test_app.db, bundle) else {
@@ -2307,7 +2474,7 @@ fn config_import_v2_rejects_missing_installed_skills_payload() {
 fn config_import_v2_rejects_missing_local_skills_payload() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
-    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION_V2);
     bundle.local_skills = None;
 
     let Err(err) = config_import(&app, &test_app.db, bundle) else {

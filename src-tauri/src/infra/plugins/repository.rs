@@ -248,7 +248,7 @@ pub(crate) fn insert_plugin_with_tx(
     insert_plugin_with_conn(conn, input)
 }
 
-fn insert_plugin_with_conn(
+pub(crate) fn insert_plugin_with_conn(
     conn: &rusqlite::Connection,
     input: InsertPluginInput,
 ) -> AppResult<PluginDetail> {

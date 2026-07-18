@@ -9,7 +9,7 @@ use super::skill_fs::validate_installed_skill_key;
 use super::{
     bool_to_int, normalize_oauth_refresh_lead_seconds, prompts_for_import, ConfigImportResult,
     InstalledSkillExport, LocalSkillExport, McpServerExport, ProviderExport, SkillRepoExport,
-    SortModeExport, WorkspaceExport, CONFIG_BUNDLE_SCHEMA_VERSION,
+    SortModeExport, WorkspaceExport, CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION,
 };
 
 #[derive(Debug, Default)]
@@ -29,6 +29,7 @@ pub(super) fn import_into_transaction(
     mcp_servers: Vec<McpServerExport>,
     skill_repos: Vec<SkillRepoExport>,
     imports_full_skill_payload: bool,
+    imports_account_usage_snapshot: bool,
     installed_skills: &[InstalledSkillExport],
     local_skills: &[LocalSkillExport],
     legacy_skill_state: Option<&LegacySkillState>,
@@ -80,6 +81,8 @@ pub(super) fn import_into_transaction(
             source_provider_id,
             source_provider_cli_key,
             bridge_type,
+            account_usage_config,
+            account_usage_credentials,
         } = provider;
 
         let sort_order = provider_sort_order_by_cli_key
@@ -176,6 +179,36 @@ INSERT INTO providers(
         .map_err(|e| db_err!("failed to insert provider: {e}"))?;
 
         let provider_id = tx.last_insert_rowid();
+        if imports_account_usage_snapshot {
+            if let Some(account_usage_config) = account_usage_config {
+                let extension_values = vec![crate::providers::ProviderExtensionValuesInput {
+                    plugin_id:
+                        crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+                    namespace:
+                        crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+                    values: crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
+                        &account_usage_config,
+                    ),
+                }];
+                crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
+                    tx,
+                    Some(&extension_values),
+                )?;
+                crate::providers::replace_extension_values(
+                    tx,
+                    provider_id,
+                    Some(&extension_values),
+                )?;
+            }
+            if let Some(credentials) = account_usage_credentials {
+                crate::domain::provider_account_usage::restore_account_usage_credentials(
+                    tx,
+                    provider_id,
+                    credentials.newapi_user_id.as_deref(),
+                    credentials.newapi_access_token_plaintext.as_deref(),
+                )?;
+            }
+        }
         let inserted_cli_key: String = tx
             .query_row(
                 "SELECT cli_key FROM providers WHERE id = ?1",
@@ -709,7 +742,7 @@ pub(super) fn resolve_skill_payloads_for_import(
     installed_skills: Option<Vec<InstalledSkillExport>>,
     local_skills: Option<Vec<LocalSkillExport>>,
 ) -> AppResult<(Vec<InstalledSkillExport>, Vec<LocalSkillExport>)> {
-    if schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION {
+    if schema_version >= CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION {
         let installed_skills = installed_skills.ok_or_else(|| {
             crate::shared::error::AppError::from(
                 "SEC_INVALID_INPUT: config bundle missing installed_skills for schema_version=2",

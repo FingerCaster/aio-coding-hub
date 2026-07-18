@@ -3683,6 +3683,11 @@ export type ProtocolBridgeContribution = {
 export type ProtocolContribution = { protocolId: string; direction: ProtocolDirection };
 export type ProtocolDirection = "inbound" | "outbound" | "both";
 export type ProviderAccountUsageAdapterKind = "sub2api" | "newapi";
+export type ProviderAccountUsageCredentialsPatch = {
+  newApiUserId: string | null;
+  newApiAccessToken: string | null;
+  clearNewApiAccessToken?: boolean;
+};
 export type ProviderAccountUsageFreshness = "not_fetched" | "fresh";
 export type ProviderAccountUsageResult = {
   adapter_kind: ProviderAccountUsageAdapterKind | null;
@@ -3881,6 +3886,8 @@ export type ProviderSummary = {
   extension_values: ProviderExtensionValues[];
   upstream_retry_policy_override: UpstreamRetryPolicy | null;
   api_key_configured: boolean;
+  newapi_account_user_id: string | null;
+  newapi_account_access_token_configured: boolean;
 };
 export type ProviderUpsertInput = {
   providerId: number | null;
@@ -3909,6 +3916,7 @@ export type ProviderUpsertInput = {
   bridgeType: string | null;
   streamIdleTimeoutSeconds: number | null;
   extensionValues: ProviderExtensionValuesInput[] | null;
+  accountUsageCredentials?: ProviderAccountUsageCredentialsPatch | null;
   upstreamRetryPolicyOverride: UpstreamRetryPolicy | null;
   upstreamRetryPolicyOverrideSpecified?: boolean;
 };

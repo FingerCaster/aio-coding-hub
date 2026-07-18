@@ -14,8 +14,11 @@ use crate::{db, settings};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 
-pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 2;
+pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 3;
 pub const CONFIG_BUNDLE_SCHEMA_VERSION_V1: u32 = 1;
+pub const CONFIG_BUNDLE_SCHEMA_VERSION_V2: u32 = 2;
+pub(crate) const CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION: u32 = 2;
+pub(crate) const CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION: u32 = 3;
 /// Shared encoded budget for config export serialization and import file reads.
 pub(crate) const CONFIG_BUNDLE_ENCODED_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Compatibility alias for the shared encoded budget.
@@ -108,6 +111,16 @@ pub struct ProviderExport {
     pub source_provider_id: Option<i64>,
     pub source_provider_cli_key: Option<String>,
     pub bridge_type: Option<String>,
+    #[serde(default)]
+    pub account_usage_config: Option<serde_json::Value>,
+    #[serde(default)]
+    pub account_usage_credentials: Option<ProviderAccountUsageCredentialsExport>,
+}
+
+#[derive(Serialize, Deserialize, specta::Type)]
+pub struct ProviderAccountUsageCredentialsExport {
+    pub newapi_user_id: Option<String>,
+    pub newapi_access_token_plaintext: Option<String>,
 }
 
 #[derive(Serialize, Deserialize, specta::Type)]
@@ -244,12 +257,18 @@ fn prompts_for_import(
 }
 
 fn validate_bundle_schema_version(schema_version: u32) -> AppResult<()> {
-    if schema_version != CONFIG_BUNDLE_SCHEMA_VERSION
-        && schema_version != CONFIG_BUNDLE_SCHEMA_VERSION_V1
-    {
+    if !matches!(
+        schema_version,
+        CONFIG_BUNDLE_SCHEMA_VERSION_V1
+            | CONFIG_BUNDLE_SCHEMA_VERSION_V2
+            | CONFIG_BUNDLE_SCHEMA_VERSION
+    ) {
         return Err(format!(
-            "SEC_INVALID_INPUT: unsupported config bundle schema_version={}, expected one of [{}, {}]",
-            schema_version, CONFIG_BUNDLE_SCHEMA_VERSION_V1, CONFIG_BUNDLE_SCHEMA_VERSION
+            "SEC_INVALID_INPUT: unsupported config bundle schema_version={}, expected one of [{}, {}, {}]",
+            schema_version,
+            CONFIG_BUNDLE_SCHEMA_VERSION_V1,
+            CONFIG_BUNDLE_SCHEMA_VERSION_V2,
+            CONFIG_BUNDLE_SCHEMA_VERSION
         )
         .into());
     }
@@ -337,14 +356,17 @@ fn config_import_timestamp() -> i64 {
 pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedConfigImport> {
     let bundle_schema_version = bundle.schema_version;
     validate_bundle_schema_version(bundle_schema_version)?;
-    let imports_full_skill_payload = bundle_schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION;
+    let imports_full_skill_payload =
+        bundle_schema_version >= CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION;
+    let imports_account_usage_snapshot =
+        bundle_schema_version >= CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION;
 
     let ConfigBundle {
         schema_version: _,
         exported_at: _,
         app_version: _,
         settings,
-        providers,
+        mut providers,
         sort_modes,
         sort_mode_active,
         workspaces,
@@ -354,6 +376,22 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         local_skills,
         image_gen_configs,
     } = bundle;
+
+    if !imports_account_usage_snapshot {
+        for provider in &mut providers {
+            provider.account_usage_config = None;
+            provider.account_usage_credentials = None;
+        }
+    } else {
+        for provider in &mut providers {
+            if let Some(config) = provider.account_usage_config.as_mut() {
+                *config =
+                    crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
+                        config,
+                    );
+            }
+        }
+    }
 
     let (installed_skills, local_skills) = import::resolve_skill_payloads_for_import(
         bundle_schema_version,
@@ -376,6 +414,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
 
     Ok(PreparedConfigImport {
         imports_full_skill_payload,
+        imports_account_usage_snapshot,
         settings_to_write,
         providers,
         sort_modes,
@@ -392,6 +431,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
 
 pub(crate) struct PreparedConfigImport {
     imports_full_skill_payload: bool,
+    imports_account_usage_snapshot: bool,
     settings_to_write: settings::AppSettings,
     providers: Vec<ProviderExport>,
     sort_modes: Vec<SortModeExport>,
@@ -423,6 +463,7 @@ pub fn config_import<R: tauri::Runtime>(
 
     let PreparedConfigImport {
         imports_full_skill_payload,
+        imports_account_usage_snapshot,
         mut settings_to_write,
         providers,
         sort_modes,
@@ -463,6 +504,7 @@ pub fn config_import<R: tauri::Runtime>(
         mcp_servers,
         skill_repos,
         imports_full_skill_payload,
+        imports_account_usage_snapshot,
         &installed_skills,
         &local_skills,
         legacy_skill_state.as_ref(),

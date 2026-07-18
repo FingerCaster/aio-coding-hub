@@ -217,6 +217,10 @@ export const handlers = [
       requestedId == null ? null : (current.find((row) => row.id === requestedId) ?? null);
     const nextId = requestedId ?? Math.max(0, ...current.map((row) => row.id)) + 1;
     const now = Date.now();
+    const accountUsageCredentials =
+      input.accountUsageCredentials && typeof input.accountUsageCredentials === "object"
+        ? (input.accountUsageCredentials as Record<string, unknown>)
+        : null;
     const summary: ProviderSummary = {
       id: nextId,
       cli_key: cliKey,
@@ -287,6 +291,19 @@ export const handlers = [
             ? null
             : (input.upstreamRetryPolicyOverride as ProviderSummary["upstream_retry_policy_override"])
           : (existing?.upstream_retry_policy_override ?? null),
+      newapi_account_user_id: accountUsageCredentials
+        ? typeof accountUsageCredentials.newApiUserId === "string"
+          ? accountUsageCredentials.newApiUserId.trim() || null
+          : null
+        : (existing?.newapi_account_user_id ?? null),
+      newapi_account_access_token_configured: accountUsageCredentials
+        ? accountUsageCredentials.clearNewApiAccessToken === true
+          ? false
+          : typeof accountUsageCredentials.newApiAccessToken === "string" &&
+              accountUsageCredentials.newApiAccessToken.trim()
+            ? true
+            : (existing?.newapi_account_access_token_configured ?? false)
+        : (existing?.newapi_account_access_token_configured ?? false),
     };
 
     setProvidersState(

@@ -106,6 +106,9 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
     upstream_retry_policy_override: null,
     api_key_configured: false,
     ...overrides,
+    newapi_account_user_id: overrides.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured:
+      overrides.newapi_account_access_token_configured ?? false,
   };
 }
 
@@ -307,6 +310,11 @@ describe("services/providers/providers", () => {
         limitWeeklyUsd: null,
         limitMonthlyUsd: null,
         limitTotalUsd: null,
+        accountUsageCredentials: {
+          newApiUserId: "42",
+          newApiAccessToken: "SYNTHETIC_ACCOUNT_SECRET",
+          clearNewApiAccessToken: false,
+        },
       })
     ).rejects.toThrow("save failed");
 
@@ -319,8 +327,24 @@ describe("services/providers/providers", () => {
           input: expect.objectContaining({
             apiKey: "[REDACTED]",
             name: "P1",
+            accountUsageCredentials: {
+              newApiUserId: "[REDACTED]",
+              newApiAccessToken: "[REDACTED]",
+              clearNewApiAccessToken: "[REDACTED]",
+            },
           }),
         },
+      })
+    );
+    expect(JSON.stringify(vi.mocked(logToConsole).mock.calls)).not.toContain(
+      "SYNTHETIC_ACCOUNT_SECRET"
+    );
+    expect(JSON.stringify(vi.mocked(logToConsole).mock.calls)).not.toContain('"42"');
+    expect(commands.providerUpsert).toHaveBeenCalledWith(
+      expect.objectContaining({
+        accountUsageCredentials: expect.objectContaining({
+          newApiAccessToken: "SYNTHETIC_ACCOUNT_SECRET",
+        }),
       })
     );
   });

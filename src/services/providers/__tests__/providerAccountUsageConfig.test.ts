@@ -1,12 +1,13 @@
 import { describe, expect, it } from "vitest";
 import {
+  isProviderAccountUsageAccountCredentialsRequired,
   mergeProviderAccountUsageExtensionValues,
   normalizeProviderAccountUsageRefreshIntervalSeconds,
   readProviderAccountUsageConfig,
 } from "../providerAccountUsageConfig";
 
 describe("providerAccountUsageConfig", () => {
-  it("reads existing NewAPI config from provider extension values", () => {
+  it("defaults legacy NewAPI config to billing without reading historical User ID", () => {
     expect(
       readProviderAccountUsageConfig([
         {
@@ -18,7 +19,7 @@ describe("providerAccountUsageConfig", () => {
       ])
     ).toEqual({
       adapterKind: "newapi",
-      newApiUserId: "42",
+      newApiQueryMode: "billing",
       timedRefreshEnabled: true,
       refreshIntervalSeconds: 300,
     });
@@ -40,7 +41,7 @@ describe("providerAccountUsageConfig", () => {
       ])
     ).toEqual({
       adapterKind: "sub2api",
-      newApiUserId: "",
+      newApiQueryMode: "billing",
       timedRefreshEnabled: false,
       refreshIntervalSeconds: 60,
     });
@@ -62,7 +63,7 @@ describe("providerAccountUsageConfig", () => {
       existingRows: [],
       config: {
         adapterKind: "newapi",
-        newApiUserId: "7",
+        newApiQueryMode: "account",
         timedRefreshEnabled: false,
         refreshIntervalSeconds: 120,
       },
@@ -79,15 +80,15 @@ describe("providerAccountUsageConfig", () => {
         namespace: "accountUsage",
         values: {
           adapterKind: "newapi",
+          newApiQueryMode: "account",
           timedRefreshEnabled: false,
           refreshIntervalSeconds: 120,
-          newApiUserId: "7",
         },
       },
     ]);
   });
 
-  it("removes account usage row when disabled without dropping unrelated rows", () => {
+  it("retains the explicit query mode when disabled without dropping unrelated rows", () => {
     const merged = mergeProviderAccountUsageExtensionValues({
       rows: null,
       existingRows: [
@@ -106,7 +107,7 @@ describe("providerAccountUsageConfig", () => {
       ],
       config: {
         adapterKind: "disabled",
-        newApiUserId: "",
+        newApiQueryMode: "account",
         timedRefreshEnabled: true,
         refreshIntervalSeconds: 300,
       },
@@ -118,6 +119,41 @@ describe("providerAccountUsageConfig", () => {
         namespace: "settings",
         values: { mode: "keep" },
       },
+      {
+        pluginId: "core.provider-account-usage",
+        namespace: "accountUsage",
+        values: {
+          adapterKind: "disabled",
+          newApiQueryMode: "account",
+          timedRefreshEnabled: true,
+          refreshIntervalSeconds: 300,
+        },
+      },
     ]);
+  });
+
+  it("requires both private credentials only for explicit NewAPI account mode", () => {
+    const extension_values = [
+      {
+        pluginId: "core.provider-account-usage",
+        namespace: "accountUsage",
+        values: { adapterKind: "newapi", newApiQueryMode: "account" },
+        updatedAt: 1,
+      },
+    ];
+    expect(
+      isProviderAccountUsageAccountCredentialsRequired({
+        extension_values,
+        newapi_account_user_id: "42",
+        newapi_account_access_token_configured: false,
+      })
+    ).toBe(true);
+    expect(
+      isProviderAccountUsageAccountCredentialsRequired({
+        extension_values,
+        newapi_account_user_id: "42",
+        newapi_account_access_token_configured: true,
+      })
+    ).toBe(false);
   });
 });

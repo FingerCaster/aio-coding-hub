@@ -332,3 +332,121 @@ await providerShareSaveToFile(providerId);
 let pending = share_service.take_preview(&preview_token)?;
 pending.verify_and_import(db)?; // digest + name + full plugin projection + transaction
 ```
+
+## Scenario: Account-Usage Secrets In A Single-Provider Share
+
+### 1. Scope / Trigger
+
+Use this scenario when account-usage configuration, private NewAPI account
+credentials, the built-in account-usage extension, or provider duplication
+changes. Single-provider share, whole-config backup, and local duplication have
+different credential policies and must not be collapsed into one serializer.
+
+### 2. Signatures
+
+```rust
+pub(crate) fn sanitize_account_usage_extension_value(
+    values: &serde_json::Value,
+) -> serde_json::Value;
+
+pub(crate) fn export_provider_share_v1(
+    db: &Db,
+    provider_id: i64,
+) -> AppResult<ProviderShareEnvelopeV1>;
+
+pub(crate) fn import_provider_share_v1(
+    db: &Db,
+    envelope: &ProviderShareEnvelopeV1,
+    expected_final_name: &str,
+    expected_extensions: &[ProviderShareExtensionPreview],
+) -> AppResult<ProviderSummary>;
+```
+
+The `aio-coding-hub.provider-share` v1 schema gains no User ID or account
+access-token field. Its built-in extension value may contain only
+`adapterKind`, `newApiQueryMode`, `timedRefreshEnabled`, and
+`refreshIntervalSeconds`.
+
+### 3. Contracts
+
+- Normalize the exact built-in identity
+  `core.provider-account-usage/accountUsage` on share export, strict v1 parse,
+  preview normalization, and import. Historical `newApiUserId`, account token,
+  and unknown fields are removed through the shared sanitizer.
+- Preserve explicit `newApiQueryMode: "account"`. Do not downgrade it to
+  billing just because share excludes the credentials.
+- Never read `provider_account_usage_credentials` while building a
+  single-provider share. The envelope, preview DTO, generated bindings,
+  renderer, clipboard diagnostics, and file diagnostics contain neither User
+  ID nor account access token.
+- Import creates the provider disabled and without a private account credential
+  row. Account mode therefore projects an explicit credentials-required state
+  and sends no request until the recipient supplies their own credentials.
+- Local provider duplication is not share/import. It copies User ID and token
+  inside the backend provider transaction so the local duplicate retains query
+  capability without exposing plaintext to React.
+- Whole-config export/import is also not share/import; schema v3 intentionally
+  includes private account credentials under its separately warned backup
+  contract.
+- Built-in owner recreation and exact-namespace validation remain mandatory.
+  No account-specific exception may weaken the rest of the plugin compatibility
+  projection or the disabled/no-route import posture.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Built-in extension has private or unknown fields | Strip them and preserve only canonical config |
+| Built-in plugin ID uses another namespace | Reject as incompatible/invalid |
+| Share source is in account mode with credentials | Share mode/config only; omit both private fields |
+| Imported account-mode provider | Disabled, no credentials, explicit configuration required |
+| Imported provider is refreshed before credentials are set | Send no account request |
+| Local duplicate is requested | Copy private credentials in the same backend transaction |
+| Whole-config v3 export is requested | Follow config-migration contract, not share policy |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an account-mode provider exports a v1 share whose canonical extension
+  keeps account mode but contains no account identity or token; the recipient
+  imports it disabled and sees a credentials-required state.
+- Base: billing or sub2api providers retain their canonical account-usage
+  extension settings with no new share fields.
+- Good: local duplication preserves synthetic credentials while the returned
+  `ProviderSummary` exposes only User ID and token-configured boolean.
+- Bad: reuse the whole-config `ProviderExport` credential snapshot as a
+  single-provider envelope.
+- Bad: remove account mode during normalization and silently query billing with
+  the recipient's model key.
+
+### 6. Tests Required
+
+- Seed synthetic User ID/token credentials and assert serialized share bytes,
+  preview DTOs, adapter diagnostics, and summaries contain no token and no
+  source account identity.
+- Assert both export and import normalization remove historical private keys
+  from extension values while preserving canonical mode and refresh settings.
+- Import an account-mode share and assert disabled state, no private credential
+  row, no route/template writes, and configuration-required account usage.
+- Duplicate the same local provider and assert private credentials are copied
+  transactionally while no frontend response or log contains the token.
+- Keep strict schema, built-in namespace, preview capability, rollback, plugin
+  compatibility, and full credential/config/extension share tests green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+share.provider.account_credentials =
+    load_account_usage_credentials(conn, provider_id)?;
+```
+
+#### Correct
+
+```rust
+extension.values = sanitize_account_usage_extension_value(&extension.values);
+// Single-provider share never reads the private credential table.
+```
+
+The user-selected account mode is portable configuration; the sender's account
+identity and system token are not portable share data.

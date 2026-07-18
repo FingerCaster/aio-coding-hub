@@ -166,6 +166,10 @@ type ExtensionValuesState = {
 
 type AccountUsageState = ProviderAccountUsageConfig & {
   resetKey: string;
+  newApiUserId: string;
+  newApiAccessToken: string;
+  newApiAccessTokenConfigured: boolean;
+  clearNewApiAccessToken: boolean;
 };
 
 function buildExtensionValuesResetKey({
@@ -217,16 +221,18 @@ function buildAccountUsageState({
   resetKey,
   mode,
   existingExtensionValues,
+  editProvider,
 }: {
   resetKey: string;
   mode: ProviderEditorDialogProps["mode"];
   existingExtensionValues: StoredProviderExtensionValues[];
+  editProvider: ProviderSummary | null;
 }): AccountUsageState {
   const config =
     resetKey === "closed" || mode !== "edit"
       ? {
           adapterKind: "disabled" as const,
-          newApiUserId: "",
+          newApiQueryMode: "billing" as const,
           timedRefreshEnabled: true,
           refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
         }
@@ -235,6 +241,11 @@ function buildAccountUsageState({
   return {
     resetKey,
     ...config,
+    newApiUserId: mode === "edit" ? (editProvider?.newapi_account_user_id ?? "") : "",
+    newApiAccessToken: "",
+    newApiAccessTokenConfigured:
+      mode === "edit" && editProvider?.newapi_account_access_token_configured === true,
+    clearNewApiAccessToken: false,
   };
 }
 
@@ -440,6 +451,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       resetKey: extensionValuesResetKey,
       mode,
       existingExtensionValues,
+      editProvider,
     })
   );
   let effectiveExtensionValuesState = extensionValuesState;
@@ -459,12 +471,19 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       resetKey: extensionValuesResetKey,
       mode,
       existingExtensionValues,
+      editProvider,
     });
     setAccountUsageState(effectiveAccountUsageState);
   }
   const extensionValuesByContributionKey = effectiveExtensionValuesState.valuesByContributionKey;
   const accountUsageAdapterKind = effectiveAccountUsageState.adapterKind;
+  const accountUsageNewApiQueryMode = effectiveAccountUsageState.newApiQueryMode;
   const accountUsageNewApiUserId = effectiveAccountUsageState.newApiUserId;
+  const accountUsageNewApiAccessToken = effectiveAccountUsageState.newApiAccessToken;
+  const accountUsageNewApiAccessTokenConfigured =
+    effectiveAccountUsageState.newApiAccessTokenConfigured &&
+    !effectiveAccountUsageState.clearNewApiAccessToken;
+  const accountUsageClearNewApiAccessToken = effectiveAccountUsageState.clearNewApiAccessToken;
   const accountUsageTimedRefreshEnabled = effectiveAccountUsageState.timedRefreshEnabled;
   const accountUsageRefreshIntervalSeconds = effectiveAccountUsageState.refreshIntervalSeconds;
 
@@ -489,14 +508,47 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setAccountUsageState((prev) => ({
       ...prev,
       adapterKind,
-      newApiUserId: adapterKind === "newapi" ? prev.newApiUserId : "",
     }));
   }, []);
+
+  const setAccountUsageNewApiQueryMode = useCallback(
+    (newApiQueryMode: ProviderAccountUsageConfig["newApiQueryMode"]) => {
+      setAccountUsageState((prev) => ({
+        ...prev,
+        newApiQueryMode,
+      }));
+    },
+    []
+  );
 
   const setAccountUsageNewApiUserId = useCallback((newApiUserId: string) => {
     setAccountUsageState((prev) => ({
       ...prev,
       newApiUserId,
+    }));
+  }, []);
+
+  const setAccountUsageNewApiAccessToken = useCallback((newApiAccessToken: string) => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      newApiAccessToken,
+      clearNewApiAccessToken: newApiAccessToken.trim() ? false : prev.clearNewApiAccessToken,
+    }));
+  }, []);
+
+  const clearAccountUsageCredentials = useCallback(() => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      newApiUserId: "",
+      newApiAccessToken: "",
+      clearNewApiAccessToken: true,
+    }));
+  }, []);
+
+  const clearAccountUsageSecretDraft = useCallback(() => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      newApiAccessToken: "",
     }));
   }, []);
 
@@ -662,13 +714,18 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
         existingRows: mode === "edit" ? existingExtensionValues : [],
         config: {
           adapterKind: authMode === "api_key" ? accountUsageAdapterKind : "disabled",
-          newApiUserId: accountUsageNewApiUserId,
+          newApiQueryMode: accountUsageNewApiQueryMode,
           timedRefreshEnabled: accountUsageTimedRefreshEnabled,
           refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
             accountUsageRefreshIntervalSeconds
           ),
         },
       }),
+      accountUsageCredentials: {
+        newApiUserId: accountUsageNewApiUserId.trim() || null,
+        newApiAccessToken: accountUsageNewApiAccessToken.trim() || null,
+        clearNewApiAccessToken: accountUsageClearNewApiAccessToken,
+      },
     }),
     [
       mode,
@@ -694,7 +751,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       extensionValuesByContributionKey,
       existingExtensionValues,
       accountUsageAdapterKind,
+      accountUsageNewApiQueryMode,
       accountUsageNewApiUserId,
+      accountUsageNewApiAccessToken,
+      accountUsageClearNewApiAccessToken,
       accountUsageTimedRefreshEnabled,
       accountUsageRefreshIntervalSeconds,
     ]
@@ -741,6 +801,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       oauthStatus,
       setOauthStatus,
       refreshOauthStatus,
+      clearAccountUsageSecretDraft,
       persistProvider: (input) => providerUpsertMutation.mutateAsync({ input }),
     }),
     [
@@ -754,6 +815,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       form.setValue,
       oauthStatus,
       refreshOauthStatus,
+      clearAccountUsageSecretDraft,
       providerUpsertMutation,
     ]
   );
@@ -881,8 +943,23 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setExtensionValue,
     accountUsageAdapterKind,
     setAccountUsageAdapterKind,
+    accountUsageNewApiQueryMode,
+    setAccountUsageNewApiQueryMode,
     accountUsageNewApiUserId,
     setAccountUsageNewApiUserId,
+    accountUsageNewApiAccessToken,
+    setAccountUsageNewApiAccessToken,
+    accountUsageNewApiAccessTokenConfigured,
+    accountUsageCredentialsPresent:
+      Boolean(accountUsageNewApiUserId.trim()) ||
+      Boolean(accountUsageNewApiAccessToken.trim()) ||
+      accountUsageNewApiAccessTokenConfigured,
+    accountUsageCredentialsRequired:
+      accountUsageAdapterKind === "newapi" &&
+      accountUsageNewApiQueryMode === "account" &&
+      (!accountUsageNewApiUserId.trim() ||
+        (!accountUsageNewApiAccessToken.trim() && !accountUsageNewApiAccessTokenConfigured)),
+    clearAccountUsageCredentials,
     accountUsageTimedRefreshEnabled,
     setAccountUsageTimedRefreshEnabled,
     accountUsageRefreshIntervalSeconds,

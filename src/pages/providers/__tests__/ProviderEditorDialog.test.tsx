@@ -89,6 +89,8 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     availability_test_model: null,
     api_key_configured: partial.api_key_configured ?? false,
     ...partial,
+    newapi_account_user_id: partial.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured: partial.newapi_account_access_token_configured ?? false,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
@@ -3115,6 +3117,84 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByDisplayValue("Existing")).toBeInTheDocument();
+  });
+
+  it("preserves account credentials across mode switches and only clears them explicitly", async () => {
+    const provider = makeProvider({
+      cli_key: "codex",
+      api_key_configured: true,
+      newapi_account_user_id: "42",
+      newapi_account_access_token_configured: true,
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: {
+            adapterKind: "newapi",
+            newApiQueryMode: "account",
+            timedRefreshEnabled: true,
+            refreshIntervalSeconds: 120,
+          },
+          updatedAt: 1,
+        },
+      ],
+    });
+    vi.mocked(providerUpsert).mockResolvedValueOnce(provider);
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={provider}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
+    fireEvent.change(dialog.getByPlaceholderText("留空表示不改"), {
+      target: { value: "SYNTHETIC_ACCOUNT_DRAFT" },
+    });
+    fireEvent.click(dialog.getByRole("radio", { name: "模型令牌额度" }));
+    expect(dialog.queryByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("radio", { name: "用户账户余额" }));
+    expect(dialog.getByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("radio", { name: "sub2api" }));
+    expect(dialog.queryByPlaceholderText("正整数")).not.toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("radio", { name: "NewAPI" }));
+    expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
+    expect(dialog.getByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).toBeInTheDocument();
+    expect(dialog.getByRole("radio", { name: "用户账户余额" })).toHaveAttribute(
+      "aria-checked",
+      "true"
+    );
+
+    fireEvent.click(dialog.getByRole("button", { name: "清除账户凭据" }));
+    expect(dialog.getByText("需配置账户凭据")).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          accountUsageCredentials: {
+            newApiUserId: null,
+            newApiAccessToken: null,
+            clearNewApiAccessToken: true,
+          },
+          extensionValues: expect.arrayContaining([
+            expect.objectContaining({
+              pluginId: "core.provider-account-usage",
+              namespace: "accountUsage",
+              values: expect.objectContaining({
+                adapterKind: "newapi",
+                newApiQueryMode: "account",
+              }),
+            }),
+          ]),
+        })
+      )
+    );
   });
 
   it("covers fallback issue path in toastFirstSchemaIssue", async () => {

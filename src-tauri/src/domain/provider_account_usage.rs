@@ -5,6 +5,7 @@ use crate::domain::plugins::{
 };
 use crate::providers::{ProviderExtensionValues, ProviderExtensionValuesInput};
 use chrono::{Datelike, Duration, TimeZone, Utc};
+use rusqlite::{params, Connection, OptionalExtension};
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -15,12 +16,25 @@ pub(crate) const SUB2API_RESPONSE_BODY_LIMIT: usize = 32 * 1024;
 const NEWAPI_STATUS_BODY_LIMIT: usize = 16 * 1024;
 const NEWAPI_SUBSCRIPTION_BODY_LIMIT: usize = 8 * 1024;
 const NEWAPI_USAGE_BODY_LIMIT: usize = 8 * 1024;
+const NEWAPI_ACCOUNT_BODY_LIMIT: usize = 16 * 1024;
+const NEWAPI_ACCESS_TOKEN_MAX_BYTES: usize = 64 * 1024;
+const ACCOUNT_USAGE_REFRESH_INTERVAL_MIN_SECONDS: i64 = 60;
+const ACCOUNT_USAGE_REFRESH_INTERVAL_MAX_SECONDS: i64 = 300;
+const ACCOUNT_USAGE_REFRESH_INTERVAL_DEFAULT_SECONDS: i64 = 300;
+const NEWAPI_UNLIMITED_TOKEN_HARD_LIMIT_USD: f64 = 100_000_000.0;
 
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "lowercase")]
 pub(crate) enum ProviderAccountUsageAdapterKind {
     Sub2api,
     Newapi,
+}
+
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum NewapiQueryMode {
+    Billing,
+    Account,
 }
 
 impl ProviderAccountUsageAdapterKind {
@@ -135,7 +149,22 @@ impl ProviderAccountUsageResult {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ProviderAccountUsageConfig {
     pub adapter_kind: ProviderAccountUsageAdapterKind,
+    pub new_api_query_mode: NewapiQueryMode,
+}
+
+#[derive(Clone, Default, PartialEq, Eq)]
+pub(crate) struct ProviderAccountUsageCredentials {
     pub new_api_user_id: Option<String>,
+    pub new_api_access_token: Option<String>,
+}
+
+#[derive(Clone, Deserialize, specta::Type)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct ProviderAccountUsageCredentialsPatch {
+    pub new_api_user_id: Option<String>,
+    pub new_api_access_token: Option<String>,
+    #[serde(default)]
+    pub clear_new_api_access_token: bool,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -144,6 +173,232 @@ pub(crate) enum ProviderAccountUsageConfigState {
     Disabled,
     Invalid(String),
     Configured(ProviderAccountUsageConfig),
+}
+
+pub(crate) fn sanitize_account_usage_extension_value(values: &Value) -> Value {
+    let adapter_kind = match values.get("adapterKind").and_then(Value::as_str) {
+        Some("sub2api") => "sub2api",
+        Some("newapi") => "newapi",
+        _ => "disabled",
+    };
+    let new_api_query_mode = match values.get("newApiQueryMode").and_then(Value::as_str) {
+        Some("account") => "account",
+        _ => "billing",
+    };
+    let timed_refresh_enabled = values
+        .get("timedRefreshEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(true);
+    let refresh_interval_seconds = values
+        .get("refreshIntervalSeconds")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+        .map(|value| value.round() as i64)
+        .unwrap_or(ACCOUNT_USAGE_REFRESH_INTERVAL_DEFAULT_SECONDS)
+        .clamp(
+            ACCOUNT_USAGE_REFRESH_INTERVAL_MIN_SECONDS,
+            ACCOUNT_USAGE_REFRESH_INTERVAL_MAX_SECONDS,
+        );
+
+    serde_json::json!({
+        "adapterKind": adapter_kind,
+        "newApiQueryMode": new_api_query_mode,
+        "timedRefreshEnabled": timed_refresh_enabled,
+        "refreshIntervalSeconds": refresh_interval_seconds,
+    })
+}
+
+pub(crate) fn normalize_newapi_user_id(raw: &str) -> Result<String, String> {
+    let value = raw.trim();
+    if value.is_empty() || !value.bytes().all(|byte| byte.is_ascii_digit()) {
+        return Err("SEC_INVALID_INPUT: NewAPI User ID must be a positive integer".to_string());
+    }
+    let parsed = value
+        .parse::<i64>()
+        .map_err(|_| "SEC_INVALID_INPUT: NewAPI User ID is out of range".to_string())?;
+    if parsed == 0 {
+        return Err("SEC_INVALID_INPUT: NewAPI User ID must be positive".to_string());
+    }
+    Ok(parsed.to_string())
+}
+
+fn normalize_newapi_access_token(raw: &str) -> Result<Option<String>, String> {
+    let value = raw.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    if value.len() > NEWAPI_ACCESS_TOKEN_MAX_BYTES {
+        return Err("SEC_INVALID_INPUT: NewAPI account access token is too large".to_string());
+    }
+    let authorization = format!("Bearer {value}");
+    if reqwest::header::HeaderValue::from_str(&authorization).is_err() {
+        return Err("SEC_INVALID_INPUT: NewAPI account access token is invalid".to_string());
+    }
+    Ok(Some(value.to_string()))
+}
+
+pub(crate) fn load_account_usage_credentials(
+    conn: &Connection,
+    provider_id: i64,
+) -> crate::shared::error::AppResult<ProviderAccountUsageCredentials> {
+    let row = conn
+        .query_row(
+            r#"
+SELECT newapi_user_id, newapi_access_token_plaintext
+FROM provider_account_usage_credentials
+WHERE provider_id = ?1
+"#,
+            params![provider_id],
+            |row| {
+                Ok((
+                    row.get::<_, Option<String>>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                ))
+            },
+        )
+        .optional()
+        .map_err(|error| {
+            crate::shared::error::db_err!("failed to query provider account credentials: {error}")
+        })?;
+
+    let Some((new_api_user_id, new_api_access_token)) = row else {
+        return Ok(ProviderAccountUsageCredentials::default());
+    };
+    let new_api_user_id = new_api_user_id
+        .as_deref()
+        .map(normalize_newapi_user_id)
+        .transpose()
+        .map_err(|_| "DB_INVALID_DATA: NewAPI account User ID is invalid".to_string())?;
+    let new_api_access_token = new_api_access_token
+        .as_deref()
+        .map(normalize_newapi_access_token)
+        .transpose()
+        .map_err(|_| "DB_INVALID_DATA: NewAPI account access token is invalid".to_string())?
+        .flatten();
+    Ok(ProviderAccountUsageCredentials {
+        new_api_user_id,
+        new_api_access_token,
+    })
+}
+
+fn write_account_usage_credentials(
+    conn: &Connection,
+    provider_id: i64,
+    credentials: &ProviderAccountUsageCredentials,
+) -> crate::shared::error::AppResult<()> {
+    if credentials.new_api_user_id.is_none() && credentials.new_api_access_token.is_none() {
+        conn.execute(
+            "DELETE FROM provider_account_usage_credentials WHERE provider_id = ?1",
+            params![provider_id],
+        )
+        .map_err(|error| {
+            crate::shared::error::db_err!("failed to clear provider account credentials: {error}")
+        })?;
+        return Ok(());
+    }
+
+    conn.execute(
+        r#"
+INSERT INTO provider_account_usage_credentials(
+  provider_id,
+  newapi_user_id,
+  newapi_access_token_plaintext,
+  updated_at
+) VALUES (?1, ?2, ?3, ?4)
+ON CONFLICT(provider_id) DO UPDATE SET
+  newapi_user_id = excluded.newapi_user_id,
+  newapi_access_token_plaintext = excluded.newapi_access_token_plaintext,
+  updated_at = excluded.updated_at
+"#,
+        params![
+            provider_id,
+            credentials.new_api_user_id,
+            credentials.new_api_access_token,
+            crate::shared::time::now_unix_seconds(),
+        ],
+    )
+    .map_err(|error| {
+        crate::shared::error::db_err!("failed to save provider account credentials: {error}")
+    })?;
+    Ok(())
+}
+
+pub(crate) fn apply_account_usage_credentials_patch(
+    conn: &Connection,
+    provider_id: i64,
+    patch: Option<&ProviderAccountUsageCredentialsPatch>,
+) -> crate::shared::error::AppResult<bool> {
+    let Some(patch) = patch else {
+        return Ok(false);
+    };
+    if patch.clear_new_api_access_token
+        && patch
+            .new_api_access_token
+            .as_deref()
+            .is_some_and(|value| !value.trim().is_empty())
+    {
+        return Err(
+            "SEC_INVALID_INPUT: cannot set and clear NewAPI account access token together"
+                .to_string()
+                .into(),
+        );
+    }
+
+    let existing = load_account_usage_credentials(conn, provider_id)?;
+    let new_api_user_id = patch
+        .new_api_user_id
+        .as_deref()
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(normalize_newapi_user_id)
+        .transpose()?;
+    let new_api_access_token = if patch.clear_new_api_access_token {
+        None
+    } else {
+        match patch.new_api_access_token.as_deref() {
+            Some(value) if !value.trim().is_empty() => normalize_newapi_access_token(value)?,
+            _ => existing.new_api_access_token,
+        }
+    };
+    write_account_usage_credentials(
+        conn,
+        provider_id,
+        &ProviderAccountUsageCredentials {
+            new_api_user_id,
+            new_api_access_token,
+        },
+    )?;
+    Ok(true)
+}
+
+pub(crate) fn copy_account_usage_credentials(
+    conn: &Connection,
+    source_provider_id: i64,
+    target_provider_id: i64,
+) -> crate::shared::error::AppResult<()> {
+    let credentials = load_account_usage_credentials(conn, source_provider_id)?;
+    write_account_usage_credentials(conn, target_provider_id, &credentials)
+}
+
+pub(crate) fn restore_account_usage_credentials(
+    conn: &Connection,
+    provider_id: i64,
+    new_api_user_id: Option<&str>,
+    new_api_access_token: Option<&str>,
+) -> crate::shared::error::AppResult<()> {
+    let new_api_user_id = new_api_user_id.map(normalize_newapi_user_id).transpose()?;
+    let new_api_access_token = new_api_access_token
+        .map(normalize_newapi_access_token)
+        .transpose()?
+        .flatten();
+    write_account_usage_credentials(
+        conn,
+        provider_id,
+        &ProviderAccountUsageCredentials {
+            new_api_user_id,
+            new_api_access_token,
+        },
+    )
 }
 
 pub(crate) fn config_from_extension_values(
@@ -169,18 +424,16 @@ fn config_from_value(values: &Value) -> ProviderAccountUsageConfigState {
         "" | "disabled" => ProviderAccountUsageConfigState::Disabled,
         "sub2api" => ProviderAccountUsageConfigState::Configured(ProviderAccountUsageConfig {
             adapter_kind: ProviderAccountUsageAdapterKind::Sub2api,
-            new_api_user_id: None,
+            new_api_query_mode: NewapiQueryMode::Billing,
         }),
         "newapi" => {
-            let new_api_user_id = values
-                .get("newApiUserId")
-                .and_then(Value::as_str)
-                .map(str::trim)
-                .filter(|value| !value.is_empty())
-                .map(take_first_chars);
+            let new_api_query_mode = match values.get("newApiQueryMode").and_then(Value::as_str) {
+                Some("account") => NewapiQueryMode::Account,
+                _ => NewapiQueryMode::Billing,
+            };
             ProviderAccountUsageConfigState::Configured(ProviderAccountUsageConfig {
                 adapter_kind: ProviderAccountUsageAdapterKind::Newapi,
-                new_api_user_id,
+                new_api_query_mode,
             })
         }
         other => ProviderAccountUsageConfigState::Invalid(format!(
@@ -201,14 +454,14 @@ pub(crate) fn extension_values_need_account_usage_owner(
 }
 
 pub(crate) fn ensure_account_usage_extension_owner_with_tx(
-    tx: &rusqlite::Transaction<'_>,
+    tx: &rusqlite::Connection,
     values: Option<&[ProviderExtensionValuesInput]>,
 ) -> crate::shared::error::AppResult<()> {
     if !extension_values_need_account_usage_owner(values) {
         return Ok(());
     }
 
-    crate::infra::plugins::repository::insert_plugin_with_tx(
+    crate::infra::plugins::repository::insert_plugin_with_conn(
         tx,
         crate::infra::plugins::repository::InsertPluginInput {
             manifest: account_usage_owner_manifest(),
@@ -299,7 +552,33 @@ pub(crate) struct NewapiBillingUrls {
     pub usage: reqwest::Url,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct NewapiAccountUrls {
+    pub status: reqwest::Url,
+    pub account: reqwest::Url,
+}
+
 pub(crate) fn build_newapi_billing_urls(base_url: &str) -> Result<NewapiBillingUrls, String> {
+    let root = normalize_newapi_root(base_url)?;
+    let status = newapi_url_at(&root, &["api", "status"])?;
+    let subscription = newapi_url_at(&root, &["v1", "dashboard", "billing", "subscription"])?;
+    let usage = newapi_url_at(&root, &["v1", "dashboard", "billing", "usage"])?;
+    Ok(NewapiBillingUrls {
+        status,
+        subscription,
+        usage,
+    })
+}
+
+pub(crate) fn build_newapi_account_urls(base_url: &str) -> Result<NewapiAccountUrls, String> {
+    let root = normalize_newapi_root(base_url)?;
+    Ok(NewapiAccountUrls {
+        status: newapi_url_at(&root, &["api", "status"])?,
+        account: newapi_url_at(&root, &["api", "user", "self"])?,
+    })
+}
+
+fn normalize_newapi_root(base_url: &str) -> Result<reqwest::Url, String> {
     let mut root = reqwest::Url::parse(base_url.trim())
         .map_err(|err| format!("SEC_INVALID_INPUT: invalid provider base URL: {err}"))?;
     if !matches!(root.scheme(), "http" | "https")
@@ -325,15 +604,7 @@ pub(crate) fn build_newapi_billing_urls(base_url: &str) -> Result<NewapiBillingU
     root.set_path(&segments.join("/"));
     root.set_query(None);
     root.set_fragment(None);
-
-    let status = newapi_url_at(&root, &["api", "status"])?;
-    let subscription = newapi_url_at(&root, &["v1", "dashboard", "billing", "subscription"])?;
-    let usage = newapi_url_at(&root, &["v1", "dashboard", "billing", "usage"])?;
-    Ok(NewapiBillingUrls {
-        status,
-        subscription,
-        usage,
-    })
+    Ok(root)
 }
 
 fn newapi_url_at(root: &reqwest::Url, suffix: &[&str]) -> Result<reqwest::Url, String> {
@@ -474,6 +745,91 @@ pub(crate) async fn fetch_newapi_account_usage(
     parse_newapi_billing_responses(&status, &subscription, &usage, fetched_at, now_unix)
 }
 
+pub(crate) async fn fetch_newapi_user_account_usage(
+    base_url: &str,
+    access_token: &str,
+    user_id: &str,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult {
+    let user_id = match normalize_newapi_user_id(user_id) {
+        Ok(user_id) => user_id,
+        Err(message) => {
+            return ProviderAccountUsageResult::local_status(
+                Some(ProviderAccountUsageAdapterKind::Newapi),
+                ProviderAccountUsageStatus::ConfigurationRequired,
+                message,
+            );
+        }
+    };
+    let access_token = match normalize_newapi_access_token(access_token) {
+        Ok(Some(access_token)) => access_token,
+        _ => {
+            return ProviderAccountUsageResult::local_status(
+                Some(ProviderAccountUsageAdapterKind::Newapi),
+                ProviderAccountUsageStatus::ConfigurationRequired,
+                "需配置账户凭据",
+            );
+        }
+    };
+    let urls = match build_newapi_account_urls(base_url) {
+        Ok(urls) => urls,
+        Err(message) => {
+            return ProviderAccountUsageResult::local_status(
+                Some(ProviderAccountUsageAdapterKind::Newapi),
+                ProviderAccountUsageStatus::ConfigurationRequired,
+                message,
+            );
+        }
+    };
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(15))
+        .user_agent(format!(
+            "aio-coding-hub-provider-account-usage/{}",
+            env!("CARGO_PKG_VERSION")
+        ))
+        .redirect(reqwest::redirect::Policy::none())
+        .build()
+    {
+        Ok(client) => client,
+        Err(_) => {
+            return newapi_failed_result(
+                ProviderAccountUsageStatus::QueryFailed,
+                fetched_at,
+                "NewAPI 账户用量查询失败",
+            );
+        }
+    };
+
+    let status = match get_newapi_json(
+        client.get(urls.status),
+        NEWAPI_STATUS_BODY_LIMIT,
+        false,
+        fetched_at,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(result) => return result,
+    };
+    let account = match get_newapi_json(
+        client
+            .get(urls.account)
+            .bearer_auth(&access_token)
+            .header("New-Api-User", &user_id),
+        NEWAPI_ACCOUNT_BODY_LIMIT,
+        true,
+        fetched_at,
+    )
+    .await
+    {
+        Ok(body) => body,
+        Err(result) => return result,
+    };
+
+    parse_newapi_account_responses(&status, &account, &user_id, fetched_at, now_unix)
+}
+
 async fn get_newapi_json(
     request: reqwest::RequestBuilder,
     body_limit: usize,
@@ -506,7 +862,7 @@ async fn get_newapi_json(
             mapped,
             fetched_at,
             if mapped == ProviderAccountUsageStatus::AuthFailed {
-                "NewAPI billing 接口认证失败"
+                "NewAPI 账户接口认证失败"
             } else {
                 "NewAPI 账户用量接口返回非成功状态"
             },
@@ -603,6 +959,18 @@ fn parse_sub2api_response(
     now_unix: i64,
 ) -> ProviderAccountUsageResult {
     let is_valid = body.get("isValid").and_then(Value::as_bool);
+    let rate_limit_daily = match parse_sub2api_daily_rate_limit(body) {
+        Ok(rate_limit) => rate_limit,
+        Err(message) => {
+            let mut result = ProviderAccountUsageResult::fetched(
+                ProviderAccountUsageAdapterKind::Sub2api,
+                ProviderAccountUsageStatus::QueryFailed,
+                fetched_at,
+            );
+            result.message = Some(message.to_string());
+            return result;
+        }
+    };
     let root_balance = number_at(body, &["balance"]);
     let remaining = number_at(body, &["remaining"]);
     let explicit_plan_remaining = number_at(body, &["plan_remaining", "planRemaining"]);
@@ -615,8 +983,12 @@ fn parse_sub2api_response(
     let subscription = body.get("subscription").unwrap_or(&Value::Null);
     let plan_name =
         subscription_plan_name(body).or_else(|| string_at(body, &["planName", "plan_name"]));
-    let daily_used = number_at(subscription, &["daily_usage_usd", "dailyUsageUsd"]);
-    let daily_total = number_at(subscription, &["daily_limit_usd", "dailyLimitUsd"]);
+    let daily_used = rate_limit_daily
+        .map(|(_, used)| used)
+        .or_else(|| number_at(subscription, &["daily_usage_usd", "dailyUsageUsd"]));
+    let daily_total = rate_limit_daily
+        .map(|(limit, _)| limit)
+        .or_else(|| number_at(subscription, &["daily_limit_usd", "dailyLimitUsd"]));
     let weekly_used = number_at(subscription, &["weekly_usage_usd", "weeklyUsageUsd"]);
     let weekly_total = number_at(subscription, &["weekly_limit_usd", "weeklyLimitUsd"]);
     let monthly_used = number_at(subscription, &["monthly_usage_usd", "monthlyUsageUsd"]);
@@ -665,6 +1037,62 @@ fn parse_sub2api_response(
     result.monthly_total = monthly_total;
     result.expires_at = expires_at;
     result
+}
+
+fn parse_sub2api_daily_rate_limit(body: &Value) -> Result<Option<(f64, f64)>, &'static str> {
+    let Some(rate_limits) = body.get("rate_limits") else {
+        return Ok(None);
+    };
+    let Some(rate_limits) = rate_limits.as_array() else {
+        return Err("sub2api rate_limits 响应格式无效");
+    };
+
+    let mut daily = None;
+    for rate_limit in rate_limits {
+        if rate_limit.get("window").and_then(Value::as_str) != Some("1d") {
+            continue;
+        }
+        if daily.is_some() {
+            return Err("sub2api rate_limits 包含重复的 1d 周期");
+        }
+        let number = |key: &str| {
+            rate_limit
+                .get(key)
+                .and_then(Value::as_f64)
+                .filter(|value| value.is_finite() && *value >= 0.0)
+        };
+        let Some(limit) = number("limit") else {
+            return Err("sub2api 1d 周期额度无效");
+        };
+        let Some(used) = number("used") else {
+            return Err("sub2api 1d 周期已用量无效");
+        };
+        let Some(remaining) = number("remaining") else {
+            return Err("sub2api 1d 周期剩余额度无效");
+        };
+        if used > limit {
+            return Err("sub2api 1d 周期额度不一致");
+        }
+        let expected_remaining = limit - used;
+        let tolerance = 1e-9_f64.max(limit.abs() * 1e-9);
+        if (expected_remaining - remaining).abs() > tolerance {
+            return Err("sub2api 1d 周期额度不一致");
+        }
+        let Some(window_start) = rate_limit
+            .get("window_start")
+            .and_then(parse_timestamp_value)
+        else {
+            return Err("sub2api 1d 周期起点无效");
+        };
+        let Some(reset_at) = rate_limit.get("reset_at").and_then(parse_timestamp_value) else {
+            return Err("sub2api 1d 周期重置时间无效");
+        };
+        if reset_at <= window_start {
+            return Err("sub2api 1d 周期时间范围无效");
+        }
+        daily = Some((limit, used));
+    }
+    Ok(daily)
 }
 
 fn parse_newapi_response(
@@ -754,6 +1182,15 @@ pub(crate) fn parse_newapi_billing_responses(
             "NewAPI usage 响应缺少有效已用量",
         );
     };
+    if total == NEWAPI_UNLIMITED_TOKEN_HARD_LIMIT_USD {
+        let mut result = ProviderAccountUsageResult::fetched(
+            ProviderAccountUsageAdapterKind::Newapi,
+            ProviderAccountUsageStatus::Available,
+            fetched_at,
+        );
+        result.message = Some("模型令牌无限额度".to_string());
+        return result;
+    }
     let used = total_usage / 100.0;
     if !used.is_finite() {
         return newapi_failed_result(
@@ -786,6 +1223,109 @@ pub(crate) fn parse_newapi_billing_responses(
     result
 }
 
+pub(crate) fn parse_newapi_account_responses(
+    status_body: &Value,
+    account_body: &Value,
+    expected_user_id: &str,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult {
+    if let Some(result) = newapi_application_error(status_body, false, fetched_at) {
+        return result;
+    }
+    if let Some(result) = newapi_application_error(account_body, true, fetched_at) {
+        return result;
+    }
+    if account_body.get("success").and_then(Value::as_bool) != Some(true) {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI 用户账户响应缺少有效成功标志",
+        );
+    }
+
+    let status = data_or_root(status_body);
+    let account = data_or_root(account_body);
+    if status.get("quota_display_type").and_then(Value::as_str) != Some("USD") {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI 展示单位暂不受支持",
+        );
+    }
+    let Some(quota_per_unit) = status
+        .get("quota_per_unit")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value > 0.0)
+    else {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI status 响应缺少有效换算基数",
+        );
+    };
+    let Some(account_user_id) = account
+        .get("id")
+        .and_then(Value::as_i64)
+        .filter(|value| *value > 0)
+    else {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI 用户账户响应缺少有效身份",
+        );
+    };
+    if account_user_id.to_string() != expected_user_id {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::AuthFailed,
+            fetched_at,
+            "NewAPI 用户账户身份不匹配",
+        );
+    }
+    let Some(quota) = account
+        .get("quota")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite())
+    else {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI 用户账户响应缺少有效余额",
+        );
+    };
+    let Some(used_quota) = account
+        .get("used_quota")
+        .and_then(Value::as_f64)
+        .filter(|value| value.is_finite() && *value >= 0.0)
+    else {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI 用户账户响应缺少有效历史消耗",
+        );
+    };
+    let balance = quota / quota_per_unit;
+    let used = used_quota / quota_per_unit;
+    if !balance.is_finite() || !used.is_finite() {
+        return newapi_failed_result(
+            ProviderAccountUsageStatus::QueryFailed,
+            fetched_at,
+            "NewAPI 用户账户额度换算失败",
+        );
+    }
+
+    let account_status = status_from_account_parts(None, &[Some(balance)], None, now_unix);
+    let mut result = ProviderAccountUsageResult::fetched(
+        ProviderAccountUsageAdapterKind::Newapi,
+        account_status,
+        fetched_at,
+    );
+    result.balance = Some(balance);
+    result.used = Some(used);
+    result.unit = Some("USD".to_string());
+    result
+}
+
 fn data_or_root(body: &Value) -> &Value {
     body.get("data")
         .filter(|value| value.is_object())
@@ -806,7 +1346,7 @@ fn newapi_application_error(
             },
             fetched_at,
             if authenticated {
-                "NewAPI billing 接口认证失败"
+                "NewAPI 账户接口认证失败"
             } else {
                 "NewAPI status 接口返回应用错误"
             },
@@ -1362,10 +1902,7 @@ mod tests {
         );
 
         assert_eq!(result.status, ProviderAccountUsageStatus::AuthFailed);
-        assert_eq!(
-            result.message.as_deref(),
-            Some("NewAPI billing 接口认证失败")
-        );
+        assert_eq!(result.message.as_deref(), Some("NewAPI 账户接口认证失败"));
         assert!(!result.message.as_deref().unwrap_or("").contains("quota"));
         assert!(!result
             .message
@@ -1535,6 +2072,15 @@ mod tests {
                 urls.usage.as_str(),
                 "https://newapi.example.test/v1/dashboard/billing/usage"
             );
+            let account_urls = build_newapi_account_urls(base).unwrap();
+            assert_eq!(
+                account_urls.status.as_str(),
+                "https://newapi.example.test/api/status"
+            );
+            assert_eq!(
+                account_urls.account.as_str(),
+                "https://newapi.example.test/api/user/self"
+            );
         }
     }
 
@@ -1692,10 +2238,7 @@ mod tests {
         server.await.unwrap();
 
         assert_eq!(result.status, ProviderAccountUsageStatus::AuthFailed);
-        assert_eq!(
-            result.message.as_deref(),
-            Some("NewAPI billing 接口认证失败")
-        );
+        assert_eq!(result.message.as_deref(), Some("NewAPI 账户接口认证失败"));
         assert!(!result
             .message
             .as_deref()
@@ -1806,6 +2349,457 @@ mod tests {
         assert!(requests[1]
             .to_ascii_lowercase()
             .contains("authorization: bearer synthetic_bearer_secret"));
+    }
+
+    #[test]
+    fn account_usage_config_defaults_newapi_to_billing_and_sanitizes_private_fields() {
+        let configured = config_from_value(&json!({
+            "adapterKind": "newapi",
+            "newApiUserId": "42",
+            "newApiAccessToken": "SYNTHETIC_PRIVATE_VALUE"
+        }));
+        assert_eq!(
+            configured,
+            ProviderAccountUsageConfigState::Configured(ProviderAccountUsageConfig {
+                adapter_kind: ProviderAccountUsageAdapterKind::Newapi,
+                new_api_query_mode: NewapiQueryMode::Billing,
+            })
+        );
+
+        let sanitized = sanitize_account_usage_extension_value(&json!({
+            "adapterKind": "newapi",
+            "newApiQueryMode": "account",
+            "newApiUserId": "42",
+            "newApiAccessToken": "SYNTHETIC_PRIVATE_VALUE",
+            "timedRefreshEnabled": false,
+            "refreshIntervalSeconds": 120
+        }));
+        assert_eq!(
+            sanitized,
+            json!({
+                "adapterKind": "newapi",
+                "newApiQueryMode": "account",
+                "timedRefreshEnabled": false,
+                "refreshIntervalSeconds": 120
+            })
+        );
+        let serialized = sanitized.to_string();
+        assert!(!serialized.contains("UserId"));
+        assert!(!serialized.contains("AccessToken"));
+        assert!(!serialized.contains("SYNTHETIC_PRIVATE_VALUE"));
+    }
+
+    #[test]
+    fn newapi_user_id_uses_the_positive_signed_go_integer_range() {
+        assert_eq!(normalize_newapi_user_id("00042").unwrap(), "42");
+        assert_eq!(
+            normalize_newapi_user_id(&i64::MAX.to_string()).unwrap(),
+            i64::MAX.to_string()
+        );
+
+        for invalid in ["0", "-1", "9223372036854775808", "18446744073709551615"] {
+            assert!(normalize_newapi_user_id(invalid).is_err(), "{invalid}");
+        }
+    }
+
+    #[test]
+    fn newapi_billing_recognizes_only_the_exact_unlimited_sentinel() {
+        let (status, mut subscription, usage) = valid_newapi_billing();
+        subscription["hard_limit_usd"] = json!(NEWAPI_UNLIMITED_TOKEN_HARD_LIMIT_USD);
+        let unlimited = parse_newapi_billing_responses(
+            &status,
+            &subscription,
+            &usage,
+            1_800_000_000,
+            1_800_000_000,
+        );
+        assert_eq!(unlimited.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(unlimited.message.as_deref(), Some("模型令牌无限额度"));
+        assert!(unlimited.total.is_none());
+        assert!(unlimited.used.is_none());
+        assert!(unlimited.balance.is_none());
+        assert!(unlimited.unit.is_none());
+
+        for finite_total in [
+            NEWAPI_UNLIMITED_TOKEN_HARD_LIMIT_USD - 1.0,
+            NEWAPI_UNLIMITED_TOKEN_HARD_LIMIT_USD + 1.0,
+        ] {
+            subscription["hard_limit_usd"] = json!(finite_total);
+            let finite = parse_newapi_billing_responses(
+                &status,
+                &subscription,
+                &usage,
+                1_800_000_000,
+                1_800_000_000,
+            );
+            assert_eq!(finite.total, Some(finite_total));
+            assert!(finite.balance.is_some());
+        }
+    }
+
+    #[test]
+    fn newapi_account_parser_maps_balance_and_historical_usage_without_total() {
+        let result = parse_newapi_account_responses(
+            &json!({
+                "data": { "quota_display_type": "USD", "quota_per_unit": 100.0 }
+            }),
+            &json!({
+                "success": true,
+                "data": { "id": 42, "quota": -250.0, "used_quota": 375.0 }
+            }),
+            "42",
+            1_800_000_000,
+            1_800_000_000,
+        );
+        assert_eq!(result.status, ProviderAccountUsageStatus::ZeroBalance);
+        assert_eq!(result.balance, Some(-2.5));
+        assert_eq!(result.used, Some(3.75));
+        assert!(result.total.is_none());
+        assert_eq!(result.unit.as_deref(), Some("USD"));
+    }
+
+    #[test]
+    fn newapi_account_parser_fails_closed_on_success_identity_unit_and_number_errors() {
+        let valid_status = json!({
+            "data": { "quota_display_type": "USD", "quota_per_unit": 100.0 }
+        });
+        let valid_account = json!({
+            "success": true,
+            "data": { "id": 42, "quota": 500.0, "used_quota": 125.0 }
+        });
+        for (status, account, expected_status) in [
+            (
+                json!({ "data": { "quota_display_type": "TOKENS", "quota_per_unit": 100.0 } }),
+                valid_account.clone(),
+                ProviderAccountUsageStatus::QueryFailed,
+            ),
+            (
+                valid_status.clone(),
+                json!({ "success": true, "data": { "id": 7, "quota": 500.0, "used_quota": 125.0 } }),
+                ProviderAccountUsageStatus::AuthFailed,
+            ),
+            (
+                valid_status.clone(),
+                json!({ "success": true, "data": { "id": 9_223_372_036_854_775_808_u64, "quota": 500.0, "used_quota": 125.0 } }),
+                ProviderAccountUsageStatus::QueryFailed,
+            ),
+            (
+                valid_status.clone(),
+                json!({ "success": true, "data": { "id": 42, "quota": 500.0, "used_quota": -1.0 } }),
+                ProviderAccountUsageStatus::QueryFailed,
+            ),
+            (
+                valid_status.clone(),
+                json!({
+                    "success": false,
+                    "message": "SYNTHETIC_UPSTREAM_MESSAGE",
+                    "data": { "id": 42, "quota": 500.0, "used_quota": 125.0 }
+                }),
+                ProviderAccountUsageStatus::AuthFailed,
+            ),
+            (
+                valid_status.clone(),
+                json!({ "data": { "id": 42, "quota": 500.0, "used_quota": 125.0 } }),
+                ProviderAccountUsageStatus::QueryFailed,
+            ),
+        ] {
+            let result = parse_newapi_account_responses(
+                &status,
+                &account,
+                "42",
+                1_800_000_000,
+                1_800_000_000,
+            );
+            assert_eq!(result.status, expected_status);
+            assert!(result.balance.is_none());
+            assert!(result.used.is_none());
+            assert!(result.total.is_none());
+            assert!(result.unit.is_none());
+            assert!(!result
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("SYNTHETIC_UPSTREAM_MESSAGE"));
+        }
+    }
+
+    #[tokio::test]
+    async fn newapi_account_http_contract_separates_public_and_private_headers() {
+        let responses = vec![
+            (
+                200,
+                json!({
+                    "data": { "quota_display_type": "USD", "quota_per_unit": 100.0 }
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                json!({
+                    "success": true,
+                    "data": { "id": 42, "quota": 500.0, "used_quota": 125.0 }
+                })
+                .to_string(),
+            ),
+        ];
+        let (base, requests, server) = spawn_http_sequence(responses).await;
+        let result = fetch_newapi_user_account_usage(
+            &format!("{base}/v1"),
+            "SYNTHETIC_ACCOUNT_SECRET",
+            "42",
+            1_800_000_000,
+            1_800_000_000,
+        )
+        .await;
+        server.await.expect("account server");
+        assert_eq!(result.balance, Some(5.0));
+        assert_eq!(result.used, Some(1.25));
+
+        let requests = requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(requests[0].starts_with("GET /api/status "));
+        assert!(!requests[0].to_ascii_lowercase().contains("authorization:"));
+        assert!(!requests[0].to_ascii_lowercase().contains("new-api-user:"));
+        assert!(requests[1].starts_with("GET /api/user/self "));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer synthetic_account_secret"));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("new-api-user: 42"));
+    }
+
+    #[tokio::test]
+    async fn newapi_account_http_contract_enforces_body_cap_all_or_nothing() {
+        let responses = vec![
+            (
+                200,
+                json!({
+                    "data": { "quota_display_type": "USD", "quota_per_unit": 100.0 }
+                })
+                .to_string(),
+            ),
+            (
+                200,
+                format!(
+                    "{{\"padding\":\"{}\"}}",
+                    "x".repeat(NEWAPI_ACCOUNT_BODY_LIMIT)
+                ),
+            ),
+        ];
+        let (base, requests, server) = spawn_http_sequence(responses).await;
+        let result = fetch_newapi_user_account_usage(
+            &base,
+            "SYNTHETIC_ACCOUNT_SECRET",
+            "42",
+            1_800_000_000,
+            1_800_000_000,
+        )
+        .await;
+        server.await.expect("account cap server");
+        assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
+        assert!(result.balance.is_none());
+        assert!(result.used.is_none());
+        assert!(result.unit.is_none());
+        assert_eq!(requests.lock().await.len(), 2);
+    }
+
+    #[tokio::test]
+    async fn newapi_account_redirect_is_not_followed_or_forwarded() {
+        let target_listener = tokio::net::TcpListener::bind(("127.0.0.1", 0))
+            .await
+            .expect("bind account redirect target");
+        let target_addr = target_listener.local_addr().expect("target addr");
+        let target = tokio::spawn(async move {
+            tokio::time::timeout(
+                std::time::Duration::from_millis(500),
+                target_listener.accept(),
+            )
+            .await
+            .is_ok()
+        });
+        let (base, requests, server) =
+            spawn_subscription_redirect(&format!("http://{target_addr}/capture")).await;
+        let result = fetch_newapi_user_account_usage(
+            &base,
+            "SYNTHETIC_ACCOUNT_SECRET",
+            "42",
+            1_800_000_000,
+            1_800_000_000,
+        )
+        .await;
+        server.await.expect("account redirect server");
+        assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
+        assert!(!target.await.expect("target task"));
+        let requests = requests.lock().await;
+        assert_eq!(requests.len(), 2);
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("authorization: bearer synthetic_account_secret"));
+        assert!(requests[1]
+            .to_ascii_lowercase()
+            .contains("new-api-user: 42"));
+    }
+
+    #[tokio::test]
+    async fn newapi_account_missing_credentials_returns_before_network_setup() {
+        let result = fetch_newapi_user_account_usage(
+            "https://example.invalid/v1",
+            "",
+            "42",
+            1_800_000_000,
+            1_800_000_000,
+        )
+        .await;
+        assert_eq!(
+            result.status,
+            ProviderAccountUsageStatus::ConfigurationRequired
+        );
+        assert_eq!(result.freshness, ProviderAccountUsageFreshness::NotFetched);
+    }
+
+    #[test]
+    fn sub2api_rate_limits_maps_only_a_valid_unique_daily_window() {
+        let result = parse_sub2api_response(
+            &json!({
+                "isValid": true,
+                "rate_limits": [{
+                    "window": "1d",
+                    "limit": 12.0,
+                    "used": 4.5,
+                    "remaining": 7.5,
+                    "window_start": 1_800_000_000,
+                    "reset_at": 1_800_086_400
+                }]
+            }),
+            1_800_000_000,
+            1_800_000_000,
+        );
+        assert_eq!(result.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(result.daily_total, Some(12.0));
+        assert_eq!(result.daily_used, Some(4.5));
+        assert!(result.balance.is_none());
+        assert!(result.plan_remaining.is_none());
+
+        let unknown = parse_sub2api_response(
+            &json!({
+                "isValid": true,
+                "rate_limits": [{ "window": "7d", "limit": 70.0 }]
+            }),
+            1_800_000_000,
+            1_800_000_000,
+        );
+        assert_eq!(unknown.status, ProviderAccountUsageStatus::Available);
+        assert!(unknown.daily_total.is_none());
+        assert!(unknown.weekly_total.is_none());
+    }
+
+    #[test]
+    fn sub2api_rate_limits_known_daily_window_fails_closed_when_malformed() {
+        let cases = [
+            json!({
+                "isValid": true,
+                "rate_limits": [
+                    { "window": "1d", "limit": 10.0, "used": 2.0, "remaining": 8.0, "window_start": 1_800_000_000, "reset_at": 1_800_086_400 },
+                    { "window": "1d", "limit": 10.0, "used": 2.0, "remaining": 8.0, "window_start": 1_800_000_000, "reset_at": 1_800_086_400 }
+                ]
+            }),
+            json!({
+                "isValid": true,
+                "rate_limits": [{ "window": "1d", "limit": 10.0, "used": -1.0, "remaining": 11.0, "window_start": 1_800_000_000, "reset_at": 1_800_086_400 }]
+            }),
+            json!({
+                "isValid": true,
+                "rate_limits": [{ "window": "1d", "limit": 10.0, "used": 2.0, "remaining": 9.0, "window_start": 1_800_000_000, "reset_at": 1_800_086_400 }]
+            }),
+            json!({
+                "isValid": true,
+                "rate_limits": [{ "window": "1d", "limit": 10.0, "used": 2.0, "remaining": 8.0, "window_start": 1_800_086_400, "reset_at": 1_800_000_000 }]
+            }),
+        ];
+        for body in cases {
+            let result = parse_sub2api_response(&body, 1_800_000_000, 1_800_000_000);
+            assert_eq!(result.status, ProviderAccountUsageStatus::QueryFailed);
+            assert!(result.daily_total.is_none());
+            assert!(result.daily_used.is_none());
+            assert!(result.balance.is_none());
+        }
+    }
+
+    #[test]
+    fn account_credentials_patch_preserves_replaces_and_clears_as_a_group() {
+        let conn = Connection::open_in_memory().expect("credentials db");
+        conn.execute_batch(
+            r#"
+PRAGMA foreign_keys = ON;
+CREATE TABLE providers(id INTEGER PRIMARY KEY);
+CREATE TABLE provider_account_usage_credentials(
+  provider_id INTEGER PRIMARY KEY,
+  newapi_user_id TEXT,
+  newapi_access_token_plaintext TEXT,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+INSERT INTO providers(id) VALUES (1);
+"#,
+        )
+        .expect("credentials schema");
+
+        apply_account_usage_credentials_patch(
+            &conn,
+            1,
+            Some(&ProviderAccountUsageCredentialsPatch {
+                new_api_user_id: Some("00042".to_string()),
+                new_api_access_token: Some("SYNTHETIC_ACCOUNT_SECRET_A".to_string()),
+                clear_new_api_access_token: false,
+            }),
+        )
+        .expect("initial credentials");
+        let initial = load_account_usage_credentials(&conn, 1).expect("load initial");
+        assert_eq!(initial.new_api_user_id.as_deref(), Some("42"));
+        assert_eq!(
+            initial.new_api_access_token.as_deref(),
+            Some("SYNTHETIC_ACCOUNT_SECRET_A")
+        );
+
+        apply_account_usage_credentials_patch(
+            &conn,
+            1,
+            Some(&ProviderAccountUsageCredentialsPatch {
+                new_api_user_id: Some("7".to_string()),
+                new_api_access_token: None,
+                clear_new_api_access_token: false,
+            }),
+        )
+        .expect("preserve token");
+        let preserved = load_account_usage_credentials(&conn, 1).expect("load preserved");
+        assert_eq!(preserved.new_api_user_id.as_deref(), Some("7"));
+        assert_eq!(
+            preserved.new_api_access_token.as_deref(),
+            Some("SYNTHETIC_ACCOUNT_SECRET_A")
+        );
+
+        apply_account_usage_credentials_patch(
+            &conn,
+            1,
+            Some(&ProviderAccountUsageCredentialsPatch {
+                new_api_user_id: None,
+                new_api_access_token: None,
+                clear_new_api_access_token: true,
+            }),
+        )
+        .expect("clear credentials");
+        let cleared = load_account_usage_credentials(&conn, 1).expect("load cleared");
+        assert!(cleared.new_api_user_id.is_none());
+        assert!(cleared.new_api_access_token.is_none());
+        let row_count: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM provider_account_usage_credentials",
+                [],
+                |row| row.get(0),
+            )
+            .expect("credential row count");
+        assert_eq!(row_count, 0);
     }
 
     #[test]

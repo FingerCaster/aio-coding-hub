@@ -1,4 +1,4 @@
-# Config Migration Skill Bundle Contract
+# Config Migration Bundle Contract
 
 ## Scenario: Change Installed Or Local Skill Payload Migration
 
@@ -332,3 +332,141 @@ do not bolt marker deletion or case handling onto the write phase.
   with O_NOFOLLOW and O_CLOEXEC, then perform the existing type, identity, and
   single-link checks. The production FIFO replacement regression must use an
   external bounded watchdog so a blocking open cannot make the test hang.
+
+## Scenario: Account-Usage Credentials In Config Bundle V3
+
+### 1. Scope / Trigger
+
+Use this scenario when changing config-bundle versions, provider account-usage
+configuration, private NewAPI account credentials, provider restore, or config
+import rollback. Whole-config backup is user-authorized sensitive export and
+intentionally differs from single-provider sharing.
+
+### 2. Signatures
+
+```rust
+pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 3;
+pub(crate) const CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION: u32 = 2;
+pub(crate) const CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION: u32 = 3;
+
+pub struct ProviderExport {
+    // Existing provider fields omitted.
+    pub account_usage_config: Option<serde_json::Value>,
+    pub account_usage_credentials: Option<ProviderAccountUsageCredentialsExport>,
+}
+
+pub struct ProviderAccountUsageCredentialsExport {
+    pub newapi_user_id: Option<String>,
+    pub newapi_access_token_plaintext: Option<String>,
+}
+
+pub(crate) fn prepare_config_import(
+    bundle: ConfigBundle,
+) -> AppResult<PreparedConfigImport>;
+```
+
+The sensitive bundle and credential carrier types must not derive `Debug`.
+Provider restoration calls `restore_account_usage_credentials` inside the
+same SQLite transaction that inserts the provider and canonical extension.
+
+### 3. Contracts
+
+- Export always writes schema v3. For each provider it exports the canonical
+  built-in account-usage config and, when either private field exists, one
+  optional private credential snapshot.
+- Account config passes through the shared extension sanitizer before leaving
+  or entering the database. Private identity/token fields never remain inside
+  extension JSON.
+- Schema validation accepts exactly v1, v2, and v3. Capability thresholds are
+  feature-owned constants: complete installed/local Skill payload begins at
+  v2, while account config/credential snapshots begin at v3. Do not compare
+  both features to the mutable current-version constant.
+- v1 preserves its legacy Skill semantics and imports no account-usage
+  snapshot. v2 requires/restores full Skill payloads but still imports no
+  account-usage snapshot. Even if an older-version JSON contains those optional
+  fields, preparation clears them before import.
+- v3 requires the established full Skill payload behavior and imports
+  canonical account config plus optional credentials. Missing credential
+  snapshot means the restored provider has no private account credentials.
+- User ID normalization requires ASCII digits in `1..=i64::MAX`; token
+  normalization applies the private credential size/header rules. Any invalid
+  v3 snapshot fails before commit.
+- Database provider replacement, account extension insertion, private
+  credential restoration, and the rest of config import are atomic under the
+  existing import transaction/rollback lifecycle. A credential failure leaves
+  the pre-import database and private credentials intact.
+- Exported v3 JSON is sensitive by design and remains under the existing
+  user-facing backup warning and 64 MiB encoded bundle cap. Logs, errors,
+  generated bindings, task artifacts, and test output must not print the
+  credential fields or their values.
+- Single-provider share must not use this snapshot. Local duplication copies
+  credentials through the provider transaction rather than serializing a
+  config bundle.
+
+### 4. Validation & Error Matrix
+
+| Bundle/input | Required result |
+| --- | --- |
+| Schema v1 | Legacy Skill behavior; ignore account config and credentials |
+| Schema v2 with complete Skill payload | Restore Skills; ignore account config and credentials |
+| Schema v2 missing required Skill payload | Reject under the existing v2 rule |
+| Schema v3 with canonical config and valid credentials | Restore both in provider transaction |
+| Schema v3 with no credential snapshot | Restore provider/config without a private row |
+| Schema v3 has invalid/out-of-range User ID | `SEC_INVALID_INPUT`; roll back the whole import |
+| Schema v3 has invalid/oversized token | `SEC_INVALID_INPUT`; roll back the whole import |
+| Account config contains historical private fields | Strip them through the shared sanitizer |
+| Unsupported schema version | Reject before destructive import work |
+| Serialized bundle exceeds 64 MiB | Reject without replacing the export target |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a v3 synthetic account-mode provider exports canonical config plus a
+  private snapshot and imports byte-for-byte equivalent credentials without
+  exposing them through `ProviderSummary`.
+- Good: an invalid v3 User ID aborts import and preserves the complete prior
+  provider and private credential winner.
+- Base: v2 continues to restore complete installed/local Skills exactly as
+  before and ignores account snapshot fields.
+- Base: v1 continues its legacy Skill preservation behavior.
+- Bad: use `schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION` as the Skill
+  gate after the current version advances to 3.
+- Bad: restore providers first, commit, then write private credentials in a
+  second transaction.
+
+### 6. Tests Required
+
+- Assert export emits schema v3, canonical account config, and synthetic
+  credentials only for providers that have private data.
+- Run a v1/v2/v3 matrix proving the independent Skill and account-snapshot
+  capability thresholds, including v2's full Skill requirements.
+- Round-trip v3 account mode, User ID, token, and refresh settings; assert the
+  extension contains no historical private keys and summary contains no token.
+- Inject out-of-range User ID, invalid token, invalid account config, and a
+  later import failure; assert provider rows, private credentials, Skills, and
+  other rollback-owned state preserve the pre-import winner.
+- Assert sensitive carrier types do not derive `Debug` and errors/logs do not
+  contain synthetic credential values.
+- Keep 64 MiB bundle, Skill payload, import lock, staged filesystem, and all
+  existing v1/v2 rollback regressions green; run the full Rust suite after
+  production config-migration changes.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let imports_skills = schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION;
+let imports_account_credentials = imports_skills;
+```
+
+#### Correct
+
+```rust
+let imports_skills =
+    schema_version >= CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION;
+let imports_account_credentials =
+    schema_version >= CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION;
+```
+
+Each feature keeps the version at which it first appeared, so advancing the
+current export schema cannot silently regress older bundle semantics.

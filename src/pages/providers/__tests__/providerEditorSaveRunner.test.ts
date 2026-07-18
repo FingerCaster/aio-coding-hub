@@ -44,6 +44,8 @@ function makeSavedProvider(partial: Partial<ProviderSummary> = {}): ProviderSumm
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
     availability_test_model: partial.availability_test_model ?? null,
     api_key_configured: partial.api_key_configured ?? true,
+    newapi_account_user_id: partial.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured: partial.newapi_account_access_token_configured ?? false,
   };
 }
 
@@ -87,6 +89,7 @@ function makeContext(overrides: Partial<SaveActionContext> = {}): SaveActionCont
     oauthStatus: null,
     setOauthStatus: vi.fn(),
     refreshOauthStatus: vi.fn().mockResolvedValue(null),
+    clearAccountUsageSecretDraft: vi.fn(),
     persistProvider: vi.fn().mockResolvedValue(makeSavedProvider()),
     ...overrides,
   };
@@ -142,7 +145,7 @@ describe("pages/providers/providerEditorSaveRunner", () => {
     expect(ctx.persistProvider).not.toHaveBeenCalled();
   });
 
-  it("persists the provider and clears the draft api key on success", async () => {
+  it("persists the provider and clears both secret drafts on success", async () => {
     const ctx = makeContext();
 
     await runProviderEditorSave(ctx);
@@ -153,6 +156,7 @@ describe("pages/providers/providerEditorSaveRunner", () => {
       shouldDirty: false,
       shouldValidate: false,
     });
+    expect(ctx.clearAccountUsageSecretDraft).toHaveBeenCalledOnce();
     expect(ctx.onOpenChange).toHaveBeenCalledWith(false);
     expect(ctx.setSaving).toHaveBeenLastCalledWith(false);
   });

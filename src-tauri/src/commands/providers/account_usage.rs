@@ -2,9 +2,10 @@ use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::blocking;
 use crate::domain::provider_account_usage::{
     build_account_usage_url, config_from_extension_values, fetch_newapi_account_usage,
-    http_status_result, parse_account_usage_response, redact_secret,
-    ProviderAccountUsageAdapterKind, ProviderAccountUsageConfigState, ProviderAccountUsageResult,
-    ProviderAccountUsageStatus, SUB2API_RESPONSE_BODY_LIMIT,
+    fetch_newapi_user_account_usage, http_status_result, parse_account_usage_response,
+    redact_secret, NewapiQueryMode, ProviderAccountUsageAdapterKind,
+    ProviderAccountUsageConfigState, ProviderAccountUsageResult, ProviderAccountUsageStatus,
+    SUB2API_RESPONSE_BODY_LIMIT,
 };
 
 #[tauri::command]
@@ -25,7 +26,7 @@ pub(crate) async fn provider_account_usage_fetch(
         let db = db.clone();
         move || {
             let conn = db.open_connection()?;
-            crate::providers::get_by_id(&conn, provider_id)
+            crate::providers::get_account_usage_fetch_context(&conn, provider_id)
         }
     })
     .await
@@ -70,6 +71,42 @@ pub(crate) async fn provider_account_usage_fetch(
         ));
     };
 
+    let fetched_at = crate::shared::time::now_unix_seconds();
+    if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi
+        && config.new_api_query_mode == NewapiQueryMode::Account
+    {
+        let credentials = blocking::run("provider_account_usage_fetch_load_account_credentials", {
+            let db = db.clone();
+            move || {
+                let conn = db.open_connection()?;
+                crate::domain::provider_account_usage::load_account_usage_credentials(
+                    &conn,
+                    provider_id,
+                )
+            }
+        })
+        .await
+        .map_err(Into::<String>::into)?;
+        let (Some(user_id), Some(access_token)) = (
+            credentials.new_api_user_id.as_deref(),
+            credentials.new_api_access_token.as_deref(),
+        ) else {
+            return Ok(ProviderAccountUsageResult::local_status(
+                Some(config.adapter_kind),
+                ProviderAccountUsageStatus::ConfigurationRequired,
+                "需配置账户凭据",
+            ));
+        };
+        return Ok(fetch_newapi_user_account_usage(
+            base_url,
+            access_token,
+            user_id,
+            fetched_at,
+            fetched_at,
+        )
+        .await);
+    }
+
     let api_key = blocking::run("provider_account_usage_fetch_load_api_key", {
         let db = db.clone();
         move || crate::providers::get_api_key_plaintext(&db, provider_id)
@@ -87,7 +124,6 @@ pub(crate) async fn provider_account_usage_fetch(
     }
 
     if config.adapter_kind == ProviderAccountUsageAdapterKind::Newapi {
-        let fetched_at = crate::shared::time::now_unix_seconds();
         return Ok(fetch_newapi_account_usage(base_url, &api_key, fetched_at, fetched_at).await);
     }
 
@@ -99,8 +135,6 @@ pub(crate) async fn provider_account_usage_fetch(
         ))
         .build()
         .map_err(|err| format!("SYSTEM_ERROR: failed to build HTTP client: {err}"))?;
-
-    let fetched_at = crate::shared::time::now_unix_seconds();
 
     let url = match build_account_usage_url(base_url, config.adapter_kind) {
         Ok(url) => url,

@@ -80,6 +80,8 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     availability_test_model: null,
     api_key_configured: partial.api_key_configured ?? false,
     ...partial,
+    newapi_account_user_id: partial.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured: partial.newapi_account_access_token_configured ?? false,
     model_mapping: partial.model_mapping ?? { default_model: null, exact: {} },
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     extension_values: partial.extension_values ?? [],
@@ -415,6 +417,108 @@ describe("pages/providers/SortableProviderCard", () => {
 
     expect(await screen.findByText("账户: 可用 · 余额 1.00 USD")).toBeInTheDocument();
     expect(screen.getByText("已用 2.00/3.00 USD")).toBeInTheDocument();
+  });
+
+  it("labels NewAPI account consumption as historical usage", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "newapi",
+      status: "available",
+      freshness: "fresh",
+      plan_name: null,
+      balance: 5,
+      plan_remaining: null,
+      used: 1.25,
+      total: null,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: null,
+    });
+
+    renderCard({
+      id: 15,
+      auth_mode: "api_key",
+      newapi_account_user_id: "42",
+      newapi_account_access_token_configured: true,
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi", newApiQueryMode: "account" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    expect(await screen.findByText("账户: 可用 · 余额 5.00 USD")).toBeInTheDocument();
+    expect(screen.getByText("历史已用 1.25 USD")).toBeInTheDocument();
+  });
+
+  it("shows missing NewAPI account credentials without starting the query", () => {
+    renderCard({
+      id: 16,
+      auth_mode: "api_key",
+      newapi_account_user_id: "42",
+      newapi_account_access_token_configured: false,
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi", newApiQueryMode: "account" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    expect(screen.getByText("账户: 需配置账户凭据")).toBeInTheDocument();
+    expect(providerAccountUsageFetch).not.toHaveBeenCalled();
+  });
+
+  it("renders the exact unlimited model-token status without amount chips", async () => {
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce({
+      adapter_kind: "newapi",
+      status: "available",
+      freshness: "fresh",
+      plan_name: null,
+      balance: null,
+      plan_remaining: null,
+      used: null,
+      total: null,
+      unit: null,
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1_700_000_000,
+      message: "模型令牌无限额度",
+    });
+
+    renderCard({
+      id: 17,
+      auth_mode: "api_key",
+      extension_values: [
+        {
+          pluginId: "core.provider-account-usage",
+          namespace: "accountUsage",
+          values: { adapterKind: "newapi", newApiQueryMode: "billing" },
+          updatedAt: 1,
+        },
+      ],
+    });
+
+    expect(await screen.findByText("账户: 可用 · 模型令牌无限额度")).toBeInTheDocument();
+    expect(screen.queryByText(/已用/)).not.toBeInTheDocument();
   });
 
   it("does not render account usage for unsupported provider config", () => {

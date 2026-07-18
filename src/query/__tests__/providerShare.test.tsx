@@ -45,6 +45,8 @@ function provider(id: number, cliKey: ProviderSummary["cli_key"], name: string):
     extension_values: [],
     upstream_retry_policy_override: null,
     api_key_configured: true,
+    newapi_account_user_id: null,
+    newapi_account_access_token_configured: false,
   };
 }
 

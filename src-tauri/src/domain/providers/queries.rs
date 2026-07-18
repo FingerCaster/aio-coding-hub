@@ -143,6 +143,8 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
             .unwrap_or(None)
             .unwrap_or(0)
             != 0,
+        newapi_account_user_id: None,
+        newapi_account_access_token_configured: false,
     })
 }
 
@@ -195,6 +197,17 @@ fn fill_summary_extension_values(
     Ok(())
 }
 
+fn fill_summary_account_usage_credentials(
+    conn: &Connection,
+    summary: &mut ProviderSummary,
+) -> crate::shared::error::AppResult<()> {
+    let credentials =
+        crate::domain::provider_account_usage::load_account_usage_credentials(conn, summary.id)?;
+    summary.newapi_account_user_id = credentials.new_api_user_id;
+    summary.newapi_account_access_token_configured = credentials.new_api_access_token.is_some();
+    Ok(())
+}
+
 fn fill_gateway_extension_values(
     conn: &Connection,
     provider: &mut ProviderForGateway,
@@ -203,7 +216,7 @@ fn fill_gateway_extension_values(
     Ok(())
 }
 
-pub(super) fn replace_extension_values(
+pub(crate) fn replace_extension_values(
     conn: &Connection,
     provider_id: i64,
     values: Option<&[ProviderExtensionValuesInput]>,
@@ -234,8 +247,18 @@ pub(super) fn replace_extension_values(
                 .into());
         }
 
+        let normalized_values = if plugin_id
+            == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+            && namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        {
+            crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
+                &value.values,
+            )
+        } else {
+            value.values.clone()
+        };
         let values_json =
-            serde_json::to_string(&value.values).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
+            serde_json::to_string(&normalized_values).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
 
         conn.execute(
             r#"
@@ -309,7 +332,40 @@ WHERE id = ?1
         .map_err(|e| db_err!("failed to query provider: {e}"))?
         .ok_or_else(|| crate::shared::error::AppError::from("DB_NOT_FOUND: provider not found"))?;
     fill_summary_extension_values(conn, &mut summary)?;
+    fill_summary_account_usage_credentials(conn, &mut summary)?;
     Ok(summary)
+}
+
+pub(crate) fn get_account_usage_fetch_context(
+    conn: &Connection,
+    provider_id: i64,
+) -> crate::shared::error::AppResult<ProviderAccountUsageFetchContext> {
+    let mut context = conn
+        .query_row(
+            r#"
+SELECT base_url, base_urls_json, auth_mode, source_provider_id
+FROM providers
+WHERE id = ?1
+"#,
+            params![provider_id],
+            |row| {
+                let base_url: String = row.get(0)?;
+                let base_urls_json: String = row.get(1)?;
+                Ok(ProviderAccountUsageFetchContext {
+                    base_urls: base_urls_from_row(&base_url, &base_urls_json),
+                    auth_mode: row
+                        .get::<_, Option<String>>(2)?
+                        .unwrap_or_else(|| "api_key".to_string()),
+                    source_provider_id: row.get(3)?,
+                    extension_values: Vec::new(),
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| db_err!("failed to query provider account usage context: {error}"))?
+        .ok_or_else(|| crate::shared::error::AppError::from("DB_NOT_FOUND: provider not found"))?;
+    context.extension_values = list_extension_values(conn, provider_id)?;
+    Ok(context)
 }
 
 pub(crate) fn claude_terminal_launch_context(
@@ -585,6 +641,7 @@ ORDER BY
     for row in rows {
         let mut item = row.map_err(|e| db_err!("failed to read provider row: {e}"))?;
         fill_summary_extension_values(&conn, &mut item)?;
+        fill_summary_account_usage_credentials(&conn, &mut item)?;
         items.push(item);
     }
 
@@ -1081,6 +1138,8 @@ pub fn upsert(
         bridge_type,
         stream_idle_timeout_seconds,
         extension_values,
+        account_usage_credentials_patch,
+        account_usage_credentials_copy_from_provider_id,
         upstream_retry_policy_override,
         upstream_retry_policy_override_specified,
     } = input;
@@ -1229,6 +1288,23 @@ pub fn upsert(
         retry_policy_override_to_json(upstream_retry_policy_override)?;
 
     let api_key = api_key.as_deref().map(str::trim).filter(|v| !v.is_empty());
+
+    if provider_id.is_some() && account_usage_credentials_copy_from_provider_id.is_some() {
+        return Err(
+            "SEC_INVALID_INPUT: account credential copy is only supported when creating a provider"
+                .to_string()
+                .into(),
+        );
+    }
+    if account_usage_credentials_patch.is_some()
+        && account_usage_credentials_copy_from_provider_id.is_some()
+    {
+        return Err(
+            "SEC_INVALID_INPUT: account credentials cannot be patched and copied together"
+                .to_string()
+                .into(),
+        );
+    }
 
     if !cost_multiplier.is_finite() || !(0.0..=1000.0).contains(&cost_multiplier) {
         return Err(
@@ -1386,6 +1462,19 @@ INSERT INTO providers(
                 extension_values.as_deref(),
             )?;
             replace_extension_values(&tx, id, extension_values.as_deref())?;
+            if let Some(source_provider_id) = account_usage_credentials_copy_from_provider_id {
+                crate::domain::provider_account_usage::copy_account_usage_credentials(
+                    &tx,
+                    source_provider_id,
+                    id,
+                )?;
+            } else {
+                crate::domain::provider_account_usage::apply_account_usage_credentials_patch(
+                    &tx,
+                    id,
+                    account_usage_credentials_patch.as_ref(),
+                )?;
+            }
             tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
             Ok(get_by_id(&conn, id)?)
         }
@@ -1629,6 +1718,11 @@ WHERE id = ?27
                 extension_values.as_deref(),
             )?;
             replace_extension_values(&tx, id, extension_values.as_deref())?;
+            crate::domain::provider_account_usage::apply_account_usage_credentials_patch(
+                &tx,
+                id,
+                account_usage_credentials_patch.as_ref(),
+            )?;
             tx.commit().map_err(|e| db_err!("failed to commit: {e}"))?;
 
             get_by_id(&conn, id)

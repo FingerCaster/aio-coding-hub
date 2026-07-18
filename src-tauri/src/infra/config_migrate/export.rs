@@ -1,7 +1,7 @@
 //! Config export: read DB tables and skill files into a ConfigBundle.
 
 use crate::shared::error::{db_err, AppResult};
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use std::collections::HashMap;
 
 use super::normalize_oauth_refresh_lead_seconds;
@@ -11,7 +11,8 @@ use super::skill_fs::{
 };
 use super::{
     ImageGenConfigExport, InstalledSkillExport, LocalSkillExport, McpServerExport, PromptExport,
-    ProviderExport, SkillRepoExport, SortModeExport, SortModeProviderExport, WorkspaceExport,
+    ProviderAccountUsageCredentialsExport, ProviderExport, SkillRepoExport, SortModeExport,
+    SortModeProviderExport, WorkspaceExport,
 };
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine as _;
@@ -148,6 +149,8 @@ ORDER BY cli_key ASC, sort_order ASC, id ASC
                     .get::<_, Option<i64>>("source_provider_id")?
                     .and_then(|source_id| provider_cli_key_by_id.get(&source_id).cloned()),
                 bridge_type: row.get("bridge_type")?,
+                account_usage_config: None,
+                account_usage_credentials: None,
             })
         })
         .map_err(|e| db_err!("failed to query providers for export: {e}"))?;
@@ -156,7 +159,53 @@ ORDER BY cli_key ASC, sort_order ASC, id ASC
     for row in rows {
         providers.push(row.map_err(|e| db_err!("failed to read provider export row: {e}"))?);
     }
+    for provider in &mut providers {
+        let provider_id = provider
+            .id
+            .ok_or_else(|| "DB_INVALID_DATA: exported provider ID is missing".to_string())?;
+        provider.account_usage_config = export_account_usage_config(conn, provider_id)?;
+        let credentials = crate::domain::provider_account_usage::load_account_usage_credentials(
+            conn,
+            provider_id,
+        )?;
+        if credentials.new_api_user_id.is_some() || credentials.new_api_access_token.is_some() {
+            provider.account_usage_credentials = Some(ProviderAccountUsageCredentialsExport {
+                newapi_user_id: credentials.new_api_user_id,
+                newapi_access_token_plaintext: credentials.new_api_access_token,
+            });
+        }
+    }
     Ok(providers)
+}
+
+fn export_account_usage_config(
+    conn: &Connection,
+    provider_id: i64,
+) -> AppResult<Option<serde_json::Value>> {
+    let values_json = conn
+        .query_row(
+            r#"
+SELECT values_json
+FROM provider_extension_values
+WHERE provider_id = ?1 AND plugin_id = ?2 AND namespace = ?3
+"#,
+            params![
+                provider_id,
+                crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID,
+                crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE,
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| db_err!("failed to query account usage config export: {error}"))?;
+    let Some(values_json) = values_json else {
+        return Ok(None);
+    };
+    let values = serde_json::from_str::<serde_json::Value>(&values_json)
+        .map_err(|_| "DB_INVALID_DATA: provider account usage config is invalid".to_string())?;
+    Ok(Some(
+        crate::domain::provider_account_usage::sanitize_account_usage_extension_value(&values),
+    ))
 }
 
 pub(super) fn export_sort_modes(conn: &Connection) -> AppResult<Vec<SortModeExport>> {

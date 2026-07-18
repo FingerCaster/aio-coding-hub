@@ -116,6 +116,42 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     expect(result.value.payload.availabilityTestModel).toBe("gpt-5.4");
   });
 
+  it("passes explicit NewAPI account credential preserve and clear semantics", () => {
+    const preserve = buildProviderEditorUpsertInput(
+      makeContext({
+        accountUsageCredentials: {
+          newApiUserId: "42",
+          newApiAccessToken: null,
+          clearNewApiAccessToken: false,
+        },
+      })
+    );
+    expect(preserve.ok).toBe(true);
+    if (!preserve.ok) return;
+    expect(preserve.value.payload.accountUsageCredentials).toEqual({
+      newApiUserId: "42",
+      newApiAccessToken: null,
+      clearNewApiAccessToken: false,
+    });
+
+    const clear = buildProviderEditorUpsertInput(
+      makeContext({
+        accountUsageCredentials: {
+          newApiUserId: null,
+          newApiAccessToken: null,
+          clearNewApiAccessToken: true,
+        },
+      })
+    );
+    expect(clear.ok).toBe(true);
+    if (!clear.ok) return;
+    expect(clear.value.payload.accountUsageCredentials).toEqual({
+      newApiUserId: null,
+      newApiAccessToken: null,
+      clearNewApiAccessToken: true,
+    });
+  });
+
   it("builds codex chat-completions bridge payload", () => {
     const result = buildProviderEditorUpsertInput(
       makeContext({

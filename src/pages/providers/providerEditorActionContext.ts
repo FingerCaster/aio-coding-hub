@@ -96,6 +96,7 @@ export type ProviderEditorPayloadContext = {
   selectedCx2ccSourceProvider: ProviderSummary | null;
   formValues: ProviderEditorDialogFormInput;
   extensionValues?: ProviderExtensionValuesInput[] | null;
+  accountUsageCredentials?: ProviderUpsertInput["accountUsageCredentials"];
 };
 
 export type ProviderEditorPayloadBuildError =
@@ -124,6 +125,7 @@ export type SaveActionContext = ProviderActionContext &
   Pick<FormActionContext, "saving" | "setSaving" | "form"> &
   Pick<AuthActionContext, "oauthStatus" | "setOauthStatus" | "refreshOauthStatus"> & {
     persistProvider: (input: ProviderUpsertInput) => Promise<ProviderSummary>;
+    clearAccountUsageSecretDraft: () => void;
   };
 
 export type OAuthActionContext = ProviderActionContext &

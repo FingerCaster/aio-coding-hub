@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"按根应用跨层质量门检查生成绑定、敏感信息、兼容性和隔离性。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"复核查询所有权、NewAPI 请求/解析约束、sub2api 稳定性及路由隔离。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"复核分享净化、禁用导入、事务回滚、预览边界和零路由写入。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"复核配置 schema v1/v2/v3 分支不破坏 v2 Skill 往返和回滚语义。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查所有层的数据格式、单一验证边界和完整往返。"}

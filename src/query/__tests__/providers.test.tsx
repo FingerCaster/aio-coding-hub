@@ -111,6 +111,8 @@ function makeProvider(
     model_mapping: partial.model_mapping ?? { default_model: null, exact: {} },
     extension_values: partial.extension_values ?? [],
     api_key_configured: partial.api_key_configured ?? false,
+    newapi_account_user_id: partial.newapi_account_user_id ?? null,
+    newapi_account_access_token_configured: partial.newapi_account_access_token_configured ?? false,
   };
 }
 

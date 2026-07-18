@@ -33,6 +33,9 @@ pub(crate) struct ProviderUpsertInput {
     pub bridge_type: Option<String>,
     pub stream_idle_timeout_seconds: Option<u32>,
     pub extension_values: Option<Vec<providers::ProviderExtensionValuesInput>>,
+    #[serde(default)]
+    pub account_usage_credentials:
+        Option<crate::domain::provider_account_usage::ProviderAccountUsageCredentialsPatch>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     #[serde(default)]
     pub upstream_retry_policy_override_specified: bool,
@@ -160,6 +163,7 @@ pub(crate) async fn provider_upsert(
         bridge_type,
         stream_idle_timeout_seconds,
         extension_values,
+        account_usage_credentials,
         upstream_retry_policy_override,
         upstream_retry_policy_override_specified,
     } = input;
@@ -211,6 +215,8 @@ pub(crate) async fn provider_upsert(
                 bridge_type,
                 stream_idle_timeout_seconds,
                 extension_values,
+                account_usage_credentials_patch: account_usage_credentials,
+                account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override,
                 upstream_retry_policy_override_specified,
             },
@@ -319,6 +325,8 @@ pub(crate) async fn provider_duplicate(
                 bridge_type: source.bridge_type.clone(),
                 stream_idle_timeout_seconds: source.stream_idle_timeout_seconds,
                 extension_values,
+                account_usage_credentials_patch: None,
+                account_usage_credentials_copy_from_provider_id: Some(provider_id),
                 upstream_retry_policy_override: source.upstream_retry_policy_override.clone(),
                 upstream_retry_policy_override_specified: true,
             },
@@ -583,6 +591,8 @@ mod tests {
             extension_values: vec![],
             upstream_retry_policy_override: None,
             api_key_configured: true,
+            newapi_account_user_id: None,
+            newapi_account_access_token_configured: false,
         };
 
         assert_eq!(
@@ -671,6 +681,8 @@ mod tests {
             extension_values: vec![],
             upstream_retry_policy_override: None,
             api_key_configured: true,
+            newapi_account_user_id: None,
+            newapi_account_access_token_configured: false,
         };
 
         let mut next = previous.clone();

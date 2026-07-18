@@ -186,6 +186,11 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
   `used = total_usage / 100`, and `balance = total - used`. A finite negative
   derived balance is valid overage data and is passed to the shared status
   mapping; it is not a cross-endpoint inconsistency.
+- Treat `hard_limit_usd == 100_000_000.0` as the one exact NewAPI
+  model-token unlimited sentinel. Return `Available` with the local
+  "model token unlimited" message and leave `total`, `used`, `balance`, unit,
+  and expiry empty. Do not use a greater-than threshold: adjacent finite
+  values remain ordinary model-token limits.
 - `access_until` must be an exact JSON integer representable as `i64`.
   Floating-point values such as `1.0`, strings, and out-of-range integers fail
   closed. Values `<= 0` mean no expiry; values `> 0` map unchanged to
@@ -222,6 +227,8 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
 | `quota_display_type` is `USD` | Apply the documented billing formulas and label USD |
 | Unit is missing, unknown, non-USD, or differently cased | Query failure with no unit or amounts |
 | Raw total/usage is missing, negative, non-numeric, NaN, or infinite | Query failure with no partial snapshot |
+| `hard_limit_usd` equals the exact unlimited sentinel | `Available`; no amount, unit, or expiry fields |
+| `hard_limit_usd` is merely near or above the sentinel | Parse as an ordinary finite model-token limit |
 | Used amount exceeds total | Preserve the finite negative derived balance and use shared status mapping |
 | `access_until` is an exact in-range JSON integer | Preserve it exactly; map positive values to `expires_at` |
 | `access_until` is `<= 0` | Successful snapshot with no expiry |
@@ -241,6 +248,8 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
   fabricated zero or query failure.
 - Good: a large exact `i64` JSON expiry is preserved without passing through
   floating-point conversion.
+- Good: the exact official unlimited sentinel produces an amount-free
+  available result, while adjacent finite totals still use the normal formula.
 - Base: USD status, a valid subscription, and valid usage produce one complete
   display snapshot with optional expiry.
 - Bad: parse quota-like fields before checking `success=false`, causing an auth
@@ -259,6 +268,8 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
   follow both payment-method branches.
 - Assert the exact USD formula, finite overage/negative balance behavior,
   zero/expired/available status mapping, and unchanged positive expiry mapping.
+- Assert exact-sentinel equality, empty amount/unit/expiry fields for unlimited
+  model tokens, and ordinary finite parsing immediately below and above it.
 - Assert `access_until` preserves exact integers above `2^53`, while floats,
   strings, and integers outside `i64` fail closed.
 - Cover root `success=false`, root error, missing required fields, negative raw
@@ -308,3 +319,268 @@ fetch_newapi_account_usage(base_url, model_key, fetched_at, now).await
 The NewAPI client refuses redirects, every URL remains on the normalized
 origin, status selects the display unit, and the billing parser applies the
 documented formula only after application-error and field validation.
+
+## Scenario: NewAPI User-Account Mode And Private Credentials
+
+### 1. Scope / Trigger
+
+Use this scenario when changing the NewAPI billing/account mode selector,
+account credentials, provider summaries or save patches, the v38 private
+credential table, the status plus user-account HTTP contract, or the editor's
+configured/missing/clear behavior.
+
+The account path is an explicitly selected alternative to model-token billing.
+It is never inferred from a provider name, host, response amount, or a legacy
+User ID.
+
+### 2. Signatures
+
+```rust
+pub(crate) enum NewapiQueryMode { Billing, Account }
+
+pub(crate) struct ProviderAccountUsageCredentialsPatch {
+    pub new_api_user_id: Option<String>,
+    pub new_api_access_token: Option<String>,
+    pub clear_new_api_access_token: bool,
+}
+
+pub(crate) async fn fetch_newapi_user_account_usage(
+    base_url: &str,
+    access_token: &str,
+    user_id: &str,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult;
+
+pub(crate) fn parse_newapi_account_responses(
+    status_body: &Value,
+    account_body: &Value,
+    expected_user_id: &str,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult;
+```
+
+The private SQLite owner is:
+
+```sql
+CREATE TABLE provider_account_usage_credentials (
+  provider_id INTEGER PRIMARY KEY,
+  newapi_user_id TEXT,
+  newapi_access_token_plaintext TEXT,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+```
+
+`ProviderSummary` may expose the normalized User ID and
+`newapi_account_access_token_configured: bool`; it must never expose the
+access token.
+
+### 3. Contracts
+
+- The built-in extension stores only `adapterKind`, `newApiQueryMode`,
+  timed-refresh enablement, and refresh interval. Missing or unknown
+  `newApiQueryMode` defaults to `billing`.
+- v37-to-v38 migrates only a valid legacy `newApiUserId` into the private
+  table, removes every private account field from extension JSON through the
+  shared sanitizer, and cascades credential deletion with the provider.
+- `None` for the entire credential patch preserves private credentials. In a
+  supplied patch, a normalized positive User ID replaces the stored ID;
+  absent/blank User ID clears it. A non-empty token replaces the token,
+  absent/blank token preserves it, and the explicit clear flag removes it.
+  Setting and clearing a token in one patch is invalid.
+- User IDs contain ASCII digits only, canonicalize without leading zeroes, and
+  must be in `1..=i64::MAX`, matching the signed Go `int` compatibility
+  boundary used by supported NewAPI deployments. Tokens are at most 64 KiB
+  and must form a valid Bearer header value.
+- Switching query mode or adapter only changes extension config. It does not
+  send a credential-clear patch. The explicit clear action removes both the
+  User ID and token.
+- Account mode loads only the private User ID/token. Missing either returns
+  `ConfigurationRequired` before client creation or network I/O. It never
+  reads or sends the provider model API key.
+- Billing and sub2api paths load only the model API key and never read or send
+  private account credentials.
+- Normalize the Base URL exactly as the billing scenario does. Account mode
+  derives only same-origin `/api/status` and `/api/user/self`, disables
+  redirects, caps status and account bodies at 16 KiB, and uses a 15-second
+  client timeout.
+- Status is public. User-account GET authentication is exactly Bearer system
+  access token plus `New-Api-User: <canonical-id>`.
+- Account success must be the exact root boolean `true`; missing, false, or
+  non-boolean success fails closed. Status requires exact `USD` and a finite
+  positive `quota_per_unit`. Account identity must be a positive JSON
+  integer representable as `i64` and exactly match the configured identity.
+- `quota` may be any finite number and maps to `balance = quota /
+  quota_per_unit`. `used_quota` must be finite and non-negative and maps to
+  historical `used`. Account mode never fabricates `total`.
+- Upstream messages, bodies, hosts, token names, credentials, identities, PII,
+  and live amounts do not enter logs or IPC errors. Save diagnostics redact
+  both nested token and User ID fields before logging.
+
+### 4. Validation & Error Matrix
+
+| Input / condition | Required result |
+| --- | --- |
+| Mode missing or unknown | Use billing; do not load account credentials |
+| Account mode has only one credential | `ConfigurationRequired`; send no request |
+| User ID is zero, signed, non-digit, or above `i64::MAX` | `SEC_INVALID_INPUT`; do not persist or import |
+| Token is empty during an ordinary edit | Preserve the stored token |
+| Explicit clear is selected | Delete User ID and token together |
+| Set and clear token are both requested | `SEC_INVALID_INPUT`; preserve stored credentials |
+| Status request | No Authorization or `New-Api-User` |
+| Account request | Bearer account token and matching canonical `New-Api-User` |
+| Redirect, non-success HTTP, invalid JSON, or body cap failure | Fail all-or-nothing; forward no credential |
+| Account root `success` is not exactly `true` | `QueryFailed`; expose no amounts |
+| Account ID is invalid or does not match | `QueryFailed` or `AuthFailed`; expose no amounts |
+| Unit/divisor/value is missing, non-finite, or unsupported | `QueryFailed`; expose no partial result |
+| Valid negative quota and non-negative historical use | Preserve negative balance; leave total empty |
+
+### 5. Good / Base / Bad Cases
+
+- Good: explicit account mode with complete private credentials performs one
+  public status request and one private user request, then returns balance and
+  historical use without a total.
+- Good: mode and adapter switches preserve an unsaved secret draft and stored
+  credentials; returning to account mode restores the same draft.
+- Base: legacy NewAPI config without a mode continues through model-token
+  billing even if a migrated User ID exists.
+- Bad: infer account mode because a User ID exists, use the model API key as a
+  system token, or accept an identity above the signed range.
+- Bad: log a failed upsert payload before replacing both account identity and
+  token fields with a redacted placeholder.
+
+### 6. Tests Required
+
+- Migration: valid/invalid legacy User IDs, sanitized extension JSON, v38
+  idempotence, private table creation, and delete cascade.
+- Persistence: whole-patch preserve, User ID set/clear, token preserve/set/
+  clear, set-plus-clear rejection, local copy, and summaries without token.
+- Protocol: root and trailing-`/v1` URLs, public/private headers, no redirects,
+  both 16 KiB caps, exact success boolean, signed identity bounds and match,
+  unit/divisor/value matrices, and all-or-nothing failures.
+- Isolation: prove account mode never loads the model key and billing/sub2api
+  never load private credentials; prove missing credentials send no request.
+- Frontend: explicit selector, legacy billing default, partial-save allowed,
+  configured/missing state, masked token, explicit clear, mode/adapter draft
+  preservation, and nested diagnostic redaction.
+- Run generated-binding validation, focused and full frontend/Rust tests,
+  typecheck, lint, format, Clippy, secret/PII diff audit, and diff check.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Credential presence must not select the protocol.
+if credentials.new_api_user_id.is_some() {
+    fetch_user_self(base_url, model_api_key).await
+}
+```
+
+#### Correct
+
+```text
+mode=billing -> model key -> status + subscription + usage
+mode=account -> private User ID/token -> status + user/self
+missing account credential -> local ConfigurationRequired, zero requests
+```
+
+Selection is explicit, each branch loads only its own credential class, and
+every account response is identity- and unit-validated before projection.
+
+## Scenario: sub2api Daily Rate-Limit Projection
+
+### 1. Scope / Trigger
+
+Use this scenario when changing sub2api `rate_limits` parsing or the daily
+usage fields shown by `ProviderAccountUsageResult`. The parser may project a
+proved daily window; it must not reinterpret periodic limits as wallet balance.
+
+### 2. Signatures
+
+```rust
+pub(crate) fn parse_account_usage_response(
+    adapter_kind: ProviderAccountUsageAdapterKind,
+    body: &Value,
+    fetched_at: i64,
+    now_unix: i64,
+) -> ProviderAccountUsageResult;
+```
+
+The existing result fields are `daily_used` and `daily_total`. No new
+balance field or window-specific credential is introduced.
+
+### 3. Contracts
+
+- If `rate_limits` is present, it must be an array. Recognize only an exact
+  string `window == "1d"`; unknown windows are ignored rather than guessed as
+  day, week, or month.
+- At most one `1d` entry is valid. Its `limit`, `used`, and `remaining`
+  are finite and non-negative, `used <= limit`, and `remaining` equals
+  `limit - used` within `max(1e-9, abs(limit) * 1e-9)`.
+- `window_start` and `reset_at` must parse as timestamps and
+  `reset_at > window_start`.
+- A valid entry maps only `limit -> daily_total` and `used -> daily_used`.
+  It does not populate `balance`, `plan_remaining`, weekly, or monthly
+  fields.
+- Existing root balance/remaining, plan remaining, subscription, expiry, and
+  validity behavior remains unchanged. A successful validity-only payload with
+  no recognized period remains `Available`.
+- A malformed or duplicate known `1d` entry fails the result closed; the
+  parser must not silently drop it and show a partially valid snapshot.
+
+### 4. Validation & Error Matrix
+
+| Input / condition | Required result |
+| --- | --- |
+| No `rate_limits` | Preserve legacy sub2api parsing |
+| `rate_limits` is not an array | `QueryFailed`; no partial daily values |
+| Only unknown windows exist | Ignore them; do not invent periodic fields |
+| One valid `1d` entry | Populate daily total/used only |
+| Duplicate `1d` entries | `QueryFailed` |
+| Negative/non-finite amount or `used > limit` | `QueryFailed` |
+| Remaining arithmetic exceeds tolerance | `QueryFailed` |
+| Missing/invalid timestamps or reset not after start | `QueryFailed` |
+
+### 5. Good / Base / Bad Cases
+
+- Good: an otherwise validity-only response with one consistent `1d` entry
+  displays daily used/total and no wallet balance.
+- Base: a legacy root balance or subscription payload parses exactly as before.
+- Base: an unknown periodic window is ignored and does not become daily data.
+- Bad: map `remaining` from a `1d` window into account `balance`.
+- Bad: accept the first of two `1d` entries or silently ignore malformed
+  known-window arithmetic.
+
+### 6. Tests Required
+
+- Cover one valid `1d` entry, absent limits, unknown-only windows, duplicate
+  known windows, non-array input, every amount validation, tolerance boundary,
+  timestamp parsing, and reset ordering.
+- Assert daily projection leaves balance, plan remaining, weekly, and monthly
+  fields untouched.
+- Keep all legacy root-balance, plan, subscription, expiry, validity-only,
+  authentication, body-cap, and display regressions green.
+- Assert account usage remains display-only and never affects provider routing,
+  availability, circuit state, order, or enablement.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+result.balance = rate_limit["remaining"].as_f64();
+```
+
+#### Correct
+
+```rust
+result.daily_total = Some(validated_limit);
+result.daily_used = Some(validated_used);
+// Account balance remains absent unless a legacy balance contract proves it.
+```
+
+Window semantics stay in their matching DTO fields; field-name similarity does
+not create a wallet-balance contract.

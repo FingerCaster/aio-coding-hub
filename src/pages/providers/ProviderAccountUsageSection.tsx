@@ -1,3 +1,6 @@
+import { useState } from "react";
+import { Eye, EyeOff, Trash2 } from "lucide-react";
+import { Button } from "../../ui/Button";
 import { FormField } from "../../ui/FormField";
 import { Input } from "../../ui/Input";
 import { Switch } from "../../ui/Switch";
@@ -7,11 +10,18 @@ import {
   PROVIDER_ACCOUNT_USAGE_MAX_REFRESH_INTERVAL_SECONDS,
   PROVIDER_ACCOUNT_USAGE_MIN_REFRESH_INTERVAL_SECONDS,
   type ProviderAccountUsageAdapterKind,
+  type ProviderAccountUsageNewApiQueryMode,
 } from "../../services/providers/providerAccountUsageConfig";
 
 export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorFormReturn }) {
+  const [showAccessToken, setShowAccessToken] = useState(false);
   if (form.authMode !== "api_key") return null;
   const accountUsageEnabled = form.accountUsageAdapterKind !== "disabled";
+  const accountMode =
+    form.accountUsageAdapterKind === "newapi" && form.accountUsageNewApiQueryMode === "account";
+  const accessTokenHint = form.accountUsageNewApiAccessTokenConfigured
+    ? "已配置。留空表示不改，输入新值表示替换。"
+    : "当前未配置。可留空保存。";
 
   return (
     <div className="grid gap-3 sm:grid-cols-2">
@@ -32,13 +42,91 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
       </FormField>
 
       {form.accountUsageAdapterKind === "newapi" ? (
-        <FormField label="NewAPI User">
-          <Input
-            value={form.accountUsageNewApiUserId}
-            onChange={(event) => form.setAccountUsageNewApiUserId(event.currentTarget.value)}
-            placeholder="New-Api-User"
+        <FormField
+          label="NewAPI 查询方式"
+          hint={
+            form.accountUsageCredentialsRequired ? (
+              <span className="text-amber-700 dark:text-amber-400">需配置账户凭据</span>
+            ) : undefined
+          }
+        >
+          <RadioButtonGroup<ProviderAccountUsageNewApiQueryMode>
+            items={[
+              { value: "billing", label: "模型令牌额度" },
+              { value: "account", label: "用户账户余额" },
+            ]}
+            ariaLabel="NewAPI 查询方式"
+            value={form.accountUsageNewApiQueryMode}
+            onChange={form.setAccountUsageNewApiQueryMode}
             disabled={form.saving}
+            size="compact"
           />
+        </FormField>
+      ) : null}
+
+      {accountMode ? (
+        <>
+          <FormField label="User ID">
+            <Input
+              value={form.accountUsageNewApiUserId}
+              onChange={(event) => form.setAccountUsageNewApiUserId(event.currentTarget.value)}
+              placeholder="正整数"
+              inputMode="numeric"
+              pattern="[0-9]*"
+              autoComplete="off"
+              disabled={form.saving}
+            />
+          </FormField>
+
+          <FormField label="系统访问令牌" hint={accessTokenHint}>
+            <div className="flex min-w-0 items-center gap-2">
+              <Input
+                type={showAccessToken ? "text" : "password"}
+                value={form.accountUsageNewApiAccessToken}
+                onChange={(event) =>
+                  form.setAccountUsageNewApiAccessToken(event.currentTarget.value)
+                }
+                placeholder={
+                  form.accountUsageNewApiAccessTokenConfigured ? "留空表示不改" : "可留空"
+                }
+                autoComplete="new-password"
+                disabled={form.saving}
+                className="min-w-0"
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="icon"
+                className="h-10 w-10 shrink-0"
+                onClick={() => setShowAccessToken((visible) => !visible)}
+                disabled={form.saving}
+                aria-label={showAccessToken ? "隐藏系统访问令牌" : "显示系统访问令牌"}
+                title={showAccessToken ? "隐藏系统访问令牌" : "显示系统访问令牌"}
+              >
+                {showAccessToken ? (
+                  <EyeOff className="h-4 w-4" aria-hidden="true" />
+                ) : (
+                  <Eye className="h-4 w-4" aria-hidden="true" />
+                )}
+              </Button>
+            </div>
+          </FormField>
+        </>
+      ) : null}
+
+      {form.accountUsageCredentialsPresent ? (
+        <FormField label="账户凭据" hint={accountMode ? undefined : "已保存，当前查询不会使用"}>
+          <Button
+            type="button"
+            variant="secondary"
+            size="sm"
+            className="h-10"
+            onClick={form.clearAccountUsageCredentials}
+            disabled={form.saving}
+          >
+            <Trash2 className="mr-2 h-4 w-4" aria-hidden="true" />
+            清除账户凭据
+          </Button>
         </FormField>
       ) : null}
 

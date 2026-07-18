@@ -646,6 +646,14 @@ fn normalize_provider_share_v1(
                 "provider share contains duplicate extension values",
             ));
         }
+        if extension.plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+            && extension.namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        {
+            extension.values =
+                crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
+                    &extension.values,
+                );
+        }
     }
     provider.extensions.sort_by(|left, right| {
         left.plugin_id
@@ -891,12 +899,19 @@ ORDER BY extension_values.plugin_id ASC, extension_values.namespace ASC
                 format!("extension owner plugin {plugin_id} has no installed version"),
             )
         })?;
-        let values = serde_json::from_str(&values_json).map_err(|_| {
+        let mut values = serde_json::from_str(&values_json).map_err(|_| {
             AppError::new(
                 "DB_INVALID_DATA",
                 format!("provider extension values are invalid for plugin {plugin_id}"),
             )
         })?;
+        if plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+            && namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        {
+            values = crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
+                &values,
+            );
+        }
         extensions.push(ProviderShareExtensionV1 {
             plugin_id,
             plugin_version,
@@ -1593,6 +1608,8 @@ mod tests {
             bridge_type: None,
             stream_idle_timeout_seconds: None,
             extension_values: None,
+            account_usage_credentials_patch: None,
+            account_usage_credentials_copy_from_provider_id: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
         }
@@ -2274,9 +2291,20 @@ mod tests {
             namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
             values: serde_json::json!({
                 "adapterKind": "newapi",
-                "baseUrl": "https://billing.example.invalid"
+                "newApiQueryMode": "account",
+                "newApiUserId": "999",
+                "systemAccessToken": "SYNTHETIC_EXTENSION_SECRET",
+                "timedRefreshEnabled": false,
+                "refreshIntervalSeconds": 120
             }),
         }]);
+        input.account_usage_credentials_patch = Some(
+            crate::domain::provider_account_usage::ProviderAccountUsageCredentialsPatch {
+                new_api_user_id: Some("42".to_string()),
+                new_api_access_token: Some("SYNTHETIC_ACCOUNT_SECRET".to_string()),
+                clear_new_api_access_token: false,
+            },
+        );
         input.upstream_retry_policy_override = Some(crate::settings::UpstreamRetryPolicy {
             enabled: true,
             status_codes: vec![429, 502],
@@ -2292,6 +2320,9 @@ mod tests {
         let bytes = serialize_provider_share_v1(&exported).expect("serialize");
         let serialized = std::str::from_utf8(&bytes).expect("utf8");
         assert!(serialized.contains("SYNTHETIC_API_KEY"));
+        assert!(!serialized.contains("SYNTHETIC_ACCOUNT_SECRET"));
+        assert!(!serialized.contains("SYNTHETIC_EXTENSION_SECRET"));
+        assert!(!serialized.contains("newApiUserId"));
         for excluded in [
             "created_at",
             "updated_at",
@@ -2371,6 +2402,12 @@ mod tests {
             crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
         );
         assert_eq!(imported.extension_values[0].values["adapterKind"], "newapi");
+        assert_eq!(
+            imported.extension_values[0].values["newApiQueryMode"],
+            "account"
+        );
+        assert!(imported.newapi_account_user_id.is_none());
+        assert!(!imported.newapi_account_access_token_configured);
         assert!(
             super::super::queries::default_route_list(&target_db, "codex")
                 .expect("default route")

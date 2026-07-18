@@ -200,6 +200,14 @@ CREATE TABLE IF NOT EXISTS provider_extension_values (
 CREATE INDEX IF NOT EXISTS idx_provider_extension_values_plugin_namespace
   ON provider_extension_values(plugin_id, namespace);
 
+CREATE TABLE IF NOT EXISTS provider_account_usage_credentials (
+  provider_id INTEGER PRIMARY KEY,
+  newapi_user_id TEXT,
+  newapi_access_token_plaintext TEXT,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+
 CREATE TABLE IF NOT EXISTS provider_pool_order (
   cli_key TEXT NOT NULL,
   provider_id INTEGER NOT NULL,

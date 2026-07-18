@@ -12,16 +12,18 @@ TypeScript bindings, frontend adapters, and React UI.
   route hops, and UI count semantics.
 - [Provider account-usage query contract](./provider-account-usage-query-contract.md):
   one TanStack Query owner for automatic, timed, and forced manual refreshes,
-  plus the bounded, same-origin NewAPI model-token billing protocol.
+  bounded NewAPI model-token/account protocols, private credential ownership,
+  and validated sub2api daily-limit projection.
 - [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
 - [Provider share and import contract](./provider-share-contract.md): strict
   single-provider v1 serialization, backend-owned secrets/native I/O, bounded
-  preview capabilities, plugin snapshot binding, and additive disabled import.
-- [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md):
-  bounded installed/local Skill export, Base64 serialization, import
-  validation, and validation-before-write filesystem restoration.
+  preview capabilities, plugin snapshot binding, additive disabled import, and
+  exclusion of private account identity/token data.
+- [Config migration bundle contract](./config-migration-skill-bundle-contract.md):
+  bounded installed/local Skill export, Base64 and filesystem validation, plus
+  versioned v3 private account-credential backup and atomic restoration.
 - [Image Gen trust boundary contract](./image-gen-trust-boundary-contract.md):
   DNS-pinned redirect-safe downloads, backend-owned native saving, canonical
   history paths, DB-reference validation, and asset-scope authority.
@@ -50,10 +52,13 @@ When changing provider account-usage fetching:
 3. For query changes, trace automatic, timed, and manual entry points through
    the same query key, options, cache owner, and component state.
 4. Test uncancellable IPC Promises with deliberately reversed completion order.
-5. For NewAPI changes, trace Base URL normalization, same-origin endpoints,
-   redirect policy, authentication headers, bounded bodies, application-error
-   ordering, field/unit validation, normalization, IPC, and display together.
-6. Confirm account usage remains display-only and that fixtures/specs contain
+5. For NewAPI changes, trace the explicit billing/account mode, private versus
+   model-key credential loading, Base URL normalization, same-origin endpoints,
+   redirect policy, authentication headers, bounded bodies, exact success and
+   signed identity validation, field/unit normalization, IPC, and display.
+6. For sub2api changes, distinguish account balance from the exact `1d`
+   periodic window and fail closed on malformed or duplicate known windows.
+7. Confirm account usage remains display-only and that fixtures/specs contain
    no upstream body/message, credential, PII, live host, token name, or actual
    account amount.
 
@@ -77,8 +82,10 @@ When changing single-provider sharing or import:
    writes.
 4. Recheck file digest, collision name, and the complete plugin compatibility
    projection at confirm time; stale previews must fail closed.
+5. For built-in account usage, preserve explicit mode/refresh config while
+   proving User ID and account token never enter share bytes or preview DTOs.
 
-When changing config migration Skill payload handling:
+When changing config migration payload handling:
 
 1. Read [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md).
 2. Trace installed and local Skill files through bounded export, Base64,
@@ -88,6 +95,9 @@ When changing config migration Skill payload handling:
    symmetric across export and import.
 4. Confirm path, duplicate, file-count, symlink, special-file, metadata,
    `SKILL.md`, and import-file limits remain enforced before partial output.
+5. For account credentials, keep v2 Skill and v3 account-snapshot thresholds
+   independent, sanitize extension config, and restore private credentials in
+   the provider transaction with full rollback on validation failure.
 
 When changing Image Gen network or filesystem behavior:
 
@@ -131,14 +141,23 @@ When changing Trellis task archive or context validation:
 - When changing the NewAPI account-usage adapter, verify the public status plus
   two Bearer billing requests, trailing `/v1` normalization, same-origin and
   no-redirect rules, exact unit/formula/expiry parsing, per-response body caps,
-  application-error precedence, all-or-nothing failure, and sub2api stability.
+  exact unlimited-sentinel behavior, application-error precedence, and
+  all-or-nothing failure. For account mode, separately verify public status plus
+  private `user/self`, signed User ID identity, exact success, credential
+  isolation, missing-credential zero-request behavior, and no fabricated total.
+- For sub2api `rate_limits`, verify only one exact `1d` window projects to
+  daily fields, arithmetic/timestamps are consistent, unknown windows stay
+  unknown, and periodic remaining never becomes wallet balance.
 - Audit account-usage diffs for credential, PII, host, upstream-message/body,
   token-name, and actual-account-value leakage, and verify routing, circuit,
   availability, order, and enablement remain untouched.
-- When changing config migration Skill payloads, verify export/import boundary
+- When changing config migration payloads, verify export/import boundary
   symmetry, failure before target-directory creation or file writes, v1/v2 and
   installed/local compatibility, and file-count, total-size, Base64, path,
   symlink, cycle, special-file, metadata, and import-bundle safety negatives.
+  For private account snapshots, add the v1/v2/v3 capability matrix, sanitized
+  config, invalid-credential rollback, no-Debug/no-log checks, and proof that
+  single-provider share remains credential-free.
 - When changing Image Gen, verify no-redirect per-hop DNS pinning, private-host
   and non-global-address negatives, body/redirect caps, URL/error redaction,
   multipart decode-before-allocation budgets, backend-owned save cancellation
@@ -152,4 +171,6 @@ When changing Trellis task archive or context validation:
   and size negatives, redacted IPC/UI boundaries, conditional clipboard cleanup,
   active preview expiry, single-use/discard behavior, file/name/plugin snapshot
   binding, full credential/config/extension round-trip, forced disabled import,
-  and zero route/template writes.
+  and zero route/template writes. For account mode, also verify canonical config
+  survives while User ID/token are excluded, imported providers require their
+  own credentials, and local duplication still copies private credentials.

@@ -7,17 +7,18 @@ export const PROVIDER_ACCOUNT_USAGE_MAX_REFRESH_INTERVAL_SECONDS = 300;
 export const PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS = 300;
 
 export type ProviderAccountUsageAdapterKind = "disabled" | "sub2api" | "newapi";
+export type ProviderAccountUsageNewApiQueryMode = "billing" | "account";
 
 export type ProviderAccountUsageConfig = {
   adapterKind: ProviderAccountUsageAdapterKind;
-  newApiUserId: string;
+  newApiQueryMode: ProviderAccountUsageNewApiQueryMode;
   timedRefreshEnabled: boolean;
   refreshIntervalSeconds: number;
 };
 
 const DEFAULT_CONFIG: ProviderAccountUsageConfig = {
   adapterKind: "disabled",
-  newApiUserId: "",
+  newApiQueryMode: "billing",
   timedRefreshEnabled: true,
   refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
 };
@@ -34,6 +35,12 @@ export function isProviderAccountUsageAdapterKind(
   value: unknown
 ): value is ProviderAccountUsageAdapterKind {
   return value === "disabled" || value === "sub2api" || value === "newapi";
+}
+
+export function isProviderAccountUsageNewApiQueryMode(
+  value: unknown
+): value is ProviderAccountUsageNewApiQueryMode {
+  return value === "billing" || value === "account";
 }
 
 export function normalizeProviderAccountUsageRefreshIntervalSeconds(value: unknown): number {
@@ -64,8 +71,9 @@ export function readProviderAccountUsageConfig(
   const adapterKind = isProviderAccountUsageAdapterKind(rawAdapterKind)
     ? rawAdapterKind
     : "disabled";
-  const newApiUserId =
-    typeof row.values.newApiUserId === "string" ? row.values.newApiUserId.trim() : "";
+  const newApiQueryMode = isProviderAccountUsageNewApiQueryMode(row.values.newApiQueryMode)
+    ? row.values.newApiQueryMode
+    : "billing";
   const timedRefreshEnabled =
     typeof row.values.timedRefreshEnabled === "boolean" ? row.values.timedRefreshEnabled : true;
   const refreshIntervalSeconds = normalizeProviderAccountUsageRefreshIntervalSeconds(
@@ -74,10 +82,24 @@ export function readProviderAccountUsageConfig(
 
   return {
     adapterKind,
-    newApiUserId: adapterKind === "newapi" ? newApiUserId : "",
+    newApiQueryMode,
     timedRefreshEnabled,
     refreshIntervalSeconds,
   };
+}
+
+export function isProviderAccountUsageAccountCredentialsRequired(
+  provider: Pick<
+    ProviderSummary,
+    "extension_values" | "newapi_account_user_id" | "newapi_account_access_token_configured"
+  >
+): boolean {
+  const config = readProviderAccountUsageConfig(provider.extension_values);
+  return (
+    config.adapterKind === "newapi" &&
+    config.newApiQueryMode === "account" &&
+    (!provider.newapi_account_user_id || !provider.newapi_account_access_token_configured)
+  );
 }
 
 export function isProviderAccountUsageConfigured(
@@ -112,23 +134,26 @@ export function mergeProviderAccountUsageExtensionValues({
     (row) => rowKey(row.pluginId, row.namespace) !== accountUsageKey
   );
 
-  if (config.adapterKind === "disabled") {
+  const existingAccountUsage = sourceRows.some(
+    (row) => rowKey(row.pluginId, row.namespace) === accountUsageKey
+  );
+  if (
+    config.adapterKind === "disabled" &&
+    config.newApiQueryMode === "billing" &&
+    !existingAccountUsage
+  ) {
     if (rows == null && withoutAccountUsage.length === existingRows.length) return null;
     return withoutAccountUsage.length > 0 ? withoutAccountUsage : [];
   }
 
   const values: Record<string, string | number | boolean> = {
     adapterKind: config.adapterKind,
+    newApiQueryMode: config.newApiQueryMode,
     timedRefreshEnabled: config.timedRefreshEnabled,
     refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
       config.refreshIntervalSeconds
     ),
   };
-  const newApiUserId = config.newApiUserId.trim();
-  if (config.adapterKind === "newapi" && newApiUserId) {
-    values.newApiUserId = newApiUserId;
-  }
-
   return [
     ...withoutAccountUsage,
     {

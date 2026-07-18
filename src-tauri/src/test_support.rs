@@ -377,6 +377,8 @@ pub fn provider_upsert_bridge_json<R: tauri::Runtime>(
             bridge_type,
             stream_idle_timeout_seconds: None,
             extension_values: None,
+            account_usage_credentials_patch: None,
+            account_usage_credentials_copy_from_provider_id: None,
             model_mapping: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,

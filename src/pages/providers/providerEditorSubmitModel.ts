@@ -195,6 +195,7 @@ export function buildProviderEditorUpsertInput(
         : null,
     bridgeType,
     extensionValues: ctx.extensionValues ?? null,
+    accountUsageCredentials: ctx.accountUsageCredentials ?? null,
   };
 
   return {

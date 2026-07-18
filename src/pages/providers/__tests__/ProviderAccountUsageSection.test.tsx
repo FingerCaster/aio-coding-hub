@@ -9,8 +9,16 @@ function makeForm(partial: Partial<UseProviderEditorFormReturn> = {}): UseProvid
     saving: false,
     accountUsageAdapterKind: "disabled",
     setAccountUsageAdapterKind: vi.fn(),
+    accountUsageNewApiQueryMode: "billing",
+    setAccountUsageNewApiQueryMode: vi.fn(),
     accountUsageNewApiUserId: "",
     setAccountUsageNewApiUserId: vi.fn(),
+    accountUsageNewApiAccessToken: "",
+    setAccountUsageNewApiAccessToken: vi.fn(),
+    accountUsageNewApiAccessTokenConfigured: false,
+    accountUsageCredentialsPresent: false,
+    accountUsageCredentialsRequired: false,
+    clearAccountUsageCredentials: vi.fn(),
     accountUsageTimedRefreshEnabled: true,
     setAccountUsageTimedRefreshEnabled: vi.fn(),
     accountUsageRefreshIntervalSeconds: 300,
@@ -50,5 +58,39 @@ describe("ProviderAccountUsageSection", () => {
     expect(setRefreshIntervalSeconds).toHaveBeenCalledWith(180);
     expect(screen.getByRole("spinbutton")).toHaveAttribute("min", "60");
     expect(screen.getByRole("spinbutton")).toHaveAttribute("max", "300");
+  });
+
+  it("renders explicit NewAPI account mode, masked token, missing state, and clear action", () => {
+    const setQueryMode = vi.fn();
+    const setAccessToken = vi.fn();
+    const clearCredentials = vi.fn();
+    render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "newapi",
+          accountUsageNewApiQueryMode: "account",
+          setAccountUsageNewApiQueryMode: setQueryMode,
+          accountUsageNewApiUserId: "42",
+          accountUsageNewApiAccessToken: "SYNTHETIC_DRAFT",
+          setAccountUsageNewApiAccessToken: setAccessToken,
+          accountUsageCredentialsPresent: true,
+          accountUsageCredentialsRequired: true,
+          clearAccountUsageCredentials: clearCredentials,
+        })}
+      />
+    );
+
+    expect(screen.getByText("需配置账户凭据")).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "NewAPI 查询方式" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("radio", { name: "模型令牌额度" }));
+    expect(setQueryMode).toHaveBeenCalledWith("billing");
+    const token = screen.getByDisplayValue("SYNTHETIC_DRAFT");
+    expect(token).toHaveAttribute("type", "password");
+    fireEvent.click(screen.getByRole("button", { name: "显示系统访问令牌" }));
+    expect(token).toHaveAttribute("type", "text");
+    fireEvent.change(token, { target: { value: "SYNTHETIC_REPLACEMENT" } });
+    expect(setAccessToken).toHaveBeenCalledWith("SYNTHETIC_REPLACEMENT");
+    fireEvent.click(screen.getByRole("button", { name: "清除账户凭据" }));
+    expect(clearCredentials).toHaveBeenCalledOnce();
   });
 });

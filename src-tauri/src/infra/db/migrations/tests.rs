@@ -1323,6 +1323,7 @@ fn baseline_v25_creates_complete_schema_for_fresh_install() {
     assert!(tables.contains(&"skill_repos".to_string()));
     assert!(tables.contains(&"model_prices".to_string()));
     assert!(tables.contains(&"provider_pool_order".to_string()));
+    assert!(tables.contains(&"provider_account_usage_credentials".to_string()));
     assert!(tables.contains(&"default_route_providers".to_string()));
     assert!(tables.contains(&"sort_modes".to_string()));
     assert!(tables.contains(&"sort_mode_providers".to_string()));
@@ -1751,4 +1752,86 @@ PRAGMA user_version = 33;
     assert_eq!(enabled_mcp, 1);
 
     apply_migrations(&mut conn).expect("apply migrations twice");
+}
+
+#[test]
+fn migrate_v37_to_v38_moves_valid_user_ids_and_sanitizes_extension_values() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch(
+        r#"
+PRAGMA foreign_keys = ON;
+CREATE TABLE providers(id INTEGER PRIMARY KEY);
+CREATE TABLE provider_extension_values(
+  provider_id INTEGER NOT NULL,
+  plugin_id TEXT NOT NULL,
+  namespace TEXT NOT NULL,
+  values_json TEXT NOT NULL,
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(provider_id, plugin_id, namespace),
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+INSERT INTO providers(id) VALUES (1), (2), (3);
+INSERT INTO provider_extension_values(provider_id, plugin_id, namespace, values_json, updated_at)
+VALUES
+  (1, 'core.provider-account-usage', 'accountUsage', '{"adapterKind":"newapi","newApiUserId":"00042","newApiAccessToken":"SYNTHETIC_PRIVATE_A"}', 1),
+  (2, 'core.provider-account-usage', 'accountUsage', '{"adapterKind":"newapi","newApiUserId":"invalid","systemAccessToken":"SYNTHETIC_PRIVATE_B"}', 1),
+  (3, 'core.provider-account-usage', 'accountUsage', '{"adapterKind":"newapi","newApiQueryMode":"account","timedRefreshEnabled":false,"refreshIntervalSeconds":120}', 1);
+PRAGMA user_version = 37;
+"#,
+    )
+    .expect("create v37 fixture");
+
+    v37_to_v38::migrate_v37_to_v38(&mut conn).expect("migrate v37->v38");
+    v37_to_v38::migrate_v37_to_v38(&mut conn).expect("repeat v37->v38");
+
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version");
+    assert_eq!(user_version, 38);
+    assert!(test_has_table(&conn, "provider_account_usage_credentials"));
+    let migrated_user_id: String = conn
+        .query_row(
+            "SELECT newapi_user_id FROM provider_account_usage_credentials WHERE provider_id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("migrated user id");
+    assert_eq!(migrated_user_id, "42");
+    let invalid_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM provider_account_usage_credentials WHERE provider_id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .expect("invalid user id count");
+    assert_eq!(invalid_count, 0);
+
+    let mut statement = conn
+        .prepare("SELECT values_json FROM provider_extension_values ORDER BY provider_id")
+        .expect("extension query");
+    let values = statement
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("extension rows")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("extension values");
+    assert_eq!(values.len(), 3);
+    for value in &values {
+        assert!(!value.contains("UserId"));
+        assert!(!value.contains("AccessToken"));
+        assert!(!value.contains("SYNTHETIC_PRIVATE"));
+    }
+    assert!(values[0].contains("\"newApiQueryMode\":\"billing\""));
+    assert!(values[2].contains("\"newApiQueryMode\":\"account\""));
+    drop(statement);
+
+    conn.execute("DELETE FROM providers WHERE id = 1", [])
+        .expect("delete provider");
+    let credential_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(*) FROM provider_account_usage_credentials",
+            [],
+            |row| row.get(0),
+        )
+        .expect("credential count after cascade");
+    assert_eq!(credential_count, 0);
 }

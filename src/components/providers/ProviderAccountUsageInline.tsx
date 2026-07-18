@@ -5,7 +5,11 @@ import type {
   ProviderAccountUsageResult,
   ProviderSummary,
 } from "../../services/providers/providers";
-import { isProviderAccountUsageConfigured } from "../../services/providers/providerAccountUsageConfig";
+import {
+  isProviderAccountUsageAccountCredentialsRequired,
+  isProviderAccountUsageConfigured,
+  readProviderAccountUsageConfig,
+} from "../../services/providers/providerAccountUsageConfig";
 import { cn } from "../../utils/cn";
 import { formatUnknownError } from "../../utils/errors";
 
@@ -95,7 +99,10 @@ function buildUsageMetric(
   return null;
 }
 
-function buildUsageDisplay(result: ProviderAccountUsageResult | null) {
+function buildUsageDisplay(
+  result: ProviderAccountUsageResult | null,
+  options: { historicalUsed: boolean }
+) {
   if (!result) {
     return { summary: "账户: 未刷新", metrics: [] as string[], title: "刷新账户用量" };
   }
@@ -105,10 +112,16 @@ function buildUsageDisplay(result: ProviderAccountUsageResult | null) {
   const balance = formatAmount(result.balance, unit);
   const planRemaining = formatAmount(result.plan_remaining, unit);
   const metrics = [
-    buildUsageMetric("已用", result.used, result.total, unit, {
-      usedOnlyLabel: "已用",
-      totalOnlyLabel: "总额",
-    }),
+    buildUsageMetric(
+      options.historicalUsed ? "历史已用" : "已用",
+      result.used,
+      result.total,
+      unit,
+      {
+        usedOnlyLabel: options.historicalUsed ? "历史已用" : "已用",
+        totalOnlyLabel: "总额",
+      }
+    ),
     buildUsageMetric("日", result.daily_used, result.daily_total, unit),
     buildUsageMetric("周", result.weekly_used, result.weekly_total, unit),
     buildUsageMetric("月", result.monthly_used, result.monthly_total, unit),
@@ -138,12 +151,34 @@ export function ProviderAccountUsageInline({
   segmentClassName?: string;
 }) {
   const configured = isProviderAccountUsageConfigured(provider);
+  const accountCredentialsRequired = isProviderAccountUsageAccountCredentialsRequired(provider);
+  const config = readProviderAccountUsageConfig(provider.extension_values);
   const queryClient = useQueryClient();
-  const { data = null, error, isFetching } = useProviderAccountUsageQuery(provider, configured);
+  const {
+    data = null,
+    error,
+    isFetching,
+  } = useProviderAccountUsageQuery(provider, configured && !accountCredentialsRequired);
 
   if (!configured) return null;
+  if (accountCredentialsRequired) {
+    return (
+      <span
+        className={cn(
+          "inline-flex min-w-0 max-w-full items-center font-mono text-xs text-amber-700 dark:text-amber-400",
+          className,
+          segmentClassName
+        )}
+        title="账户: 需配置账户凭据"
+      >
+        账户: 需配置账户凭据
+      </span>
+    );
+  }
 
-  const display = buildUsageDisplay(data);
+  const display = buildUsageDisplay(data, {
+    historicalUsed: config.adapterKind === "newapi" && config.newApiQueryMode === "account",
+  });
   const refreshError = !isFetching && error ? formatUnknownError(error) : null;
   const text = refreshError ?? display.summary;
   const metrics = refreshError || isFetching ? [] : display.metrics;

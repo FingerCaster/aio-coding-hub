@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"根应用跨层实现清单，覆盖生成绑定、账户用量隔离、配置迁移和敏感信息审计。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"账户用量 query owner、NewAPI billing 协议、安全边界及回归测试的现有契约。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"单供应商分享/导入的严格 schema、凭据边界、事务和预览兼容契约。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"完整配置 v1/v2 Skill 载荷能力与导入回滚边界，防止 schema v3 引入版本判断回归。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"数据库、Rust IPC、生成类型、前端配置和展示之间的数据流与验证所有权指南。"}
