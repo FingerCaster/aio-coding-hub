@@ -16,6 +16,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
+- [Provider share and import contract](./provider-share-contract.md): strict
+  single-provider v1 serialization, backend-owned secrets/native I/O, bounded
+  preview capabilities, plugin snapshot binding, and additive disabled import.
 - [Config migration Skill bundle contract](./config-migration-skill-bundle-contract.md):
   bounded installed/local Skill export, Base64 serialization, import
   validation, and validation-before-write filesystem restoration.
@@ -62,6 +65,18 @@ When changing Codex or Grok device authorization:
    token persistence.
 3. Test pending, terminal, cancellation/replacement, and successful completion
    separately; remote bodies and tokens must not enter errors or logs.
+
+When changing single-provider sharing or import:
+
+1. Read [Provider share and import contract](./provider-share-contract.md).
+2. Trace credentials and extension values through Rust serialization, native
+   output, preview capability storage, transactional import, generated bindings,
+   the frontend adapter, and dialogs without exposing plaintext to React.
+3. Preserve strict version dispatch, deterministic bounded serialization,
+   referenced-provider refusal, disabled additive import, and no route/template
+   writes.
+4. Recheck file digest, collision name, and the complete plugin compatibility
+   projection at confirm time; stale previews must fail closed.
 
 When changing config migration Skill payload handling:
 
@@ -133,3 +148,8 @@ When changing Trellis task archive or context validation:
   bodies, non-empty typed fields, bounded Result expiry arithmetic, cumulative
   RFC 8628 slow-down intervals, pending/terminal flow ownership, cancellation,
   no-persistence invalid cases, and secret-free diagnostics.
+- When changing provider sharing, verify copy/save byte identity, strict schema
+  and size negatives, redacted IPC/UI boundaries, conditional clipboard cleanup,
+  active preview expiry, single-use/discard behavior, file/name/plugin snapshot
+  binding, full credential/config/extension round-trip, forced disabled import,
+  and zero route/template writes.

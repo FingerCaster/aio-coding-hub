@@ -917,6 +917,82 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async providerShareCopyToClipboard(
+    providerId: number,
+    confirm: RiskyIpcConfirm | null
+  ): Promise<Result<boolean, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_share_copy_to_clipboard", { providerId, confirm }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerShareSaveToFile(
+    providerId: number,
+    confirm: RiskyIpcConfirm | null
+  ): Promise<Result<boolean, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_share_save_to_file", { providerId, confirm }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerShareImportPreviewFromFile(): Promise<
+    Result<ProviderShareImportPreview | null, string>
+  > {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("provider_share_import_preview_from_file") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerShareImportPreviewFromContent(
+    content: string
+  ): Promise<Result<ProviderShareImportPreview, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_share_import_preview_from_content", { content }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerShareImportConfirm(
+    previewToken: string,
+    confirm: RiskyIpcConfirm | null
+  ): Promise<Result<ProviderSummary, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_share_import_confirm", { previewToken, confirm }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerShareImportPreviewDiscard(previewToken: string): Promise<Result<boolean, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_share_import_preview_discard", { previewToken }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async claudeProviderValidateModel(
     providerId: number,
     baseUrl: string,
@@ -3738,6 +3814,39 @@ export type ProviderOAuthStatusResult = {
   has_refresh_token: boolean | null;
 };
 export type ProviderRouteRow = { provider_id: number };
+export type ProviderShareCredentialStatus =
+  | "configured"
+  | "needs_api_key"
+  | "not_required"
+  | "available"
+  | "refreshable"
+  | "needs_login";
+export type ProviderShareExtensionCompatibility =
+  | "compatible"
+  | "missing_plugin"
+  | "plugin_unavailable"
+  | "version_mismatch"
+  | "namespace_mismatch";
+export type ProviderShareExtensionPreview = {
+  pluginId: string;
+  namespace: string;
+  requiredVersion: string;
+  installedVersion: string | null;
+  compatibility: ProviderShareExtensionCompatibility;
+};
+export type ProviderShareImportPreview = {
+  previewToken: string;
+  cliKey: string;
+  sourceName: string;
+  finalName: string;
+  sourceEnabled: boolean;
+  importEnabled: boolean;
+  authMode: ProviderAuthMode;
+  credentialStatus: ProviderShareCredentialStatus;
+  extensionCount: number;
+  extensions: ProviderShareExtensionPreview[];
+  canImport: boolean;
+};
 export type ProviderSummary = {
   id: number;
   cli_key: string;

@@ -964,6 +964,26 @@ describe("pages/providers/SortableProviderCard", () => {
     expect(screen.getByText("终端启动")).toBeInTheDocument();
   });
 
+  it("invokes the share action for an independent provider", () => {
+    const onShare = vi.fn();
+    renderCard({}, { onShare });
+
+    fireEvent.click(screen.getByRole("button", { name: "分享" }));
+
+    expect(onShare).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
+  });
+
+  it("disables sharing when the provider references another provider", () => {
+    const onShare = vi.fn();
+    renderCard({ source_provider_id: 7, bridge_type: "cx2cc" }, { onShare });
+
+    const shareButton = screen.getByRole("button", { name: "分享" });
+    expect(shareButton).toBeDisabled();
+    expect(shareButton).toHaveAttribute("title", "该转译供应商引用了另一个供应商，无法独立分享");
+    fireEvent.click(shareButton);
+    expect(onShare).not.toHaveBeenCalled();
+  });
+
   it("renders limit chips with fixed daily reset", () => {
     renderCard({
       limit_daily_usd: 50,

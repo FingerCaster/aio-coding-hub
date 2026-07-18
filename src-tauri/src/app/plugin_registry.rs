@@ -10,6 +10,7 @@ pub(crate) fn create_builder() -> tauri::Builder<tauri::Wry> {
         .manage(GatewayState::default())
         .manage(resident::ResidentState::default())
         .manage(StartupState::default())
+        .manage(crate::app::provider_share_service::ProviderShareService::default())
         .manage(crate::app::heartbeat_watchdog::HeartbeatWatchdogState::default())
         .manage(crate::app::plugins::extension_host_registry::ExtensionHostRuntimeState::default())
         .plugin(tauri_plugin_opener::init())

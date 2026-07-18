@@ -9,7 +9,7 @@ use crate::shared::time::now_unix_seconds;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
-fn retry_policy_override_from_json(
+pub(super) fn retry_policy_override_from_json(
     raw: Option<String>,
 ) -> Option<crate::settings::UpstreamRetryPolicy> {
     let raw = raw?;
@@ -34,7 +34,7 @@ fn retry_policy_override_from_json(
     Some(policy)
 }
 
-fn retry_policy_override_to_json(
+pub(super) fn retry_policy_override_to_json(
     policy: Option<crate::settings::UpstreamRetryPolicy>,
 ) -> crate::shared::error::AppResult<Option<String>> {
     let Some(mut policy) = policy else {
@@ -203,7 +203,7 @@ fn fill_gateway_extension_values(
     Ok(())
 }
 
-fn replace_extension_values(
+pub(super) fn replace_extension_values(
     conn: &Connection,
     provider_id: i64,
     values: Option<&[ProviderExtensionValuesInput]>,
@@ -1038,7 +1038,10 @@ pub(crate) async fn resolve_effective_transport_credential(
     Ok(token)
 }
 
-fn next_sort_order(conn: &Connection, cli_key: &str) -> crate::shared::error::AppResult<i64> {
+pub(super) fn next_sort_order(
+    conn: &Connection,
+    cli_key: &str,
+) -> crate::shared::error::AppResult<i64> {
     conn.query_row(
         "SELECT COALESCE(MAX(sort_order), -1) + 1 FROM providers WHERE cli_key = ?1",
         params![cli_key],

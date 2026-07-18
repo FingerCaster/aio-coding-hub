@@ -1,6 +1,7 @@
 //! Usage: Provider configuration persistence and gateway selection helpers.
 
 mod queries;
+mod share;
 mod types;
 mod validation;
 
@@ -29,6 +30,13 @@ pub(crate) use queries::{
     list_oauth_providers_needing_refresh, resolve_effective_credential,
     resolve_effective_transport_credential, set_enabled, set_oauth_last_error, update_oauth_tokens,
     update_oauth_tokens_if_last_refreshed_matches,
+};
+
+pub(crate) use share::{
+    export_provider_share_v1, import_provider_share_v1, parse_provider_share_v1,
+    preview_provider_share_v1, provider_share_default_filename, serialize_provider_share_v1,
+    ProviderShareCredentialStatus, ProviderShareEnvelopeV1, ProviderShareExtensionPreview,
+    ProviderSharePreviewDraft, PROVIDER_SHARE_MAX_BYTES,
 };
 
 #[cfg(test)]

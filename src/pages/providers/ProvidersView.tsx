@@ -1,7 +1,7 @@
 // Usage: Rendered by ProvidersPage when `view === "providers"`.
 
 import { useEffect, useRef, useState } from "react";
-import { Search } from "lucide-react";
+import { Search, Upload } from "lucide-react";
 import { DndContext, closestCenter } from "@dnd-kit/core";
 import { SortableContext, verticalListSortingStrategy } from "@dnd-kit/sortable";
 import { CLIS } from "../../constants/clis";
@@ -14,6 +14,8 @@ import { Select } from "../../ui/Select";
 import { Spinner } from "../../ui/Spinner";
 import { Switch } from "../../ui/Switch";
 import { ProviderEditorDialog } from "./ProviderEditorDialog";
+import { ProviderImportDialog } from "./ProviderImportDialog";
+import { ProviderShareDialog } from "./ProviderShareDialog";
 import { SortableProviderCard } from "./SortableProviderCard";
 import { SortableProviderOrderItem } from "./SortableProviderOrderItem";
 import { useProvidersViewDataModel } from "./hooks/useProvidersViewDataModel";
@@ -34,7 +36,7 @@ function getRouteRowEnabled(row: unknown) {
   return typeof row.enabled === "boolean" ? row.enabled : true;
 }
 
-export function ProvidersView({ activeCli }: ProvidersViewProps) {
+export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
   const model = useProvidersViewDataModel(activeCli);
   const {
     providers,
@@ -122,6 +124,8 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
     routeDraftSelection.kind === "default" ? "default" : `mode:${routeDraftSelection.modeId}`;
   const selectedCliName = CLIS.find((cli) => cli.key === activeCli)?.name ?? activeCli;
   const [clearUsageStatsOnDelete, setClearUsageStatsOnDelete] = useState(false);
+  const [shareTarget, setShareTarget] = useState<(typeof providers)[number] | null>(null);
+  const [importDialogOpen, setImportDialogOpen] = useState(false);
 
   useEffect(() => {
     const pendingRestore = pendingProvidersScrollRestoreRef.current;
@@ -253,6 +257,16 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
             </div>
 
             <Button
+              onClick={() => setImportDialogOpen(true)}
+              variant="secondary"
+              size="sm"
+              className="h-9"
+            >
+              <Upload className="h-4 w-4" aria-hidden="true" />
+              导入
+            </Button>
+
+            <Button
               onClick={() => void refreshProviders()}
               variant="secondary"
               size="sm"
@@ -361,6 +375,7 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
                           testAvailabilityLoading={Boolean(testingByProviderId[provider.id])}
                           onDuplicate={duplicateProvider}
                           duplicateLoading={Boolean(duplicatingByProviderId[provider.id])}
+                          onShare={setShareTarget}
                           onEdit={setEditTarget}
                           onDelete={openDeleteDialog}
                         />
@@ -560,6 +575,22 @@ export function ProvidersView({ activeCli }: ProvidersViewProps) {
           }}
         />
       ) : null}
+
+      <ProviderShareDialog
+        open={shareTarget != null}
+        provider={shareTarget}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setShareTarget(null);
+        }}
+      />
+
+      <ProviderImportDialog
+        open={importDialogOpen}
+        onOpenChange={setImportDialogOpen}
+        onImported={(provider) => {
+          setActiveCli(provider.cli_key);
+        }}
+      />
 
       <Dialog
         open={!!deleteTarget}

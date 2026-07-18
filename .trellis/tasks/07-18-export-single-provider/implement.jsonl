@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"供应商分享跨 Rust、生成绑定、service/query 与 React，需遵守跨层契约和生成绑定门禁。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"统一拥有严格 JSON、预览 DTO 和 IPC 投影，避免各层私自解析。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用 provider 验证、原子文件写入、风险确认和现有 Query 模式。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"导入必须强制禁用并保留账户用量扩展，避免导入触发自动远端查询。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"采用后端拥有保存对话框与文件写入的既有信任边界。"}
+{"file":".trellis/tasks/07-18-export-single-provider/research/provider-share-codebase.md","reason":"包含供应商字段、插件兼容、引用边界、文件与剪贴板的源码证据。"}

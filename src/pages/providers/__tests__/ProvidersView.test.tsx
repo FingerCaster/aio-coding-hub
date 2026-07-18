@@ -115,6 +115,23 @@ vi.mock("../ProviderEditorDialog", () => ({
   ),
 }));
 
+vi.mock("../ProviderShareDialog", () => ({
+  ProviderShareDialog: ({ open, provider }: any) =>
+    open ? <div data-testid="provider-share-dialog">{provider?.name}</div> : null,
+}));
+
+vi.mock("../ProviderImportDialog", () => ({
+  ProviderImportDialog: ({ open, onImported }: any) =>
+    open ? (
+      <button
+        type="button"
+        onClick={() => onImported({ id: 99, cli_key: "codex", name: "Imported", enabled: false })}
+      >
+        complete-provider-import
+      </button>
+    ) : null,
+}));
+
 vi.mock("../../../query/gateway", async () => {
   const actual =
     await vi.importActual<typeof import("../../../query/gateway")>("../../../query/gateway");
@@ -238,6 +255,50 @@ afterEach(() => {
 });
 
 describe("pages/providers/ProvidersView", () => {
+  it("opens card sharing and switches CLI after a provider import", () => {
+    vi.mocked(useProvidersListQuery).mockReturnValue({
+      data: [
+        {
+          id: 1,
+          cli_key: "claude",
+          name: "P1",
+          enabled: true,
+          base_urls: ["https://a"],
+          base_url_mode: "order",
+          cost_multiplier: 1,
+          claude_models: {},
+          source_provider_id: null,
+        },
+      ],
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    const setActiveCli = vi.fn();
+
+    renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={setActiveCli} />);
+
+    fireEvent.click(screen.getByRole("button", { name: "分享" }));
+    expect(screen.getByTestId("provider-share-dialog")).toHaveTextContent("P1");
+
+    fireEvent.click(screen.getByRole("button", { name: "导入" }));
+    fireEvent.click(screen.getByRole("button", { name: "complete-provider-import" }));
+    expect(setActiveCli).toHaveBeenCalledWith("codex");
+  });
+
   it("treats cooldown-only circuits as unavailable for reset-all visibility", () => {
     vi.useFakeTimers();
     vi.setSystemTime(1_700_000_000_000);

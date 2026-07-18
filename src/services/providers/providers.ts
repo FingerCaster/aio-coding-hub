@@ -158,7 +158,7 @@ function toProviderAuthMode(value: string, label: string): ProviderAuthMode {
   return narrowGeneratedStringUnion(value, PROVIDER_AUTH_MODE_VALUES, label);
 }
 
-function toProviderSummary(value: GeneratedProviderSummary): ProviderSummary {
+export function toProviderSummary(value: GeneratedProviderSummary): ProviderSummary {
   return {
     ...value,
     cli_key: toCliKey(value.cli_key, "providers.cli_key"),

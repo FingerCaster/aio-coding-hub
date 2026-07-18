@@ -12,7 +12,7 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Copy, GripVertical, Pencil, RefreshCw, Terminal, Trash2, Zap } from "lucide-react";
+import { Copy, GripVertical, Pencil, RefreshCw, Share2, Terminal, Trash2, Zap } from "lucide-react";
 import { FREE_TAG } from "../../constants/providers";
 import type { GatewayProviderCircuitStatus } from "../../services/gateway/gateway";
 import { getGatewayCircuitDerivedState } from "../../query/gateway";
@@ -146,6 +146,8 @@ export type SortableProviderCardProps = {
   testAvailabilityLoading?: boolean;
   onDuplicate?: (provider: ProviderSummary) => void;
   duplicateLoading?: boolean;
+  onShare?: (provider: ProviderSummary) => void;
+  shareLoading?: boolean;
   onToggleEnabled?: (provider: ProviderSummary) => void;
   onEdit: (provider: ProviderSummary) => void;
   onDelete: (provider: ProviderSummary) => void;
@@ -171,6 +173,8 @@ const ProviderCard = memo(function ProviderCard({
   testAvailabilityLoading = false,
   onDuplicate,
   duplicateLoading = false,
+  onShare,
+  shareLoading = false,
   onToggleEnabled,
   onEdit,
   onDelete,
@@ -601,6 +605,24 @@ const ProviderCard = memo(function ProviderCard({
                 >
                   <Copy className="h-3.5 w-3.5" />
                   {duplicateLoading ? "复制中…" : "复制"}
+                </Button>
+              ) : null}
+
+              {onShare ? (
+                <Button
+                  onClick={() => onShare(provider)}
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1.5 px-2 py-1 text-[11px]"
+                  disabled={shareLoading || provider.source_provider_id != null}
+                  title={
+                    provider.source_provider_id != null
+                      ? "该转译供应商引用了另一个供应商，无法独立分享"
+                      : "分享供应商"
+                  }
+                >
+                  <Share2 className="h-3.5 w-3.5" />
+                  {shareLoading ? "处理中…" : "分享"}
                 </Button>
               ) : null}
 

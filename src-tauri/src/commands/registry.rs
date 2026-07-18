@@ -115,6 +115,12 @@ macro_rules! generated_command_registry {
             provider_oauth_fetch_limits => crate::commands::providers::provider_oauth_fetch_limits,
             provider_account_usage_fetch => crate::commands::providers::provider_account_usage_fetch,
             provider_oauth_reset_codex_quota => crate::commands::providers::provider_oauth_reset_codex_quota,
+            provider_share_copy_to_clipboard => crate::commands::providers::provider_share_copy_to_clipboard,
+            provider_share_save_to_file => crate::commands::providers::provider_share_save_to_file,
+            provider_share_import_preview_from_file => crate::commands::providers::provider_share_import_preview_from_file,
+            provider_share_import_preview_from_content => crate::commands::providers::provider_share_import_preview_from_content,
+            provider_share_import_confirm => crate::commands::providers::provider_share_import_confirm,
+            provider_share_import_preview_discard => crate::commands::providers::provider_share_import_preview_discard,
             // ── claude_model_validation ──
             claude_provider_validate_model => crate::commands::claude_model_validation::claude_provider_validate_model,
             claude_validation_history_list => crate::commands::claude_model_validation::claude_validation_history_list,

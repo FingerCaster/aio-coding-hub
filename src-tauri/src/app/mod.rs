@@ -21,6 +21,7 @@ pub(crate) mod plugin_registry;
 pub(crate) mod plugin_service;
 pub(crate) mod plugins;
 pub(crate) mod provider_service;
+pub(crate) mod provider_share_service;
 pub(crate) mod resident;
 pub(crate) mod settings_service;
 pub(crate) mod startup_gateway;

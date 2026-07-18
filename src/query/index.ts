@@ -9,6 +9,7 @@ export * from "./mcp";
 export * from "./modelPrices";
 export * from "./prompts";
 export * from "./providers";
+export * from "./providerShare";
 export { queryClient } from "./queryClient";
 export * from "./requestLogs";
 export * from "./settings";
