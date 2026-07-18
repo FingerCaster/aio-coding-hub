@@ -4,4 +4,4 @@
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"审查是否重复实现现有验证、原子写入和 mutation 模式。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"确认导入禁用项不会触发账户用量或 OAuth 网络副作用。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"核对后端保存授权、原子写入和路径/内容不泄漏。"}
-{"file":".trellis/tasks/07-18-export-single-provider/research/provider-share-codebase.md","reason":"按代码证据逐项检查字段完整性、插件和转译约束。"}
+{"file": ".trellis/tasks/archive/2026-07/07-18-export-single-provider/research/provider-share-codebase.md", "reason": "按代码证据逐项检查字段完整性、插件和转译约束。"}
