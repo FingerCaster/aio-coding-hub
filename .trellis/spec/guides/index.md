@@ -23,6 +23,7 @@ These guides help you **ask the right questions before coding**.
 |-------|---------|-------------|
 | [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md) | Identify patterns and reduce duplication | When you notice repeated patterns |
 | [Cross-Layer Thinking Guide](./cross-layer-thinking-guide.md) | Think through data flow across layers | Features spanning multiple layers |
+| [Upstream Merge Scope Guide](./upstream-merge-scope-guide.md) | Separate integration conflicts from upstream-origin defects | Before or during upstream merge/drift work |
 
 ---
 
@@ -50,6 +51,15 @@ These guides help you **ask the right questions before coding**.
 - [ ] Multiple branches update the same derived state from `kind` / `action`
 
 → Read [Code Reuse Thinking Guide](./code-reuse-thinking-guide.md)
+
+### When Synchronizing Upstream
+
+- [ ] You are fetching, merging, or auditing a pinned upstream revision
+- [ ] Review found a defect in code imported from upstream
+- [ ] A test failure may be unchanged upstream behavior rather than a merge regression
+- [ ] A proposed edit is adjacent to a conflict but may not be required to resolve it
+
+→ Read [Upstream Merge Scope Guide](./upstream-merge-scope-guide.md)
 
 ### When Verifying AI Cross-Review Results
 
