@@ -203,6 +203,144 @@ fn settings_set_blocks_when_settings_json_is_corrupted() {
 }
 
 #[test]
+fn settings_set_reports_recovery_and_preserves_snapshot_when_atomic_backup_fails() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let before =
+        aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("read defaults");
+    let app_data_dir =
+        aio_coding_hub_lib::test_support::app_data_dir(&handle).expect("app data dir");
+    let settings_path = app_data_dir.join("settings.json");
+    let before_bytes = std::fs::read(&settings_path).expect("read persisted settings");
+    let backup_path = app_data_dir.join("settings.json.bak");
+    std::fs::create_dir_all(&backup_path).expect("create backup directory failure fixture");
+
+    let mut update = settings_command_update_json(38001);
+    update["autoStart"] = serde_json::json!(true);
+    let err = aio_coding_hub_lib::test_support::settings_set_via_command_json(&handle, update)
+        .expect_err("atomic settings backup failure must surface");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("SETTINGS_RECOVERY_REQUIRED"),
+        "persistence failure must be recoverable: {err_text}"
+    );
+    assert!(
+        err_text.contains("failed to create settings backup"),
+        "unexpected persistence error: {err_text}"
+    );
+    assert_eq!(
+        std::fs::read(&settings_path).expect("read unchanged settings"),
+        before_bytes,
+        "failed persistence must preserve the last durable settings bytes"
+    );
+    assert!(
+        !settings_path.with_file_name("settings.json.tmp").exists(),
+        "failed persistence must clean its temporary file"
+    );
+    assert!(
+        backup_path.is_dir(),
+        "failure fixture must remain a directory"
+    );
+    let after = aio_coding_hub_lib::test_support::settings_get_json(&handle)
+        .expect("read settings after failure");
+    assert_eq!(
+        after, before,
+        "failed persistence must not change canonical settings"
+    );
+
+    std::fs::remove_dir_all(&backup_path).expect("remove backup failure fixture");
+}
+
+#[test]
+fn settings_set_aggregates_finalize_and_restore_failures_and_keeps_backup_bytes() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let _ = aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("seed settings");
+    let app_data_dir =
+        aio_coding_hub_lib::test_support::app_data_dir(&handle).expect("app data dir");
+    let settings_path = app_data_dir.join("settings.json");
+    let before_bytes = std::fs::read(&settings_path).expect("read durable settings");
+    let backup_path = app_data_dir.join("settings.json.bak");
+    let tmp_path = app_data_dir.join("settings.json.tmp");
+
+    aio_coding_hub_lib::test_support::set_settings_finalize_restore_failpoint_for_tests(true);
+    let err = aio_coding_hub_lib::test_support::settings_set_via_command_json(
+        &handle,
+        settings_command_update_json(38002),
+    )
+    .expect_err("finalize and restore failpoint must surface recovery");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("SETTINGS_RECOVERY_REQUIRED"),
+        "error classification missing: {err_text}"
+    );
+    assert!(
+        err_text.contains("failed to finalize settings")
+            && err_text.contains("failed to restore canonical settings"),
+        "both finalize and restore failures must be aggregated: {err_text}"
+    );
+    assert!(
+        settings_path.is_dir(),
+        "canonical blocker must remain observable"
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).expect("durable backup bytes"),
+        before_bytes,
+        "at least the previous durable settings bytes must remain in backup"
+    );
+    assert!(!tmp_path.exists(), "writer-owned temp must be cleaned");
+    assert!(
+        !settings_path.is_file(),
+        "canonical must not be claimed usable"
+    );
+
+    std::fs::remove_dir_all(&settings_path).expect("remove injected canonical blocker");
+    std::fs::remove_file(&backup_path).expect("remove retained backup fixture");
+}
+
+#[test]
+fn settings_set_finalize_failure_restores_canonical_and_cleans_writer_temp() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let _ = aio_coding_hub_lib::test_support::settings_get_json(&handle).expect("seed settings");
+    let app_data_dir =
+        aio_coding_hub_lib::test_support::app_data_dir(&handle).expect("app data dir");
+    let settings_path = app_data_dir.join("settings.json");
+    let before_bytes = std::fs::read(&settings_path).expect("read durable settings");
+    let backup_path = app_data_dir.join("settings.json.bak");
+    let tmp_path = app_data_dir.join("settings.json.tmp");
+
+    aio_coding_hub_lib::test_support::set_settings_finalize_failpoint_for_tests(true);
+    let err = aio_coding_hub_lib::test_support::settings_set_via_command_json(
+        &handle,
+        settings_command_update_json(38003),
+    )
+    .expect_err("finalize failpoint must surface the original finalize error");
+    let err_text = err.to_string();
+    assert!(
+        err_text.contains("failed to finalize settings"),
+        "unexpected error: {err_text}"
+    );
+    assert!(
+        !err_text.contains("failed to restore canonical settings"),
+        "restore succeeded and must not be reported as failed: {err_text}"
+    );
+    assert!(
+        err_text.starts_with("SETTINGS_PERSISTENCE_FAILED:"),
+        "finalize-only restore-success must use the ordinary structured persistence code: {err_text}"
+    );
+    assert_eq!(
+        std::fs::read(&settings_path).expect("restored canonical bytes"),
+        before_bytes
+    );
+    assert!(!backup_path.exists(), "restored backup must be consumed");
+    assert!(
+        !tmp_path.exists(),
+        "writer-owned temp must be cleaned after restore"
+    );
+}
+
+#[test]
 fn settings_read_rejects_oversized_settings_json() {
     let app = support::TestApp::new();
     let handle = app.handle();

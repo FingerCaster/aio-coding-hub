@@ -1,0 +1,8 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查跨层 owner、错误、回滚与完整 round-trip 数据流没有遗漏。"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"执行共享 Rust backend helper 变更后的完整 library/integration 与 all-target quality gates。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"检查 bindings、前端 writer 路由、专属字段保留与相关 cross-layer quality checklist。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"验证真实 writer barriers、精确 token/CAS、autostart winner 与无 production settings::write 旁路。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"验证 import 全生命周期串行、真正 bounded read、export/import encoded budget 与任意 bytes 保真。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"验证 stats no-follow/reparse/special/identity/budget 负例与正常多根统计。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"检查 active/archive manifests、仅归档 round-6、父 in_progress 与三阶段提交顺序。"}
+{"file":".trellis/tasks/07-17-final-review-findings-round-6/research/final-review-round-6.md","reason":"逐项复核 F1-F8 证据锚点、测试缺口、禁止内容过滤约束与验收映射。"}

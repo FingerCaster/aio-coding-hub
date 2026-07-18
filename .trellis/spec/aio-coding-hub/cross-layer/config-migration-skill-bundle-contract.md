@@ -69,8 +69,10 @@ fn read_config_import_bundle(
 ```
 
 `read_config_import_bundle` passes
-`config_migrate::CONFIG_IMPORT_FILE_MAX_BYTES` to the bounded helper before
-UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
+`config_migrate::CONFIG_BUNDLE_ENCODED_MAX_BYTES` (alias
+`CONFIG_IMPORT_FILE_MAX_BYTES`) to the bounded helper before UTF-8 and JSON
+parsing. Export serialization uses the same constant. Do not introduce an
+unbounded alternate reader or a second independent 64 MiB magic number.
 
 ### 3. Contracts
 
@@ -84,15 +86,26 @@ UTF-8 and JSON parsing. Do not introduce an unbounded alternate reader.
 - One Skill contains at most 256 exported files and at most 8 MiB of decoded
   file bytes in total. A relative path contains at most 512 characters.
 - Source metadata remains bounded at 64 KiB and `SKILL.md` remains bounded at
-  256 KiB. The complete imported configuration file remains bounded at
-  64 MiB before JSON parsing.
+  256 KiB. The complete imported configuration file and the complete exported
+  pretty JSON remain bounded at 64 MiB encoded bytes. Export must fail before
+  overwriting the target when serialization would exceed that budget.
 - A necessary binary file larger than 1 MiB and no larger than 8 MiB must be
-  carried completely. Do not skip it, truncate it, replace it, or branch on
-  its extension. A file of exactly 8 MiB is valid only when the Skill's other
-  exported file bytes do not make the total exceed 8 MiB.
+  carried completely. Do not skip it, truncate it, replace it, filter by
+  content/sensitivity, or branch on its extension. A file of exactly 8 MiB is
+  valid only when the Skill's other exported file bytes do not make the total
+  exceed 8 MiB. Legal arbitrary bytes must round-trip byte-for-byte.
+- Shared filesystem helpers open regular files with no-follow semantics and
+  hard-bounded handle reads that consume at most `limit + 1` bytes. Skill
+  export reuses the already identity-checked file handle; it does not reopen
+  by path and does not `read_to_end` unbounded after metadata.
 - Export bounds each file read by the shared single-file limit, then uses
   checked addition to enforce the decoded total before adding the encoded
   file to the bundle.
+- Config import destructive lifecycle (canonical/runtime capture through DB
+  commit, Skill FS guard finish, or complete rollback) is serialized by a
+  process-level import lock. Pure payload preflight, user confirmation, and
+  the 64 MiB bounded file read remain outside that lock. Stage/backup paths
+  use random unique import tokens.
 - Import validates file count, relative paths, duplicate paths, derived
   Base64 length, decoded single-file length, and checked decoded total before
   creating the target directory or writing any file. Import orchestration
@@ -287,3 +300,19 @@ bounded byte-for-byte round trip rather than omission or truncation.
 Path correctness uses one normalized component graph for payload paths,
 generated markers, duplicate/ancestor checks, and `SKILL.md` classification;
 do not bolt marker deletion or case handling onto the write phase.
+
+## Follow-up Findings F10-F12
+
+- Import rollback state must distinguish a candidate SSOT path, an import-owned
+  stage directory, a live root successfully moved to backup, and an activated
+  replacement root. A stage or pre-backup failure may remove only the stage;
+  it must never delete the preexisting live root. A successful activation may
+  remove only that activated replacement before restoring its own backup.
+- A local target directory is import-owned only after it was verified absent and
+  before the first mkdir/write. If a multi-file writer fails midway, rollback
+  removes that new target and preserves every preexisting directory and byte.
+  The writer must not silently turn a partial directory into a committed import.
+- Unix handle-relative export child opens must include O_NONBLOCK together
+  with O_NOFOLLOW and O_CLOEXEC, then perform the existing type, identity, and
+  single-link checks. The production FIFO replacement regression must use an
+  external bounded watchdog so a blocking open cannot make the test hang.

@@ -1,0 +1,8 @@
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"保持 settings、OS 副作用、DB、Skill FS、IPC 与 Image Gen 文件系统边界的一致所有权。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用单一 bounded-read、autostart coordinator、settings patch 与配置预算 helper，避免协议分叉。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"执行 root app 跨层 pre-development checklist 与生成 bindings/前端一致性要求。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"实现锁内字段补丁、精确 committed token、CAS rollback 与 canonical runtime/autostart 收敛。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"保持 Skill 任意字节 round-trip、no-follow handle authority、8 MiB/64 MiB 对称预算与 validation-before-write。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"实现 task-handle relative stats、reparse/symlink 拒绝、identity 与资源预算。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"按工作提交、仅归档当前 child、全 manifests 校验和父状态保留的顺序收尾。"}
+{"file":".trellis/tasks/07-17-final-review-findings-round-6/research/final-review-round-6.md","reason":"提供 F1-F8 的已核实调用链、根因、测试缺口、字段 ownership 与修复边界。"}

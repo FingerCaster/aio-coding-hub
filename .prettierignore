@@ -1,6 +1,8 @@
 dist
 node_modules
 .omx
+# Local agent runtime files.
+.pi
 .serena
 src-tauri/target
 src-tauri/target-*

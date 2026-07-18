@@ -7,6 +7,7 @@ import { gatewayCheckPortAvailable } from "../../../services/gateway/gateway";
 import type { AppSettings, SettingsMutationResult } from "../../../services/settings/settings";
 import { createTestAppSettings } from "../../../test/fixtures/settings";
 import { useSettingsQuery, useSettingsSetMutation } from "../../../query/settings";
+import { AppErrorCodes } from "../../../constants/appErrorCodes";
 import { useSettingsPersistence } from "../useSettingsPersistence";
 
 vi.mock("sonner", () => ({ toast: vi.fn() }));
@@ -127,13 +128,7 @@ describe("settings/useSettingsPersistence", () => {
         upstream_first_byte_timeout_seconds: undefined,
         upstream_stream_idle_timeout_seconds: undefined,
         upstream_request_timeout_non_streaming_seconds: undefined,
-        intercept_anthropic_warmup_requests: undefined,
-        enable_thinking_signature_rectifier: undefined,
         enable_cache_anomaly_monitor: undefined,
-        enable_response_fixer: undefined,
-        response_fixer_fix_encoding: undefined,
-        response_fixer_fix_sse_format: undefined,
-        response_fixer_fix_truncated_json: undefined,
         failover_max_attempts_per_provider: undefined,
         failover_max_providers_to_try: undefined,
         circuit_breaker_failure_threshold: undefined,
@@ -516,6 +511,33 @@ describe("settings/useSettingsPersistence", () => {
     expect(toast).not.toHaveBeenCalledWith("Ping 选择缓存 TTL 必须为 1-3600 秒");
   });
 
+  it("does not enter readonly protection for a finalize-only persistence error", async () => {
+    vi.mocked(useSettingsQuery).mockReturnValue({
+      data: createSettings(),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as any);
+
+    const mutation = { mutateAsync: vi.fn() };
+    mutation.mutateAsync.mockRejectedValue(
+      new Error(`${AppErrorCodes.SETTINGS_PERSISTENCE_FAILED}: failed to finalize settings`)
+    );
+    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+
+    const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
+    await waitFor(() => expect(result.current.settingsReady).toBe(true));
+
+    act(() => {
+      result.current.requestPersist({ provider_cooldown_seconds: 12 });
+    });
+
+    await waitFor(() => expect(mutation.mutateAsync).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(result.current.settingsSaving).toBe(false));
+    expect(result.current.settingsWriteBlocked).toBe(false);
+    expect(toast).toHaveBeenCalledWith("更新设置失败：请稍后重试");
+  });
+
   it("persists homepage usage period changes", async () => {
     vi.mocked(useSettingsQuery).mockReturnValue({
       data: createSettings(),
@@ -701,7 +723,7 @@ describe("settings/useSettingsPersistence", () => {
 
   it("applies desired fallbacks when settings_set omits optional fields", async () => {
     vi.mocked(useSettingsQuery).mockReturnValue({
-      data: createSettings({ tray_enabled: true, enable_response_fixer: true }),
+      data: createSettings({ tray_enabled: true }),
       isLoading: false,
       isError: false,
       error: null,
@@ -720,13 +742,7 @@ describe("settings/useSettingsPersistence", () => {
         upstream_first_byte_timeout_seconds: undefined,
         upstream_stream_idle_timeout_seconds: undefined,
         upstream_request_timeout_non_streaming_seconds: undefined,
-        intercept_anthropic_warmup_requests: undefined,
-        enable_thinking_signature_rectifier: undefined,
         enable_cache_anomaly_monitor: undefined,
-        enable_response_fixer: undefined,
-        response_fixer_fix_encoding: undefined,
-        response_fixer_fix_sse_format: undefined,
-        response_fixer_fix_truncated_json: undefined,
         failover_max_attempts_per_provider: undefined,
         failover_max_providers_to_try: undefined,
         circuit_breaker_failure_threshold: undefined,
@@ -746,11 +762,6 @@ describe("settings/useSettingsPersistence", () => {
     act(() => {
       result.current.requestPersist({
         tray_enabled: false,
-        intercept_anthropic_warmup_requests: true,
-        enable_response_fixer: false,
-        response_fixer_fix_encoding: false,
-        response_fixer_fix_sse_format: false,
-        response_fixer_fix_truncated_json: false,
         failover_max_attempts_per_provider: 7,
         failover_max_providers_to_try: 8,
         circuit_breaker_failure_threshold: 6,
@@ -766,11 +777,6 @@ describe("settings/useSettingsPersistence", () => {
         expect.objectContaining({
           settings: expect.objectContaining({
             tray_enabled: false,
-            intercept_anthropic_warmup_requests: true,
-            enable_response_fixer: false,
-            response_fixer_fix_encoding: false,
-            response_fixer_fix_sse_format: false,
-            response_fixer_fix_truncated_json: false,
             failover_max_attempts_per_provider: 7,
             failover_max_providers_to_try: 8,
             circuit_breaker_failure_threshold: 6,

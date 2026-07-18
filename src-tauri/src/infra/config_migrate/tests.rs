@@ -1,5 +1,7 @@
+use super::rollback::set_before_local_skill_dir_create_test_hook;
 use super::skill_fs::{
     cli_skills_root, export_skill_dir_files, set_after_skill_export_enumeration_test_hook,
+    set_after_skill_export_file_metadata_test_hook, set_write_prepared_skill_files_failpoint,
     ssot_skills_root, validate_installed_skill_key, write_skill_files_to_dir,
     SkillSourceMetadataFile,
 };
@@ -12,6 +14,7 @@ use std::ffi::OsString;
 use std::path::Path;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::MutexGuard;
+use tauri::Manager;
 
 static TEST_ENV_SEQ: AtomicU64 = AtomicU64::new(1);
 
@@ -104,6 +107,21 @@ fn write_skill_md(dir: &Path, name: &str, description: &str) {
     .expect("write skill md");
 }
 
+fn write_grok_config_for_import_matrix(
+    app: &tauri::AppHandle<tauri::test::MockRuntime>,
+    valid: bool,
+) {
+    let config_path = crate::grok_config::config_path(app).expect("Grok config path");
+    std::fs::create_dir_all(config_path.parent().expect("Grok config parent"))
+        .expect("create Grok home");
+    let content = if valid {
+        b"# matrix valid\n[model.aio]\nmodel = \"grok-build\"\n".as_slice()
+    } else {
+        b"[mcp_servers\ninvalid = true\n".as_slice()
+    };
+    std::fs::write(config_path, content).expect("write Grok matrix config");
+}
+
 fn synthetic_bytes(len: usize) -> Vec<u8> {
     (0..len)
         .map(|index| ((index * 31 + 17) % 251) as u8)
@@ -145,6 +163,149 @@ fn make_test_bundle(schema_version: u32) -> ConfigBundle {
         local_skills: (schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION).then(Vec::new),
         image_gen_configs: None,
     }
+}
+
+fn make_matrix_bundle(
+    settings_value: &settings::AppSettings,
+    label: &str,
+    prompt_content: &str,
+) -> ConfigBundle {
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(settings_value).expect("matrix settings");
+    bundle.workspaces = vec![WorkspaceExport {
+        cli_key: "codex".to_string(),
+        name: format!("Matrix {label}"),
+        is_active: true,
+        prompts: vec![PromptExport {
+            name: format!("{label}-prompt"),
+            content: prompt_content.to_string(),
+            enabled: true,
+        }],
+        prompt: None,
+    }];
+    bundle.installed_skills = Some(vec![InstalledSkillExport {
+        skill_key: format!("matrix-{label}"),
+        name: format!("Matrix {label}"),
+        description: "deterministic import matrix skill".to_string(),
+        source_git_url: "https://example.invalid/matrix.git".to_string(),
+        source_branch: "main".to_string(),
+        source_subdir: String::new(),
+        enabled_in_workspaces: vec![("codex".to_string(), format!("Matrix {label}"))],
+        files: vec![
+            SkillFileExport {
+                relative_path: "SKILL.md".to_string(),
+                content_base64: BASE64_STANDARD.encode(format!(
+                    "---\nname: Matrix {label}\ndescription: matrix skill\n---\n"
+                )),
+            },
+            SkillFileExport {
+                relative_path: "payload.bin".to_string(),
+                content_base64: BASE64_STANDARD.encode(format!("installed-{label}")),
+            },
+        ],
+    }]);
+    bundle.local_skills = Some(vec![LocalSkillExport {
+        cli_key: "codex".to_string(),
+        dir_name: format!("matrix-local-{label}"),
+        name: format!("Matrix Local {label}"),
+        description: "deterministic local matrix skill".to_string(),
+        source_git_url: Some("https://example.invalid/local.git".to_string()),
+        source_branch: Some("main".to_string()),
+        source_subdir: Some("skills/matrix".to_string()),
+        files: vec![
+            SkillFileExport {
+                relative_path: "SKILL.md".to_string(),
+                content_base64: BASE64_STANDARD.encode(format!(
+                    "---\nname: Matrix Local {label}\ndescription: local matrix skill\n---\n"
+                )),
+            },
+            SkillFileExport {
+                relative_path: "payload.txt".to_string(),
+                content_base64: BASE64_STANDARD.encode(format!("local-{label}")),
+            },
+        ],
+    }]);
+    bundle
+}
+
+fn assert_matrix_state(
+    test_app: &ConfigMigrateTestApp,
+    expected_settings: &settings::AppSettings,
+    label: &str,
+    prompt_content: &str,
+) {
+    let app = test_app.handle();
+    let canonical = settings::read(&app).expect("matrix canonical settings");
+    assert_eq!(canonical.auto_start, expected_settings.auto_start);
+    assert_eq!(
+        canonical.log_retention_days,
+        expected_settings.log_retention_days
+    );
+
+    let conn = test_app.db.open_connection().expect("matrix db");
+    let workspace_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM workspaces WHERE name = ?1",
+            rusqlite::params![format!("Matrix {label}")],
+            |row| row.get(0),
+        )
+        .expect("matrix workspace count");
+    assert_eq!(workspace_count, 1);
+    let prompt_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM prompts WHERE content = ?1",
+            rusqlite::params![prompt_content],
+            |row| row.get(0),
+        )
+        .expect("matrix prompt count");
+    assert_eq!(prompt_count, 1);
+
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("matrix SSOT root");
+    assert_eq!(
+        std::fs::read(
+            ssot_root
+                .join(format!("matrix-{label}"))
+                .join("payload.bin")
+        )
+        .expect("matrix installed payload"),
+        format!("installed-{label}").as_bytes()
+    );
+    let local_root = cli_skills_root(&app, "codex").expect("matrix local root");
+    assert_eq!(
+        std::fs::read(
+            local_root
+                .join(format!("matrix-local-{label}"))
+                .join("payload.txt")
+        )
+        .expect("matrix local payload"),
+        format!("local-{label}").as_bytes()
+    );
+    let prompt_bytes = crate::prompt_sync::read_target_bytes(&app, "codex")
+        .expect("matrix prompt target")
+        .expect("matrix prompt target exists");
+    assert!(
+        String::from_utf8_lossy(&prompt_bytes).contains(prompt_content),
+        "runtime prompt must match matrix winner"
+    );
+}
+
+fn assert_matrix_import_artifacts_clean(app: &tauri::AppHandle<tauri::test::MockRuntime>) {
+    let app_data_dir = crate::app_paths::app_data_dir(app).expect("matrix app data dir");
+    let leftovers = std::fs::read_dir(&app_data_dir)
+        .expect("read matrix app data dir")
+        .filter_map(Result::ok)
+        .filter_map(|entry| entry.file_name().into_string().ok())
+        .filter(|name| {
+            name.starts_with("config-import-skills-stage-")
+                || name.starts_with("config-import-skills-backup-")
+                || name.starts_with("config-import-local-backup-")
+        })
+        .collect::<Vec<_>>();
+    assert!(
+        leftovers.is_empty(),
+        "import artifacts remain: {leftovers:?}"
+    );
 }
 
 fn insert_image_gen_config(conn: &Connection, adapter_id: &str, api_key: &str) {
@@ -257,6 +418,933 @@ fn config_import_cas_loser_preserves_winner_without_autostart_side_effect() {
     assert_eq!(canonical.log_retention_days, winner_retention);
     assert_eq!(canonical.auto_start, previous.auto_start);
     assert_eq!(crate::app::autostart::auto_start_sync_test_calls(), 0);
+}
+
+#[test]
+fn config_import_serializes_second_import_until_first_finishes() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous");
+
+    let mut first_settings = previous.clone();
+    first_settings.auto_start = true;
+    first_settings.log_retention_days = previous.log_retention_days.saturating_add(1);
+    let mut first_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    first_bundle.settings = serde_json::to_string(&first_settings).expect("first settings");
+
+    let mut second_settings = previous.clone();
+    second_settings.auto_start = false;
+    second_settings.log_retention_days = previous.log_retention_days.saturating_add(2);
+    let mut second_bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    second_bundle.settings = serde_json::to_string(&second_settings).expect("second settings");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let first_at_lock = Arc::new(AtomicBool::new(false));
+    let first_at_lock_hook = first_at_lock.clone();
+    let barrier_for_hook = barrier.clone();
+    set_after_config_import_lock_acquired_test_hook(Box::new(move || {
+        first_at_lock_hook.store(true, Ordering::SeqCst);
+        barrier_for_hook.wait();
+        barrier_for_hook.wait();
+    }));
+    reset_config_import_lock_attempts_for_test();
+
+    let app_a = app.clone();
+    let db_a = test_app.db.clone();
+    let first = std::thread::spawn(move || config_import(&app_a, &db_a, first_bundle));
+
+    // Deterministic wait until the first import owns CONFIG_IMPORT_LOCK.
+    while !first_at_lock.load(Ordering::SeqCst) {
+        std::thread::yield_now();
+    }
+    barrier.wait();
+
+    let app_b = app.clone();
+    let db_b = test_app.db.clone();
+    let second = std::thread::spawn(move || config_import(&app_b, &db_b, second_bundle));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while config_import_lock_attempts_for_test() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "second import must actually attempt CONFIG_IMPORT_LOCK"
+        );
+        std::thread::yield_now();
+    }
+    // While first is still paused after lock acquisition, the second thread is waiting.
+    assert!(
+        !second.is_finished(),
+        "second import must wait for first import lifecycle"
+    );
+
+    // Release first import to finish CAS/commit/finish.
+    barrier.wait();
+    first.join().expect("join first").expect("first import");
+    second.join().expect("join second").expect("second import");
+
+    let canonical = settings::read(&app).expect("canonical");
+    assert_eq!(
+        canonical.log_retention_days,
+        second_settings.log_retention_days
+    );
+    assert_eq!(canonical.auto_start, second_settings.auto_start);
+}
+
+#[test]
+fn config_import_true_then_settings_false_converges_to_settings_winner() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous");
+
+    let mut imported = previous.clone();
+    imported.auto_start = true;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(5);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+    config_import(&app, &test_app.db, bundle).expect("import true");
+
+    let after_import = settings::read(&app).expect("after import");
+    assert!(after_import.auto_start);
+
+    // Ordinary settings writer flips auto_start false after import succeeded.
+    settings::update(&app, |latest| {
+        latest.auto_start = false;
+        latest.log_retention_days = after_import.log_retention_days.saturating_add(1);
+        Ok(())
+    })
+    .expect("settings false");
+    let _ = crate::app::autostart::converge_auto_start_to_canonical(&app);
+
+    let winner = settings::read(&app).expect("winner");
+    assert!(!winner.auto_start);
+    assert_eq!(
+        winner.log_retention_days,
+        after_import.log_retention_days.saturating_add(1)
+    );
+}
+
+#[test]
+fn config_import_post_cas_barrier_waits_for_real_settings_writer_and_converges_os() {
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous settings");
+
+    let mut imported = previous.clone();
+    imported.auto_start = true;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(5);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    let cas_reached = Arc::new(AtomicBool::new(false));
+    let release_import = Arc::new(Barrier::new(2));
+    let cas_reached_for_hook = cas_reached.clone();
+    let release_for_hook = release_import.clone();
+    crate::app::autostart::set_after_whole_settings_cas_test_hook(Box::new(move || {
+        cas_reached_for_hook.store(true, Ordering::SeqCst);
+        release_for_hook.wait();
+    }));
+    crate::app::autostart::reset_auto_start_lock_attempts_for_test();
+    crate::app::autostart::reset_auto_start_sync_test_calls();
+
+    let app_for_import = app.clone();
+    let db_for_import = test_app.db.clone();
+    let import_thread =
+        std::thread::spawn(move || config_import(&app_for_import, &db_for_import, bundle));
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while !cas_reached.load(Ordering::SeqCst) {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "import must reach the post-CAS barrier"
+        );
+        std::thread::yield_now();
+    }
+
+    let after_cas = settings::read(&app).expect("post-CAS canonical settings");
+    assert!(
+        after_cas.auto_start,
+        "import must be durably committed at the barrier"
+    );
+
+    let settings_update =
+        serde_json::from_value::<crate::commands::settings::SettingsUpdate>(serde_json::json!({
+            "preferredPort": previous.preferred_port,
+            "autoStart": false,
+            "logRetentionDays": previous.log_retention_days.saturating_add(7),
+            "failoverMaxAttemptsPerProvider": previous.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": previous.failover_max_providers_to_try
+        }))
+        .expect("real settings update payload");
+    let app_for_settings = app.clone();
+    let settings_thread = std::thread::spawn(move || {
+        tauri::async_runtime::block_on(crate::app::settings_service::settings_set_impl_for_test(
+            app_for_settings,
+            settings_update,
+        ))
+    });
+
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+    while crate::app::autostart::auto_start_lock_attempts_for_test() < 2 {
+        assert!(
+            std::time::Instant::now() < deadline,
+            "real settings writer must actually attempt the autostart lock"
+        );
+        std::thread::yield_now();
+    }
+    assert!(
+        !settings_thread.is_finished(),
+        "settings writer must still wait at post-CAS barrier"
+    );
+
+    release_import.wait();
+    import_thread
+        .join()
+        .expect("join import")
+        .expect("post-CAS import succeeds");
+    settings_thread
+        .join()
+        .expect("join settings writer")
+        .expect("real settings writer succeeds");
+
+    let canonical = settings::read(&app).expect("canonical winner");
+    assert!(!canonical.auto_start);
+    assert_eq!(
+        canonical.log_retention_days,
+        previous.log_retention_days.saturating_add(7)
+    );
+    assert_eq!(
+        crate::app::autostart::auto_start_sync_test_targets()
+            .last()
+            .copied(),
+        Some(false)
+    );
+}
+
+#[test]
+fn config_import_tail_preserves_concurrent_tray_winner_and_resident_state() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous settings");
+    assert!(previous.tray_enabled);
+
+    let mut imported = previous.clone();
+    imported.tray_enabled = false;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(4);
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.settings = serde_json::to_string(&imported).expect("import settings");
+
+    let winner_handle = app.clone();
+    crate::app::autostart::set_after_whole_settings_cas_test_hook(Box::new(move || {
+        settings::update(&winner_handle, |latest| {
+            latest.tray_enabled = true;
+            Ok(())
+        })
+        .expect("B tray winner");
+        winner_handle
+            .state::<crate::resident::ResidentState>()
+            .set_tray_enabled(true);
+    }));
+
+    config_import(&app, &test_app.db, bundle).expect("import with tray winner");
+
+    let canonical = settings::read(&app).expect("canonical tray winner");
+    assert!(canonical.tray_enabled);
+    assert!(
+        app.state::<crate::resident::ResidentState>().tray_enabled(),
+        "import tail must not hide the resident state using stale imported tray value"
+    );
+}
+
+#[test]
+fn whole_import_rollback_restores_owned_fields_without_overwriting_private_winner() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous settings");
+    let mut imported = previous.clone();
+    imported.auto_start = true;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(5);
+    imported.image_gen_storage_dir = Some("A-import-root".to_string());
+
+    let winner_handle = app.clone();
+    crate::app::autostart::set_after_whole_settings_cas_test_hook(Box::new(move || {
+        settings::update(&winner_handle, |latest| {
+            latest.image_gen_storage_dir = Some("B-private-root".to_string());
+            Ok(())
+        })
+        .expect("B private writer");
+    }));
+    let mut sync_calls = 0usize;
+    crate::app::autostart::set_auto_start_sync_failure_hook(Box::new(move |_| {
+        sync_calls += 1;
+        (sync_calls == 1).then(|| "forced import OS failure".to_string())
+    }));
+
+    let (returned, token) = match crate::app::autostart::commit_whole_settings_with_auto_start(
+        &app, &previous, &imported,
+    ) {
+        crate::app::autostart::WholeSettingsCommitResult::Committed { settings, token } => {
+            (settings, token)
+        }
+        other => panic!("import correction should commit with effective auto_start: {other:?}"),
+    };
+    crate::app::autostart::reset_auto_start_sync_test_calls();
+
+    assert_eq!(
+        returned.image_gen_storage_dir.as_deref(),
+        Some("A-import-root"),
+        "correction token must not absorb B's private field"
+    );
+    assert_eq!(
+        settings::read(&app)
+            .expect("canonical after correction")
+            .image_gen_storage_dir
+            .as_deref(),
+        Some("B-private-root")
+    );
+
+    let rollback = crate::app::autostart::rollback_whole_settings_with_auto_start_token(
+        &app, &previous, &returned, token,
+    );
+    assert!(
+        matches!(
+            &rollback,
+            crate::app::autostart::OwnedRollbackResult::Restored
+                | crate::app::autostart::OwnedRollbackResult::ConcurrentWinner(_)
+        ),
+        "owner-aware rollback should complete: {rollback:?}"
+    );
+    let canonical = settings::read(&app).expect("canonical after rollback");
+    assert_eq!(canonical.log_retention_days, previous.log_retention_days);
+    assert_eq!(
+        canonical.image_gen_storage_dir.as_deref(),
+        Some("B-private-root")
+    );
+}
+
+#[test]
+fn config_import_rejects_skill_payload_before_import_lock_and_db_write() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.installed_skills = Some(vec![InstalledSkillExport {
+        skill_key: "invalid-preflight".to_string(),
+        name: "Invalid preflight".to_string(),
+        description: String::new(),
+        source_git_url: String::new(),
+        source_branch: String::new(),
+        source_subdir: String::new(),
+        enabled_in_workspaces: Vec::new(),
+        files: vec![
+            SkillFileExport {
+                relative_path: "SKILL.md".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"---\nname: invalid\n---\n"),
+            },
+            SkillFileExport {
+                relative_path: "payload.bin".to_string(),
+                content_base64: "%%%invalid-base64%%%".to_string(),
+            },
+        ],
+    }]);
+    reset_config_import_lock_attempts_for_test();
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("invalid Skill payload must fail before destructive import");
+    assert!(error.to_string().contains("invalid base64"), "{error}");
+    assert_eq!(
+        config_import_lock_attempts_for_test(),
+        0,
+        "payload preflight must fail before CONFIG_IMPORT_LOCK"
+    );
+    let skill_count: i64 = test_app
+        .db
+        .open_connection()
+        .expect("open db")
+        .query_row("SELECT COUNT(1) FROM skills", [], |row| row.get(0))
+        .expect("skill count");
+    assert_eq!(skill_count, 0);
+}
+
+#[test]
+fn config_import_rejects_near_64_mib_skill_base64_before_import_lock() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut oversized_base64 = "A".repeat(CONFIG_BUNDLE_ENCODED_MAX_BYTES - 1024);
+    oversized_base64.push('!');
+    bundle.installed_skills = Some(vec![InstalledSkillExport {
+        skill_key: "near-64-mib-preflight".to_string(),
+        name: "Near 64 MiB preflight".to_string(),
+        description: String::new(),
+        source_git_url: String::new(),
+        source_branch: String::new(),
+        source_subdir: String::new(),
+        enabled_in_workspaces: Vec::new(),
+        files: vec![SkillFileExport {
+            relative_path: "payload.bin".to_string(),
+            content_base64: oversized_base64,
+        }],
+    }]);
+    reset_config_import_lock_attempts_for_test();
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("near-64 MiB invalid payload must fail during preflight");
+    assert!(error.to_string().contains("too large"), "{error}");
+    assert_eq!(
+        config_import_lock_attempts_for_test(),
+        0,
+        "near-limit payload must fail before CONFIG_IMPORT_LOCK"
+    );
+    let skill_count: i64 = test_app
+        .db
+        .open_connection()
+        .expect("open db")
+        .query_row("SELECT COUNT(1) FROM skills", [], |row| row.get(0))
+        .expect("skill count");
+    assert_eq!(skill_count, 0);
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("near-64-mib-preflight")
+        .exists());
+}
+
+#[test]
+fn config_import_rejects_conflicting_skill_paths_before_import_lock() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    bundle.installed_skills = Some(vec![InstalledSkillExport {
+        skill_key: "conflicting-path-preflight".to_string(),
+        name: "Conflicting path preflight".to_string(),
+        description: String::new(),
+        source_git_url: String::new(),
+        source_branch: String::new(),
+        source_subdir: String::new(),
+        enabled_in_workspaces: Vec::new(),
+        files: vec![
+            SkillFileExport {
+                relative_path: "nested".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"file"),
+            },
+            SkillFileExport {
+                relative_path: "nested/file".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"conflict"),
+            },
+        ],
+    }]);
+    reset_config_import_lock_attempts_for_test();
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("conflicting path graph must fail during preflight");
+    assert!(
+        error.to_string().contains("conflicting skill file paths"),
+        "{error}"
+    );
+    assert_eq!(
+        config_import_lock_attempts_for_test(),
+        0,
+        "path conflict must fail before CONFIG_IMPORT_LOCK"
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("conflicting-path-preflight")
+        .exists());
+}
+
+#[test]
+fn local_skill_absence_to_create_race_does_not_delete_external_directory() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let local_root = cli_skills_root(&app, "codex").expect("local root");
+    let target = local_root.join("external-race");
+    let target_for_hook = target.clone();
+    set_before_local_skill_dir_create_test_hook(Box::new(move || {
+        write_skill_md(&target_for_hook, "External", "created by external tool");
+        std::fs::write(target_for_hook.join("sentinel.bin"), b"external-bytes")
+            .expect("external sentinel");
+    }));
+    let local = LocalSkillExport {
+        cli_key: "codex".to_string(),
+        dir_name: "external-race".to_string(),
+        name: "External race".to_string(),
+        description: String::new(),
+        source_git_url: None,
+        source_branch: None,
+        source_subdir: None,
+        files: vec![SkillFileExport {
+            relative_path: "SKILL.md".to_string(),
+            content_base64: BASE64_STANDARD.encode(b"---\nname: import\n---\n"),
+        }],
+    };
+
+    let error = rollback::apply_skill_fs_import(&app, &[], &[local])
+        .expect_err("external directory must win the atomic create race");
+    assert!(
+        error
+            .to_string()
+            .contains("SKILL_IMPORT_DIR_ALREADY_EXISTS"),
+        "{error}"
+    );
+    assert_eq!(
+        std::fs::read(target.join("sentinel.bin")).expect("external sentinel survives"),
+        b"external-bytes"
+    );
+}
+
+#[test]
+fn config_import_failure_then_success_converges_db_settings_fs_and_runtime() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    write_grok_config_for_import_matrix(&app, false);
+    let previous_settings = settings::read(&app).expect("previous settings");
+    let previous_prompt =
+        crate::prompt_sync::read_target_bytes(&app, "codex").expect("read previous prompt target");
+
+    let mut failed_settings = previous_settings.clone();
+    failed_settings.log_retention_days = previous_settings.log_retention_days.saturating_add(1);
+    let failed_bundle = make_matrix_bundle(&failed_settings, "failure", "failure-prompt");
+    let error = config_import(&app, &test_app.db, failed_bundle)
+        .expect_err("real Grok runtime failure must reject import");
+    assert!(
+        error.to_string().contains("GROK_CONFIG_INVALID_TOML"),
+        "unexpected failure: {error}"
+    );
+    assert_eq!(
+        serde_json::to_value(settings::read(&app).expect("settings after failed import"))
+            .expect("serialize settings after failure"),
+        serde_json::to_value(&previous_settings).expect("serialize previous settings")
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-failure")
+        .exists());
+    assert!(!cli_skills_root(&app, "codex")
+        .expect("local root")
+        .join("matrix-local-failure")
+        .exists());
+    assert_eq!(
+        crate::prompt_sync::read_target_bytes(&app, "codex").expect("read restored prompt target"),
+        previous_prompt
+    );
+    assert_matrix_import_artifacts_clean(&app);
+
+    write_grok_config_for_import_matrix(&app, true);
+    let mut success_settings = previous_settings.clone();
+    success_settings.log_retention_days = previous_settings.log_retention_days.saturating_add(2);
+    let success_bundle = make_matrix_bundle(&success_settings, "success", "success-prompt");
+    config_import(&app, &test_app.db, success_bundle).expect("retry after failure");
+    assert_matrix_state(&test_app, &success_settings, "success", "success-prompt");
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-failure")
+        .exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn config_import_success_then_failure_restores_the_successful_winner() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    write_grok_config_for_import_matrix(&app, true);
+    let previous_settings = settings::read(&app).expect("previous settings");
+
+    let mut first_settings = previous_settings.clone();
+    first_settings.log_retention_days = previous_settings.log_retention_days.saturating_add(3);
+    let first_bundle = make_matrix_bundle(&first_settings, "winner", "winner-prompt");
+    config_import(&app, &test_app.db, first_bundle).expect("first import succeeds");
+    assert_matrix_state(&test_app, &first_settings, "winner", "winner-prompt");
+    let winner_prompt =
+        crate::prompt_sync::read_target_bytes(&app, "codex").expect("read winner prompt target");
+
+    write_grok_config_for_import_matrix(&app, false);
+    let mut failed_settings = first_settings.clone();
+    failed_settings.auto_start = true;
+    failed_settings.log_retention_days = first_settings.log_retention_days.saturating_add(4);
+    let failed_bundle = make_matrix_bundle(&failed_settings, "loser", "loser-prompt");
+    let error = config_import(&app, &test_app.db, failed_bundle)
+        .expect_err("second real Grok runtime failure must reject import");
+    assert!(
+        error.to_string().contains("GROK_CONFIG_INVALID_TOML"),
+        "unexpected failure: {error}"
+    );
+    assert_matrix_state(&test_app, &first_settings, "winner", "winner-prompt");
+    assert_eq!(
+        crate::prompt_sync::read_target_bytes(&app, "codex").expect("read restored winner prompt"),
+        winner_prompt
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-loser")
+        .exists());
+    assert!(!cli_skills_root(&app, "codex")
+        .expect("local root")
+        .join("matrix-local-loser")
+        .exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn config_import_failure_field_rollback_preserves_ordinary_and_private_winners() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    write_grok_config_for_import_matrix(&app, true);
+    let previous = settings::read(&app).expect("previous settings");
+    let a_storage = tempfile::tempdir().expect("A Image Gen storage root");
+    let a_storage_path = std::fs::canonicalize(&a_storage)
+        .expect("canonicalize A Image Gen storage root")
+        .to_string_lossy()
+        .to_string();
+
+    let mut imported = previous.clone();
+    imported.preferred_port = previous.preferred_port.saturating_add(1);
+    imported.tray_enabled = !previous.tray_enabled;
+    imported.auto_start = !previous.auto_start;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(5);
+    imported.image_gen_storage_dir = Some(a_storage_path);
+    let mut bundle = make_matrix_bundle(&imported, "field-rollback", "field-rollback-prompt");
+    bundle.settings = serde_json::to_string(&imported).expect("field rollback settings");
+
+    let b_retention = previous.log_retention_days.saturating_add(31);
+    let b_update =
+        serde_json::from_value::<crate::commands::settings::SettingsUpdate>(serde_json::json!({
+            "preferredPort": imported.preferred_port,
+            "autoStart": previous.auto_start,
+            "logRetentionDays": b_retention,
+            "failoverMaxAttemptsPerProvider": previous.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": previous.failover_max_providers_to_try
+        }))
+        .expect("B ordinary settings update");
+    let b_handle = app.clone();
+    let b_db = test_app.db.clone();
+    let b_storage = tempfile::tempdir().expect("B Image Gen storage root");
+    let b_storage_path = b_storage.path().to_string_lossy().to_string();
+    let b_storage_for_thread = b_storage_path.clone();
+    let mut b_started = false;
+    let mut b_update = Some(b_update);
+    set_config_import_cli_runtime_sync_test_hook(Box::new(move || {
+        if b_started {
+            return None;
+        }
+        b_started = true;
+        let b_handle = b_handle.clone();
+        let b_db = b_db.clone();
+        let b_storage_for_thread = b_storage_for_thread.clone();
+        let b_update = b_update.take().expect("B update only runs once");
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(
+                crate::app::settings_service::settings_set_impl_for_test(
+                    b_handle.clone(),
+                    b_update,
+                ),
+            )
+            .expect("B ordinary production settings writer");
+            crate::app::image_gen_service::commit_image_gen_storage_dir_settings(
+                &b_handle,
+                &b_db,
+                &b_storage_for_thread,
+            )
+            .expect("B Image Gen dedicated production writer");
+        })
+        .join()
+        .expect("join B production writers");
+        Some("forced import runtime failure after B winner".to_string())
+    }));
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("import must fail after B commits during runtime sync");
+    clear_config_import_cli_runtime_sync_test_hook();
+    assert!(
+        error
+            .to_string()
+            .contains("forced import runtime failure after B winner"),
+        "unexpected import failure: {error}"
+    );
+
+    let canonical = settings::read(&app).expect("canonical after field-aware rollback");
+    let b_storage_canonical = std::fs::canonicalize(&b_storage)
+        .expect("canonicalize B Image Gen storage root")
+        .to_string_lossy()
+        .to_string();
+    assert_eq!(
+        canonical.preferred_port, previous.preferred_port,
+        "A-owned preferred_port must be restored"
+    );
+    assert_eq!(
+        canonical.tray_enabled, previous.tray_enabled,
+        "A-owned tray_enabled must be restored"
+    );
+    assert_eq!(
+        canonical.log_retention_days, b_retention,
+        "B ordinary winner must survive rollback"
+    );
+    assert_eq!(
+        canonical.auto_start, previous.auto_start,
+        "B auto_start winner must survive rollback"
+    );
+    assert_eq!(
+        canonical.image_gen_storage_dir.as_deref(),
+        Some(b_storage_canonical.as_str()),
+        "B Image Gen private winner must survive rollback"
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-field-rollback")
+        .exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn config_import_same_second_success_replacements_use_unique_artifacts_and_second_wins() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    write_grok_config_for_import_matrix(&app, true);
+    crate::infra::config_migrate::set_config_import_now_override_for_test(Some(1_700_000_000));
+    struct ImportTimestampReset;
+    impl Drop for ImportTimestampReset {
+        fn drop(&mut self) {
+            crate::infra::config_migrate::set_config_import_now_override_for_test(None);
+        }
+    }
+    let _timestamp_reset = ImportTimestampReset;
+
+    let previous = settings::read(&app).expect("previous settings");
+    let mut first_settings = previous.clone();
+    first_settings.log_retention_days = previous.log_retention_days.saturating_add(5);
+    config_import(
+        &app,
+        &test_app.db,
+        make_matrix_bundle(&first_settings, "same-first", "same-first-prompt"),
+    )
+    .expect("first same-second import");
+
+    let mut second_settings = first_settings.clone();
+    second_settings.log_retention_days = first_settings.log_retention_days.saturating_add(1);
+    config_import(
+        &app,
+        &test_app.db,
+        make_matrix_bundle(&second_settings, "same-second", "same-second-prompt"),
+    )
+    .expect("second same-second import");
+
+    assert_matrix_state(
+        &test_app,
+        &second_settings,
+        "same-second",
+        "same-second-prompt",
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-same-first")
+        .exists());
+    assert!(!cli_skills_root(&app, "codex")
+        .expect("local root")
+        .join("matrix-local-same-first")
+        .exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn rollback_aggregates_settings_autostart_runtime_and_live_root_failures() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let previous = settings::read(&app).expect("previous settings");
+    let mut committed = previous.clone();
+    committed.auto_start = !previous.auto_start;
+    committed.log_retention_days = previous.log_retention_days.saturating_add(1);
+
+    let token = match crate::app::autostart::commit_whole_settings_with_auto_start(
+        &app, &previous, &committed,
+    ) {
+        crate::app::autostart::WholeSettingsCommitResult::Committed { token, .. } => token,
+        other => panic!("rollback aggregation setup failed: {other:?}"),
+    };
+
+    let live_root_file = crate::app_paths::app_data_dir(&app)
+        .expect("app data dir")
+        .join("rollback-live-root-file");
+    std::fs::write(&live_root_file, b"live-root must not disappear silently")
+        .expect("write live-root failure fixture");
+    let mut skill_fs_guard =
+        rollback::SkillFsImportGuard::test_guard_with_ssot_root(live_root_file.clone());
+
+    crate::app::autostart::set_auto_start_sync_failure_hook(Box::new(|_| {
+        Some("forced autostart rollback failure".to_string())
+    }));
+    set_config_import_cli_runtime_sync_test_hook(Box::new(|| {
+        Some("forced CLI runtime rollback failure".to_string())
+    }));
+
+    let error = rollback::rollback_after_failed_import_with_auto_start_token(
+        &app,
+        &test_app.db,
+        &previous,
+        Some(&committed),
+        Some(token),
+        Vec::new(),
+        Some(&mut skill_fs_guard),
+    )
+    .expect_err("all injected rollback failures must aggregate as recovery required");
+
+    crate::app::autostart::reset_auto_start_sync_test_calls();
+    clear_config_import_cli_runtime_sync_test_hook();
+
+    let message = error.to_string();
+    assert!(
+        message.contains("CONFIG_IMPORT_RECOVERY_REQUIRED"),
+        "{message}"
+    );
+    assert!(
+        message.contains("settings/autostart could not be restored"),
+        "settings/autostart failure missing: {message}"
+    );
+    assert!(
+        message.contains("CLI runtime resync failed after import rollback"),
+        "runtime failure missing: {message}"
+    );
+    assert!(
+        message.contains("SKILL_FS_RECOVERY_REQUIRED"),
+        "live-root failure missing: {message}"
+    );
+    assert!(
+        live_root_file.exists(),
+        "live-root failure must remain observable for recovery"
+    );
+    std::fs::remove_file(&live_root_file).expect("remove recovery fixture");
+}
+
+fn imported_skill_for_rollback_test(skill_key: &str) -> InstalledSkillExport {
+    InstalledSkillExport {
+        skill_key: skill_key.to_string(),
+        name: "Rollback test skill".to_string(),
+        description: "rollback test".to_string(),
+        source_git_url: "https://example.invalid/rollback.git".to_string(),
+        source_branch: "main".to_string(),
+        source_subdir: String::new(),
+        enabled_in_workspaces: Vec::new(),
+        files: vec![SkillFileExport {
+            relative_path: "SKILL.md".to_string(),
+            content_base64: BASE64_STANDARD.encode(b"---\nname: rollback\n---\n"),
+        }],
+    }
+}
+
+#[test]
+fn skill_fs_stage_failure_preserves_existing_ssot_root_and_cleans_stage() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    let old_skill = ssot_root.join("old-stage-sentinel");
+    write_skill_md(&old_skill, "Old stage", "must survive stage failure");
+    let sentinel = old_skill.join("sentinel.bin");
+    std::fs::write(&sentinel, b"old-ssot-stage-bytes").expect("old sentinel");
+
+    rollback::set_skill_fs_import_failpoint(rollback::SkillFsImportFailpoint::StageWrite);
+    let error = rollback::apply_skill_fs_import(
+        &app,
+        &[imported_skill_for_rollback_test("new-stage")],
+        &[],
+    )
+    .expect_err("stage failpoint must reject the import");
+    assert!(
+        error.to_string().contains("stage"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&sentinel).expect("old SSOT sentinel"),
+        b"old-ssot-stage-bytes"
+    );
+    assert!(!ssot_root.join("new-stage").exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn skill_fs_backup_rename_failure_preserves_existing_ssot_root_and_cleans_stage() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    let old_skill = ssot_root.join("old-rename-sentinel");
+    write_skill_md(
+        &old_skill,
+        "Old rename",
+        "must survive backup rename failure",
+    );
+    let sentinel = old_skill.join("sentinel.bin");
+    std::fs::write(&sentinel, b"old-ssot-rename-bytes").expect("old sentinel");
+
+    rollback::set_skill_fs_import_failpoint(rollback::SkillFsImportFailpoint::SsotBackupRename);
+    let error = rollback::apply_skill_fs_import(
+        &app,
+        &[imported_skill_for_rollback_test("new-rename")],
+        &[],
+    )
+    .expect_err("backup rename failpoint must reject the import");
+    assert!(
+        error.to_string().contains("backup"),
+        "unexpected error: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&sentinel).expect("old SSOT sentinel"),
+        b"old-ssot-rename-bytes"
+    );
+    assert!(!ssot_root.join("new-rename").exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn skill_fs_local_mid_write_failure_cleans_half_built_dir_without_touching_existing_dir() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    write_skill_md(
+        &ssot_root.join("old-installed"),
+        "Old installed",
+        "keep installed",
+    );
+
+    let local_root = cli_skills_root(&app, "codex").expect("codex local root");
+    let existing = local_root.join("existing-local");
+    write_skill_md(&existing, "Existing local", "keep local");
+    let sentinel = existing.join("sentinel.bin");
+    std::fs::write(&sentinel, b"preexisting-local-bytes").expect("existing sentinel");
+
+    let local = LocalSkillExport {
+        cli_key: "codex".to_string(),
+        dir_name: "new-half-written".to_string(),
+        name: "Half written".to_string(),
+        description: "mid-write failure".to_string(),
+        source_git_url: None,
+        source_branch: None,
+        source_subdir: None,
+        files: vec![
+            SkillFileExport {
+                relative_path: "SKILL.md".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"---\nname: half\n---\n"),
+            },
+            SkillFileExport {
+                relative_path: "payload.bin".to_string(),
+                content_base64: BASE64_STANDARD.encode(b"second file"),
+            },
+        ],
+    };
+    set_write_prepared_skill_files_failpoint(Some(1));
+    let error = rollback::apply_skill_fs_import(&app, &[], &[local])
+        .expect_err("mid-write failpoint must reject the import");
+    assert!(
+        error.to_string().contains("mid-write"),
+        "unexpected error: {error}"
+    );
+    assert!(!local_root.join("new-half-written").exists());
+    assert_eq!(
+        std::fs::read(&sentinel).expect("preexisting local sentinel"),
+        b"preexisting-local-bytes"
+    );
+    assert!(ssot_root.join("old-installed").join("SKILL.md").exists());
+    assert_matrix_import_artifacts_clean(&app);
 }
 
 #[cfg(unix)]
@@ -487,6 +1575,174 @@ VALUES (?1, ?2, 1, 1)
         .files
         .iter()
         .any(|file| file.relative_path == "notes.txt"));
+}
+
+#[test]
+fn production_config_export_to_path_round_trips_real_disk_skills_and_db() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let conn = test_app.db.open_connection().expect("open db");
+    let (workspace_id, workspace_name) = query_workspace(&conn, "codex");
+    conn.execute(
+        r#"
+INSERT INTO prompts(workspace_id, name, content, enabled, created_at, updated_at)
+VALUES (?1, 'roundtrip-prompt', ?2, 1, 1, 1)
+"#,
+        params![workspace_id, "db-byte-exact-prompt-\0-utf8"],
+    )
+    .expect("insert round-trip prompt");
+    conn.execute(
+        r#"
+INSERT INTO skills(
+  skill_key, name, normalized_name, description, source_git_url, source_branch, source_subdir,
+  created_at, updated_at
+) VALUES (
+  'roundtrip-installed', 'Roundtrip Installed', 'roundtrip-installed',
+  'DB byte exact description', 'https://example.test/roundtrip.git', 'main', 'skills/roundtrip', 1, 1
+)
+"#,
+        [],
+    )
+    .expect("insert round-trip skill");
+    let skill_id = conn.last_insert_rowid();
+    conn.execute(
+        "INSERT INTO workspace_skill_enabled(workspace_id, skill_id, created_at, updated_at) VALUES (?1, ?2, 1, 1)",
+        params![workspace_id, skill_id],
+    )
+    .expect("enable round-trip skill");
+    drop(conn);
+
+    let installed_payload = b"installed\0bytes\xffwith-no-filter";
+    let installed_dir = ssot_skills_root(&app)
+        .expect("ssot root")
+        .join("roundtrip-installed");
+    write_skill_md(
+        &installed_dir,
+        "Roundtrip Installed",
+        "DB byte exact description",
+    );
+    std::fs::write(installed_dir.join("payload.bin"), installed_payload)
+        .expect("write installed payload");
+
+    let local_payload = b"local\0bytes\xfeexact";
+    let local_dir = cli_skills_root(&app, "codex")
+        .expect("codex local root")
+        .join("roundtrip-local");
+    write_skill_md(&local_dir, "Roundtrip Local", "local exact description");
+    std::fs::write(local_dir.join("payload.bin"), local_payload).expect("write local payload");
+
+    let temp = tempfile::tempdir().expect("export tempdir");
+    let export_path = temp.path().join("production-export.json");
+    crate::commands::config_migrate::config_export_to_path(&app, &test_app.db, &export_path)
+        .expect("production config_export_to_path");
+    let exported_bytes = std::fs::read(&export_path).expect("read production export");
+    assert!(!exported_bytes.is_empty());
+    assert!(exported_bytes.len() <= CONFIG_BUNDLE_ENCODED_MAX_BYTES);
+
+    let reloaded = crate::commands::config_migrate::read_config_import_bundle(
+        export_path.to_str().expect("utf8 export path"),
+    )
+    .expect("bounded reader accepts production export");
+    let exported_skill = reloaded
+        .installed_skills
+        .as_ref()
+        .expect("installed payload")
+        .iter()
+        .find(|skill| skill.skill_key == "roundtrip-installed")
+        .expect("installed skill in export");
+    assert_eq!(
+        BASE64_STANDARD
+            .decode(
+                exported_skill
+                    .files
+                    .iter()
+                    .find(|file| file.relative_path == "payload.bin")
+                    .expect("installed payload file")
+                    .content_base64
+                    .as_bytes(),
+            )
+            .expect("decode installed payload"),
+        installed_payload
+    );
+    let exported_local = reloaded
+        .local_skills
+        .as_ref()
+        .expect("local payload")
+        .iter()
+        .find(|skill| skill.cli_key == "codex" && skill.dir_name == "roundtrip-local")
+        .expect("local skill in export");
+    assert_eq!(
+        BASE64_STANDARD
+            .decode(
+                exported_local
+                    .files
+                    .iter()
+                    .find(|file| file.relative_path == "payload.bin")
+                    .expect("local payload file")
+                    .content_base64
+                    .as_bytes(),
+            )
+            .expect("decode local payload"),
+        local_payload
+    );
+    let exported_prompt = reloaded
+        .workspaces
+        .iter()
+        .find(|workspace| workspace.cli_key == "codex" && workspace.name == workspace_name)
+        .expect("workspace in export")
+        .prompts
+        .iter()
+        .find(|prompt| prompt.name == "roundtrip-prompt")
+        .expect("prompt in export");
+    assert_eq!(
+        exported_prompt.content.as_bytes(),
+        b"db-byte-exact-prompt-\0-utf8"
+    );
+
+    config_import(&app, &test_app.db, reloaded).expect("production export import");
+
+    assert_eq!(
+        std::fs::read(installed_dir.join("payload.bin")).expect("restored installed payload"),
+        installed_payload
+    );
+    assert_eq!(
+        std::fs::read(local_dir.join("payload.bin")).expect("restored local payload"),
+        local_payload
+    );
+    let conn = test_app.db.open_connection().expect("open restored db");
+    let prompt_content: String = conn
+        .query_row(
+            "SELECT content FROM prompts WHERE name = 'roundtrip-prompt'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("restored prompt");
+    assert_eq!(prompt_content.as_bytes(), b"db-byte-exact-prompt-\0-utf8");
+    let skill: (String, String, String, String, String) = conn
+        .query_row(
+            "SELECT skill_key, description, source_git_url, source_branch, source_subdir FROM skills WHERE skill_key = 'roundtrip-installed'",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?)),
+        )
+        .expect("restored skill DB row");
+    assert_eq!(
+        skill,
+        (
+            "roundtrip-installed".to_string(),
+            "DB byte exact description".to_string(),
+            "https://example.test/roundtrip.git".to_string(),
+            "main".to_string(),
+            "skills/roundtrip".to_string(),
+        )
+    );
+    let enabled: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM workspace_skill_enabled wse JOIN skills s ON s.id = wse.skill_id WHERE s.skill_key = 'roundtrip-installed'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("restored skill enablement");
+    assert_eq!(enabled, 1);
 }
 
 #[test]
@@ -1195,6 +2451,58 @@ fn skill_root_sensitive_looking_bytes_round_trip_without_content_filtering() {
     );
 }
 
+#[cfg(unix)]
+#[test]
+fn config_export_fifo_replacement_fails_closed_under_external_watchdog() {
+    const TEST_FILTER: &str = "config_export_fifo_replacement_fails_closed_under_external_watchdog";
+    if std::env::var_os("AIO_CONFIG_EXPORT_FIFO_WATCHDOG_CHILD").is_some() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let temp = tempfile::tempdir().expect("watchdog tempdir");
+        let skill_dir = temp.path().join("fifo-race-skill");
+        write_skill_md(&skill_dir, "FIFO race", "regular file before replacement");
+        let regular = skill_dir.join("race.bin");
+        let moved = skill_dir.join("race-original.bin");
+        std::fs::write(&regular, b"regular-before-fifo").expect("regular fixture");
+        let hook_regular = regular.clone();
+        let hook_moved = moved.clone();
+        set_after_skill_export_enumeration_test_hook(Box::new(move || {
+            std::fs::rename(&hook_regular, &hook_moved).expect("move enumerated regular file");
+            let c_path =
+                std::ffi::CString::new(hook_regular.as_os_str().as_bytes()).expect("fifo path");
+            assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        }));
+
+        let error = export_skill_dir_files(&skill_dir, true)
+            .expect_err("FIFO replacement must fail closed");
+        assert!(error.to_string().contains("SEC_INVALID_INPUT"), "{error}");
+        return;
+    }
+
+    let mut child =
+        std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            .arg(TEST_FILTER)
+            .arg("--nocapture")
+            .env("AIO_CONFIG_EXPORT_FIFO_WATCHDOG_CHILD", "1")
+            .spawn()
+            .expect("spawn export watchdog child");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait().expect("poll export watchdog child") {
+            Some(status) => {
+                assert!(status.success(), "FIFO child failed: {status}");
+                break;
+            }
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!("production config export did not fail closed before watchdog deadline");
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+}
+
 #[test]
 fn config_skill_file_budget_matches_existing_safety_budgets() {
     assert_eq!(CONFIG_SKILL_FILE_MAX_BYTES, CONFIG_SKILL_TOTAL_MAX_BYTES);
@@ -1228,6 +2536,37 @@ fn export_skill_dir_files_accepts_file_above_legacy_one_mib_limit() {
             .decode(file.content_base64.as_bytes())
             .expect("decode large file"),
         synthetic_bytes(legacy_limit + 1)
+    );
+}
+
+#[test]
+fn export_skill_dir_files_rejects_growth_after_metadata_via_handle_reader() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let skill_dir = temp.path().join("growth-skill");
+    write_skill_md(&skill_dir, "Growth", "growth skill");
+    let path = skill_dir.join("grow.bin");
+    std::fs::write(&path, b"abcd").expect("seed");
+
+    let grow_path = path.clone();
+    set_after_skill_export_file_metadata_test_hook(Box::new(move || {
+        use std::io::Write as _;
+        let mut file = std::fs::OpenOptions::new()
+            .append(true)
+            .open(&grow_path)
+            .expect("append open");
+        // Grow well past any residual SKILL.md/source budgets so the ordinary
+        // file hard limit rejects at limit+1 from the same handle.
+        file.write_all(&vec![b'x'; CONFIG_SKILL_FILE_MAX_BYTES])
+            .expect("append growth");
+    }));
+
+    let err = match export_skill_dir_files(&skill_dir, true) {
+        Ok(_) => panic!("growth must fail"),
+        Err(err) => err,
+    };
+    assert!(
+        err.to_string().contains("too large") || err.to_string().contains("SEC_INVALID_INPUT"),
+        "unexpected: {err}"
     );
 }
 

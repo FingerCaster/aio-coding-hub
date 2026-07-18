@@ -1,6 +1,7 @@
 //! Usage: Desktop resident mode (tray icon + window lifecycle hooks).
 
 use std::sync::atomic::{AtomicBool, AtomicU8, Ordering};
+use std::sync::{Mutex, OnceLock};
 
 const MAIN_WINDOW_LABEL: &str = "main";
 const TRAY_ID: &str = "main-tray";
@@ -34,6 +35,13 @@ enum CloseRequestAction {
 
 impl ResidentState {
     pub fn set_tray_enabled(&self, enabled: bool) {
+        let _tray_guard = tray_runtime_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        self.set_tray_enabled_unlocked(enabled);
+    }
+
+    fn set_tray_enabled_unlocked(&self, enabled: bool) {
         self.tray_enabled.store(enabled, Ordering::Relaxed);
     }
 
@@ -66,6 +74,29 @@ impl ResidentState {
             CloseRequestAction::Minimize
         }
     }
+}
+
+fn tray_runtime_lock() -> &'static Mutex<()> {
+    static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+    LOCK.get_or_init(|| Mutex::new(()))
+}
+
+/// Read the latest canonical settings and apply the tray side effect while
+/// holding the same coordinator used by every resident-mode writer. A caller
+/// must never apply an old import/settings snapshot directly to the resident
+/// state after this function exists.
+pub(crate) fn sync_tray_enabled_from_canonical<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    let _tray_guard = tray_runtime_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let canonical = crate::settings::read(app).map_err(|error| error.to_string())?;
+    let enabled = canonical.tray_enabled;
+    if let Some(resident) = app.try_state::<ResidentState>() {
+        resident.set_tray_enabled_unlocked(enabled);
+    }
+    Ok(enabled)
 }
 
 #[cfg(not(desktop))]

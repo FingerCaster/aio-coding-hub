@@ -13,11 +13,14 @@ use crate::shared::error::{db_err, AppResult};
 use crate::{db, settings};
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
-use tauri::Manager;
 
 pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 2;
 pub const CONFIG_BUNDLE_SCHEMA_VERSION_V1: u32 = 1;
-pub(crate) const CONFIG_IMPORT_FILE_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Shared encoded budget for config export serialization and import file reads.
+pub(crate) const CONFIG_BUNDLE_ENCODED_MAX_BYTES: usize = 64 * 1024 * 1024;
+/// Compatibility alias for the shared encoded budget.
+#[cfg(test)]
+pub(crate) const CONFIG_IMPORT_FILE_MAX_BYTES: usize = CONFIG_BUNDLE_ENCODED_MAX_BYTES;
 pub(crate) const CONFIG_SKILL_TOTAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const CONFIG_SKILL_FILE_MAX_BYTES: usize = CONFIG_SKILL_TOTAL_MAX_BYTES;
 pub(crate) const CONFIG_SKILL_FILE_COUNT_MAX: usize = 256;
@@ -191,13 +194,13 @@ pub struct LocalSkillExport {
     pub files: Vec<SkillFileExport>,
 }
 
-#[derive(Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
 pub struct SkillFileExport {
     pub relative_path: String,
     pub content_base64: String,
 }
 
-#[derive(Serialize, Deserialize, specta::Type)]
+#[derive(Debug, Serialize, Deserialize, specta::Type)]
 pub struct ConfigImportResult {
     pub providers_imported: u32,
     pub sort_modes_imported: u32,
@@ -281,11 +284,50 @@ pub fn config_export<R: tauri::Runtime>(
     })
 }
 
-pub fn config_import<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
-    db: &db::Db,
-    bundle: ConfigBundle,
-) -> AppResult<ConfigImportResult> {
+fn config_import_lock() -> &'static std::sync::Mutex<()> {
+    static LOCK: std::sync::OnceLock<std::sync::Mutex<()>> = std::sync::OnceLock::new();
+    LOCK.get_or_init(|| std::sync::Mutex::new(()))
+}
+
+#[cfg(test)]
+static CONFIG_IMPORT_LOCK_ATTEMPTS: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+#[cfg(test)]
+static CONFIG_IMPORT_NOW_OVERRIDE: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(i64::MIN);
+
+#[cfg(test)]
+pub(crate) fn reset_config_import_lock_attempts_for_test() {
+    CONFIG_IMPORT_LOCK_ATTEMPTS.store(0, std::sync::atomic::Ordering::SeqCst);
+}
+
+#[cfg(test)]
+pub(crate) fn config_import_lock_attempts_for_test() -> usize {
+    CONFIG_IMPORT_LOCK_ATTEMPTS.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+#[cfg(test)]
+pub(crate) fn set_config_import_now_override_for_test(value: Option<i64>) {
+    CONFIG_IMPORT_NOW_OVERRIDE.store(
+        value.unwrap_or(i64::MIN),
+        std::sync::atomic::Ordering::SeqCst,
+    );
+}
+
+fn config_import_timestamp() -> i64 {
+    #[cfg(test)]
+    {
+        let value = CONFIG_IMPORT_NOW_OVERRIDE.load(std::sync::atomic::Ordering::SeqCst);
+        if value != i64::MIN {
+            return value;
+        }
+    }
+    crate::shared::time::now_unix_seconds()
+}
+
+/// Pure payload preflight that does not read or mutate current process state.
+pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedConfigImport> {
     let bundle_schema_version = bundle.schema_version;
     validate_bundle_schema_version(bundle_schema_version)?;
     let imports_full_skill_payload = bundle_schema_version >= CONFIG_BUNDLE_SCHEMA_VERSION;
@@ -312,15 +354,86 @@ pub fn config_import<R: tauri::Runtime>(
         local_skills,
     )?;
     import::validate_local_skills_for_import(&local_skills)?;
+    let prepared_skill_fs = if imports_full_skill_payload {
+        Some(rollback::prepare_skill_fs_import(
+            &installed_skills,
+            &local_skills,
+        )?)
+    } else {
+        None
+    };
 
-    let previous_settings = settings::read(app)?;
     let mut settings_to_write: settings::AppSettings = serde_json::from_str(&settings)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings bundle: {e}"))?;
     settings_to_write.schema_version = settings::SCHEMA_VERSION;
+
+    Ok(PreparedConfigImport {
+        imports_full_skill_payload,
+        settings_to_write,
+        providers,
+        sort_modes,
+        sort_mode_active,
+        workspaces,
+        mcp_servers,
+        skill_repos,
+        installed_skills,
+        local_skills,
+        prepared_skill_fs,
+        image_gen_configs,
+    })
+}
+
+pub(crate) struct PreparedConfigImport {
+    imports_full_skill_payload: bool,
+    settings_to_write: settings::AppSettings,
+    providers: Vec<ProviderExport>,
+    sort_modes: Vec<SortModeExport>,
+    sort_mode_active: HashMap<String, String>,
+    workspaces: Vec<WorkspaceExport>,
+    mcp_servers: Vec<McpServerExport>,
+    skill_repos: Vec<SkillRepoExport>,
+    installed_skills: Vec<InstalledSkillExport>,
+    local_skills: Vec<LocalSkillExport>,
+    prepared_skill_fs: Option<rollback::PreparedSkillFsImport>,
+    image_gen_configs: Option<Vec<ImageGenConfigExport>>,
+}
+
+pub fn config_import<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    db: &db::Db,
+    bundle: ConfigBundle,
+) -> AppResult<ConfigImportResult> {
+    // Pure schema/path/Base64/metadata preflight stays outside the process lock.
+    let prepared = prepare_config_import(bundle)?;
+
+    #[cfg(test)]
+    CONFIG_IMPORT_LOCK_ATTEMPTS.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+    let _import_guard = config_import_lock()
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    #[cfg(test)]
+    run_after_config_import_lock_acquired_test_hook();
+
+    let PreparedConfigImport {
+        imports_full_skill_payload,
+        mut settings_to_write,
+        providers,
+        sort_modes,
+        sort_mode_active,
+        workspaces,
+        mcp_servers,
+        skill_repos,
+        installed_skills,
+        local_skills,
+        mut prepared_skill_fs,
+        image_gen_configs,
+    } = prepared;
+
+    let previous_settings = settings::read(app)?;
     let runtime_backups = rollback::capture_cli_runtime_backups(app)?;
 
     let mut conn = db.open_connection()?;
-    let now = crate::shared::time::now_unix_seconds();
+    let now = config_import_timestamp();
     let tx = conn
         .transaction()
         .map_err(|e| db_err!("failed to start transaction: {e}"))?;
@@ -353,10 +466,12 @@ pub fn config_import<R: tauri::Runtime>(
     }
 
     let mut skill_fs_guard = if imports_full_skill_payload {
-        Some(rollback::apply_skill_fs_import(
+        let prepared_skill_fs = prepared_skill_fs
+            .take()
+            .ok_or_else(|| "SYSTEM_ERROR: prepared Skill FS payload missing".to_string())?;
+        Some(rollback::apply_prepared_skill_fs_import(
             app,
-            &installed_skills,
-            &local_skills,
+            prepared_skill_fs,
         )?)
     } else {
         None
@@ -364,98 +479,133 @@ pub fn config_import<R: tauri::Runtime>(
 
     #[cfg(test)]
     run_before_config_import_settings_cas_test_hook();
-    let settings_committed =
-        settings::compare_and_swap(app, &previous_settings, &settings_to_write);
-    if !matches!(settings_committed, Ok((_, true))) {
-        rollback::rollback_after_failed_import(
-            app,
-            db,
-            &previous_settings,
-            None,
-            runtime_backups,
-            skill_fs_guard.as_mut(),
-        );
-        return match settings_committed {
-            Ok(_) => Err(
-                "SETTINGS_CONCURRENT_UPDATE: settings changed during config import"
-                    .to_string()
-                    .into(),
-            ),
-            Err(error) => Err(error),
-        };
-    }
-
-    let desired_auto_start = settings_to_write.auto_start;
-    let effective_auto_start = crate::app::autostart::reconcile_auto_start(
+    let settings_commit = crate::app::autostart::commit_whole_settings_with_auto_start(
         app,
-        previous_settings.auto_start,
-        desired_auto_start,
-        true,
+        &previous_settings,
+        &settings_to_write,
     );
-    if effective_auto_start != desired_auto_start {
-        let committed_settings = settings_to_write.clone();
-        settings_to_write.auto_start = effective_auto_start;
-        match settings::compare_and_swap(app, &committed_settings, &settings_to_write) {
-            Ok((_, true)) => {}
-            result => {
-                if let Ok(winner) = settings::read(app) {
-                    let _ = crate::app::autostart::reconcile_auto_start(
-                        app,
-                        effective_auto_start,
-                        winner.auto_start,
-                        true,
-                    );
-                }
-                rollback::rollback_after_failed_import(
-                    app,
-                    db,
-                    &previous_settings,
-                    None,
-                    runtime_backups,
-                    skill_fs_guard.as_mut(),
-                );
-                return match result {
-                    Ok(_) => Err(
-                        "SETTINGS_CONCURRENT_UPDATE: settings changed during config import autostart reconciliation"
-                            .to_string()
-                            .into(),
-                    ),
-                    Err(error) => Err(error),
-                };
-            }
+    use crate::app::autostart::WholeSettingsCommitResult;
+    let auto_start_token = match settings_commit {
+        WholeSettingsCommitResult::Committed { settings, token } => {
+            settings_to_write = settings;
+            token
         }
-    }
+        WholeSettingsCommitResult::ConcurrentUpdate => {
+            // No durable settings write; release DB tx before reopening for rollback.
+            drop(tx);
+            let recovery = rollback::rollback_after_failed_import(
+                app,
+                db,
+                &previous_settings,
+                None,
+                runtime_backups,
+                skill_fs_guard.as_mut(),
+            );
+            let base =
+                "SETTINGS_CONCURRENT_UPDATE: settings changed during config import".to_string();
+            return Err(match recovery {
+                Ok(()) => base.into(),
+                Err(fs_err) => format!("{base}; {fs_err}").into(),
+            });
+        }
+        WholeSettingsCommitResult::Failed(error) => {
+            drop(tx);
+            let recovery = rollback::rollback_after_failed_import(
+                app,
+                db,
+                &previous_settings,
+                None,
+                runtime_backups,
+                skill_fs_guard.as_mut(),
+            );
+            return Err(match recovery {
+                Ok(()) => error.into(),
+                Err(fs_err) => format!("{error}; {fs_err}").into(),
+            });
+        }
+        WholeSettingsCommitResult::CommitNeedsRollback {
+            committed,
+            token,
+            error,
+        } => {
+            // Durable settings already changed; must roll back with token + expected.
+            drop(tx);
+            let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
+                app,
+                db,
+                &previous_settings,
+                Some(&committed),
+                Some(token),
+                runtime_backups,
+                skill_fs_guard.as_mut(),
+            );
+            return Err(match recovery {
+                Ok(()) => error.into(),
+                Err(fs_err) => format!("{error}; {fs_err}").into(),
+            });
+        }
+    };
 
-    if let Err(err) = rollback::sync_all_cli_runtime(app, &tx) {
+    let runtime_sync_error = {
+        #[cfg(test)]
+        {
+            take_config_import_cli_runtime_sync_error()
+                .map(|message| message.into())
+                .or_else(|| rollback::sync_all_cli_runtime(app, &tx).err())
+        }
+        #[cfg(not(test))]
+        {
+            rollback::sync_all_cli_runtime(app, &tx).err()
+        }
+    };
+    if let Some(err) = runtime_sync_error {
         drop(tx);
-        rollback::rollback_after_failed_import(
+        let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
             app,
             db,
             &previous_settings,
             Some(&settings_to_write),
+            Some(auto_start_token),
             runtime_backups,
             skill_fs_guard.as_mut(),
         );
-        return Err(err);
+        return Err(match recovery {
+            Ok(()) => err,
+            Err(fs_err) => format!("{err}; {fs_err}").into(),
+        });
     }
 
     if let Err(err) = tx.commit() {
-        rollback::rollback_after_failed_import(
+        // commit() already consumed the transaction on failure paths.
+        let recovery = rollback::rollback_after_failed_import_with_auto_start_token(
             app,
             db,
             &previous_settings,
             Some(&settings_to_write),
+            Some(auto_start_token),
             runtime_backups,
             skill_fs_guard.as_mut(),
         );
-        return Err(db_err!("failed to commit transaction: {err}"));
+        let base = format!("failed to commit transaction: {err}");
+        return Err(match recovery {
+            Ok(()) => db_err!("{base}"),
+            Err(fs_err) => format!("{base}; {fs_err}").into(),
+        });
     }
 
     if let Some(guard) = skill_fs_guard.take() {
-        guard.finish();
+        if let Err(err) = guard.finish() {
+            return Err(format!(
+                "CONFIG_IMPORT_RECOVERY_REQUIRED: config import committed but Skill FS backup cleanup failed: {err}"
+            )
+            .into());
+        }
     }
-    app.state::<resident::ResidentState>()
-        .set_tray_enabled(settings_to_write.tray_enabled);
+    resident::sync_tray_enabled_from_canonical(app).map_err(|error| {
+        format!(
+            "CONFIG_IMPORT_RECOVERY_REQUIRED: config import committed but tray runtime convergence failed: {error}"
+        )
+    })?;
 
     Ok(result)
 }
@@ -464,20 +614,96 @@ pub fn config_import<R: tauri::Runtime>(
 type BeforeConfigImportSettingsCasHook = Box<dyn FnOnce() + Send>;
 
 #[cfg(test)]
-thread_local! {
-    static BEFORE_CONFIG_IMPORT_SETTINGS_CAS_TEST_HOOK: std::cell::RefCell<Option<BeforeConfigImportSettingsCasHook>> = const { std::cell::RefCell::new(None) };
+fn before_config_import_settings_cas_test_hook(
+) -> &'static std::sync::Mutex<Option<BeforeConfigImportSettingsCasHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<BeforeConfigImportSettingsCasHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
 }
 
 #[cfg(test)]
 fn set_before_config_import_settings_cas_test_hook(hook: BeforeConfigImportSettingsCasHook) {
-    BEFORE_CONFIG_IMPORT_SETTINGS_CAS_TEST_HOOK.with(|current| current.replace(Some(hook)));
+    *before_config_import_settings_cas_test_hook()
+        .lock()
+        .expect("config import cas hook") = Some(hook);
 }
 
 #[cfg(test)]
 fn run_before_config_import_settings_cas_test_hook() {
-    let hook =
-        BEFORE_CONFIG_IMPORT_SETTINGS_CAS_TEST_HOOK.with(|current| current.borrow_mut().take());
+    let hook = before_config_import_settings_cas_test_hook()
+        .lock()
+        .expect("config import cas hook")
+        .take();
     if let Some(hook) = hook {
         hook();
     }
+}
+
+/// Observability for second-import wait: fired once the process import lock is
+/// acquired (after any wait). Used by concurrent-import tests instead of
+/// spawn-then-immediately-check-is_finished races.
+#[cfg(test)]
+type AfterConfigImportLockAcquiredHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
+fn after_config_import_lock_acquired_test_hook(
+) -> &'static std::sync::Mutex<Option<AfterConfigImportLockAcquiredHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<AfterConfigImportLockAcquiredHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn set_after_config_import_lock_acquired_test_hook(hook: AfterConfigImportLockAcquiredHook) {
+    *after_config_import_lock_acquired_test_hook()
+        .lock()
+        .expect("config import lock acquired hook") = Some(hook);
+}
+
+#[cfg(test)]
+fn run_after_config_import_lock_acquired_test_hook() {
+    let hook = after_config_import_lock_acquired_test_hook()
+        .lock()
+        .expect("config import lock acquired hook")
+        .take();
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+/// Injected runtime sync failure for import rollback matrix tests.
+#[cfg(test)]
+type ConfigImportCliRuntimeSyncHook = Box<dyn FnMut() -> Option<String> + Send>;
+
+#[cfg(test)]
+fn config_import_cli_runtime_sync_test_hook(
+) -> &'static std::sync::Mutex<Option<ConfigImportCliRuntimeSyncHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<ConfigImportCliRuntimeSyncHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn set_config_import_cli_runtime_sync_test_hook(hook: ConfigImportCliRuntimeSyncHook) {
+    *config_import_cli_runtime_sync_test_hook()
+        .lock()
+        .expect("cli runtime sync hook") = Some(hook);
+}
+
+#[cfg(test)]
+pub(super) fn take_config_import_cli_runtime_sync_error() -> Option<String> {
+    let mut guard = config_import_cli_runtime_sync_test_hook()
+        .lock()
+        .expect("cli runtime sync hook");
+    if let Some(hook) = guard.as_mut() {
+        return hook();
+    }
+    None
+}
+
+#[cfg(test)]
+pub(crate) fn clear_config_import_cli_runtime_sync_test_hook() {
+    *config_import_cli_runtime_sync_test_hook()
+        .lock()
+        .expect("cli runtime sync hook") = None;
 }

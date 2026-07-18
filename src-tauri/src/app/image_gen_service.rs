@@ -197,6 +197,56 @@ pub(crate) async fn storage_get(
     .map_err(Into::into)
 }
 
+/// Production ownership write for Image Gen storage roots/dir under SETTINGS_WRITE_LOCK.
+/// Shared by the async IPC path and concurrent ownership barrier tests.
+pub(crate) fn commit_image_gen_storage_dir_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    db: &crate::db::Db,
+    dir: &str,
+) -> crate::shared::error::AppResult<image_gen::ImageGenStorageView> {
+    let dir = dir.trim();
+    if dir.is_empty() {
+        return Err("SEC_INVALID_INPUT: storage dir is required"
+            .to_string()
+            .into());
+    }
+    let path = std::path::PathBuf::from(dir);
+    if !path.is_absolute() {
+        return Err("SEC_INVALID_INPUT: storage dir must be an absolute path"
+            .to_string()
+            .into());
+    }
+    image_gen::ensure_writable_dir(&path)?;
+    let canonical_path = std::fs::canonicalize(&path)
+        .map_err(|e| format!("SEC_INVALID_INPUT: storage dir cannot be resolved: {e}"))?;
+    let default_dir = crate::app_paths::app_data_dir(app)?.join("image-gen");
+    crate::settings::update(app, |settings| {
+        let previous_dir = settings
+            .image_gen_storage_dir
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty())
+            .map(std::path::PathBuf::from)
+            .unwrap_or_else(|| default_dir.clone());
+        let mut roots = settings
+            .image_gen_storage_roots
+            .iter()
+            .map(std::path::PathBuf::from)
+            .collect::<Vec<_>>();
+        roots.push(previous_dir);
+        roots.push(canonical_path.clone());
+        let roots = image_gen::canonical_storage_roots(&roots)?;
+        let view = image_gen::storage_stats_with_roots(db, &canonical_path, &roots)?;
+        settings.image_gen_storage_dir = Some(canonical_path.to_string_lossy().to_string());
+        settings.image_gen_storage_roots = roots
+            .iter()
+            .map(|root| root.to_string_lossy().to_string())
+            .collect();
+        Ok(view)
+    })
+    .map(|(_, view)| view)
+}
+
 pub(crate) async fn storage_set_dir(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
@@ -204,52 +254,9 @@ pub(crate) async fn storage_set_dir(
 ) -> Result<image_gen::ImageGenStorageView, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     let app_for_write = app.clone();
-    let view = blocking::run(
-        "image_gen_storage_set_dir",
-        move || -> crate::shared::error::AppResult<_> {
-            let dir = dir.trim();
-            if dir.is_empty() {
-                return Err("SEC_INVALID_INPUT: storage dir is required"
-                    .to_string()
-                    .into());
-            }
-            let path = std::path::PathBuf::from(dir);
-            if !path.is_absolute() {
-                return Err("SEC_INVALID_INPUT: storage dir must be an absolute path"
-                    .to_string()
-                    .into());
-            }
-            image_gen::ensure_writable_dir(&path)?;
-            let canonical_path = std::fs::canonicalize(&path)
-                .map_err(|e| format!("SEC_INVALID_INPUT: storage dir cannot be resolved: {e}"))?;
-            let default_dir = crate::app_paths::app_data_dir(&app_for_write)?.join("image-gen");
-            crate::settings::update(&app_for_write, |settings| {
-                let previous_dir = settings
-                    .image_gen_storage_dir
-                    .as_deref()
-                    .map(str::trim)
-                    .filter(|value| !value.is_empty())
-                    .map(std::path::PathBuf::from)
-                    .unwrap_or_else(|| default_dir.clone());
-                let mut roots = settings
-                    .image_gen_storage_roots
-                    .iter()
-                    .map(std::path::PathBuf::from)
-                    .collect::<Vec<_>>();
-                roots.push(previous_dir);
-                roots.push(canonical_path.clone());
-                let roots = image_gen::canonical_storage_roots(&roots)?;
-                let view = image_gen::storage_stats_with_roots(&db, &canonical_path, &roots)?;
-                settings.image_gen_storage_dir = Some(canonical_path.to_string_lossy().to_string());
-                settings.image_gen_storage_roots = roots
-                    .iter()
-                    .map(|root| root.to_string_lossy().to_string())
-                    .collect();
-                Ok(view)
-            })
-            .map(|(_, view)| view)
-        },
-    )
+    let view = blocking::run("image_gen_storage_set_dir", move || {
+        commit_image_gen_storage_dir_settings(&app_for_write, &db, &dir)
+    })
     .await
     .map_err(String::from)?;
 

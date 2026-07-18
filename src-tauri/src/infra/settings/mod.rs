@@ -18,7 +18,8 @@ pub(crate) use migration::sanitize_upstream_retry_policy;
 pub(crate) use persistence::validate_bounds;
 pub use persistence::{
     clear_cache, compare_and_swap, log_retention_days_fail_open, read,
-    request_log_retention_days_fail_open, update, write,
+    request_log_retention_days_fail_open, set_settings_finalize_failpoint_for_tests,
+    set_settings_finalize_restore_failpoint_for_tests, update, write,
 };
 pub use types::{
     AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, UpstreamRetryPolicy,

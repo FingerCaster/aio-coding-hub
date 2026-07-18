@@ -29,18 +29,27 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 
 - A production writer performs read, mutation, validation, serialization, and atomic replacement while
   holding the shared settings write lock through `settings::update`.
-- A writer changes only its owned fields. Settings UI preserves `image_gen_storage_dir`,
-  `image_gen_storage_roots`, and `grok_proxy_preferences`; Grok writers own only
-  `grok_proxy_preferences`; gateway repair conditionally owns only `preferred_port`.
-- Complete config import may replace the whole snapshot only through `compare_and_swap`; the canonical
-  snapshot used for preparation is the expected value.
+- A writer changes only its owned fields. Ordinary `settings_set` applies an explicit field patch under
+  `settings::update`; it never rebuilds a whole snapshot from a lock-out-of-date read. Image Gen owns
+  `image_gen_storage_dir` / `image_gen_storage_roots`, Grok owns `grok_proxy_preferences`, circuit notice owns
+  `enable_circuit_breaker_notice`, Codex completion owns `enable_codex_session_id_completion`, rectifier owns
+  the 12 rectifier/response-fixer fields, and gateway repair conditionally owns only `preferred_port`.
+- Ordinary `SettingsUpdate` / generated bindings / frontend ordinary payload must not include rectifier
+  exclusive fields. Future `AppSettings` fields do not automatically become ordinary-owner fields.
+- Complete config import may replace the whole snapshot only through `compare_and_swap` (or the shared
+  autostart coordinator that wraps it); the canonical snapshot used for preparation is the expected value.
 - A writer with external side effects records the exact owned-field value it committed. Rollback restores
   only those owned fields and only while they still equal that committed token.
+- All production writers that change canonical `auto_start` share one autostart coordinator with a monotonic
+  generation token. OS autostart side effects happen only after durable settings commit succeeds. Invalid
+  candidates produce zero OS calls. Token losers never restore an older value over a newer winner; they only
+  converge OS to the latest canonical value.
+- Lock order is `CONFIG_IMPORT_LOCK -> AUTO_START_LOCK -> SETTINGS_WRITE_LOCK`. Code holding the settings lock
+  must never acquire the autostart lock.
 - Losing rollback CAS preserves the newer settings and must not restore old gateway runtime, CLI proxy, or
   OS autostart state.
-- Whole-import autostart reconciliation runs only after the settings CAS succeeds. If post-commit
-  reconciliation must correct the persisted value, that correction uses a second CAS; losing it resynchronizes
-  autostart from the canonical winner and never restores the loser's value.
+- Whole-import autostart reconciliation runs only inside the shared autostart coordinator after the settings
+  CAS succeeds. Correction/rollback use the same generation token protocol and never restore a loser's value.
 - Settings-service owned rollback has an explicit `Restored` / concurrent-winner / failure result. Only
   `Restored` authorizes previous-runtime restoration. Other results keep or resynchronize runtime side effects
   from the current canonical snapshot.
@@ -106,3 +115,20 @@ settings::update(app, |latest| {
     Ok(())
 })?;
 ```
+
+## Follow-up Findings F9 and F13
+
+- An ordinary settings writer's previous and committed tokens must be built
+  directly from that writer's locked durable settings::update result. A
+  coordinator return or later canonical reread may update only the coordinator's
+  own auto_start correction; it must not absorb a gateway preferred-port repair
+  or another writer into the ordinary rollback token.
+- The production regression for a post-coordinator preferred-port repair must
+  pause between coordinator return and token construction, force the later
+  runtime sync to fail, and prove rollback converges to the preferred-port
+  winner without restoring the previous runtime.
+- Settings persistence finalization must distinguish finalize failure from
+  restore failure. If both fail, return SETTINGS_RECOVERY_REQUIRED, preserve
+  the best available durable settings bytes (backup or retained writer temp),
+  clean only writer-owned temporary output, and never claim that canonical
+  settings are usable.

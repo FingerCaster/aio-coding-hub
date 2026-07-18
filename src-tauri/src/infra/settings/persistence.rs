@@ -6,7 +6,7 @@ use super::migration::{
 };
 use super::types::{AppSettings, CodexHomeMode, GatewayListenMode, WslHostAddressMode};
 use crate::app_paths;
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppError, AppResult};
 use crate::shared::fs::read_file_with_max_len;
 use crate::shared::mutex_ext::MutexExt;
 use std::path::{Path, PathBuf};
@@ -27,6 +27,61 @@ struct CachedSettings {
 
 static SETTINGS_CACHE: OnceLock<RwLock<Option<CachedSettings>>> = OnceLock::new();
 static SETTINGS_WRITE_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+static SETTINGS_FINALIZE_FAILPOINT: AtomicBool = AtomicBool::new(false);
+static SETTINGS_FINALIZE_RESTORE_FAILPOINT: AtomicBool = AtomicBool::new(false);
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum SettingsPersistenceFailureKind {
+    /// Finalization failed, but the previous canonical settings were restored.
+    FinalizeOnly,
+    /// Finalization and canonical restoration both failed; recovery is required.
+    RecoveryRequired,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct SettingsPersistenceFailure {
+    pub(crate) kind: SettingsPersistenceFailureKind,
+    pub(crate) message: String,
+}
+
+impl SettingsPersistenceFailure {
+    fn into_app_error(self) -> AppError {
+        let code = match self.kind {
+            SettingsPersistenceFailureKind::FinalizeOnly => "SETTINGS_PERSISTENCE_FAILED",
+            SettingsPersistenceFailureKind::RecoveryRequired => "SETTINGS_RECOVERY_REQUIRED",
+        };
+        AppError::new(code, self.message)
+    }
+}
+
+fn persistence_failure(
+    kind: SettingsPersistenceFailureKind,
+    message: impl Into<String>,
+) -> AppError {
+    SettingsPersistenceFailure {
+        kind,
+        message: message.into(),
+    }
+    .into_app_error()
+}
+
+/// Test-only fault injection used by integration tests to exercise the
+/// finalize-plus-restore recovery path without relying on filesystem timing.
+pub fn set_settings_finalize_restore_failpoint_for_tests(enabled: bool) {
+    SETTINGS_FINALIZE_RESTORE_FAILPOINT.store(enabled, Ordering::SeqCst);
+}
+
+pub fn set_settings_finalize_failpoint_for_tests(enabled: bool) {
+    SETTINGS_FINALIZE_FAILPOINT.store(enabled, Ordering::SeqCst);
+}
+
+fn take_settings_finalize_failpoint() -> bool {
+    SETTINGS_FINALIZE_FAILPOINT.swap(false, Ordering::SeqCst)
+}
+
+fn take_settings_finalize_restore_failpoint() -> bool {
+    SETTINGS_FINALIZE_RESTORE_FAILPOINT.swap(false, Ordering::SeqCst)
+}
 
 fn cache_settings(path: &Path, settings: &AppSettings) {
     let cache = SETTINGS_CACHE.get_or_init(|| RwLock::new(None));
@@ -533,13 +588,69 @@ fn write_unlocked<R: tauri::Runtime>(
         let _ = std::fs::remove_file(&backup_path);
     }
     if path.exists() {
-        std::fs::rename(&path, &backup_path)
-            .map_err(|e| format!("failed to create settings backup: {e}"))?;
+        if let Err(error) = std::fs::rename(&path, &backup_path) {
+            let _ = std::fs::remove_file(&tmp_path);
+            return Err(format!("failed to create settings backup: {error}").into());
+        }
     }
 
-    if let Err(e) = std::fs::rename(&tmp_path, &path) {
-        let _ = std::fs::rename(&backup_path, &path);
-        return Err(format!("failed to finalize settings: {e}").into());
+    if take_settings_finalize_restore_failpoint() {
+        std::fs::create_dir(&path)
+            .map_err(|e| format!("failed to install settings finalize failpoint: {e}"))?;
+    }
+
+    let finalize_result = if take_settings_finalize_failpoint() {
+        Err(std::io::Error::other("injected settings finalize failure"))
+    } else {
+        std::fs::rename(&tmp_path, &path)
+    };
+    if let Err(e) = finalize_result {
+        // Capture durable ownership before restore moves the backup away.
+        let had_backup = backup_path.is_file();
+        let restore_result = std::fs::rename(&backup_path, &path);
+        let temp_cleanup = if had_backup {
+            std::fs::remove_file(&tmp_path)
+        } else {
+            // When there is no previous canonical file, retain the writer's
+            // temp bytes as the last available recovery copy.
+            Ok(())
+        };
+        if let Err(restore_error) = restore_result {
+            let temp_detail = temp_cleanup
+                .err()
+                .map(|cleanup_error| {
+                    format!("; failed to clean writer-owned temp: {cleanup_error}")
+                })
+                .unwrap_or_default();
+            let durable_detail = if had_backup {
+                format!("durable settings bytes remain at {}", backup_path.display())
+            } else if tmp_path.is_file() {
+                format!(
+                    "writer-owned settings bytes remain at {}",
+                    tmp_path.display()
+                )
+            } else {
+                "no durable settings copy could be confirmed".to_string()
+            };
+            return Err(persistence_failure(
+                SettingsPersistenceFailureKind::RecoveryRequired,
+                format!(
+                    "failed to finalize settings: {e}; failed to restore canonical settings from backup: {restore_error}; {durable_detail}{temp_detail}"
+                ),
+            ));
+        }
+        if let Err(cleanup_error) = temp_cleanup {
+            return Err(persistence_failure(
+                SettingsPersistenceFailureKind::FinalizeOnly,
+                format!(
+                    "failed to finalize settings: {e}; failed to clean writer-owned temp: {cleanup_error}"
+                ),
+            ));
+        }
+        return Err(persistence_failure(
+            SettingsPersistenceFailureKind::FinalizeOnly,
+            format!("failed to finalize settings: {e}"),
+        ));
     }
 
     if backup_path.exists() {

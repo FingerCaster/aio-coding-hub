@@ -3927,7 +3927,9 @@ export type SettingsMutationRuntime = {
   gateway_status: GatewayStatus;
 };
 /**
- * Encapsulates all fields for the `settings_set` command.
+ * Encapsulates ordinary `settings_set` owned fields only.
+ * Rectifier / circuit-notice / Codex-completion / Image Gen / Grok fields are
+ * intentionally absent; dedicated writers own those groups.
  */
 export type SettingsUpdate = {
   preferredPort: number;
@@ -3947,20 +3949,10 @@ export type SettingsUpdate = {
   upstreamFirstByteTimeoutSeconds: number | null;
   upstreamStreamIdleTimeoutSeconds: number | null;
   upstreamRequestTimeoutNonStreamingSeconds: number | null;
-  interceptAnthropicWarmupRequests: boolean | null;
-  enableThinkingSignatureRectifier: boolean | null;
-  enableThinkingBudgetRectifier: boolean | null;
-  enableBillingHeaderRectifier: boolean | null;
-  enableClaudeMetadataUserIdInjection: boolean | null;
   enableCacheAnomalyMonitor: boolean | null;
   enableDebugLog: boolean | null;
   enableTaskCompleteNotify: boolean | null;
   enableNotificationSound: boolean | null;
-  enableResponseFixer: boolean | null;
-  responseFixerFixEncoding: boolean | null;
-  responseFixerFixSseFormat: boolean | null;
-  responseFixerFixTruncatedJson: boolean | null;
-  verboseProviderError: boolean | null;
   failoverMaxAttemptsPerProvider: number;
   failoverMaxProvidersToTry: number;
   upstreamRetryPolicy: UpstreamRetryPolicy | null;

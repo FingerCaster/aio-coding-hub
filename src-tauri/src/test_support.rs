@@ -11,6 +11,14 @@ pub fn clear_settings_cache() {
     crate::settings::clear_cache();
 }
 
+pub fn set_settings_finalize_restore_failpoint_for_tests(enabled: bool) {
+    crate::settings::set_settings_finalize_restore_failpoint_for_tests(enabled);
+}
+
+pub fn set_settings_finalize_failpoint_for_tests(enabled: bool) {
+    crate::settings::set_settings_finalize_failpoint_for_tests(enabled);
+}
+
 #[cfg(test)]
 pub fn test_env_lock() -> MutexGuard<'static, ()> {
     static TEST_ENV_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
@@ -537,129 +545,22 @@ pub fn settings_set_json<R: tauri::Runtime>(
     serialize_json(persisted)
 }
 
-/// Update application settings through the real `settings_set` command path.
-///
-/// This exercises the same read-merge-write logic as the frontend settings page.
+/// Update application settings through the real `settings_set` production path.
 pub fn settings_set_via_command_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     update: serde_json::Value,
 ) -> crate::shared::error::AppResult<serde_json::Value> {
-    use crate::commands::settings::{
-        SensitiveStringUpdate, SettingsMutationResult, SettingsMutationRuntime, SettingsUpdate,
-        SettingsView,
-    };
+    use crate::commands::settings::SettingsUpdate;
 
     let update: SettingsUpdate = serde_json::from_value(update)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings command payload: {e}"))?;
-    let previous = crate::settings::read(app).map_err(|err| {
-        format!(
-            "SETTINGS_RECOVERY_REQUIRED: settings.json could not be read; fix or restore it before saving: {err}"
-        )
-    })?;
-
-    let mut next = previous.clone();
-    next.schema_version = crate::settings::SCHEMA_VERSION;
-    next.preferred_port = update.preferred_port;
-    next.auto_start = update.auto_start;
-    next.log_retention_days = update.log_retention_days;
-    next.failover_max_attempts_per_provider = update.failover_max_attempts_per_provider;
-    next.failover_max_providers_to_try = update.failover_max_providers_to_try;
-
-    if let Some(value) = update.update_releases_url {
-        next.update_releases_url = value;
-    }
-    if let Some(value) = update.gateway_listen_mode {
-        next.gateway_listen_mode = value;
-    }
-    if let Some(value) = update.gateway_custom_listen_address {
-        next.gateway_custom_listen_address = value;
-    }
-    if let Some(value) = update.wsl_host_address_mode {
-        next.wsl_host_address_mode = value;
-    }
-    if let Some(value) = update.wsl_custom_host_address {
-        next.wsl_custom_host_address = value;
-    }
-    if let Some(value) = update.cx2cc_fallback_model_opus {
-        next.cx2cc_fallback_model_opus = value;
-    }
-    if let Some(value) = update.cx2cc_fallback_model_sonnet {
-        next.cx2cc_fallback_model_sonnet = value;
-    }
-    if let Some(value) = update.cx2cc_fallback_model_haiku {
-        next.cx2cc_fallback_model_haiku = value;
-    }
-    if let Some(value) = update.cx2cc_fallback_model_main {
-        next.cx2cc_fallback_model_main = value;
-    }
-    if let Some(value) = update.cx2cc_model_reasoning_effort {
-        next.cx2cc_model_reasoning_effort = value;
-    }
-    if let Some(value) = update.cx2cc_service_tier {
-        next.cx2cc_service_tier = value;
-    }
-    if let Some(value) = update.upstream_proxy_enabled {
-        next.upstream_proxy_enabled = value;
-    }
-    if let Some(value) = update.upstream_proxy_url {
-        next.upstream_proxy_url = value;
-    }
-    if let Some(value) = update.upstream_proxy_username {
-        next.upstream_proxy_username = value;
-    }
-
-    next.update_releases_url = next.update_releases_url.trim().to_string();
-    next.gateway_custom_listen_address = next.gateway_custom_listen_address.trim().to_string();
-    next.wsl_custom_host_address = next.wsl_custom_host_address.trim().to_string();
-    next.cx2cc_fallback_model_opus = next.cx2cc_fallback_model_opus.trim().to_string();
-    next.cx2cc_fallback_model_sonnet = next.cx2cc_fallback_model_sonnet.trim().to_string();
-    next.cx2cc_fallback_model_haiku = next.cx2cc_fallback_model_haiku.trim().to_string();
-    next.cx2cc_fallback_model_main = next.cx2cc_fallback_model_main.trim().to_string();
-    next.cx2cc_model_reasoning_effort = next.cx2cc_model_reasoning_effort.trim().to_string();
-    next.cx2cc_service_tier = next.cx2cc_service_tier.trim().to_string();
-    next.upstream_proxy_url = next.upstream_proxy_url.trim().to_string();
-    next.upstream_proxy_username = next.upstream_proxy_username.trim().to_string();
-
-    next.upstream_proxy_password = match update
-        .upstream_proxy_password
-        .unwrap_or(SensitiveStringUpdate::Preserve)
-    {
-        SensitiveStringUpdate::Preserve => previous.upstream_proxy_password.clone(),
-        SensitiveStringUpdate::Clear => String::new(),
-        SensitiveStringUpdate::Replace(value) => value,
-    };
-
-    if next.upstream_proxy_enabled && next.upstream_proxy_url.is_empty() {
-        return Err(
-            "upstream_proxy_url cannot be empty when upstream proxy is enabled"
-                .to_string()
-                .into(),
-        );
-    }
-
-    crate::settings::validate_bounds(&next)?;
-    crate::gateway::http_client::validate_proxy_for_settings(&next)?;
-    let persisted = crate::settings::write(app, &next)?;
-    crate::gateway::http_client::sync_from_settings(&persisted)?;
-
-    let gateway_status = crate::gateway_runtime_access::try_app_gateway_status(app).unwrap_or(
-        crate::gateway::GatewayStatus {
-            running: false,
-            port: None,
-            base_url: None,
-            listen_addr: None,
-        },
-    );
-
-    serialize_json(SettingsMutationResult {
-        settings: SettingsView::from(&persisted),
-        runtime: SettingsMutationRuntime {
-            gateway_rebound: false,
-            cli_proxy_synced: false,
-            wsl_auto_sync_triggered: false,
-            gateway_status,
-        },
-    })
+    let db_state = crate::app::app_state::DbInitState::default();
+    let result = tauri::async_runtime::block_on(
+        crate::app::settings_service::settings_set_impl_generic(app.clone(), update, false, None),
+    )
+    .map_err(crate::shared::error::AppError::from)?;
+    let _ = db_state;
+    serialize_json(result)
 }
 
 pub fn gateway_upstream_proxy_url_json<R: tauri::Runtime>(

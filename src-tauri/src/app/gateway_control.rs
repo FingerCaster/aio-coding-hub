@@ -48,12 +48,11 @@ pub(crate) fn app_start_gateway(
         if start_result.effective_preferred_port != requested_port
             && requested_port == cfg.preferred_port
         {
-            let _ = settings::update(app, |current| {
-                if current.preferred_port == cfg.preferred_port {
-                    current.preferred_port = start_result.effective_preferred_port;
-                }
-                Ok(())
-            });
+            let _ = crate::app::autostart::repair_preferred_port_if_current(
+                app,
+                cfg.preferred_port,
+                start_result.effective_preferred_port,
+            );
         }
 
         Ok(start_result.status)

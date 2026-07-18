@@ -1,6 +1,6 @@
 //! Skill file system utilities for config export/import.
 
-use crate::shared::error::AppResult;
+use crate::shared::error::{AppError, AppResult};
 use base64::engine::general_purpose::STANDARD as BASE64_STANDARD;
 use base64::Engine;
 use serde::{Deserialize, Serialize};
@@ -239,15 +239,18 @@ impl SkillFileCollector {
             .into());
         }
         ensure_export_file_single_link(&source)?;
-        let mut content = Vec::with_capacity(metadata.len() as usize);
-        std::io::Read::read_to_end(&mut source, &mut content)
-            .map_err(|e| format!("failed to read skill file handle: {e}"))?;
-        if content.len() > file_limit {
-            return Err(format!(
-                "SEC_INVALID_INPUT: skill file too large (max {file_limit} bytes)"
-            )
-            .into());
-        }
+        #[cfg(test)]
+        run_after_skill_export_file_metadata_test_hook();
+        let content = crate::shared::fs::read_open_file_with_max_len(&mut source, file_limit)
+            .map_err(|e| -> AppError {
+                let message = e.to_string();
+                if message.contains("too large") {
+                    format!("SEC_INVALID_INPUT: skill file too large (max {file_limit} bytes)")
+                        .into()
+                } else {
+                    format!("failed to read skill file handle: {message}").into()
+                }
+            })?;
         let next_total = self
             .total_bytes
             .checked_add(content.len())
@@ -495,8 +498,10 @@ fn open_export_child(
     name: &std::ffi::OsStr,
     directory: bool,
 ) -> AppResult<std::fs::File> {
-    let mut flags =
-        rustix::fs::OFlags::RDONLY | rustix::fs::OFlags::NOFOLLOW | rustix::fs::OFlags::CLOEXEC;
+    let mut flags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC
+        | rustix::fs::OFlags::NONBLOCK;
     if directory {
         flags |= rustix::fs::OFlags::DIRECTORY;
     }
@@ -746,8 +751,13 @@ fn ensure_export_file_single_link(file: &std::fs::File) -> AppResult<()> {
 type AfterSkillExportEnumerationHook = Box<dyn FnOnce() + Send>;
 
 #[cfg(test)]
+type AfterSkillExportFileMetadataHook = Box<dyn FnOnce() + Send>;
+
+#[cfg(test)]
 thread_local! {
     static AFTER_SKILL_EXPORT_ENUMERATION_TEST_HOOK: std::cell::RefCell<Option<AfterSkillExportEnumerationHook>> = const { std::cell::RefCell::new(None) };
+    static AFTER_SKILL_EXPORT_FILE_METADATA_TEST_HOOK: std::cell::RefCell<Option<AfterSkillExportFileMetadataHook>> = const { std::cell::RefCell::new(None) };
+    static WRITE_PREPARED_SKILL_FILES_FAILPOINT: std::cell::Cell<Option<usize>> = const { std::cell::Cell::new(None) };
 }
 
 #[cfg(test)]
@@ -756,11 +766,51 @@ pub(super) fn set_after_skill_export_enumeration_test_hook(hook: AfterSkillExpor
 }
 
 #[cfg(test)]
+pub(super) fn set_after_skill_export_file_metadata_test_hook(
+    hook: AfterSkillExportFileMetadataHook,
+) {
+    AFTER_SKILL_EXPORT_FILE_METADATA_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
 fn run_after_skill_export_enumeration_test_hook() {
     let hook = AFTER_SKILL_EXPORT_ENUMERATION_TEST_HOOK.with(|current| current.borrow_mut().take());
     if let Some(hook) = hook {
         hook();
     }
+}
+
+#[cfg(test)]
+fn run_after_skill_export_file_metadata_test_hook() {
+    let hook =
+        AFTER_SKILL_EXPORT_FILE_METADATA_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook();
+    }
+}
+
+#[cfg(test)]
+pub(super) fn set_write_prepared_skill_files_failpoint(after_files: Option<usize>) {
+    WRITE_PREPARED_SKILL_FILES_FAILPOINT.with(|current| current.set(after_files));
+}
+
+#[cfg(test)]
+fn run_write_prepared_skill_files_failpoint() -> AppResult<()> {
+    let should_fail = WRITE_PREPARED_SKILL_FILES_FAILPOINT.with(|current| match current.get() {
+        Some(remaining) if remaining <= 1 => {
+            current.set(None);
+            true
+        }
+        Some(remaining) => {
+            current.set(Some(remaining - 1));
+            false
+        }
+        None => false,
+    });
+    if should_fail {
+        return Err("SYSTEM_ERROR: injected mid-write failure".into());
+    }
+    Ok(())
 }
 
 fn relative_path_string(path: &Path) -> AppResult<String> {
@@ -843,10 +893,24 @@ pub(super) fn write_prepared_skill_files_to_dir(
     dir: &Path,
     prepared: PreparedSkillFiles,
 ) -> AppResult<()> {
-    if dir.exists() {
-        return Err(format!("SKILL_IMPORT_DIR_ALREADY_EXISTS: {}", dir.display()).into());
+    match std::fs::create_dir(dir) {
+        Ok(()) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            return Err(format!("SKILL_IMPORT_DIR_ALREADY_EXISTS: {}", dir.display()).into())
+        }
+        Err(error) => return Err(format!("failed to create {}: {error}", dir.display()).into()),
     }
-    std::fs::create_dir_all(dir).map_err(|e| format!("failed to create {}: {e}", dir.display()))?;
+
+    write_prepared_skill_files_into_existing_dir(dir, prepared)
+}
+
+pub(super) fn write_prepared_skill_files_into_existing_dir(
+    dir: &Path,
+    prepared: PreparedSkillFiles,
+) -> AppResult<()> {
+    if !dir.is_dir() {
+        return Err(format!("SKILL_IMPORT_DIR_NOT_DIRECTORY: {}", dir.display()).into());
+    }
 
     for (relative_path, bytes) in prepared.decoded_files {
         let target = dir.join(&relative_path);
@@ -855,6 +919,8 @@ pub(super) fn write_prepared_skill_files_to_dir(
                 .map_err(|e| format!("failed to create {}: {e}", parent.display()))?;
         }
         crate::shared::fs::write_file_atomic(&target, &bytes)?;
+        #[cfg(test)]
+        run_write_prepared_skill_files_failpoint()?;
     }
 
     let managed_marker = dir.join(SKILL_MANAGED_MARKER_FILE);

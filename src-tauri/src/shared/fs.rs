@@ -102,33 +102,208 @@ pub(crate) fn copy_file_if_missing(
     Ok(true)
 }
 
+/// Open a regular on-disk file without following the final path component.
+/// Returns `None` only when the path is missing; other object types and open
+/// failures become explicit errors so callers can fail closed.
+pub(crate) fn open_regular_file_no_follow(
+    path: &Path,
+) -> crate::shared::error::AppResult<Option<std::fs::File>> {
+    open_regular_file_no_follow_impl(path)
+}
+
+#[cfg(unix)]
+fn open_regular_file_no_follow_impl(
+    path: &Path,
+) -> crate::shared::error::AppResult<Option<std::fs::File>> {
+    use rustix::fs::{Mode, OFlags};
+
+    let flags = OFlags::RDONLY | OFlags::NOFOLLOW | OFlags::CLOEXEC | OFlags::NONBLOCK;
+    match rustix::fs::open(path, flags, Mode::empty()) {
+        Ok(fd) => {
+            let file: std::fs::File = fd.into();
+            let stat = rustix::fs::fstat(&file).map_err(|e| {
+                format!(
+                    "SEC_INVALID_INPUT: failed to inspect {}: {e}",
+                    path.display()
+                )
+            })?;
+            if rustix::fs::FileType::from_raw_mode(stat.st_mode)
+                != rustix::fs::FileType::RegularFile
+            {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: {} is not a regular file",
+                    path.display()
+                )
+                .into());
+            }
+            Ok(Some(file))
+        }
+        Err(err) if err == rustix::io::Errno::NOENT => Ok(None),
+        Err(err) if err == rustix::io::Errno::LOOP => Err(format!(
+            "SEC_INVALID_INPUT: {} is a symbolic link or reparse point",
+            path.display()
+        )
+        .into()),
+        Err(err) => Err(format!(
+            "SEC_INVALID_INPUT: failed to open {}: {err}",
+            path.display()
+        )
+        .into()),
+    }
+}
+
+#[cfg(windows)]
+fn open_regular_file_no_follow_impl(
+    path: &Path,
+) -> crate::shared::error::AppResult<Option<std::fs::File>> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, GetFileType, BY_HANDLE_FILE_INFORMATION,
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, FILE_TYPE_DISK,
+    };
+
+    let open_result = std::fs::OpenOptions::new()
+        .read(true)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path);
+
+    let file = match open_result {
+        Ok(file) => file,
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(err) => {
+            return Err(format!(
+                "SEC_INVALID_INPUT: failed to open {}: {err}",
+                path.display()
+            )
+            .into())
+        }
+    };
+
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
+        return Err(format!(
+            "SEC_INVALID_INPUT: failed to inspect {}: {}",
+            path.display(),
+            std::io::Error::last_os_error()
+        )
+        .into());
+    }
+    let info = unsafe { info.assume_init() };
+    if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {} is not a regular file",
+            path.display()
+        )
+        .into());
+    }
+    if info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {} is a symbolic link or reparse point",
+            path.display()
+        )
+        .into());
+    }
+    let file_type = unsafe { GetFileType(file.as_raw_handle() as _) };
+    if file_type != FILE_TYPE_DISK {
+        return Err(format!(
+            "SEC_INVALID_INPUT: {} is not a regular disk file",
+            path.display()
+        )
+        .into());
+    }
+    Ok(Some(file))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_regular_file_no_follow_impl(
+    path: &Path,
+) -> crate::shared::error::AppResult<Option<std::fs::File>> {
+    match std::fs::OpenOptions::new().read(true).open(path) {
+        Ok(file) => {
+            let metadata = file.metadata().map_err(|e| {
+                format!(
+                    "SEC_INVALID_INPUT: failed to inspect {}: {e}",
+                    path.display()
+                )
+            })?;
+            if !metadata.is_file() {
+                return Err(format!(
+                    "SEC_INVALID_INPUT: {} is not a regular file",
+                    path.display()
+                )
+                .into());
+            }
+            Ok(Some(file))
+        }
+        Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(None),
+        Err(err) => Err(format!(
+            "SEC_INVALID_INPUT: failed to open {}: {err}",
+            path.display()
+        )
+        .into()),
+    }
+}
+
+/// Hard-bounded read from an already-opened handle.
+///
+/// Reads at most `max_len + 1` bytes. Capacity is capped at `max_len` so a
+/// growing file cannot force a full allocation of the observed size. The path
+/// is never reopened; callers retain authority via the captured handle.
+pub(crate) fn read_open_file_with_max_len(
+    file: &mut std::fs::File,
+    max_len: usize,
+) -> crate::shared::error::AppResult<Vec<u8>> {
+    use std::io::Read as _;
+
+    let metadata_len = file
+        .metadata()
+        .map(|meta| meta.len())
+        .unwrap_or(0)
+        .min(max_len as u64) as usize;
+    let take_limit = max_len
+        .checked_add(1)
+        .ok_or_else(|| "SEC_INVALID_INPUT: file size limit overflow".to_string())?;
+
+    let mut bytes = Vec::with_capacity(metadata_len);
+    let mut limited = file.take(take_limit as u64);
+    limited
+        .read_to_end(&mut bytes)
+        .map_err(|e| format!("failed to read open file handle: {e}"))?;
+    if bytes.len() > max_len {
+        return Err(format!("SEC_INVALID_INPUT: file too large (max {max_len} bytes)").into());
+    }
+    Ok(bytes)
+}
+
 pub(crate) fn read_optional_file_with_max_len(
     path: &Path,
     max_len: usize,
 ) -> crate::shared::error::AppResult<Option<Vec<u8>>> {
-    if !path.exists() {
+    let Some(mut file) = open_regular_file_no_follow(path)? else {
         return Ok(None);
-    }
-
-    let metadata = std::fs::metadata(path)
-        .map_err(|e| format!("failed to read metadata {}: {e}", path.display()))?;
-    if metadata.len() > max_len as u64 {
-        return Err(format!(
-            "SEC_INVALID_INPUT: file {} too large (max {max_len} bytes)",
-            path.display()
-        )
-        .into());
-    }
-
-    let bytes =
-        std::fs::read(path).map_err(|e| format!("failed to read {}: {e}", path.display()))?;
-    if bytes.len() > max_len {
-        return Err(format!(
-            "SEC_INVALID_INPUT: file {} too large (max {max_len} bytes)",
-            path.display()
-        )
-        .into());
-    }
+    };
+    let bytes = read_open_file_with_max_len(&mut file, max_len).map_err(|err| {
+        let message = err.to_string();
+        if message.contains("too large") {
+            format!(
+                "SEC_INVALID_INPUT: file {} too large (max {max_len} bytes)",
+                path.display()
+            )
+            .into()
+        } else if message.starts_with("failed to read open file handle:") {
+            format!(
+                "failed to read {}: {}",
+                path.display(),
+                message.trim_start_matches("failed to read open file handle: ")
+            )
+            .into()
+        } else {
+            err
+        }
+    })?;
     Ok(Some(bytes))
 }
 
@@ -273,6 +448,88 @@ mod tests {
         let err = read_optional_file_with_max_len(&path, 4).expect_err("oversized file fails");
 
         assert!(err.to_string().contains("too large"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_open_file_with_max_len_accepts_exact_limit_and_arbitrary_bytes() {
+        let dir = unique_tmp_dir();
+        let path = dir.join("exact.bin");
+        let payload = b"\x00secret\xff\n\r\x7f";
+        std::fs::write(&path, payload).expect("write exact");
+
+        let mut file = open_regular_file_no_follow(&path)
+            .expect("open")
+            .expect("exists");
+        let got = read_open_file_with_max_len(&mut file, payload.len()).expect("read exact");
+        assert_eq!(got, payload);
+
+        let path_over = dir.join("over.bin");
+        std::fs::write(&path_over, b"12345").expect("write over");
+        let mut over_file = open_regular_file_no_follow(&path_over)
+            .expect("open over")
+            .expect("exists");
+        let err = read_open_file_with_max_len(&mut over_file, 4).expect_err("limit+1 rejects");
+        assert!(err.to_string().contains("too large"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_open_file_with_max_len_rejects_growth_after_metadata() {
+        let dir = unique_tmp_dir();
+        let path = dir.join("grow.bin");
+        std::fs::write(&path, b"abcd").expect("write initial");
+
+        let mut file = open_regular_file_no_follow(&path)
+            .expect("open")
+            .expect("exists");
+        // Append after open/metadata would have observed the short size.
+        {
+            use std::io::Write as _;
+            let mut appender = std::fs::OpenOptions::new()
+                .append(true)
+                .open(&path)
+                .expect("append open");
+            appender.write_all(b"EFGHIJKLMNOP").expect("append");
+        }
+        let err = read_open_file_with_max_len(&mut file, 4).expect_err("growth rejects");
+        assert!(err.to_string().contains("too large"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn read_file_with_max_len_uses_captured_handle_after_path_replace() {
+        let dir = unique_tmp_dir();
+        let path = dir.join("target.bin");
+        let replacement = dir.join("replacement.bin");
+        std::fs::write(&path, b"original-bytes").expect("write original");
+        std::fs::write(&replacement, b"replacement-bytes").expect("write replacement");
+
+        let mut file = open_regular_file_no_follow(&path)
+            .expect("open original")
+            .expect("exists");
+        std::fs::rename(&replacement, &path).expect("replace path");
+        let got = read_open_file_with_max_len(&mut file, 64).expect("read captured handle");
+        assert_eq!(got, b"original-bytes");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn open_regular_file_no_follow_rejects_symlink_and_directory() {
+        let dir = unique_tmp_dir();
+        let target = dir.join("target.txt");
+        let link = dir.join("link.txt");
+        let nested = dir.join("nested");
+        std::fs::write(&target, b"target").expect("write target");
+        std::fs::create_dir_all(&nested).expect("create nested");
+        std::os::unix::fs::symlink(&target, &link).expect("symlink");
+
+        let link_err = open_regular_file_no_follow(&link).expect_err("symlink rejected");
+        assert!(link_err.to_string().contains("SEC_INVALID_INPUT"));
+
+        let dir_err = open_regular_file_no_follow(&nested).expect_err("directory rejected");
+        assert!(dir_err.to_string().contains("SEC_INVALID_INPUT"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 

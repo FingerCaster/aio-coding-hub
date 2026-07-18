@@ -130,7 +130,12 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   already-validated file handle and require the handle identity to equal the
   identity captured during metadata validation (`dev+ino` on Unix; volume +
   FileId on Windows). Persisted assets with multiple hard links fail closed.
-  Destructive operations atomically rename the
+  Storage stats walk from the already-validated task directory handle with
+  relative no-follow enumeration/open, visited identities, max depth 64, global
+  entry budget 100000, and checked byte totals that never exceed `i64::MAX`.
+  Symlink/junction/reparse/special/identity-race/budget failures fail the whole
+  stats request closed; malicious entries are never skipped to return an
+  undercount. Destructive operations atomically rename the
   validated task into a unique quarantine under the trusted root using the
   trusted directory handle, verify identity, then recursively delete there.
   Reopening the original path after validation is not an acceptable boundary.
@@ -300,3 +305,15 @@ asset scope -> no Image Gen filesystem authority
 Keep authority acquisition and validation in the same Rust-owned operation;
 untrusted remote, renderer, or DB values may describe a candidate but never
 grant network or filesystem authority by themselves.
+
+## Follow-up Finding F14
+
+- The storage-stats production entry must be tested against an enumerated
+  regular file replaced by a Unix FIFO or other special object. The regression
+  uses a separate child process and an external watchdog with a hard deadline;
+  it must fail closed before the deadline rather than call the synchronous
+  function and inspect elapsed time only after it returns.
+- Unix-only FIFO/race coverage remains cfg(unix). Windows keeps its junction,
+  reparse, and special-entry coverage under the Windows cfg; a Windows run
+  must report that Unix FIFO coverage was not executable rather than claiming
+  it passed.

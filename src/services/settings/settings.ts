@@ -75,20 +75,10 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   upstreamFirstByteTimeoutSeconds: "upstream_first_byte_timeout_seconds",
   upstreamStreamIdleTimeoutSeconds: "upstream_stream_idle_timeout_seconds",
   upstreamRequestTimeoutNonStreamingSeconds: "upstream_request_timeout_non_streaming_seconds",
-  verboseProviderError: "verbose_provider_error",
-  interceptAnthropicWarmupRequests: "intercept_anthropic_warmup_requests",
-  enableThinkingSignatureRectifier: "enable_thinking_signature_rectifier",
-  enableThinkingBudgetRectifier: "enable_thinking_budget_rectifier",
-  enableBillingHeaderRectifier: "enable_billing_header_rectifier",
-  enableClaudeMetadataUserIdInjection: "enable_claude_metadata_user_id_injection",
   enableCacheAnomalyMonitor: "enable_cache_anomaly_monitor",
   enableDebugLog: "enable_debug_log",
   enableTaskCompleteNotify: "enable_task_complete_notify",
   enableNotificationSound: "enable_notification_sound",
-  enableResponseFixer: "enable_response_fixer",
-  responseFixerFixEncoding: "response_fixer_fix_encoding",
-  responseFixerFixSseFormat: "response_fixer_fix_sse_format",
-  responseFixerFixTruncatedJson: "response_fixer_fix_truncated_json",
   updateReleasesUrl: "update_releases_url",
   failoverMaxAttemptsPerProvider: "failover_max_attempts_per_provider",
   failoverMaxProvidersToTry: "failover_max_providers_to_try",
@@ -131,6 +121,16 @@ type SettingsViewKeysHandledOutsideCreateInput =
   | "schema_version"
   | "enable_circuit_breaker_notice"
   | "enable_codex_session_id_completion"
+  | "verbose_provider_error"
+  | "intercept_anthropic_warmup_requests"
+  | "enable_thinking_signature_rectifier"
+  | "enable_thinking_budget_rectifier"
+  | "enable_billing_header_rectifier"
+  | "enable_claude_metadata_user_id_injection"
+  | "enable_response_fixer"
+  | "response_fixer_fix_encoding"
+  | "response_fixer_fix_sse_format"
+  | "response_fixer_fix_truncated_json"
   | "response_fixer_max_json_depth"
   | "response_fixer_max_fix_size"
   | "upstream_proxy_password_configured";
@@ -202,20 +202,10 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): FrontendSettingsUpd
     upstreamStreamIdleTimeoutSeconds: input.upstreamStreamIdleTimeoutSeconds ?? null,
     upstreamRequestTimeoutNonStreamingSeconds:
       input.upstreamRequestTimeoutNonStreamingSeconds ?? null,
-    interceptAnthropicWarmupRequests: input.interceptAnthropicWarmupRequests ?? null,
-    enableThinkingSignatureRectifier: input.enableThinkingSignatureRectifier ?? null,
-    enableThinkingBudgetRectifier: input.enableThinkingBudgetRectifier ?? null,
-    enableBillingHeaderRectifier: input.enableBillingHeaderRectifier ?? null,
-    enableClaudeMetadataUserIdInjection: input.enableClaudeMetadataUserIdInjection ?? null,
     enableCacheAnomalyMonitor: input.enableCacheAnomalyMonitor ?? null,
     enableDebugLog: input.enableDebugLog ?? null,
     enableTaskCompleteNotify: input.enableTaskCompleteNotify ?? null,
     enableNotificationSound: input.enableNotificationSound ?? null,
-    enableResponseFixer: input.enableResponseFixer ?? null,
-    responseFixerFixEncoding: input.responseFixerFixEncoding ?? null,
-    responseFixerFixSseFormat: input.responseFixerFixSseFormat ?? null,
-    responseFixerFixTruncatedJson: input.responseFixerFixTruncatedJson ?? null,
-    verboseProviderError: input.verboseProviderError ?? null,
     failoverMaxAttemptsPerProvider: input.failoverMaxAttemptsPerProvider,
     failoverMaxProvidersToTry: input.failoverMaxProvidersToTry,
     upstreamRetryPolicy: input.upstreamRetryPolicy ?? null,

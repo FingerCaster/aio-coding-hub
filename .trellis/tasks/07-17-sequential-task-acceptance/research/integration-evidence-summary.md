@@ -44,10 +44,15 @@
 ## Fixed execution policy
 
 - Baseline: local `main@2e43ee23572e69e34ce2c4cfb60481b58acf9298`.
-- Order: child 1 -> 2 -> 3 -> 4 -> 5 -> parent integration acceptance.
+- Order: child 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 (archived) -> 11 (round-6 current) -> parent integration acceptance.
 - One task active at a time; no concurrent subagents.
 - No `upstream` access before child 5. Child 5 keeps `origin` as normal target and `upstream`
   fetch-only, imports non-conflicting changes, and pauses on fork behavior conflicts.
+- Child 5 owns synchronization and minimal conflict resolution only. A defect that reproduces on the
+  pinned upstream revision without the merge is documented as out of scope and moved to a separately
+  authorized follow-up task instead of being fixed in the merge task.
+- The Image Gen fixes already retained later in this parent task are a one-time user-approved exception,
+  not precedent for widening future upstream merge tasks.
 
 ## Remaining dynamic checks (not root-cause hypotheses)
 
@@ -57,3 +62,19 @@
 - Child 4: synthetic binary `>1 MiB && <=8 MiB` export/import round trip and `>8 MiB` rejection.
 
 No unresolved product decision blocks implementation.
+
+## Round-6 follow-up fact projection
+
+Child 11 remains the active implementation task. Historical implementation records retain their actual
+`gpt-5.6-luna / effort=max` model; all remaining implementation and checks use exactly one Orca-managed Codex
+`gpt-5.6-terra / effort=max` terminal with no concurrent execution agent. Its historical F1-F8 records are
+retained, while the already completed independent Codex `gpt-5.6-sol / effort=max`
+round-6 final review added F9-F15: exact ordinary settings rollback tokens, early Skill FS
+ownership, local Skill partial-write cleanup, Unix export FIFO bounded open, settings finalize/restore
+recovery, bounded Image Gen watchdog evidence, and round-5 journal/task fact consistency. The parent
+stays in_progress until child 11 is focused/full validated, committed and archived, followed by a
+frozen-commit dual independent read-only review: Codex `gpt-5.6-sol / effort=max` and Pi
+(`grok-cpa / grok-4.5`). The parent final review follows the same fresh-session, isolated-pair boundary;
+the coordinator aggregates the reports, and neither the historical Luna session nor the Terra execution
+terminal may be reused for review.
+The one-time Image Gen exception above remains unchanged.

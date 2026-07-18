@@ -240,7 +240,7 @@ pub(crate) fn canonical_storage_root(storage_dir: &Path) -> AppResult<PathBuf> {
     Ok(root)
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 struct FileIdentity {
     volume: u64,
     file: u64,
@@ -2039,7 +2039,17 @@ pub(crate) fn storage_stats_with_roots(
         .map_err(|e| db_err!("failed to count image gen tasks: {e}"))?;
     drop(conn);
 
-    let mut total_bytes: i64 = 0;
+    let mut total_bytes: u64 = 0;
+    #[cfg(test)]
+    let mut total_entries: u64 = take_storage_stats_entry_count_seed();
+    #[cfg(not(test))]
+    let mut total_entries: u64 = 0;
+    let mut visited = std::collections::HashSet::new();
+    let max_entries = storage_stats_max_entries();
+    #[cfg(test)]
+    let byte_bias = take_storage_stats_byte_bias();
+    #[cfg(not(test))]
+    let byte_bias = 0;
     let conn = db.open_connection()?;
     let pairs = query_id_dir_pairs(
         &conn,
@@ -2049,32 +2059,425 @@ pub(crate) fn storage_stats_with_roots(
     for (id, dir) in pairs {
         let dir = validate_task_dir(&storage_roots, &dir, &id)?;
         dir.revalidate()?;
-        total_bytes = total_bytes.saturating_add(dir_size_bytes(&dir.path));
+        let task_bytes = dir_size_bytes_from_handle(
+            &dir.task_handle,
+            dir.task_identity,
+            &mut visited,
+            &mut total_entries,
+            max_entries,
+            byte_bias,
+        )?;
+        total_bytes = total_bytes.checked_add(task_bytes).ok_or_else(|| {
+            "SEC_INVALID_INPUT: image gen storage size exceeds representable range".to_string()
+        })?;
+        if total_bytes > i64::MAX as u64 {
+            return Err(
+                "SEC_INVALID_INPUT: image gen storage size exceeds representable range"
+                    .to_string()
+                    .into(),
+            );
+        }
     }
 
     Ok(ImageGenStorageView {
         dir: current_storage_dir.to_string_lossy().to_string(),
-        total_bytes,
+        total_bytes: total_bytes as i64,
         task_count,
     })
 }
 
-fn dir_size_bytes(dir: &Path) -> i64 {
-    let Ok(entries) = std::fs::read_dir(dir) else {
-        return 0;
-    };
-    let mut total: i64 = 0;
-    for entry in entries.flatten() {
-        let Ok(metadata) = entry.metadata() else {
-            continue;
-        };
-        if metadata.is_dir() {
-            total = total.saturating_add(dir_size_bytes(&entry.path()));
-        } else {
-            total = total.saturating_add(metadata.len() as i64);
+const STORAGE_STATS_MAX_DEPTH: usize = 64;
+const STORAGE_STATS_MAX_ENTRIES: u64 = 100_000;
+
+#[cfg(test)]
+thread_local! {
+    static STORAGE_STATS_ENTRY_COUNT_SEED: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+/// Seed the real production entry counter for a one-shot boundary test. The
+/// walker still enumerates and charges a real filesystem entry, which becomes
+/// the 100001st entry without creating a large test tree.
+#[cfg(test)]
+pub(crate) fn set_storage_stats_entry_count_seed_for_test(seed: u64) {
+    STORAGE_STATS_ENTRY_COUNT_SEED.with(|current| current.set(seed));
+}
+
+#[cfg(test)]
+fn take_storage_stats_entry_count_seed() -> u64 {
+    STORAGE_STATS_ENTRY_COUNT_SEED.with(|current| current.replace(0))
+}
+
+// Optional one-shot additive byte bias applied after each regular-file size is
+// read from handle metadata. Used to force checked i64::MAX+1 fail-closed without
+// allocating huge files.
+#[cfg(test)]
+thread_local! {
+    static STORAGE_STATS_BYTE_BIAS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_storage_stats_byte_bias_for_test(bias: u64) {
+    STORAGE_STATS_BYTE_BIAS.with(|current| current.set(bias));
+}
+
+#[cfg(test)]
+fn take_storage_stats_byte_bias() -> u64 {
+    STORAGE_STATS_BYTE_BIAS.with(|current| current.replace(0))
+}
+
+/// Fired after a stats entry is enumerated but before relative open, so tests
+/// can replace the entry with a different identity (symlink/junction/file swap).
+#[cfg(test)]
+type BeforeStatsOpenHook = Box<dyn FnOnce(&str) + Send>;
+
+#[cfg(test)]
+thread_local! {
+    static BEFORE_STATS_OPEN_TEST_HOOK: std::cell::RefCell<Option<BeforeStatsOpenHook>> = const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+pub(crate) fn set_before_stats_open_test_hook(hook: BeforeStatsOpenHook) {
+    BEFORE_STATS_OPEN_TEST_HOOK.with(|current| current.replace(Some(hook)));
+}
+
+#[cfg(test)]
+fn run_before_stats_open_test_hook(entry_name: &str) {
+    let hook = BEFORE_STATS_OPEN_TEST_HOOK.with(|current| current.borrow_mut().take());
+    if let Some(hook) = hook {
+        hook(entry_name);
+    }
+}
+
+fn storage_stats_max_entries() -> u64 {
+    STORAGE_STATS_MAX_ENTRIES
+}
+
+fn dir_size_bytes_from_handle(
+    task_handle: &std::fs::File,
+    task_identity: FileIdentity,
+    visited: &mut std::collections::HashSet<FileIdentity>,
+    total_entries: &mut u64,
+    max_entries: u64,
+    byte_bias: u64,
+) -> AppResult<u64> {
+    if !visited.insert(task_identity) {
+        return Err("SEC_INVALID_INPUT: image gen storage directory identity cycle".into());
+    }
+    let mut stack = vec![(
+        task_handle
+            .try_clone()
+            .map_err(|e| format!("SYSTEM_ERROR: failed to clone image gen task handle: {e}"))?,
+        0usize,
+    )];
+    let mut total: u64 = 0;
+
+    while let Some((dir_handle, depth)) = stack.pop() {
+        if depth > STORAGE_STATS_MAX_DEPTH {
+            return Err(format!(
+                "SEC_INVALID_INPUT: image gen storage directory exceeds max depth {STORAGE_STATS_MAX_DEPTH}"
+            )
+            .into());
+        }
+        // Enumeration shares and enforces the global entry budget incrementally;
+        // never collect an unbounded Vec first.
+        let entries = list_stats_entries(&dir_handle, total_entries, max_entries)?;
+        for entry in entries {
+            match entry.kind {
+                StatsEntryKind::Directory => {
+                    #[cfg(test)]
+                    run_before_stats_open_test_hook(&stats_entry_name(&entry));
+                    let child = open_stats_child(&dir_handle, &entry, true)?;
+                    let child_identity = file_identity_from_handle(&child)?;
+                    if child_identity != entry.identity {
+                        return Err(
+                            "SEC_INVALID_INPUT: image gen storage directory identity changed"
+                                .to_string()
+                                .into(),
+                        );
+                    }
+                    if !visited.insert(child_identity) {
+                        return Err(
+                            "SEC_INVALID_INPUT: image gen storage directory identity cycle"
+                                .to_string()
+                                .into(),
+                        );
+                    }
+                    stack.push((child, depth + 1));
+                }
+                StatsEntryKind::File => {
+                    #[cfg(test)]
+                    run_before_stats_open_test_hook(&stats_entry_name(&entry));
+                    let child = open_stats_child(&dir_handle, &entry, false)?;
+                    let child_identity = file_identity_from_handle(&child)?;
+                    if child_identity != entry.identity {
+                        return Err("SEC_INVALID_INPUT: image gen storage file identity changed"
+                            .to_string()
+                            .into());
+                    }
+                    ensure_single_link_file(&child)?;
+                    let metadata = child.metadata().map_err(|e| {
+                        format!("SYSTEM_ERROR: failed to inspect image gen storage file: {e}")
+                    })?;
+                    if !metadata.is_file() {
+                        return Err(
+                            "SEC_INVALID_INPUT: image gen storage entry is not a regular file"
+                                .to_string()
+                                .into(),
+                        );
+                    }
+                    let charged_size = metadata.len().checked_add(byte_bias).ok_or_else(|| {
+                        "SEC_INVALID_INPUT: image gen storage size exceeds representable range"
+                            .to_string()
+                    })?;
+                    total = total.checked_add(charged_size).ok_or_else(|| {
+                        "SEC_INVALID_INPUT: image gen storage size exceeds representable range"
+                            .to_string()
+                    })?;
+                    if total > i64::MAX as u64 {
+                        return Err(
+                            "SEC_INVALID_INPUT: image gen storage size exceeds representable range"
+                                .to_string()
+                                .into(),
+                        );
+                    }
+                }
+                StatsEntryKind::Rejected(reason) => {
+                    return Err(format!("SEC_INVALID_INPUT: {reason}").into());
+                }
+            }
         }
     }
-    total
+
+    Ok(total)
+}
+
+#[derive(Debug, Clone, Copy)]
+enum StatsEntryKind {
+    File,
+    Directory,
+    Rejected(&'static str),
+}
+
+#[derive(Debug)]
+struct StatsEntry {
+    #[cfg(unix)]
+    name: std::ffi::OsString,
+    #[cfg(windows)]
+    name_utf16: Vec<u16>,
+    identity: FileIdentity,
+    kind: StatsEntryKind,
+}
+
+fn charge_stats_entry(total_entries: &mut u64, max_entries: u64) -> AppResult<()> {
+    *total_entries = total_entries
+        .checked_add(1)
+        .ok_or_else(|| "SEC_INVALID_INPUT: image gen storage entry count overflow".to_string())?;
+    if *total_entries > max_entries {
+        return Err(format!(
+            "SEC_INVALID_INPUT: image gen storage exceeds max entries {max_entries}"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn list_stats_entries(
+    dir: &std::fs::File,
+    total_entries: &mut u64,
+    max_entries: u64,
+) -> AppResult<Vec<StatsEntry>> {
+    use std::os::unix::ffi::OsStrExt as _;
+    let mut entries = rustix::fs::Dir::read_from(dir).map_err(|e| {
+        format!("SYSTEM_ERROR: failed to enumerate image gen storage directory: {e}")
+    })?;
+    let mut output = Vec::new();
+    while let Some(entry) = entries.next() {
+        let entry = entry.map_err(|e| {
+            format!("SYSTEM_ERROR: failed to read image gen storage directory entry: {e}")
+        })?;
+        let name = entry.file_name();
+        if name.to_bytes() == b"." || name.to_bytes() == b".." {
+            continue;
+        }
+        charge_stats_entry(total_entries, max_entries)?;
+        let stat = rustix::fs::statat(dir, name, rustix::fs::AtFlags::SYMLINK_NOFOLLOW)
+            .map_err(|e| format!("SYSTEM_ERROR: failed to inspect image gen storage entry: {e}"))?;
+        let file_type = rustix::fs::FileType::from_raw_mode(stat.st_mode);
+        let kind = match file_type {
+            rustix::fs::FileType::RegularFile => StatsEntryKind::File,
+            rustix::fs::FileType::Directory => StatsEntryKind::Directory,
+            rustix::fs::FileType::Symlink => {
+                StatsEntryKind::Rejected("image gen storage symlink is not allowed")
+            }
+            _ => StatsEntryKind::Rejected("image gen storage special file is not allowed"),
+        };
+        output.push(StatsEntry {
+            name: std::ffi::OsStr::from_bytes(name.to_bytes()).to_os_string(),
+            identity: FileIdentity {
+                volume: stat.st_dev as u64,
+                file: stat.st_ino as u64,
+            },
+            kind,
+        });
+    }
+    Ok(output)
+}
+
+#[cfg(unix)]
+fn open_stats_child(
+    parent: &std::fs::File,
+    entry: &StatsEntry,
+    directory: bool,
+) -> AppResult<std::fs::File> {
+    // NONBLOCK prevents permanent hang if a regular-file entry is replaced by a
+    // FIFO/socket between enumeration and open.
+    let mut flags = rustix::fs::OFlags::RDONLY
+        | rustix::fs::OFlags::NOFOLLOW
+        | rustix::fs::OFlags::CLOEXEC
+        | rustix::fs::OFlags::NONBLOCK;
+    if directory {
+        flags |= rustix::fs::OFlags::DIRECTORY;
+    }
+    let fd = rustix::fs::openat(
+        parent,
+        entry.name.as_os_str(),
+        flags,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| "SEC_INVALID_INPUT: image gen storage entry cannot be opened".to_string())?;
+    let file: std::fs::File = fd.into();
+    if !directory {
+        let stat = rustix::fs::fstat(&file).map_err(|_| {
+            "SEC_INVALID_INPUT: image gen storage entry cannot be inspected".to_string()
+        })?;
+        if rustix::fs::FileType::from_raw_mode(stat.st_mode) != rustix::fs::FileType::RegularFile {
+            return Err(
+                "SEC_INVALID_INPUT: image gen storage entry is not a regular file"
+                    .to_string()
+                    .into(),
+            );
+        }
+    }
+    Ok(file)
+}
+
+#[cfg(test)]
+fn stats_entry_name(entry: &StatsEntry) -> String {
+    #[cfg(unix)]
+    {
+        entry.name.to_string_lossy().into_owned()
+    }
+    #[cfg(windows)]
+    {
+        String::from_utf16_lossy(&entry.name_utf16)
+    }
+}
+
+#[cfg(windows)]
+fn list_stats_entries(
+    dir: &std::fs::File,
+    total_entries: &mut u64,
+    max_entries: u64,
+) -> AppResult<Vec<StatsEntry>> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Foundation::{GetLastError, ERROR_NO_MORE_FILES};
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileIdBothDirectoryInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT,
+        FILE_ID_BOTH_DIR_INFO,
+    };
+
+    let volume = {
+        let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+        if unsafe { GetFileInformationByHandle(dir.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
+            return Err(
+                "SYSTEM_ERROR: failed to inspect image gen storage directory handle".into(),
+            );
+        }
+        unsafe { info.assume_init() }.dwVolumeSerialNumber
+    };
+
+    let mut output = Vec::new();
+    loop {
+        let mut buffer = vec![0_u64; (64 * 1024) / std::mem::size_of::<u64>()];
+        let ok = unsafe {
+            GetFileInformationByHandleEx(
+                dir.as_raw_handle() as _,
+                FileIdBothDirectoryInfo,
+                buffer.as_mut_ptr().cast(),
+                (buffer.len() * std::mem::size_of::<u64>()) as u32,
+            )
+        };
+        if ok == 0 {
+            let error = unsafe { GetLastError() };
+            if error == ERROR_NO_MORE_FILES {
+                break;
+            }
+            return Err(format!(
+                "SYSTEM_ERROR: failed to enumerate image gen storage handle: os error {error}"
+            )
+            .into());
+        }
+
+        let mut offset = 0usize;
+        loop {
+            let info = unsafe {
+                &*buffer
+                    .as_ptr()
+                    .cast::<u8>()
+                    .add(offset)
+                    .cast::<FILE_ID_BOTH_DIR_INFO>()
+            };
+            let name_len = info.FileNameLength as usize / std::mem::size_of::<u16>();
+            let name = unsafe { std::slice::from_raw_parts(info.FileName.as_ptr(), name_len) };
+            if name != [b'.' as u16] && name != [b'.' as u16, b'.' as u16] {
+                charge_stats_entry(total_entries, max_entries)?;
+                let attributes = info.FileAttributes;
+                let kind = if attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0 {
+                    StatsEntryKind::Rejected("image gen storage reparse point is not allowed")
+                } else if attributes & FILE_ATTRIBUTE_DIRECTORY != 0 {
+                    StatsEntryKind::Directory
+                } else {
+                    StatsEntryKind::File
+                };
+                output.push(StatsEntry {
+                    name_utf16: name.to_vec(),
+                    identity: FileIdentity {
+                        volume: u64::from(volume),
+                        file: info.FileId as u64,
+                    },
+                    kind,
+                });
+            }
+            if info.NextEntryOffset == 0 {
+                break;
+            }
+            offset = offset
+                .checked_add(info.NextEntryOffset as usize)
+                .ok_or_else(|| {
+                    "SYSTEM_ERROR: invalid image gen storage entry offset".to_string()
+                })?;
+            if offset >= buffer.len() * std::mem::size_of::<u64>() {
+                return Err("SYSTEM_ERROR: invalid image gen storage entry buffer"
+                    .to_string()
+                    .into());
+            }
+        }
+    }
+    Ok(output)
+}
+
+#[cfg(windows)]
+fn open_stats_child(
+    parent: &std::fs::File,
+    entry: &StatsEntry,
+    directory: bool,
+) -> AppResult<std::fs::File> {
+    let mut name = entry.name_utf16.clone();
+    open_windows_child_no_follow(parent, &mut name, directory).map_err(|err| {
+        format!("SEC_INVALID_INPUT: image gen storage entry cannot be opened: {err}").into()
+    })
 }
 
 /// Ensures the directory exists and is writable (probe file round-trip).

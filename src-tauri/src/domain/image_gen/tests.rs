@@ -636,10 +636,12 @@ use super::history::{
     ensure_writable_dir, read_image, read_image_with_roots, read_images_with_budget_with_roots,
     set_before_history_file_read_test_hook, set_before_history_read_open_test_hook,
     set_before_persist_file_create_test_hook, set_before_quarantine_test_hook,
-    set_persist_failure_point, storage_cleanup, storage_cleanup_with_roots, storage_stats,
-    storage_stats_with_roots, task_delete, task_persist, tasks_clear, tasks_list,
-    tasks_list_with_roots, tasks_page_with_roots, ImageGenTaskFilePayload,
-    ImageGenTaskPersistPayload, PersistFailurePoint,
+    set_before_stats_open_test_hook, set_persist_failure_point,
+    set_storage_stats_byte_bias_for_test, set_storage_stats_entry_count_seed_for_test,
+    storage_cleanup, storage_cleanup_with_roots, storage_stats, storage_stats_with_roots,
+    task_delete, task_persist, tasks_clear, tasks_list, tasks_list_with_roots,
+    tasks_page_with_roots, ImageGenTaskFilePayload, ImageGenTaskPersistPayload,
+    PersistFailurePoint,
 };
 #[cfg(windows)]
 use super::history::{
@@ -1144,6 +1146,7 @@ fn history_tasks_remain_operable_across_allowlisted_storage_roots() {
         storage_stats_with_roots(&db, new_storage.path(), &roots).expect("multi-root stats");
     assert_eq!(stats.task_count, 2);
     assert_eq!(stats.dir, new_storage.path().to_string_lossy());
+    assert!(stats.total_bytes > 0);
 
     assert_eq!(
         storage_cleanup_with_roots(&db, &roots, 1).expect("cleanup across roots"),
@@ -1600,4 +1603,173 @@ fn history_task_row_serialization_has_no_sensitive_fields() {
     assert!(!json.contains("dataB64"));
     assert_eq!(listed[0].dir, "t1");
     assert!(!json.contains(&storage.path().to_string_lossy().to_string()));
+}
+
+#[test]
+fn storage_stats_rejects_reparse_or_symlink_entries() {
+    let (_db_dir, db) = test_db("image-gen-history-stats-link.db");
+    let storage = tempfile::tempdir().expect("storage");
+    task_persist(&db, storage.path(), done_task_payload("t-link", 1)).expect("persist");
+    let task_dir = storage.path().join("t-link");
+    let outside = storage.path().join("outside-target");
+    std::fs::create_dir_all(&outside).expect("outside");
+    std::fs::write(outside.join("secret.bin"), b"secret").expect("secret");
+    let link = task_dir.join("escape");
+
+    #[cfg(windows)]
+    {
+        junction::create(&outside, &link).expect("create junction test entry");
+    }
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(&outside, &link).expect("symlink dir");
+    }
+
+    let started = std::time::Instant::now();
+    let err = storage_stats(&db, storage.path()).expect_err("link entry must fail closed");
+    assert!(err.to_string().contains("SEC_INVALID_INPUT"));
+    assert!(
+        started.elapsed() < std::time::Duration::from_secs(2),
+        "malicious entry must not hang stats"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn storage_stats_rejects_fifo_replacement_without_hanging() {
+    const TEST_FILTER: &str = "storage_stats_rejects_fifo_replacement_without_hanging";
+    if std::env::var_os("AIO_IMAGE_STATS_FIFO_WATCHDOG_CHILD").is_some() {
+        use std::os::unix::ffi::OsStrExt as _;
+
+        let (_db_dir, db) = test_db("image-gen-history-stats-fifo.db");
+        let storage = tempfile::tempdir().expect("storage");
+        task_persist(&db, storage.path(), done_task_payload("t-fifo", 1)).expect("persist");
+        let task_dir = storage.path().join("t-fifo");
+        let regular = task_dir.join("image-1.png");
+        let moved = task_dir.join("image-original.png");
+        let hook_regular = regular.clone();
+        let hook_moved = moved.clone();
+        set_before_stats_open_test_hook(Box::new(move |_| {
+            std::fs::rename(&hook_regular, &hook_moved).expect("move enumerated image");
+            let c_path =
+                std::ffi::CString::new(hook_regular.as_os_str().as_bytes()).expect("fifo path");
+            assert_eq!(unsafe { libc::mkfifo(c_path.as_ptr(), 0o600) }, 0);
+        }));
+
+        let error = storage_stats_with_roots(&db, storage.path(), &[storage.path().to_path_buf()])
+            .expect_err("FIFO replacement must fail closed");
+        assert!(error.to_string().contains("SEC_INVALID_INPUT"), "{error}");
+        return;
+    }
+
+    let mut child =
+        std::process::Command::new(std::env::current_exe().expect("current test executable"))
+            .arg(TEST_FILTER)
+            .arg("--nocapture")
+            .env("AIO_IMAGE_STATS_FIFO_WATCHDOG_CHILD", "1")
+            .spawn()
+            .expect("spawn image stats watchdog child");
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        match child.try_wait().expect("poll image stats watchdog child") {
+            Some(status) => {
+                assert!(status.success(), "FIFO child failed: {status}");
+                break;
+            }
+            None if std::time::Instant::now() >= deadline => {
+                let _ = child.kill();
+                let _ = child.wait();
+                panic!(
+                    "production image storage stats did not fail closed before watchdog deadline"
+                );
+            }
+            None => std::thread::sleep(std::time::Duration::from_millis(10)),
+        }
+    }
+}
+
+#[test]
+fn storage_stats_counts_nested_legal_tree() {
+    let (_db_dir, db) = test_db("image-gen-history-stats-nested.db");
+    let storage = tempfile::tempdir().expect("storage");
+    task_persist(&db, storage.path(), done_task_payload("t-nested", 1)).expect("persist");
+    let nested = storage.path().join("t-nested").join("a").join("b");
+    std::fs::create_dir_all(&nested).expect("nested dirs");
+    std::fs::write(nested.join("extra.bin"), b"abcdef").expect("extra");
+    let stats = storage_stats(&db, storage.path()).expect("nested stats");
+    assert!(stats.total_bytes >= 6);
+}
+
+#[test]
+fn storage_stats_rejects_depth_over_limit() {
+    let (_db_dir, db) = test_db("image-gen-history-stats-depth.db");
+    let storage = tempfile::tempdir().expect("storage");
+    task_persist(&db, storage.path(), done_task_payload("t-depth", 1)).expect("persist");
+    let mut cur = storage.path().join("t-depth");
+    for i in 0..66 {
+        cur = cur.join(format!("d{i}"));
+        std::fs::create_dir_all(&cur).expect("mkdir");
+    }
+    std::fs::write(cur.join("leaf.bin"), b"x").expect("leaf");
+    let err = storage_stats(&db, storage.path()).expect_err("depth 65+ must fail");
+    assert!(
+        err.to_string().contains("max depth") || err.to_string().contains("SEC_INVALID_INPUT"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn storage_stats_rejects_entry_budget_overflow() {
+    let (_db_dir, db) = test_db("image-gen-history-stats-entries.db");
+    let storage = tempfile::tempdir().expect("storage");
+    task_persist(&db, storage.path(), done_task_payload("t-entries", 1)).expect("persist");
+    set_storage_stats_entry_count_seed_for_test(100_000);
+
+    let err = storage_stats_with_roots(&db, storage.path(), &[storage.path().to_path_buf()])
+        .expect_err("the real 100001st entry must fail closed");
+    assert!(err.to_string().contains("max entries"), "unexpected: {err}");
+}
+
+#[test]
+fn storage_stats_rejects_i64_max_plus_one_through_production_entry() {
+    let (_db_dir, db) = test_db("image-gen-history-stats-byte-overflow.db");
+    let storage = tempfile::tempdir().expect("storage");
+    task_persist(&db, storage.path(), done_task_payload("t-bytes", 1)).expect("persist");
+    set_storage_stats_byte_bias_for_test(i64::MAX as u64);
+
+    let err = storage_stats_with_roots(&db, storage.path(), &[storage.path().to_path_buf()])
+        .expect_err("i64::MAX plus one byte must fail closed");
+    assert!(
+        err.to_string().contains("representable range"),
+        "unexpected: {err}"
+    );
+}
+
+#[test]
+fn storage_stats_rejects_enumerate_to_open_identity_race() {
+    let (_db_dir, db) = test_db("image-gen-history-stats-identity-race.db");
+    let storage = tempfile::tempdir().expect("storage");
+    task_persist(&db, storage.path(), done_task_payload("t-race", 1)).expect("persist");
+    let task_dir = storage.path().join("t-race");
+    let replacement_dir = tempfile::tempdir().expect("replacement dir");
+    std::fs::write(
+        replacement_dir.path().join("replacement.bin"),
+        b"replacement",
+    )
+    .expect("replacement file");
+    let task_for_hook = task_dir.clone();
+    let replacement_for_hook = replacement_dir.path().join("replacement.bin");
+    set_before_stats_open_test_hook(Box::new(move |entry_name| {
+        let original = task_for_hook.join(entry_name);
+        let moved = task_for_hook.join(format!("moved-{entry_name}"));
+        std::fs::rename(&original, &moved).expect("move enumerated entry");
+        std::fs::rename(&replacement_for_hook, &original).expect("replace enumerated entry");
+    }));
+
+    let err = storage_stats_with_roots(&db, storage.path(), &[storage.path().to_path_buf()])
+        .expect_err("identity replacement must fail closed");
+    assert!(
+        err.to_string().contains("identity changed") || err.to_string().contains("hard link"),
+        "unexpected: {err}"
+    );
 }
