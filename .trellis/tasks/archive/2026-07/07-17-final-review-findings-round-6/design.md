@@ -40,11 +40,11 @@ CONFIG_IMPORT_LOCK -> AUTO_START_LOCK -> SETTINGS_WRITE_LOCK
   `gpt-5.6-terra / effort=max` 终端串行执行；不得并发创建第二个执行终端。
 - 产生本节 F9-F15 findings 的已发生 Round 6 独立只读终审使用新开独立 Codex
   `gpt-5.6-sol / effort=max` 会话。
-- 下一次独立只读终审以及父任务最终审核都必须针对同一冻结提交新开一对彼此隔离的 reviewer：
-  Codex `gpt-5.6-sol / effort=max` 与 Pi（`grok-cpa / grok-4.5`）。两者可并行但不得交换结果，
-  且仅可读审核，不能修改 tracked 文件、任务状态、分支或 remote；协调会话统一去重、核实证据并汇总。
-  不得复用历史 Luna 或当前 Terra 执行会话。
-- 已发生 round-6 终审的模型事实按历史记录保留，不用未来审核规则改写。
+- 有效的 post-archive 独立只读审核已针对同一冻结提交新开一对彼此隔离的 reviewer：Codex
+  `gpt-5.6-sol / effort=max` 与 Claude `claude-opus-4-8 / effort=max`。两者未交换结果，仅可读审核，
+  未修改 tracked 文件、任务状态、分支或 remote；协调会话统一去重、核实证据并汇总。Pi 不计入本轮
+  有效审核记录；不得复用历史 Luna 或 Terra 执行会话。
+- 已发生 round-6 Luna/Sol 终审的模型事实按历史记录保留，并如实记录 post-archive 实际审核模型。
 
 普通 settings writer 不获取 import lock；不涉及 `auto_start` 的专属 writer只获取 settings lock。
 任何代码都不得在持有 settings lock 时获取 autostart lock，避免反向等待。

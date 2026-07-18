@@ -19,8 +19,9 @@ planning validated
   -> child 9 fourth final-review security/concurrency findings / archive
   -> child 10 fifth final-review trust/CAS/gate/log/router findings / archive
   -> child 11 sixth final-review ownership/budget/stats findings / archive
-  -> child 11 frozen-commit dual read-only review / aggregate
-  -> parent frozen-commit dual read-only review / archive only after approval
+  -> frozen-commit Sol + Claude read-only review / evidence aggregation
+  -> factual-record correction and a new frozen-commit final review
+  -> parent archive only after approval
 ```
 
 ## Model And Session Boundary
@@ -30,10 +31,10 @@ planning validated
   协调，不创建第二个并发执行终端。
 - 产生当前 F9-F15 findings 的已发生 Round 6 独立只读终审使用新开独立 Codex
   `gpt-5.6-sol / effort=max` 会话。
-- 每次后续独立只读终审，包括子任务 11 完成后的下一轮终审和父任务最终审核，必须针对同一冻结
-  提交新开彼此隔离的一对 reviewer：Codex `gpt-5.6-sol / effort=max` 与 Pi（`grok-cpa / grok-4.5`）。
-  两者可并行但不得交换结果，不能修改 tracked 文件、任务状态、分支或 remote；主会话统一去重、
-  核实证据并汇总结论。
+- 每次后续独立只读终审，包括父任务最终审核，必须针对同一冻结提交新开彼此隔离的一对 reviewer：
+  Codex `gpt-5.6-sol / effort=max` 与 Claude `claude-opus-4-8 / effort=max`。两者不得交换结果，
+  不能修改 tracked 文件、任务状态、分支或 remote；主会话统一去重、核实证据并汇总结论。Pi 不计入
+  本轮有效审核记录。
 - Terra 执行会话不得复用于审核；已发生轮次的历史记录按已记录的具体模型保留。
 
 ## Task Ownership
@@ -51,7 +52,7 @@ planning validated
 | 9 | Final review findings round 4 | Nine filesystem, settings, IPC-budget, logging and archive-integrity findings |
 | 10 | Final review findings round 5 | Six top-level trust, CAS/runtime, gate-order, OAuth log and Grok router findings |
 | 11 | Final review findings round 6 | Historical F1-F8 plus in-scope follow-up F9-F23 settings/autostart, import rollback, bounded read, Image Gen stats and evidence findings; F24 Trellis work excluded by user decision |
-| 12 | Parent | Frozen-commit dual read-only review by Codex `gpt-5.6-sol / effort=max` and Pi `grok-cpa / grok-4.5`, then aggregate merge-readiness decision |
+| 12 | Parent | Frozen-commit dual read-only review by Codex `gpt-5.6-sol / effort=max` and Claude `claude-opus-4-8 / effort=max`, then aggregate merge-readiness decision |
 
 ## Cross-Task Contracts
 

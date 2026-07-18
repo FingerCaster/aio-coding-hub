@@ -13,24 +13,27 @@
 - 当前分支为 `FingerCaster/sequential-task-acceptance`，基线为本地
   `main@2e43ee23572e69e34ce2c4cfb60481b58acf9298`。
 - 子任务 1-10 已依次实现、提交并归档；第五轮已归档于
-  `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-5`。
-  第六轮历史 F1-F8 由子任务 11（`07-17-final-review-findings-round-6`）完成后，又由独立终审确认
-  F9-F23 follow-up 当前继续收尾；F24 Trellis template-hash 观察项按用户决定不属于本任务。
-   子任务 11 完成并归档后才能对冻结提交启动下一次双独立只读终审；父任务保持 `in_progress`，
-   父任务最终双独立只读审核汇总通过前不得归档。
+  `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-5`。子任务 11 已在
+  `b430874d` 关闭历史 F1-F8 与 F9-F23 follow-up，并在 `a2abe128` 归档至
+  `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-6`。F24 Trellis
+  template-hash 观察项按用户决定不属于本任务。
+- 子任务 11 的完整门禁、归档和独立 journal 记录已完成；冻结提交
+  `2a3788fc62db982737b9873757c354f89e198ce6` 的两份独立只读报告均已收齐。父任务保持
+  `in_progress`，直到报告去重、证据复现、必要的事实纠正和最终冻结审核全部通过；父任务最终
+  审核汇总通过前不得归档。
 - 用户已确认前置父任务完成，并授权规划校验通过后直接进入实现，无需再次请求规划确认。
   已发生的 Round 6 实现记录保留其真实 `gpt-5.6-luna / effort=max` 模型；按用户最新指令，
   剩余执行改由单个 Orca 管理的 Codex `gpt-5.6-terra / effort=max` 终端串行承担，禁止并发执行终端。
-   该执行终端与所有只读终审会话隔离。下一次子任务终审和父任务最终审核均针对同一冻结提交，
-   新开彼此隔离的 Codex `gpt-5.6-sol / effort=max` 与 Pi（`grok-cpa / grok-4.5`）reviewer；两者
-   可并行但不得交换结果，只可读审核，协调会话收齐结果后去重、核实证据并汇总结论。
+   该执行终端与所有只读终审会话隔离。当前有效的冻结提交双独立审核员为新开的 Codex
+   `gpt-5.6-sol / effort=max` 与 Claude `claude-opus-4-8 / effort=max`；两者不得交换结果，
+   只可读审核，协调会话收齐结果后去重、核实证据并汇总结论。Pi 不计入本轮有效审核记录。
 - 产生当前 F9-F15 findings 的已发生 Round 6 独立只读终审是新开独立 Codex
   `gpt-5.6-sol / effort=max` 会话；该历史事实不与当前实现会话混用。
 - 用户现场报告与已验证事实、仍需实现阶段动态验证的边界，统一记录在
   `research/integration-evidence-summary.md` 及各子任务 `research/` 中。
 - 除两个明确的只读审核 gate 外，整个任务禁止并发子代理。主会话只协调一个 Orca 执行终端；实现、
-  检查、提交、归档和下一任务启动严格串行。审核 gate 仅可并行运行 Codex Sol 与 Pi Grok 两位
-  reviewer，且均不得改动 tracked 文件、任务状态、分支或 remote。
+  检查、提交、归档和下一任务启动严格串行。审核 gate 的有效 reviewer 为 Codex Sol 与 Claude
+  Opus，且均不得改动 tracked 文件、任务状态、分支或 remote。
 
 ## Requirements
 
@@ -49,7 +52,8 @@
 9. `07-17-final-review-findings-round-4`
 10. `07-17-final-review-findings-round-5`
 11. `07-17-final-review-findings-round-6`
-12. 父任务最终双独立只读审核汇总（Codex `gpt-5.6-sol / effort=max` + Pi `grok-cpa / grok-4.5`）
+12. 父任务最终双独立只读审核汇总（Codex `gpt-5.6-sol / effort=max` + Claude
+    `claude-opus-4-8 / effort=max`）
 
 每个子任务只有在前一任务的验收标准、质量检查、提交与归档全部完成后才可执行
 `task.py start`。父子关系不替代此依赖门槛。
@@ -68,7 +72,7 @@
 | 8 | `07-17-final-review-findings-round-3` | archived; user selected common-gate option A |
 | 9 | `07-17-final-review-findings-round-4` | archived; nine findings and full gates complete |
 | 10 | `07-17-final-review-findings-round-5` | archived; six findings and full gates complete |
-| 11 | `07-17-final-review-findings-round-6` | in progress; historical F1-F8 plus in-scope follow-up F9-F23 before the next frozen-commit dual review (Codex Sol + Pi Grok); F24 excluded by user decision |
+| 11 | `07-17-final-review-findings-round-6` | archived at `a2abe128`; F1-F23 and full gates closed, F24 excluded by user decision |
 
 ### R2. 多供应商失败链路
 
@@ -143,6 +147,8 @@
       负例有效。
 - [x] 子任务 5 仅在前四项归档后执行，记录不可变 upstream SHA，带入全部不冲突变更，
       且没有覆盖 fork 特有行为。
+- [x] 子任务 11 的受影响测试、完整 Rust/前端质量门槛、Docker/Linux watchdog、bindings 与
+      `check:precommit:full` / `check:prepush` 已通过，证据记录在其归档工件中。
 - [ ] 父任务最终执行受影响测试、完整 Rust/前端质量门槛和集成行为检查，结果全部通过。
 - [x] 子任务 6、7 的安全回归、脱敏 live 证据、冲突决策表与稳定分页均完成，随后由新开独立
       Codex `gpt-5.6-sol / effort=max` 会话执行只读终审并给出最终结论。
@@ -154,11 +160,13 @@
 - [x] 子任务 10 关闭第五轮六项 findings，完成 Skill 顶层可信根、settings 副作用/CAS、方案 A
       gate 顺序、OAuth capability 脱敏与 Grok continuation 生产回归，并归档于
       `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-5`。
-- [ ] 子任务 11 关闭第六轮历史 F1-F8 与属于本任务的 follow-up F9-F23（settings/autostart ownership、config
-  import rollback lifecycle、有界读取/encoded budget、Image Gen handle stats、journal/task 证据
-  纠正），不处理 F24 Trellis template-hash，再在冻结提交上进入 Codex Sol 与 Pi Grok 双独立只读终审。
-- [ ] 除两个只读审核 gate 的两位 reviewer 可并行外，过程没有并发子代理、未泄露密钥/PII、未向任何
-  remote 推送。
+- [x] 子任务 11 已关闭第六轮历史 F1-F8 与属于本任务的 follow-up F9-F23（settings/autostart ownership、
+  config import rollback lifecycle、有界读取/encoded budget、Image Gen handle stats、journal/task 证据
+  纠正），不处理 F24 Trellis template-hash；`b430874d` 后在 `a2abe128` 归档。
+- [x] 冻结提交 `2a3788fc` 上已运行互不交换结果的 Codex Sol 与 Claude Opus 只读审核；两份报告
+  已收齐，Sol 的运行时候选项尚待独立复现，Claude 确认两项任务事实投影缺口。
+- [ ] 复现并裁决所有仍有效的候选项，纠正任务事实投影后重新冻结并完成最终双独立审核；全过程
+  不泄露密钥/PII、不向任何 remote 推送，父任务才可归档。
 
 ## Out of Scope
 

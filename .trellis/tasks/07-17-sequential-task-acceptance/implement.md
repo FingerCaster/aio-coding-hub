@@ -4,13 +4,11 @@
 
 - [x] Planning artifacts and manifests were validated before the ordered execution began.
 - [x] Preserve the actual historical implementation model as `gpt-5.6-luna / effort=max`.
-- [ ] Launch exactly one Orca-managed Codex `gpt-5.6-terra / effort=max` terminal for all remaining
-      implementation and checks; do not run a second execution agent concurrently. Each next independent
-      read-only review and the parent final review must instead freeze one commit and use fresh, isolated
-      Codex `gpt-5.6-sol / effort=max` and Pi (`grok-cpa / grok-4.5`) reviewer sessions. They may run
-      concurrently only with each other, cannot exchange results or modify tracked files/task state/branch/
-      remote, and the coordinator must aggregate their evidence. Do not reuse the Terra execution session
-      for review. User approval to start after validation is already recorded; do not ask again.
+- [x] The single Orca-managed Codex `gpt-5.6-terra / effort=max` execution terminal completed the remaining
+      implementation and checks without a concurrent execution agent. The frozen-commit review used fresh,
+      isolated Codex `gpt-5.6-sol / effort=max` and Claude `claude-opus-4-8 / effort=max` sessions; they did
+      not exchange results or modify tracked files/task state/branch/remote. Do not reuse the Terra execution
+      session for review. Pi is not part of this accepted review record.
 - [x] Record that the already completed Round 6 independent read-only review producing F9-F15 used a
       new Codex `gpt-5.6-sol / effort=max` session; this is separate from both the historical Luna work and
       the remaining Terra execution terminal.
@@ -70,13 +68,15 @@
 - [x] Finish child 10 after closing round-5 findings and full gates, then verify order is exactly
       1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10; archived at
       `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-5`.
-- [ ] Finish child 11 after closing round-6 findings and full gates, then verify order is exactly
-      1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11.
-- [ ] Freeze the parent final commit and run the two independent read-only reviewers: Codex
-      `gpt-5.6-sol / effort=max` and Pi (`grok-cpa / grok-4.5`); aggregate and evidence-check their
-      conclusions before passing. Do not archive the parent before that summary passes.
-- [ ] Rerun `pnpm build`, `pnpm check:precommit:full`, `pnpm check:prepush` and all focused commands
-      required by child 11 after the final F16-F23 state; prior successful runs are historical evidence only.
+- [x] Finish child 11 after closing round-6 findings and full gates, then verify order is exactly
+      1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11; it was archived at `a2abe128`.
+- [x] Freeze commit `2a3788fc62db982737b9873757c354f89e198ce6` and collect independent read-only reports from
+      Codex `gpt-5.6-sol / effort=max` and Claude `claude-opus-4-8 / effort=max`. The reports must still be
+      aggregated and evidence-checked before passing; do not archive the parent before that summary passes.
+- [x] The focused and full gates required by child 11, including `pnpm build`, `pnpm check:precommit:full`
+      and `pnpm check:prepush`, passed and are recorded in the archived child evidence.
+- [ ] Reproduce and classify the frozen-review candidates, commit the factual-record correction, then freeze
+      that commit and run the final independent Sol + Claude review before passing the parent.
 - [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
       made.
 - [ ] Archive the parent only after every acceptance item is evidenced.
@@ -119,14 +119,15 @@
 
 ### 11. Sixth final-review findings
 
-- [ ] Close historical F1-F8 and in-scope follow-up F9-F23 under `.trellis/tasks/07-17-final-review-findings-round-6`,
-      including settings owned patch/autostart coordinator, exact preferred-port rollback ownership,
-      config import serialization/Skill rollback lifecycle, hard-bounded reads, encoded export budget,
-      Image Gen handle-relative storage stats, and evidence correction. Do not implement or validate F24
-      Trellis template-hash / safe-commit work; preserve related existing dirty files.
-- [ ] Run focused and full gates, commit and archive only child 11, then freeze the resulting commit and
-      run the next dual independent read-only review: Codex `gpt-5.6-sol / effort=max` plus Pi
-      (`grok-cpa / grok-4.5`) in isolated sessions while the parent remains `in_progress`.
+- [x] Close historical F1-F8 and in-scope follow-up F9-F23 under
+      `.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-6`, including settings owned
+      patch/autostart coordinator, exact preferred-port rollback ownership, config import serialization/Skill
+      rollback lifecycle, hard-bounded reads, encoded export budget, Image Gen handle-relative storage stats,
+      and evidence correction. F24 Trellis template-hash / safe-commit remains excluded and related dirty files
+      remain preserved.
+- [x] Run focused and full gates, commit `b430874d`, archive only child 11 in `a2abe128`, then freeze
+      `2a3788fc` and collect isolated Codex Sol plus Claude Opus read-only reports while the parent remains
+      `in_progress`.
 
 ## Stop And Rollback Rules
 

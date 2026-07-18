@@ -44,7 +44,7 @@
 ## Fixed execution policy
 
 - Baseline: local `main@2e43ee23572e69e34ce2c4cfb60481b58acf9298`.
-- Order: child 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 (archived) -> 11 (round-6 current) -> parent integration acceptance.
+- Order: child 1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 (all archived) -> parent integration acceptance.
 - One task active at a time; no concurrent subagents.
 - No `upstream` access before child 5. Child 5 keeps `origin` as normal target and `upstream`
   fetch-only, imports non-conflicting changes, and pauses on fork behavior conflicts.
@@ -63,18 +63,20 @@
 
 No unresolved product decision blocks implementation.
 
-## Round-6 follow-up fact projection
+## Round-6 completion and final-review fact projection
 
-Child 11 remains the active implementation task. Historical implementation records retain their actual
-`gpt-5.6-luna / effort=max` model; all remaining implementation and checks use exactly one Orca-managed Codex
-`gpt-5.6-terra / effort=max` terminal with no concurrent execution agent. Its historical F1-F8 records are
-retained, while the already completed independent Codex `gpt-5.6-sol / effort=max`
-round-6 final review added F9-F15: exact ordinary settings rollback tokens, early Skill FS
-ownership, local Skill partial-write cleanup, Unix export FIFO bounded open, settings finalize/restore
-recovery, bounded Image Gen watchdog evidence, and round-5 journal/task fact consistency. The parent
-stays in_progress until child 11 is focused/full validated, committed and archived, followed by a
-frozen-commit dual independent read-only review: Codex `gpt-5.6-sol / effort=max` and Pi
-(`grok-cpa / grok-4.5`). The parent final review follows the same fresh-session, isolated-pair boundary;
-the coordinator aggregates the reports, and neither the historical Luna session nor the Terra execution
-terminal may be reused for review.
+Child 11 completed F1-F23 in `b430874d`, was archived in `a2abe128`, and its independent journal record
+was committed in `8d756426`. Historical implementation records retain their actual `gpt-5.6-luna /
+effort=max` model; the remaining serial execution used one Orca-managed Codex `gpt-5.6-terra / effort=max`
+terminal with no concurrent execution agent. F24 remains excluded.
+
+The post-archive frozen commit is `2a3788fc62db982737b9873757c354f89e198ce6`. Its effective independent
+read-only reviewers were Codex `gpt-5.6-sol / effort=max` and Claude `claude-opus-4-8 / effort=max`; Pi is
+not an accepted reviewer for this round. The reports are intentionally independent. The Sol report contains
+candidate runtime findings that require coordinator reproduction before adoption. The Claude report confirms
+two P2 factual-record gaps: the parent still described child 11 as active, and the archived child retained
+unchecked completion/archival items despite its completed manifest and commits. The required next action is
+to correct those facts, validate the task manifests, then freeze the resulting record for the final Sol +
+Claude review. The historical Luna and Terra sessions must not be reused for that review.
+
 The one-time Image Gen exception above remains unchanged.

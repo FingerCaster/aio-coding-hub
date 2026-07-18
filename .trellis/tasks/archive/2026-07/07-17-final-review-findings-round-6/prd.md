@@ -28,11 +28,11 @@ round-5 归档后的证据一致性，为下一次双独立只读审核建立完
   验证、完整门禁与收尾只使用一个 Orca 管理的 Codex `gpt-5.6-terra / effort=max` 终端串行执行。
 - 产生本节 F9-F15 findings 的已发生 Round 6 独立只读终审使用新开独立 Codex
   `gpt-5.6-sol / effort=max` 会话。
-- 本子任务完成后的下一次独立只读终审和父任务最终审核，都必须针对同一冻结提交新开一对彼此隔离的
-  reviewer：Codex `gpt-5.6-sol / effort=max` 与 Pi（`grok-cpa / grok-4.5`）。两者可并行，
-  但不得互相交换结果；只可审核冻结提交，不得修改 tracked 文件、任务状态、分支或 remote。协调会话
-  在收齐两份结果后去重、核实证据并汇总结论；不得复用历史 Luna 或当前 Terra 执行会话。
-- 本文件保留已发生 round-6 终审的历史事实，不把历史终审改写为未来审核模型。
+- 本子任务完成后的有效独立只读审核已在同一冻结提交上新开彼此隔离的 reviewer：Codex
+  `gpt-5.6-sol / effort=max` 与 Claude `claude-opus-4-8 / effort=max`。两者未交换结果，只审核
+  冻结提交，未修改 tracked 文件、任务状态、分支或 remote；协调会话收齐报告后去重、核实证据并
+  汇总结论。Pi 不计入本轮有效审核记录；不得复用历史 Luna 或 Terra 执行会话。
+- 本文件保留已发生 round-6 Luna/Sol 历史事实，同时如实记录 post-archive 审核的实际模型。
 
 ## Requirements
 
@@ -150,11 +150,12 @@ round-5 归档后的证据一致性，为下一次双独立只读审核建立完
       深度/entry/byte 超限快速 fail closed；正常 nested/multi-root 统计准确。
 - [x] AC8：父任务与 journal 的 round-5 事实一致，所有 active/archive 路径准确；父状态仍为
       `in_progress`。
-- [ ] AC9：聚焦 Rust/前端测试、完整 Rust lib+integration、完整前端、bindings 二次零漂移、
+- [x] AC9：聚焦 Rust/前端测试、完整 Rust lib+integration、完整前端、bindings 二次零漂移、
       typecheck、lint、format、build、all-target Clippy、`check:precommit:full`、`check:prepush`、
-      Trellis manifests/镜像/task validation 与 `git diff --check` 全部通过。
-- [ ] AC10：按工作提交 → 仅归档 round-6 → journal 纠正/记录提交的顺序完成；父任务不归档，
-      `upstream` push URL 为 `DISABLED`，且无 remote 操作。
+      Trellis manifests/镜像/task validation 与 `git diff --check` 均已通过，详见 `implement.md` 的
+      full validation evidence；未将 F24 排除项计入该结论。
+- [x] AC10：已按工作提交 `b430874d` → 仅归档 round-6 `a2abe128` → journal 记录提交
+      `8d756426` 的顺序完成；父任务未归档，`upstream` push URL 保持 `DISABLED`，且无 remote 操作。
 
 ## Out Of Scope
 
