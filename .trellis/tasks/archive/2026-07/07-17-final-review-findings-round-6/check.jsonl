@@ -5,4 +5,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"验证 import 全生命周期串行、真正 bounded read、export/import encoded budget 与任意 bytes 保真。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"验证 stats no-follow/reparse/special/identity/budget 负例与正常多根统计。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"检查 active/archive manifests、仅归档 round-6、父 in_progress 与三阶段提交顺序。"}
-{"file":".trellis/tasks/07-17-final-review-findings-round-6/research/final-review-round-6.md","reason":"逐项复核 F1-F8 证据锚点、测试缺口、禁止内容过滤约束与验收映射。"}
+{"file": ".trellis/tasks/archive/2026-07/07-17-final-review-findings-round-6/research/final-review-round-6.md", "reason": "逐项复核 F1-F8 证据锚点、测试缺口、禁止内容过滤约束与验收映射。"}

@@ -5,4 +5,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"保持 Skill 任意字节 round-trip、no-follow handle authority、8 MiB/64 MiB 对称预算与 validation-before-write。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"实现 task-handle relative stats、reparse/symlink 拒绝、identity 与资源预算。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"按工作提交、仅归档当前 child、全 manifests 校验和父状态保留的顺序收尾。"}
-{"file":".trellis/tasks/07-17-final-review-findings-round-6/research/final-review-round-6.md","reason":"提供 F1-F8 的已核实调用链、根因、测试缺口、字段 ownership 与修复边界。"}
+{"file": ".trellis/tasks/archive/2026-07/07-17-final-review-findings-round-6/research/final-review-round-6.md", "reason": "提供 F1-F8 的已核实调用链、根因、测试缺口、字段 ownership 与修复边界。"}
