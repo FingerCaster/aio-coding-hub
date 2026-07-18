@@ -13,7 +13,7 @@
       review agent.
 - [x] Round 7 implementation and checks used one fresh Orca-managed Codex `gpt-5.6-sol / effort=max` execution
       terminal under the approved PRD/design/implement scope. Implementation committed at `8bbc619a` and archived
-      at `29133ac0`; its separate final review found the historical-user-decision P2 now owned by Round 8.
+      at `29133ac0`; its separate final review found the historical-user-decision P2 later corrected by Round 8.
 - [x] Record that the already completed Round 6 independent read-only review producing F9-F15 used a
       new Codex `gpt-5.6-sol / effort=max` session; this is separate from both the historical Luna work and
       the remaining Terra execution terminal.
@@ -82,8 +82,9 @@
       and `pnpm check:prepush`, passed and are recorded in the archived child evidence.
 - [x] Complete child 12 at `8bbc619a`, archive it at `29133ac0`, and record that its fresh Sol review found the
       unsupported historical-user-decision P2.
-- [ ] Complete and archive child 13 as the sole Round 8 factual-record correction, then freeze that archive commit
-      and run a new Sol max read-only review before passing the parent.
+- [x] Complete and archive child 13 as the sole Round 8 factual-record correction at `356fe32` while the parent
+      remains `in_progress`.
+- [ ] Freeze `356fe32` and run a new independent Sol max read-only review before passing the parent.
 - [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
       made.
 - [ ] Archive the parent only after every acceptance item is evidenced.
@@ -145,9 +146,9 @@
 
 ### 13. Eighth final-review factual correction
 
-- [ ] Correct only the two unsupported historical-decision assertions and the parent Round 7/8 projection, then
-      commit and archive only child 13 while the parent remains `in_progress`.
-- [ ] Freeze the Round 8 archive commit for a new Sol max read-only review; do not pass or archive the parent before
+- [x] Correct only the two unsupported historical-decision assertions and the parent Round 7/8 projection, then
+      commit and archive only child 13 at `356fe32` while the parent remains `in_progress`.
+- [ ] Freeze `356fe32` for a new independent Sol max read-only review; do not pass or archive the parent before
       that review reports no P0-P2.
 
 ## Stop And Rollback Rules

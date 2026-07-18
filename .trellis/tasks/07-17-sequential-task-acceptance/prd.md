@@ -22,8 +22,8 @@
   `in_progress`，直到报告去重、证据复现、必要的事实纠正和最终冻结审核全部通过；最终 Sol 审核
   通过前不得归档。
 - 子任务 12（Round 7）已在 `8bbc619a` 完成实现，并在 `29133ac0` 归档；其后新的 Sol 终审
-  发现一项历史用户决定断言缺乏记录证据的 P2。子任务 13（Round 8）是唯一未完成的纠正子任务，
-  父任务继续保持 `in_progress`，等待 Round 8 归档和新的只读 Sol 审核。
+  发现一项历史用户决定断言缺乏记录证据的 P2。子任务 13（Round 8）已完成该事实修正并归档于
+  `356fe32`；其新的独立 Sol final review 仍待执行，父任务继续保持 `in_progress`。
 - 用户已确认前置父任务完成，并授权规划校验通过后直接进入实现，无需再次请求规划确认。
   已发生的 Round 6 实现记录保留其真实 `gpt-5.6-luna / effort=max` 模型，已完成的 child 11
   执行记录保留其真实 `gpt-5.6-terra / effort=max` 模型；从 Round 7 起，剩余实现和检查改由
@@ -82,7 +82,7 @@
 | 10 | `07-17-final-review-findings-round-5` | archived; six findings and full gates complete |
 | 11 | `07-17-final-review-findings-round-6` | archived at `a2abe128`; F1-F23 and full gates closed, F24 excluded by user decision |
 | 12 | `07-18-final-review-findings-round-7` | archived at `29133ac0`; its fresh Sol review found the unsupported historical-decision P2 |
-| 13 | `07-18-final-review-findings-round-8` | in progress; sole incomplete factual-record correction before a new Sol gate |
+| 13 | `07-18-final-review-findings-round-8` | archived at `356fe32`; factual-record correction complete, new independent Sol review pending |
 
 ### R2. 多供应商失败链路
 
@@ -177,7 +177,7 @@
   已收齐，属于历史证据；其后不再启动 Claude 或其他 agent 审核。
 - [x] 子任务 12 已关闭冻结提交 `35db0f32` 的有效 findings，在 `8bbc619a` 完成实现并于
       `29133ac0` 归档；其后新的 Sol 终审发现本轮待纠正的历史决定断言 P2。
-- [ ] 子任务 13 仅纠正该 P2 和 Round 7/8 任务事实投影，完成提交与归档。
+- [x] 子任务 13 仅纠正该 P2 和 Round 7/8 任务事实投影，并在 `356fe32` 完成归档。
 - [ ] 子任务 13 归档后重新冻结并完成最终 Sol max 审核；全过程
   不泄露密钥/PII、不向任何 remote 推送，父任务才可归档。
 
