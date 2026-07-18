@@ -356,3 +356,37 @@ Removed the unreleased managed external gateway integration, retained only the o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 11: 兼容多种供应商账户额度查询
+
+**Date**: 2026-07-19
+**Task**: 兼容多种供应商账户额度查询
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/adapt-ai-input-account-usage`
+
+### Summary
+
+新增 NewAPI 模型令牌与用户账户显式模式、sub2api 日额度适配、私有凭据存储及版本化导入分享边界，并完成全量测试和安全审计。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4ef96047` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
