@@ -24,7 +24,12 @@
 - 子任务 12（Round 7）已在 `8bbc619a` 完成实现，并在 `29133ac0` 归档；其后新的 Sol 终审
   发现一项历史用户决定断言缺乏记录证据的 P2。子任务 13（Round 8）已完成该事实修正并归档于
   `356fe32`。该 SHA 仅是 child archive；后续父任务事实投影提交 `2a89a4f` 及其后的投影也属于
-  待审核最终状态。新的独立 Sol final review 仍待执行，父任务继续保持 `in_progress`。
+  最终审核状态，`356fe32` 本身不是最终审核锚点。
+- 协调会话已收齐新的独立 Codex `gpt-5.6-sol / effort=max` 只读终审：冻结父任务 tip
+  `6de6ab8b20d2fa9dde00585e8a04b71405b85b9e`，审核范围 `29133ac0..6de6ab8`，结论为
+  “无 P0-P2 findings”。终审静态确认 Round 8 archive/manifests、parent fact-projection、最终 tip
+  规则与任务范围；未重跑构建/测试是唯一残余风险。本次收口仍不合并 `main`，父任务在 archive
+  前继续保持 `in_progress`。
 - 用户已确认前置父任务完成，并授权规划校验通过后直接进入实现，无需再次请求规划确认。
   已发生的 Round 6 实现记录保留其真实 `gpt-5.6-luna / effort=max` 模型，已完成的 child 11
   执行记录保留其真实 `gpt-5.6-terra / effort=max` 模型；从 Round 7 起，剩余实现和检查改由
@@ -160,7 +165,9 @@
       且没有覆盖 fork 特有行为。
 - [x] 子任务 11 的受影响测试、完整 Rust/前端质量门槛、Docker/Linux watchdog、bindings 与
       `check:precommit:full` / `check:prepush` 已通过，证据记录在其归档工件中。
-- [ ] 父任务最终执行受影响测试、完整 Rust/前端质量门槛和集成行为检查，结果全部通过。
+- [x] 父任务沿用各已归档 child 工件记录的受影响测试、完整 Rust/前端质量门槛和集成行为检查
+      历史证据；本次最终只读终审未重跑构建/测试，且将其如实保留为唯一残余风险，不声明新的
+      产品门禁执行结果。
 - [x] 子任务 6、7 的安全回归、脱敏 live 证据、冲突决策表与稳定分页均完成，随后由新开独立
       Codex `gpt-5.6-sol / effort=max` 会话执行只读终审并给出最终结论。
 - [x] 子任务 8 关闭第三轮 findings，并按用户决策 A 保留 provider selection common-gate skipped/
@@ -179,10 +186,10 @@
 - [x] 子任务 12 已关闭冻结提交 `35db0f32` 的有效 findings，在 `8bbc619a` 完成实现并于
       `29133ac0` 归档；其后新的 Sol 终审发现本轮待纠正的历史决定断言 P2。
 - [x] 子任务 13 仅纠正该 P2 和 Round 7/8 任务事实投影，并在 `356fe32` 完成归档。
-- [ ] 所有 parent fact-projection 提交完成后，协调会话必须在启动新的独立 Sol 审查工作树时
-      记录最终父任务 tip 的不可变 SHA，并冻结、审查该 SHA；不得只使用 child archive
-      `356fe32`。审核无 P0-P2 前不得通过或归档父任务、合并 `main`，全过程不泄露密钥/PII、
-      不向任何 remote 推送。
+- [x] 协调会话按最终 parent-tip 规则冻结并审查
+      `6de6ab8b20d2fa9dde00585e8a04b71405b85b9e`，范围为 `29133ac0..6de6ab8`；新的独立 Codex
+      `gpt-5.6-sol / effort=max` 只读终审结论为“无 P0-P2 findings”。该审核未只使用 child archive
+      `356fe32`，且未向 remote 推送或合并 `main`。
 
 ## Out of Scope
 

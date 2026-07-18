@@ -84,11 +84,13 @@
       unsupported historical-user-decision P2.
 - [x] Complete and archive child 13 as the sole Round 8 factual-record correction at `356fe32` while the parent
       remains `in_progress`.
-- [ ] After every parent fact-projection commit is complete, the coordinator starts a new independent Sol review
-      worktree, records the immutable SHA of the final parent tip, and freezes and reviews exactly that SHA;
-      child archive `356fe32` alone is not a valid final-review anchor.
-- [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
-      made.
+- [x] After the parent fact-projection commits, the coordinator froze final parent tip
+      `6de6ab8b20d2fa9dde00585e8a04b71405b85b9e` and ran a new independent Codex
+      `gpt-5.6-sol / effort=max` read-only review over `29133ac0..6de6ab8`. It reported no P0-P2 and statically
+      confirmed the Round 8 archive/manifests, parent projections, final-tip rule and task scope. Builds/tests were
+      not rerun and remain the only residual risk; child archive `356fe32` was not used as the final anchor.
+- [x] Read-only `git remote -v` confirmed `origin` as the normal fetch/push remote and `upstream` push as
+      `DISABLED`; this session issued no push.
 - [ ] Archive the parent only after every acceptance item is evidenced.
 
 ## Review children
@@ -150,8 +152,9 @@
 
 - [x] Correct only the two unsupported historical-decision assertions and the parent Round 7/8 projection, then
       commit and archive only child 13 at `356fe32` while the parent remains `in_progress`.
-- [ ] Apply the final-parent-tip freeze rule in Parent Integration Acceptance. Do not pass or archive the parent,
-      or merge `main`, before that independent Sol review reports no P0-P2.
+- [x] Satisfy the final-parent-tip freeze rule with the independent Sol review of
+      `6de6ab8b20d2fa9dde00585e8a04b71405b85b9e`; its no-P0-P2 conclusion permits parent archive while `main`
+      remains unmerged.
 
 ## Stop And Rollback Rules
 
