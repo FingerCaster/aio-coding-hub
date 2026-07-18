@@ -69,7 +69,10 @@
 - [x] 记录同步前 HEAD、merge-base 和唯一的 `upstream/main` 不可变 SHA。
 - [x] 结果历史保留前四项提交，且记录的 upstream SHA 是结果 HEAD 的祖先。
 - [x] 全部不冲突 upstream 变更均被带入；没有静默丢弃提交或文件。
-- [x] 所有 fork 产品语义冲突均先暂停并在用户明确选择后处理。
+- [ ] 所有 fork 产品语义冲突均先暂停并在用户明确选择后处理。
+      证据说明：`.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-2/research/`
+      `upstream-merge-conflict-decision-audit.md:15-16` 只支持最终 merge/行为审计，明确不声称记录中
+      缺失的历史用户决定。
 - [x] `origin` 仍是默认仓库目标，`upstream` 仍为 fetch-only，未向 upstream 推送或
       恢复 push URL。
 - [x] 子任务 1–4 聚焦回归、完整 Rust/前端门槛及 upstream 影响测试全部通过。

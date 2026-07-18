@@ -23,8 +23,11 @@
 - [x] 标记 fork 特有产品面、前四项修复和现有网关契约的重叠区域。
 - [x] 对固定 upstream SHA 执行真实 merge，保留前四项提交历史。
 - [x] 带入全部不冲突变更，不通过挑选文件或 cherry-pick 静默丢失 upstream 内容。
-- [x] 若出现 fork 产品语义冲突，立即停止解析和提交，向主会话提供文件、提交、两侧
+- [ ] 若出现 fork 产品语义冲突，立即停止解析和提交，向主会话提供文件、提交、两侧
       行为、影响与选项；获得用户明确决定后才继续。
+      证据说明：`.trellis/tasks/archive/2026-07/07-17-final-review-findings-round-2/research/`
+      `upstream-merge-conflict-decision-audit.md:15-16` 只支持最终 merge/行为审计，明确不声称记录中
+      缺失的历史用户决定。
 - [x] 即使文本自动合并，也检查是否恢复 reasoning guard/continuation repair，或覆盖
       子任务 1–4 和 gateway contract。
 

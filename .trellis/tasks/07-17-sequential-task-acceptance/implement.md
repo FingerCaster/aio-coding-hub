@@ -11,10 +11,9 @@
       session for review. This is historical evidence only. From 2026-07-18 onward, every new frozen review
       uses only a fresh Codex `gpt-5.6-sol / effort=max` session; do not launch Claude, Pi, or any other
       review agent.
-- [ ] Round 7 implementation and checks use one fresh Orca-managed Codex `gpt-5.6-sol / effort=max` execution
-      terminal. Its prompt is closed to the approved PRD/design/implement checklist: no unrelated exploration,
-      finding hunting, refactor, architecture alternatives, or scope expansion; a required scope change stops
-      for coordinator adjudication. Do not reuse that execution session for final review.
+- [x] Round 7 implementation and checks used one fresh Orca-managed Codex `gpt-5.6-sol / effort=max` execution
+      terminal under the approved PRD/design/implement scope. Implementation committed at `8bbc619a` and archived
+      at `29133ac0`; its separate final review found the historical-user-decision P2 now owned by Round 8.
 - [x] Record that the already completed Round 6 independent read-only review producing F9-F15 used a
       new Codex `gpt-5.6-sol / effort=max` session; this is separate from both the historical Luna work and
       the remaining Terra execution terminal.
@@ -81,8 +80,10 @@
       aggregated and evidence-checked before passing; do not archive the parent before that summary passes.
 - [x] The focused and full gates required by child 11, including `pnpm build`, `pnpm check:precommit:full`
       and `pnpm check:prepush`, passed and are recorded in the archived child evidence.
-- [ ] Reproduce and classify the frozen-review candidates, complete child 12 and its factual-record correction,
-      then freeze that commit and run the final Sol max review before passing the parent.
+- [x] Complete child 12 at `8bbc619a`, archive it at `29133ac0`, and record that its fresh Sol review found the
+      unsupported historical-user-decision P2.
+- [ ] Complete and archive child 13 as the sole Round 8 factual-record correction, then freeze that archive commit
+      and run a new Sol max read-only review before passing the parent.
 - [ ] Verify `origin` remains the normal GitHub target, `upstream` remains fetch-only, and no push was
       made.
 - [ ] Archive the parent only after every acceptance item is evidenced.
@@ -134,6 +135,20 @@
 - [x] Run focused and full gates, commit `b430874d`, archive only child 11 in `a2abe128`, then freeze
       `2a3788fc` and collect isolated Codex Sol plus Claude Opus read-only reports while the parent remains
       `in_progress`.
+
+### 12. Seventh final-review findings
+
+- [x] Close the approved Round 7 runtime and archive-reconciliation findings, commit `8bbc619a`, and archive only
+      child 12 in `29133ac0` while the parent remains `in_progress`.
+- [x] Record the separate fresh Sol review's P2: the upstream archive claimed a historical user decision that the
+      cited post-hoc audit does not prove.
+
+### 13. Eighth final-review factual correction
+
+- [ ] Correct only the two unsupported historical-decision assertions and the parent Round 7/8 projection, then
+      commit and archive only child 13 while the parent remains `in_progress`.
+- [ ] Freeze the Round 8 archive commit for a new Sol max read-only review; do not pass or archive the parent before
+      that review reports no P0-P2.
 
 ## Stop And Rollback Rules
 

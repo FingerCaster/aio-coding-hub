@@ -3,8 +3,8 @@
 ## Goal
 
 在已完成的前置任务 `07-15-external-codex-retry-gateway` 之后，严格按
-`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12 -> Sol max 最终审核`
-修复、同步并关闭七轮终审发现。
+`1 -> 2 -> 3 -> 4 -> 5 -> 6 -> 7 -> 8 -> 9 -> 10 -> 11 -> 12 -> 13 -> Sol max 最终审核`
+修复、同步并关闭八轮终审发现。
 每个子任务必须独立实现、检查、提交并归档，前一项未通过时不得
 启动后一项。
 
@@ -21,6 +21,9 @@
   `2a3788fc62db982737b9873757c354f89e198ce6` 的历史 Sol/Claude 只读报告均已收齐。父任务保持
   `in_progress`，直到报告去重、证据复现、必要的事实纠正和最终冻结审核全部通过；最终 Sol 审核
   通过前不得归档。
+- 子任务 12（Round 7）已在 `8bbc619a` 完成实现，并在 `29133ac0` 归档；其后新的 Sol 终审
+  发现一项历史用户决定断言缺乏记录证据的 P2。子任务 13（Round 8）是唯一未完成的纠正子任务，
+  父任务继续保持 `in_progress`，等待 Round 8 归档和新的只读 Sol 审核。
 - 用户已确认前置父任务完成，并授权规划校验通过后直接进入实现，无需再次请求规划确认。
   已发生的 Round 6 实现记录保留其真实 `gpt-5.6-luna / effort=max` 模型，已完成的 child 11
   执行记录保留其真实 `gpt-5.6-terra / effort=max` 模型；从 Round 7 起，剩余实现和检查改由
@@ -57,7 +60,8 @@
 10. `07-17-final-review-findings-round-5`
 11. `07-17-final-review-findings-round-6`
 12. `07-18-final-review-findings-round-7`
-13. 父任务最终单一只读 Sol 审核（Codex `gpt-5.6-sol / effort=max`）
+13. `07-18-final-review-findings-round-8`
+14. 父任务最终单一只读 Sol 审核（Codex `gpt-5.6-sol / effort=max`）
 
 每个子任务只有在前一任务的验收标准、质量检查、提交与归档全部完成后才可执行
 `task.py start`。父子关系不替代此依赖门槛。
@@ -77,7 +81,8 @@
 | 9 | `07-17-final-review-findings-round-4` | archived; nine findings and full gates complete |
 | 10 | `07-17-final-review-findings-round-5` | archived; six findings and full gates complete |
 | 11 | `07-17-final-review-findings-round-6` | archived at `a2abe128`; F1-F23 and full gates closed, F24 excluded by user decision |
-| 12 | `07-18-final-review-findings-round-7` | planning; closes the post-`35db0f32` findings before the final Sol gate |
+| 12 | `07-18-final-review-findings-round-7` | archived at `29133ac0`; its fresh Sol review found the unsupported historical-decision P2 |
+| 13 | `07-18-final-review-findings-round-8` | in progress; sole incomplete factual-record correction before a new Sol gate |
 
 ### R2. 多供应商失败链路
 
@@ -170,8 +175,10 @@
   纠正），不处理 F24 Trellis template-hash；`b430874d` 后在 `a2abe128` 归档。
 - [x] 冻结提交 `2a3788fc` 上已运行互不交换结果的 Codex Sol 与 Claude Opus 只读审核；两份报告
   已收齐，属于历史证据；其后不再启动 Claude 或其他 agent 审核。
-- [ ] 子任务 12 关闭冻结提交 `35db0f32` 的有效 findings，完成对应门禁、提交与归档。
-- [ ] 复现并裁决所有仍有效的候选项，纠正任务事实投影后重新冻结并完成最终 Sol max 审核；全过程
+- [x] 子任务 12 已关闭冻结提交 `35db0f32` 的有效 findings，在 `8bbc619a` 完成实现并于
+      `29133ac0` 归档；其后新的 Sol 终审发现本轮待纠正的历史决定断言 P2。
+- [ ] 子任务 13 仅纠正该 P2 和 Round 7/8 任务事实投影，完成提交与归档。
+- [ ] 子任务 13 归档后重新冻结并完成最终 Sol max 审核；全过程
   不泄露密钥/PII、不向任何 remote 推送，父任务才可归档。
 
 ## Out of Scope
