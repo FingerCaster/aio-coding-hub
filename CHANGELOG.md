@@ -1,5 +1,27 @@
 # Changelog
 
+## [0.60.27](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.26...aio-coding-hub-v0.60.27) (2026-07-18)
+
+
+### Features
+
+* **providers:** 改进供应商路由与账户用量展示，保留实际请求、统一 gate 跳过和路由跳转的可诊断信息。
+* **config:** 配置导入导出现在可在既有 8 MiB Skill 总预算内完整保留大于 1 MiB 的必要 Skill 资源。
+
+
+### Bug Fixes
+
+* **failover:** 修复多供应商场景中候选被 gate 跳过时可能过早返回 503 的问题；可用候选会继续尝试，跳过原因会被正确记录。
+* **account usage:** 手动刷新余额不再被较早的首次或定时查询结果覆盖，并兼容 NewAPI billing 响应及其应用层错误语义。
+* **config migration:** 导出和导入对大 Skill 资源保持对称校验，拒绝不完整 bundle、越界路径、符号链接和超预算内容。
+
+
+### Security and Reliability
+
+* **settings:** 强化设置写入、外部副作用回滚与并发更新保护，避免无关配置被旧状态覆盖。
+* **oauth and diagnostics:** 收紧设备授权流程、响应预算与错误脱敏，避免令牌、上游响应和敏感账户信息进入诊断输出。
+* **filesystem and image generation:** 加强本地文件、Skill 与图像资产的可信根、路径校验、下载和历史记录边界。
+
 ## [0.60.26](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.25...aio-coding-hub-v0.60.26) (2026-07-14)
 
 
