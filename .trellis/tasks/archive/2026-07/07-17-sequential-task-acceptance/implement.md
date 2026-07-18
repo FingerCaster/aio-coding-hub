@@ -91,7 +91,7 @@
       not rerun and remain the only residual risk; child archive `356fe32` was not used as the final anchor.
 - [x] Read-only `git remote -v` confirmed `origin` as the normal fetch/push remote and `upstream` push as
       `DISABLED`; this session issued no push.
-- [ ] Archive the parent only after every acceptance item is evidenced.
+- [x] Archive the parent only after every acceptance item is evidenced.
 
 ## Review children
 

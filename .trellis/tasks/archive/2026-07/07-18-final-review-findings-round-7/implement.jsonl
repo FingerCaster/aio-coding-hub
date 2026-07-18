@@ -3,4 +3,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Retain byte-for-byte Skill export/import, 8 MiB per-Skill limits, and filesystem trust rules while adding a shared export budget."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Apply generation-token ownership and field-aware rollback rules to the config-import ABA correction."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/trellis-task-context-archive-contract.md","reason":"Reconcile archived child evidence without breaking global context-manifest validation or parent lifecycle semantics."}
-{"file":".trellis/tasks/07-17-sequential-task-acceptance/research/integration-evidence-summary.md","reason":"Keep the parent sequence, user-reported boundaries, upstream exclusion, and evidence constraints intact."}
+{"file":".trellis/tasks/archive/2026-07/07-17-sequential-task-acceptance/research/integration-evidence-summary.md","reason":"Keep the parent sequence, user-reported boundaries, upstream exclusion, and evidence constraints intact."}

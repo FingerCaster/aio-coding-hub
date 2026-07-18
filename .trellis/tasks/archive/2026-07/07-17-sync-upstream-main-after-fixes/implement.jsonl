@@ -1,4 +1,4 @@
 {"file":"AGENTS.md","reason":"执行 origin 默认、显式 GitHub 仓库、upstream fetch-only 与产品冲突暂停规则。"}
 {"file":".trellis/workflow.md","reason":"按 Trellis 生命周期确认前四项归档门槛，并保持子任务 5 与父任务验收顺序。"}
 {"file":".trellis/tasks/archive/2026-07/07-17-sync-upstream-main-after-fixes/research/upstream-sync-policy.md","reason":"以固定 SHA、语义冲突决策门和非破坏性回滚流程完成最终同步。"}
-{"file":".trellis/tasks/07-17-sequential-task-acceptance/research/integration-evidence-summary.md","reason":"合并时保留前四项已确认根因修复、网关契约、隐私边界和固定串行策略。"}
+{"file":".trellis/tasks/archive/2026-07/07-17-sequential-task-acceptance/research/integration-evidence-summary.md","reason":"合并时保留前四项已确认根因修复、网关契约、隐私边界和固定串行策略。"}
