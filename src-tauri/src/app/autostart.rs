@@ -744,15 +744,24 @@ pub(crate) fn rollback_whole_settings_with_auto_start_token<R: tauri::Runtime>(
     #[cfg(test)]
     record_auto_start_durable_mutation_attempt();
     let update = crate::settings::update(app, |latest| {
-        if settings_snapshots_equal(latest, expected_committed) {
+        if owns_auto_start_generation && settings_snapshots_equal(latest, expected_committed) {
             *latest = previous_settings.clone();
             return Ok(true);
         }
         // A concurrent writer may have changed only a subset of the imported
         // snapshot. Restore each field still owned by this import and preserve
-        // every field whose current value differs from the import value.
-        restore_owned_settings_fields(latest, previous_settings, expected_committed)
-            .map_err(Into::into)
+        // every field whose current value differs from the import value. Once
+        // generation ownership is stale, auto_start is never restored even when
+        // its value still equals the import snapshot (same-value ABA).
+        if owns_auto_start_generation {
+            restore_owned_settings_fields(latest, previous_settings, expected_committed)
+                .map_err(Into::into)
+        } else {
+            let mut previous_without_auto_start = previous_settings.clone();
+            previous_without_auto_start.auto_start = expected_committed.auto_start;
+            restore_owned_settings_fields(latest, &previous_without_auto_start, expected_committed)
+                .map_err(Into::into)
+        }
     });
 
     match update {

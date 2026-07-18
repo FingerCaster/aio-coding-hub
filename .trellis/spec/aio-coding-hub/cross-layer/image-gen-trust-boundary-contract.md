@@ -101,6 +101,12 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   DB failure removes only the directory created by that attempt. A preexisting
   symlink, hardlink, ordinary target, or write probe is never followed or
   overwritten.
+- Every frontend retry is an append-only generation attempt with a fresh
+  cryptographically random task ID and fresh creation/start timestamps. It
+  reuses only the source task's request snapshot (rehydrating persisted
+  references through the bounded backend reader first); generation and
+  persistence then address only the new ID. The source done/error task, DB row,
+  directory, files, and in-flight persistence remain unchanged.
 - SQLite `dir`, `images_json`, and `ref_images_json` values are untrusted.
   Listing canonicalizes the current plus historical settings-owned roots and
   validates every selected row in full. A task directory must be a non-symlink/
@@ -180,6 +186,8 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
 | Dialog result extension mismatches MIME | Reject; write no file |
 | DB task dir is outside root, nested, wrong-id, missing, symlink, or reparse escape | Reject before filesystem mutation or DB deletion |
 | Persist target directory/file, symlink, or hardlink already exists | Reject before writing; preserve external bytes and create no DB row |
+| Persisted done/error task is retried | Append a fresh-ID attempt; preserve the source row/directory and persist the retry independently |
+| Source attempt persistence resolves after its retry starts | Keep both IDs and rows; never reinterpret the late source result as an update of the retry |
 | DB insert fails after new files were written | Remove only the newly created task directory; leave no DB row |
 | Final row/path validation fails after INSERT | Roll back INSERT and remove only the newly created task directory |
 | Trusted root parent or task path is rebound after validation | Handle-relative read/quarantine fails closed; preserve outside bytes and DB rows |
@@ -240,6 +248,11 @@ The frontend save adapter accepts only `suggestedFilename`, `mime`, and
   DB tampering tests for outside-root task dirs, traversal filenames,
   unreferenced in-root files, symlink/reparse escape, wrong task ids, and
   tampering between list and read. Any invalid selected row fails the list.
+- Frontend-test successful retries of persisted done and error rows, failed
+  retries, persisted reference rehydration, and a source persistence promise
+  resolving after retry start. Assert distinct random IDs, immutable source
+  state, and independent persistence payloads. Keep a Rust regression proving
+  distinct attempt rows/files coexist while duplicate IDs remain rejected.
 - Prove clear/cleanup validate all selected rows before deleting a valid task,
   and prove failed validation leaves DB rows intact.
 - Add deterministic post-validation replacement hooks for read/delete and

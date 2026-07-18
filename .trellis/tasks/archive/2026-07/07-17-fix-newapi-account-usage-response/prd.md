@@ -65,14 +65,14 @@
 
 ## Acceptance Criteria
 
-- [ ] 真实形状 fixture 中 `success=false` 映射为准确认证失败，不再显示 missing quota。
-- [ ] subscription + usage + USD status fixture 归一化为正确 total/used/balance/expiry。
-- [ ] 非 USD、未知单位、非有限数字、部分 endpoint 失败和 error object 均按明确规则处理。
-- [ ] URL/date/auth/header 测试证明模型 Key 只发送到预期同源 NewAPI endpoint。
-- [ ] API Key、PII、完整真实响应和实际账户数值不出现在日志、错误、fixture 或 git diff。
-- [ ] fixture 测试通过后，对 `muyuan` 的最小只读验证返回可计算字段形状，且只记录脱敏
+- [x] 真实形状 fixture 中 `success=false` 映射为准确认证失败，不再显示 missing quota。
+- [x] subscription + usage + USD status fixture 归一化为正确 total/used/balance/expiry。
+- [x] 非 USD、未知单位、非有限数字、部分 endpoint 失败和 error object 均按明确规则处理。
+- [x] URL/date/auth/header 测试证明模型 Key 只发送到预期同源 NewAPI endpoint。
+- [x] API Key、PII、完整真实响应和实际账户数值不出现在日志、错误、fixture 或 git diff。
+- [x] fixture 测试通过后，对 `muyuan` 的最小只读验证返回可计算字段形状，且只记录脱敏
       断言。
-- [ ] provider routing/circuit/availability 相关 mock 均未被调用，现有 sub2api 行为不回归。
+- [x] provider routing/circuit/availability 相关 mock 均未被调用，现有 sub2api 行为不回归。
 
 ## Out of Scope
 

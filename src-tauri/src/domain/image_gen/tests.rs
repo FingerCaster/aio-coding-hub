@@ -847,7 +847,7 @@ fn history_opaque_cursor_rejects_invalid_and_legacy_values() {
 
 #[test]
 fn history_persist_rejects_existing_task_id_without_overwriting_files() {
-    let (_db_dir, db) = test_db("image-gen-history-upsert.db");
+    let (_db_dir, db) = test_db("image-gen-history-duplicate-id.db");
     let storage = tempfile::tempdir().expect("storage tempdir");
 
     task_persist(&db, storage.path(), done_task_payload("t1", 1)).expect("persist");
@@ -865,6 +865,31 @@ fn history_persist_rejects_existing_task_id_without_overwriting_files() {
         std::fs::read(storage.path().join("t1/image-1.png")).expect("unchanged image"),
         original
     );
+}
+
+#[test]
+fn history_persist_keeps_distinct_attempt_rows_and_files() {
+    let (_db_dir, db) = test_db("image-gen-history-distinct-attempts.db");
+    let storage = tempfile::tempdir().expect("storage tempdir");
+
+    let mut failed = done_task_payload("attempt-failed", 1);
+    failed.status = "error".to_string();
+    failed.error = Some("HTTP 500: original".to_string());
+    failed.images.clear();
+    failed.thumbs.clear();
+    task_persist(&db, storage.path(), failed).expect("persist failed source attempt");
+    task_persist(&db, storage.path(), done_task_payload("attempt-retry", 2))
+        .expect("persist successful retry attempt");
+
+    let listed = tasks_list(&db, storage.path(), None, 50).expect("reload attempts");
+    assert_eq!(listed.len(), 2);
+    assert_eq!(listed[0].id, "attempt-retry");
+    assert_eq!(listed[0].status, "done");
+    assert_eq!(listed[1].id, "attempt-failed");
+    assert_eq!(listed[1].status, "error");
+    assert_eq!(listed[1].error.as_deref(), Some("HTTP 500: original"));
+    assert!(storage.path().join("attempt-failed").is_dir());
+    assert!(storage.path().join("attempt-retry/image-1.png").is_file());
 }
 
 #[test]

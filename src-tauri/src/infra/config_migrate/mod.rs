@@ -24,6 +24,8 @@ pub(crate) const CONFIG_IMPORT_FILE_MAX_BYTES: usize = CONFIG_BUNDLE_ENCODED_MAX
 pub(crate) const CONFIG_SKILL_TOTAL_MAX_BYTES: usize = 8 * 1024 * 1024;
 pub(crate) const CONFIG_SKILL_FILE_MAX_BYTES: usize = CONFIG_SKILL_TOTAL_MAX_BYTES;
 pub(crate) const CONFIG_SKILL_FILE_COUNT_MAX: usize = 256;
+pub(crate) const CONFIG_SKILL_EXPORT_ENCODED_MAX_BYTES: usize = 56 * 1024 * 1024;
+pub(crate) const CONFIG_SKILL_EXPORT_FILE_COUNT_MAX: usize = 2048;
 pub(crate) const CONFIG_SKILL_RELATIVE_PATH_MAX_CHARS: usize = 512;
 pub(crate) const CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const CONFIG_SKILL_MD_MAX_BYTES: usize = 256 * 1024;
@@ -266,6 +268,7 @@ pub fn config_export<R: tauri::Runtime>(
 
     let conn = db.open_connection()?;
     let provider_cli_key_by_id = export::load_provider_cli_key_by_id(&conn)?;
+    let mut skill_export_budget = skill_fs::SkillExportBudget::default();
 
     Ok(ConfigBundle {
         schema_version: CONFIG_BUNDLE_SCHEMA_VERSION,
@@ -278,8 +281,12 @@ pub fn config_export<R: tauri::Runtime>(
         workspaces: export::export_workspaces(&conn)?,
         mcp_servers: export::export_mcp_servers(&conn)?,
         skill_repos: export::export_skill_repos(&conn)?,
-        installed_skills: Some(export::export_installed_skills(app, &conn)?),
-        local_skills: Some(export::export_local_skills(app)?),
+        installed_skills: Some(export::export_installed_skills(
+            app,
+            &conn,
+            &mut skill_export_budget,
+        )?),
+        local_skills: Some(export::export_local_skills(app, &mut skill_export_budget)?),
         image_gen_configs: Some(export::export_image_gen_configs(&conn)?),
     })
 }

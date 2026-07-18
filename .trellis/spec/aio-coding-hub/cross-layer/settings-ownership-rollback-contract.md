@@ -50,6 +50,12 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
   OS autostart state.
 - Whole-import autostart reconciliation runs only inside the shared autostart coordinator after the settings
   CAS succeeds. Correction/rollback use the same generation token protocol and never restore a loser's value.
+- Whole-import rollback treats generation ownership as authoritative for
+  `auto_start`. If its token generation is stale, it must not restore
+  `auto_start` even when the current value equals the import snapshot (a
+  same-value ABA). It may still restore every other import-owned field whose
+  value equals the committed snapshot, and OS autostart must converge to the
+  resulting canonical winner.
 - Settings-service owned rollback has an explicit `Restored` / concurrent-winner / failure result. Only
   `Restored` authorizes previous-runtime restoration. Other results keep or resynchronize runtime side effects
   from the current canonical snapshot.
@@ -65,6 +71,7 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 | Whole-import expected snapshot still matches | Replace atomically | CAS returns `true` |
 | Whole-import snapshot drifted | Preserve latest snapshot | `SETTINGS_CONCURRENT_UPDATE` / CAS `false` |
 | Whole-import CAS loses before autostart reconciliation | Preserve winner | No autostart side effect from loser |
+| Later ordinary writer commits the import's same `auto_start` value and advances generation | Preserve that same-value winner | Roll back only other import-owned fields; sync OS to canonical winner |
 | External side effect fails and committed token still matches | Restore only owned fields | Report original operation failure |
 | External side effect fails after newer owned-field commit | Skip rollback and old runtime restoration | Preserve newer value; safe warning allowed |
 | Atomic settings persistence fails | Leave last durable snapshot authoritative | Return persistence error without partial file |
@@ -88,6 +95,11 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 - Cover whole-import CAS success and `SETTINGS_CONCURRENT_UPDATE` with deterministic interleaving.
 - Force runtime sync failure, commit a newer owner value before rollback, and prove the service syncs the
   canonical winner rather than previous runtime. Count autostart calls in the real import CAS-loser path.
+- Through the real config-import runtime-failure path, advance generation with
+  an ordinary writer that commits the same `auto_start` value. Cover both a
+  snapshot otherwise equal to the import and a partial ordinary-field winner;
+  assert `auto_start` survives, other fields remain field-aware, and the last
+  OS target is the canonical winner.
 - Search production Rust sources for `settings::write(` and allow only test fixtures/seeding.
 - Run settings, gateway, Grok, CLI proxy, config-migration focused suites and the full Rust library suite.
 

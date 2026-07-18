@@ -62,15 +62,15 @@
 
 ## Acceptance Criteria
 
-- [ ] 嵌套 `skills/<name>/assets/` 下 `>1 MiB && <8 MiB` 的 PNG 可导出并导入，回读
+- [x] 嵌套 `skills/<name>/assets/` 下 `>1 MiB && <8 MiB` 的 PNG 可导出并导入，回读
       字节与源文件完全一致。
-- [ ] 恰好 8 MiB 的单文件在单 Skill 总量允许时可 round trip；8 MiB 加 1 字节在导出
+- [x] 恰好 8 MiB 的单文件在单 Skill 总量允许时可 round trip；8 MiB 加 1 字节在导出
       和导入两侧均被拒绝。
-- [ ] 多文件各自合法但合计超过 8 MiB、257 个文件、超长/遍历/重复路径、符号链接逃逸、
+- [x] 多文件各自合法但合计超过 8 MiB、257 个文件、超长/遍历/重复路径、符号链接逃逸、
       特殊文件和超长 Base64 均继续被拒绝。
-- [ ] 64 MiB 导入 bundle 上限及“校验失败前不创建目标目录/不写文件”回归保持通过。
-- [ ] 正常小文件、installed/local Skill、v1/v2 bundle 和非 Skill 配置迁移测试通过。
-- [ ] 未修改业务范围外的 Skill 安装、同步或运行时文件预算。
+- [x] 64 MiB 导入 bundle 上限及“校验失败前不创建目标目录/不写文件”回归保持通过。
+- [x] 正常小文件、installed/local Skill、v1/v2 bundle 和非 Skill 配置迁移测试通过。
+- [x] 未修改业务范围外的 Skill 安装、同步或运行时文件预算。
 
 ## Out of Scope
 

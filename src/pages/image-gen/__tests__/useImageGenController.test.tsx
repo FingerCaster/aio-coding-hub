@@ -317,7 +317,7 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(result.current.tasks).toHaveLength(0);
   });
 
-  it("shows a readable error and retries with the request snapshot", async () => {
+  it("shows a readable error and retries with the request snapshot as a new attempt", async () => {
     vi.mocked(gptImageAdapter.generate).mockRejectedValueOnce(new Error("HTTP 500: boom"));
     const { result } = await renderController();
 
@@ -348,7 +348,14 @@ describe("pages/image-gen/useImageGenController", () => {
     const calls = vi.mocked(gptImageAdapter.generate).mock.calls;
     expect(calls).toHaveLength(2);
     expect(calls[1][0]).toBe(calls[0][0]);
-    const retried = result.current.tasks[0];
+    expect(result.current.tasks).toHaveLength(2);
+    expect(result.current.tasks[0]).toMatchObject({
+      id: failed.id,
+      status: "error",
+      error: expect.stringContaining("HTTP 500: boom"),
+    });
+    const retried = result.current.tasks[1];
+    expect(retried.id).not.toBe(failed.id);
     expect(retried.status).toBe("done");
     expect(retried.error).toBeUndefined();
   });
@@ -380,7 +387,7 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(persisted?.error?.length).toBeLessThanOrEqual(512);
   });
 
-  it("retry resets startedAt while keeping createdAt", async () => {
+  it("retry creates a new attempt with new creation and start timestamps", async () => {
     vi.mocked(gptImageAdapter.generate).mockRejectedValueOnce(new Error("boom"));
     const { result } = await renderController();
     act(() => {
@@ -401,8 +408,10 @@ describe("pages/image-gen/useImageGenController", () => {
     });
     nowSpy.mockRestore();
 
-    const retried = result.current.tasks[0];
-    expect(retried.createdAt).toBe(createdAt);
+    expect(result.current.tasks[0]).toMatchObject({ id: failed.id, createdAt, startedAt });
+    const retried = result.current.tasks[1];
+    expect(retried.id).not.toBe(failed.id);
+    expect(retried.createdAt).toBe(startedAt + 5000);
     expect(retried.startedAt).toBe(startedAt + 5000);
     // Date.now 被固定：完成时刻 - startedAt = 0。
     expect(retried.elapsedMs).toBe(0);
@@ -711,7 +720,7 @@ describe("pages/image-gen/useImageGenController", () => {
     expect(result.current.referenceImages).toHaveLength(1);
   });
 
-  it("updates error and elapsed across consecutive failed retries without leaking urls", async () => {
+  it("appends independent error attempts across consecutive failed retries without leaking urls", async () => {
     vi.mocked(gptImageAdapter.generate).mockRejectedValueOnce(new Error("第一次失败"));
     const { result } = await renderController();
     act(() => {
@@ -736,7 +745,9 @@ describe("pages/image-gen/useImageGenController", () => {
       await result.current.retry(first.id);
     });
     nowSpy.mockRestore();
-    const second = result.current.tasks[0];
+    expect(result.current.tasks).toHaveLength(2);
+    const second = result.current.tasks[1];
+    expect(second.id).not.toBe(first.id);
     expect(second.status).toBe("error");
     expect(second.error).toContain("第二次失败");
     expect(second.startedAt).toBe(base + 5000);
@@ -747,7 +758,9 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.retry(second.id);
     });
-    const third = result.current.tasks[0];
+    expect(result.current.tasks).toHaveLength(3);
+    const third = result.current.tasks[2];
+    expect(new Set(result.current.tasks.map((task) => task.id)).size).toBe(3);
     expect(third.error).toContain("第三次失败");
     const calls = vi.mocked(gptImageAdapter.generate).mock.calls;
     expect(calls).toHaveLength(3);
@@ -1559,9 +1572,10 @@ describe("pages/image-gen/useImageGenController", () => {
 
   // ---------- 持久化：disk 任务的四操作（read_image 读回） ----------
 
-  it("retries a disk task by reading reference images back from disk", async () => {
+  it("persists a successful retry of a done disk task under a fresh id after rehydrating refs", async () => {
     vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRowWithRef()]));
     vi.mocked(imageGenReadImage).mockResolvedValue({ mime: "image/png", dataB64: btoa("ref") });
+    vi.mocked(imageGenTaskPersist).mockImplementation(async (payload) => rowFromPayload(payload));
     vi.mocked(gptImageAdapter.generate).mockResolvedValue({
       images: [{ mime: "image/png", b64: btoa("new") }],
     });
@@ -1573,15 +1587,30 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.retry("row-1");
     });
+    await waitFor(() => {
+      expect(result.current.tasks).toHaveLength(2);
+      expect(result.current.tasks[1].persisted).toBe(true);
+    });
     expect(imageGenReadImage).toHaveBeenCalledWith("row-1/ref-1.png");
     const request = vi.mocked(gptImageAdapter.generate).mock.calls[0][0];
     expect(request.referenceImages).toEqual([{ mime: "image/png", b64: btoa("ref") }]);
-    expect(result.current.tasks[0].status).toBe("done");
+    const [source, retryAttempt] = result.current.tasks;
+    expect(source).toMatchObject({ id: "row-1", status: "done", persisted: true });
+    expect(retryAttempt).toMatchObject({ status: "done", persisted: true });
+    expect(retryAttempt.id).not.toBe(source.id);
+    expect(retryAttempt.refPaths).toEqual([
+      { path: `${retryAttempt.id}/ref-1.png`, mime: "image/png" },
+    ]);
+    expect(vi.mocked(imageGenTaskPersist).mock.calls[0][0]).toMatchObject({
+      id: retryAttempt.id,
+      status: "done",
+      refImages: [{ mime: "image/png", dataB64: btoa("ref") }],
+    });
   });
 
-  it("does not overwrite the persisted done row when a disk-task retry fails", async () => {
-    // 独立 id：与其他用例的悬挂 persist（异步 FileReader）隔离，断言只看本任务。
+  it("persists a failed disk-task retry as a separate attempt without changing the done source", async () => {
     vi.mocked(imageGenTasksList).mockResolvedValue(makePage([makeRow({ id: "row-keep" })]));
+    vi.mocked(imageGenTaskPersist).mockImplementation(async (payload) => rowFromPayload(payload));
     vi.mocked(gptImageAdapter.generate).mockRejectedValue(new Error("HTTP 500: boom"));
     const { result } = await renderController();
     await waitFor(() => {
@@ -1591,16 +1620,117 @@ describe("pages/image-gen/useImageGenController", () => {
     await act(async () => {
       await result.current.retry("row-keep");
     });
-    // 失败态仅本次会话可见；不 upsert 空 images 的 error 行覆盖上一次成功结果。
-    const callsForTask = vi
-      .mocked(imageGenTaskPersist)
-      .mock.calls.filter(([payload]) => payload.id === "row-keep");
-    expect(callsForTask).toHaveLength(0);
-    const task = result.current.tasks[0];
-    expect(task.status).toBe("error");
-    expect(task.error).toContain("HTTP 500: boom");
-    expect(task.images[0].kind).toBe("disk");
-    expect(task.persisted).toBe(true);
+    await waitFor(() => {
+      expect(result.current.tasks).toHaveLength(2);
+      expect(result.current.tasks[1].persisted).toBe(true);
+    });
+    const [source, failedAttempt] = result.current.tasks;
+    expect(source).toMatchObject({ id: "row-keep", status: "done", persisted: true });
+    expect(source.images[0].kind).toBe("disk");
+    expect(failedAttempt).toMatchObject({
+      status: "error",
+      error: expect.stringContaining("HTTP 500: boom"),
+      persisted: true,
+    });
+    expect(failedAttempt.id).not.toBe(source.id);
+    expect(imageGenTaskPersist).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(imageGenTaskPersist).mock.calls[0][0]).toMatchObject({
+      id: failedAttempt.id,
+      status: "error",
+      images: [],
+    });
+  });
+
+  it("persists a successful retry of a persisted error row as a separate done attempt", async () => {
+    vi.mocked(imageGenTasksList).mockResolvedValue(
+      makePage([
+        makeRow({
+          id: "row-error",
+          status: "error",
+          error: "HTTP 500: original",
+          images: [],
+        }),
+      ])
+    );
+    vi.mocked(imageGenTaskPersist).mockImplementation(async (payload) => rowFromPayload(payload));
+    vi.mocked(gptImageAdapter.generate).mockResolvedValue({
+      images: [{ mime: "image/png", b64: btoa("recovered") }],
+    });
+    const { result } = await renderController();
+    await waitFor(() => {
+      expect(result.current.tasks).toHaveLength(1);
+    });
+
+    await act(async () => {
+      await result.current.retry("row-error");
+    });
+    await waitFor(() => {
+      expect(result.current.tasks).toHaveLength(2);
+      expect(result.current.tasks[1].persisted).toBe(true);
+    });
+
+    const [source, retryAttempt] = result.current.tasks;
+    expect(source).toMatchObject({
+      id: "row-error",
+      status: "error",
+      error: "HTTP 500: original",
+      persisted: true,
+    });
+    expect(retryAttempt).toMatchObject({ status: "done", persisted: true });
+    expect(retryAttempt.id).not.toBe(source.id);
+    expect(vi.mocked(imageGenTaskPersist).mock.calls[0][0].id).toBe(retryAttempt.id);
+  });
+
+  it("keeps both attempts when the source persist resolves after its retry starts", async () => {
+    let resolveSourcePersist!: () => void;
+    let persistCall = 0;
+    vi.mocked(imageGenTaskPersist).mockImplementation((payload) => {
+      persistCall += 1;
+      if (persistCall === 1) {
+        return new Promise<ImageGenTaskRow>((resolve) => {
+          resolveSourcePersist = () => resolve(rowFromPayload(payload));
+        });
+      }
+      return Promise.resolve(rowFromPayload(payload));
+    });
+    vi.mocked(gptImageAdapter.generate)
+      .mockResolvedValueOnce({ images: [{ mime: "image/png", b64: btoa("source") }] })
+      .mockResolvedValueOnce({ images: [{ mime: "image/png", b64: btoa("retry") }] });
+    const { result } = await renderController();
+    act(() => {
+      result.current.setPrompt("落盘竞态");
+    });
+    await act(async () => {
+      await result.current.submit();
+    });
+    await waitFor(() => {
+      expect(imageGenTaskPersist).toHaveBeenCalledTimes(1);
+    });
+    const sourceId = result.current.tasks[0].id;
+
+    await act(async () => {
+      await result.current.retry(sourceId);
+    });
+    await waitFor(() => {
+      expect(imageGenTaskPersist).toHaveBeenCalledTimes(2);
+      expect(result.current.tasks).toHaveLength(2);
+      expect(result.current.tasks[1].persisted).toBe(true);
+    });
+    const retryId = result.current.tasks[1].id;
+    expect(retryId).not.toBe(sourceId);
+
+    await act(async () => {
+      resolveSourcePersist();
+    });
+    await waitFor(() => {
+      expect(result.current.tasks.every((task) => task.persisted)).toBe(true);
+    });
+    expect(result.current.tasks.map((task) => task.id)).toEqual([sourceId, retryId]);
+    expect(vi.mocked(imageGenTaskPersist).mock.calls.map(([payload]) => payload.id)).toEqual([
+      sourceId,
+      retryId,
+    ]);
+    expect(imageGenTaskDelete).not.toHaveBeenCalled();
   });
 
   it("aborts a disk-task retry with a toast when the reference file is missing", async () => {

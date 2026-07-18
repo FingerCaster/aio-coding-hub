@@ -200,10 +200,8 @@ export function extractClipboardImageFiles(data: ClipboardImageSource): File[] {
   return Array.from(data.files ?? []).filter((file) => file.type.startsWith("image/"));
 }
 
-let idCounter = 0;
 function nextId(): string {
-  idCounter += 1;
-  return `imggen-${Date.now()}-${idCounter}`;
+  return `imggen-${globalThis.crypto.randomUUID()}`;
 }
 
 /** 释放任务持有的全部 objectURL（disk 形态的 asset URL 无需释放）。 */
@@ -434,9 +432,6 @@ export function useImageGenController() {
     async (taskId: string) => {
       const task = getImageGenSession().tasks.find((item) => item.id === taskId);
       if (!task || task.status === "loading") return;
-      // 已落盘 done 任务重试失败：不回写。否则空 images 的 error 行会 upsert 覆盖
-      // 上一次成功结果（重启后图片丢失）。DB 保留最后一次成功状态，错误仅本次会话可见。
-      if (task.status === "error" && task.images.some((image) => image.kind === "disk")) return;
       try {
         const payload = await buildPersistPayload(task);
         const row = await imageGenTaskPersist(payload);
@@ -446,8 +441,6 @@ export function useImageGenController() {
           void imageGenTaskDelete(taskId).catch(() => undefined);
           return;
         }
-        // 落盘期间被重试：等重试完成后按新结果重新落盘（同 id upsert）。
-        if (current.status === "loading") return;
         const restored = await taskFromRow(row);
         if (!restored) return;
         updateImageGenSession((prev) => ({
@@ -487,7 +480,7 @@ export function useImageGenController() {
           ...prev,
           tasks: prev.tasks.map((task) => {
             if (task.id !== taskId) return task;
-            // 重试覆盖旧结果时释放被替换图片的 objectURL（disk 图无 URL 可释放）。
+            // 防御性释放该 attempt 已有的 memory 图片（正常生成只会完成一次）。
             for (const old of task.images) {
               if (old.kind === "memory") releaseImageGenObjectUrl(old.objectUrl);
             }
@@ -578,9 +571,9 @@ export function useImageGenController() {
     await runGeneration(taskId, request);
   }, [apiKeyConfigured, apiKeyDraft, baseUrl, model, params, runGeneration]);
 
-  // 重试使用任务内的参数快照，不读面板当前值；目标任务生成中时忽略。
-  // 落盘任务的快照不含参考图字节：先从磁盘读回重建请求（缺文件则中止）。
-  // startedAt 重置计时，createdAt 保持创建时间不变。
+  // 重试使用源任务内的参数快照，不读面板当前值；目标任务生成中时忽略。
+  // 落盘任务的快照不含参考图字节：先从磁盘读回重建请求（缺文件则中止）。每次重试
+  // 追加独立随机 ID 的 attempt；源任务及其持久化目录/历史行保持不可变。
   const retry = useCallback(
     async (taskId: string) => {
       const target = getImageGenSession().tasks.find((task) => task.id === taskId);
@@ -595,21 +588,30 @@ export function useImageGenController() {
           return;
         }
       }
+      const now = Date.now();
+      const attemptId = nextId();
       updateImageGenSession((prev) => ({
         ...prev,
-        tasks: prev.tasks.map((task) =>
-          task.id === taskId
-            ? {
-                ...task,
-                status: "loading" as const,
-                error: undefined,
-                startedAt: Date.now(),
+        tasks: prev.tasks.some((task) => task.id === taskId && task.status !== "loading")
+          ? [
+              ...prev.tasks,
+              {
+                id: attemptId,
+                prompt: target.prompt,
+                refThumbs: [],
+                refPaths: [],
                 request,
-              }
-            : task
-        ),
+                status: "loading" as const,
+                images: [],
+                createdAt: now,
+                startedAt: now,
+                persisted: false,
+              },
+            ]
+          : prev.tasks,
       }));
-      await runGeneration(taskId, request);
+      if (!getImageGenSession().tasks.some((task) => task.id === attemptId)) return;
+      await runGeneration(attemptId, request);
     },
     [runGeneration]
   );

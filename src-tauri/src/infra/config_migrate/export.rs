@@ -7,7 +7,7 @@ use std::collections::HashMap;
 use super::normalize_oauth_refresh_lead_seconds;
 use super::skill_fs::{
     cli_skills_root, parse_skill_md_metadata_bytes, read_local_skill_source_metadata_bytes,
-    ssot_skills_root, SkillExportRoot,
+    ssot_skills_root, SkillExportBudget, SkillExportRoot,
 };
 use super::{
     ImageGenConfigExport, InstalledSkillExport, LocalSkillExport, McpServerExport, PromptExport,
@@ -471,6 +471,7 @@ pub(super) fn export_skill_repos(conn: &Connection) -> AppResult<Vec<SkillRepoEx
 pub(super) fn export_installed_skills<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     conn: &Connection,
+    export_budget: &mut SkillExportBudget,
 ) -> AppResult<Vec<InstalledSkillExport>> {
     let ssot_root = ssot_skills_root(app)?;
     let trusted_root = SkillExportRoot::open_if_exists(&ssot_root)?;
@@ -522,7 +523,7 @@ ORDER BY id ASC
             source_branch,
             source_subdir,
             enabled_in_workspaces: export_enabled_skill_workspaces(conn, skill_id)?,
-            files: skill_dir.export_files(true)?,
+            files: skill_dir.export_files(true, export_budget)?,
         });
     }
     Ok(items)
@@ -558,6 +559,7 @@ ORDER BY w.cli_key ASC, w.name ASC, w.id ASC
 
 pub(super) fn export_local_skills<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
+    export_budget: &mut SkillExportBudget,
 ) -> AppResult<Vec<LocalSkillExport>> {
     let mut items = Vec::new();
 
@@ -571,7 +573,7 @@ pub(super) fn export_local_skills<R: tauri::Runtime>(
 
         for skill_dir in trusted_root.capture_local_skills()? {
             let dir_name = skill_dir.dir_name().to_string();
-            let Some(mut files) = skill_dir.export_local_files(false)? else {
+            let Some(mut files) = skill_dir.export_local_files(false, export_budget)? else {
                 continue;
             };
             let skill_md = files

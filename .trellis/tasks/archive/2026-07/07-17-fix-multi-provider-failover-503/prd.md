@@ -62,15 +62,15 @@
 
 ## Acceptance Criteria
 
-- [ ] 三候选全被 gate 拒绝时，终态为 503，route/attempts 包含三条 skipped 记录且没有
+- [x] 三候选全被 gate 拒绝时，终态为 503，route/attempts 包含三条 skipped 记录且没有
       上游调用。
-- [ ] 会话绑定 provider 被拒绝时仍出现在链路中，且不会绕过 circuit/cooldown。
-- [ ] 前两家失败/skip、第三家可用时会处理第三家；明确 `max_providers_to_try=2` 时仍按
+- [x] 会话绑定 provider 被拒绝时仍出现在链路中，且不会绕过 circuit/cooldown。
+- [x] 前两家失败/skip、第三家可用时会处理第三家；明确 `max_providers_to_try=2` 时仍按
       Ready-provider 预算停止。
-- [ ] UI 对三家、两次 transition、包含 retry/skip 的 N 条 attempt 给出不混淆的标签与
+- [x] UI 对三家、两次 transition、包含 retry/skip 的 N 条 attempt 给出不混淆的标签与
       tooltip。
-- [ ] circuit failure counts、cooldown、session binding、provider order 与成功路径不回归。
-- [ ] gateway attempt-budget、model discovery、usage、TTFB、response-id、流式和 20 MiB
+- [x] circuit failure counts、cooldown、session binding、provider order 与成功路径不回归。
+- [x] gateway attempt-budget、model discovery、usage、TTFB、response-id、流式和 20 MiB
       相关现有测试保持通过。
 
 ## Out of Scope

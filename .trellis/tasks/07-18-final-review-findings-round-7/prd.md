@@ -108,20 +108,20 @@ Codex `gpt-5.6-sol / effort=max` 只读终审。
 
 ## Acceptance Criteria
 
-- [ ] 对已持久化 done/error 任务的成功重试产生新的 task ID，并在后端 insert-only 契约下
+- [x] 对已持久化 done/error 任务的成功重试产生新的 task ID，并在后端 insert-only 契约下
       独立持久化；重启后原记录与新成功记录均可正确读取。
-- [ ] 失败重试、参考图回读、在途首次落盘与重试交叠不会覆盖、删除或误标原持久化记录。
-- [ ] Image Gen 前后端注释、跨层契约和 focused 前端/Rust 回归一致描述 immutable attempt
+- [x] 失败重试、参考图回读、在途首次落盘与重试交叠不会覆盖、删除或误标原持久化记录。
+- [x] Image Gen 前后端注释、跨层契约和 focused 前端/Rust 回归一致描述 immutable attempt
       语义。
-- [ ] 多个 individually legal Skill 在 aggregate budget 触发时于下一次 Base64 分配前得到
+- [x] 多个 individually legal Skill 在 aggregate budget 触发时于下一次 Base64 分配前得到
       明确失败，目标导出文件保持原样；一项 1-8 MiB 的合法资源仍完整导出/导入。
-- [ ] installed/local 两条 exporter 共享同一 budget，文件数和字节累计均使用 checked
+- [x] installed/local 两条 exporter 共享同一 budget，文件数和字节累计均使用 checked
       arithmetic，且原有 symlink、特殊文件和敏感-looking bytes 的回归继续通过。
-- [ ] 同值 ordinary `auto_start` writer 推进 generation 后，失败 import rollback 保留该 winner；
+- [x] 同值 ordinary `auto_start` writer 推进 generation 后，失败 import rollback 保留该 winner；
       import 独有的其他字段按 field-aware 规则恢复，OS 收敛到 winner。
-- [ ] 子任务 1-5 的 archive PRD/implement 仅勾选已证实的项目，且全仓任务 manifest/归档
+- [x] 子任务 1-5 的 archive PRD/implement 仅勾选已证实的项目，且全仓任务 manifest/归档
       校验通过。
-- [ ] 受影响 Rust/前端测试、格式/类型检查、`pnpm check:precommit:full`、`pnpm check:prepush`
+- [x] 受影响 Rust/前端测试、格式/类型检查、`pnpm check:precommit:full`、`pnpm check:prepush`
       和必要的 Docker/Linux watchdog 验证全部通过并记录。
 - [ ] 完成提交与归档后，新的 Sol max 只读审核没有 P0-P2 findings，父任务才可进入最终验收。
 

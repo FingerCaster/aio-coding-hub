@@ -8,7 +8,8 @@ use std::collections::{HashMap, HashSet};
 use std::path::{Component, Path, PathBuf};
 
 use super::{
-    LocalSkillExport, SkillFileExport, CONFIG_SKILL_FILE_COUNT_MAX, CONFIG_SKILL_FILE_MAX_BYTES,
+    LocalSkillExport, SkillFileExport, CONFIG_SKILL_EXPORT_ENCODED_MAX_BYTES,
+    CONFIG_SKILL_EXPORT_FILE_COUNT_MAX, CONFIG_SKILL_FILE_COUNT_MAX, CONFIG_SKILL_FILE_MAX_BYTES,
     CONFIG_SKILL_MD_MAX_BYTES, CONFIG_SKILL_RELATIVE_PATH_MAX_CHARS,
     CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES, CONFIG_SKILL_TOTAL_MAX_BYTES,
     SKILL_MANAGED_MARKER_FILE, SKILL_SOURCE_MARKER_FILE,
@@ -71,7 +72,8 @@ pub(super) fn export_skill_dir_files(
     dir: &Path,
     skip_source_marker: bool,
 ) -> AppResult<Vec<SkillFileExport>> {
-    let mut collector = SkillFileCollector::default();
+    let mut export_budget = SkillExportBudget::default();
+    let mut collector = SkillFileCollector::new(&mut export_budget);
     let mut visited_dirs = HashSet::new();
     let root = ExportDir::open_root(dir)?;
     visited_dirs.insert(root.identity()?);
@@ -163,8 +165,12 @@ impl CapturedSkillDir {
         &self.dir_name
     }
 
-    pub(super) fn export_files(&self, skip_source_marker: bool) -> AppResult<Vec<SkillFileExport>> {
-        let mut collector = SkillFileCollector::default();
+    pub(super) fn export_files(
+        &self,
+        skip_source_marker: bool,
+        export_budget: &mut SkillExportBudget,
+    ) -> AppResult<Vec<SkillFileExport>> {
+        let mut collector = SkillFileCollector::new(export_budget);
         let mut visited_dirs = HashSet::new();
         visited_dirs.insert(self.dir.identity()?);
         collect_skill_dir_files(
@@ -180,6 +186,7 @@ impl CapturedSkillDir {
     pub(super) fn export_local_files(
         &self,
         skip_source_marker: bool,
+        export_budget: &mut SkillExportBudget,
     ) -> AppResult<Option<Vec<SkillFileExport>>> {
         let entries = self.dir.entries()?;
         let has_skill_md = entries
@@ -191,7 +198,7 @@ impl CapturedSkillDir {
         if !has_skill_md || has_managed_marker {
             return Ok(None);
         }
-        let mut collector = SkillFileCollector::default();
+        let mut collector = SkillFileCollector::new(export_budget);
         let mut visited_dirs = HashSet::new();
         visited_dirs.insert(self.dir.identity()?);
         collect_skill_dir_entries(
@@ -206,13 +213,63 @@ impl CapturedSkillDir {
     }
 }
 
-#[derive(Default)]
-struct SkillFileCollector {
-    files: Vec<SkillFileExport>,
-    total_bytes: usize,
+#[derive(Debug, Default)]
+pub(super) struct SkillExportBudget {
+    encoded_bytes: usize,
+    file_count: usize,
 }
 
-impl SkillFileCollector {
+impl SkillExportBudget {
+    fn reserve_file(&mut self, raw_bytes: usize) -> AppResult<()> {
+        let encoded_bytes = raw_bytes
+            .checked_add(2)
+            .and_then(|value| value.checked_div(3))
+            .and_then(|value| value.checked_mul(4))
+            .ok_or_else(|| {
+                "SEC_INVALID_INPUT: skill export aggregate encoded payload overflow".to_string()
+            })?;
+        let next_encoded_bytes =
+            self.encoded_bytes
+                .checked_add(encoded_bytes)
+                .ok_or_else(|| {
+                    "SEC_INVALID_INPUT: skill export aggregate encoded payload overflow".to_string()
+                })?;
+        let next_file_count = self.file_count.checked_add(1).ok_or_else(|| {
+            "SEC_INVALID_INPUT: skill export aggregate file count overflow".to_string()
+        })?;
+        if next_file_count > CONFIG_SKILL_EXPORT_FILE_COUNT_MAX {
+            return Err(format!(
+                "SEC_INVALID_INPUT: too many skill export aggregate files (max {CONFIG_SKILL_EXPORT_FILE_COUNT_MAX})"
+            )
+            .into());
+        }
+        if next_encoded_bytes > CONFIG_SKILL_EXPORT_ENCODED_MAX_BYTES {
+            return Err(format!(
+                "SEC_INVALID_INPUT: skill export aggregate encoded payload too large (max {CONFIG_SKILL_EXPORT_ENCODED_MAX_BYTES} bytes)"
+            )
+            .into());
+        }
+        self.encoded_bytes = next_encoded_bytes;
+        self.file_count = next_file_count;
+        Ok(())
+    }
+}
+
+struct SkillFileCollector<'a> {
+    files: Vec<SkillFileExport>,
+    total_bytes: usize,
+    export_budget: &'a mut SkillExportBudget,
+}
+
+impl<'a> SkillFileCollector<'a> {
+    fn new(export_budget: &'a mut SkillExportBudget) -> Self {
+        Self {
+            files: Vec::new(),
+            total_bytes: 0,
+            export_budget,
+        }
+    }
+
     fn push_file(&mut self, relative_path: &Path, mut source: std::fs::File) -> AppResult<()> {
         if self.files.len() >= CONFIG_SKILL_FILE_COUNT_MAX {
             return Err(format!(
@@ -261,6 +318,7 @@ impl SkillFileCollector {
             )
             .into());
         }
+        self.export_budget.reserve_file(content.len())?;
 
         self.total_bytes = next_total;
         self.files.push(SkillFileExport {
@@ -274,7 +332,7 @@ impl SkillFileCollector {
 fn collect_skill_dir_files(
     dir: &ExportDir,
     relative_root: &Path,
-    files: &mut SkillFileCollector,
+    files: &mut SkillFileCollector<'_>,
     visited_dirs: &mut HashSet<ExportIdentity>,
     skip_source_marker: bool,
 ) -> AppResult<()> {
@@ -298,7 +356,7 @@ fn collect_skill_dir_entries(
     dir: &ExportDir,
     relative_root: &Path,
     entries: Vec<ExportEntry>,
-    files: &mut SkillFileCollector,
+    files: &mut SkillFileCollector<'_>,
     visited_dirs: &mut HashSet<ExportIdentity>,
     skip_source_marker: bool,
 ) -> AppResult<()> {

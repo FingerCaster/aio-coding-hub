@@ -1099,6 +1099,160 @@ fn config_import_failure_field_rollback_preserves_ordinary_and_private_winners()
 }
 
 #[test]
+fn config_import_runtime_failure_same_value_auto_start_aba_skips_whole_snapshot_restore() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    write_grok_config_for_import_matrix(&app, true);
+    let previous = settings::read(&app).expect("previous settings");
+    let mut imported = previous.clone();
+    imported.auto_start = !previous.auto_start;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(5);
+    let mut bundle = make_matrix_bundle(&imported, "same-auto-whole", "same-auto-whole-prompt");
+    bundle.settings = serde_json::to_string(&imported).expect("whole ABA settings");
+
+    let b_update =
+        serde_json::from_value::<crate::commands::settings::SettingsUpdate>(serde_json::json!({
+            "preferredPort": imported.preferred_port,
+            "autoStart": imported.auto_start,
+            "logRetentionDays": imported.log_retention_days,
+            "failoverMaxAttemptsPerProvider": imported.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": imported.failover_max_providers_to_try
+        }))
+        .expect("same-value B ordinary settings update");
+    let b_handle = app.clone();
+    let mut b_started = false;
+    let mut b_update = Some(b_update);
+    crate::app::autostart::reset_auto_start_sync_test_calls();
+    set_config_import_cli_runtime_sync_test_hook(Box::new(move || {
+        if b_started {
+            return None;
+        }
+        b_started = true;
+        let b_handle = b_handle.clone();
+        let b_update = b_update.take().expect("B update only runs once");
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(
+                crate::app::settings_service::settings_set_impl_for_test(b_handle, b_update),
+            )
+            .expect("same-value B ordinary production writer");
+        })
+        .join()
+        .expect("join same-value B writer");
+        Some("forced import runtime failure after same-value whole ABA".to_string())
+    }));
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("runtime failure must roll back after same-value whole ABA");
+    clear_config_import_cli_runtime_sync_test_hook();
+    assert!(
+        error
+            .to_string()
+            .contains("forced import runtime failure after same-value whole ABA"),
+        "unexpected import failure: {error}"
+    );
+
+    let canonical = settings::read(&app).expect("canonical after whole ABA rollback");
+    assert_eq!(
+        canonical.auto_start, imported.auto_start,
+        "newer same-value generation must retain auto_start"
+    );
+    assert_eq!(
+        canonical.log_retention_days, previous.log_retention_days,
+        "import-owned ordinary field must still roll back"
+    );
+    assert_eq!(
+        crate::app::autostart::auto_start_sync_test_targets()
+            .last()
+            .copied(),
+        Some(imported.auto_start),
+        "OS autostart must converge to the same-value generation winner"
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-same-auto-whole")
+        .exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
+fn config_import_runtime_failure_same_value_auto_start_aba_keeps_field_winner() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    write_grok_config_for_import_matrix(&app, true);
+    let previous = settings::read(&app).expect("previous settings");
+    let mut imported = previous.clone();
+    imported.preferred_port = previous.preferred_port.saturating_add(1);
+    imported.tray_enabled = !previous.tray_enabled;
+    imported.auto_start = !previous.auto_start;
+    imported.log_retention_days = previous.log_retention_days.saturating_add(5);
+    let mut bundle = make_matrix_bundle(&imported, "same-auto-field", "same-auto-field-prompt");
+    bundle.settings = serde_json::to_string(&imported).expect("field ABA settings");
+
+    let b_retention = previous.log_retention_days.saturating_add(31);
+    let b_update =
+        serde_json::from_value::<crate::commands::settings::SettingsUpdate>(serde_json::json!({
+            "preferredPort": imported.preferred_port,
+            "autoStart": imported.auto_start,
+            "logRetentionDays": b_retention,
+            "failoverMaxAttemptsPerProvider": imported.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": imported.failover_max_providers_to_try
+        }))
+        .expect("same-value field B ordinary settings update");
+    let b_handle = app.clone();
+    let mut b_started = false;
+    let mut b_update = Some(b_update);
+    crate::app::autostart::reset_auto_start_sync_test_calls();
+    set_config_import_cli_runtime_sync_test_hook(Box::new(move || {
+        if b_started {
+            return None;
+        }
+        b_started = true;
+        let b_handle = b_handle.clone();
+        let b_update = b_update.take().expect("B update only runs once");
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(
+                crate::app::settings_service::settings_set_impl_for_test(b_handle, b_update),
+            )
+            .expect("same-value field B ordinary production writer");
+        })
+        .join()
+        .expect("join same-value field B writer");
+        Some("forced import runtime failure after same-value field ABA".to_string())
+    }));
+
+    let error = config_import(&app, &test_app.db, bundle)
+        .expect_err("runtime failure must roll back after same-value field ABA");
+    clear_config_import_cli_runtime_sync_test_hook();
+    assert!(
+        error
+            .to_string()
+            .contains("forced import runtime failure after same-value field ABA"),
+        "unexpected import failure: {error}"
+    );
+
+    let canonical = settings::read(&app).expect("canonical after field ABA rollback");
+    assert_eq!(canonical.preferred_port, previous.preferred_port);
+    assert_eq!(canonical.tray_enabled, previous.tray_enabled);
+    assert_eq!(canonical.log_retention_days, b_retention);
+    assert_eq!(
+        canonical.auto_start, imported.auto_start,
+        "newer same-value generation must retain auto_start"
+    );
+    assert_eq!(
+        crate::app::autostart::auto_start_sync_test_targets()
+            .last()
+            .copied(),
+        Some(imported.auto_start),
+        "OS autostart must converge to the field-aware same-value winner"
+    );
+    assert!(!ssot_skills_root(&app)
+        .expect("SSOT root")
+        .join("matrix-same-auto-field")
+        .exists());
+    assert_matrix_import_artifacts_clean(&app);
+}
+
+#[test]
 fn config_import_same_second_success_replacements_use_unique_artifacts_and_second_wins() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
@@ -1374,6 +1528,20 @@ INSERT INTO skills(
         params![skill_key],
     )
     .expect("insert installed skill");
+}
+
+fn insert_distinct_installed_skill(conn: &Connection, skill_key: &str) {
+    conn.execute(
+        r#"
+INSERT INTO skills(
+  skill_key, name, normalized_name, description, source_git_url, source_branch, source_subdir,
+  created_at, updated_at
+) VALUES (?1, ?1, ?1, 'Aggregate export fixture',
+          'https://example.test/repo.git', 'main', 'skills/aggregate', 1, 1)
+"#,
+        params![skill_key],
+    )
+    .expect("insert distinct installed skill");
 }
 
 #[test]
@@ -2309,6 +2477,162 @@ fn config_export_ignores_local_top_level_directory_link() {
         .expect("local skill payload")
         .iter()
         .all(|skill| skill.dir_name != "linked-local"));
+}
+
+#[test]
+fn config_export_aggregate_payload_budget_is_shared_by_installed_and_local_skills() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    let conn = test_app.db.open_connection().expect("open db");
+    let installed_key = "aggregate-installed";
+    insert_distinct_installed_skill(&conn, installed_key);
+    let installed_dir = ssot_root.join(installed_key);
+    write_skill_md(&installed_dir, installed_key, "aggregate payload boundary");
+    let installed_md_len = std::fs::metadata(installed_dir.join("SKILL.md"))
+        .expect("installed SKILL.md metadata")
+        .len() as usize;
+    std::fs::write(
+        installed_dir.join("payload.bin"),
+        vec![0x11; CONFIG_SKILL_TOTAL_MAX_BYTES - installed_md_len],
+    )
+    .expect("write installed aggregate payload");
+    drop(conn);
+
+    let cli_key =
+        crate::shared::cli_key::cli_keys_with(crate::shared::cli_key::CliCapability::Skills)
+            .next()
+            .expect("skills CLI");
+    let local_root = cli_skills_root(&app, cli_key).expect("local root");
+    for index in 0..4 {
+        let local_dir = local_root.join(format!("aggregate-local-{index}"));
+        write_skill_md(&local_dir, "Aggregate local", "aggregate payload boundary");
+        let skill_md_len = std::fs::metadata(local_dir.join("SKILL.md"))
+            .expect("local SKILL.md metadata")
+            .len() as usize;
+        std::fs::write(
+            local_dir.join("payload.bin"),
+            vec![index as u8; CONFIG_SKILL_TOTAL_MAX_BYTES - skill_md_len],
+        )
+        .expect("write local aggregate payload");
+    }
+    let local_dir = local_root.join("aggregate-local-z-overflow");
+    write_skill_md(
+        &local_dir,
+        "Aggregate local overflow",
+        "cross-root aggregate boundary",
+    );
+    std::fs::write(local_dir.join("payload.bin"), vec![0xA5; 3 * 1024 * 1024])
+        .expect("write local overflow payload");
+
+    let target = test_app.home.path().join("aggregate-payload-export.json");
+    std::fs::write(&target, b"SENTINEL-PAYLOAD").expect("write payload sentinel");
+    let error = crate::commands::config_migrate::config_export_to_path(&app, &test_app.db, &target)
+        .expect_err("installed plus local encoded payload must exceed aggregate budget");
+
+    assert!(
+        error.contains("SEC_INVALID_INPUT: skill export aggregate encoded payload"),
+        "unexpected aggregate payload error: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("read payload sentinel"),
+        b"SENTINEL-PAYLOAD"
+    );
+}
+
+#[test]
+fn config_export_aggregate_file_budget_is_shared_by_installed_and_local_skills() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let ssot_root = ssot_skills_root(&app).expect("ssot root");
+    let conn = test_app.db.open_connection().expect("open db");
+    let installed_key = "aggregate-files-installed";
+    insert_distinct_installed_skill(&conn, installed_key);
+    let installed_dir = ssot_root.join(installed_key);
+    write_skill_md(&installed_dir, installed_key, "aggregate file boundary");
+    for file_index in 0..255 {
+        std::fs::write(
+            installed_dir.join(format!("file-{file_index:03}.bin")),
+            [0x11, file_index as u8],
+        )
+        .expect("write installed aggregate file");
+    }
+    drop(conn);
+
+    let cli_key =
+        crate::shared::cli_key::cli_keys_with(crate::shared::cli_key::CliCapability::Skills)
+            .next()
+            .expect("skills CLI");
+    let local_root = cli_skills_root(&app, cli_key).expect("local root");
+    for skill_index in 0..7 {
+        let local_dir = local_root.join(format!("aggregate-files-local-{skill_index}"));
+        write_skill_md(
+            &local_dir,
+            "Aggregate local files",
+            "aggregate file boundary",
+        );
+        for file_index in 0..255 {
+            std::fs::write(
+                local_dir.join(format!("file-{file_index:03}.bin")),
+                [skill_index as u8, file_index as u8],
+            )
+            .expect("write local aggregate file");
+        }
+    }
+    let local_dir = local_root.join("aggregate-files-z-overflow");
+    write_skill_md(&local_dir, "Aggregate file overflow", "2049th export file");
+
+    let target = test_app.home.path().join("aggregate-files-export.json");
+    std::fs::write(&target, b"SENTINEL-FILES").expect("write file-count sentinel");
+    let error = crate::commands::config_migrate::config_export_to_path(&app, &test_app.db, &target)
+        .expect_err("installed plus local files must exceed aggregate file budget");
+
+    assert!(
+        error.contains("SEC_INVALID_INPUT: too many skill export aggregate files"),
+        "unexpected aggregate file error: {error}"
+    );
+    assert_eq!(
+        std::fs::read(&target).expect("read file-count sentinel"),
+        b"SENTINEL-FILES"
+    );
+}
+
+#[test]
+fn config_export_large_legal_payload_round_trips_without_content_filtering() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let conn = test_app.db.open_connection().expect("open db");
+    insert_distinct_installed_skill(&conn, "large-legal-roundtrip");
+    drop(conn);
+    let skill_dir = ssot_skills_root(&app)
+        .expect("ssot root")
+        .join("large-legal-roundtrip");
+    write_skill_md(&skill_dir, "Large legal roundtrip", "arbitrary bytes");
+    let mut payload = vec![0xA5; 1024 * 1024 + 17];
+    let sensitive_looking = b"SYNTHETIC_SECRET\0\xff";
+    payload[..sensitive_looking.len()].copy_from_slice(sensitive_looking);
+    std::fs::write(skill_dir.join("opaque.bin"), &payload).expect("write legal payload");
+
+    let target = test_app.home.path().join("large-legal-export.json");
+    crate::commands::config_migrate::config_export_to_path(&app, &test_app.db, &target)
+        .expect("large legal production export");
+    let bundle: ConfigBundle =
+        serde_json::from_slice(&std::fs::read(&target).expect("read exported bundle"))
+            .expect("parse exported bundle");
+    drop(test_app);
+
+    let imported_app = ConfigMigrateTestApp::new();
+    let imported_handle = imported_app.handle();
+    config_import(&imported_handle, &imported_app.db, bundle).expect("import exported bundle");
+    assert_eq!(
+        std::fs::read(
+            ssot_skills_root(&imported_handle)
+                .expect("imported ssot root")
+                .join("large-legal-roundtrip/opaque.bin")
+        )
+        .expect("read imported payload"),
+        payload
+    );
 }
 
 #[test]

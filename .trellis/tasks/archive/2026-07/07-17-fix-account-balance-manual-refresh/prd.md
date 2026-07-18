@@ -54,14 +54,14 @@
 
 ## Acceptance Criteria
 
-- [ ] deferred-response 测试证明较旧自动响应在手动响应后完成时不能覆盖手动值。
-- [ ] 手动点击总会触发一次新的 IPC 请求，不受现有 fresh/Infinity cache 影响。
-- [ ] 首次自动、定时与手动入口共享同一 query options 和 key。
-- [ ] 连续点击/多组件入口不会产生重复的非受控缓存写入。
-- [ ] 无需运行供应商可用性测试即可看到手动请求返回的新值。
-- [ ] `gatewayCircuitResetProvider`、provider availability 和其他 provider cache 没有被调用或
+- [x] deferred-response 测试证明较旧自动响应在手动响应后完成时不能覆盖手动值。
+- [x] 手动点击总会触发一次新的 IPC 请求，不受现有 fresh/Infinity cache 影响。
+- [x] 首次自动、定时与手动入口共享同一 query options 和 key。
+- [x] 连续点击/多组件入口不会产生重复的非受控缓存写入。
+- [x] 无需运行供应商可用性测试即可看到手动请求返回的新值。
+- [x] `gatewayCircuitResetProvider`、provider availability 和其他 provider cache 没有被调用或
       修改。
-- [ ] 现有自动刷新 interval、disabled provider、provider edit/delete cache cleanup 测试
+- [x] 现有自动刷新 interval、disabled provider、provider edit/delete cache cleanup 测试
       保持通过。
 
 ## Out of Scope

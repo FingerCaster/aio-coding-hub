@@ -43,6 +43,7 @@ pub(super) fn write_skill_files_to_dir(
 
 pub(super) struct SkillExportRoot { /* trusted parent directory handle */ }
 pub(super) struct CapturedSkillDir { /* relative/no-follow child handle */ }
+pub(super) struct SkillExportBudget { /* export-scoped encoded bytes + file count */ }
 ```
 
 The serialized file payload remains:
@@ -85,6 +86,15 @@ unbounded alternate reader or a second independent 64 MiB magic number.
   independent magic number.
 - One Skill contains at most 256 exported files and at most 8 MiB of decoded
   file bytes in total. A relative path contains at most 512 characters.
+- One `config_export` invocation creates a single `SkillExportBudget` shared by
+  installed and local Skill collectors. Across both exporters it permits at
+  most 56 MiB of standard-Base64 encoded file payload and at most 2048
+  collected files. Per-Skill collectors do not reset this aggregate budget.
+- After the bounded raw handle read and per-Skill checks, but before invoking
+  the Base64 encoder, reserve the next file's exact encoded length and one file
+  slot with checked arithmetic. Overflow or a limit breach returns explicit
+  `SEC_INVALID_INPUT`; the file is neither encoded nor appended, no later file
+  is skipped, and the production export target is not replaced.
 - Source metadata remains bounded at 64 KiB and `SKILL.md` remains bounded at
   256 KiB. The complete imported configuration file and the complete exported
   pretty JSON remain bounded at 64 MiB encoded bytes. Export must fail before
@@ -179,6 +189,8 @@ unbounded alternate reader or a second independent 64 MiB magic number.
 | Local top-level entry is a symlink/junction | Treat it as no local Skill authority; export no target bytes |
 | Installed/local top-level directory is replaced after parent-handle enumeration | Reject on child identity/no-follow open |
 | Root-owned file contains sensitive-looking arbitrary bytes | Round-trip every byte; perform no content filtering |
+| Installed files stay below the aggregate limit, then a local file crosses 56 MiB encoded | Reject before encoding/appending that local file; preserve the export target |
+| Installed and local collectors reach 2048 files, then encounter one more | Reject the 2049th file with `SEC_INVALID_INPUT`; preserve the export target |
 | Import contains 257 files | Reject before target-directory creation |
 | Import path is duplicate, empty, traversal, rooted/absolute, or over 512 characters | Reject before target-directory creation |
 | Installed `skill_key` traverses, is absolute, drive/UNC, or contains a separator | Reject before staging/DB activation; preserve old state |
@@ -242,6 +254,10 @@ Keep focused regressions in
   Windows hardlink/junction, plus a root-owned sensitive-looking binary round trip.
 - Real `config_export` regressions for installed and local top-level
   symlink/junction and post-parent-enumeration replacement.
+- Real production-path `config_export` regressions proving installed and local
+  Skills share the 56 MiB encoded and 2048-file aggregate budget. Seed a
+  sentinel destination and assert both aggregate failures leave it unchanged;
+  retain a `> 1 MiB && <= 8 MiB` arbitrary-byte export/import round trip.
 - v1/v2 compatibility, installed/local restoration, dedicated metadata and
   `SKILL.md` bounds, and the 64 MiB import-file read boundary.
 - Import/rollback `skill_key` traversal and Windows drive/UNC forms, proving no
