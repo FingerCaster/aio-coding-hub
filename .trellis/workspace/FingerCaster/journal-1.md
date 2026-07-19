@@ -493,3 +493,37 @@ Removed the unreleased managed external gateway integration, retained only the o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 15: Rule-based transient error retries
+
+**Date**: 2026-07-19
+**Task**: Rule-based transient error retries
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Added configurable HTTP transient retry rules with global and Provider scopes, strict migration/share contracts, bounded body matching, independent retry budgets, UI editors, diagnostics, and full regression coverage; integrated into local main.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `45d01dd7` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
