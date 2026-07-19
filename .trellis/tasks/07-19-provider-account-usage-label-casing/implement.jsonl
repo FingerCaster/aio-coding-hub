@@ -1,0 +1,3 @@
+{"file": "src/pages/providers/ProviderAccountUsageSection.tsx", "reason": "Update only visible adapter casing and related accessible labels."}
+{"file": "src/pages/providers/__tests__/ProviderAccountUsageSection.test.tsx", "reason": "Update focused component expectations for canonical display casing."}
+{"file": "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx", "reason": "Update dialog integration expectations without changing internal values."}

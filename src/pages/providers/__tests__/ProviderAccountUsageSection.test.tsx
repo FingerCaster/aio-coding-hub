@@ -55,16 +55,16 @@ function expectElementBefore(first: HTMLElement, second: HTMLElement) {
 
 const summaryCases: Array<[string, Partial<UseProviderEditorFormReturn>, string]> = [
   ["关闭", {}, "关闭"],
-  ["sub2api", { accountUsageAdapterKind: "sub2api" }, "sub2api"],
+  ["Sub2Api", { accountUsageAdapterKind: "sub2api" }, "Sub2Api"],
   [
-    "NewAPI 模型令牌额度",
+    "NewApi 模型令牌额度",
     { accountUsageAdapterKind: "newapi", accountUsageNewApiQueryMode: "billing" },
-    "NewAPI · 模型令牌额度",
+    "NewApi · 模型令牌额度",
   ],
   [
-    "NewAPI 用户账户余额",
+    "NewApi 用户账户余额",
     { accountUsageAdapterKind: "newapi", accountUsageNewApiQueryMode: "account" },
-    "NewAPI · 用户账户余额",
+    "NewApi · 用户账户余额",
   ],
 ];
 
@@ -104,7 +104,7 @@ describe("ProviderAccountUsageSection", () => {
     );
 
     const { details } = openDisclosure();
-    fireEvent.click(screen.getByRole("radio", { name: "NewAPI" }));
+    fireEvent.click(screen.getByRole("radio", { name: "NewApi" }));
     expect(setAdapterKind).toHaveBeenCalledWith("newapi");
 
     rerender(
@@ -118,7 +118,7 @@ describe("ProviderAccountUsageSection", () => {
       />
     );
     expect(details.open).toBe(true);
-    expect(within(getDisclosure().summary).getByText("NewAPI · 模型令牌额度")).toBeInTheDocument();
+    expect(within(getDisclosure().summary).getByText("NewApi · 模型令牌额度")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("radio", { name: "用户账户余额" }));
     expect(setQueryMode).toHaveBeenCalledWith("account");
@@ -133,7 +133,7 @@ describe("ProviderAccountUsageSection", () => {
         })}
       />
     );
-    expect(within(getDisclosure().summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
+    expect(within(getDisclosure().summary).getByText("NewApi · 用户账户余额")).toBeInTheDocument();
   });
 
   it("renders timed refresh controls for configured account usage", () => {
@@ -176,7 +176,7 @@ describe("ProviderAccountUsageSection", () => {
     expect(refreshInterval).toHaveAttribute("max", "300");
   });
 
-  it("keeps NewAPI selectors, credentials, and refresh controls in natural responsive rows", () => {
+  it("keeps NewApi selectors, credentials, and refresh controls in natural responsive rows", () => {
     render(
       <ProviderAccountUsageSection
         form={makeForm({
@@ -196,9 +196,10 @@ describe("ProviderAccountUsageSection", () => {
       name: "账户用量适配器",
     });
     const queryModeGroup = within(selectorRow).getByRole("radiogroup", {
-      name: "NewAPI 查询方式",
+      name: "NewApi 查询方式",
     });
 
+    expect(within(selectorRow).getByText("NewApi 查询方式")).toBeInTheDocument();
     expect(selectorRow).toHaveClass("grid", "sm:grid-cols-2");
     expect(credentialsRow).toHaveClass("grid", "sm:grid-cols-2");
     expect(refreshRow).toHaveClass("grid", "sm:grid-cols-2");
@@ -217,7 +218,7 @@ describe("ProviderAccountUsageSection", () => {
     expect(refreshRow).not.toContainElement(screen.getByDisplayValue("42"));
   });
 
-  it("renders explicit NewAPI account mode, masked token, missing state, and clear action", () => {
+  it("renders explicit NewApi account mode, masked token, missing state, and clear action", () => {
     const setQueryMode = vi.fn();
     const setAccessToken = vi.fn();
     const clearCredentials = vi.fn();
@@ -243,7 +244,7 @@ describe("ProviderAccountUsageSection", () => {
 
     openDisclosure();
     expect(screen.getAllByText("需配置账户凭据")).toHaveLength(2);
-    expect(screen.getByRole("radiogroup", { name: "NewAPI 查询方式" })).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "NewApi 查询方式" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "模型令牌额度" }));
     expect(setQueryMode).toHaveBeenCalledWith("billing");
     const token = screen.getByDisplayValue("SYNTHETIC_DRAFT");

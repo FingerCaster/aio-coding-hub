@@ -1,0 +1,3 @@
+{"file": "src/pages/providers/ProviderAccountUsageSection.tsx", "reason": "Verify visible casing is consistent and internal values unchanged."}
+{"file": "src/pages/providers/__tests__/ProviderAccountUsageSection.test.tsx", "reason": "Verify casing matrix and layout regressions."}
+{"file": "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx", "reason": "Verify integration text and callback values remain correct."}

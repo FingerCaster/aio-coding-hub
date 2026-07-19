@@ -3236,22 +3236,22 @@ describe("pages/providers/ProviderEditorDialog", () => {
     const dialogElement = screen.getByRole("dialog");
     const dialog = within(dialogElement);
     const { details, summary } = openAccountUsageDisclosure(dialogElement);
-    expect(within(summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
+    expect(within(summary).getByText("NewApi · 用户账户余额")).toBeInTheDocument();
     expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
     fireEvent.change(dialog.getByPlaceholderText("留空表示不改"), {
       target: { value: "SYNTHETIC_ACCOUNT_DRAFT" },
     });
     fireEvent.click(dialog.getByRole("radio", { name: "模型令牌额度" }));
-    expect(within(summary).getByText("NewAPI · 模型令牌额度")).toBeInTheDocument();
+    expect(within(summary).getByText("NewApi · 模型令牌额度")).toBeInTheDocument();
     expect(dialog.queryByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).not.toBeInTheDocument();
     fireEvent.click(dialog.getByRole("radio", { name: "用户账户余额" }));
-    expect(within(summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
+    expect(within(summary).getByText("NewApi · 用户账户余额")).toBeInTheDocument();
     expect(dialog.getByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).toBeInTheDocument();
-    fireEvent.click(dialog.getByRole("radio", { name: "sub2api" }));
-    expect(within(summary).getByText("sub2api")).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("radio", { name: "Sub2Api" }));
+    expect(within(summary).getByText("Sub2Api")).toBeInTheDocument();
     expect(dialog.queryByPlaceholderText("正整数")).not.toBeInTheDocument();
-    fireEvent.click(dialog.getByRole("radio", { name: "NewAPI" }));
-    expect(within(summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
+    fireEvent.click(dialog.getByRole("radio", { name: "NewApi" }));
+    expect(within(summary).getByText("NewApi · 用户账户余额")).toBeInTheDocument();
     expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
     expect(dialog.getByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).toBeInTheDocument();
     expect(dialog.getByRole("radio", { name: "用户账户余额" })).toHaveAttribute(

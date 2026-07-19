@@ -23,10 +23,10 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
     form.accountUsageAdapterKind === "disabled"
       ? "关闭"
       : form.accountUsageAdapterKind === "sub2api"
-        ? "sub2api"
+        ? "Sub2Api"
         : form.accountUsageNewApiQueryMode === "billing"
-          ? "NewAPI · 模型令牌额度"
-          : "NewAPI · 用户账户余额";
+          ? "NewApi · 模型令牌额度"
+          : "NewApi · 用户账户余额";
   const accessTokenHint = form.accountUsageNewApiAccessTokenConfigured
     ? "已配置。留空表示不改，输入新值表示替换。"
     : "当前未配置。可留空保存。";
@@ -54,8 +54,8 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
             <RadioButtonGroup<ProviderAccountUsageAdapterKind>
               items={[
                 { value: "disabled", label: "关闭" },
-                { value: "sub2api", label: "sub2api" },
-                { value: "newapi", label: "NewAPI" },
+                { value: "sub2api", label: "Sub2Api" },
+                { value: "newapi", label: "NewApi" },
               ]}
               ariaLabel="账户用量适配器"
               value={form.accountUsageAdapterKind}
@@ -67,7 +67,7 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
 
           {form.accountUsageAdapterKind === "newapi" ? (
             <FormField
-              label="NewAPI 查询方式"
+              label="NewApi 查询方式"
               hint={
                 form.accountUsageCredentialsRequired ? (
                   <span className="text-amber-700 dark:text-amber-400">需配置账户凭据</span>
@@ -80,7 +80,7 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
                   { value: "billing", label: "模型令牌额度" },
                   { value: "account", label: "用户账户余额" },
                 ]}
-                ariaLabel="NewAPI 查询方式"
+                ariaLabel="NewApi 查询方式"
                 value={form.accountUsageNewApiQueryMode}
                 onChange={form.setAccountUsageNewApiQueryMode}
                 disabled={form.saving}

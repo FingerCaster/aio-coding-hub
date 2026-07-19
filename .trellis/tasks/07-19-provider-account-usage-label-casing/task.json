@@ -1,0 +1,30 @@
+{
+  "id": "provider-account-usage-label-casing",
+  "name": "provider-account-usage-label-casing",
+  "title": "供应商账户用量标签大小写统一",
+  "description": "将编辑弹窗账户用量中的 sub2api/NewAPI 显示文案统一为 Sub2Api/NewApi 风格。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-07-19",
+  "completedAt": null,
+  "branch": "provider-account-usage-tab",
+  "base_branch": "provider-account-usage-tab",
+  "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/provider-account-usage-tab",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/pages/providers/ProviderAccountUsageSection.tsx",
+    "src/pages/providers/__tests__/ProviderAccountUsageSection.test.tsx",
+    "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx"
+  ],
+  "notes": "已将编辑弹窗账户用量可见文案统一为 Sub2Api/NewApi；81/81 测试和前端检查通过，Kimi 实际页面确认，无需更新 spec。",
+  "meta": {}
+}
