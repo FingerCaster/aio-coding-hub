@@ -524,10 +524,10 @@ fn export_identity(file: &std::fs::File) -> AppResult<ExportIdentity> {
 #[cfg(unix)]
 fn export_entries(dir: &std::fs::File) -> AppResult<Vec<ExportEntry>> {
     use std::os::unix::ffi::OsStrExt as _;
-    let mut entries = rustix::fs::Dir::read_from(dir)
+    let entries = rustix::fs::Dir::read_from(dir)
         .map_err(|e| format!("failed to enumerate skill directory handle: {e}"))?;
     let mut output = Vec::new();
-    while let Some(entry) = entries.next() {
+    for entry in entries {
         let entry = entry.map_err(|e| format!("failed to read skill directory entry: {e}"))?;
         let name = entry.file_name();
         if name.to_bytes() == b"." || name.to_bytes() == b".." {

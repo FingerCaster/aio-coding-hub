@@ -2,9 +2,11 @@
 
 ## Scope Boundary
 
-发布前唯一允许的代码修改是修复
-`response/upstream_error.rs` 中 `upstream_error_decision` 的参数数量。函数的输入值、
-决策顺序、返回值以及所有调用时机保持不变；发布配置和 workflow 本身不做修改。
+发布前只允许两组已确认的 Clippy 阻塞修复：修复
+`response/upstream_error.rs` 中 `upstream_error_decision` 的参数数量，以及消除
+GitHub Actions run `29697960436` 精确报告的 8 个 Linux 平台专属 lint。前者的输入值、
+决策顺序、返回值以及所有调用时机保持不变；后者仅采用下文列出的机械变换。除这两组
+阻塞外不修改产品行为，发布配置和 workflow 本身也不做修改。
 
 ## Clippy Fix
 
@@ -23,6 +25,26 @@
 - Provider override、熔断失败计数和 attempt reason 均不受本次结构调整影响。
 
 参数结构保持文件私有，不扩展跨模块 API，不复制 policy，不新增持久化或前端契约。
+
+## Linux CI Clippy Fixes
+
+GitHub Actions run `29697960436` 在 Linux `--all-targets` 下报告 8 个平台专属 lint。
+按以下边界逐项机械修复：
+
+- `image_gen.rs` 与 `providers/share.rs` 的 3 个 native dialog builder 先建立不可变
+  binding；Windows/macOS 用同名 shadow binding 调用 `set_parent`。Linux 继续使用
+  原 builder，Windows/macOS 继续绑定同一个 parent window。
+- `history.rs` 两个 rustix directory iterator 与 `skill_fs.rs` 一个 iterator 改用
+  `for entry in entries`，每个 `Result` 的错误映射、`.`/`..` 跳过和后续顺序不变。
+- 删除 Unix `open_trusted_task_dir` wrapper；Unix 删除路径本来通过已验证 handle 的
+  `try_clone` 获取 capability，只有 Windows 的 `acquire_delete_task_handle` 调用同名
+  Windows 实现。
+- `set_after_quarantine_validation_test_hook` 仅由 `#[cfg(windows)]` 回归测试调用，
+  因而将 setter 收窄为 `#[cfg(all(test, windows))]`；生产 quarantine 验证和测试 runner
+  不变。
+
+不得以 lint allow 代替上述修复。Linux 验证使用 Docker Linux engine 中的 Rust
+1.90 与 CI 相同系统依赖，执行 `cargo clippy --all-targets --locked -- -D warnings`。
 
 ## Release Flow
 
@@ -45,6 +67,7 @@ target、workflow `checkout_ref` 与 release PR merge commit SHA 必须相互一
 ## Compatibility And Rollback
 
 - 代码修复不改变序列化格式、数据库、配置、生成绑定或用户可见行为。
+- Linux lint 修复不改变 filesystem capability、原子导入导出或 native dialog 授权。
 - 推送前若门禁失败，只修复当前分支上的具体回归，不推送。
 - release PR 合并前若 CI 或版本审查失败，保留 PR 并修正后重跑，不创建 Release。
 - Release 构建失败时保留 draft 与日志，修复具体发布问题后重跑现有 workflow；不得以

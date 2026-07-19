@@ -260,11 +260,6 @@ fn open_trusted_dir(path: &Path) -> AppResult<std::fs::File> {
     Ok(fd.into())
 }
 
-#[cfg(unix)]
-fn open_trusted_task_dir(path: &Path) -> AppResult<std::fs::File> {
-    open_trusted_dir(path)
-}
-
 #[cfg(windows)]
 fn open_trusted_dir(path: &Path) -> AppResult<std::fs::File> {
     use std::os::windows::fs::{MetadataExt as _, OpenOptionsExt as _};
@@ -620,7 +615,7 @@ thread_local! {
     static AFTER_QUARANTINE_VALIDATION_TEST_HOOK: std::cell::RefCell<Option<AfterQuarantineValidationHook>> = const { std::cell::RefCell::new(None) };
 }
 
-#[cfg(test)]
+#[cfg(all(test, windows))]
 pub(super) fn set_after_quarantine_validation_test_hook(hook: AfterQuarantineValidationHook) {
     AFTER_QUARANTINE_VALIDATION_TEST_HOOK.with(|current| current.replace(Some(hook)));
 }
@@ -746,9 +741,9 @@ fn remove_quarantined_task(
 
 #[cfg(unix)]
 fn remove_dir_contents_at(dir: &std::fs::File) -> AppResult<()> {
-    let mut entries = rustix::fs::Dir::read_from(dir)
+    let entries = rustix::fs::Dir::read_from(dir)
         .map_err(|e| format!("SYSTEM_ERROR: failed to read quarantined task dir: {e}"))?;
-    while let Some(entry) = entries.next() {
+    for entry in entries {
         let entry = entry
             .map_err(|e| format!("SYSTEM_ERROR: failed to read quarantined task entry: {e}"))?;
         let name = entry.file_name();
@@ -2288,11 +2283,11 @@ fn list_stats_entries(
     max_entries: u64,
 ) -> AppResult<Vec<StatsEntry>> {
     use std::os::unix::ffi::OsStrExt as _;
-    let mut entries = rustix::fs::Dir::read_from(dir).map_err(|e| {
+    let entries = rustix::fs::Dir::read_from(dir).map_err(|e| {
         format!("SYSTEM_ERROR: failed to enumerate image gen storage directory: {e}")
     })?;
     let mut output = Vec::new();
-    while let Some(entry) = entries.next() {
+    for entry in entries {
         let entry = entry.map_err(|e| {
             format!("SYSTEM_ERROR: failed to read image gen storage directory entry: {e}")
         })?;

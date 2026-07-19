@@ -117,16 +117,14 @@ pub(crate) async fn provider_share_save_to_file(
     })
     .await?;
 
-    let mut dialog = window
+    let dialog = window
         .dialog()
         .file()
         .set_title("保存供应商分享")
         .set_file_name(filename)
         .add_filter("JSON", &["json"]);
     #[cfg(any(windows, target_os = "macos"))]
-    {
-        dialog = dialog.set_parent(&window);
-    }
+    let dialog = dialog.set_parent(&window);
     let (tx, rx) = oneshot::channel();
     dialog.save_file(move |selection| {
         let _ = tx.send(selection.map(|path| PathBuf::from(path.to_string())));
@@ -163,15 +161,13 @@ pub(crate) async fn provider_share_import_preview_from_file(
     db_state: tauri::State<'_, DbInitState>,
     share_state: tauri::State<'_, ProviderShareService>,
 ) -> Result<Option<ProviderShareImportPreview>, String> {
-    let mut dialog = window
+    let dialog = window
         .dialog()
         .file()
         .set_title("导入供应商")
         .add_filter("JSON", &["json"]);
     #[cfg(any(windows, target_os = "macos"))]
-    {
-        dialog = dialog.set_parent(&window);
-    }
+    let dialog = dialog.set_parent(&window);
     let (tx, rx) = oneshot::channel();
     dialog.pick_file(move |selection| {
         let _ = tx.send(selection.map(|path| PathBuf::from(path.to_string())));

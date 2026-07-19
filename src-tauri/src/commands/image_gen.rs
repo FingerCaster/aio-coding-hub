@@ -166,16 +166,14 @@ pub(crate) async fn image_gen_save_image(
     let suggested_filename = validate_suggested_filename(&suggested_filename, extension)?;
     let bytes = decode_image_gen_save_data(&data_b64)?;
 
-    let mut dialog = window
+    let dialog = window
         .dialog()
         .file()
         .set_title("保存图片")
         .set_file_name(&suggested_filename)
         .add_filter("Image", &[extension]);
     #[cfg(any(windows, target_os = "macos"))]
-    {
-        dialog = dialog.set_parent(&window);
-    }
+    let dialog = dialog.set_parent(&window);
     let (tx, rx) = oneshot::channel();
     dialog.save_file(move |selection| {
         let _ = tx.send(selection.map(|path| PathBuf::from(path.to_string())));

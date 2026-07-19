@@ -1,3 +1,7 @@
 {"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Verify the required Rust checks for shared failover-loop inputs"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify affected cfg branches were checked in their native target family"}
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Review retry-budget behavior and boundary-test preservation"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Review that routing, circuit, and HTTP matcher behavior remains unchanged"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/image-gen-trust-boundary-contract.md","reason":"Review Linux lint fixes against Image Gen capability and fail-closed filesystem invariants"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"Review dialog shadowing against provider share authorization behavior"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Review iterator rewrite against Skill export validation and ordering"}
