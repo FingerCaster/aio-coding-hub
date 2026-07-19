@@ -36,7 +36,8 @@ pub(crate) struct SettingsUpdate {
     pub home_usage_period: Option<settings::HomeUsagePeriod>,
     pub gateway_listen_mode: Option<settings::GatewayListenMode>,
     pub gateway_custom_listen_address: Option<String>,
-    pub auto_start: bool,
+    /// `Some` explicitly owns and force-syncs auto-start; `None` preserves it.
+    pub auto_start: Option<bool>,
     pub start_minimized: Option<bool>,
     pub tray_enabled: Option<bool>,
     pub enable_cli_proxy_startup_recovery: Option<bool>,
@@ -115,7 +116,6 @@ struct SettingsServiceOwnedToken {
     home_usage_period: settings::HomeUsagePeriod,
     gateway_listen_mode: settings::GatewayListenMode,
     gateway_custom_listen_address: String,
-    auto_start: bool,
     start_minimized: bool,
     tray_enabled: bool,
     enable_cli_proxy_startup_recovery: bool,
@@ -171,7 +171,6 @@ impl SettingsServiceOwnedToken {
             home_usage_period: settings.home_usage_period,
             gateway_listen_mode: settings.gateway_listen_mode,
             gateway_custom_listen_address: settings.gateway_custom_listen_address.clone(),
-            auto_start: settings.auto_start,
             start_minimized: settings.start_minimized,
             tray_enabled: settings.tray_enabled,
             enable_cli_proxy_startup_recovery: settings.enable_cli_proxy_startup_recovery,
@@ -235,7 +234,6 @@ impl SettingsServiceOwnedToken {
         settings.home_usage_period = self.home_usage_period;
         settings.gateway_listen_mode = self.gateway_listen_mode;
         settings.gateway_custom_listen_address = self.gateway_custom_listen_address.clone();
-        settings.auto_start = self.auto_start;
         settings.start_minimized = self.start_minimized;
         settings.tray_enabled = self.tray_enabled;
         settings.enable_cli_proxy_startup_recovery = self.enable_cli_proxy_startup_recovery;
@@ -887,7 +885,6 @@ fn apply_settings_update_owned_patch(
         home_usage_period,
         gateway_listen_mode,
         gateway_custom_listen_address,
-        auto_start: update.auto_start,
         start_minimized,
         tray_enabled,
         enable_cli_proxy_startup_recovery,
@@ -935,6 +932,9 @@ fn apply_settings_update_owned_patch(
     };
 
     committed_token.apply_to(latest);
+    if let Some(auto_start) = update.auto_start {
+        latest.auto_start = auto_start;
+    }
     latest.schema_version = settings::SCHEMA_VERSION;
     settings::validate_bounds(latest)?;
     crate::gateway::http_client::validate_proxy_for_settings(latest)?;
@@ -958,9 +958,8 @@ async fn rollback_settings_service_owned_fields<R: tauri::Runtime>(
     let rollback_result = blocking::run("settings_set_rollback", {
         let app = app.clone();
         move || {
-            // Atomic ownership check under AUTO_START -> SETTINGS: generation,
-            // auto_start committed value, and ordinary owned token are validated
-            // together before any field is restored.
+            // A token atomically validates auto-start generation plus ordinary
+            // ownership. Without one, the helper performs a settings-only CAS.
             Ok::<_, String>(crate::app::autostart::rollback_owned_with_auto_start_token(
                 &app,
                 auto_start_token,
@@ -1205,18 +1204,73 @@ fn commit_settings_update_owned<R: tauri::Runtime>(
         settings::AppSettings,
         SettingsServiceOwnedToken,
         SettingsServiceOwnedToken,
-        crate::app::autostart::AutoStartCommitToken,
+        Option<crate::app::autostart::AutoStartCommitToken>,
     ),
     String,
 > {
-    let desired_auto_start = update.auto_start;
-    let committed = crate::app::autostart::commit_auto_start_with_owner(
-        app,
-        desired_auto_start,
-        || {
-            let (committed, previous_token) = settings::update(app, |latest| {
-            let previous = apply_settings_update_owned_patch(latest, &update)?;
-            Ok(previous)
+    if let Some(desired_auto_start) = update.auto_start {
+        let committed =
+            crate::app::autostart::commit_auto_start_with_owner(app, desired_auto_start, || {
+                let (committed, previous_token, previous_auto_start) =
+                    persist_settings_update_owned(app, &update)?;
+                let committed_auto_start = committed.auto_start;
+                let committed_token = SettingsServiceOwnedToken::from_settings(&committed);
+                Ok((
+                    (
+                        previous_token,
+                        committed,
+                        committed_token,
+                        previous_auto_start,
+                    ),
+                    previous_auto_start,
+                    committed_auto_start,
+                ))
+            });
+        #[cfg(test)]
+        run_after_settings_autostart_commit_test_hook();
+        return committed.map(
+            |(
+                (previous_token, committed, committed_token, previous_auto_start),
+                token,
+                effective_auto_start,
+            )| {
+                finalize_settings_update_owned(
+                    previous_token,
+                    committed,
+                    committed_token,
+                    previous_auto_start,
+                    effective_auto_start,
+                    Some(token),
+                )
+            },
+        );
+    }
+
+    let (committed, previous_token, previous_auto_start) =
+        persist_settings_update_owned(app, &update)?;
+    let committed_token = SettingsServiceOwnedToken::from_settings(&committed);
+    #[cfg(test)]
+    run_after_settings_autostart_commit_test_hook();
+    let effective_auto_start = committed.auto_start;
+    Ok(finalize_settings_update_owned(
+        previous_token,
+        committed,
+        committed_token,
+        previous_auto_start,
+        effective_auto_start,
+        None,
+    ))
+}
+
+fn persist_settings_update_owned<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    update: &SettingsUpdate,
+) -> Result<(settings::AppSettings, SettingsServiceOwnedToken, bool), String> {
+    let (committed, (previous_token, previous_auto_start)) =
+        settings::update(app, |latest| {
+            let previous_auto_start = latest.auto_start;
+            let previous = apply_settings_update_owned_patch(latest, update)?;
+            Ok((previous, previous_auto_start))
         })
         .map_err(|err| {
             let message = err.to_string();
@@ -1249,37 +1303,36 @@ fn commit_settings_update_owned<R: tauri::Runtime>(
                 message
             }
         })?;
-            let committed_token = SettingsServiceOwnedToken::from_settings(&committed);
-            let previous_auto_start = previous_token.auto_start;
-            let committed_auto_start = committed_token.auto_start;
-            Ok((
-                (previous_token, committed, committed_token),
-                previous_auto_start,
-                committed_auto_start,
-            ))
-        },
-    );
-    #[cfg(test)]
-    run_after_settings_autostart_commit_test_hook();
-    committed.map(
-        |((previous_token, committed, mut committed_token), token, effective_auto_start)| {
-            // The ordinary token must describe the settings::update result owned by
-            // this writer. The coordinator may correct only auto_start, so apply
-            // that returned effective value without rereading another writer's
-            // canonical snapshot (notably a preferred_port repair).
-            let mut previous_settings = committed.clone();
-            previous_token.apply_to(&mut previous_settings);
-            let mut final_settings = committed;
-            final_settings.auto_start = effective_auto_start;
-            committed_token.auto_start = effective_auto_start;
-            (
-                previous_settings,
-                final_settings,
-                previous_token,
-                committed_token,
-                token,
-            )
-        },
+    Ok((committed, previous_token, previous_auto_start))
+}
+
+fn finalize_settings_update_owned(
+    previous_token: SettingsServiceOwnedToken,
+    committed: settings::AppSettings,
+    committed_token: SettingsServiceOwnedToken,
+    previous_auto_start: bool,
+    effective_auto_start: bool,
+    auto_start_token: Option<crate::app::autostart::AutoStartCommitToken>,
+) -> (
+    settings::AppSettings,
+    settings::AppSettings,
+    SettingsServiceOwnedToken,
+    SettingsServiceOwnedToken,
+    Option<crate::app::autostart::AutoStartCommitToken>,
+) {
+    // Tokens come from the writer's locked settings::update result. Only the
+    // coordinator's returned auto_start may differ after OS-sync correction.
+    let mut previous_settings = committed.clone();
+    previous_token.apply_to(&mut previous_settings);
+    previous_settings.auto_start = previous_auto_start;
+    let mut final_settings = committed;
+    final_settings.auto_start = effective_auto_start;
+    (
+        previous_settings,
+        final_settings,
+        previous_token,
+        committed_token,
+        auto_start_token,
     )
 }
 
@@ -1356,8 +1409,8 @@ pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
     #[cfg(test)]
     run_before_settings_set_lock_test_hook();
 
-    // Durable commit + OS autostart happen under AUTO_START then SETTINGS locks.
-    // No OS side effects occur before validate_bounds succeeds inside the patch.
+    // Explicit auto-start intent uses AUTO_START -> SETTINGS and syncs the OS.
+    // Other updates commit under SETTINGS only and produce no auto-start token.
     let (previous_settings, _committed_settings, previous_token, committed_token, auto_start_token) =
         blocking::run("settings_set", move || {
             commit_settings_update_owned(&app_for_work, update_for_work)
@@ -1382,7 +1435,7 @@ pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
                 &app,
                 &previous_token,
                 &committed_token,
-                Some(auto_start_token),
+                auto_start_token,
             )
             .await;
             let recovery_suffix = recovery_error
@@ -1535,7 +1588,7 @@ async fn settings_set_impl_with_gateway(
                             &previous_settings,
                             &previous_token,
                             &committed_token,
-                            Some(auto_start_token),
+                            auto_start_token,
                             &previous_gateway_status,
                         )
                         .await;
@@ -1563,7 +1616,7 @@ async fn settings_set_impl_with_gateway(
                     &previous_settings,
                     &previous_token,
                     &committed_token,
-                    Some(auto_start_token),
+                    auto_start_token,
                     &previous_gateway_status,
                 )
                 .await;
@@ -1584,7 +1637,7 @@ async fn settings_set_impl_with_gateway(
                     &previous_settings,
                     &previous_token,
                     &committed_token,
-                    Some(auto_start_token),
+                    auto_start_token,
                     &previous_gateway_status,
                 )
                 .await;
@@ -1617,7 +1670,7 @@ async fn settings_set_impl_with_gateway(
                     &previous_settings,
                     &previous_token,
                     &committed_token,
-                    Some(auto_start_token),
+                    auto_start_token,
                     &previous_gateway_status,
                 )
                 .await;
@@ -2085,6 +2138,7 @@ mod tests {
         });
 
         let update: SettingsUpdate = serde_json::from_value(json).expect("should deserialize");
+        assert_eq!(update.auto_start, Some(false));
         assert_eq!(update.cx2cc_fallback_model_opus.as_deref(), Some("gpt-5"));
         assert_eq!(
             update.cx2cc_fallback_model_sonnet.as_deref(),
@@ -2108,13 +2162,13 @@ mod tests {
     fn settings_update_cx2cc_fields_default_to_none_when_absent() {
         let json = serde_json::json!({
             "preferredPort": 37123,
-            "autoStart": false,
             "logRetentionDays": 30,
             "failoverMaxAttemptsPerProvider": 5,
             "failoverMaxProvidersToTry": 3
         });
 
         let update: SettingsUpdate = serde_json::from_value(json).expect("should deserialize");
+        assert!(update.auto_start.is_none());
         assert!(update.cx2cc_model_reasoning_effort.is_none());
         assert!(update.cx2cc_fallback_model_opus.is_none());
         assert!(update.cx2cc_filter_batch_tool.is_none());
@@ -2132,7 +2186,7 @@ mod tests {
             home_usage_period: Some(settings.home_usage_period),
             gateway_listen_mode: Some(settings.gateway_listen_mode),
             gateway_custom_listen_address: Some(settings.gateway_custom_listen_address.clone()),
-            auto_start,
+            auto_start: Some(auto_start),
             start_minimized: Some(settings.start_minimized),
             tray_enabled: Some(settings.tray_enabled),
             enable_cli_proxy_startup_recovery: Some(settings.enable_cli_proxy_startup_recovery),
@@ -2186,6 +2240,145 @@ mod tests {
             upstream_proxy_username: Some(settings.upstream_proxy_username.clone()),
             upstream_proxy_password: Some(SensitiveStringUpdate::Preserve),
         }
+    }
+
+    #[test]
+    fn settings_update_null_auto_start_has_no_intent() {
+        let update: SettingsUpdate = serde_json::from_value(serde_json::json!({
+            "preferredPort": 37123,
+            "autoStart": null,
+            "logRetentionDays": 30,
+            "failoverMaxAttemptsPerProvider": 5,
+            "failoverMaxProvidersToTry": 3
+        }))
+        .expect("null autoStart should deserialize");
+
+        assert!(update.auto_start.is_none());
+    }
+
+    #[test]
+    fn retry_policy_save_without_auto_start_intent_skips_owner_and_os_sync() {
+        let _serial = crate::app::autostart::auto_start_test_serial_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous");
+        let mut policy = previous.upstream_retry_policy.clone();
+        policy.max_retries = if policy.max_retries == 10 {
+            9
+        } else {
+            policy.max_retries + 1
+        };
+        let mut update = ordinary_update_from_settings(&previous, previous.auto_start, None);
+        update.auto_start = None;
+        update.upstream_retry_policy = Some(policy.clone());
+
+        crate::app::autostart::reset_auto_start_lock_attempts_for_test();
+        crate::app::autostart::reset_auto_start_durable_mutation_test_calls();
+        crate::app::autostart::reset_auto_start_sync_test_calls();
+        let result =
+            tauri::async_runtime::block_on(settings_set_impl_for_test(handle.clone(), update))
+                .expect("retry policy save");
+
+        assert_eq!(result.settings.upstream_retry_policy, policy);
+        assert_eq!(result.settings.auto_start, previous.auto_start);
+        assert_eq!(
+            crate::app::autostart::auto_start_lock_attempts_for_test(),
+            0
+        );
+        assert_eq!(
+            crate::app::autostart::auto_start_durable_mutation_test_calls(),
+            0
+        );
+        assert_eq!(crate::app::autostart::auto_start_sync_test_calls(), 0);
+    }
+
+    #[test]
+    fn explicit_same_auto_start_still_creates_token_and_force_syncs() {
+        let _serial = crate::app::autostart::auto_start_test_serial_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous");
+        let update = ordinary_update_from_settings(&previous, previous.auto_start, None);
+
+        crate::app::autostart::reset_auto_start_lock_attempts_for_test();
+        crate::app::autostart::reset_auto_start_durable_mutation_test_calls();
+        crate::app::autostart::reset_auto_start_sync_test_calls();
+        let (_, _, _, _, auto_start_token) =
+            commit_settings_update_owned(&handle, update).expect("explicit autostart commit");
+
+        assert!(auto_start_token.is_some());
+        assert!(crate::app::autostart::auto_start_lock_attempts_for_test() > 0);
+        assert_eq!(
+            crate::app::autostart::auto_start_durable_mutation_test_calls(),
+            1
+        );
+        assert_eq!(
+            crate::app::autostart::auto_start_sync_test_targets(),
+            vec![previous.auto_start]
+        );
+    }
+
+    #[test]
+    fn settings_only_rollback_preserves_concurrent_auto_start_without_os_sync() {
+        let _serial = crate::app::autostart::auto_start_test_serial_lock()
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous");
+        assert!(!previous.auto_start);
+
+        let mut update = ordinary_update_from_settings(&previous, previous.auto_start, None);
+        update.auto_start = None;
+        update.log_retention_days = previous.log_retention_days.saturating_add(2);
+        let (_, _, previous_token, committed_token, auto_start_token) =
+            commit_settings_update_owned(&handle, update).expect("settings-only commit");
+        assert!(auto_start_token.is_none());
+
+        crate::app::autostart::commit_auto_start_with_owner(&handle, true, || {
+            let (written, previous_auto_start) = settings::update(&handle, |latest| {
+                let previous_auto_start = latest.auto_start;
+                latest.auto_start = true;
+                Ok(previous_auto_start)
+            })
+            .map_err(|error| error.to_string())?;
+            Ok(((), previous_auto_start, written.auto_start))
+        })
+        .expect("concurrent auto-start winner");
+
+        crate::app::autostart::reset_auto_start_lock_attempts_for_test();
+        crate::app::autostart::reset_auto_start_durable_mutation_test_calls();
+        crate::app::autostart::reset_auto_start_sync_test_calls();
+        let rollback = tauri::async_runtime::block_on(rollback_settings_service_owned_fields(
+            &handle,
+            &previous_token,
+            &committed_token,
+            None,
+        ));
+
+        assert!(matches!(rollback, OwnedSettingsRollback::Restored));
+        let canonical = settings::read(&handle).expect("canonical after rollback");
+        assert_eq!(canonical.log_retention_days, previous.log_retention_days);
+        assert!(
+            canonical.auto_start,
+            "concurrent auto-start winner must survive"
+        );
+        assert_eq!(
+            crate::app::autostart::auto_start_lock_attempts_for_test(),
+            0
+        );
+        assert_eq!(
+            crate::app::autostart::auto_start_durable_mutation_test_calls(),
+            0
+        );
+        assert_eq!(crate::app::autostart::auto_start_sync_test_calls(), 0);
     }
 
     #[test]

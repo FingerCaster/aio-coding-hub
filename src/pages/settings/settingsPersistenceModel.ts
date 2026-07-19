@@ -181,8 +181,18 @@ export function buildPersistedSettingsSnapshot(
   };
 }
 
-export function buildPersistedSettingsMutationInput(desired: PersistedSettings): SettingsSetInput {
-  return pickSettingsSetInputFieldsFromView(desired, PERSISTED_SETTINGS_INPUT_KEYS);
+export function buildPersistedSettingsMutationInput(
+  desired: PersistedSettings,
+  changedKeys: PersistKey[]
+): SettingsSetInput {
+  const input: SettingsSetInput = pickSettingsSetInputFieldsFromView(
+    desired,
+    PERSISTED_SETTINGS_INPUT_KEYS
+  );
+  if (!changedKeys.includes("auto_start")) {
+    delete input.autoStart;
+  }
+  return input;
 }
 
 function isIntegerInRange(value: number, min: number, max: number) {

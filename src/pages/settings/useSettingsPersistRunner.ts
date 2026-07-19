@@ -183,7 +183,7 @@ export function useSettingsPersistRunner(input: UseSettingsPersistRunnerInput) {
       let nextResult: SettingsMutationResult | null;
       try {
         nextResult = await settingsSetMutation.mutateAsync(
-          buildPersistedSettingsMutationInput(desired)
+          buildPersistedSettingsMutationInput(desired, changedKeys)
         );
       } catch (err) {
         if (isSettingsReadFailure(err)) {

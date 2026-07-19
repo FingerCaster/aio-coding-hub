@@ -20,7 +20,17 @@ pub fn compare_and_swap<R: Runtime>(
     expected: &AppSettings,
     replacement: &AppSettings,
 ) -> AppResult<(AppSettings, bool)>;
+
+pub struct SettingsUpdate {
+    // Some(value) is explicit OS autostart intent; None preserves canonical state.
+    pub auto_start: Option<bool>,
+    // ...other ordinary settings fields...
+}
 ```
+
+The generated frontend contract is `autoStart: boolean | null`. Existing clients that send a boolean remain
+compatible; new partial-save callers send `null` unless the source patch/changed-key set explicitly contains
+`auto_start`.
 
 Every field owner must also define an equality predicate or committed token containing only the fields it
 owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved for initialization and tests.
@@ -44,6 +54,16 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
   generation token. OS autostart side effects happen only after durable settings commit succeeds. Invalid
   candidates produce zero OS calls. Token losers never restore an older value over a newer winner; they only
   converge OS to the latest canonical value.
+- Ordinary `settings_set` treats `SettingsUpdate.auto_start` as intent, not a required snapshot field.
+  `Some(value)` enters the autostart coordinator and force-syncs the OS even when the value equals canonical;
+  `None` preserves the latest lock-internal value, returns no autostart token, and performs no OS autostart call.
+  Frontend patch builders must not infer intent merely because the current settings snapshot contains the field.
+- A runtime-failure rollback with no autostart token is a settings-only owned CAS: it does not acquire the
+  autostart owner, does not advance its generation, does not call OS autostart, and preserves a concurrent
+  `auto_start` winner. A later effective preferred-port repair remains a separate writer that may advance the
+  generation to invalidate stale tokens, but it must not call OS autostart.
+- On Windows, disabling an already absent `Run` key/value is idempotent success (`ErrorKind::NotFound`). Registry
+  permission, access, and all other I/O errors remain failures and must reach the coordinator's correction path.
 - Lock order is `CONFIG_IMPORT_LOCK -> AUTO_START_LOCK -> SETTINGS_WRITE_LOCK`. Code holding the settings lock
   must never acquire the autostart lock.
 - Losing rollback CAS preserves the newer settings and must not restore old gateway runtime, CLI proxy, or
@@ -72,6 +92,10 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 | Whole-import snapshot drifted | Preserve latest snapshot | `SETTINGS_CONCURRENT_UPDATE` / CAS `false` |
 | Whole-import CAS loses before autostart reconciliation | Preserve winner | No autostart side effect from loser |
 | Later ordinary writer commits the import's same `auto_start` value and advances generation | Preserve that same-value winner | Roll back only other import-owned fields; sync OS to canonical winner |
+| Ordinary patch omits / sends `null` for `auto_start` | Preserve the latest canonical value | No autostart owner/generation or OS call from direct commit |
+| Settings-only runtime rollback races with explicit autostart writer | Restore ordinary owned fields only | Preserve concurrent `auto_start`; no OS call from the token-less rollback |
+| Explicit Windows disable finds no Run key/value | Treat target state as already satisfied | Success; do not enter correction |
+| Explicit Windows disable hits permission/access error | Keep canonical/OS recovery rules authoritative | Propagate the original non-`NotFound` error |
 | External side effect fails and committed token still matches | Restore only owned fields | Report original operation failure |
 | External side effect fails after newer owned-field commit | Skip rollback and old runtime restoration | Preserve newer value; safe warning allowed |
 | Atomic settings persistence fails | Leave last durable snapshot authoritative | Return persistence error without partial file |
@@ -80,8 +104,12 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 
 - **Good:** `grok_config::set` preflights, then uses `settings::update` to replace only
   `grok_proxy_preferences`; a concurrent Image Gen root survives.
+- **Good:** a retry-policy patch sends `autoStart: null`; Rust commits the policy under the settings lock and
+  returns `None` for the autostart token, so an absent Windows startup entry is never inspected.
 - **Base:** config import prepares from snapshot `S`, then CAS replaces `S` with imported `S2` when no writer
   intervenes.
+- **Bad:** rebuilding a complete settings payload causes an unrelated retry-policy save to resend the current
+  `autoStart` boolean; the backend then treats an unrelated save as explicit OS repair intent.
 - **Bad:** code clones `settings::read`, changes one field, and later calls `settings::write`; it can overwrite
   every owner that committed in between.
 - **Bad:** rollback writes an old whole snapshot or restores old runtime after its owned-field CAS loses.
@@ -100,6 +128,14 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
   snapshot otherwise equal to the import and a partial ordinary-field winner;
   assert `auto_start` survives, other fields remain field-aware, and the last
   OS target is the canonical winner.
+- Through the real settings service, save only `upstream_retry_policy` with `auto_start=None`; assert zero
+  autostart lock attempts, zero generation-owned mutations, zero OS calls, and successful policy persistence.
+- Force a token-less runtime rollback after a concurrent explicit autostart writer; assert ordinary fields are
+  restored, the concurrent `auto_start` survives, and the rollback records zero autostart lock/OS calls.
+- Test both frontend partial-save owners: CLI Manager source patches and Settings-page queued changed-key saves.
+  After one explicit autostart save settles, the next unrelated queued request must encode `autoStart: null`.
+- Unit-test the Windows adapter without real registry mutation: open/delete success, missing key, missing value,
+  and non-`NotFound` open/delete failures.
 - Search production Rust sources for `settings::write(` and allow only test fixtures/seeding.
 - Run settings, gateway, Grok, CLI proxy, config-migration focused suites and the full Rust library suite.
 
@@ -126,6 +162,15 @@ settings::update(app, |latest| {
     }
     Ok(())
 })?;
+```
+
+```typescript
+// Wrong: snapshot reconstruction invents auto-start intent for every patch.
+const input = { ...current, ...patch, autoStart: current.auto_start };
+
+// Correct: only the source patch owns intent; transport encodes omission as null.
+const input = createSettingsSetInput(current, patch);
+const update = { ...input, autoStart: input.autoStart ?? null };
 ```
 
 ## Follow-up Findings F9 and F13

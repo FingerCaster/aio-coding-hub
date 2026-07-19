@@ -4055,7 +4055,10 @@ export type SettingsUpdate = {
   homeUsagePeriod: HomeUsagePeriod | null;
   gatewayListenMode: GatewayListenMode | null;
   gatewayCustomListenAddress: string | null;
-  autoStart: boolean;
+  /**
+   * `Some` explicitly owns and force-syncs auto-start; `None` preserves it.
+   */
+  autoStart: boolean | null;
   startMinimized: boolean | null;
   trayEnabled: boolean | null;
   enableCliProxyStartupRecovery: boolean | null;

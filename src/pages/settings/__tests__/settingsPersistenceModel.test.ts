@@ -141,7 +141,8 @@ describe("pages/settings/settingsPersistenceModel", () => {
         preferred_port: 38080,
         show_home_heatmap: false,
         cli_priority_order: ["codex", "gemini", "claude"],
-      })
+      }),
+      ["preferred_port", "show_home_heatmap", "cli_priority_order"]
     );
 
     expect(input).toEqual({
@@ -150,7 +151,6 @@ describe("pages/settings/settingsPersistenceModel", () => {
       showHomeUsage: true,
       homeUsagePeriod: "last15",
       cliPriorityOrder: ["codex", "gemini", "claude"],
-      autoStart: false,
       startMinimized: false,
       trayEnabled: true,
       logRetentionDays: 7,
@@ -166,5 +166,9 @@ describe("pages/settings/settingsPersistenceModel", () => {
       circuitBreakerFailureThreshold: 5,
       circuitBreakerOpenDurationMinutes: 30,
     });
+
+    expect(
+      buildPersistedSettingsMutationInput(DEFAULT_PERSISTED_SETTINGS, ["auto_start"]).autoStart
+    ).toBe(false);
   });
 });

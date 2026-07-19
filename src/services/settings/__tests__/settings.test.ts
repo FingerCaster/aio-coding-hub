@@ -108,9 +108,37 @@ describe("services/settings/settings", () => {
       cx2CcFallbackModelMain: "gpt-5.4",
       upstreamProxyPassword: { mode: "clear" },
     });
+    expect(input).not.toHaveProperty("autoStart");
     expect(Object.keys(input).filter((key) => key.includes("ReasoningGuard"))).toEqual([]);
     expect(input).not.toHaveProperty("cx2ccFallbackModelMain");
     expect(input).not.toHaveProperty("codex_oauth_compatible_proxy_mode");
+  });
+
+  it("only sends auto-start intent when the patch owns auto_start", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue({ schema_version: 1 } as any);
+
+    const { createSettingsSetInput, settingsSet } = await import("../settings");
+    const current = createTestAppSettings({ auto_start: false });
+
+    const unrelated = createSettingsSetInput(current, { provider_cooldown_seconds: 99 });
+    expect(unrelated).not.toHaveProperty("autoStart");
+    await settingsSet(unrelated);
+    expect(tauriInvoke).toHaveBeenLastCalledWith(
+      "settings_set",
+      expect.objectContaining({
+        update: expect.objectContaining({ autoStart: null, providerCooldownSeconds: 99 }),
+      })
+    );
+
+    const explicit = createSettingsSetInput(current, { auto_start: false });
+    expect(explicit.autoStart).toBe(false);
+    await settingsSet(explicit);
+    expect(tauriInvoke).toHaveBeenLastCalledWith(
+      "settings_set",
+      expect.objectContaining({ update: expect.objectContaining({ autoStart: false }) })
+    );
   });
 
   it("rejects invalid settings at the frontend boundary before IPC", async () => {

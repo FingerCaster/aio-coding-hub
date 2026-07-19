@@ -215,7 +215,7 @@ static AUTO_START_DURABLE_MUTATION_ATTEMPTS: std::sync::atomic::AtomicUsize =
     std::sync::atomic::AtomicUsize::new(0);
 
 #[cfg(test)]
-fn auto_start_test_serial_lock() -> &'static Mutex<()> {
+pub(crate) fn auto_start_test_serial_lock() -> &'static Mutex<()> {
     static LOCK: OnceLock<Mutex<()>> = OnceLock::new();
     LOCK.get_or_init(|| Mutex::new(()))
 }
@@ -632,11 +632,12 @@ pub(crate) fn commit_whole_settings_with_auto_start<R: tauri::Runtime>(
     }
 }
 
-/// Atomic ordinary-owned + autostart rollback under AUTO_START then SETTINGS.
+/// Roll back ordinary-owned fields, optionally with auto-start ownership.
 ///
-/// Validates generation, auto_start committed value, and the caller-supplied
-/// ordinary owned equality in one settings update. Never mutates auto_start
-/// before checking ordinary ownership.
+/// `Some(token)` validates generation, auto_start committed value, and the
+/// caller-supplied ordinary equality under AUTO_START then SETTINGS before
+/// restoring and converging the OS. `None` uses SETTINGS only and never reads
+/// or writes OS auto-start state.
 pub(crate) fn rollback_owned_with_auto_start_token<R, F>(
     app: &tauri::AppHandle<R>,
     auto_start_token: Option<AutoStartCommitToken>,
@@ -646,62 +647,63 @@ where
     R: tauri::Runtime,
     F: FnOnce(&mut crate::settings::AppSettings) -> bool,
 {
-    let mut owner = lock_owner();
-    if let Some(token) = auto_start_token {
-        if owner.generation != token.generation {
-            let winner = crate::settings::read(app).ok();
-            let convergence = winner
-                .as_ref()
-                .map(|settings| perform_os_sync(app, settings.auto_start));
-            if let Some(Err(error)) = convergence {
-                return OwnedRollbackResult::Failed(format!(
-                    "autostart canonical convergence failed after losing ownership: {error}"
-                ));
-            }
-            return match winner {
-                Some(settings) => OwnedRollbackResult::ConcurrentWinner(Box::new(settings)),
-                None => OwnedRollbackResult::Failed(
-                    "failed to read canonical settings after lost autostart ownership".into(),
-                ),
+    let token = match auto_start_token {
+        None => {
+            let update = crate::settings::update(app, |latest| Ok(restore_if_owned(latest)));
+            return match update {
+                Ok((_, true)) => OwnedRollbackResult::Restored,
+                Ok((winner, false)) => OwnedRollbackResult::ConcurrentWinner(Box::new(winner)),
+                Err(err) => OwnedRollbackResult::Failed(err.to_string()),
             };
         }
+        Some(token) => token,
+    };
+
+    let mut owner = lock_owner();
+    if owner.generation != token.generation {
+        let winner = crate::settings::read(app).ok();
+        let convergence = winner
+            .as_ref()
+            .map(|settings| perform_os_sync(app, settings.auto_start));
+        if let Some(Err(error)) = convergence {
+            return OwnedRollbackResult::Failed(format!(
+                "autostart canonical convergence failed after losing ownership: {error}"
+            ));
+        }
+        return match winner {
+            Some(settings) => OwnedRollbackResult::ConcurrentWinner(Box::new(settings)),
+            None => OwnedRollbackResult::Failed(
+                "failed to read canonical settings after lost autostart ownership".into(),
+            ),
+        };
     }
 
-    // Reserve before any durable restore when this path owns generation.
+    // Reserve before any durable restore while this path owns generation.
     // Overflow fails closed without running restore_if_owned / settings::update.
-    let reserved = if auto_start_token.is_some() {
-        match next_generation(&owner) {
-            Ok(generation) => Some(generation),
-            Err(err) => return OwnedRollbackResult::Failed(err),
-        }
-    } else {
-        None
+    let reserved = match next_generation(&owner) {
+        Ok(generation) => generation,
+        Err(err) => return OwnedRollbackResult::Failed(err),
     };
 
     #[cfg(test)]
-    if auto_start_token.is_some() {
-        record_auto_start_durable_mutation_attempt();
-    }
+    record_auto_start_durable_mutation_attempt();
     let update = crate::settings::update(app, |latest| {
-        if let Some(token) = auto_start_token {
-            if latest.auto_start != token.committed {
-                return Ok(false);
-            }
+        if latest.auto_start != token.committed {
+            return Ok(false);
         }
         if !restore_if_owned(latest) {
             return Ok(false);
         }
+        latest.auto_start = token.previous;
         Ok(true)
     });
 
     match update {
         Ok((_, true)) => {
-            if let Some(reserved) = reserved {
-                publish_generation(&mut owner, reserved);
-            }
+            publish_generation(&mut owner, reserved);
             let effective = crate::settings::read(app)
                 .map(|settings| settings.auto_start)
-                .unwrap_or_else(|_| auto_start_token.map(|t| t.previous).unwrap_or(false));
+                .unwrap_or(token.previous);
             if let Err(err) = perform_os_sync(app, effective) {
                 return OwnedRollbackResult::Failed(format!(
                     "settings restored but OS autostart convergence failed: {err}"

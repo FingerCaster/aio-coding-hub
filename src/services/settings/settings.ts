@@ -153,7 +153,6 @@ export type __AssertNoStaleHandledSettingsViewKeys = AssertNever<
 function validateRequiredSettingsSetInput(input: SettingsSetInput): string | null {
   for (const [fieldLabel, value] of [
     ["preferredPort", input.preferredPort],
-    ["autoStart", input.autoStart],
     ["logRetentionDays", input.logRetentionDays],
     ["failoverMaxAttemptsPerProvider", input.failoverMaxAttemptsPerProvider],
     ["failoverMaxProvidersToTry", input.failoverMaxProvidersToTry],
@@ -192,7 +191,7 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): FrontendSettingsUpd
     homeUsagePeriod: input.homeUsagePeriod ?? null,
     gatewayListenMode: input.gatewayListenMode ?? null,
     gatewayCustomListenAddress: input.gatewayCustomListenAddress ?? null,
-    autoStart: input.autoStart,
+    autoStart: input.autoStart ?? null,
     startMinimized: input.startMinimized ?? null,
     trayEnabled: input.trayEnabled ?? null,
     enableCliProxyStartupRecovery: input.enableCliProxyStartupRecovery ?? null,
@@ -247,10 +246,14 @@ export function createSettingsSetInput(
   patch: AppSettingsPatch = {}
 ): SettingsSetInput {
   const next: AppSettings = { ...current, ...patch };
-  return {
+  const input: SettingsSetInput = {
     ...pickSettingsSetInputFieldsFromView(next, SETTINGS_VIEW_BACKED_INPUT_KEYS),
     upstreamProxyPassword: patch.upstream_proxy_password ?? { mode: "preserve" },
   };
+  if (!Object.prototype.hasOwnProperty.call(patch, "auto_start")) {
+    delete input.autoStart;
+  }
+  return input;
 }
 
 export async function settingsGet() {

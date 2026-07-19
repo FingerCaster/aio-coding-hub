@@ -465,6 +465,45 @@ describe("settings/useSettingsPersistence", () => {
     expect(mutation.mutateAsync).toHaveBeenCalledTimes(2);
   });
 
+  it("does not resend settled auto-start intent in a queued ordinary save", async () => {
+    vi.mocked(useSettingsQuery).mockReturnValue({
+      data: createSettings({ auto_start: false }),
+      isLoading: false,
+      isError: false,
+      error: null,
+    } as any);
+
+    const resolveFirst: { fn?: (value: SettingsMutationResult) => void } = {};
+    const firstPromise = new Promise<SettingsMutationResult>((resolve) => {
+      resolveFirst.fn = resolve;
+    });
+    const mutation = { mutateAsync: vi.fn() };
+    mutation.mutateAsync
+      .mockReturnValueOnce(firstPromise)
+      .mockResolvedValueOnce(createSettingsMutationResult({ provider_cooldown_seconds: 12 }));
+    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+
+    const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
+    await waitFor(() => expect(result.current.settingsReady).toBe(true));
+
+    act(() => {
+      result.current.requestPersist({ auto_start: true });
+      result.current.requestPersist({ provider_cooldown_seconds: 12 });
+    });
+
+    await waitFor(() => expect(mutation.mutateAsync).toHaveBeenCalledTimes(1));
+    expect(mutation.mutateAsync.mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ autoStart: true })
+    );
+
+    resolveFirst.fn?.(createSettingsMutationResult({ auto_start: true }));
+    await waitFor(() => expect(mutation.mutateAsync).toHaveBeenCalledTimes(2));
+
+    const queuedInput = mutation.mutateAsync.mock.calls[1]?.[0];
+    expect(queuedInput).toEqual(expect.objectContaining({ providerCooldownSeconds: 12 }));
+    expect(queuedInput).not.toHaveProperty("autoStart");
+  });
+
   it("drops queued persists when an in-flight save enters readonly protection", async () => {
     vi.mocked(useSettingsQuery).mockReturnValue({
       data: createSettings(),

@@ -1,4 +1,5 @@
 use crate::{AutoLaunch, Result};
+use std::io::{self, ErrorKind};
 use winreg::enums::RegType::REG_BINARY;
 use winreg::enums::{HKEY_CURRENT_USER, KEY_READ, KEY_SET_VALUE};
 use winreg::{RegKey, RegValue};
@@ -60,10 +61,14 @@ impl AutoLaunch {
     ///
     /// - failed to open the registry key
     /// - failed to delete value
+    ///
+    /// A missing key or value already represents the disabled state and succeeds.
     pub fn disable(&self) -> Result<()> {
         let hkcu = RegKey::predef(HKEY_CURRENT_USER);
-        hkcu.open_subkey_with_flags(AL_REGKEY, KEY_SET_VALUE)?
-            .delete_value(&self.app_name)?;
+        delete_run_entry_with(
+            || hkcu.open_subkey_with_flags(AL_REGKEY, KEY_SET_VALUE),
+            |reg| reg.delete_value(&self.app_name),
+        )?;
         Ok(())
     }
 
@@ -92,6 +97,16 @@ impl AutoLaunch {
     }
 }
 
+fn delete_run_entry_with<T>(
+    open_key: impl FnOnce() -> io::Result<T>,
+    delete_value: impl FnOnce(T) -> io::Result<()>,
+) -> io::Result<()> {
+    match open_key().and_then(delete_value) {
+        Err(error) if error.kind() == ErrorKind::NotFound => Ok(()),
+        result => result,
+    }
+}
+
 fn last_eight_bytes_all_zeros(bytes: &[u8]) -> Option<bool> {
     if bytes.len() < 8 {
         return None;
@@ -112,5 +127,45 @@ fn format_run_command(app_path: &str, args: &[String]) -> String {
         app_path
     } else {
         format!("{app_path} {}", args.join(" "))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn delete_run_entry_preserves_success() {
+        delete_run_entry_with(|| Ok(()), |()| Ok(())).expect("successful deletion");
+    }
+
+    #[test]
+    fn delete_run_entry_ignores_missing_key_and_value() {
+        delete_run_entry_with(
+            || Err::<(), _>(io::Error::from(ErrorKind::NotFound)),
+            |()| panic!("delete must not run when the key is missing"),
+        )
+        .expect("missing key is already disabled");
+
+        delete_run_entry_with(|| Ok(()), |()| Err(io::Error::from(ErrorKind::NotFound)))
+            .expect("missing value is already disabled");
+    }
+
+    #[test]
+    fn delete_run_entry_propagates_other_errors() {
+        let open_error = delete_run_entry_with(
+            || Err::<(), _>(io::Error::from_raw_os_error(5)),
+            |()| panic!("delete must not run when opening the key fails"),
+        )
+        .expect_err("access-denied open must fail");
+        assert_eq!(open_error.raw_os_error(), Some(5));
+
+        let delete_error = delete_run_entry_with(
+            || Ok(()),
+            |()| Err(io::Error::new(ErrorKind::PermissionDenied, "delete denied")),
+        )
+        .expect_err("access-denied delete must fail");
+        assert_eq!(delete_error.kind(), ErrorKind::PermissionDenied);
+        assert_eq!(delete_error.to_string(), "delete denied");
     }
 }
