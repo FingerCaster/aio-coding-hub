@@ -458,3 +458,38 @@ Removed the unreleased managed external gateway integration, retained only the o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 14: 供应商账户用量编辑体验收尾
+
+**Date**: 2026-07-19
+**Task**: 供应商账户用量编辑体验收尾
+**Package**: aio-coding-hub
+**Branch**: `provider-account-usage-tab`
+
+### Summary
+
+优化账户用量展开区的等宽分段按钮与响应式控件分组，并将可见文案统一为 Sub2Api/NewApi；完成自动化与 Kimi 桌面/窄屏验证。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `91692454` | (see git log) |
+| `cb5f8f83` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
