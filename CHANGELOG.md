@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.28](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.27...aio-coding-hub-v0.60.28) (2026-07-19)
+
+
+### Features
+
+* **providers:** 支持安全分享、预览和导入单个供应商配置，导入项默认保持禁用。 ([0fe30af](https://github.com/FingerCaster/aio-coding-hub/commit/0fe30af13155a6b7856ef93f981f092bf5b41fd2))
+* **account usage:** 新增可配置的 NewAPI 用户账户余额查询，并兼容模型令牌无限额度与 sub2api 日周期限额，避免展示无法证明语义的余额。 ([4ef9604](https://github.com/FingerCaster/aio-coding-hub/commit/4ef960474b74369f7a0460af7213537dfc0b4a9c))
+
 ## [0.60.27](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.26...aio-coding-hub-v0.60.27) (2026-07-18)
 
 
