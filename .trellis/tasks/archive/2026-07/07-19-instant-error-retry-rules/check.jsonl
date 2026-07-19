@@ -1,0 +1,8 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Verify the required focused and full backend quality gates for retry/circuit changes."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Review boundary values, strict helper routes, transient reservations, and cross-request circuit counts."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Verify generated bindings, frontend validation, persistence, and runtime remain aligned."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Check attempt/route observability and prove 401/403 bodies do not leak."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Check policy writes use the authoritative settings path without stale snapshot overwrite."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"Audit strict version dispatch, deterministic serialization, import rollback, and secret boundaries."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Apply edge-case and round-trip checks across every rule data boundary."}
+{"file": ".trellis/tasks/archive/2026-07/07-19-instant-error-retry-rules/research/rule-model-and-migration.md", "reason": "Use the source-backed reference behavior and migration inventory during review."}

@@ -1,0 +1,8 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Gateway retry and circuit changes must follow the backend pre-development and quality checklist."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve provider attempt budgets, configured transient reservations, strict routes, and circuit accounting."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"The rule contract crosses Rust settings, generated bindings, frontend adapters, UI, and runtime."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Keep generic failover decisions, attempt reasons, route projection, and auth-body privacy stable."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Global policy writes must preserve field ownership, locked validation, and rollback semantics."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"Provider share v1/v2 must remain strict, deterministic, bounded, and secret-safe."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Use the complete data-flow and boundary checklist for the new rule payload."}
+{"file": ".trellis/tasks/archive/2026-07/07-19-instant-error-retry-rules/research/rule-model-and-migration.md", "reason": "Local evidence comparing current retry behavior with sub2api and identifying all migration surfaces."}
