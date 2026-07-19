@@ -424,3 +424,37 @@ Removed the unreleased managed external gateway integration, retained only the o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 13: 供应商编辑弹窗配置区顺序微调
+
+**Date**: 2026-07-19
+**Task**: 供应商编辑弹窗配置区顺序微调
+**Package**: aio-coding-hub
+**Branch**: `provider-account-usage-tab`
+
+### Summary
+
+将流式空闲超时移动到账户用量之前，使账户用量、重试覆盖和限流配置连续排列，并通过 DOM 顺序测试与 Kimi WebBridge 桌面截图验证。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `b2277c5f` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
