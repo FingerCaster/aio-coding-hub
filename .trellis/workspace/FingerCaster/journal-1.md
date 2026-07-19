@@ -527,3 +527,37 @@ Added configurable HTTP transient retry rules with global and Provider scopes, s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 16: 修复设置保存误触发自启动
+
+**Date**: 2026-07-20
+**Task**: 修复设置保存误触发自启动
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+将 auto_start 改为显式补丁意图，使瞬时重试等普通设置保存及无 token 回滚不再访问 OS 自启动；保留显式自启动协调与 Windows NotFound 幂等防御，完成测试、main 合并和 MSI 构建。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `54ba206e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

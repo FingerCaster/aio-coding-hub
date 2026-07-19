@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 15
-- **Last Active**: 2026-07-19
+- **Total Sessions**: 16
+- **Last Active**: 2026-07-20
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~529 | Active |
+| `journal-1.md` | ~563 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 16 | 2026-07-20 | 修复设置保存误触发自启动 | `54ba206e` | `main` |
 | 15 | 2026-07-19 | Rule-based transient error retries | `45d01dd7` | `main` |
 | 14 | 2026-07-19 | 供应商账户用量编辑体验收尾 | `91692454`, `cb5f8f83` | `provider-account-usage-tab` |
 | 13 | 2026-07-19 | 供应商编辑弹窗配置区顺序微调 | `b2277c5f` | `provider-account-usage-tab` |
