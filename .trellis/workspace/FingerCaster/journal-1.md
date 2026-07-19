@@ -390,3 +390,37 @@ Removed the unreleased managed external gateway integration, retained only the o
 ### Next Steps
 
 - None - task complete
+
+
+## Session 12: 供应商账户用量折叠选项卡
+
+**Date**: 2026-07-19
+**Task**: 供应商账户用量折叠选项卡
+**Package**: aio-coding-hub
+**Branch**: `provider-account-usage-tab`
+
+### Summary
+
+将供应商编辑弹窗的账户用量配置改为默认收起的摘要面板，保留完整配置语义，并通过自动化与 Kimi WebBridge 桌面及窄屏验证。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `ffdba4b0` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
