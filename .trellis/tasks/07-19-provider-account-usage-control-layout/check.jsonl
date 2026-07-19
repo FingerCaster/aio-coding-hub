@@ -1,0 +1,3 @@
+{"file": "src/pages/providers/ProviderAccountUsageSection.tsx", "reason": "Verify responsive logical grouping and unchanged conditional behavior."}
+{"file": "src/pages/providers/RadioButtonGroup.tsx", "reason": "Verify the established full-width API is reused rather than duplicated."}
+{"file": "src/pages/providers/__tests__/ProviderAccountUsageSection.test.tsx", "reason": "Verify tests cover layout intent and preserve interactions."}

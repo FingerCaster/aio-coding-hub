@@ -1,0 +1,3 @@
+{"file": "src/pages/providers/ProviderAccountUsageSection.tsx", "reason": "Restructure the existing form grid into logical selector and refresh rows."}
+{"file": "src/pages/providers/RadioButtonGroup.tsx", "reason": "Reuse the existing full-width segmented-control behavior; do not change this shared component unless strictly necessary."}
+{"file": "src/pages/providers/__tests__/ProviderAccountUsageSection.test.tsx", "reason": "Add focused layout-contract assertions without weakening interaction coverage."}

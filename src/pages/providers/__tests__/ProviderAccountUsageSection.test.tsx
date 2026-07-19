@@ -41,6 +41,18 @@ function openDisclosure() {
   return disclosure;
 }
 
+function expectFullWidthRadioOptions(group: HTMLElement) {
+  expect(group).toHaveClass("w-full");
+  expect(group).not.toHaveClass("w-auto");
+  within(group)
+    .getAllByRole("radio")
+    .forEach((option) => expect(option).toHaveClass("flex-1"));
+}
+
+function expectElementBefore(first: HTMLElement, second: HTMLElement) {
+  expect(first.compareDocumentPosition(second) & Node.DOCUMENT_POSITION_FOLLOWING).not.toBe(0);
+}
+
 const summaryCases: Array<[string, Partial<UseProviderEditorFormReturn>, string]> = [
   ["关闭", {}, "关闭"],
   ["sub2api", { accountUsageAdapterKind: "sub2api" }, "sub2api"],
@@ -140,13 +152,69 @@ describe("ProviderAccountUsageSection", () => {
     );
 
     openDisclosure();
-    fireEvent.click(screen.getByRole("switch", { name: "定时刷新账户用量" }));
-    fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "180" } });
+    const selectorRow = screen.getByRole("group", { name: "账户用量选择设置" });
+    const refreshRow = screen.getByRole("group", { name: "账户用量刷新设置" });
+    const adapterGroup = within(selectorRow).getByRole("radiogroup", {
+      name: "账户用量适配器",
+    });
+    const refreshSwitch = within(refreshRow).getByRole("switch", {
+      name: "定时刷新账户用量",
+    });
+    const refreshInterval = within(refreshRow).getByRole("spinbutton");
+
+    expect(selectorRow).toHaveClass("grid", "sm:grid-cols-2");
+    expect(refreshRow).toHaveClass("grid", "sm:grid-cols-2");
+    expectElementBefore(selectorRow, refreshRow);
+    expectFullWidthRadioOptions(adapterGroup);
+
+    fireEvent.click(refreshSwitch);
+    fireEvent.change(refreshInterval, { target: { value: "180" } });
 
     expect(setTimedRefreshEnabled).toHaveBeenCalledWith(false);
     expect(setRefreshIntervalSeconds).toHaveBeenCalledWith(180);
-    expect(screen.getByRole("spinbutton")).toHaveAttribute("min", "60");
-    expect(screen.getByRole("spinbutton")).toHaveAttribute("max", "300");
+    expect(refreshInterval).toHaveAttribute("min", "60");
+    expect(refreshInterval).toHaveAttribute("max", "300");
+  });
+
+  it("keeps NewAPI selectors, credentials, and refresh controls in natural responsive rows", () => {
+    render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "newapi",
+          accountUsageNewApiQueryMode: "account",
+          accountUsageNewApiUserId: "42",
+          accountUsageCredentialsPresent: true,
+        })}
+      />
+    );
+
+    openDisclosure();
+    const selectorRow = screen.getByRole("group", { name: "账户用量选择设置" });
+    const credentialsRow = screen.getByRole("group", { name: "账户用量凭据设置" });
+    const refreshRow = screen.getByRole("group", { name: "账户用量刷新设置" });
+    const adapterGroup = within(selectorRow).getByRole("radiogroup", {
+      name: "账户用量适配器",
+    });
+    const queryModeGroup = within(selectorRow).getByRole("radiogroup", {
+      name: "NewAPI 查询方式",
+    });
+
+    expect(selectorRow).toHaveClass("grid", "sm:grid-cols-2");
+    expect(credentialsRow).toHaveClass("grid", "sm:grid-cols-2");
+    expect(refreshRow).toHaveClass("grid", "sm:grid-cols-2");
+    expectElementBefore(selectorRow, credentialsRow);
+    expectElementBefore(credentialsRow, refreshRow);
+    expectFullWidthRadioOptions(adapterGroup);
+    expectFullWidthRadioOptions(queryModeGroup);
+    expect(within(credentialsRow).getByDisplayValue("42")).toBeInTheDocument();
+    expect(
+      within(credentialsRow).getByRole("button", { name: "清除账户凭据" })
+    ).toBeInTheDocument();
+    expect(
+      within(refreshRow).getByRole("switch", { name: "定时刷新账户用量" })
+    ).toBeInTheDocument();
+    expect(within(refreshRow).getByRole("spinbutton")).toBeInTheDocument();
+    expect(refreshRow).not.toContainElement(screen.getByDisplayValue("42"));
   });
 
   it("renders explicit NewAPI account mode, masked token, missing state, and clear action", () => {
