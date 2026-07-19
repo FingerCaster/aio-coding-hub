@@ -42,16 +42,29 @@ use crate::shared::mutex_ext::MutexExt;
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderValue};
 
-fn upstream_error_decision(
+struct UpstreamErrorDecisionInput<'a> {
     is_count_tokens: bool,
     base_decision: FailoverDecision,
     configured_rule_matched: bool,
-    policy: &crate::settings::UpstreamRetryPolicy,
+    policy: &'a crate::settings::UpstreamRetryPolicy,
     configured_retries_used: u32,
     retry_index: u32,
     configured_max_attempts_per_provider: u32,
     base_max_attempts_per_provider: u32,
-) -> (FailoverDecision, bool) {
+}
+
+fn upstream_error_decision(input: UpstreamErrorDecisionInput<'_>) -> (FailoverDecision, bool) {
+    let UpstreamErrorDecisionInput {
+        is_count_tokens,
+        base_decision,
+        configured_rule_matched,
+        policy,
+        configured_retries_used,
+        retry_index,
+        configured_max_attempts_per_provider,
+        base_max_attempts_per_provider,
+    } = input;
+
     if is_count_tokens {
         return (FailoverDecision::Abort, false);
     }
@@ -416,16 +429,17 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     let mut matched_http_retry_rule = configured_http_retry_available
         .then(|| match_code_only_http_retry_rule(upstream_retry_policy, status.as_u16()))
         .flatten();
-    let (mut decision, mut configured_retry) = upstream_error_decision(
-        is_count_tokens,
-        base_decision,
-        matched_http_retry_rule.is_some(),
-        upstream_retry_policy,
-        *upstream.configured_transient_retries_used,
-        retry_index,
-        provider_max_attempts,
-        provider_base_max_attempts,
-    );
+    let (mut decision, mut configured_retry) =
+        upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens,
+            base_decision,
+            configured_rule_matched: matched_http_retry_rule.is_some(),
+            policy: upstream_retry_policy,
+            configured_retries_used: *upstream.configured_transient_retries_used,
+            retry_index,
+            configured_max_attempts_per_provider: provider_max_attempts,
+            base_max_attempts_per_provider: provider_base_max_attempts,
+        });
 
     let mut abort_body_bytes: Option<Bytes> = None;
     let mut abort_response_headers: Option<axum::http::HeaderMap> = None;
@@ -491,16 +505,18 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         body_for_scan.as_ref(),
                     ) {
                         matched_http_retry_rule = Some(matched);
-                        (decision, configured_retry) = upstream_error_decision(
-                            is_count_tokens,
-                            base_decision,
-                            true,
-                            upstream_retry_policy,
-                            *upstream.configured_transient_retries_used,
-                            retry_index,
-                            provider_max_attempts,
-                            provider_base_max_attempts,
-                        );
+                        (decision, configured_retry) =
+                            upstream_error_decision(UpstreamErrorDecisionInput {
+                                is_count_tokens,
+                                base_decision,
+                                configured_rule_matched: true,
+                                policy: upstream_retry_policy,
+                                configured_retries_used: *upstream
+                                    .configured_transient_retries_used,
+                                retry_index,
+                                configured_max_attempts_per_provider: provider_max_attempts,
+                                base_max_attempts_per_provider: provider_base_max_attempts,
+                            });
                     }
                 }
                 // CX2CC: log upstream error body to console for debugging.
@@ -1019,7 +1035,8 @@ mod tests {
         read_response_body_for_error_scan, read_response_body_for_rule_scan,
         remove_codex_previous_response_id, reqwest_error_decision, retry_after_reset_at,
         should_record_http_circuit_failure, should_scan_codex_previous_response_id_error,
-        upstream_error_decision, FailoverDecision, MAX_ENCODED_ERROR_BODY_READ_BYTES,
+        upstream_error_decision, FailoverDecision, UpstreamErrorDecisionInput,
+        MAX_ENCODED_ERROR_BODY_READ_BYTES,
     };
     use crate::gateway::proxy::ErrorCategory;
     use crate::settings::{UpstreamRetryPolicy, UpstreamTransportRetryKind};
@@ -1058,64 +1075,64 @@ mod tests {
 
     #[test]
     fn upstream_error_decision_aborts_for_count_tokens() {
-        let (decision, configured_retry) = upstream_error_decision(
-            true,
-            FailoverDecision::RetrySameProvider,
-            true,
-            &UpstreamRetryPolicy::default(),
-            0,
-            1,
-            5,
-            5,
-        );
+        let (decision, configured_retry) = upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens: true,
+            base_decision: FailoverDecision::RetrySameProvider,
+            configured_rule_matched: true,
+            policy: &UpstreamRetryPolicy::default(),
+            configured_retries_used: 0,
+            retry_index: 1,
+            configured_max_attempts_per_provider: 5,
+            base_max_attempts_per_provider: 5,
+        });
         assert!(matches!(decision, FailoverDecision::Abort));
         assert!(!configured_retry);
     }
 
     #[test]
     fn upstream_error_decision_keeps_base_decision_before_retry_limit() {
-        let (decision, configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::RetrySameProvider,
-            false,
-            &UpstreamRetryPolicy::default(),
-            0,
-            1,
-            5,
-            5,
-        );
+        let (decision, configured_retry) = upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens: false,
+            base_decision: FailoverDecision::RetrySameProvider,
+            configured_rule_matched: false,
+            policy: &UpstreamRetryPolicy::default(),
+            configured_retries_used: 0,
+            retry_index: 1,
+            configured_max_attempts_per_provider: 5,
+            base_max_attempts_per_provider: 5,
+        });
         assert!(matches!(decision, FailoverDecision::RetrySameProvider));
         assert!(!configured_retry);
     }
 
     #[test]
     fn upstream_error_decision_switches_after_retry_limit() {
-        let (decision, configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::RetrySameProvider,
-            false,
-            &UpstreamRetryPolicy::default(),
-            0,
-            5,
-            5,
-            5,
-        );
+        let (decision, configured_retry) = upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens: false,
+            base_decision: FailoverDecision::RetrySameProvider,
+            configured_rule_matched: false,
+            policy: &UpstreamRetryPolicy::default(),
+            configured_retries_used: 0,
+            retry_index: 5,
+            configured_max_attempts_per_provider: 5,
+            base_max_attempts_per_provider: 5,
+        });
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
     }
 
     #[test]
     fn unmatched_rule_cannot_consume_configured_retry_reservation() {
-        let (decision, configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::RetrySameProvider,
-            false,
-            &UpstreamRetryPolicy::default(),
-            0,
-            1,
-            2,
-            1,
-        );
+        let (decision, configured_retry) = upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens: false,
+            base_decision: FailoverDecision::RetrySameProvider,
+            configured_rule_matched: false,
+            policy: &UpstreamRetryPolicy::default(),
+            configured_retries_used: 0,
+            retry_index: 1,
+            configured_max_attempts_per_provider: 2,
+            base_max_attempts_per_provider: 1,
+        });
 
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
@@ -1123,45 +1140,47 @@ mod tests {
 
     #[test]
     fn upstream_error_decision_keeps_switch_and_abort_decisions() {
-        let (switch_decision, switch_configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::SwitchProvider,
-            false,
-            &UpstreamRetryPolicy::default(),
-            0,
-            1,
-            5,
-            5,
-        );
+        let (switch_decision, switch_configured_retry) =
+            upstream_error_decision(UpstreamErrorDecisionInput {
+                is_count_tokens: false,
+                base_decision: FailoverDecision::SwitchProvider,
+                configured_rule_matched: false,
+                policy: &UpstreamRetryPolicy::default(),
+                configured_retries_used: 0,
+                retry_index: 1,
+                configured_max_attempts_per_provider: 5,
+                base_max_attempts_per_provider: 5,
+            });
         assert!(matches!(switch_decision, FailoverDecision::SwitchProvider));
         assert!(!switch_configured_retry);
 
-        let (abort_decision, abort_configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::Abort,
-            false,
-            &UpstreamRetryPolicy::default(),
-            0,
-            1,
-            5,
-            5,
-        );
+        let (abort_decision, abort_configured_retry) =
+            upstream_error_decision(UpstreamErrorDecisionInput {
+                is_count_tokens: false,
+                base_decision: FailoverDecision::Abort,
+                configured_rule_matched: false,
+                policy: &UpstreamRetryPolicy::default(),
+                configured_retries_used: 0,
+                retry_index: 1,
+                configured_max_attempts_per_provider: 5,
+                base_max_attempts_per_provider: 5,
+            });
         assert!(matches!(abort_decision, FailoverDecision::Abort));
         assert!(!abort_configured_retry);
     }
 
     #[test]
     fn upstream_error_decision_retries_a_matched_configured_rule() {
-        let (decision, configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::SwitchProvider,
-            true,
-            &UpstreamRetryPolicy::default(),
-            0,
-            1,
-            2,
-            1,
-        );
+        let (decision, configured_retry) = upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens: false,
+            base_decision: FailoverDecision::SwitchProvider,
+            configured_rule_matched: true,
+            policy: &UpstreamRetryPolicy::default(),
+            configured_retries_used: 0,
+            retry_index: 1,
+            configured_max_attempts_per_provider: 2,
+            base_max_attempts_per_provider: 1,
+        });
         assert!(matches!(decision, FailoverDecision::RetrySameProvider));
         assert!(configured_retry);
     }
@@ -1173,16 +1192,16 @@ mod tests {
             ..Default::default()
         };
 
-        let (decision, configured_retry) = upstream_error_decision(
-            false,
-            FailoverDecision::SwitchProvider,
-            true,
-            &policy,
-            0,
-            1,
-            2,
-            1,
-        );
+        let (decision, configured_retry) = upstream_error_decision(UpstreamErrorDecisionInput {
+            is_count_tokens: false,
+            base_decision: FailoverDecision::SwitchProvider,
+            configured_rule_matched: true,
+            policy: &policy,
+            configured_retries_used: 0,
+            retry_index: 1,
+            configured_max_attempts_per_provider: 2,
+            base_max_attempts_per_provider: 1,
+        });
 
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
