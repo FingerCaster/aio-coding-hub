@@ -1,0 +1,30 @@
+{
+  "id": "provider-account-usage-tab",
+  "name": "provider-account-usage-tab",
+  "title": "供应商账户用量折叠选项卡",
+  "description": "将供应商编辑弹窗中的账户用量配置改为默认收起、摘要可见的折叠面板。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-07-19",
+  "completedAt": null,
+  "branch": "provider-account-usage-tab",
+  "base_branch": "main",
+  "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/provider-account-usage-tab",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/pages/providers/ProviderAccountUsageSection.tsx",
+    "src/pages/providers/__tests__/ProviderAccountUsageSection.test.tsx",
+    "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx"
+  ],
+  "notes": "实现与自动化检查完成；Kimi WebBridge 已验证桌面及 390x844 收起/展开态。复用既有 details 模式，无新增跨层契约，不更新 spec。",
+  "meta": {}
+}

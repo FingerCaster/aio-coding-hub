@@ -1,4 +1,4 @@
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { ProviderAccountUsageSection } from "../ProviderAccountUsageSection";
 import type { UseProviderEditorFormReturn } from "../useProviderEditorForm";
@@ -27,13 +27,101 @@ function makeForm(partial: Partial<UseProviderEditorFormReturn> = {}): UseProvid
   } as unknown as UseProviderEditorFormReturn;
 }
 
+function getDisclosure() {
+  const summary = screen.getByText("账户用量", { selector: "summary span" }).closest("summary");
+  const details = summary?.closest("details") as HTMLDetailsElement | null;
+  if (!summary || !details) throw new Error("账户用量折叠面板不存在");
+  return { details, summary };
+}
+
+function openDisclosure() {
+  const disclosure = getDisclosure();
+  fireEvent.click(disclosure.summary);
+  expect(disclosure.details.open).toBe(true);
+  return disclosure;
+}
+
+const summaryCases: Array<[string, Partial<UseProviderEditorFormReturn>, string]> = [
+  ["关闭", {}, "关闭"],
+  ["sub2api", { accountUsageAdapterKind: "sub2api" }, "sub2api"],
+  [
+    "NewAPI 模型令牌额度",
+    { accountUsageAdapterKind: "newapi", accountUsageNewApiQueryMode: "billing" },
+    "NewAPI · 模型令牌额度",
+  ],
+  [
+    "NewAPI 用户账户余额",
+    { accountUsageAdapterKind: "newapi", accountUsageNewApiQueryMode: "account" },
+    "NewAPI · 用户账户余额",
+  ],
+];
+
 describe("ProviderAccountUsageSection", () => {
-  it("hides timed refresh controls while account usage is disabled", () => {
+  it.each(summaryCases)("renders %s status closed by default", (_name, partial, status) => {
+    render(<ProviderAccountUsageSection form={makeForm(partial)} />);
+
+    const { details, summary } = getDisclosure();
+    expect(details.open).toBe(false);
+    expect(within(summary).getByText(status)).toBeInTheDocument();
+    expect(screen.getByRole("radiogroup", { name: "账户用量适配器" })).not.toBeVisible();
+  });
+
+  it("opens and closes while keeping disabled-only controls absent", () => {
     render(<ProviderAccountUsageSection form={makeForm()} />);
 
+    const { details, summary } = openDisclosure();
     expect(screen.getByRole("radiogroup", { name: "账户用量适配器" })).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "定时刷新账户用量" })).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
+
+    fireEvent.click(summary);
+    expect(details.open).toBe(false);
+    expect(screen.getByRole("radiogroup", { name: "账户用量适配器" })).not.toBeVisible();
+  });
+
+  it("updates the summary without resetting the disclosure", () => {
+    const setAdapterKind = vi.fn();
+    const setQueryMode = vi.fn();
+    const { rerender } = render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          setAccountUsageAdapterKind: setAdapterKind,
+          setAccountUsageNewApiQueryMode: setQueryMode,
+        })}
+      />
+    );
+
+    const { details } = openDisclosure();
+    fireEvent.click(screen.getByRole("radio", { name: "NewAPI" }));
+    expect(setAdapterKind).toHaveBeenCalledWith("newapi");
+
+    rerender(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "newapi",
+          accountUsageNewApiQueryMode: "billing",
+          setAccountUsageAdapterKind: setAdapterKind,
+          setAccountUsageNewApiQueryMode: setQueryMode,
+        })}
+      />
+    );
+    expect(details.open).toBe(true);
+    expect(within(getDisclosure().summary).getByText("NewAPI · 模型令牌额度")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("radio", { name: "用户账户余额" }));
+    expect(setQueryMode).toHaveBeenCalledWith("account");
+
+    rerender(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "newapi",
+          accountUsageNewApiQueryMode: "account",
+          setAccountUsageAdapterKind: setAdapterKind,
+          setAccountUsageNewApiQueryMode: setQueryMode,
+        })}
+      />
+    );
+    expect(within(getDisclosure().summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
   });
 
   it("renders timed refresh controls for configured account usage", () => {
@@ -51,6 +139,7 @@ describe("ProviderAccountUsageSection", () => {
       />
     );
 
+    openDisclosure();
     fireEvent.click(screen.getByRole("switch", { name: "定时刷新账户用量" }));
     fireEvent.change(screen.getByRole("spinbutton"), { target: { value: "180" } });
 
@@ -80,7 +169,12 @@ describe("ProviderAccountUsageSection", () => {
       />
     );
 
-    expect(screen.getByText("需配置账户凭据")).toBeInTheDocument();
+    const { details, summary } = getDisclosure();
+    expect(details.open).toBe(false);
+    expect(within(summary).getByText("需配置账户凭据")).toBeInTheDocument();
+
+    openDisclosure();
+    expect(screen.getAllByText("需配置账户凭据")).toHaveLength(2);
     expect(screen.getByRole("radiogroup", { name: "NewAPI 查询方式" })).toBeInTheDocument();
     fireEvent.click(screen.getByRole("radio", { name: "模型令牌额度" }));
     expect(setQueryMode).toHaveBeenCalledWith("billing");
@@ -92,5 +186,12 @@ describe("ProviderAccountUsageSection", () => {
     expect(setAccessToken).toHaveBeenCalledWith("SYNTHETIC_REPLACEMENT");
     fireEvent.click(screen.getByRole("button", { name: "清除账户凭据" }));
     expect(clearCredentials).toHaveBeenCalledOnce();
+  });
+
+  it("does not render for non-API-key authentication", () => {
+    render(<ProviderAccountUsageSection form={makeForm({ authMode: "oauth" })} />);
+
+    expect(screen.queryByText("账户用量", { selector: "summary span" })).not.toBeInTheDocument();
+    expect(screen.queryByRole("radiogroup", { name: "账户用量适配器" })).not.toBeInTheDocument();
   });
 });

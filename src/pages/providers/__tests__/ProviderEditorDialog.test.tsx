@@ -187,6 +187,22 @@ function renderDialog(ui: ReactElement) {
 
 const render = renderDialog;
 
+function getAccountUsageDisclosure(dialog: HTMLElement) {
+  const summary = within(dialog)
+    .getByText("账户用量", { selector: "summary span" })
+    .closest("summary");
+  const details = summary?.closest("details") as HTMLDetailsElement | null;
+  if (!summary || !details) throw new Error("账户用量折叠面板不存在");
+  return { details, summary };
+}
+
+function openAccountUsageDisclosure(dialog: HTMLElement) {
+  const disclosure = getAccountUsageDisclosure(dialog);
+  fireEvent.click(disclosure.summary);
+  expect(disclosure.details.open).toBe(true);
+  return disclosure;
+}
+
 describe("pages/providers/ProviderEditorDialog", () => {
   beforeEach(() => {
     vi.mocked(providerUpsert).mockReset();
@@ -218,7 +234,11 @@ describe("pages/providers/ProviderEditorDialog", () => {
       />
     );
 
-    const dialog = within(screen.getByRole("dialog"));
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    const accountUsageDisclosure = getAccountUsageDisclosure(dialogElement);
+    expect(accountUsageDisclosure.details.open).toBe(false);
+    expect(within(accountUsageDisclosure.summary).getByText("关闭")).toBeInTheDocument();
     expect(dialog.getByPlaceholderText("sk-…")).toBeInTheDocument();
     // Auth mode tab label
     expect(dialog.getByText("OAuth 登录")).toBeInTheDocument();
@@ -229,6 +249,41 @@ describe("pages/providers/ProviderEditorDialog", () => {
     expect(dialog.getByText("未连接 OAuth")).toBeInTheDocument();
     expect(dialog.getByRole("button", { name: "OAuth 登录" })).toBeInTheDocument();
     expect(dialog.getByRole("button", { name: "设备码登录" })).toBeInTheDocument();
+    expect(dialog.queryByText("账户用量", { selector: "summary span" })).not.toBeInTheDocument();
+  });
+
+  it("keeps account usage and limits disclosures independent", () => {
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    const accountUsageDisclosure = getAccountUsageDisclosure(dialogElement);
+    const limitsSummary = dialog.getByText("限流配置").closest("summary");
+    const limitsDetails = limitsSummary?.closest("details") as HTMLDetailsElement | null;
+    expect(limitsSummary).not.toBeNull();
+    expect(limitsDetails).not.toBeNull();
+    expect(accountUsageDisclosure.details.open).toBe(false);
+    expect(limitsDetails!.open).toBe(false);
+
+    fireEvent.click(accountUsageDisclosure.summary);
+    expect(accountUsageDisclosure.details.open).toBe(true);
+    expect(limitsDetails!.open).toBe(false);
+
+    fireEvent.click(limitsSummary!);
+    expect(accountUsageDisclosure.details.open).toBe(true);
+    expect(limitsDetails!.open).toBe(true);
+
+    fireEvent.click(accountUsageDisclosure.summary);
+    expect(accountUsageDisclosure.details.open).toBe(false);
+    expect(limitsDetails!.open).toBe(true);
   });
 
   it("validates create form and saves provider", async () => {
@@ -3151,18 +3206,25 @@ describe("pages/providers/ProviderEditorDialog", () => {
       />
     );
 
-    const dialog = within(screen.getByRole("dialog"));
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    const { details, summary } = openAccountUsageDisclosure(dialogElement);
+    expect(within(summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
     expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
     fireEvent.change(dialog.getByPlaceholderText("留空表示不改"), {
       target: { value: "SYNTHETIC_ACCOUNT_DRAFT" },
     });
     fireEvent.click(dialog.getByRole("radio", { name: "模型令牌额度" }));
+    expect(within(summary).getByText("NewAPI · 模型令牌额度")).toBeInTheDocument();
     expect(dialog.queryByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).not.toBeInTheDocument();
     fireEvent.click(dialog.getByRole("radio", { name: "用户账户余额" }));
+    expect(within(summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
     expect(dialog.getByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).toBeInTheDocument();
     fireEvent.click(dialog.getByRole("radio", { name: "sub2api" }));
+    expect(within(summary).getByText("sub2api")).toBeInTheDocument();
     expect(dialog.queryByPlaceholderText("正整数")).not.toBeInTheDocument();
     fireEvent.click(dialog.getByRole("radio", { name: "NewAPI" }));
+    expect(within(summary).getByText("NewAPI · 用户账户余额")).toBeInTheDocument();
     expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
     expect(dialog.getByDisplayValue("SYNTHETIC_ACCOUNT_DRAFT")).toBeInTheDocument();
     expect(dialog.getByRole("radio", { name: "用户账户余额" })).toHaveAttribute(
@@ -3171,7 +3233,10 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
 
     fireEvent.click(dialog.getByRole("button", { name: "清除账户凭据" }));
-    expect(dialog.getByText("需配置账户凭据")).toBeInTheDocument();
+    expect(within(summary).getByText("需配置账户凭据")).toBeInTheDocument();
+    fireEvent.click(summary);
+    expect(details.open).toBe(false);
+    expect(within(summary).getByText("需配置账户凭据")).toBeInTheDocument();
     fireEvent.click(dialog.getByRole("button", { name: "保存" }));
 
     await waitFor(() =>
