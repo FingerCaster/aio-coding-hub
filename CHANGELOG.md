@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.60.29](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.28...aio-coding-hub-v0.60.29) (2026-07-19)
+
+
+### Features
+
+* add rule-based transient error retries ([45d01dd](https://github.com/FingerCaster/aio-coding-hub/commit/45d01dd707102d0de8d24497cb49d53f9ed32345))
+* collapse provider account usage settings ([ffdba4b](https://github.com/FingerCaster/aio-coding-hub/commit/ffdba4b0721914296bc4f86b78c3336c7dc9e2ce))
+
+
+### Bug Fixes
+
+* balance provider account usage controls ([9169245](https://github.com/FingerCaster/aio-coding-hub/commit/916924544f82092370ece4ee04e6d34cc08d9590))
+* clear Linux Clippy release blockers ([495e9d1](https://github.com/FingerCaster/aio-coding-hub/commit/495e9d1b1275a304c800a432a92427751ccb5fb1))
+* decouple autostart from unrelated settings saves ([54ba206](https://github.com/FingerCaster/aio-coding-hub/commit/54ba206e62e37968ba72d535362e6d2a39605a56))
+* reorder provider editor configuration sections ([b2277c5](https://github.com/FingerCaster/aio-coding-hub/commit/b2277c5f0c7cb951a79313153c43892ddfd4350f))
+* satisfy transient retry Clippy gate ([4f2621a](https://github.com/FingerCaster/aio-coding-hub/commit/4f2621ab30d2e5feebde4e963029e3708bf1156f))
+* unify provider account usage labels ([cb5f8f8](https://github.com/FingerCaster/aio-coding-hub/commit/cb5f8f8356c118569d1e50c5ead4908394654e64))
+
 ## [0.60.28](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.27...aio-coding-hub-v0.60.28) (2026-07-19)
 
 
