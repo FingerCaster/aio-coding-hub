@@ -34,10 +34,10 @@ pub(crate) use queries::{
 };
 
 pub(crate) use share::{
-    export_provider_share_v1, import_provider_share_v1, parse_provider_share_v1,
-    preview_provider_share_v1, provider_share_default_filename, serialize_provider_share_v1,
-    ProviderShareCredentialStatus, ProviderShareEnvelopeV1, ProviderShareExtensionPreview,
-    ProviderSharePreviewDraft, PROVIDER_SHARE_MAX_BYTES,
+    export_provider_share_v2, import_provider_share, parse_provider_share, preview_provider_share,
+    provider_share_default_filename, serialize_provider_share_v2, ProviderShareCredentialStatus,
+    ProviderShareEnvelopeV2, ProviderShareExtensionPreview, ProviderSharePreviewDraft,
+    PROVIDER_SHARE_MAX_BYTES,
 };
 
 #[cfg(test)]

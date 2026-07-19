@@ -734,6 +734,122 @@ fn invalid_retry_policy_override_json_disables_override_instead_of_inheriting() 
 }
 
 #[test]
+fn incomplete_retry_rule_override_disables_rule_instead_of_broadening_to_status_only() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_incomplete_retry_override.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let saved =
+        upsert(&db, default_provider_params("incomplete-retry-override")).expect("save provider");
+    let incomplete = r#"{"enabled":true,"http_rules":[{"enabled":true,"status_code":503,"description":"missing body_contains"}],"transport_errors":[],"max_retries":1,"backoff_ms":100,"counts_toward_circuit_breaker":false}"#;
+    db.open_connection()
+        .expect("open db")
+        .execute(
+            "UPDATE providers SET upstream_retry_policy_json = ?1 WHERE id = ?2",
+            rusqlite::params![incomplete, saved.id],
+        )
+        .expect("seed incomplete retry override");
+
+    let conn = db.open_connection().expect("open db for read");
+    let loaded = get_by_id(&conn, saved.id).expect("read provider");
+    let policy = loaded
+        .upstream_retry_policy_override
+        .expect("incomplete override remains explicit");
+    assert!(!policy.enabled);
+    assert_eq!(policy.http_rules.len(), 1);
+    assert!(!policy.http_rules[0].enabled);
+    assert!(policy.http_rules[0].body_contains.is_empty());
+}
+
+#[test]
+fn provider_retry_policy_override_writes_canonical_rules_and_rejects_invalid_disabled_rules() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_retry_rule_write.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut params = default_provider_params("retry-rule-write");
+    params.upstream_retry_policy_override = Some(crate::settings::UpstreamRetryPolicy {
+        enabled: true,
+        http_rules: vec![crate::settings::UpstreamHttpRetryRule {
+            enabled: true,
+            status_code: 599,
+            body_contains: vec![" Quota ".to_string(), "quota".to_string()],
+            description: " Temporary quota ".to_string(),
+        }],
+        transport_errors: Vec::new(),
+        max_retries: 2,
+        backoff_ms: 250,
+        counts_toward_circuit_breaker: true,
+    });
+    params.upstream_retry_policy_override_specified = true;
+    let saved = upsert(&db, params).expect("save retry rule override");
+    let policy = saved
+        .upstream_retry_policy_override
+        .expect("saved retry policy override");
+    assert_eq!(policy.http_rules[0].body_contains, vec!["quota"]);
+    assert_eq!(policy.http_rules[0].description, "Temporary quota");
+
+    let raw: String = db
+        .open_connection()
+        .expect("open db")
+        .query_row(
+            "SELECT upstream_retry_policy_json FROM providers WHERE id = ?1",
+            [saved.id],
+            |row| row.get(0),
+        )
+        .expect("read retry policy JSON");
+    assert!(raw.contains("\"http_rules\""));
+    assert!(!raw.contains("status_codes"));
+
+    let mut invalid = default_provider_params("invalid-disabled-retry-rule");
+    invalid.upstream_retry_policy_override = Some(crate::settings::UpstreamRetryPolicy {
+        enabled: false,
+        http_rules: vec![crate::settings::UpstreamHttpRetryRule {
+            enabled: false,
+            status_code: 399,
+            body_contains: Vec::new(),
+            description: String::new(),
+        }],
+        ..Default::default()
+    });
+    invalid.upstream_retry_policy_override_specified = true;
+    let error = upsert(&db, invalid).expect_err("invalid disabled rule must fail");
+    assert!(error.to_string().contains("SEC_INVALID_INPUT"));
+}
+
+#[test]
+fn legacy_provider_retry_statuses_load_as_rules_without_inheriting_global_policy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_legacy_retry_override.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let saved =
+        upsert(&db, default_provider_params("legacy-retry-override")).expect("save provider");
+    let legacy = r#"{"enabled":false,"status_codes":[429,503],"transport_errors":["timeout"],"max_retries":2,"backoff_ms":50,"counts_toward_circuit_breaker":true}"#;
+    db.open_connection()
+        .expect("open db")
+        .execute(
+            "UPDATE providers SET upstream_retry_policy_json = ?1 WHERE id = ?2",
+            rusqlite::params![legacy, saved.id],
+        )
+        .expect("seed legacy override");
+
+    let conn = db.open_connection().expect("open db for read");
+    let loaded = get_by_id(&conn, saved.id).expect("read provider");
+    let policy = loaded
+        .upstream_retry_policy_override
+        .expect("legacy override remains explicit");
+    assert!(!policy.enabled);
+    assert_eq!(
+        policy
+            .http_rules
+            .iter()
+            .map(|rule| rule.status_code)
+            .collect::<Vec<_>>(),
+        vec![429, 503]
+    );
+    assert_eq!(policy.max_retries, 2);
+}
+
+#[test]
 fn upsert_accepts_grok_api_key_provider() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("providers_grok_api_key.db");

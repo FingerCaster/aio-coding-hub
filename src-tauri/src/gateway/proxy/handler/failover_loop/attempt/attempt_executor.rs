@@ -17,6 +17,7 @@ pub(super) struct RetryLoopState {
     pub(super) codex_previous_response_id_rectifier_retried: bool,
     pub(super) thinking_signature_rectifier_retried: bool,
     pub(super) thinking_budget_rectifier_retried: bool,
+    pub(super) configured_transient_retries_used: u32,
     pub(super) allow_next_retry_beyond_max_attempts: bool,
 }
 
@@ -29,6 +30,7 @@ impl Clone for RetryLoopState {
                 .codex_previous_response_id_rectifier_retried,
             thinking_signature_rectifier_retried: self.thinking_signature_rectifier_retried,
             thinking_budget_rectifier_retried: self.thinking_budget_rectifier_retried,
+            configured_transient_retries_used: self.configured_transient_retries_used,
             allow_next_retry_beyond_max_attempts: false,
         }
     }
@@ -42,6 +44,7 @@ impl RetryLoopState {
             codex_previous_response_id_rectifier_retried: false,
             thinking_signature_rectifier_retried: false,
             thinking_budget_rectifier_retried: false,
+            configured_transient_retries_used: 0,
             allow_next_retry_beyond_max_attempts: false,
         }
     }

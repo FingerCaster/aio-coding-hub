@@ -26,7 +26,8 @@ use std::io::Write as _;
 
 pub(crate) const PROVIDER_SHARE_MAX_BYTES: usize = 8 * 1024 * 1024;
 const PROVIDER_SHARE_KIND: &str = "aio-coding-hub.provider-share";
-const PROVIDER_SHARE_SCHEMA_VERSION: u32 = 1;
+const PROVIDER_SHARE_SCHEMA_VERSION_V1: u32 = 1;
+const PROVIDER_SHARE_SCHEMA_VERSION_V2: u32 = 2;
 const DEFAULT_OAUTH_REFRESH_LEAD_SECONDS: i64 = 3600;
 const MAX_PROVIDER_NAME_CHARS: usize = 256;
 const MAX_AUTH_SECRET_BYTES: usize = 256 * 1024;
@@ -39,27 +40,27 @@ const MAX_SHARE_FILENAME_BYTES: usize = 240;
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderShareEnvelopeV1 {
+pub(crate) struct ProviderShareEnvelope<RetryPolicy> {
     #[serde(rename = "type")]
     kind: String,
     schema_version: u32,
-    pub(crate) provider: ProviderShareProviderV1,
+    pub(crate) provider: ProviderShareProvider<RetryPolicy>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-pub(crate) struct ProviderShareProviderV1 {
+pub(crate) struct ProviderShareProvider<RetryPolicy> {
     pub(crate) cli_key: String,
     pub(crate) name: String,
     pub(crate) enabled: bool,
-    configuration: ProviderShareConfigurationV1,
+    configuration: ProviderShareConfiguration<RetryPolicy>,
     authentication: ProviderShareAuthenticationV1,
     extensions: Vec<ProviderShareExtensionV1>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct ProviderShareConfigurationV1 {
+struct ProviderShareConfiguration<RetryPolicy> {
     base_urls: Vec<String>,
     base_url_mode: ProviderBaseUrlMode,
     priority: i64,
@@ -72,8 +73,13 @@ struct ProviderShareConfigurationV1 {
     note: String,
     bridge_type: Option<String>,
     stream_idle_timeout_seconds: Option<u32>,
-    upstream_retry_policy_override: Option<ProviderShareRetryPolicyV1>,
+    upstream_retry_policy_override: Option<RetryPolicy>,
 }
+
+type ProviderShareEnvelopeV1 = ProviderShareEnvelope<ProviderShareRetryPolicyV1>;
+pub(crate) type ProviderShareEnvelopeV2 = ProviderShareEnvelope<ProviderShareRetryPolicyV2>;
+type ProviderShareProviderV2 = ProviderShareProvider<ProviderShareRetryPolicyV2>;
+type ProviderShareConfigurationV2 = ProviderShareConfiguration<ProviderShareRetryPolicyV2>;
 
 #[derive(Clone, Default, Serialize, Deserialize)]
 #[serde(default, deny_unknown_fields)]
@@ -157,11 +163,53 @@ struct ProviderShareRetryPolicyV1 {
     counts_toward_circuit_breaker: bool,
 }
 
-impl From<crate::settings::UpstreamRetryPolicy> for ProviderShareRetryPolicyV1 {
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct ProviderShareRetryPolicyV2 {
+    enabled: bool,
+    http_rules: Vec<ProviderShareHttpRetryRuleV2>,
+    transport_errors: Vec<crate::settings::UpstreamTransportRetryKind>,
+    max_retries: u32,
+    backoff_ms: u32,
+    counts_toward_circuit_breaker: bool,
+}
+
+#[derive(Clone, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+struct ProviderShareHttpRetryRuleV2 {
+    enabled: bool,
+    status_code: u16,
+    body_contains: Vec<String>,
+    description: String,
+}
+
+impl From<crate::settings::UpstreamHttpRetryRule> for ProviderShareHttpRetryRuleV2 {
+    fn from(value: crate::settings::UpstreamHttpRetryRule) -> Self {
+        Self {
+            enabled: value.enabled,
+            status_code: value.status_code,
+            body_contains: value.body_contains,
+            description: value.description,
+        }
+    }
+}
+
+impl From<ProviderShareHttpRetryRuleV2> for crate::settings::UpstreamHttpRetryRule {
+    fn from(value: ProviderShareHttpRetryRuleV2) -> Self {
+        Self {
+            enabled: value.enabled,
+            status_code: value.status_code,
+            body_contains: value.body_contains,
+            description: value.description,
+        }
+    }
+}
+
+impl From<crate::settings::UpstreamRetryPolicy> for ProviderShareRetryPolicyV2 {
     fn from(value: crate::settings::UpstreamRetryPolicy) -> Self {
         Self {
             enabled: value.enabled,
-            status_codes: value.status_codes,
+            http_rules: value.http_rules.into_iter().map(Into::into).collect(),
             transport_errors: value.transport_errors,
             max_retries: value.max_retries,
             backoff_ms: value.backoff_ms,
@@ -174,11 +222,87 @@ impl From<ProviderShareRetryPolicyV1> for crate::settings::UpstreamRetryPolicy {
     fn from(value: ProviderShareRetryPolicyV1) -> Self {
         Self {
             enabled: value.enabled,
-            status_codes: value.status_codes,
+            http_rules: value
+                .status_codes
+                .into_iter()
+                .map(crate::settings::UpstreamHttpRetryRule::status_only)
+                .collect(),
             transport_errors: value.transport_errors,
             max_retries: value.max_retries,
             backoff_ms: value.backoff_ms,
             counts_toward_circuit_breaker: value.counts_toward_circuit_breaker,
+        }
+    }
+}
+
+impl From<ProviderShareRetryPolicyV2> for crate::settings::UpstreamRetryPolicy {
+    fn from(value: ProviderShareRetryPolicyV2) -> Self {
+        Self {
+            enabled: value.enabled,
+            http_rules: value.http_rules.into_iter().map(Into::into).collect(),
+            transport_errors: value.transport_errors,
+            max_retries: value.max_retries,
+            backoff_ms: value.backoff_ms,
+            counts_toward_circuit_breaker: value.counts_toward_circuit_breaker,
+        }
+    }
+}
+
+impl<RetryPolicy> ProviderShareEnvelope<RetryPolicy> {
+    fn map_retry_policy<NextRetryPolicy>(
+        self,
+        schema_version: u32,
+        map: impl FnOnce(RetryPolicy) -> NextRetryPolicy,
+    ) -> ProviderShareEnvelope<NextRetryPolicy> {
+        let ProviderShareProvider {
+            cli_key,
+            name,
+            enabled,
+            configuration,
+            authentication,
+            extensions,
+        } = self.provider;
+        let ProviderShareConfiguration {
+            base_urls,
+            base_url_mode,
+            priority,
+            cost_multiplier,
+            claude_models,
+            model_mapping,
+            availability_test_model,
+            limits,
+            tags,
+            note,
+            bridge_type,
+            stream_idle_timeout_seconds,
+            upstream_retry_policy_override,
+        } = configuration;
+
+        ProviderShareEnvelope {
+            kind: self.kind,
+            schema_version,
+            provider: ProviderShareProvider {
+                cli_key,
+                name,
+                enabled,
+                configuration: ProviderShareConfiguration {
+                    base_urls,
+                    base_url_mode,
+                    priority,
+                    cost_multiplier,
+                    claude_models,
+                    model_mapping,
+                    availability_test_model,
+                    limits,
+                    tags,
+                    note,
+                    bridge_type,
+                    stream_idle_timeout_seconds,
+                    upstream_retry_policy_override: upstream_retry_policy_override.map(map),
+                },
+                authentication,
+                extensions,
+            },
         }
     }
 }
@@ -396,7 +520,7 @@ fn validate_oauth_token_uri(value: Option<&str>) -> AppResult<()> {
     Ok(())
 }
 
-fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV1) -> AppResult<()> {
+fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV2) -> AppResult<()> {
     let bridge_type = provider
         .configuration
         .bridge_type
@@ -418,11 +542,11 @@ fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV1) -> App
     Ok(())
 }
 
-fn normalize_provider_share_v1(
-    mut envelope: ProviderShareEnvelopeV1,
-) -> AppResult<ProviderShareEnvelopeV1> {
+fn normalize_provider_share_v2(
+    mut envelope: ProviderShareEnvelopeV2,
+) -> AppResult<ProviderShareEnvelopeV2> {
     if envelope.kind != PROVIDER_SHARE_KIND
-        || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION
+        || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION_V2
     {
         return Err(provider_share_schema_error());
     }
@@ -547,7 +671,7 @@ fn normalize_provider_share_v1(
 
     if let Some(policy) = provider.configuration.upstream_retry_policy_override.take() {
         let mut policy: crate::settings::UpstreamRetryPolicy = policy.into();
-        crate::settings::sanitize_upstream_retry_policy(&mut policy);
+        crate::settings::normalize_upstream_retry_policy_for_write(&mut policy)?;
         provider.configuration.upstream_retry_policy_override = Some(policy.into());
     }
 
@@ -664,7 +788,7 @@ fn normalize_provider_share_v1(
     Ok(envelope)
 }
 
-pub(crate) fn parse_provider_share_v1(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV1> {
+pub(crate) fn parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV2> {
     if bytes.is_empty() {
         return Err(AppError::new(
             "SEC_INVALID_INPUT",
@@ -689,22 +813,36 @@ pub(crate) fn parse_provider_share_v1(bytes: &[u8]) -> AppResult<ProviderShareEn
             "file is not an AIO Coding Hub provider share",
         ));
     }
-    if header.schema_version != PROVIDER_SHARE_SCHEMA_VERSION {
-        return Err(AppError::new(
+    match header.schema_version {
+        PROVIDER_SHARE_SCHEMA_VERSION_V1 => {
+            let envelope: ProviderShareEnvelopeV1 =
+                serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
+            if envelope.kind != PROVIDER_SHARE_KIND
+                || envelope.schema_version != PROVIDER_SHARE_SCHEMA_VERSION_V1
+            {
+                return Err(provider_share_schema_error());
+            }
+            let envelope = envelope.map_retry_policy(PROVIDER_SHARE_SCHEMA_VERSION_V2, |policy| {
+                ProviderShareRetryPolicyV2::from(crate::settings::UpstreamRetryPolicy::from(policy))
+            });
+            normalize_provider_share_v2(envelope)
+        }
+        PROVIDER_SHARE_SCHEMA_VERSION_V2 => {
+            let envelope: ProviderShareEnvelopeV2 =
+                serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
+            normalize_provider_share_v2(envelope)
+        }
+        _ => Err(AppError::new(
             "SEC_INVALID_INPUT",
             "provider share schema version is not supported; update AIO Coding Hub",
-        ));
+        )),
     }
-
-    let envelope: ProviderShareEnvelopeV1 =
-        serde_json::from_slice(bytes).map_err(|_| provider_share_schema_error())?;
-    normalize_provider_share_v1(envelope)
 }
 
-pub(crate) fn serialize_provider_share_v1(
-    envelope: &ProviderShareEnvelopeV1,
+pub(crate) fn serialize_provider_share_v2(
+    envelope: &ProviderShareEnvelopeV2,
 ) -> AppResult<Vec<u8>> {
-    let envelope = normalize_provider_share_v1(envelope.clone())?;
+    let envelope = normalize_provider_share_v2(envelope.clone())?;
     let mut writer = CappedJsonWriter::new();
     serde_json::to_writer_pretty(&mut writer, &envelope).map_err(|error| {
         if error.is_io() {
@@ -922,10 +1060,10 @@ ORDER BY extension_values.plugin_id ASC, extension_values.namespace ASC
     Ok(extensions)
 }
 
-pub(crate) fn export_provider_share_v1(
+pub(crate) fn export_provider_share_v2(
     db: &db::Db,
     provider_id: i64,
-) -> AppResult<ProviderShareEnvelopeV1> {
+) -> AppResult<ProviderShareEnvelopeV2> {
     if provider_id <= 0 {
         return Err(AppError::new("SEC_INVALID_INPUT", "provider_id is invalid"));
     }
@@ -978,14 +1116,14 @@ pub(crate) fn export_provider_share_v1(
     tx.commit()
         .map_err(|error| db_err!("failed to finish provider share snapshot: {error}"))?;
 
-    normalize_provider_share_v1(ProviderShareEnvelopeV1 {
+    normalize_provider_share_v2(ProviderShareEnvelopeV2 {
         kind: PROVIDER_SHARE_KIND.to_string(),
-        schema_version: PROVIDER_SHARE_SCHEMA_VERSION,
-        provider: ProviderShareProviderV1 {
+        schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V2,
+        provider: ProviderShareProviderV2 {
             cli_key: row.cli_key.clone(),
             name: row.name,
             enabled: row.enabled,
-            configuration: ProviderShareConfigurationV1 {
+            configuration: ProviderShareConfigurationV2 {
                 base_urls: base_urls_from_row(&row.base_url, &row.base_urls_json),
                 base_url_mode,
                 priority: row.priority,
@@ -1202,7 +1340,7 @@ fn extension_preview(
     })
 }
 
-fn credential_status(provider: &ProviderShareProviderV1) -> ProviderShareCredentialStatus {
+fn credential_status(provider: &ProviderShareProviderV2) -> ProviderShareCredentialStatus {
     if provider.configuration.bridge_type.as_deref() == Some(CX2CC_BRIDGE_TYPE) {
         return ProviderShareCredentialStatus::NotRequired;
     }
@@ -1246,11 +1384,11 @@ fn credential_status(provider: &ProviderShareProviderV1) -> ProviderShareCredent
     }
 }
 
-pub(crate) fn preview_provider_share_v1(
+pub(crate) fn preview_provider_share(
     db: &db::Db,
-    envelope: &ProviderShareEnvelopeV1,
+    envelope: &ProviderShareEnvelopeV2,
 ) -> AppResult<ProviderSharePreviewDraft> {
-    let envelope = normalize_provider_share_v1(envelope.clone())?;
+    let envelope = normalize_provider_share_v2(envelope.clone())?;
     let mut conn = db.open_connection()?;
     let tx = conn
         .transaction()
@@ -1348,13 +1486,13 @@ fn authentication_db_fields(
     }
 }
 
-pub(crate) fn import_provider_share_v1(
+pub(crate) fn import_provider_share(
     db: &db::Db,
-    envelope: &ProviderShareEnvelopeV1,
+    envelope: &ProviderShareEnvelopeV2,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary> {
-    let envelope = normalize_provider_share_v1(envelope.clone())?;
+    let envelope = normalize_provider_share_v2(envelope.clone())?;
     let provider = &envelope.provider;
     let mut conn = db.open_connection()?;
     let tx = conn
@@ -1615,15 +1753,15 @@ mod tests {
         }
     }
 
-    fn minimal_share() -> ProviderShareEnvelopeV1 {
-        ProviderShareEnvelopeV1 {
+    fn minimal_share() -> ProviderShareEnvelopeV2 {
+        ProviderShareEnvelopeV2 {
             kind: PROVIDER_SHARE_KIND.to_string(),
-            schema_version: PROVIDER_SHARE_SCHEMA_VERSION,
-            provider: ProviderShareProviderV1 {
+            schema_version: PROVIDER_SHARE_SCHEMA_VERSION_V2,
+            provider: ProviderShareProviderV2 {
                 cli_key: "claude".to_string(),
                 name: "测试供应商".to_string(),
                 enabled: true,
-                configuration: ProviderShareConfigurationV1 {
+                configuration: ProviderShareConfigurationV2 {
                     base_urls: vec!["https://example.invalid/v1".to_string()],
                     base_url_mode: ProviderBaseUrlMode::Order,
                     priority: 100,
@@ -1693,7 +1831,7 @@ mod tests {
         name: &str,
         plugin_id: &str,
         plugin_version: &str,
-    ) -> ProviderShareEnvelopeV1 {
+    ) -> ProviderShareEnvelopeV2 {
         let mut share = minimal_share();
         share.provider.name = name.to_string();
         share.provider.extensions.push(ProviderShareExtensionV1 {
@@ -1706,40 +1844,137 @@ mod tests {
     }
 
     #[test]
-    fn strict_v1_round_trip_is_deterministic_and_newline_terminated() {
+    fn strict_v2_round_trip_is_deterministic_and_newline_terminated() {
         let share = minimal_share();
-        let first = serialize_provider_share_v1(&share).expect("serialize");
-        let parsed = parse_provider_share_v1(&first).expect("parse");
-        let second = serialize_provider_share_v1(&parsed).expect("serialize again");
+        let first = serialize_provider_share_v2(&share).expect("serialize");
+        let parsed = parse_provider_share(&first).expect("parse");
+        let second = serialize_provider_share_v2(&parsed).expect("serialize again");
 
         assert_eq!(first, second);
         assert!(first.ends_with(b"\n"));
     }
 
     #[test]
-    fn strict_v1_rejects_unknown_root_and_nested_fields() {
-        let bytes = serialize_provider_share_v1(&minimal_share()).expect("serialize");
-        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        value["unknown"] = serde_json::json!(true);
-        assert!(parse_provider_share_v1(value.to_string().as_bytes()).is_err());
+    fn strict_v1_reads_legacy_statuses_and_reexports_canonical_v2_rules() {
+        let mut value = serde_json::to_value(minimal_share()).expect("serialize fixture");
+        value["schema_version"] = serde_json::json!(1);
+        value["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": false,
+            "status_codes": [429, 502],
+            "transport_errors": ["timeout"],
+            "max_retries": 2,
+            "backoff_ms": 321,
+            "counts_toward_circuit_breaker": true
+        });
 
-        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        value["provider"]["configuration"]["unknown"] = serde_json::json!(true);
-        assert!(parse_provider_share_v1(value.to_string().as_bytes()).is_err());
+        let parsed = parse_provider_share(value.to_string().as_bytes()).expect("parse v1");
+        let policy = parsed
+            .provider
+            .configuration
+            .upstream_retry_policy_override
+            .as_ref()
+            .expect("retry policy");
+        assert_eq!(policy.http_rules.len(), 2);
+        assert_eq!(policy.http_rules[0].status_code, 429);
+        assert!(!policy.enabled);
+
+        let exported = serialize_provider_share_v2(&parsed).expect("serialize v2");
+        let exported: serde_json::Value = serde_json::from_slice(&exported).expect("parse v2");
+        assert_eq!(exported["schema_version"], 2);
+        let retry = &exported["provider"]["configuration"]["upstream_retry_policy_override"];
+        assert!(retry.get("status_codes").is_none());
+        assert_eq!(retry["http_rules"][1]["status_code"], 502);
     }
 
     #[test]
-    fn strict_v1_rejects_future_version_and_oversized_content() {
-        let bytes = serialize_provider_share_v1(&minimal_share()).expect("serialize");
+    fn strict_v1_and_v2_reject_each_others_retry_fields() {
+        let mut v1 = serde_json::to_value(minimal_share()).expect("serialize fixture");
+        v1["schema_version"] = serde_json::json!(1);
+        v1["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "status_codes": [503],
+            "http_rules": [],
+            "transport_errors": [],
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        assert!(parse_provider_share(v1.to_string().as_bytes()).is_err());
+
+        let mut v2 = serde_json::to_value(minimal_share()).expect("serialize fixture");
+        v2["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [],
+            "status_codes": [503],
+            "transport_errors": ["timeout"],
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        assert!(parse_provider_share(v2.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn strict_v2_rejects_unknown_root_and_nested_fields() {
+        let bytes = serialize_provider_share_v2(&minimal_share()).expect("serialize");
         let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
-        value["schema_version"] = serde_json::json!(2);
-        let error = parse_provider_share_v1(value.to_string().as_bytes())
+        value["unknown"] = serde_json::json!(true);
+        assert!(parse_provider_share(value.to_string().as_bytes()).is_err());
+
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        value["provider"]["configuration"]["unknown"] = serde_json::json!(true);
+        assert!(parse_provider_share(value.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn strict_v2_requires_complete_retry_rules_and_rejects_rule_extensions() {
+        let bytes = serialize_provider_share_v2(&minimal_share()).expect("serialize");
+        let mut missing_status: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        missing_status["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [{
+                "enabled": true,
+                "body_contains": [],
+                "description": "missing status"
+            }],
+            "transport_errors": [],
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        assert!(parse_provider_share(missing_status.to_string().as_bytes()).is_err());
+
+        let mut unknown_rule_field: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("json");
+        unknown_rule_field["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [{
+                "enabled": true,
+                "status_code": 503,
+                "body_contains": [],
+                "description": "",
+                "future_action": "retry"
+            }],
+            "transport_errors": [],
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        assert!(parse_provider_share(unknown_rule_field.to_string().as_bytes()).is_err());
+    }
+
+    #[test]
+    fn strict_parser_rejects_future_version_and_oversized_content() {
+        let bytes = serialize_provider_share_v2(&minimal_share()).expect("serialize");
+        let mut value: serde_json::Value = serde_json::from_slice(&bytes).expect("json");
+        value["schema_version"] = serde_json::json!(3);
+        let error = parse_provider_share(value.to_string().as_bytes())
             .err()
             .expect("future version must fail");
         assert!(error.to_string().contains("update AIO Coding Hub"));
 
         let oversized = vec![b' '; PROVIDER_SHARE_MAX_BYTES + 1];
-        assert!(parse_provider_share_v1(&oversized)
+        assert!(parse_provider_share(&oversized)
             .err()
             .expect("oversized content must fail")
             .to_string()
@@ -1747,7 +1982,7 @@ mod tests {
     }
 
     #[test]
-    fn strict_v1_rejects_oauth_provider_type_from_another_cli() {
+    fn strict_v2_rejects_oauth_provider_type_from_another_cli() {
         let mut share = minimal_share();
         let codex_provider_type = crate::gateway::oauth::registry::global_registry()
             .get_by_cli_key("codex")
@@ -1767,7 +2002,7 @@ mod tests {
             refresh_lead_seconds: DEFAULT_OAUTH_REFRESH_LEAD_SECONDS,
         };
 
-        let error = normalize_provider_share_v1(share)
+        let error = normalize_provider_share_v2(share)
             .err()
             .expect("cross-CLI oauth provider type must fail");
         assert!(error
@@ -1779,13 +2014,14 @@ mod tests {
     fn sensitive_share_types_do_not_derive_debug() {
         let source = include_str!("share.rs");
         for declaration in [
-            "pub(crate) struct ProviderShareEnvelopeV1",
-            "pub(crate) struct ProviderShareProviderV1",
-            "struct ProviderShareConfigurationV1",
+            "pub(crate) struct ProviderShareEnvelope<RetryPolicy>",
+            "pub(crate) struct ProviderShareProvider<RetryPolicy>",
+            "struct ProviderShareConfiguration<RetryPolicy>",
             "struct ProviderShareClaudeModelsV1",
             "struct ProviderShareModelMappingV1",
             "struct ProviderShareLimitsV1",
             "struct ProviderShareRetryPolicyV1",
+            "pub(crate) struct ProviderShareRetryPolicyV2",
             "enum ProviderShareAuthenticationV1",
             "struct ProviderShareExtensionV1",
             "struct ProviderShareDbRow",
@@ -1824,10 +2060,10 @@ mod tests {
         let dir = tempfile::tempdir().expect("tempdir");
         let db = crate::db::init_for_tests(&dir.path().join("provider-share.db")).expect("init db");
         let share = minimal_share();
-        let first = import_provider_share_v1(&db, &share, "测试供应商", &[]).expect("first import");
+        let first = import_provider_share(&db, &share, "测试供应商", &[]).expect("first import");
         assert!(!first.enabled);
 
-        let preview = preview_provider_share_v1(&db, &share).expect("preview duplicate");
+        let preview = preview_provider_share(&db, &share).expect("preview duplicate");
         assert_eq!(preview.final_name, "测试供应商 副本");
 
         let mut empty_key_share = share.clone();
@@ -1835,8 +2071,8 @@ mod tests {
         empty_key_share.provider.authentication = ProviderShareAuthenticationV1::ApiKey {
             api_key: " \t ".to_string(),
         };
-        let imported = import_provider_share_v1(&db, &empty_key_share, "空密钥", &[])
-            .expect("empty key import");
+        let imported =
+            import_provider_share(&db, &empty_key_share, "空密钥", &[]).expect("empty key import");
         assert!(!imported.api_key_configured);
         assert!(!imported.enabled);
     }
@@ -1854,7 +2090,7 @@ mod tests {
             values: serde_json::json!({"enabled": true}),
         });
 
-        let preview = preview_provider_share_v1(&db, &share).expect("preview");
+        let preview = preview_provider_share(&db, &share).expect("preview");
         assert!(!preview.can_import);
         assert_eq!(
             preview.extensions[0].compatibility,
@@ -1911,12 +2147,12 @@ mod tests {
             .expect("init db");
         let mut share = minimal_share();
         share.provider.name = "长".repeat(MAX_PROVIDER_NAME_CHARS);
-        import_provider_share_v1(&db, &share, &share.provider.name, &[]).expect("first import");
+        import_provider_share(&db, &share, &share.provider.name, &[]).expect("first import");
 
-        let preview = preview_provider_share_v1(&db, &share).expect("duplicate preview");
+        let preview = preview_provider_share(&db, &share).expect("duplicate preview");
         assert_eq!(preview.final_name.chars().count(), MAX_PROVIDER_NAME_CHARS);
         assert!(preview.final_name.ends_with(" 副本"));
-        import_provider_share_v1(&db, &share, &preview.final_name, &preview.extensions)
+        import_provider_share(&db, &share, &preview.final_name, &preview.extensions)
             .expect("duplicate import");
     }
 
@@ -1946,14 +2182,13 @@ mod tests {
             refresh_lead_seconds: 7_200,
         };
 
-        let preview = preview_provider_share_v1(&db, &share).expect("preview oauth");
+        let preview = preview_provider_share(&db, &share).expect("preview oauth");
         assert_eq!(
             preview.credential_status,
             ProviderShareCredentialStatus::Available
         );
-        let imported =
-            import_provider_share_v1(&db, &share, &preview.final_name, &preview.extensions)
-                .expect("import oauth");
+        let imported = import_provider_share(&db, &share, &preview.final_name, &preview.extensions)
+            .expect("import oauth");
         assert!(!imported.enabled);
         let stored =
             super::super::queries::get_oauth_details(&db, imported.id).expect("read oauth details");
@@ -1980,7 +2215,7 @@ mod tests {
         );
         assert_eq!(stored.oauth_refresh_lead_s, 7_200);
 
-        let exported = export_provider_share_v1(&db, imported.id).expect("export oauth");
+        let exported = export_provider_share_v2(&db, imported.id).expect("export oauth");
         assert!(!exported.provider.enabled);
         let ProviderShareAuthenticationV1::Oauth {
             provider_type: exported_provider_type,
@@ -2019,14 +2254,13 @@ mod tests {
             .expect("init db");
         let mut source_share = minimal_share();
         source_share.provider.name = "Source Provider".to_string();
-        let source = import_provider_share_v1(&db, &source_share, "Source Provider", &[])
+        let source = import_provider_share(&db, &source_share, "Source Provider", &[])
             .expect("import source");
 
         let mut referenced_share = minimal_share();
         referenced_share.provider.name = "Referenced Provider".to_string();
-        let referenced =
-            import_provider_share_v1(&db, &referenced_share, "Referenced Provider", &[])
-                .expect("import referenced");
+        let referenced = import_provider_share(&db, &referenced_share, "Referenced Provider", &[])
+            .expect("import referenced");
         let conn = db.open_connection().expect("open db");
         conn.execute(
             "UPDATE providers SET source_provider_id = ?1, bridge_type = ?2 WHERE id = ?3",
@@ -2034,7 +2268,7 @@ mod tests {
         )
         .expect("mark provider as referenced");
         drop(conn);
-        let error = export_provider_share_v1(&db, referenced.id)
+        let error = export_provider_share_v2(&db, referenced.id)
             .err()
             .expect("referenced provider export must fail");
         assert_eq!(
@@ -2057,12 +2291,12 @@ mod tests {
             api_key: String::new(),
         };
         let standalone_preview =
-            preview_provider_share_v1(&db, &standalone_share).expect("preview standalone cx2cc");
+            preview_provider_share(&db, &standalone_share).expect("preview standalone cx2cc");
         assert_eq!(
             standalone_preview.credential_status,
             ProviderShareCredentialStatus::NotRequired
         );
-        let standalone = import_provider_share_v1(
+        let standalone = import_provider_share(
             &db,
             &standalone_share,
             &standalone_preview.final_name,
@@ -2071,7 +2305,7 @@ mod tests {
         .expect("import standalone cx2cc");
         assert_eq!(standalone.source_provider_id, None);
         assert_eq!(standalone.bridge_type.as_deref(), Some(CX2CC_BRIDGE_TYPE));
-        let exported = export_provider_share_v1(&db, standalone.id).expect("export cx2cc");
+        let exported = export_provider_share_v2(&db, standalone.id).expect("export cx2cc");
         assert_eq!(
             exported.provider.configuration.bridge_type.as_deref(),
             Some(CX2CC_BRIDGE_TYPE)
@@ -2145,7 +2379,7 @@ mod tests {
         )
         .expect("tamper manifest id");
         drop(conn);
-        let wrong_id_preview = preview_provider_share_v1(&db, &share).expect("preview wrong id");
+        let wrong_id_preview = preview_provider_share(&db, &share).expect("preview wrong id");
         assert_eq!(
             wrong_id_preview.extensions[0].compatibility,
             ProviderShareExtensionCompatibility::NamespaceMismatch
@@ -2161,7 +2395,7 @@ mod tests {
         .expect("tamper manifest version");
         drop(conn);
         let wrong_version_preview =
-            preview_provider_share_v1(&db, &share).expect("preview wrong version");
+            preview_provider_share(&db, &share).expect("preview wrong version");
         assert_eq!(
             wrong_version_preview.extensions[0].compatibility,
             ProviderShareExtensionCompatibility::VersionMismatch
@@ -2176,7 +2410,7 @@ mod tests {
         )
         .expect("restore matching manifest");
         drop(conn);
-        let matching_preview = preview_provider_share_v1(&db, &share).expect("preview matching");
+        let matching_preview = preview_provider_share(&db, &share).expect("preview matching");
         assert!(matching_preview.can_import);
     }
 
@@ -2189,13 +2423,13 @@ mod tests {
         let missing_plugin_id = "example.provider-share.missing-snapshot";
         let missing_share = share_with_extension("Missing Snapshot", missing_plugin_id, "1.0.0");
         let missing_preview =
-            preview_provider_share_v1(&db, &missing_share).expect("preview missing plugin");
+            preview_provider_share(&db, &missing_share).expect("preview missing plugin");
         assert_eq!(
             missing_preview.extensions[0].compatibility,
             ProviderShareExtensionCompatibility::MissingPlugin
         );
         insert_provider_extension_plugin(&db, missing_plugin_id, "1.0.0");
-        let missing_error = import_provider_share_v1(
+        let missing_error = import_provider_share(
             &db,
             &missing_share,
             &missing_preview.final_name,
@@ -2208,7 +2442,7 @@ mod tests {
         insert_provider_extension_plugin(&db, version_plugin_id, "2.0.0");
         let version_share = share_with_extension("Version Snapshot", version_plugin_id, "1.0.0");
         let version_preview =
-            preview_provider_share_v1(&db, &version_share).expect("preview version mismatch");
+            preview_provider_share(&db, &version_share).expect("preview version mismatch");
         assert_eq!(
             version_preview.extensions[0].compatibility,
             ProviderShareExtensionCompatibility::VersionMismatch
@@ -2223,7 +2457,7 @@ mod tests {
         )
         .expect("make plugin compatible");
         drop(conn);
-        let version_error = import_provider_share_v1(
+        let version_error = import_provider_share(
             &db,
             &version_share,
             &version_preview.final_name,
@@ -2244,14 +2478,14 @@ mod tests {
         insert_provider_extension_plugin(&db, "example.provider-share", "2.0.0");
         let share =
             share_with_extension("Plugin Version Mismatch", "example.provider-share", "1.0.0");
-        let preview = preview_provider_share_v1(&db, &share).expect("preview mismatch");
+        let preview = preview_provider_share(&db, &share).expect("preview mismatch");
         assert!(!preview.can_import);
         assert_eq!(preview.extensions.len(), 1);
         assert_eq!(
             preview.extensions[0].compatibility,
             ProviderShareExtensionCompatibility::VersionMismatch
         );
-        let error = import_provider_share_v1(&db, &share, &preview.final_name, &preview.extensions)
+        let error = import_provider_share(&db, &share, &preview.final_name, &preview.extensions)
             .expect_err("mismatched plugin import must fail");
         assert_eq!(error.code(), "PROVIDER_SHARE_EXTENSION_INCOMPATIBLE");
         assert!(super::super::queries::list_by_cli(&db, "claude")
@@ -2307,7 +2541,15 @@ mod tests {
         );
         input.upstream_retry_policy_override = Some(crate::settings::UpstreamRetryPolicy {
             enabled: true,
-            status_codes: vec![429, 502],
+            http_rules: vec![
+                crate::settings::UpstreamHttpRetryRule::status_only(429),
+                crate::settings::UpstreamHttpRetryRule {
+                    enabled: true,
+                    status_code: 502,
+                    body_contains: vec!["temporary quota".to_string()],
+                    description: "quota retry".to_string(),
+                },
+            ],
             transport_errors: vec![crate::settings::UpstreamTransportRetryKind::Timeout],
             max_retries: 2,
             backoff_ms: 321,
@@ -2316,8 +2558,8 @@ mod tests {
         input.upstream_retry_policy_override_specified = true;
         let source = super::super::queries::upsert(&source_db, input).expect("create source");
 
-        let exported = export_provider_share_v1(&source_db, source.id).expect("export");
-        let bytes = serialize_provider_share_v1(&exported).expect("serialize");
+        let exported = export_provider_share_v2(&source_db, source.id).expect("export");
+        let bytes = serialize_provider_share_v2(&exported).expect("serialize");
         let serialized = std::str::from_utf8(&bytes).expect("utf8");
         assert!(serialized.contains("SYNTHETIC_API_KEY"));
         assert!(!serialized.contains("SYNTHETIC_ACCOUNT_SECRET"));
@@ -2332,18 +2574,18 @@ mod tests {
         ] {
             assert!(!serialized.contains(excluded), "must exclude {excluded}");
         }
-        let parsed = parse_provider_share_v1(&bytes).expect("parse");
+        let parsed = parse_provider_share(&bytes).expect("parse");
         assert_eq!(
-            serialize_provider_share_v1(&parsed).expect("serialize parsed"),
+            serialize_provider_share_v2(&parsed).expect("serialize parsed"),
             bytes
         );
 
         let target_dir = tempfile::tempdir().expect("target tempdir");
         let target_db = crate::db::init_for_tests(&target_dir.path().join("target-api-key.db"))
             .expect("init target db");
-        let preview = preview_provider_share_v1(&target_db, &parsed).expect("preview");
+        let preview = preview_provider_share(&target_db, &parsed).expect("preview");
         assert!(preview.can_import);
-        let imported = import_provider_share_v1(
+        let imported = import_provider_share(
             &target_db,
             &parsed,
             &preview.final_name,
@@ -2384,7 +2626,15 @@ mod tests {
             imported.upstream_retry_policy_override,
             Some(crate::settings::UpstreamRetryPolicy {
                 enabled: true,
-                status_codes: vec![429, 502],
+                http_rules: vec![
+                    crate::settings::UpstreamHttpRetryRule::status_only(429),
+                    crate::settings::UpstreamHttpRetryRule {
+                        enabled: true,
+                        status_code: 502,
+                        body_contains: vec!["temporary quota".to_string()],
+                        description: "quota retry".to_string(),
+                    },
+                ],
                 transport_errors: vec![crate::settings::UpstreamTransportRetryKind::Timeout],
                 max_retries: 2,
                 backoff_ms: 321,
@@ -2421,11 +2671,11 @@ mod tests {
         let db = crate::db::init_for_tests(&dir.path().join("provider-share-stale.db"))
             .expect("init db");
         let share = minimal_share();
-        let preview = preview_provider_share_v1(&db, &share).expect("preview");
-        import_provider_share_v1(&db, &share, &preview.final_name, &preview.extensions)
+        let preview = preview_provider_share(&db, &share).expect("preview");
+        import_provider_share(&db, &share, &preview.final_name, &preview.extensions)
             .expect("competing import");
 
-        let error = import_provider_share_v1(&db, &share, &preview.final_name, &preview.extensions)
+        let error = import_provider_share(&db, &share, &preview.final_name, &preview.extensions)
             .expect_err("stale preview");
         assert!(error.to_string().contains("PROVIDER_SHARE_PREVIEW_STALE"));
         assert_eq!(

@@ -2,9 +2,9 @@
 
 use crate::db;
 use crate::providers::{
-    parse_provider_share_v1, preview_provider_share_v1, ProviderAuthMode,
-    ProviderShareCredentialStatus, ProviderShareEnvelopeV1, ProviderShareExtensionPreview,
-    ProviderSharePreviewDraft, PROVIDER_SHARE_MAX_BYTES,
+    parse_provider_share, preview_provider_share, ProviderAuthMode, ProviderShareCredentialStatus,
+    ProviderShareEnvelopeV2, ProviderShareExtensionPreview, ProviderSharePreviewDraft,
+    PROVIDER_SHARE_MAX_BYTES,
 };
 use crate::shared::error::{AppError, AppResult};
 use crate::shared::mutex_ext::MutexExt;
@@ -46,7 +46,7 @@ struct PreviewEntry {
     token: String,
     created_at: Instant,
     sensitive_bytes: usize,
-    envelope: ProviderShareEnvelopeV1,
+    envelope: ProviderShareEnvelopeV2,
     expected_final_name: String,
     expected_extensions: Vec<ProviderShareExtensionPreview>,
     source: PreviewSource,
@@ -111,8 +111,8 @@ impl ProviderShareService {
         file_path: Option<PathBuf>,
         now: Instant,
     ) -> AppResult<ProviderShareImportPreview> {
-        let envelope = parse_provider_share_v1(bytes)?;
-        let draft = preview_provider_share_v1(db, &envelope)?;
+        let envelope = parse_provider_share(bytes)?;
+        let draft = preview_provider_share(db, &envelope)?;
         let source = PreviewSource {
             digest: digest_bytes(bytes),
             file_path,
@@ -159,7 +159,7 @@ impl ProviderShareService {
 
     fn insert_at(
         &self,
-        envelope: ProviderShareEnvelopeV1,
+        envelope: ProviderShareEnvelopeV2,
         expected_final_name: String,
         expected_extensions: Vec<ProviderShareExtensionPreview>,
         source: PreviewSource,
@@ -233,7 +233,7 @@ impl PendingProviderShareImport {
         db: &db::Db,
     ) -> AppResult<crate::providers::ProviderSummary> {
         let Some(path) = self.entry.source.file_path.as_deref() else {
-            return crate::providers::import_provider_share_v1(
+            return crate::providers::import_provider_share(
                 db,
                 &self.entry.envelope,
                 &self.entry.expected_final_name,
@@ -244,7 +244,7 @@ impl PendingProviderShareImport {
         if digest_bytes(&bytes) != self.entry.source.digest {
             return Err(preview_file_stale());
         }
-        crate::providers::import_provider_share_v1(
+        crate::providers::import_provider_share(
             db,
             &self.entry.envelope,
             &self.entry.expected_final_name,
@@ -374,8 +374,8 @@ fn preview_file_stale() -> AppError {
 mod tests {
     use super::*;
 
-    fn envelope() -> ProviderShareEnvelopeV1 {
-        parse_provider_share_v1(
+    fn envelope() -> ProviderShareEnvelopeV2 {
+        parse_provider_share(
             br#"{
   "type": "aio-coding-hub.provider-share",
   "schema_version": 1,

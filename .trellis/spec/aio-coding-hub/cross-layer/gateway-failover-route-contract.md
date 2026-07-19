@@ -65,8 +65,18 @@ buildRequestRouteMeta({
 - Upstream 401 and 403 bodies are authentication material and must never enter
   console diagnostics, persisted attempt reasons, `attempts_json`, or
   `error_details_json`. The bounded body may remain in memory only as needed by
-  existing failover/auth classification. Serialization defensively strips a
-  supplied 401/403 preview even when an earlier layer accidentally included it.
+  existing failover/auth classification or an explicit configured HTTP retry
+  rule. Serialization defensively strips a supplied 401/403 preview even when
+  an earlier layer accidentally included it.
+- HTTP retry content matching joins the existing error-body inspection path:
+  consume the network body once, scan at most the decoded first 64 KiB, and use
+  a separately bounded encoded input for gzip. A decode/read failure is an
+  unmatched rule and compressed bytes must never be treated as text.
+- Only an actual configured HTTP retry adds `retry_rule=<1-based index>` and an
+  optional bounded single-line description to the attempt reason. Matcher
+  contents, hit fragments, and response bodies are never added by this feature.
+  Description `%`, `,`, and `=` delimiters are percent-escaped before joining
+  the attempt-reason field format so they cannot impersonate another field.
 
 ### 4. Validation & Error Matrix
 
@@ -82,6 +92,7 @@ buildRequestRouteMeta({
 | Two Ready providers consume cap 2, then a circuit-open candidate follows | Record the third skipped attempt/route; make no third upstream call |
 | Route has 3 hops and 4 attempt rows | 3 providers, 2 transitions, 4 attempts |
 | Upstream 401/403 body contains a credential-like value | Keep status and safe reason, but persist/log none of the body |
+| Gzip body exceeds the decoded scan prefix | Match only decoded bytes within the first 64 KiB; never scan compressed fallback bytes |
 
 ### 5. Good / Base / Bad Cases
 

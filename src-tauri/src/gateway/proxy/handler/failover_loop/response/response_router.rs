@@ -206,6 +206,7 @@ where
             loop_state: loop_state.reborrow(),
             enable_thinking_signature_rectifier: input.enable_thinking_signature_rectifier,
             enable_thinking_budget_rectifier: input.enable_thinking_budget_rectifier,
+            provider_base_max_attempts: prepared.provider_base_max_attempts,
             resp,
             upstream: upstream_error::UpstreamRequestState {
                 upstream_body_bytes: &mut prepared.upstream_body_bytes,
@@ -216,6 +217,8 @@ where
                     .thinking_signature_rectifier_retried,
                 thinking_budget_rectifier_retried: &mut retry_state
                     .thinking_budget_rectifier_retried,
+                configured_transient_retries_used: &mut retry_state
+                    .configured_transient_retries_used,
             },
         },
     )

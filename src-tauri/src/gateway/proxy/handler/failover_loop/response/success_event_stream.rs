@@ -36,6 +36,7 @@ fn resolve_requested_model_for_log(
 fn stream_transport_decision(
     kind: crate::settings::UpstreamTransportRetryKind,
     policy: &crate::settings::UpstreamRetryPolicy,
+    configured_retries_used: u32,
     retry_index: u32,
     max_attempts_per_provider: u32,
 ) -> (FailoverDecision, bool) {
@@ -43,6 +44,7 @@ fn stream_transport_decision(
         false,
         RetryPolicyMatch::Transport(kind),
         policy,
+        configured_retries_used,
         retry_index,
         max_attempts_per_provider,
     )
@@ -597,7 +599,7 @@ pub(super) async fn handle_success_event_stream<R>(
     attempt_ctx: AttemptCtx<'_>,
     _prepared: PreparedProvider,
     loop_state: LoopState<'_, R>,
-    _retry_state: &mut RetryLoopState,
+    retry_state: &mut RetryLoopState,
     resp: reqwest::Response,
     status: StatusCode,
     mut response_headers: HeaderMap,
@@ -713,9 +715,15 @@ where
                 let (decision, configured_retry) = stream_transport_decision(
                     crate::settings::UpstreamTransportRetryKind::Read,
                     &provider_ctx_owned.upstream_retry_policy,
+                    retry_state.configured_transient_retries_used,
                     retry_index,
                     provider_max_attempts,
                 );
+                if configured_retry {
+                    retry_state.configured_transient_retries_used = retry_state
+                        .configured_transient_retries_used
+                        .saturating_add(1);
+                }
 
                 let outcome = format!(
                     "stream_first_chunk_error: category={} code={} decision={} timeout_secs={}",
@@ -755,9 +763,15 @@ where
                 let (decision, configured_retry) = stream_transport_decision(
                     crate::settings::UpstreamTransportRetryKind::Timeout,
                     &provider_ctx_owned.upstream_retry_policy,
+                    retry_state.configured_transient_retries_used,
                     retry_index,
                     provider_max_attempts,
                 );
+                if configured_retry {
+                    retry_state.configured_transient_retries_used = retry_state
+                        .configured_transient_retries_used
+                        .saturating_add(1);
+                }
 
                 let outcome = format!(
                     "stream_first_byte_timeout: category={} code={} decision={} timeout_secs={}",
@@ -804,9 +818,15 @@ where
             let (decision, configured_retry) = stream_transport_decision(
                 crate::settings::UpstreamTransportRetryKind::Read,
                 &provider_ctx_owned.upstream_retry_policy,
+                retry_state.configured_transient_retries_used,
                 retry_index,
                 provider_max_attempts,
             );
+            if configured_retry {
+                retry_state.configured_transient_retries_used = retry_state
+                    .configured_transient_retries_used
+                    .saturating_add(1);
+            }
 
             let outcome = format!(
                 "stream_first_chunk_eof: category={} code={} decision={} timeout_secs={}",
@@ -910,9 +930,15 @@ where
                         let (decision, configured_retry) = stream_transport_decision(
                             crate::settings::UpstreamTransportRetryKind::Read,
                             &provider_ctx_owned.upstream_retry_policy,
+                            retry_state.configured_transient_retries_used,
                             retry_index,
                             provider_max_attempts,
                         );
+                        if configured_retry {
+                            retry_state.configured_transient_retries_used = retry_state
+                                .configured_transient_retries_used
+                                .saturating_add(1);
+                        }
                         let outcome = format!(
                             "stream_prefix_read_error: category={} code={} decision={}",
                             ErrorCategory::SystemError.as_str(),
@@ -950,9 +976,15 @@ where
                         let (decision, configured_retry) = stream_transport_decision(
                             crate::settings::UpstreamTransportRetryKind::Timeout,
                             &provider_ctx_owned.upstream_retry_policy,
+                            retry_state.configured_transient_retries_used,
                             retry_index,
                             provider_max_attempts,
                         );
+                        if configured_retry {
+                            retry_state.configured_transient_retries_used = retry_state
+                                .configured_transient_retries_used
+                                .saturating_add(1);
+                        }
                         let timeout_secs = upstream_stream_idle_timeout
                             .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32);
                         let outcome = format!(
@@ -996,9 +1028,15 @@ where
                         let (decision, configured_retry) = stream_transport_decision(
                             crate::settings::UpstreamTransportRetryKind::Read,
                             &provider_ctx_owned.upstream_retry_policy,
+                            retry_state.configured_transient_retries_used,
                             retry_index,
                             provider_max_attempts,
                         );
+                        if configured_retry {
+                            retry_state.configured_transient_retries_used = retry_state
+                                .configured_transient_retries_used
+                                .saturating_add(1);
+                        }
                         let outcome = format!(
                             "stream_prefix_read_error: category={} code={} decision={}",
                             ErrorCategory::SystemError.as_str(),

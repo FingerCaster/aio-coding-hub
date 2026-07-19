@@ -586,9 +586,16 @@ describe("pages/providers/ProviderEditorDialog", () => {
   });
 
   it("keeps retry policy override details collapsed until enabled and saves the override", async () => {
+    const providerRule = {
+      enabled: true,
+      status_code: 429,
+      body_contains: ["quota exhausted"],
+      description: "Quota retry",
+    };
     const savedOverride: UpstreamRetryPolicy = {
       ...DEFAULT_UPSTREAM_RETRY_POLICY,
       enabled: false,
+      http_rules: [...DEFAULT_UPSTREAM_RETRY_POLICY.http_rules, providerRule],
       max_retries: 2,
       backoff_ms: 250,
     };
@@ -621,21 +628,33 @@ describe("pages/providers/ProviderEditorDialog", () => {
       target: { value: "https://example.com/v1" },
     });
 
-    expect(dialog.queryByText("HTTP 状态码")).not.toBeInTheDocument();
+    expect(dialog.queryByText("HTTP 规则")).not.toBeInTheDocument();
+    expect(dialog.getByRole("switch", { name: "覆盖全局重试策略" })).toBeInTheDocument();
 
     fireEvent.click(dialog.getByRole("button", { name: /覆盖全局重试策略/ }));
-    expect(dialog.getByText("HTTP 状态码")).toBeInTheDocument();
+    expect(dialog.getByText("HTTP 规则")).toBeInTheDocument();
 
     const retryEnabledRow = dialog.getByText("启用瞬时错误重试").parentElement
       ?.parentElement as HTMLElement;
     fireEvent.click(within(retryEnabledRow).getByRole("switch"));
 
-    const retryPolicyFields = dialog
-      .getByText("启用瞬时错误重试")
-      .closest(".space-y-4") as HTMLElement;
-    const retryInputs = within(retryPolicyFields).getAllByRole("spinbutton");
-    fireEvent.change(retryInputs[0], { target: { value: "2" } });
-    fireEvent.change(retryInputs[1], { target: { value: "250" } });
+    fireEvent.click(dialog.getByRole("button", { name: "新增规则" }));
+    fireEvent.change(dialog.getByLabelText("规则 4 · 错误码"), {
+      target: { value: "429" },
+    });
+    fireEvent.change(dialog.getAllByLabelText("描述")[3], {
+      target: { value: providerRule.description },
+    });
+    fireEvent.change(dialog.getAllByLabelText("匹配内容（每行一项）")[3], {
+      target: { value: providerRule.body_contains[0] },
+    });
+
+    fireEvent.change(dialog.getByLabelText("同供应商重试次数"), {
+      target: { value: "2" },
+    });
+    fireEvent.change(dialog.getByLabelText("重试间隔（毫秒）"), {
+      target: { value: "250" },
+    });
 
     fireEvent.click(dialog.getByRole("button", { name: "保存" }));
 
@@ -672,10 +691,10 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
 
     const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.getByText("HTTP 状态码")).toBeInTheDocument();
+    expect(dialog.getByText("HTTP 规则")).toBeInTheDocument();
 
     fireEvent.click(dialog.getByRole("button", { name: /覆盖全局重试策略/ }));
-    expect(dialog.queryByText("HTTP 状态码")).not.toBeInTheDocument();
+    expect(dialog.queryByText("HTTP 规则")).not.toBeInTheDocument();
 
     fireEvent.click(dialog.getByRole("button", { name: "保存" }));
 

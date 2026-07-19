@@ -18,9 +18,9 @@ TypeScript bindings, frontend adapters, and React UI.
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
 - [Provider share and import contract](./provider-share-contract.md): strict
-  single-provider v1 serialization, backend-owned secrets/native I/O, bounded
-  preview capabilities, plugin snapshot binding, additive disabled import, and
-  exclusion of private account identity/token data.
+  single-provider v1 compatibility reads and v2 exports, backend-owned
+  secrets/native I/O, bounded preview capabilities, plugin snapshot binding,
+  additive disabled import, and exclusion of private account identity/token data.
 - [Config migration bundle contract](./config-migration-skill-bundle-contract.md):
   bounded installed/local Skill export, Base64 and filesystem validation, plus
   versioned v3 private account-credential backup and atomic restoration.

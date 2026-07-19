@@ -40,7 +40,7 @@ pub(super) fn retry_policy_override_to_json(
     let Some(mut policy) = policy else {
         return Ok(None);
     };
-    crate::settings::sanitize_upstream_retry_policy(&mut policy);
+    crate::settings::normalize_upstream_retry_policy_for_write(&mut policy)?;
     serde_json::to_string(&policy)
         .map(Some)
         .map_err(|e| format!("SYSTEM_ERROR: failed to serialize retry policy override: {e}").into())

@@ -109,8 +109,9 @@ use crate::gateway::proxy::{
     failover::{retry_backoff_delay, select_provider_base_url_for_request, FailoverDecision},
     gemini_oauth,
     http_util::{
-        build_response, has_gzip_content_encoding, has_non_identity_content_encoding,
-        is_event_stream, maybe_gunzip_response_body_bytes_with_limit,
+        build_response, gunzip_bytes_prefix, has_gzip_content_encoding,
+        has_non_identity_content_encoding, is_event_stream,
+        maybe_gunzip_response_body_bytes_with_limit,
     },
     ErrorCategory, GatewayErrorCode,
 };

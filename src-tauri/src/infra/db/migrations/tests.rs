@@ -1,6 +1,108 @@
 use super::*;
 
 #[test]
+fn migrate_v38_to_v39_converts_valid_retry_overrides_and_preserves_malformed_rows() {
+    let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
+    conn.execute_batch(
+        r#"
+CREATE TABLE providers (
+  id INTEGER PRIMARY KEY,
+  upstream_retry_policy_json TEXT
+);
+PRAGMA user_version = 38;
+"#,
+    )
+    .expect("create v38 fixture");
+    let legacy = r#"{"enabled":true,"status_codes":[429,503],"transport_errors":["timeout"],"max_retries":2,"backoff_ms":25,"counts_toward_circuit_breaker":false}"#;
+    let current = r#"{"enabled":false,"http_rules":[],"transport_errors":[],"max_retries":1,"backoff_ms":0,"counts_toward_circuit_breaker":false}"#;
+    let malformed = "{not-json";
+    for (id, value) in [(1_i64, legacy), (2, current), (3, malformed)] {
+        conn.execute(
+            "INSERT INTO providers(id, upstream_retry_policy_json) VALUES (?1, ?2)",
+            rusqlite::params![id, value],
+        )
+        .expect("insert fixture row");
+    }
+    let non_text = vec![0xff_u8, 0x00, 0x7f];
+    conn.execute(
+        "INSERT INTO providers(id, upstream_retry_policy_json) VALUES (?1, ?2)",
+        rusqlite::params![4_i64, non_text],
+    )
+    .expect("insert non-text fixture row");
+
+    v38_to_v39::migrate_v38_to_v39(&mut conn).expect("migrate v38->v39");
+
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read version");
+    assert_eq!(version, 39);
+    let migrated: String = conn
+        .query_row(
+            "SELECT upstream_retry_policy_json FROM providers WHERE id = 1",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read migrated row");
+    let migrated: serde_json::Value = serde_json::from_str(&migrated).expect("parse migrated row");
+    assert!(migrated.get("status_codes").is_none());
+    assert_eq!(migrated["http_rules"][0]["status_code"], 429);
+    assert_eq!(migrated["http_rules"][1]["status_code"], 503);
+    assert_eq!(migrated["transport_errors"], serde_json::json!(["timeout"]));
+
+    let unchanged_current: String = conn
+        .query_row(
+            "SELECT upstream_retry_policy_json FROM providers WHERE id = 2",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read current row");
+    let unchanged_malformed: String = conn
+        .query_row(
+            "SELECT upstream_retry_policy_json FROM providers WHERE id = 3",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read malformed row");
+    let unchanged_non_text: Vec<u8> = conn
+        .query_row(
+            "SELECT upstream_retry_policy_json FROM providers WHERE id = 4",
+            [],
+            |row| row.get(0),
+        )
+        .expect("read non-text row");
+    assert_eq!(unchanged_current, current);
+    assert_eq!(unchanged_malformed, malformed);
+    assert_eq!(unchanged_non_text, vec![0xff, 0x00, 0x7f]);
+}
+
+#[test]
+fn migrate_v38_to_v39_adds_missing_retry_policy_column() {
+    let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
+    conn.execute_batch(
+        r#"
+CREATE TABLE providers (id INTEGER PRIMARY KEY);
+PRAGMA user_version = 38;
+"#,
+    )
+    .expect("create minimal v38 fixture");
+
+    v38_to_v39::migrate_v38_to_v39(&mut conn).expect("migrate v38->v39");
+
+    let column_count: i64 = conn
+        .query_row(
+            "SELECT COUNT(1) FROM pragma_table_info('providers') WHERE name = 'upstream_retry_policy_json'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("inspect migrated columns");
+    let version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("read version");
+    assert_eq!(column_count, 1);
+    assert_eq!(version, 39);
+}
+
+#[test]
 fn migrate_v32_to_v33_backfills_pool_and_default_route_orders() {
     let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
     conn.execute_batch(

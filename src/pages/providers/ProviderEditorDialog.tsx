@@ -179,6 +179,7 @@ function ProviderRetryPolicySection({ form }: { form: ReturnType<typeof useProvi
         <div className="flex items-center gap-2">
           <Switch
             checked={enabled}
+            aria-label="覆盖全局重试策略"
             onCheckedChange={(checked) => form.setUpstreamRetryPolicyOverrideEnabled(checked)}
             disabled={form.saving}
           />

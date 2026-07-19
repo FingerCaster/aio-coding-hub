@@ -114,6 +114,19 @@ pub(super) fn gunzip_bytes_with_limit(
     Ok(Bytes::from(out))
 }
 
+pub(super) fn gunzip_bytes_prefix(input: &[u8], max_output_bytes: usize) -> Option<Bytes> {
+    if max_output_bytes == 0 {
+        return Some(Bytes::new());
+    }
+    let read_limit = max_output_bytes.saturating_add(1) as u64;
+    let decoder = flate2::read::GzDecoder::new(input);
+    let mut limited = decoder.take(read_limit);
+    let mut out = Vec::with_capacity(max_output_bytes.min(64 * 1024));
+    limited.read_to_end(&mut out).ok()?;
+    out.truncate(max_output_bytes);
+    Some(Bytes::from(out))
+}
+
 pub(super) fn gzip_bytes_with_limit(
     input: &[u8],
     max_output_bytes: usize,
@@ -164,7 +177,7 @@ pub(super) fn build_response(
 
 #[cfg(test)]
 mod tests {
-    use super::maybe_gunzip_response_body_bytes_with_limit;
+    use super::{gunzip_bytes_prefix, maybe_gunzip_response_body_bytes_with_limit};
     use axum::body::Bytes;
     use axum::http::{header, HeaderMap, HeaderValue};
     use flate2::write::GzEncoder;
@@ -213,6 +226,30 @@ mod tests {
         assert_eq!(output, compressed);
         assert_eq!(headers.get(header::CONTENT_ENCODING).unwrap(), "gzip");
         assert!(headers.get(header::CONTENT_LENGTH).is_some());
+    }
+
+    #[test]
+    fn gunzip_prefix_returns_decoded_prefix_instead_of_compressed_bytes() {
+        let plain = Bytes::from(vec![b'a'; 128 * 1024]);
+        let compressed = gzip_bytes(plain.as_ref());
+        let prefix = gunzip_bytes_prefix(compressed.as_ref(), 64 * 1024).expect("decode prefix");
+
+        assert_eq!(prefix.len(), 64 * 1024);
+        assert!(prefix.iter().all(|byte| *byte == b'a'));
+        assert_ne!(prefix, compressed);
+    }
+
+    #[test]
+    fn gunzip_prefix_fails_closed_for_invalid_streams() {
+        assert!(gunzip_bytes_prefix(b"not-gzip", 64 * 1024).is_none());
+    }
+
+    #[test]
+    fn gunzip_prefix_fails_closed_for_truncated_streams() {
+        let compressed = gzip_bytes(b"synthetic_match_inside_truncated_stream");
+        let truncated = &compressed[..compressed.len() - 8];
+
+        assert!(gunzip_bytes_prefix(truncated, 64 * 1024).is_none());
     }
 
     #[test]

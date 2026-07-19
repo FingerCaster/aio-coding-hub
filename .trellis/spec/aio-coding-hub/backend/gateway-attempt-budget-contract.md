@@ -49,6 +49,18 @@ fn provider_max_attempts_for_request(
 - Resolve a provider's `upstream_retry_policy_override` before reserving
   transient retry capacity. A disabled effective policy reserves zero attempts,
   even if its stored `max_retries` is non-zero.
+- Configured transient capacity is policy-scoped, not rule-scoped. An enabled
+  HTTP rule match (status-only or status plus decoded-body content) and an
+  enabled transport match share the same `max_retries` reservation, backoff,
+  and circuit-accounting settings; rules do not add independent capacity.
+- `max_retries` counts actual configured HTTP/transport retries for the current
+  Provider, not the total attempt index. OAuth refresh, auth fallback,
+  `previous_response_id` repair, thinking rectifiers, and generic baseline
+  retries do not consume this counter; switching Provider resets it.
+- The transient reservation is available only after an HTTP/transport matcher
+  succeeds. An unmatched 5xx, 408/429, or other generic base decision is capped
+  by the same calculation with `configured_transient_retries = 0`; it cannot
+  consume the extra configured-retry slots.
 - `circuit_breaker_failure_threshold` is not an input to the request budget.
   Circuit failures accumulate across requests; the threshold must never enlarge
   one request's configured attempt count.
@@ -92,6 +104,14 @@ fn provider_max_attempts_for_request(
 - Unit-test `provider_max_attempts_for_request` for no-retry, OAuth-only,
   `previous_response_id`-only, combined internal retries, enabled/disabled transient
   retries, and strict-limit cases.
+- Keep provider inheritance, complete override, and explicit disabled override
+  tests. Provider HTTP rules replace the global rule set as part of the whole
+  policy; they are never appended to it.
+- Route-test a baseline of one attempt with a non-matching configured HTTP rule
+  and prove the transient reservation does not create a second upstream call.
+- Route-test an internal `previous_response_id` repair followed by a configured
+  HTTP failure and prove the configured retry still runs within its independent
+  policy counter.
 - Keep an explicit regression proving configured `1` remains `1` when there is
   no retry reason, regardless of the circuit threshold.
 - Route-test Codex model discovery for one call per provider, cross-provider

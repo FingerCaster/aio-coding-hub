@@ -2,7 +2,8 @@
 
 use super::defaults::*;
 use super::migration::{
-    normalize_cli_priority_order, normalize_codex_home_override, repair_settings,
+    normalize_cli_priority_order, normalize_codex_home_override,
+    normalize_upstream_retry_policy_for_write, repair_settings,
 };
 use super::types::{AppSettings, CodexHomeMode, GatewayListenMode, WslHostAddressMode};
 use crate::app_paths;
@@ -478,49 +479,8 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         .into());
     }
 
-    if settings.upstream_retry_policy.status_codes.len() > MAX_UPSTREAM_RETRY_POLICY_STATUS_CODES {
-        return Err(format!(
-            "SEC_INVALID_INPUT: upstream_retry_policy.status_codes must contain <= {MAX_UPSTREAM_RETRY_POLICY_STATUS_CODES} entries"
-        )
-        .into());
-    }
-    if settings
-        .upstream_retry_policy
-        .status_codes
-        .iter()
-        .any(|status| !(400..=599).contains(status))
-    {
-        return Err(
-            "SEC_INVALID_INPUT: upstream_retry_policy.status_codes must be within [400, 599]"
-                .into(),
-        );
-    }
-    if settings.upstream_retry_policy.transport_errors.len()
-        > MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS
-    {
-        return Err(format!(
-            "SEC_INVALID_INPUT: upstream_retry_policy.transport_errors must contain <= {MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS} entries"
-        )
-        .into());
-    }
-    if settings.upstream_retry_policy.max_retries > MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES {
-        return Err(format!(
-            "SEC_INVALID_INPUT: upstream_retry_policy.max_retries must be <= {MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES}"
-        )
-        .into());
-    }
-    if settings.upstream_retry_policy.backoff_ms > MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS {
-        return Err(format!(
-            "SEC_INVALID_INPUT: upstream_retry_policy.backoff_ms must be <= {MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS}"
-        )
-        .into());
-    }
-    if settings.upstream_retry_policy.enabled
-        && settings.upstream_retry_policy.status_codes.is_empty()
-        && settings.upstream_retry_policy.transport_errors.is_empty()
-    {
-        return Err("SEC_INVALID_INPUT: upstream_retry_policy must include at least one status code or transport error when enabled".into());
-    }
+    let mut retry_policy = settings.upstream_retry_policy.clone();
+    normalize_upstream_retry_policy_for_write(&mut retry_policy)?;
 
     if settings.circuit_breaker_failure_threshold == 0 {
         return Err("SEC_INVALID_INPUT: circuit_breaker_failure_threshold must be >= 1".into());
@@ -562,6 +522,7 @@ fn write_unlocked<R: tauri::Runtime>(
         settings.cx2cc_model_reasoning_effort.trim().to_string();
     settings.cx2cc_service_tier = settings.cx2cc_service_tier.trim().to_string();
     settings.codex_home_override = normalize_codex_home_override(&settings.codex_home_override);
+    normalize_upstream_retry_policy_for_write(&mut settings.upstream_retry_policy)?;
     if settings.codex_home_mode != CodexHomeMode::Custom {
         settings.codex_home_override.clear();
     }
@@ -786,6 +747,118 @@ mod tests {
     #[test]
     fn parse_settings_json_rejects_invalid_json() {
         assert!(parse_settings_json("not json").is_err());
+    }
+
+    #[test]
+    fn legacy_retry_status_codes_load_as_rules_and_serialize_only_new_field() {
+        let json = r#"{
+            "schema_version": 52,
+            "upstream_retry_policy": {
+                "enabled": false,
+                "status_codes": [429, 503],
+                "transport_errors": ["timeout"],
+                "max_retries": 2,
+                "backoff_ms": 250,
+                "counts_toward_circuit_breaker": true
+            }
+        }"#;
+        let (mut settings, schema_present, raw) = parse_settings_json(json).expect("parse legacy");
+        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 2);
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[0].status_code,
+            429
+        );
+        assert_eq!(settings.upstream_retry_policy.max_retries, 2);
+
+        assert!(repair_settings(&mut settings, schema_present, &raw).expect("repair legacy"));
+        assert_eq!(settings.schema_version, SCHEMA_VERSION);
+        let canonical = canonical_settings_json(&settings).expect("canonical");
+        let policy = canonical
+            .get("upstream_retry_policy")
+            .and_then(serde_json::Value::as_object)
+            .expect("policy object");
+        assert!(policy.get("status_codes").is_none());
+        assert_eq!(policy["http_rules"][1]["status_code"], 503);
+        assert_eq!(policy["transport_errors"], serde_json::json!(["timeout"]));
+    }
+
+    #[test]
+    fn new_retry_rules_take_precedence_when_legacy_field_is_also_present() {
+        let json = r#"{
+            "upstream_retry_policy": {
+                "http_rules": [{
+                    "enabled": true,
+                    "status_code": 599,
+                    "body_contains": ["quota"],
+                    "description": "new"
+                }],
+                "status_codes": [503]
+            }
+        }"#;
+        let (settings, _, _) = parse_settings_json(json).expect("parse mixed policy");
+        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 1);
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[0].status_code,
+            599
+        );
+    }
+
+    #[test]
+    fn retry_rule_load_repair_drops_missing_status_without_broadening() {
+        let json = r#"{
+            "schema_version": 53,
+            "upstream_retry_policy": {
+                "enabled": true,
+                "http_rules": [{
+                    "enabled": true,
+                    "body_contains": [],
+                    "description": "must not become 503",
+                    "future_metadata": true
+                }],
+                "transport_errors": [],
+                "max_retries": 1,
+                "backoff_ms": 100,
+                "counts_toward_circuit_breaker": false
+            }
+        }"#;
+        let (mut settings, schema_present, raw) = parse_settings_json(json).expect("parse damaged");
+        assert_eq!(settings.upstream_retry_policy.http_rules[0].status_code, 0);
+
+        assert!(repair_settings(&mut settings, schema_present, &raw).expect("repair damaged"));
+        assert!(settings.upstream_retry_policy.http_rules.is_empty());
+        assert!(!settings.upstream_retry_policy.enabled);
+    }
+
+    #[test]
+    fn retry_rule_load_repair_disables_missing_body_condition_field() {
+        let json = r#"{
+            "schema_version": 53,
+            "upstream_retry_policy": {
+                "enabled": true,
+                "http_rules": [{
+                    "enabled": true,
+                    "status_code": 503,
+                    "description": "incomplete rule"
+                }],
+                "transport_errors": [],
+                "max_retries": 1,
+                "backoff_ms": 100,
+                "counts_toward_circuit_breaker": false
+            }
+        }"#;
+        let (mut settings, schema_present, raw) = parse_settings_json(json).expect("parse damaged");
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[0].body_contains,
+            vec![""]
+        );
+
+        assert!(repair_settings(&mut settings, schema_present, &raw).expect("repair damaged"));
+        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 1);
+        assert!(!settings.upstream_retry_policy.http_rules[0].enabled);
+        assert!(settings.upstream_retry_policy.http_rules[0]
+            .body_contains
+            .is_empty());
+        assert!(!settings.upstream_retry_policy.enabled);
     }
 
     #[test]

@@ -124,8 +124,14 @@ where
                 indices.attempt_index,
                 indices.retry_index,
             );
-            send_timeout::handle_timeout(ctx, provider_ctx, attempt_ctx, loop_state.reborrow())
-                .await
+            send_timeout::handle_timeout(
+                ctx,
+                provider_ctx,
+                attempt_ctx,
+                loop_state.reborrow(),
+                &mut retry_state.configured_transient_retries_used,
+            )
+            .await
         }
         AttemptSendOutcome::ReqwestError(err, timing) => {
             let (attempt_ctx, provider_ctx) = build_error_contexts(
@@ -140,6 +146,7 @@ where
                 provider_ctx,
                 attempt_ctx,
                 loop_state.reborrow(),
+                &mut retry_state.configured_transient_retries_used,
                 err,
             )
             .await

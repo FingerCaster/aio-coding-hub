@@ -69,18 +69,22 @@ resources are `provider-share-preview:<preview_token>`.
 The domain boundary is:
 
 ```rust
-parse_provider_share_v1(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV1>
-serialize_provider_share_v1(envelope: &ProviderShareEnvelopeV1) -> AppResult<Vec<u8>>
-export_provider_share_v1(db: &Db, provider_id: i64) -> AppResult<ProviderShareEnvelopeV1>
-preview_provider_share_v1(db: &Db, envelope: &ProviderShareEnvelopeV1)
+parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV2>
+serialize_provider_share_v2(envelope: &ProviderShareEnvelopeV2) -> AppResult<Vec<u8>>
+export_provider_share_v2(db: &Db, provider_id: i64) -> AppResult<ProviderShareEnvelopeV2>
+preview_provider_share(db: &Db, envelope: &ProviderShareEnvelopeV2)
     -> AppResult<ProviderSharePreviewDraft>
-import_provider_share_v1(
+import_provider_share(
     db: &Db,
-    envelope: &ProviderShareEnvelopeV1,
+    envelope: &ProviderShareEnvelopeV2,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary>
 ```
+
+`parse_provider_share` is the only version-dispatch boundary. It strictly
+parses v1 or v2, converts v1 retry policies to canonical v2, and returns only
+`ProviderShareEnvelopeV2` to preview/import services.
 
 No schema migration is involved. Import writes one `providers` row plus its
 credential and extension fields in one SQLite transaction. It must not write
@@ -96,7 +100,7 @@ The top-level discriminator is exact:
 ```json
 {
   "type": "aio-coding-hub.provider-share",
-  "schema_version": 1,
+  "schema_version": 2,
   "provider": {
     "cli_key": "codex",
     "name": "Example",
@@ -138,19 +142,23 @@ The top-level discriminator is exact:
 
 OAuth authentication replaces `api_key` with `provider_type`, `access_token`,
 `refresh_token`, `id_token`, `token_uri`, `client_id`, `client_secret`,
-`expires_at`, `email`, and `refresh_lead_seconds`. Retry overrides contain
+`expires_at`, `email`, and `refresh_lead_seconds`. A v1 retry override contains
 `enabled`, `status_codes`, `transport_errors`, `max_retries`, `backoff_ms`, and
-`counts_toward_circuit_breaker`. Each extension contains `plugin_id`,
+`counts_toward_circuit_breaker`. The v2 equivalent replaces `status_codes`
+with `http_rules`; each rule contains `enabled`, `status_code`,
+`body_contains`, and `description`. Each extension contains `plugin_id`,
 `plugin_version`, `namespace`, and plugin-owned open JSON `values`.
 
-All controlled v1 objects use `deny_unknown_fields`; only extension `values`
-is open. Unknown discriminators, versions, fields, enum values, invalid UTF-8,
-and invalid provider fields fail closed. A future format gets a new explicit
-version reader rather than weakening v1.
+All controlled v1 and v2 objects use `deny_unknown_fields`; only extension
+`values` is open. Each version rejects fields owned by the other version, as
+well as unknown discriminators, versions, fields, enum values, invalid UTF-8,
+and invalid provider fields. A future format gets a new explicit version
+reader rather than weakening either existing reader.
 
-Serialization is pretty JSON with one trailing newline and deterministic
-extension ordering by `(plugin_id, namespace)`. Copy and save call the same
-serializer and enforce the 8 MiB encoded limit. The default filename is
+New serialization is v2 pretty JSON with one trailing newline and
+deterministic extension ordering by `(plugin_id, namespace)`. Copy and save
+call the same v2 serializer and enforce the 8 MiB encoded limit. There is no
+v1 export path. The default filename is
 `aio-coding-hub-provider-<cli>-<sanitized-name>.json`, uses a cross-platform
 240-byte budget, and contains no timestamp.
 
@@ -270,9 +278,10 @@ extension values.
   disabled without any remote call.
 - Base: a standalone Claude `cx2cc` provider previews as `not_required` and
   round-trips without a source-provider ID.
-- Bad: unknown v1 fields, a future schema version, an external provider bridge,
-  a changed preview file, an expired token, or plugin manifest/version drift
-  fails before commit and leaves provider counts unchanged.
+- Bad: unknown or cross-version v1/v2 fields, a future schema version, an
+  external provider bridge, a changed preview file, an expired token, or
+  plugin manifest/version drift fails before commit and leaves provider counts
+  unchanged.
 - Bad: cancelling file selection or save returns `null`/`false` and causes no
   filesystem, clipboard, or database side effect.
 
@@ -315,7 +324,7 @@ await save(json, rendererSelectedPath);
 
 ```rust
 // Trusts a point-in-time preview after target state may have changed.
-let preview = preview_provider_share_v1(db, &share)?;
+let preview = preview_provider_share(db, &share)?;
 cache.insert(token, (share, preview.final_name));
 // Later: insert without rechecking name, file digest, or plugin state.
 ```
@@ -349,30 +358,31 @@ pub(crate) fn sanitize_account_usage_extension_value(
     values: &serde_json::Value,
 ) -> serde_json::Value;
 
-pub(crate) fn export_provider_share_v1(
+pub(crate) fn export_provider_share_v2(
     db: &Db,
     provider_id: i64,
-) -> AppResult<ProviderShareEnvelopeV1>;
+) -> AppResult<ProviderShareEnvelopeV2>;
 
-pub(crate) fn import_provider_share_v1(
+pub(crate) fn import_provider_share(
     db: &Db,
-    envelope: &ProviderShareEnvelopeV1,
+    envelope: &ProviderShareEnvelopeV2,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary>;
 ```
 
-The `aio-coding-hub.provider-share` v1 schema gains no User ID or account
-access-token field. Its built-in extension value may contain only
+The `aio-coding-hub.provider-share` v1 compatibility reader and v2 export
+schema contain no User ID or account access-token field. Their built-in
+extension value may contain only
 `adapterKind`, `newApiQueryMode`, `timedRefreshEnabled`, and
 `refreshIntervalSeconds`.
 
 ### 3. Contracts
 
 - Normalize the exact built-in identity
-  `core.provider-account-usage/accountUsage` on share export, strict v1 parse,
-  preview normalization, and import. Historical `newApiUserId`, account token,
-  and unknown fields are removed through the shared sanitizer.
+  `core.provider-account-usage/accountUsage` on v2 share export, strict v1/v2
+  parse, preview normalization, and import. Historical `newApiUserId`, account
+  token, and unknown fields are removed through the shared sanitizer.
 - Preserve explicit `newApiQueryMode: "account"`. Do not downgrade it to
   billing just because share excludes the credentials.
 - Never read `provider_account_usage_credentials` while building a
@@ -406,7 +416,7 @@ access-token field. Its built-in extension value may contain only
 
 ### 5. Good / Base / Bad Cases
 
-- Good: an account-mode provider exports a v1 share whose canonical extension
+- Good: an account-mode provider exports a v2 share whose canonical extension
   keeps account mode but contains no account identity or token; the recipient
   imports it disabled and sees a credentials-required state.
 - Base: billing or sub2api providers retain their canonical account-usage

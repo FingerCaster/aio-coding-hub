@@ -321,10 +321,10 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
-    expect(screen.queryByText("HTTP 状态码")).not.toBeInTheDocument();
+    expect(screen.queryByText("HTTP 规则")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
-    expect(screen.getByText("HTTP 状态码")).toBeInTheDocument();
+    expect(screen.getByText("HTTP 规则")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "保存重试策略" }));
 

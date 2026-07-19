@@ -10,8 +10,9 @@ use super::context::{
 };
 use super::thinking_signature_rectifier_400;
 use super::upstream_retry_policy::{
-    retry_policy_backoff_delay, should_record_circuit_failure, transient_failure_decision,
-    RetryPolicyMatch,
+    has_content_http_retry_rule, match_code_only_http_retry_rule, match_content_http_retry_rule,
+    retry_policy_backoff_delay, retry_rule_reason, should_record_circuit_failure,
+    should_retry_same_provider, transient_failure_decision, RetryPolicyMatch,
 };
 use super::{emit_attempt_event_and_log, AttemptCircuitFields};
 use super::{
@@ -27,8 +28,8 @@ use crate::gateway::proxy::errors::{
 };
 use crate::gateway::proxy::failover::{retry_backoff_delay, FailoverDecision};
 use crate::gateway::proxy::http_util::{
-    build_response, has_gzip_content_encoding, has_non_identity_content_encoding,
-    maybe_gunzip_response_body_bytes_with_limit,
+    build_response, gunzip_bytes_prefix, has_gzip_content_encoding,
+    has_non_identity_content_encoding,
 };
 use crate::gateway::proxy::is_claude_count_tokens_request;
 use crate::gateway::proxy::provider_router;
@@ -44,28 +45,33 @@ use axum::http::{header, HeaderValue};
 fn upstream_error_decision(
     is_count_tokens: bool,
     base_decision: FailoverDecision,
-    status: reqwest::StatusCode,
+    configured_rule_matched: bool,
     policy: &crate::settings::UpstreamRetryPolicy,
+    configured_retries_used: u32,
     retry_index: u32,
-    max_attempts_per_provider: u32,
+    configured_max_attempts_per_provider: u32,
+    base_max_attempts_per_provider: u32,
 ) -> (FailoverDecision, bool) {
     if is_count_tokens {
         return (FailoverDecision::Abort, false);
     }
 
-    let (configured_decision, configured_retry) = transient_failure_decision(
-        is_count_tokens,
-        RetryPolicyMatch::HttpStatus(status.as_u16()),
-        policy,
-        retry_index,
-        max_attempts_per_provider,
-    );
-    if configured_retry || matches!(configured_decision, FailoverDecision::Abort) {
-        return (configured_decision, configured_retry);
+    if configured_rule_matched {
+        let (configured_decision, configured_retry) = transient_failure_decision(
+            is_count_tokens,
+            RetryPolicyMatch::HttpRule,
+            policy,
+            configured_retries_used,
+            retry_index,
+            configured_max_attempts_per_provider,
+        );
+        if configured_retry || matches!(configured_decision, FailoverDecision::Abort) {
+            return (configured_decision, configured_retry);
+        }
     }
 
     if matches!(base_decision, FailoverDecision::RetrySameProvider)
-        && retry_index >= max_attempts_per_provider
+        && retry_index >= base_max_attempts_per_provider
     {
         return (FailoverDecision::SwitchProvider, false);
     }
@@ -73,10 +79,20 @@ fn upstream_error_decision(
     (base_decision, false)
 }
 
+fn should_record_http_circuit_failure(
+    category: ErrorCategory,
+    policy: &crate::settings::UpstreamRetryPolicy,
+    configured_retry: bool,
+) -> bool {
+    (matches!(category, ErrorCategory::ProviderError) || configured_retry)
+        && should_record_circuit_failure(policy, configured_retry)
+}
+
 fn reqwest_error_decision(
     is_count_tokens: bool,
     transport_kind: crate::settings::UpstreamTransportRetryKind,
     policy: &crate::settings::UpstreamRetryPolicy,
+    configured_retries_used: u32,
     retry_index: u32,
     max_attempts_per_provider: u32,
 ) -> (FailoverDecision, bool) {
@@ -88,6 +104,7 @@ fn reqwest_error_decision(
         is_count_tokens,
         RetryPolicyMatch::Transport(transport_kind),
         policy,
+        configured_retries_used,
         retry_index,
         max_attempts_per_provider,
     )
@@ -105,36 +122,49 @@ fn classify_transport_retry_kind(
     }
 }
 
-async fn read_response_body_with_limit(
+const MAX_ENCODED_ERROR_BODY_READ_BYTES: u64 = 256 * 1024;
+
+pub(super) struct ErrorBodyRead {
+    pub(super) bytes: Bytes,
+    pub(super) truncated: bool,
+}
+
+async fn read_response_body_with_truncation(
     mut resp: reqwest::Response,
     max_bytes: u64,
-) -> Result<Bytes, reqwest::Error> {
+) -> Result<ErrorBodyRead, reqwest::Error> {
     let limit = max_bytes.min(usize::MAX as u64) as usize;
     if limit == 0 {
-        return Ok(Bytes::new());
+        return Ok(ErrorBodyRead {
+            bytes: Bytes::new(),
+            truncated: resp.content_length().is_some_and(|length| length > 0),
+        });
     }
 
     let mut out = Vec::with_capacity(limit.min(16 * 1024));
-
+    let mut truncated = resp
+        .content_length()
+        .is_some_and(|length| length > max_bytes);
     loop {
         if out.len() >= limit {
+            truncated = true;
             break;
         }
-
         let Some(chunk) = resp.chunk().await? else {
             break;
         };
-
         let remaining = limit - out.len();
         if chunk.len() > remaining {
             out.extend_from_slice(&chunk[..remaining]);
+            truncated = true;
             break;
         }
-
         out.extend_from_slice(&chunk);
     }
-
-    Ok(Bytes::from(out))
+    Ok(ErrorBodyRead {
+        bytes: Bytes::from(out),
+        truncated,
+    })
 }
 
 fn error_body_scan_limit_bytes() -> u64 {
@@ -175,10 +205,25 @@ fn save_oauth_quota_exhausted_snapshot(
     }
 }
 
+pub(super) async fn read_response_body_for_rule_scan(
+    resp: reqwest::Response,
+    gzip_encoded: bool,
+) -> Result<ErrorBodyRead, reqwest::Error> {
+    let max_bytes = if gzip_encoded {
+        MAX_ENCODED_ERROR_BODY_READ_BYTES
+    } else {
+        error_body_scan_limit_bytes()
+    };
+    read_response_body_with_truncation(resp, max_bytes).await
+}
+
+#[cfg(test)]
 pub(super) async fn read_response_body_for_error_scan(
     resp: reqwest::Response,
 ) -> Result<Bytes, reqwest::Error> {
-    read_response_body_with_limit(resp, error_body_scan_limit_bytes()).await
+    read_response_body_with_truncation(resp, error_body_scan_limit_bytes())
+        .await
+        .map(|read| read.bytes)
 }
 
 pub(super) struct UpstreamRequestState<'a> {
@@ -187,6 +232,7 @@ pub(super) struct UpstreamRequestState<'a> {
     pub(super) codex_previous_response_id_rectifier_retried: &'a mut bool,
     pub(super) thinking_signature_rectifier_retried: &'a mut bool,
     pub(super) thinking_budget_rectifier_retried: &'a mut bool,
+    pub(super) configured_transient_retries_used: &'a mut u32,
 }
 
 fn codex_request_has_previous_response_id(body: &[u8]) -> bool {
@@ -271,6 +317,7 @@ pub(super) struct HandleNonSuccessResponseInput<'a, R: tauri::Runtime = tauri::W
     pub(super) loop_state: LoopState<'a, R>,
     pub(super) enable_thinking_signature_rectifier: bool,
     pub(super) enable_thinking_budget_rectifier: bool,
+    pub(super) provider_base_max_attempts: u32,
     pub(super) resp: reqwest::Response,
     pub(super) upstream: UpstreamRequestState<'a>,
 }
@@ -285,6 +332,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         loop_state,
         enable_thinking_signature_rectifier,
         enable_thinking_budget_rectifier,
+        provider_base_max_attempts,
         resp,
         upstream,
     } = input;
@@ -307,6 +355,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 loop_state,
                 enable_thinking_signature_rectifier,
                 enable_thinking_budget_rectifier,
+                provider_base_max_attempts,
                 resp,
                 status,
                 response_headers,
@@ -356,13 +405,26 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
 
     let (base_category, error_code, base_decision) = classify_upstream_status(status);
     let mut category = base_category;
-    let (mut decision, configured_retry) = upstream_error_decision(
+    let configured_http_retry_available = !is_count_tokens
+        && should_retry_same_provider(
+            upstream_retry_policy,
+            RetryPolicyMatch::HttpRule,
+            *upstream.configured_transient_retries_used,
+            retry_index,
+            provider_max_attempts,
+        );
+    let mut matched_http_retry_rule = configured_http_retry_available
+        .then(|| match_code_only_http_retry_rule(upstream_retry_policy, status.as_u16()))
+        .flatten();
+    let (mut decision, mut configured_retry) = upstream_error_decision(
         is_count_tokens,
         base_decision,
-        status,
+        matched_http_retry_rule.is_some(),
         upstream_retry_policy,
+        *upstream.configured_transient_retries_used,
         retry_index,
         provider_max_attempts,
+        provider_base_max_attempts,
     );
 
     let mut abort_body_bytes: Option<Bytes> = None;
@@ -390,17 +452,57 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
             *upstream.codex_previous_response_id_rectifier_retried,
             upstream.upstream_body_bytes,
         );
-    if need_client_error_scan || need_error_body_preview || need_codex_previous_response_id_scan {
+    let need_retry_rule_body_scan = configured_http_retry_available
+        && matched_http_retry_rule.is_none()
+        && has_content_http_retry_rule(upstream_retry_policy, status.as_u16());
+    if need_client_error_scan
+        || need_error_body_preview
+        || need_codex_previous_response_id_scan
+        || need_retry_rule_body_scan
+    {
         if let Some(r) = resp.take() {
-            let read_result = read_response_body_for_error_scan(r).await;
-            if let Ok(bytes) = read_result {
+            let gzip_encoded = has_gzip_content_encoding(&response_headers);
+            let read_result = read_response_body_for_rule_scan(r, gzip_encoded).await;
+            if let Ok(read) = read_result {
                 let mut headers_for_scan = response_headers.clone();
                 strip_hop_headers(&mut headers_for_scan);
-                let body_for_scan = maybe_gunzip_response_body_bytes_with_limit(
-                    bytes,
-                    &mut headers_for_scan,
-                    error_body_scan_limit_usize(),
-                );
+                let (body_for_scan, body_for_abort) = if gzip_encoded {
+                    let decoded =
+                        gunzip_bytes_prefix(read.bytes.as_ref(), error_body_scan_limit_usize())
+                            .filter(|decoded| {
+                                !read.truncated || decoded.len() == error_body_scan_limit_usize()
+                            });
+                    match decoded {
+                        Some(decoded) => {
+                            headers_for_scan.remove(header::CONTENT_ENCODING);
+                            headers_for_scan.remove(header::CONTENT_LENGTH);
+                            (decoded.clone(), decoded)
+                        }
+                        None => (Bytes::new(), read.bytes),
+                    }
+                } else {
+                    (read.bytes.clone(), read.bytes)
+                };
+
+                if need_retry_rule_body_scan {
+                    if let Some(matched) = match_content_http_retry_rule(
+                        upstream_retry_policy,
+                        status.as_u16(),
+                        body_for_scan.as_ref(),
+                    ) {
+                        matched_http_retry_rule = Some(matched);
+                        (decision, configured_retry) = upstream_error_decision(
+                            is_count_tokens,
+                            base_decision,
+                            true,
+                            upstream_retry_policy,
+                            *upstream.configured_transient_retries_used,
+                            retry_index,
+                            provider_max_attempts,
+                            provider_base_max_attempts,
+                        );
+                    }
+                }
                 // CX2CC: log upstream error body to console for debugging.
                 if cx2cc_active && retry_index == 1 && persist_error_body_preview {
                     let preview = String::from_utf8_lossy(&body_for_scan);
@@ -434,7 +536,9 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         )
                     {
                         category = ErrorCategory::ProviderError;
-                        decision = FailoverDecision::SwitchProvider;
+                        if !configured_retry {
+                            decision = FailoverDecision::SwitchProvider;
+                        }
                         matched_rule_id = Some("quota_exhausted");
                     }
                     if status.as_u16() == 429 {
@@ -452,7 +556,9 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                     if matched_non_retryable_rule.is_some() {
                         matched_rule_id = matched_non_retryable_rule;
                     }
-                    if matched_non_retryable_rule.is_some() || matched_429_concurrency_limit {
+                    if !configured_retry
+                        && (matched_non_retryable_rule.is_some() || matched_429_concurrency_limit)
+                    {
                         category = ErrorCategory::NonRetryableClientError;
                         decision = FailoverDecision::Abort;
                     }
@@ -460,7 +566,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 // Preserve consumed body/headers so downstream (e.g. Abort
                 // pass-through) can still use them after resp.take().
                 if abort_body_bytes.is_none() {
-                    abort_body_bytes = Some(body_for_scan);
+                    abort_body_bytes = Some(body_for_abort);
                     abort_response_headers = Some(headers_for_scan);
                 }
             }
@@ -492,7 +598,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         }
     }
 
-    if !is_count_tokens
+    if !configured_retry
+        && !is_count_tokens
         && upstream_client_error_rules::should_abort_unmatched_client_error(status, matched_rule_id)
     {
         category = ErrorCategory::NonRetryableClientError;
@@ -507,6 +614,11 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 }
             }
         }
+    }
+
+    if configured_retry {
+        *upstream.configured_transient_retries_used =
+            upstream.configured_transient_retries_used.saturating_add(1);
     }
 
     let oauth_quota_exhausted = auth_mode == "oauth" && matched_rule_id == Some("quota_exhausted");
@@ -525,9 +637,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     }
 
     if !is_count_tokens
-        && matches!(category, ErrorCategory::ProviderError)
         && !oauth_quota_exhausted
-        && should_record_circuit_failure(upstream_retry_policy, configured_retry)
+        && should_record_http_circuit_failure(category, upstream_retry_policy, configured_retry)
     {
         let change = provider_router::record_failure_and_emit_transition(
             provider_router::RecordCircuitArgs::from_state(
@@ -571,16 +682,22 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         *circuit_snapshot = snap;
     }
 
-    let reason = if matched_429_concurrency_limit {
+    configured_retry &= matches!(decision, FailoverDecision::RetrySameProvider);
+
+    let configured_rule_reason = configured_retry
+        .then(|| matched_http_retry_rule.map(retry_rule_reason))
+        .flatten();
+    let reason = if matched_429_concurrency_limit && !configured_retry {
         format!("status={} rule=429_concurrency_limit", status.as_u16())
     } else {
         let base = match matched_rule_id {
             Some(rule_id) => format!("status={} rule={rule_id}", status.as_u16()),
             None => format!("status={}", status.as_u16()),
         };
-        match upstream_body_preview {
-            Some(ref preview) => format!("{base}, upstream_body={preview}"),
-            None => base,
+        match (configured_rule_reason, upstream_body_preview) {
+            (Some(rule), _) => format!("{base}, {rule}"),
+            (None, Some(ref preview)) => format!("{base}, upstream_body={preview}"),
+            (None, None) => base,
         }
     };
     let outcome = format!(
@@ -822,6 +939,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
     loop_state: LoopState<'_, R>,
+    configured_transient_retries_used: &mut u32,
     err: reqwest::Error,
 ) -> LoopControl {
     tracing::warn!(
@@ -843,6 +961,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
         is_count_tokens,
         transport_kind,
         provider_ctx.upstream_retry_policy,
+        *configured_transient_retries_used,
         attempt_ctx.retry_index,
         provider_ctx.provider_max_attempts,
     );
@@ -853,6 +972,9 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
         decision.as_str(),
     );
     let reason = format!("reqwest {transport_kind:?} error");
+    if configured_retry {
+        *configured_transient_retries_used = configured_transient_retries_used.saturating_add(1);
+    }
 
     if is_count_tokens {
         return record_system_failure_and_decide_no_cooldown(RecordSystemFailureArgs {
@@ -894,10 +1016,12 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
 mod tests {
     use super::{
         error_body_scan_limit_usize, matches_codex_previous_response_id_error,
-        read_response_body_for_error_scan, remove_codex_previous_response_id,
-        reqwest_error_decision, retry_after_reset_at, should_scan_codex_previous_response_id_error,
-        upstream_error_decision, FailoverDecision,
+        read_response_body_for_error_scan, read_response_body_for_rule_scan,
+        remove_codex_previous_response_id, reqwest_error_decision, retry_after_reset_at,
+        should_record_http_circuit_failure, should_scan_codex_previous_response_id_error,
+        upstream_error_decision, FailoverDecision, MAX_ENCODED_ERROR_BODY_READ_BYTES,
     };
+    use crate::gateway::proxy::ErrorCategory;
     use crate::settings::{UpstreamRetryPolicy, UpstreamTransportRetryKind};
     use axum::body::Bytes;
     use axum::http::{header, HeaderMap, HeaderValue};
@@ -937,9 +1061,11 @@ mod tests {
         let (decision, configured_retry) = upstream_error_decision(
             true,
             FailoverDecision::RetrySameProvider,
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            true,
             &UpstreamRetryPolicy::default(),
+            0,
             1,
+            5,
             5,
         );
         assert!(matches!(decision, FailoverDecision::Abort));
@@ -951,9 +1077,11 @@ mod tests {
         let (decision, configured_retry) = upstream_error_decision(
             false,
             FailoverDecision::RetrySameProvider,
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            false,
             &UpstreamRetryPolicy::default(),
+            0,
             1,
+            5,
             5,
         );
         assert!(matches!(decision, FailoverDecision::RetrySameProvider));
@@ -965,11 +1093,30 @@ mod tests {
         let (decision, configured_retry) = upstream_error_decision(
             false,
             FailoverDecision::RetrySameProvider,
-            reqwest::StatusCode::TOO_MANY_REQUESTS,
+            false,
             &UpstreamRetryPolicy::default(),
+            0,
+            5,
             5,
             5,
         );
+        assert!(matches!(decision, FailoverDecision::SwitchProvider));
+        assert!(!configured_retry);
+    }
+
+    #[test]
+    fn unmatched_rule_cannot_consume_configured_retry_reservation() {
+        let (decision, configured_retry) = upstream_error_decision(
+            false,
+            FailoverDecision::RetrySameProvider,
+            false,
+            &UpstreamRetryPolicy::default(),
+            0,
+            1,
+            2,
+            1,
+        );
+
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
     }
@@ -979,9 +1126,11 @@ mod tests {
         let (switch_decision, switch_configured_retry) = upstream_error_decision(
             false,
             FailoverDecision::SwitchProvider,
-            reqwest::StatusCode::UNAUTHORIZED,
+            false,
             &UpstreamRetryPolicy::default(),
+            0,
             1,
+            5,
             5,
         );
         assert!(matches!(switch_decision, FailoverDecision::SwitchProvider));
@@ -990,9 +1139,11 @@ mod tests {
         let (abort_decision, abort_configured_retry) = upstream_error_decision(
             false,
             FailoverDecision::Abort,
-            reqwest::StatusCode::OK,
+            false,
             &UpstreamRetryPolicy::default(),
+            0,
             1,
+            5,
             5,
         );
         assert!(matches!(abort_decision, FailoverDecision::Abort));
@@ -1000,23 +1151,19 @@ mod tests {
     }
 
     #[test]
-    fn upstream_error_decision_retries_configured_502_503_504_once() {
-        for status in [
-            reqwest::StatusCode::BAD_GATEWAY,
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
-            reqwest::StatusCode::GATEWAY_TIMEOUT,
-        ] {
-            let (decision, configured_retry) = upstream_error_decision(
-                false,
-                FailoverDecision::SwitchProvider,
-                status,
-                &UpstreamRetryPolicy::default(),
-                1,
-                2,
-            );
-            assert!(matches!(decision, FailoverDecision::RetrySameProvider));
-            assert!(configured_retry);
-        }
+    fn upstream_error_decision_retries_a_matched_configured_rule() {
+        let (decision, configured_retry) = upstream_error_decision(
+            false,
+            FailoverDecision::SwitchProvider,
+            true,
+            &UpstreamRetryPolicy::default(),
+            0,
+            1,
+            2,
+            1,
+        );
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
+        assert!(configured_retry);
     }
 
     #[test]
@@ -1029,14 +1176,49 @@ mod tests {
         let (decision, configured_retry) = upstream_error_decision(
             false,
             FailoverDecision::SwitchProvider,
-            reqwest::StatusCode::SERVICE_UNAVAILABLE,
+            true,
             &policy,
+            0,
             1,
             2,
+            1,
         );
 
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
+    }
+
+    #[test]
+    fn configured_retry_circuit_accounting_applies_to_resource_not_found() {
+        let not_counted = UpstreamRetryPolicy {
+            counts_toward_circuit_breaker: false,
+            ..Default::default()
+        };
+        assert!(!should_record_http_circuit_failure(
+            ErrorCategory::ResourceNotFound,
+            &not_counted,
+            true,
+        ));
+
+        let counted = UpstreamRetryPolicy {
+            counts_toward_circuit_breaker: true,
+            ..Default::default()
+        };
+        assert!(should_record_http_circuit_failure(
+            ErrorCategory::ResourceNotFound,
+            &counted,
+            true,
+        ));
+        assert!(!should_record_http_circuit_failure(
+            ErrorCategory::ResourceNotFound,
+            &counted,
+            false,
+        ));
+        assert!(should_record_http_circuit_failure(
+            ErrorCategory::ProviderError,
+            &not_counted,
+            false,
+        ));
     }
 
     #[tokio::test]
@@ -1053,6 +1235,21 @@ mod tests {
 
         assert_eq!(body.len(), limit);
         assert!(body.iter().all(|byte| *byte == b'x'));
+    }
+
+    #[tokio::test]
+    async fn gzip_rule_scan_reader_bounds_encoded_input() {
+        let limit = MAX_ENCODED_ERROR_BODY_READ_BYTES as usize;
+        let payload = vec![b'x'; limit + 4096];
+        let (response, server_task) = known_length_response(payload).await;
+
+        let read = read_response_body_for_rule_scan(response, true)
+            .await
+            .expect("read bounded gzip input");
+        server_task.abort();
+
+        assert_eq!(read.bytes.len(), limit);
+        assert!(read.truncated);
     }
 
     #[test]
@@ -1168,6 +1365,7 @@ mod tests {
             true,
             UpstreamTransportRetryKind::Connect,
             &UpstreamRetryPolicy::default(),
+            0,
             1,
             5,
         );
@@ -1181,6 +1379,7 @@ mod tests {
             false,
             UpstreamTransportRetryKind::Connect,
             &UpstreamRetryPolicy::default(),
+            0,
             1,
             5,
         );
@@ -1195,7 +1394,7 @@ mod tests {
             ..Default::default()
         };
         let (decision, configured_retry) =
-            reqwest_error_decision(false, UpstreamTransportRetryKind::Read, &policy, 1, 5);
+            reqwest_error_decision(false, UpstreamTransportRetryKind::Read, &policy, 0, 1, 5);
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
     }
@@ -1207,7 +1406,7 @@ mod tests {
             ..Default::default()
         };
         let (decision, configured_retry) =
-            reqwest_error_decision(false, UpstreamTransportRetryKind::Connect, &policy, 1, 5);
+            reqwest_error_decision(false, UpstreamTransportRetryKind::Connect, &policy, 0, 1, 5);
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
         assert!(!configured_retry);
     }
@@ -1218,6 +1417,7 @@ mod tests {
             false,
             UpstreamTransportRetryKind::Read,
             &UpstreamRetryPolicy::default(),
+            0,
             5,
             5,
         );

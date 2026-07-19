@@ -1,4 +1,8 @@
 import { describe, expect, it } from "vitest";
+import {
+  cloneUpstreamRetryPolicy,
+  DEFAULT_UPSTREAM_RETRY_POLICY,
+} from "../../gateway/upstreamRetryPolicy";
 import { validateSettingsSetInput } from "../settingsValidation";
 
 describe("services/settings/settingsValidation", () => {
@@ -64,5 +68,22 @@ describe("services/settings/settingsValidation", () => {
         failoverMaxProvidersToTry: 6,
       })
     ).toContain("Failover 总尝试次数必须 <= 100");
+  });
+
+  it("validates nested retry rules before settings IPC", () => {
+    const policy = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
+    policy.http_rules[0] = {
+      enabled: true,
+      status_code: 599,
+      body_contains: ["Quota", "literal *.json"],
+      description: "Temporary quota",
+    };
+    expect(validateSettingsSetInput({ upstreamRetryPolicy: policy })).toBeNull();
+
+    policy.http_rules[0].status_code = 600;
+    expect(validateSettingsSetInput({ upstreamRetryPolicy: policy })).toContain("400-599");
+    policy.http_rules[0].status_code = 503;
+    policy.http_rules[0].description = "unsafe\nline";
+    expect(validateSettingsSetInput({ upstreamRetryPolicy: policy })).toContain("控制字符");
   });
 });

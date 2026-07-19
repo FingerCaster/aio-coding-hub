@@ -19,6 +19,7 @@ import {
   type ProviderOAuthStatusResult,
   type ProviderSummary as GeneratedProviderSummary,
   type ProviderUpsertInput as GeneratedProviderUpsertInput,
+  type UpstreamHttpRetryRule,
   type UpstreamRetryPolicy,
   type UpstreamTransportRetryKind,
 } from "../../generated/bindings";
@@ -49,6 +50,7 @@ export type {
   ProviderOAuthResetCodexQuotaResult,
   ProviderOAuthStartFlowResult,
   ProviderOAuthStatusResult,
+  UpstreamHttpRetryRule,
   UpstreamRetryPolicy,
   UpstreamTransportRetryKind,
 };

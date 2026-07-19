@@ -123,58 +123,182 @@ pub(super) fn sanitize_failover_settings(settings: &mut AppSettings) -> bool {
     changed
 }
 
-pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool {
-    let mut changed = false;
+fn truncate_chars(value: &str, max_chars: usize) -> String {
+    value.chars().take(max_chars).collect()
+}
 
-    policy.status_codes.retain(|status| {
-        let keep = (400..=599).contains(status);
-        changed |= !keep;
-        keep
-    });
-    policy.status_codes.sort_unstable();
-    policy.status_codes.dedup();
-    if policy.status_codes.len() > MAX_UPSTREAM_RETRY_POLICY_STATUS_CODES {
-        policy
-            .status_codes
-            .truncate(MAX_UPSTREAM_RETRY_POLICY_STATUS_CODES);
-        changed = true;
+fn normalize_body_contains_for_write(rule_index: usize, values: &mut Vec<String>) -> AppResult<()> {
+    if values.len() > MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].body_contains must contain <= {MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS} entries"
+        )
+        .into());
+    }
+
+    let mut normalized = Vec::with_capacity(values.len());
+    let mut seen = HashSet::new();
+    for (content_index, value) in values.iter().enumerate() {
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].body_contains[{content_index}] must not be empty"
+            )
+            .into());
+        }
+        if trimmed.chars().count() > MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].body_contains[{content_index}] must be <= {MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS} characters"
+            )
+            .into());
+        }
+        let lowercase = trimmed.to_lowercase();
+        if lowercase.chars().count() > MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].body_contains[{content_index}] must be <= {MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS} characters after normalization"
+            )
+            .into());
+        }
+        if seen.insert(lowercase.clone()) {
+            normalized.push(lowercase);
+        }
+    }
+    *values = normalized;
+    Ok(())
+}
+
+pub fn normalize_upstream_retry_policy_for_write(
+    policy: &mut UpstreamRetryPolicy,
+) -> AppResult<bool> {
+    let original = policy.clone();
+    if policy.http_rules.len() > MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_retry_policy.http_rules must contain <= {MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES} entries"
+        )
+        .into());
+    }
+
+    for (rule_index, rule) in policy.http_rules.iter_mut().enumerate() {
+        if !(400..=599).contains(&rule.status_code) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].status_code must be within [400, 599]"
+            )
+            .into());
+        }
+        normalize_body_contains_for_write(rule_index, &mut rule.body_contains)?;
+        if rule.description.chars().any(char::is_control) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].description must not contain control characters"
+            )
+            .into());
+        }
+        rule.description = rule.description.trim().to_string();
+        if rule.description.chars().count() > MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.http_rules[{rule_index}].description must be <= {MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS} characters"
+            )
+            .into());
+        }
+    }
+
+    if policy.transport_errors.len() > MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_retry_policy.transport_errors must contain <= {MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS} entries"
+        )
+        .into());
+    }
+    let mut seen_transport_errors = HashSet::new();
+    policy
+        .transport_errors
+        .retain(|kind| seen_transport_errors.insert(*kind));
+
+    if policy.max_retries > MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_retry_policy.max_retries must be <= {MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES}"
+        )
+        .into());
+    }
+    if policy.backoff_ms > MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_retry_policy.backoff_ms must be <= {MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS}"
+        )
+        .into());
+    }
+    if policy.enabled
+        && !policy.http_rules.iter().any(|rule| rule.enabled)
+        && policy.transport_errors.is_empty()
+    {
+        return Err("SEC_INVALID_INPUT: upstream_retry_policy must include at least one enabled HTTP rule or transport error when enabled".into());
+    }
+
+    Ok(*policy != original)
+}
+
+pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool {
+    let original = policy.clone();
+    policy
+        .http_rules
+        .retain(|rule| (400..=599).contains(&rule.status_code));
+    policy
+        .http_rules
+        .truncate(MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES);
+
+    for rule in &mut policy.http_rules {
+        let originally_had_body_contents = !rule.body_contains.is_empty();
+        let mut normalized = Vec::new();
+        let mut seen = HashSet::new();
+        for value in rule
+            .body_contains
+            .iter()
+            .take(MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS)
+        {
+            let trimmed = value.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            let lowercase = truncate_chars(
+                &trimmed.to_lowercase(),
+                MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS,
+            );
+            if !lowercase.is_empty() && seen.insert(lowercase.clone()) {
+                normalized.push(lowercase);
+            }
+        }
+        rule.body_contains = normalized;
+        if originally_had_body_contents && rule.body_contains.is_empty() {
+            rule.enabled = false;
+        }
+
+        let description: String = rule
+            .description
+            .chars()
+            .filter(|character| !character.is_control())
+            .collect();
+        rule.description = truncate_chars(
+            description.trim(),
+            MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS,
+        );
     }
 
     let mut seen_transport_errors = HashSet::new();
-    policy.transport_errors.retain(|kind| {
-        let keep = seen_transport_errors.insert(*kind);
-        changed |= !keep;
-        keep
-    });
-    if policy.transport_errors.len() > MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS {
-        policy
-            .transport_errors
-            .truncate(MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS);
-        changed = true;
+    policy
+        .transport_errors
+        .retain(|kind| seen_transport_errors.insert(*kind));
+    policy
+        .transport_errors
+        .truncate(MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS);
+    policy.max_retries = policy
+        .max_retries
+        .min(MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES);
+    policy.backoff_ms = policy.backoff_ms.min(MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS);
+
+    if policy.enabled
+        && !policy.http_rules.iter().any(|rule| rule.enabled)
+        && policy.transport_errors.is_empty()
+    {
+        policy.enabled = false;
     }
 
-    if policy.max_retries > MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES {
-        policy.max_retries = MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES;
-        changed = true;
-    }
-    if policy.backoff_ms > MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS {
-        policy.backoff_ms = MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS;
-        changed = true;
-    }
-
-    if policy.enabled && (policy.status_codes.is_empty() || policy.transport_errors.is_empty()) {
-        let defaults = UpstreamRetryPolicy::default();
-        if policy.status_codes.is_empty() {
-            policy.status_codes = defaults.status_codes;
-            changed = true;
-        }
-        if policy.transport_errors.is_empty() {
-            policy.transport_errors = defaults.transport_errors;
-            changed = true;
-        }
-    }
-
-    changed
+    *policy != original
 }
 
 pub(super) fn sanitize_circuit_breaker_settings(settings: &mut AppSettings) -> bool {
@@ -801,6 +925,17 @@ fn migrate_add_image_gen_storage_roots(
     )
 }
 
+fn migrate_add_upstream_http_retry_rules(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_UPSTREAM_HTTP_RETRY_RULES,
+    )
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -838,6 +973,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_grok_proxy_preferences,
     migrate_add_image_gen_storage_dir,
     migrate_add_image_gen_storage_roots,
+    migrate_add_upstream_http_retry_rules,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1462,10 +1598,24 @@ mod tests {
     }
 
     #[test]
-    fn sanitize_upstream_retry_policy_deduplicates_and_defaults_enabled_empty_policy() {
+    fn sanitize_upstream_retry_policy_repairs_rules_without_broadening_empty_content() {
         let mut policy = UpstreamRetryPolicy {
             enabled: true,
-            status_codes: vec![200, 503, 503, 504],
+            http_rules: vec![
+                crate::settings::UpstreamHttpRetryRule::status_only(200),
+                crate::settings::UpstreamHttpRetryRule {
+                    enabled: true,
+                    status_code: 503,
+                    body_contains: vec![" LIMIT ".to_string(), "limit".to_string()],
+                    description: " retry\nrule ".to_string(),
+                },
+                crate::settings::UpstreamHttpRetryRule {
+                    enabled: true,
+                    status_code: 504,
+                    body_contains: vec!["   ".to_string()],
+                    description: String::new(),
+                },
+            ],
             transport_errors: vec![],
             max_retries: 999,
             backoff_ms: 999_999,
@@ -1473,10 +1623,104 @@ mod tests {
         };
 
         assert!(sanitize_upstream_retry_policy(&mut policy));
-        assert_eq!(policy.status_codes, vec![503, 504]);
-        assert!(!policy.transport_errors.is_empty());
+        assert_eq!(policy.http_rules.len(), 2);
+        assert_eq!(policy.http_rules[0].body_contains, vec!["limit"]);
+        assert_eq!(policy.http_rules[0].description, "retryrule");
+        assert!(!policy.http_rules[1].enabled);
+        assert!(policy.enabled);
+        assert!(policy.transport_errors.is_empty());
         assert_eq!(policy.max_retries, MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES);
         assert_eq!(policy.backoff_ms, MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS);
+    }
+
+    #[test]
+    fn normalize_upstream_retry_policy_for_write_rejects_invalid_rules() {
+        let mut policy = UpstreamRetryPolicy {
+            http_rules: vec![crate::settings::UpstreamHttpRetryRule {
+                enabled: false,
+                status_code: 399,
+                body_contains: Vec::new(),
+                description: String::new(),
+            }],
+            ..Default::default()
+        };
+        assert!(normalize_upstream_retry_policy_for_write(&mut policy).is_err());
+
+        let mut policy = UpstreamRetryPolicy {
+            http_rules: vec![crate::settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 503,
+                body_contains: vec![" ".to_string()],
+                description: String::new(),
+            }],
+            transport_errors: Vec::new(),
+            ..Default::default()
+        };
+        assert!(normalize_upstream_retry_policy_for_write(&mut policy).is_err());
+
+        let mut missing_status: UpstreamRetryPolicy = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "http_rules": [{
+                "enabled": true,
+                "body_contains": [],
+                "description": "missing status"
+            }],
+            "transport_errors": []
+        }))
+        .expect("deserialize write-shaped policy");
+        assert_eq!(missing_status.http_rules[0].status_code, 0);
+        assert!(normalize_upstream_retry_policy_for_write(&mut missing_status).is_err());
+
+        let mut missing_body: UpstreamRetryPolicy = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "http_rules": [{
+                "enabled": true,
+                "status_code": 503,
+                "description": "missing body condition field"
+            }],
+            "transport_errors": []
+        }))
+        .expect("deserialize incomplete write-shaped policy");
+        assert_eq!(missing_body.http_rules[0].body_contains, vec![""]);
+        assert!(normalize_upstream_retry_policy_for_write(&mut missing_body).is_err());
+
+        let mut null_rules: UpstreamRetryPolicy = serde_json::from_value(serde_json::json!({
+            "enabled": true,
+            "http_rules": null,
+            "transport_errors": []
+        }))
+        .expect("deserialize null rules for load repair");
+        assert_eq!(null_rules.http_rules[0].status_code, 0);
+        assert!(normalize_upstream_retry_policy_for_write(&mut null_rules).is_err());
+
+        let mut lowercase_expansion = UpstreamRetryPolicy {
+            http_rules: vec![crate::settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 503,
+                body_contains: vec!["İ".repeat(MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS)],
+                description: String::new(),
+            }],
+            transport_errors: Vec::new(),
+            ..Default::default()
+        };
+        assert!(normalize_upstream_retry_policy_for_write(&mut lowercase_expansion).is_err());
+    }
+
+    #[test]
+    fn normalize_upstream_retry_policy_for_write_canonicalizes_content_and_description() {
+        let mut policy = UpstreamRetryPolicy {
+            http_rules: vec![crate::settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 599,
+                body_contains: vec![" Quota ".to_string(), "quota".to_string()],
+                description: " Temporary quota ".to_string(),
+            }],
+            transport_errors: Vec::new(),
+            ..Default::default()
+        };
+        assert!(normalize_upstream_retry_policy_for_write(&mut policy).unwrap());
+        assert_eq!(policy.http_rules[0].body_contains, vec!["quota"]);
+        assert_eq!(policy.http_rules[0].description, "Temporary quota");
     }
 
     #[test]
@@ -1539,6 +1783,20 @@ mod tests {
             SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_ROOTS
         );
         assert!(settings.image_gen_storage_roots.is_empty());
+    }
+
+    #[test]
+    fn migrate_add_upstream_http_retry_rules_bumps_schema_to_53() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_IMAGE_GEN_STORAGE_ROOTS,
+            ..Default::default()
+        };
+
+        assert!(migrate_add_upstream_http_retry_rules(&mut settings, true));
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_UPSTREAM_HTTP_RETRY_RULES
+        );
     }
 
     #[test]

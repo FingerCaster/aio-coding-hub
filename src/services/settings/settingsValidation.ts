@@ -4,6 +4,16 @@ import type {
   UpstreamRetryPolicy,
   WslHostAddressMode,
 } from "../../generated/bindings";
+import {
+  MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS,
+  MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS,
+  MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS,
+  MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS,
+  MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES,
+  MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES,
+  MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS,
+  validateUpstreamRetryPolicy as validateGatewayUpstreamRetryPolicy,
+} from "../gateway/upstreamRetryPolicy";
 
 export const MAX_UPDATE_RELEASES_URL_LEN = 2048;
 export const MAX_UPSTREAM_PROXY_URL_LEN = 2048;
@@ -30,9 +40,6 @@ export const MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 20;
 export const MIN_FAILOVER_MAX_PROVIDERS_TO_TRY = 1;
 export const MAX_FAILOVER_MAX_PROVIDERS_TO_TRY = 20;
 export const MAX_FAILOVER_TOTAL_ATTEMPTS = 100;
-export const MAX_UPSTREAM_RETRY_STATUS_CODES = 16;
-export const MAX_UPSTREAM_RETRY_MAX_RETRIES = 10;
-export const MAX_UPSTREAM_RETRY_BACKOFF_MS = 60_000;
 export const MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 1;
 export const MAX_CIRCUIT_BREAKER_FAILURE_THRESHOLD = 50;
 export const MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES = 1;
@@ -69,6 +76,13 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MIN_FAILOVER_MAX_PROVIDERS_TO_TRY,
   MAX_FAILOVER_MAX_PROVIDERS_TO_TRY,
   MAX_FAILOVER_TOTAL_ATTEMPTS,
+  MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES,
+  MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS,
+  MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS,
+  MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS,
+  MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS,
+  MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES,
+  MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS,
   MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   MAX_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
@@ -78,7 +92,6 @@ export const SETTINGS_VALIDATION_LIMITS = {
 const CONTROL_CHAR_PATTERN = /[\u0000-\u001f\u007f-\u009f]/u;
 const DECIMAL_INTEGER_PATTERN = /^\d+$/u;
 const SUPPORTED_PROXY_SCHEMES = new Set(["http", "https", "socks5", "socks5h"]);
-const SUPPORTED_UPSTREAM_RETRY_TRANSPORT_ERRORS = new Set(["connect", "timeout", "read"]);
 
 export type ParsedCustomListenAddress = {
   host: string;
@@ -347,38 +360,7 @@ function validateUpstreamStreamIdleTimeout(value: number | null | undefined): st
 
 function validateUpstreamRetryPolicy(policy: UpstreamRetryPolicy | null | undefined) {
   if (policy == null) return null;
-  if (!Array.isArray(policy.status_codes)) return "瞬时错误重试 HTTP 状态码必须是列表";
-  if (policy.status_codes.length > MAX_UPSTREAM_RETRY_STATUS_CODES) {
-    return `瞬时错误重试 HTTP 状态码最多支持 ${MAX_UPSTREAM_RETRY_STATUS_CODES} 个`;
-  }
-  for (const statusCode of policy.status_codes) {
-    if (!Number.isSafeInteger(statusCode)) return "瞬时错误重试 HTTP 状态码必须是整数";
-    if (statusCode < 400 || statusCode > 599) return "瞬时错误重试 HTTP 状态码必须在 400-599";
-  }
-  if (!Array.isArray(policy.transport_errors)) return "瞬时错误重试传输错误必须是列表";
-  for (const kind of policy.transport_errors) {
-    if (!SUPPORTED_UPSTREAM_RETRY_TRANSPORT_ERRORS.has(kind)) {
-      return "瞬时错误重试传输错误仅支持 connect、timeout、read";
-    }
-  }
-  if (
-    !Number.isSafeInteger(policy.max_retries) ||
-    policy.max_retries < 0 ||
-    policy.max_retries > MAX_UPSTREAM_RETRY_MAX_RETRIES
-  ) {
-    return `瞬时错误重试次数必须为 0-${MAX_UPSTREAM_RETRY_MAX_RETRIES}`;
-  }
-  if (
-    !Number.isSafeInteger(policy.backoff_ms) ||
-    policy.backoff_ms < 0 ||
-    policy.backoff_ms > MAX_UPSTREAM_RETRY_BACKOFF_MS
-  ) {
-    return `重试间隔必须为 0-${MAX_UPSTREAM_RETRY_BACKOFF_MS} 毫秒`;
-  }
-  if (policy.enabled && policy.status_codes.length === 0 && policy.transport_errors.length === 0) {
-    return "启用重试时至少选择一个 HTTP 状态码或传输错误";
-  }
-  return null;
+  return validateGatewayUpstreamRetryPolicy(policy);
 }
 
 export type SettingsSetValidationInput = {

@@ -872,7 +872,7 @@ fn apply_settings_update_owned_patch(
         .upstream_retry_policy
         .clone()
         .unwrap_or_else(|| previous_token.upstream_retry_policy.clone());
-    settings::sanitize_upstream_retry_policy(&mut upstream_retry_policy);
+    settings::normalize_upstream_retry_policy_for_write(&mut upstream_retry_policy)?;
     let circuit_breaker_failure_threshold = update
         .circuit_breaker_failure_threshold
         .unwrap_or(previous_token.circuit_breaker_failure_threshold);

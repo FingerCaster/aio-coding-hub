@@ -21,6 +21,7 @@ pub(super) struct PreparedProvider {
     pub(super) provider_bridged: bool,
     pub(super) session_reuse: Option<bool>,
     pub(super) effective_credential: String,
+    pub(super) provider_base_max_attempts: u32,
     pub(super) provider_max_attempts: u32,
     pub(super) oauth_adapter:
         Option<&'static dyn crate::gateway::oauth::provider_trait::OAuthProvider>,
@@ -150,15 +151,24 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         }
     };
 
-    let upstream_retry_policy = provider
-        .upstream_retry_policy_override
-        .clone()
-        .unwrap_or_else(|| input.upstream_retry_policy.clone());
+    let upstream_retry_policy = effective_upstream_retry_policy(
+        &input.upstream_retry_policy,
+        provider.upstream_retry_policy_override.as_ref(),
+    );
 
+    let needs_oauth_reactive_refresh_retry = provider.auth_mode == "oauth";
+    let needs_codex_previous_response_id_retry = codex_request_has_previous_response_id(input);
+    let provider_base_max_attempts = provider_max_attempts_for_request(
+        input.max_attempts_per_provider,
+        needs_oauth_reactive_refresh_retry,
+        needs_codex_previous_response_id_retry,
+        0,
+        input.is_codex_model_discovery,
+    );
     let provider_max_attempts = provider_max_attempts_for_request(
         input.max_attempts_per_provider,
-        provider.auth_mode == "oauth",
-        codex_request_has_previous_response_id(input),
+        needs_oauth_reactive_refresh_retry,
+        needs_codex_previous_response_id_retry,
         configured_transient_retry_budget(&upstream_retry_policy),
         input.is_codex_model_discovery,
     );
@@ -408,6 +418,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         provider_bridged,
         session_reuse,
         effective_credential,
+        provider_base_max_attempts,
         provider_max_attempts,
         oauth_adapter,
         upstream_forwarded_path,
@@ -482,13 +493,22 @@ fn configured_transient_retry_budget(policy: &crate::settings::UpstreamRetryPoli
     }
 }
 
+fn effective_upstream_retry_policy(
+    global_policy: &crate::settings::UpstreamRetryPolicy,
+    provider_override: Option<&crate::settings::UpstreamRetryPolicy>,
+) -> crate::settings::UpstreamRetryPolicy {
+    provider_override
+        .cloned()
+        .unwrap_or_else(|| global_policy.clone())
+}
+
 #[cfg(test)]
 mod tests {
     use super::{
         codex_body_has_previous_response_id, configured_transient_retry_budget,
-        provider_max_attempts_for_request,
+        effective_upstream_retry_policy, provider_max_attempts_for_request,
     };
-    use crate::settings::UpstreamRetryPolicy;
+    use crate::settings::{UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind};
 
     fn body(value: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&value).expect("serialize body")
@@ -583,5 +603,33 @@ mod tests {
     #[test]
     fn provider_max_attempts_honors_strict_request_limit() {
         assert_eq!(provider_max_attempts_for_request(1, true, true, 3, true), 1);
+    }
+
+    #[test]
+    fn provider_retry_policy_inherits_or_replaces_the_complete_global_policy() {
+        let global = UpstreamRetryPolicy::default();
+        assert_eq!(effective_upstream_retry_policy(&global, None), global);
+
+        let provider_override = UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![UpstreamHttpRetryRule::status_only(429)],
+            transport_errors: vec![UpstreamTransportRetryKind::Connect],
+            max_retries: 3,
+            backoff_ms: 750,
+            counts_toward_circuit_breaker: true,
+        };
+        assert_eq!(
+            effective_upstream_retry_policy(&global, Some(&provider_override)),
+            provider_override
+        );
+
+        let explicitly_disabled = UpstreamRetryPolicy {
+            enabled: false,
+            ..provider_override
+        };
+        assert_eq!(
+            effective_upstream_retry_policy(&global, Some(&explicitly_disabled)),
+            explicitly_disabled
+        );
     }
 }

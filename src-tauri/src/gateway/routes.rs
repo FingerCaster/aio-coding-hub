@@ -274,6 +274,56 @@ mod tests {
         (format!("http://{addr}"), call_count, task)
     }
 
+    async fn spawn_retry_rule_upstream(
+        status_line: &'static str,
+        error_body: Vec<u8>,
+        gzip_error: bool,
+        success_body: &'static str,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind retry-rule upstream stub");
+        let addr = listener.local_addr().expect("retry-rule upstream addr");
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_call_count = Arc::clone(&call_count);
+        let task = tokio::spawn(async move {
+            for index in 0..2 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                task_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if index == 0 {
+                    let content_encoding = if gzip_error {
+                        "content-encoding: gzip\r\n"
+                    } else {
+                        ""
+                    };
+                    let headers = format!(
+                        "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\n{content_encoding}content-length: {}\r\nconnection: close\r\n\r\n",
+                        error_body.len()
+                    );
+                    let _ = socket.write_all(headers.as_bytes()).await;
+                    let _ = socket.write_all(&error_body).await;
+                } else {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        success_body.len(),
+                        success_body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+        (format!("http://{addr}"), call_count, task)
+    }
+
     #[derive(Debug)]
     struct CapturedRawRequest {
         head: String,
@@ -445,6 +495,52 @@ mod tests {
                     )
                 } else {
                     ("200 OK", success_body)
+                };
+                let response = format!(
+                    "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{addr}"), rx, task)
+    }
+
+    async fn spawn_previous_response_then_retry_rule_upstream(
+        success_body: &'static str,
+    ) -> (
+        String,
+        tokio::sync::mpsc::Receiver<CapturedRawRequest>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind internal-plus-configured retry upstream stub");
+        let addr = listener
+            .local_addr()
+            .expect("internal-plus-configured retry upstream addr");
+        let (tx, rx) = tokio::sync::mpsc::channel(3);
+        let task = tokio::spawn(async move {
+            for index in 0..3 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let request =
+                    split_raw_http_request(read_complete_http_request_bytes(&mut socket).await);
+                let _ = tx.send(request).await;
+                let (status_line, body) = match index {
+                    0 => (
+                        "400 Bad Request",
+                        r#"{"error":{"message":"No response found for previous_response_id resp_old","param":"previous_response_id"}}"#,
+                    ),
+                    1 => (
+                        "503 Service Unavailable",
+                        r#"{"error":"temporarily unavailable"}"#,
+                    ),
+                    _ => ("200 OK", success_body),
                 };
                 let response = format!(
                     "HTTP/1.1 {status_line}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
@@ -3714,6 +3810,558 @@ mod tests {
 
         quota_task.abort();
         success_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_gzip_body_rule_retries_same_provider_and_records_safe_rule_reason() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 503,
+                body_contains: vec!["synthetic_body_match".to_string()],
+                description: "temporary upstream".to_string(),
+            }],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-retry-rule-gzip.sqlite"))
+            .expect("init test db");
+        let error_body =
+            gzip_bytes(br#"{"error":{"message":"SYNTHETIC_BODY_MATCH SYNTHETIC_BODY_SECRET"}}"#);
+        let success_body = r#"{"id":"retry-rule-ok","object":"chat.completion","choices":[]}"#;
+        let (base_url, call_count, upstream_task) =
+            spawn_retry_rule_upstream("503 Service Unavailable", error_body, true, success_body)
+                .await;
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Gzip Retry Rule Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-retry-rule","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts JSON");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("decision").and_then(Value::as_str),
+            Some("retry")
+        );
+        let reason = attempts[0]
+            .get("reason")
+            .and_then(Value::as_str)
+            .expect("rule reason");
+        assert!(reason.contains("retry_rule=1"));
+        assert!(reason.contains("retry_rule_description=temporary upstream"));
+        assert!(!reason.contains("SYNTHETIC_BODY_MATCH"));
+        assert!(!reason.contains("SYNTHETIC_BODY_SECRET"));
+        assert!(!log.attempts_json.contains("SYNTHETIC_BODY_SECRET"));
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn unmatched_http_rule_does_not_expand_the_baseline_provider_budget() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 503,
+                body_contains: vec!["required marker".to_string()],
+                description: String::new(),
+            }],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-retry-rule-unmatched.sqlite"))
+            .expect("init test db");
+        let (base_url, call_count, upstream_task) = spawn_retry_rule_upstream(
+            "503 Service Unavailable",
+            br#"{"error":"different marker"}"#.to_vec(),
+            false,
+            r#"{"id":"must-not-retry"}"#,
+        )
+        .await;
+        insert_codex_provider_with_priority(&db, "Unmatched Retry Rule Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-retry-rule-unmatched","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts JSON");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("decision").and_then(Value::as_str),
+            Some("switch")
+        );
+        assert!(!attempts[0]
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("retry_rule="));
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_auth_body_rule_retries_without_persisting_auth_body() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 401,
+                body_contains: vec!["synthetic_auth_match".to_string()],
+                description: "auth retry".to_string(),
+            }],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-retry-rule-auth.sqlite"))
+            .expect("init test db");
+        let success_body = r#"{"id":"auth-retry-ok","object":"chat.completion","choices":[]}"#;
+        let (base_url, call_count, upstream_task) = spawn_retry_rule_upstream(
+            "401 Unauthorized",
+            br#"{"error":"SYNTHETIC_AUTH_MATCH SYNTHETIC_AUTH_SECRET"}"#.to_vec(),
+            false,
+            success_body,
+        )
+        .await;
+        insert_codex_provider_with_priority(&db, "Auth Retry Rule Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-auth-retry","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert!(log.attempts_json.contains("retry_rule=1"));
+        assert!(!log.attempts_json.contains("SYNTHETIC_AUTH_MATCH"));
+        assert!(!log.attempts_json.contains("SYNTHETIC_AUTH_SECRET"));
+        assert!(!log
+            .error_details_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("SYNTHETIC_AUTH_SECRET"));
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn internal_repair_does_not_consume_the_configured_retry_budget() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.enable_codex_session_id_completion = false;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let success_body =
+            r#"{"id":"configured-retry-after-repair","object":"response","output":[]}"#;
+        let (base_url, mut captured_rx, upstream_task) =
+            spawn_previous_response_then_retry_rule_upstream(success_body).await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-retry-rule-after-internal-repair.sqlite"),
+        )
+        .expect("init test db");
+        let provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Internal Then Configured Retry Stub",
+            base_url,
+            0,
+        );
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-retry-after-repair","previous_response_id":"resp_old","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let response: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("response JSON");
+        assert_eq!(
+            response.get("id").and_then(Value::as_str),
+            Some("configured-retry-after-repair")
+        );
+
+        let first = captured_rx.recv().await.expect("first request");
+        let second = captured_rx.recv().await.expect("second request");
+        let third = captured_rx.recv().await.expect("third request");
+        assert!(String::from_utf8_lossy(&first.body).contains("previous_response_id"));
+        assert!(!String::from_utf8_lossy(&second.body).contains("previous_response_id"));
+        assert!(!String::from_utf8_lossy(&third.body).contains("previous_response_id"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts JSON");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0].get("decision").and_then(Value::as_str),
+            Some("retry")
+        );
+        assert!(attempts[0]
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("retry_rule=1")));
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_gzip_body_rule_does_not_scan_beyond_decoded_prefix() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 400,
+                body_contains: vec!["after_prefix_marker".to_string()],
+                description: String::new(),
+            }],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-retry-rule-gzip-prefix.sqlite"))
+            .expect("init test db");
+        let mut decoded_error_body = vec![b'x'; 64 * 1024];
+        decoded_error_body.extend_from_slice(b"AFTER_PREFIX_MARKER");
+        let (base_url, call_count, upstream_task) = spawn_retry_rule_upstream(
+            "400 Bad Request",
+            gzip_bytes(&decoded_error_body),
+            true,
+            r#"{"id":"must-not-retry"}"#,
+        )
+        .await;
+        insert_codex_provider_with_priority(&db, "Gzip Prefix Rule Stub", base_url, 0);
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-retry-rule-prefix","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(
+            call_count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "content after the decoded 64 KiB prefix must not trigger a retry"
+        );
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn exhausted_configured_retry_records_only_the_final_circuit_failure() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.circuit_breaker_failure_threshold = 5;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-retry-rule-exhausted.sqlite"))
+            .expect("init test db");
+        let (base_url, call_count, upstream_task) = spawn_counting_status_upstream(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"still unavailable"}"#,
+        )
+        .await;
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Exhausted Retry Rule Stub", base_url, 0);
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 5,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-retry-rule-exhausted","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts JSON");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("decision").and_then(Value::as_str),
+            Some("retry")
+        );
+        assert!(attempts[0]
+            .get("reason")
+            .and_then(Value::as_str)
+            .is_some_and(|reason| reason.contains("retry_rule=1")));
+        assert_eq!(
+            attempts[0]
+                .get("circuit_failure_count")
+                .and_then(Value::as_u64),
+            Some(0)
+        );
+        assert_eq!(
+            attempts[1].get("decision").and_then(Value::as_str),
+            Some("switch")
+        );
+        assert!(!attempts[1]
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("retry_rule="));
+        assert_eq!(
+            attempts[1]
+                .get("circuit_failure_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 1);
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn circuit_open_switch_is_not_reported_as_an_actual_configured_retry() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
+            transport_errors: Vec::new(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: true,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-retry-rule-circuit-open.sqlite"))
+            .expect("init test db");
+        let (base_url, call_count, upstream_task) = spawn_counting_status_upstream(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":"unavailable"}"#,
+        )
+        .await;
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Circuit Open Retry Rule Stub", base_url, 0);
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-retry-rule-circuit-open","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts JSON");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("decision").and_then(Value::as_str),
+            Some("switch")
+        );
+        assert!(!attempts[0]
+            .get("reason")
+            .and_then(Value::as_str)
+            .unwrap_or_default()
+            .contains("retry_rule="));
+        assert_eq!(
+            attempts[0]
+                .get("circuit_failure_count")
+                .and_then(Value::as_u64),
+            Some(1)
+        );
+        assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 1);
+        upstream_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]

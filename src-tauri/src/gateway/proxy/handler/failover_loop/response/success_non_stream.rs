@@ -298,6 +298,7 @@ impl NonStreamBodyReadError {
     fn decision(
         self,
         policy: &crate::settings::UpstreamRetryPolicy,
+        configured_retries_used: u32,
         retry_index: u32,
         max_attempts_per_provider: u32,
     ) -> (FailoverDecision, bool) {
@@ -309,6 +310,7 @@ impl NonStreamBodyReadError {
             false,
             RetryPolicyMatch::Transport(kind),
             policy,
+            configured_retries_used,
             retry_index,
             max_attempts_per_provider,
         )
@@ -456,7 +458,7 @@ pub(super) async fn handle_success_non_stream<R>(
     provider_ctx: ProviderCtx<'_>,
     attempt_ctx: AttemptCtx<'_>,
     loop_state: LoopState<'_, R>,
-    _retry_state: &mut RetryLoopState,
+    retry_state: &mut RetryLoopState,
     resp: reqwest::Response,
     status: StatusCode,
     mut response_headers: HeaderMap,
@@ -752,9 +754,15 @@ where
             let error_code = kind.error_code();
             let (decision, configured_retry) = kind.decision(
                 provider_ctx.upstream_retry_policy,
+                retry_state.configured_transient_retries_used,
                 retry_index,
                 provider_max_attempts,
             );
+            if configured_retry {
+                retry_state.configured_transient_retries_used = retry_state
+                    .configured_transient_retries_used
+                    .saturating_add(1);
+            }
 
             let outcome = format!(
                 "upstream_body_error: category={} code={} decision={} kind={kind}",

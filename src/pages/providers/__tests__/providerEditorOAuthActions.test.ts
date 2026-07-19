@@ -155,7 +155,12 @@ function makeCtx(overrides: Partial<OAuthActionContext> = {}) {
     upstreamRetryPolicyOverrideEnabled: false,
     upstreamRetryPolicyDraft: {
       enabled: true,
-      status_codes: [429, 500, 502, 503, 504],
+      http_rules: [429, 500, 502, 503, 504].map((status_code) => ({
+        enabled: true,
+        status_code,
+        body_contains: [],
+        description: "",
+      })),
       transport_errors: ["connect", "timeout", "read"],
       max_retries: 2,
       backoff_ms: 1000,

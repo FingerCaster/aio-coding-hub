@@ -4209,9 +4209,15 @@ export type UiContribution = {
   schema: HostRenderedSchema;
   when?: string | null;
 };
+export type UpstreamHttpRetryRule = {
+  enabled: boolean;
+  status_code: number;
+  body_contains: string[];
+  description: string;
+};
 export type UpstreamRetryPolicy = {
   enabled: boolean;
-  status_codes: number[];
+  http_rules: UpstreamHttpRetryRule[];
   transport_errors: UpstreamTransportRetryKind[];
   max_retries: number;
   backoff_ms: number;

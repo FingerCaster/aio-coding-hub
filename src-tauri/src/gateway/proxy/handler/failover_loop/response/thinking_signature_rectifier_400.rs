@@ -12,6 +12,7 @@ pub(super) struct HandleThinkingRectifiers400Input<'a, R: tauri::Runtime = tauri
     pub(super) loop_state: LoopState<'a, R>,
     pub(super) enable_thinking_signature_rectifier: bool,
     pub(super) enable_thinking_budget_rectifier: bool,
+    pub(super) provider_base_max_attempts: u32,
     pub(super) resp: reqwest::Response,
     pub(super) status: StatusCode,
     pub(super) response_headers: HeaderMap,
@@ -28,6 +29,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         loop_state,
         enable_thinking_signature_rectifier,
         enable_thinking_budget_rectifier,
+        provider_base_max_attempts,
         resp,
         status,
         mut response_headers,
@@ -37,6 +39,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
     let strip_request_content_encoding = upstream.strip_request_content_encoding;
     let thinking_signature_rectifier_retried = upstream.thinking_signature_rectifier_retried;
     let thinking_budget_rectifier_retried = upstream.thinking_budget_rectifier_retried;
+    let configured_transient_retries_used = upstream.configured_transient_retries_used;
     let introspection_body = ctx.introspection_body;
 
     let CommonCtxOwned {
@@ -67,6 +70,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         provider_index,
         session_reuse,
         provider_max_attempts,
+        upstream_retry_policy,
         ..
     } = ProviderCtxOwned::from(provider_ctx);
 
@@ -92,9 +96,11 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         && status.as_u16() == 400
         && (enable_thinking_signature_rectifier || enable_thinking_budget_rectifier)
     {
+        let gzip_encoded = has_gzip_content_encoding(&response_headers);
         let buffered_body =
-            match super::upstream_error::read_response_body_for_error_scan(resp).await {
-                Ok(bytes) => bytes,
+            match super::upstream_error::read_response_body_for_rule_scan(resp, gzip_encoded).await
+            {
+                Ok(read) => read,
                 Err(err) => {
                     let duration_ms = started.elapsed().as_millis();
                     let client_attempts = if ctx.verbose_provider_error {
@@ -145,12 +151,19 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                 }
             };
 
-        let mut headers_for_scan = response_headers.clone();
-        let body_for_scan = maybe_gunzip_response_body_bytes_with_limit(
-            buffered_body.clone(),
-            &mut headers_for_scan,
-            super::upstream_error::error_body_scan_limit_usize(),
-        );
+        let body_for_scan = if gzip_encoded {
+            gunzip_bytes_prefix(
+                buffered_body.bytes.as_ref(),
+                super::upstream_error::error_body_scan_limit_usize(),
+            )
+            .filter(|decoded| {
+                !buffered_body.truncated
+                    || decoded.len() == super::upstream_error::error_body_scan_limit_usize()
+            })
+            .unwrap_or_default()
+        } else {
+            buffered_body.bytes.clone()
+        };
         let upstream_body_text = String::from_utf8_lossy(body_for_scan.as_ref()).to_string();
         let signature_trigger = enable_thinking_signature_rectifier
             .then(|| thinking_signature_rectifier::detect_trigger(&upstream_body_text))
@@ -171,6 +184,8 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         let mut category = base_category;
         let mut decision = base_decision;
         let mut should_record_circuit_failure = matches!(category, ErrorCategory::ProviderError);
+        let mut configured_retry = false;
+        let mut matched_http_retry_rule = None;
 
         if let Some(trigger) = signature_trigger {
             rectifier_kind = Some("thinking_signature_rectifier");
@@ -289,28 +304,70 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                 }
             }
         } else {
-            // Fallback: match configured non-retryable client error rules and handle like upstream_error.
-            matched_rule_id = upstream_client_error_rules::match_non_retryable_client_error(
-                &cli_key,
-                status,
-                body_for_scan.as_ref(),
-            );
-            if matched_rule_id.is_some()
-                || upstream_client_error_rules::should_abort_unmatched_client_error(
-                    status,
-                    matched_rule_id,
+            matched_http_retry_rule =
+                super::upstream_retry_policy::match_code_only_http_retry_rule(
+                    &upstream_retry_policy,
+                    status.as_u16(),
                 )
-            {
-                should_record_circuit_failure = false;
-                category = ErrorCategory::NonRetryableClientError;
-                decision = FailoverDecision::Abort;
+                .or_else(|| {
+                    super::upstream_retry_policy::match_content_http_retry_rule(
+                        &upstream_retry_policy,
+                        status.as_u16(),
+                        body_for_scan.as_ref(),
+                    )
+                });
+            if matched_http_retry_rule.is_some() {
+                let (configured_decision, is_configured_retry) =
+                    super::upstream_retry_policy::transient_failure_decision(
+                        false,
+                        super::upstream_retry_policy::RetryPolicyMatch::HttpRule,
+                        &upstream_retry_policy,
+                        *configured_transient_retries_used,
+                        retry_index,
+                        provider_max_attempts,
+                    );
+                if is_configured_retry {
+                    configured_retry = true;
+                    decision = configured_decision;
+                    should_record_circuit_failure =
+                        super::upstream_retry_policy::should_record_circuit_failure(
+                            &upstream_retry_policy,
+                            true,
+                        );
+                }
+            }
+
+            if !configured_retry {
+                // Fallback: match configured non-retryable client error rules and handle like upstream_error.
+                matched_rule_id = upstream_client_error_rules::match_non_retryable_client_error(
+                    &cli_key,
+                    status,
+                    body_for_scan.as_ref(),
+                );
+                if matched_rule_id.is_some()
+                    || upstream_client_error_rules::should_abort_unmatched_client_error(
+                        status,
+                        matched_rule_id,
+                    )
+                {
+                    should_record_circuit_failure = false;
+                    category = ErrorCategory::NonRetryableClientError;
+                    decision = FailoverDecision::Abort;
+                }
             }
         }
 
-        if matches!(decision, FailoverDecision::RetrySameProvider)
-            && retry_index >= provider_max_attempts
-        {
+        let retry_limit = if rectified_applied || configured_retry {
+            provider_max_attempts
+        } else {
+            provider_base_max_attempts
+        };
+        if matches!(decision, FailoverDecision::RetrySameProvider) && retry_index >= retry_limit {
             decision = FailoverDecision::SwitchProvider;
+        }
+        if configured_retry {
+            *configured_transient_retries_used =
+                configured_transient_retries_used.saturating_add(1);
         }
 
         let mut circuit_state_before = Some(circuit_before.state.as_str());
@@ -359,6 +416,8 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             }
         }
 
+        configured_retry &= matches!(decision, FailoverDecision::RetrySameProvider);
+
         let reason = if let Some(rectifier_kind) = rectifier_kind {
             let trigger = rectifier_trigger.unwrap_or("unknown_trigger");
             if rectifier_retried {
@@ -372,6 +431,14 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                     status.as_u16()
                 )
             }
+        } else if configured_retry {
+            format!(
+                "status={}, {}",
+                status.as_u16(),
+                super::upstream_retry_policy::retry_rule_reason(
+                    matched_http_retry_rule.expect("configured retry has a matched rule")
+                )
+            )
         } else {
             match matched_rule_id {
                 Some(rule_id) => format!("status={} rule={rule_id}", status.as_u16()),
@@ -434,7 +501,15 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
 
         match decision {
             FailoverDecision::RetrySameProvider => {
-                if let Some(delay) = retry_backoff_delay(status, retry_index) {
+                if let Some(delay) = configured_retry
+                    .then(|| {
+                        super::upstream_retry_policy::retry_policy_backoff_delay(
+                            &upstream_retry_policy,
+                        )
+                    })
+                    .flatten()
+                    .or_else(|| retry_backoff_delay(status, retry_index))
+                {
                     tokio::time::sleep(delay).await;
                 }
                 return LoopControl::ContinueRetry;
@@ -445,7 +520,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             }
             FailoverDecision::Abort => {
                 strip_hop_headers(&mut response_headers);
-                let mut body_to_return = buffered_body;
+                let mut body_to_return = buffered_body.bytes;
 
                 body_to_return = maybe_gunzip_response_body_bytes_with_limit(
                     body_to_return,

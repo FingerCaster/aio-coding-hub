@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 52,
+      schema_version: 53,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -41,7 +41,12 @@ describe("MSW defaults", () => {
         max_retries: 1,
         backoff_ms: 100,
         counts_toward_circuit_breaker: false,
-        status_codes: [502, 503, 504],
+        http_rules: [502, 503, 504].map((status_code) => ({
+          enabled: true,
+          status_code,
+          body_contains: [],
+          description: "",
+        })),
         transport_errors: ["connect", "timeout", "read"],
       },
       circuit_breaker_failure_threshold: 5,

@@ -4,7 +4,7 @@ use crate::app::app_state::{ensure_db_ready, DbInitState};
 use crate::app::provider_share_service::{ProviderShareImportPreview, ProviderShareService};
 use crate::blocking;
 use crate::providers::{
-    export_provider_share_v1, provider_share_default_filename, serialize_provider_share_v1,
+    export_provider_share_v2, provider_share_default_filename, serialize_provider_share_v2,
     ProviderSummary,
 };
 use crate::shared::error::{AppError, AppResult};
@@ -26,10 +26,10 @@ fn export_serialized_provider(
     db: &crate::db::Db,
     provider_id: i64,
 ) -> AppResult<(Vec<u8>, String)> {
-    let envelope = export_provider_share_v1(db, provider_id)?;
+    let envelope = export_provider_share_v2(db, provider_id)?;
     let filename =
         provider_share_default_filename(&envelope.provider.cli_key, &envelope.provider.name);
-    let bytes = serialize_provider_share_v1(&envelope)?;
+    let bytes = serialize_provider_share_v2(&envelope)?;
     Ok((bytes, filename))
 }
 

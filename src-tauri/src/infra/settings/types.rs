@@ -61,9 +61,42 @@ pub enum UpstreamTransportRetryKind {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
 #[serde(default)]
+pub struct UpstreamHttpRetryRule {
+    pub enabled: bool,
+    pub status_code: u16,
+    pub body_contains: Vec<String>,
+    pub description: String,
+}
+
+impl UpstreamHttpRetryRule {
+    pub fn status_only(status_code: u16) -> Self {
+        Self {
+            enabled: true,
+            status_code,
+            body_contains: Vec::new(),
+            description: String::new(),
+        }
+    }
+}
+
+impl Default for UpstreamHttpRetryRule {
+    fn default() -> Self {
+        // Invalid sentinels let load repair distinguish missing required
+        // fields from an explicit code-only rule (`body_contains: []`).
+        Self {
+            enabled: true,
+            status_code: 0,
+            body_contains: vec![String::new()],
+            description: String::new(),
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
+#[serde(default)]
 pub struct UpstreamRetryPolicy {
     pub enabled: bool,
-    pub status_codes: Vec<u16>,
+    pub http_rules: Vec<UpstreamHttpRetryRule>,
     pub transport_errors: Vec<UpstreamTransportRetryKind>,
     pub max_retries: u32,
     pub backoff_ms: u32,
@@ -74,7 +107,10 @@ impl Default for UpstreamRetryPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            status_codes: vec![502, 503, 504],
+            http_rules: [502, 503, 504]
+                .into_iter()
+                .map(UpstreamHttpRetryRule::status_only)
+                .collect(),
             transport_errors: vec![
                 UpstreamTransportRetryKind::Connect,
                 UpstreamTransportRetryKind::Timeout,
@@ -84,6 +120,90 @@ impl Default for UpstreamRetryPolicy {
             backoff_ms: 100,
             counts_toward_circuit_breaker: false,
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default)]
+struct UpstreamRetryPolicyWire {
+    enabled: bool,
+    http_rules: WireField<Vec<UpstreamHttpRetryRule>>,
+    status_codes: WireField<Vec<u16>>,
+    transport_errors: Vec<UpstreamTransportRetryKind>,
+    max_retries: u32,
+    backoff_ms: u32,
+    counts_toward_circuit_breaker: bool,
+}
+
+enum WireField<T> {
+    Missing,
+    Null,
+    Value(T),
+}
+
+impl<T> Default for WireField<T> {
+    fn default() -> Self {
+        Self::Missing
+    }
+}
+
+impl<'de, T> Deserialize<'de> for WireField<T>
+where
+    T: Deserialize<'de>,
+{
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        Ok(match Option::<T>::deserialize(deserializer)? {
+            Some(value) => Self::Value(value),
+            None => Self::Null,
+        })
+    }
+}
+
+impl Default for UpstreamRetryPolicyWire {
+    fn default() -> Self {
+        let defaults = UpstreamRetryPolicy::default();
+        Self {
+            enabled: defaults.enabled,
+            http_rules: WireField::Missing,
+            status_codes: WireField::Missing,
+            transport_errors: defaults.transport_errors,
+            max_retries: defaults.max_retries,
+            backoff_ms: defaults.backoff_ms,
+            counts_toward_circuit_breaker: defaults.counts_toward_circuit_breaker,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UpstreamRetryPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = UpstreamRetryPolicyWire::deserialize(deserializer)?;
+        let http_rules = match wire.http_rules {
+            WireField::Value(http_rules) => http_rules,
+            WireField::Null => vec![UpstreamHttpRetryRule::default()],
+            WireField::Missing => match wire.status_codes {
+                WireField::Value(status_codes) => status_codes
+                    .into_iter()
+                    .map(UpstreamHttpRetryRule::status_only)
+                    .collect(),
+                WireField::Null => vec![UpstreamHttpRetryRule::default()],
+                WireField::Missing => UpstreamRetryPolicy::default().http_rules,
+            },
+        };
+
+        Ok(Self {
+            enabled: wire.enabled,
+            http_rules,
+            transport_errors: wire.transport_errors,
+            max_retries: wire.max_retries,
+            backoff_ms: wire.backoff_ms,
+            counts_toward_circuit_breaker: wire.counts_toward_circuit_breaker,
+        })
     }
 }
 
