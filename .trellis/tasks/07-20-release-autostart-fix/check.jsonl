@@ -1,0 +1,3 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Verify the required Rust checks for shared failover-loop inputs"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Review retry-budget behavior and boundary-test preservation"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Review that routing, circuit, and HTTP matcher behavior remains unchanged"}
