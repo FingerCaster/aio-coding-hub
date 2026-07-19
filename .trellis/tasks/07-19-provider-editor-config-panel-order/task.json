@@ -1,0 +1,29 @@
+{
+  "id": "provider-editor-config-panel-order",
+  "name": "provider-editor-config-panel-order",
+  "title": "供应商编辑弹窗配置区顺序微调",
+  "description": "将流式空闲超时移到账户用量之前，使账户用量、重试覆盖与限流配置连续排列。",
+  "status": "in_progress",
+  "dev_type": null,
+  "scope": null,
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-07-19",
+  "completedAt": null,
+  "branch": "provider-account-usage-tab",
+  "base_branch": "provider-account-usage-tab",
+  "worktree_path": "D:/OrcaProjects/aio-coding-hub-fork/provider-account-usage-tab",
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": null,
+  "relatedFiles": [
+    "src/pages/providers/ProviderEditorDialog.tsx",
+    "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx"
+  ],
+  "notes": "已完成流式超时上移及 DOM 顺序回归测试；80/80 测试和前端检查通过，Kimi 桌面截图确认三个面板连续且间距一致，无需更新 spec。",
+  "meta": {}
+}

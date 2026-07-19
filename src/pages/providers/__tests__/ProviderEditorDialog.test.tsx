@@ -286,6 +286,33 @@ describe("pages/providers/ProviderEditorDialog", () => {
     expect(limitsDetails!.open).toBe(true);
   });
 
+  it("renders built-in advanced configuration in the intended order", () => {
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    const sections = [
+      dialog.getByText("流式空闲超时覆盖（秒）"),
+      dialog.getByText("账户用量", { selector: "summary span" }),
+      dialog.getByText("覆盖全局重试策略"),
+      dialog.getByText("限流配置"),
+    ];
+
+    for (let index = 0; index < sections.length - 1; index += 1) {
+      expect(
+        sections[index].compareDocumentPosition(sections[index + 1]) &
+          Node.DOCUMENT_POSITION_FOLLOWING
+      ).toBeTruthy();
+    }
+  });
+
   it("validates create form and saves provider", async () => {
     vi.mocked(providerUpsert).mockResolvedValue(
       makeProvider({

@@ -101,15 +101,6 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
           <ApiKeySection form={f} />
         )}
 
-        <ProviderAccountUsageSection form={f} />
-
-        <ContributionSlot
-          slotId="providers.editor.sections"
-          valuesByContributionKey={f.extensionValuesByContributionKey}
-          onChange={(contribution, key, value) => f.setExtensionValue(contribution, key, value)}
-          disabled={f.saving}
-        />
-
         <FormField
           label="流式空闲超时覆盖（秒）"
           hint="留空或 0 表示沿用全局设置；仅对当前 Provider 的流式请求生效。"
@@ -125,6 +116,15 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
             disabled={f.saving}
           />
         </FormField>
+
+        <ProviderAccountUsageSection form={f} />
+
+        <ContributionSlot
+          slotId="providers.editor.sections"
+          valuesByContributionKey={f.extensionValuesByContributionKey}
+          onChange={(contribution, key, value) => f.setExtensionValue(contribution, key, value)}
+          disabled={f.saving}
+        />
 
         <ProviderRetryPolicySection form={f} />
 

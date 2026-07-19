@@ -1,0 +1,2 @@
+{"file": "src/pages/providers/ProviderEditorDialog.tsx", "reason": "Verify the requested order without behavior or scope changes."}
+{"file": "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx", "reason": "Verify order coverage and existing interaction regressions."}

@@ -1,0 +1,2 @@
+{"file": "src/pages/providers/ProviderEditorDialog.tsx", "reason": "Reorder the existing built-in editor sections only."}
+{"file": "src/pages/providers/__tests__/ProviderEditorDialog.test.tsx", "reason": "Add a focused DOM-order regression assertion."}
