@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 16
+- **Total Sessions**: 17
 - **Last Active**: 2026-07-20
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~563 | Active |
+| `journal-1.md` | ~599 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 17 | 2026-07-20 | 发布 aio-coding-hub v0.60.29 | `4f2621ab30d2e5feebde4e963029e3708bf1156f`, `495e9d1b1275a304c800a432a92427751ccb5fb1`, `76fbdea5ec31788136332a08170bf5feedbe2523` | `release-0-60-29-preflight` |
 | 16 | 2026-07-20 | 修复设置保存误触发自启动 | `54ba206e` | `main` |
 | 15 | 2026-07-19 | Rule-based transient error retries | `45d01dd7` | `main` |
 | 14 | 2026-07-19 | 供应商账户用量编辑体验收尾 | `91692454`, `cb5f8f83` | `provider-account-usage-tab` |

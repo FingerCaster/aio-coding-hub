@@ -19,7 +19,14 @@ Initialized tracked Trellis project files and added the Codex approvals_reviewer
 
 ### Main Changes
 
-- Detailed change bullets were not supplied; see the summary above.
+- 消除瞬时重试代码的 Windows Clippy 门禁与 8 个 Linux 专属 lint，不改变重试、
+  failover、熔断或平台功能语义。
+- 通过 release-please PR `#15` 将版本更新为 `0.60.29`，同步 Cargo.lock 并审查
+  Changelog 与版本文件。
+- 发布 tag `aio-coding-hub-v0.60.29`，验证 tag、Release target 和下游
+  `checkout_ref` 均绑定 release commit `76fbdea5`。
+- 验证公开 Release、24 个上传资产、14 个支持矩阵必需资产、`latest.json` 四平台
+  合约与 Homebrew Cask job。
 
 ### Git Commits
 
@@ -30,7 +37,13 @@ Initialized tracked Trellis project files and added the Codex approvals_reviewer
 
 ### Testing
 
-- Validation was not recorded for this session.
+- `pnpm check:prepush`：15/15 通过；Windows fmt/check/clippy、聚焦与完整 Rust 测试通过。
+- Docker `rust:1.90-bookworm`：Linux `cargo clippy --all-targets --locked -- -D warnings`
+  通过。
+- `main` CI runs `29700170426`、`29701745592`，release PR CI run `29701005098`
+  及 Windows dev-build run `29701003773` 全部成功。
+- 正式 release run `29701767005` 的四平台 build、latest.json 聚合、publish 与
+  Homebrew job 全部成功。
 
 ### Status
 
@@ -549,6 +562,42 @@ Added configurable HTTP transient retry rules with global and Provider scopes, s
 | Hash | Message |
 |------|---------|
 | `54ba206e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
+
+
+## Session 17: 发布 aio-coding-hub v0.60.29
+
+**Date**: 2026-07-20
+**Task**: 发布 aio-coding-hub v0.60.29
+**Package**: aio-coding-hub
+**Branch**: `release-0-60-29-preflight`
+
+### Summary
+
+修复瞬时重试与 Linux 平台 Clippy 发布阻塞，通过 main/PR CI 和四平台构建，发布 v0.60.29；验证不可变 SHA、24 个资产、latest.json 与 Homebrew Cask job，并保留主工作区用户改动。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `4f2621ab30d2e5feebde4e963029e3708bf1156f` | (see git log) |
+| `495e9d1b1275a304c800a432a92427751ccb5fb1` | (see git log) |
+| `76fbdea5ec31788136332a08170bf5feedbe2523` | (see git log) |
 
 ### Testing
 
