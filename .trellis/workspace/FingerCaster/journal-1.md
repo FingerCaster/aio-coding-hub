@@ -610,3 +610,44 @@ Added configurable HTTP transient retry rules with global and Provider scopes, s
 ### Next Steps
 
 - None - task complete
+
+
+## Session 18: 完成 Codex 供应商模型发现与路由配置发布
+
+**Date**: 2026-07-22
+**Task**: 完成 Codex 供应商模型发现与路由配置发布
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+完成 AIO 管理模型发现、profile 配置写入、reasoning effort 与上下文能力配置，并保持 Codex 侧唯一 aio 供应商；完善模型路由识别与普通模型故障转移边界，完成合并、MSI/多平台构建和 v0.60.30 发布验证。主工作区中其他用户改动保持不变。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `884b258a` | (see git log) |
+| `85ea3fbb` | (see git log) |
+| `ee50ac8c` | (see git log) |
+| `99470984` | (see git log) |
+| `33b21e56` | (see git log) |
+| `f7b7ea86` | (see git log) |
+| `6bd591a3` | (see git log) |
+| `1a551cbe` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
