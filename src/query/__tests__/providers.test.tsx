@@ -4,6 +4,7 @@ import type {
   ProviderAccountUsageResult,
   ProviderSummary,
 } from "../../services/providers/providers";
+import type { ProviderModelCatalog } from "../../services/providers/providerModels";
 import {
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
@@ -19,6 +20,7 @@ import {
   providersReorder,
 } from "../../services/providers/providers";
 import { gatewayCircuitResetProvider } from "../../services/gateway/gateway";
+import { providerModelsRefresh } from "../../services/providers/providerModels";
 import {
   fetchProviderOAuthStatus,
   providerAccountUsageQueryOptions,
@@ -39,7 +41,14 @@ import {
   useProvidersListQuery,
   useProvidersReorderMutation,
 } from "../providers";
-import { gatewayKeys, oauthLimitsKeys, providerAccountUsageKeys, providersKeys } from "../keys";
+import { useProviderModelsRefreshMutation } from "../providerModels";
+import {
+  gatewayKeys,
+  oauthLimitsKeys,
+  providerAccountUsageKeys,
+  providerModelsKeys,
+  providersKeys,
+} from "../keys";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
 
@@ -74,11 +83,22 @@ vi.mock("../../services/gateway/gateway", async () => {
   };
 });
 
+vi.mock("../../services/providers/providerModels", async () => {
+  const actual = await vi.importActual<typeof import("../../services/providers/providerModels")>(
+    "../../services/providers/providerModels"
+  );
+  return {
+    ...actual,
+    providerModelsRefresh: vi.fn(),
+  };
+});
+
 function makeProvider(
   partial: Partial<ProviderSummary> & Pick<ProviderSummary, "id" | "cli_key" | "name">
 ): ProviderSummary {
   return {
     id: partial.id,
+    provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: partial.cli_key,
     name: partial.name,
     base_urls: partial.base_urls ?? [],
@@ -889,6 +909,15 @@ describe("query/providers", () => {
 
     const client = createTestQueryClient();
     client.setQueryData(providersKeys.list("claude"), [existing]);
+    const otherProviderUuid = "22222222-2222-4222-8222-222222222222";
+    client.setQueryData(providerModelsKeys.catalog(1, existing.provider_uuid), {
+      providerId: 1,
+      marker: "target",
+    });
+    client.setQueryData(providerModelsKeys.catalog(2, otherProviderUuid), {
+      providerId: 2,
+      marker: "other",
+    });
     client.setQueryData(providerAccountUsageKeys.detail(1), {
       adapter_kind: "sub2api",
       status: "available",
@@ -937,10 +966,253 @@ describe("query/providers", () => {
 
     expect(client.getQueryData(providersKeys.list("claude"))).toEqual([saved]);
     expect(client.getQueryData(providerAccountUsageKeys.detail(1))).toBeUndefined();
+    expect(
+      client.getQueryState(providerModelsKeys.catalog(1, existing.provider_uuid))?.isInvalidated
+    ).toBe(true);
+    expect(
+      client.getQueryState(providerModelsKeys.catalog(2, otherProviderUuid))?.isInvalidated
+    ).toBe(false);
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: providerModelsKeys.catalog(1, existing.provider_uuid),
+      exact: true,
+    });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: providersKeys.list("claude") });
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: gatewayKeys.circuitStatus("claude"),
     });
+  });
+
+  it("keeps provider B refresh cached while provider A is being updated", async () => {
+    setTauriRuntime();
+
+    const providerA = makeProvider({ id: 1, cli_key: "codex", name: "Provider A" });
+    const providerB = makeProvider({
+      id: 2,
+      cli_key: "codex",
+      name: "Provider B",
+      provider_uuid: "22222222-2222-4222-8222-222222222222",
+    });
+    const savedProviderA = { ...providerA, name: "Provider A updated" };
+    const pendingProviderBRefresh = deferred<ProviderModelCatalog>();
+    const refreshedProviderB: ProviderModelCatalog = {
+      providerId: providerB.id,
+      providerUuid: providerB.provider_uuid,
+      protocol: "openai_compatible",
+      stale: false,
+      lastAttemptAt: 200,
+      lastSuccessAt: 200,
+      lastErrorCode: null,
+      models: [],
+    };
+    vi.mocked(providerUpsert).mockResolvedValueOnce(savedProviderA);
+    vi.mocked(providerModelsRefresh).mockReturnValueOnce(pendingProviderBRefresh.promise);
+
+    const client = createTestQueryClient();
+    client.setQueryData(providersKeys.list("codex"), [providerA, providerB]);
+    client.setQueryData(providerModelsKeys.catalog(1, providerA.provider_uuid), {
+      providerId: 1,
+      marker: "provider-a-before-edit",
+    });
+    const wrapper = createQueryWrapper(client);
+    const refreshMutation = renderHook(() => useProviderModelsRefreshMutation(), { wrapper });
+    const upsertMutation = renderHook(() => useProviderUpsertMutation(), { wrapper });
+
+    let refreshPromise!: Promise<ProviderModelCatalog>;
+    act(() => {
+      refreshPromise = refreshMutation.result.current.mutateAsync({
+        providerId: providerB.id,
+        providerUuid: providerB.provider_uuid,
+      });
+    });
+    await waitFor(() =>
+      expect(providerModelsRefresh).toHaveBeenCalledWith(providerB.id, providerB.provider_uuid)
+    );
+
+    await act(async () => {
+      await upsertMutation.result.current.mutateAsync({
+        input: {
+          providerId: providerA.id,
+          cliKey: "codex",
+          name: savedProviderA.name,
+          baseUrls: [],
+          baseUrlMode: "order",
+          enabled: true,
+          costMultiplier: 1,
+          limit5hUsd: null,
+          limitDailyUsd: null,
+          dailyResetMode: "fixed",
+          dailyResetTime: "00:00:00",
+          limitWeeklyUsd: null,
+          limitMonthlyUsd: null,
+          limitTotalUsd: null,
+        },
+      });
+    });
+
+    pendingProviderBRefresh.resolve(refreshedProviderB);
+    await act(async () => {
+      await refreshPromise;
+    });
+
+    expect(
+      client.getQueryData(providerModelsKeys.catalog(providerB.id, providerB.provider_uuid))
+    ).toEqual(refreshedProviderB);
+    expect(
+      client.getQueryState(providerModelsKeys.catalog(providerA.id, providerA.provider_uuid))
+        ?.isInvalidated
+    ).toBe(true);
+  });
+
+  it("keeps the same provider refresh result when only display fields change", async () => {
+    setTauriRuntime();
+    vi.clearAllMocks();
+
+    const provider = makeProvider({
+      id: 31,
+      cli_key: "codex",
+      name: "Provider before",
+      base_urls: ["https://provider.example/v1"],
+      api_key_configured: true,
+    });
+    const saved = { ...provider, name: "Provider after" };
+    const pendingRefresh = deferred<ProviderModelCatalog>();
+    vi.mocked(providerUpsert).mockResolvedValueOnce(saved);
+    vi.mocked(providerModelsRefresh).mockReturnValueOnce(pendingRefresh.promise);
+
+    const client = createTestQueryClient();
+    client.setQueryData(providersKeys.list("codex"), [provider]);
+    const wrapper = createQueryWrapper(client);
+    const refreshMutation = renderHook(() => useProviderModelsRefreshMutation(), { wrapper });
+    const upsertMutation = renderHook(() => useProviderUpsertMutation(), { wrapper });
+
+    let refreshPromise!: Promise<ProviderModelCatalog>;
+    act(() => {
+      refreshPromise = refreshMutation.result.current.mutateAsync({
+        providerId: provider.id,
+        providerUuid: provider.provider_uuid,
+      });
+    });
+    await waitFor(() =>
+      expect(providerModelsRefresh).toHaveBeenCalledWith(provider.id, provider.provider_uuid)
+    );
+
+    await act(async () => {
+      await upsertMutation.result.current.mutateAsync({
+        input: {
+          providerId: provider.id,
+          cliKey: "codex",
+          name: saved.name,
+          baseUrls: provider.base_urls,
+          baseUrlMode: provider.base_url_mode,
+          authMode: provider.auth_mode,
+          apiKey: null,
+          enabled: provider.enabled,
+          costMultiplier: provider.cost_multiplier,
+          limit5hUsd: null,
+          limitDailyUsd: null,
+          dailyResetMode: "fixed",
+          dailyResetTime: "00:00:00",
+          limitWeeklyUsd: null,
+          limitMonthlyUsd: null,
+          limitTotalUsd: null,
+        },
+      });
+    });
+
+    const refreshed: ProviderModelCatalog = {
+      providerId: provider.id,
+      providerUuid: provider.provider_uuid,
+      protocol: "openai_compatible",
+      stale: false,
+      lastAttemptAt: 300,
+      lastSuccessAt: 300,
+      lastErrorCode: null,
+      models: [],
+    };
+    pendingRefresh.resolve(refreshed);
+    await act(async () => {
+      await refreshPromise;
+    });
+
+    expect(
+      client.getQueryData(providerModelsKeys.catalog(provider.id, provider.provider_uuid))
+    ).toEqual(refreshed);
+  });
+
+  it("drops the same provider refresh result when connection fields change", async () => {
+    setTauriRuntime();
+    vi.clearAllMocks();
+
+    const provider = makeProvider({
+      id: 32,
+      cli_key: "codex",
+      name: "Provider",
+      base_urls: ["https://old.example/v1"],
+      api_key_configured: true,
+    });
+    const saved = { ...provider, base_urls: ["https://new.example/v1"] };
+    const pendingRefresh = deferred<ProviderModelCatalog>();
+    vi.mocked(providerUpsert).mockResolvedValueOnce(saved);
+    vi.mocked(providerModelsRefresh).mockReturnValueOnce(pendingRefresh.promise);
+
+    const client = createTestQueryClient();
+    const key = providerModelsKeys.catalog(provider.id, provider.provider_uuid);
+    client.setQueryData(providersKeys.list("codex"), [provider]);
+    const wrapper = createQueryWrapper(client);
+    const refreshMutation = renderHook(() => useProviderModelsRefreshMutation(), { wrapper });
+    const upsertMutation = renderHook(() => useProviderUpsertMutation(), { wrapper });
+
+    let refreshPromise!: Promise<ProviderModelCatalog>;
+    act(() => {
+      refreshPromise = refreshMutation.result.current.mutateAsync({
+        providerId: provider.id,
+        providerUuid: provider.provider_uuid,
+      });
+    });
+    await waitFor(() =>
+      expect(providerModelsRefresh).toHaveBeenCalledWith(provider.id, provider.provider_uuid)
+    );
+
+    await act(async () => {
+      await upsertMutation.result.current.mutateAsync({
+        input: {
+          providerId: provider.id,
+          cliKey: "codex",
+          name: provider.name,
+          baseUrls: saved.base_urls,
+          baseUrlMode: provider.base_url_mode,
+          authMode: provider.auth_mode,
+          apiKey: null,
+          enabled: provider.enabled,
+          costMultiplier: provider.cost_multiplier,
+          limit5hUsd: null,
+          limitDailyUsd: null,
+          dailyResetMode: "fixed",
+          dailyResetTime: "00:00:00",
+          limitWeeklyUsd: null,
+          limitMonthlyUsd: null,
+          limitTotalUsd: null,
+        },
+      });
+    });
+
+    const postEditCatalog = {
+      providerId: provider.id,
+      providerUuid: provider.provider_uuid,
+      protocol: "openai_compatible" as const,
+      stale: true,
+      lastAttemptAt: null,
+      lastSuccessAt: null,
+      lastErrorCode: null,
+      models: [],
+    };
+    client.setQueryData(key, postEditCatalog);
+    pendingRefresh.resolve({ ...postEditCatalog, stale: false, lastSuccessAt: 200 });
+    await act(async () => {
+      await refreshPromise;
+    });
+
+    expect(client.getQueryData(key)).toEqual(postEditCatalog);
   });
 
   it("useProviderSetEnabledMutation is a no-op when service returns null", async () => {
@@ -1003,6 +1275,14 @@ describe("query/providers", () => {
 
     const client = createTestQueryClient();
     client.setQueryData(providersKeys.list("claude"), providers);
+    client.setQueryData(providerModelsKeys.catalog(1, providers[0].provider_uuid), {
+      providerId: 1,
+      marker: "target",
+    });
+    client.setQueryData(providerModelsKeys.catalog(2, providers[1].provider_uuid), {
+      providerId: 2,
+      marker: "other",
+    });
     client.setQueryData(providerAccountUsageKeys.detail(1), {
       adapter_kind: "sub2api",
       status: "available",
@@ -1034,7 +1314,87 @@ describe("query/providers", () => {
     expect(providerDelete).toHaveBeenCalledWith(1, { clearUsageStats: false });
     expect(client.getQueryData(providersKeys.list("claude"))).toEqual([providers[1]]);
     expect(client.getQueryData(providerAccountUsageKeys.detail(1))).toBeUndefined();
+    expect(
+      client.getQueryData(providerModelsKeys.catalog(1, providers[0].provider_uuid))
+    ).toBeUndefined();
+    expect(client.getQueryData(providerModelsKeys.catalog(2, providers[1].provider_uuid))).toEqual({
+      providerId: 2,
+      marker: "other",
+    });
     expect(client.getQueryData(providersKeys.list(" claude " as never))).toBeUndefined();
+  });
+
+  it("retires in-flight model mutations for a deleted provider without affecting another provider", async () => {
+    setTauriRuntime();
+
+    const providerA = makeProvider({ id: 1, cli_key: "codex", name: "P1" });
+    const providerB = makeProvider({
+      id: 2,
+      cli_key: "codex",
+      name: "P2",
+      provider_uuid: "22222222-2222-4222-8222-222222222222",
+    });
+    const pendingA = deferred<ProviderModelCatalog>();
+    const pendingB = deferred<ProviderModelCatalog>();
+    const catalogA: ProviderModelCatalog = {
+      providerId: providerA.id,
+      providerUuid: providerA.provider_uuid,
+      protocol: "openai_compatible",
+      stale: false,
+      lastAttemptAt: 1,
+      lastSuccessAt: 1,
+      lastErrorCode: null,
+      models: [],
+    };
+    const catalogB: ProviderModelCatalog = {
+      ...catalogA,
+      providerId: providerB.id,
+      providerUuid: providerB.provider_uuid,
+    };
+    vi.mocked(providerModelsRefresh)
+      .mockReturnValueOnce(pendingA.promise)
+      .mockReturnValueOnce(pendingB.promise);
+    vi.mocked(providerDelete).mockResolvedValueOnce(true);
+
+    const client = createTestQueryClient();
+    client.setQueryData(providersKeys.list("codex"), [providerA, providerB]);
+    const wrapper = createQueryWrapper(client);
+    const refreshA = renderHook(() => useProviderModelsRefreshMutation(), { wrapper });
+    const refreshB = renderHook(() => useProviderModelsRefreshMutation(), { wrapper });
+    const deleteProvider = renderHook(() => useProviderDeleteMutation(), { wrapper });
+
+    let refreshAPromise!: Promise<ProviderModelCatalog>;
+    let refreshBPromise!: Promise<ProviderModelCatalog>;
+    act(() => {
+      refreshAPromise = refreshA.result.current.mutateAsync({
+        providerId: providerA.id,
+        providerUuid: providerA.provider_uuid,
+      });
+      refreshBPromise = refreshB.result.current.mutateAsync({
+        providerId: providerB.id,
+        providerUuid: providerB.provider_uuid,
+      });
+    });
+    await waitFor(() => expect(providerModelsRefresh).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      await deleteProvider.result.current.mutateAsync({
+        cliKey: "codex",
+        providerId: providerA.id,
+      });
+    });
+    pendingA.resolve(catalogA);
+    pendingB.resolve(catalogB);
+    await act(async () => {
+      await Promise.all([refreshAPromise, refreshBPromise]);
+    });
+
+    expect(
+      client.getQueryState(providerModelsKeys.catalog(providerA.id, providerA.provider_uuid))
+    ).toBeUndefined();
+    expect(
+      client.getQueryData(providerModelsKeys.catalog(providerB.id, providerB.provider_uuid))
+    ).toEqual(catalogB);
   });
 
   it("useProviderDeleteMutation forwards usage stats cleanup choice", async () => {

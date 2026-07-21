@@ -333,7 +333,7 @@ do not bolt marker deletion or case handling onto the write phase.
   single-link checks. The production FIFO replacement regression must use an
   external bounded watchdog so a blocking open cannot make the test hang.
 
-## Scenario: Account-Usage Credentials In Config Bundle V3
+## Scenario: Account-Usage Credentials In Config Bundle V3 And Provider Identity In V4
 
 ### 1. Scope / Trigger
 
@@ -345,12 +345,15 @@ intentionally differs from single-provider sharing.
 ### 2. Signatures
 
 ```rust
-pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 3;
+pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 4;
 pub(crate) const CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION: u32 = 2;
 pub(crate) const CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION: u32 = 3;
+pub(crate) const CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION: u32 = 4;
 
 pub struct ProviderExport {
     // Existing provider fields omitted.
+    pub provider_uuid: Option<String>,
+    pub source_provider_uuid: Option<String>,
     pub account_usage_config: Option<serde_json::Value>,
     pub account_usage_credentials: Option<ProviderAccountUsageCredentialsExport>,
 }
@@ -371,16 +374,22 @@ same SQLite transaction that inserts the provider and canonical extension.
 
 ### 3. Contracts
 
-- Export always writes schema v3. For each provider it exports the canonical
-  built-in account-usage config and, when either private field exists, one
-  optional private credential snapshot.
+- Export always writes schema v4. It retains the v3 account-usage snapshot
+  behavior and adds a canonical provider UUID for every provider plus UUID
+  links for bridge sources. A v4 bundle never derives provider identity from
+  numeric IDs, names, or ordering.
+- Schema v4 provider UUIDs are canonical lowercase UUIDv4 values, are unique
+  across the bundle, and source UUID references must resolve to a different
+  provider in the same bundle. Validate these facts before any destructive
+  import work.
 - Account config passes through the shared extension sanitizer before leaving
   or entering the database. Private identity/token fields never remain inside
   extension JSON.
-- Schema validation accepts exactly v1, v2, and v3. Capability thresholds are
-  feature-owned constants: complete installed/local Skill payload begins at
-  v2, while account config/credential snapshots begin at v3. Do not compare
-  both features to the mutable current-version constant.
+- Schema validation accepts exactly v1, v2, v3, and v4. Capability thresholds
+  are feature-owned constants: complete installed/local Skill payload begins
+  at v2, account config/credential snapshots begin at v3, and stable provider
+  UUIDs begin at v4. Do not compare these features to the mutable current
+  version constant.
 - v1 preserves its legacy Skill semantics and imports no account-usage
   snapshot. v2 requires/restores full Skill payloads but still imports no
   account-usage snapshot. Even if an older-version JSON contains those optional
@@ -388,6 +397,12 @@ same SQLite transaction that inserts the provider and canonical extension.
 - v3 requires the established full Skill payload behavior and imports
   canonical account config plus optional credentials. Missing credential
   snapshot means the restored provider has no private account credentials.
+- v4 retains the v3 account behavior and requires the provider/source UUID
+  fields. On a same-machine import, local managed-model catalogs and Codex
+  profile metadata may be rebound only through an exact retained provider UUID;
+  they are never serialized into the bundle. A legacy v1-v3 import is rejected
+  before replacement when local managed profiles exist because it cannot prove
+  that identity.
 - User ID normalization requires ASCII digits in `1..=i64::MAX`; token
   normalization applies the private credential size/header rules. Any invalid
   v3 snapshot fails before commit.
@@ -412,6 +427,9 @@ same SQLite transaction that inserts the provider and canonical extension.
 | Schema v2 missing required Skill payload | Reject under the existing v2 rule |
 | Schema v3 with canonical config and valid credentials | Restore both in provider transaction |
 | Schema v3 with no credential snapshot | Restore provider/config without a private row |
+| Schema v4 with valid provider/source UUIDs | Restore v3 state and retain exact provider identity links |
+| Schema v4 with missing, invalid, duplicate, or dangling UUID | Reject before destructive import |
+| Schema v1-v3 while local managed profiles exist | Reject before replacing providers |
 | Schema v3 has invalid/out-of-range User ID | `SEC_INVALID_INPUT`; roll back the whole import |
 | Schema v3 has invalid/oversized token | `SEC_INVALID_INPUT`; roll back the whole import |
 | Account config contains historical private fields | Strip them through the shared sanitizer |
@@ -435,10 +453,12 @@ same SQLite transaction that inserts the provider and canonical extension.
 
 ### 6. Tests Required
 
-- Assert export emits schema v3, canonical account config, and synthetic
+- Assert export emits schema v4, canonical account config, stable provider
+  UUIDs, and synthetic
   credentials only for providers that have private data.
-- Run a v1/v2/v3 matrix proving the independent Skill and account-snapshot
-  capability thresholds, including v2's full Skill requirements.
+- Run a v1/v2/v3/v4 matrix proving the independent Skill, account-snapshot,
+  and provider-UUID capability thresholds, including v2's full Skill
+  requirements.
 - Round-trip v3 account mode, User ID, token, and refresh settings; assert the
   extension contains no historical private keys and summary contains no token.
 - Inject out-of-range User ID, invalid token, invalid account config, and a
@@ -470,3 +490,40 @@ let imports_account_credentials =
 
 Each feature keeps the version at which it first appeared, so advancing the
 current export schema cannot silently regress older bundle semantics.
+
+## Scenario: Local Managed Model State During Config Bundle V4 Import
+
+### 1. Scope / Trigger
+
+Use this scenario when a full configuration import changes provider identity,
+provider-model catalogs, or managed Codex profile metadata.
+
+### 2. Contracts
+
+- Provider-model catalogs, manual model entries, managed-profile metadata, and
+  generated `$CODEX_HOME/<name>.config.toml` files remain machine-local. They
+  are not exported in a config bundle.
+- Before the import deletes or replaces provider rows, capture local managed
+  state together with the referenced provider UUIDs in the same import lock
+  and database transaction lifecycle.
+- A v4 import may reinsert captured local state only when its provider UUID is
+  present in the incoming bundle and remains an eligible direct Codex provider.
+  Reinserted discovered entries are stale because the connection may have
+  changed.
+- A profile whose provider UUID is absent, no longer direct Codex, or whose
+  stored Codex home no longer matches a safe resolved home blocks the import
+  before the existing configuration is cleared. Report only bounded profile
+  names, never a credential, URL, raw upstream body, or filesystem detail.
+- Config v1-v3 does not carry stable provider identity. When any local managed
+  profile exists, reject those imports before destructive work instead of
+  guessing an ID/name mapping. Without local managed profiles, retain the
+  existing legacy import behavior and generate fresh provider UUIDs.
+
+### 3. Tests Required
+
+- Cover v4 same-machine rebinding, stale discovered-state restoration, and
+  local state removal for unreferenced providers.
+- Cover malformed/duplicate/dangling v4 UUIDs and every profile-rebinding
+  rejection before provider deletion.
+- Cover v1-v3 import with and without local managed profiles, and prove no
+  catalog/profile row or profile file enters export bytes.

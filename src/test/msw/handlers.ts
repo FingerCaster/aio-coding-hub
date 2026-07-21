@@ -223,6 +223,8 @@ export const handlers = [
         : null;
     const summary: ProviderSummary = {
       id: nextId,
+      provider_uuid:
+        existing?.provider_uuid ?? `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`,
       cli_key: cliKey,
       name: input.name,
       base_urls: input.baseUrls.map((value) => String(value)),
@@ -331,6 +333,7 @@ export const handlers = [
       const duplicated: ProviderSummary = {
         ...source,
         id: nextId,
+        provider_uuid: `00000000-0000-4000-8000-${String(nextId).padStart(12, "0")}`,
         name: `${source.name} 副本`,
         updated_at: Date.now(),
       };

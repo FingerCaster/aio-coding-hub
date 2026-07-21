@@ -294,9 +294,10 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
     apply_gateway_error_hook(&state.db, state.plugin_pipeline.clone(), trace_id, resp).await
 }
 
-pub(super) struct TerminalBridgeErrorInput<'a, R: tauri::Runtime = tauri::Wry> {
+pub(super) struct TerminalRequestErrorInput<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) state: &'a GatewayAppState<R>,
     pub(super) abort_guard: &'a mut RequestAbortGuard<R>,
+    pub(super) status: StatusCode,
     pub(super) observe: bool,
     pub(super) attempts: Vec<FailoverAttempt>,
     pub(super) cli_key: String,
@@ -316,12 +317,13 @@ pub(super) struct TerminalBridgeErrorInput<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) reason: String,
 }
 
-pub(super) async fn terminal_bridge_error<R: tauri::Runtime>(
-    input: TerminalBridgeErrorInput<'_, R>,
+pub(super) async fn terminal_request_error<R: tauri::Runtime>(
+    input: TerminalRequestErrorInput<'_, R>,
 ) -> Response {
-    let TerminalBridgeErrorInput {
+    let TerminalRequestErrorInput {
         state,
         abort_guard,
+        status,
         observe,
         attempts,
         cli_key,
@@ -344,12 +346,13 @@ pub(super) async fn terminal_bridge_error<R: tauri::Runtime>(
     tracing::warn!(
         trace_id = %trace_id,
         error_code,
+        status = status.as_u16(),
         cli_key = %cli_key,
-        "bridge request translation failed"
+        "terminal request rejected"
     );
 
     let resp = error_response(
-        StatusCode::BAD_REQUEST,
+        status,
         trace_id.clone(),
         error_code,
         reason.clone(),
@@ -386,7 +389,7 @@ pub(super) async fn terminal_bridge_error<R: tauri::Runtime>(
             created_at,
         })
         .with_completion(RequestCompletion::failure(
-            StatusCode::BAD_REQUEST.as_u16(),
+            status.as_u16(),
             Some(error_category),
             error_code,
         )),

@@ -186,6 +186,7 @@ mod tests {
             path: "/v1/messages".to_string(),
             query: None,
             requested_model: Some("claude-sonnet-4".to_string()),
+            requested_upstream_model: None,
             special_settings_json: None,
             attempt_index,
             provider_id: i64::from(attempt_index),

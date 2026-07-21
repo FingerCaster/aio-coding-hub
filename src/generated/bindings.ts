@@ -745,6 +745,128 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async providerModelsGet(
+    providerId: number,
+    providerUuid: string
+  ): Promise<Result<ProviderModelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_models_get", { providerId, providerUuid }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerModelsRefresh(
+    providerId: number,
+    providerUuid: string
+  ): Promise<Result<ProviderModelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_models_refresh", { providerId, providerUuid }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerModelManualUpsert(
+    providerId: number,
+    providerUuid: string,
+    remoteModelId: string
+  ): Promise<Result<ProviderModelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_model_manual_upsert", {
+          providerId,
+          providerUuid,
+          remoteModelId,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerModelManualDelete(
+    providerId: number,
+    providerUuid: string,
+    modelUuid: string
+  ): Promise<Result<ProviderModelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_model_manual_delete", {
+          providerId,
+          providerUuid,
+          modelUuid,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async providerModelCapabilitiesUpdate(
+    providerId: number,
+    providerUuid: string,
+    modelUuid: string,
+    capabilities: ProviderModelCapabilitiesInput
+  ): Promise<Result<ProviderModelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_model_capabilities_update", {
+          providerId,
+          providerUuid,
+          modelUuid,
+          capabilities,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async codexManagedProfilesList(): Promise<Result<CodexManagedProfile[], string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("codex_managed_profiles_list") };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async codexManagedProfileCreate(
+    profileName: string,
+    modelUuid: string
+  ): Promise<Result<CodexManagedProfile, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("codex_managed_profile_create", { profileName, modelUuid }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async codexManagedProfileDelete(
+    profileUuid: string
+  ): Promise<Result<CodexManagedProfileDeleteResult, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("codex_managed_profile_delete", { profileUuid }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async providerClaudeTerminalLaunchCommand(providerId: number): Promise<Result<string, string>> {
     try {
       return {
@@ -2738,6 +2860,21 @@ export type CodexConfigTomlValidationResult = {
   error: CodexConfigTomlValidationError | null;
 };
 export type CodexHomeMode = "user_home_default" | "follow_codex_home" | "custom";
+export type CodexManagedProfile = {
+  profileUuid: string;
+  profileName: string;
+  modelUuid: string;
+  providerId: number;
+  providerUuid: string;
+  providerName: string;
+  remoteModelId: string;
+  canonicalModel: string;
+  fileStatus: CodexManagedProfileFileStatus;
+  createdAt: number;
+  updatedAt: number;
+};
+export type CodexManagedProfileDeleteResult = { deleted: boolean; externalFilePreserved: boolean };
+export type CodexManagedProfileFileStatus = "managed" | "missing" | "modified";
 export type CodexModelCapability = {
   id: string;
   model: string;
@@ -2863,6 +3000,7 @@ export type FailoverAttempt = {
   circuit_trigger_error_code?: string | null;
   provider_bridged: boolean | null;
   timeout_secs: number | null;
+  requested_upstream_model: string | null;
 };
 export type FrontendErrorReportInput = {
   source: string;
@@ -2893,6 +3031,7 @@ export type GatewayAttemptEvent = {
   path: string;
   query: string | null;
   requested_model: string | null;
+  requested_upstream_model: string | null;
   special_settings_json: string | null;
   attempt_index: number;
   provider_id: number;
@@ -3769,6 +3908,45 @@ export type ProviderLimitUsageRow = {
   window_weekly_start_ts: number;
   window_monthly_start_ts: number;
 };
+export type ProviderModelCapabilitiesInput = {
+  supportedReasoningEfforts: ProviderModelReasoningEffort[];
+  defaultReasoningEffort: ProviderModelReasoningEffort | null;
+  contextWindow: number | null;
+};
+export type ProviderModelCatalog = {
+  providerId: number;
+  providerUuid: string;
+  protocol: string;
+  stale: boolean;
+  lastAttemptAt: number | null;
+  lastSuccessAt: number | null;
+  lastErrorCode: string | null;
+  models: ProviderModelEntry[];
+};
+export type ProviderModelEntry = {
+  modelUuid: string;
+  providerId: number;
+  remoteModelId: string;
+  source: ProviderModelSource;
+  stale: boolean;
+  lastSeenAt: number | null;
+  createdAt: number;
+  updatedAt: number;
+  capabilitiesConfigured: boolean;
+  supportedReasoningEfforts: ProviderModelReasoningEffort[];
+  defaultReasoningEffort: ProviderModelReasoningEffort | null;
+  contextWindow: number | null;
+};
+export type ProviderModelReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
+export type ProviderModelSource = "discovered" | "manual";
 export type ProviderOAuthDeviceCodeCancelResult = { cancelled: boolean };
 export type ProviderOAuthDeviceCodePollInput = { flowId: string };
 export type ProviderOAuthDeviceCodePollResult = {
@@ -3854,6 +4032,7 @@ export type ProviderShareImportPreview = {
 };
 export type ProviderSummary = {
   id: number;
+  provider_uuid: string;
   cli_key: string;
   name: string;
   base_urls: string[];

@@ -1,5 +1,6 @@
 //! Read the model capability catalog exposed by the installed Codex CLI.
 
+pub(crate) mod managed;
 mod protocol;
 
 use crate::{cli_manager, codex_paths};
@@ -55,8 +56,8 @@ pub struct CodexModelCatalogState {
     pub models: Vec<CodexModelCapability>,
 }
 
-pub fn codex_model_catalog_get(
-    app: &tauri::AppHandle,
+pub fn codex_model_catalog_get<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<CodexModelCatalogState> {
     let config_path = codex_paths::codex_config_toml_path(app)?;
     let mut snapshot = CodexModelCatalogSnapshot {

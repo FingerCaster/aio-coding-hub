@@ -33,6 +33,7 @@ fn skipped_attempt(reason_code: Option<&'static str>) -> FailoverAttempt {
         circuit_trigger_error_code: None,
         provider_bridged: None,
         timeout_secs: None,
+        requested_upstream_model: None,
     }
 }
 
@@ -62,6 +63,7 @@ fn terminal_bridge_attempt() -> FailoverAttempt {
         circuit_trigger_error_code: None,
         provider_bridged: Some(true),
         timeout_secs: None,
+        requested_upstream_model: None,
     }
 }
 
@@ -91,6 +93,7 @@ fn real_attempt() -> FailoverAttempt {
         circuit_trigger_error_code: None,
         provider_bridged: Some(false),
         timeout_secs: None,
+        requested_upstream_model: None,
     }
 }
 
@@ -124,6 +127,7 @@ fn timeout_attempt(
         circuit_trigger_error_code: None,
         provider_bridged: Some(false),
         timeout_secs: None,
+        requested_upstream_model: None,
     }
 }
 
@@ -309,9 +313,9 @@ fn gate_skip_attempt_without_trigger_omits_trigger_key_but_keeps_state() {
 }
 
 #[test]
-fn non_circuit_attempts_serialize_without_new_attribution_keys() {
-    // Baseline key set before this feature: the two new keys must be absent
-    // when None so successful requests' attempts_json gains zero bytes.
+fn non_circuit_attempts_serialize_without_circuit_attribution_keys() {
+    // The two circuit-only keys must be absent when None. Other stable wire
+    // fields, including requested_upstream_model, serialize explicit nulls.
     let expected_keys = [
         "provider_id",
         "provider_name",
@@ -335,6 +339,7 @@ fn non_circuit_attempts_serialize_without_new_attribution_keys() {
         "circuit_failure_threshold",
         "provider_bridged",
         "timeout_secs",
+        "requested_upstream_model",
     ];
 
     let mut success = real_attempt();

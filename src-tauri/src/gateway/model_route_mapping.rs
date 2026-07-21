@@ -22,6 +22,53 @@ pub(in crate::gateway) struct ModelRouteSettingInput<'a> {
     pub(in crate::gateway) provider_name: &'a str,
 }
 
+pub(in crate::gateway) struct SharedModelRouteSettingInput<'a> {
+    pub(in crate::gateway) cli_key: &'a str,
+    pub(in crate::gateway) requested_model: Option<&'a str>,
+    pub(in crate::gateway) actual_model: Option<&'a str>,
+    pub(in crate::gateway) conflicting_actual_model: Option<&'a str>,
+    pub(in crate::gateway) actual_reasoning_effort: Option<&'a str>,
+    pub(in crate::gateway) special_settings: &'a std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    pub(in crate::gateway) provider_id: i64,
+    pub(in crate::gateway) provider_name: &'a str,
+}
+
+pub(in crate::gateway) struct ModelRouteBytesInput<'a> {
+    pub(in crate::gateway) cli_key: &'a str,
+    pub(in crate::gateway) requested_model: Option<&'a str>,
+    pub(in crate::gateway) response_bytes: &'a [u8],
+    pub(in crate::gateway) special_settings: &'a std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
+    pub(in crate::gateway) provider_id: i64,
+    pub(in crate::gateway) provider_name: &'a str,
+}
+
+pub(in crate::gateway) fn observe_model_route_from_bytes(
+    input: ModelRouteBytesInput<'_>,
+) -> crate::usage::ModelRouteEvidence {
+    let evidence = crate::usage::parse_model_route_evidence_from_json_or_sse_bytes(
+        input.cli_key,
+        input.response_bytes,
+    );
+    if let Some(setting) =
+        build_model_route_mapping_setting_from_shared(SharedModelRouteSettingInput {
+            cli_key: input.cli_key,
+            requested_model: input.requested_model,
+            actual_model: evidence.first_model.as_deref(),
+            conflicting_actual_model: evidence.first_conflicting_model.as_deref(),
+            actual_reasoning_effort: evidence.reasoning_effort.as_deref(),
+            special_settings: input.special_settings,
+            provider_id: input.provider_id,
+            provider_name: input.provider_name,
+        })
+    {
+        crate::gateway::response_fixer::push_model_route_mapping_special_setting(
+            input.special_settings,
+            setting,
+        );
+    }
+    evidence
+}
+
 pub(in crate::gateway) fn build_model_route_mapping_setting(
     input: ModelRouteSettingInput<'_>,
 ) -> Option<Value> {
@@ -51,39 +98,99 @@ pub(in crate::gateway) fn build_model_route_mapping_setting(
     Some(json!({
         "type": "model_route_mapping",
         "cliKey": input.cli_key,
-        "requestedModel": requested_model,
+        "requestedModel": truncate_display_text(&requested_model),
         "requestedReasoningEffort": requested_effort.effort,
         "requestedReasoningEffortSource": requested_effort.source,
-        "actualModel": actual_model,
+        "actualModel": truncate_display_text(&actual_model),
         "actualReasoningEffort": actual_effort.effort,
         "actualReasoningEffortSource": actual_effort.source,
         "modelMismatch": model_mismatch,
         "effortMismatch": effort_mismatch,
         "mismatch": true,
         "providerId": input.provider_id,
-        "providerName": normalize_text(Some(input.provider_name)),
+        "providerName": normalize_text(Some(input.provider_name))
+            .map(|name| truncate_display_text(&name)),
     }))
 }
 
 pub(in crate::gateway) fn build_model_route_mapping_setting_from_shared(
-    cli_key: &str,
+    input: SharedModelRouteSettingInput<'_>,
+) -> Option<Value> {
+    let observation = classify_model_observation(
+        input.requested_model,
+        input.actual_model,
+        input.conflicting_actual_model,
+    );
+    crate::gateway::managed_model_route::update_observation(
+        input.special_settings,
+        input.provider_id,
+        observation.kind,
+    );
+    let settings = input.special_settings.lock().ok()?.clone();
+    let setting = build_model_route_mapping_setting(ModelRouteSettingInput {
+        cli_key: input.cli_key,
+        requested_model: input.requested_model,
+        actual_model: observation.actual_model.as_deref(),
+        actual_reasoning_effort: input.actual_reasoning_effort,
+        special_settings: settings.as_slice(),
+        provider_id: input.provider_id,
+        provider_name: input.provider_name,
+    });
+
+    // A request can observe more than one upstream attempt. Once a later
+    // attempt is matched or unobserved, an earlier attempt's mismatch must
+    // not survive into the terminal log and create a false warning.
+    if setting.is_none() && input.cli_key == "codex" {
+        crate::gateway::response_fixer::clear_model_route_mapping_special_setting(
+            input.special_settings,
+        );
+    }
+
+    setting
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ModelObservation {
+    kind: &'static str,
+    actual_model: Option<String>,
+}
+
+fn classify_model_observation(
     requested_model: Option<&str>,
     actual_model: Option<&str>,
-    actual_reasoning_effort: Option<&str>,
-    special_settings: &std::sync::Arc<std::sync::Mutex<Vec<Value>>>,
-    provider_id: i64,
-    provider_name: &str,
-) -> Option<Value> {
-    let settings = special_settings.lock().ok()?.clone();
-    build_model_route_mapping_setting(ModelRouteSettingInput {
-        cli_key,
-        requested_model,
-        actual_model,
-        actual_reasoning_effort,
-        special_settings: settings.as_slice(),
-        provider_id,
-        provider_name,
-    })
+    conflicting_actual_model: Option<&str>,
+) -> ModelObservation {
+    let Some(actual_model) = normalize_text(actual_model) else {
+        return ModelObservation {
+            kind: "unobserved",
+            actual_model: None,
+        };
+    };
+    let conflicting_actual_model = normalize_text(conflicting_actual_model)
+        .filter(|conflict| !same_route_part(&actual_model, conflict));
+    let requested_model = normalize_text(requested_model);
+
+    if let Some(conflict) = conflicting_actual_model {
+        let actual_for_comparison = requested_model
+            .as_deref()
+            .filter(|requested| !same_route_part(requested, &actual_model))
+            .map(|_| actual_model)
+            .unwrap_or(conflict);
+        return ModelObservation {
+            kind: "conflict",
+            actual_model: Some(actual_for_comparison),
+        };
+    }
+
+    let kind = match requested_model {
+        Some(requested) if same_route_part(&requested, &actual_model) => "matched",
+        Some(_) => "mismatch",
+        None => "unobserved",
+    };
+    ModelObservation {
+        kind,
+        actual_model: Some(actual_model),
+    }
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -175,11 +282,15 @@ fn normalize_text(value: Option<&str>) -> Option<String> {
     if value.is_empty() {
         return None;
     }
-    Some(if value.chars().count() > 200 {
+    Some(value.to_string())
+}
+
+fn truncate_display_text(value: &str) -> String {
+    if value.chars().count() > 200 {
         value.chars().take(200).collect()
     } else {
         value.to_string()
-    })
+    }
 }
 
 fn same_route_part(left: &str, right: &str) -> bool {
@@ -347,6 +458,32 @@ mod tests {
     }
 
     #[test]
+    fn skips_managed_wire_model_when_selected_effort_is_matched_or_unobserved() {
+        for actual_reasoning_effort in [None, Some("high")] {
+            assert!(build_model_route_mapping_setting(ModelRouteSettingInput {
+                cli_key: "codex",
+                requested_model: Some("grok-4.5"),
+                actual_model: Some("grok-4.5"),
+                actual_reasoning_effort,
+                special_settings: &[
+                    json!({
+                        "type": "aio_managed_model_route",
+                        "canonicalModel": "aio/grok-4-5",
+                        "wireModel": "grok-4.5"
+                    }),
+                    json!({
+                        "type": "codex_reasoning_effort",
+                        "effort": "high"
+                    }),
+                ],
+                provider_id: 7,
+                provider_name: "xAI",
+            })
+            .is_none());
+        }
+    }
+
+    #[test]
     fn skips_non_codex_routes() {
         assert!(build_model_route_mapping_setting(ModelRouteSettingInput {
             cli_key: "claude",
@@ -445,5 +582,167 @@ mod tests {
             .expect("provider name");
         assert_eq!(provider_name.chars().count(), 200);
         assert!(provider_name.is_char_boundary(provider_name.len()));
+    }
+
+    #[test]
+    fn compares_model_suffixes_beyond_the_display_limit() {
+        let shared_prefix = "x".repeat(200);
+        let requested = format!("{shared_prefix}a");
+        let actual = format!("{shared_prefix}b");
+        let setting = build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some(&requested),
+            actual_model: Some(&actual),
+            actual_reasoning_effort: None,
+            special_settings: &[],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .expect("suffix mismatch must not be hidden by display truncation");
+
+        assert_eq!(
+            setting.get("modelMismatch").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            setting
+                .get("requestedModel")
+                .and_then(Value::as_str)
+                .map(str::len),
+            Some(200)
+        );
+        assert_eq!(
+            classify_model_observation(Some(&requested), Some(&requested), Some(&actual)),
+            ModelObservation {
+                kind: "conflict",
+                actual_model: Some(actual),
+            }
+        );
+    }
+
+    #[test]
+    fn response_evidence_detects_suffix_mismatch_beyond_200_bytes() {
+        let shared_prefix = "x".repeat(200);
+        let requested = format!("{shared_prefix}{}", "a".repeat(56));
+        let actual = format!("{shared_prefix}{}", "b".repeat(56));
+        assert_eq!(requested.len(), 256);
+        assert_eq!(actual.len(), 256);
+        let response = serde_json::json!({ "model": actual }).to_string();
+        let special_settings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+
+        let evidence = observe_model_route_from_bytes(ModelRouteBytesInput {
+            cli_key: "codex",
+            requested_model: Some(&requested),
+            response_bytes: response.as_bytes(),
+            special_settings: &special_settings,
+            provider_id: 7,
+            provider_name: "Provider A",
+        });
+
+        assert_eq!(evidence.first_model.as_deref(), Some(actual.as_str()));
+        let settings = special_settings.lock().expect("route settings");
+        let mapping = settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+            })
+            .expect("suffix mismatch must produce a route warning");
+        assert_eq!(
+            mapping.get("modelMismatch").and_then(Value::as_bool),
+            Some(true)
+        );
+    }
+
+    #[test]
+    fn conflict_keeps_the_first_model_that_differs_from_wire() {
+        assert_eq!(
+            classify_model_observation(Some("wire"), Some("wire"), Some("other")),
+            ModelObservation {
+                kind: "conflict",
+                actual_model: Some("other".to_string()),
+            }
+        );
+        assert_eq!(
+            classify_model_observation(Some("wire"), Some("other"), Some("wire")),
+            ModelObservation {
+                kind: "conflict",
+                actual_model: Some("other".to_string()),
+            }
+        );
+    }
+
+    #[test]
+    fn missing_model_is_unobserved() {
+        assert_eq!(
+            classify_model_observation(Some("wire"), None, None),
+            ModelObservation {
+                kind: "unobserved",
+                actual_model: None,
+            }
+        );
+    }
+
+    #[test]
+    fn later_matched_or_unobserved_observation_clears_stale_mismatch() {
+        let special_settings = std::sync::Arc::new(std::sync::Mutex::new(Vec::new()));
+        let mismatch = build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some("wire"),
+            actual_model: Some("other"),
+            actual_reasoning_effort: None,
+            special_settings: &[],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .expect("mismatch setting");
+        crate::gateway::response_fixer::push_model_route_mapping_special_setting(
+            &special_settings,
+            mismatch,
+        );
+
+        let matched = build_model_route_mapping_setting_from_shared(SharedModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some("wire"),
+            actual_model: Some("wire"),
+            conflicting_actual_model: None,
+            actual_reasoning_effort: None,
+            special_settings: &special_settings,
+            provider_id: 7,
+            provider_name: "Provider A",
+        });
+        assert!(matched.is_none());
+        assert!(!special_settings.lock().unwrap().iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+        }));
+
+        let mismatch = build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some("wire"),
+            actual_model: Some("other"),
+            actual_reasoning_effort: None,
+            special_settings: &[],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .expect("second mismatch setting");
+        crate::gateway::response_fixer::push_model_route_mapping_special_setting(
+            &special_settings,
+            mismatch,
+        );
+        let unobserved =
+            build_model_route_mapping_setting_from_shared(SharedModelRouteSettingInput {
+                cli_key: "codex",
+                requested_model: Some("wire"),
+                actual_model: None,
+                conflicting_actual_model: None,
+                actual_reasoning_effort: None,
+                special_settings: &special_settings,
+                provider_id: 7,
+                provider_name: "Provider A",
+            });
+        assert!(unobserved.is_none());
+        assert!(!special_settings.lock().unwrap().iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+        }));
     }
 }

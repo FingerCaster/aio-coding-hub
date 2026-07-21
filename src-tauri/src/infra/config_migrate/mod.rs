@@ -2,6 +2,7 @@
 
 mod export;
 mod import;
+mod provider_local_state;
 mod rollback;
 pub(crate) mod skill_fs;
 
@@ -12,13 +13,15 @@ use crate::resident;
 use crate::shared::error::{db_err, AppResult};
 use crate::{db, settings};
 use serde::{Deserialize, Serialize};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
-pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 3;
+pub const CONFIG_BUNDLE_SCHEMA_VERSION: u32 = 4;
 pub const CONFIG_BUNDLE_SCHEMA_VERSION_V1: u32 = 1;
 pub const CONFIG_BUNDLE_SCHEMA_VERSION_V2: u32 = 2;
+pub const CONFIG_BUNDLE_SCHEMA_VERSION_V3: u32 = 3;
 pub(crate) const CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION: u32 = 2;
 pub(crate) const CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION: u32 = 3;
+pub(crate) const CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION: u32 = 4;
 /// Shared encoded budget for config export serialization and import file reads.
 pub(crate) const CONFIG_BUNDLE_ENCODED_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Compatibility alias for the shared encoded budget.
@@ -68,6 +71,8 @@ pub struct ConfigBundle {
 #[derive(Serialize, Deserialize, specta::Type)]
 pub struct ProviderExport {
     pub id: Option<i64>,
+    #[serde(default)]
+    pub provider_uuid: Option<String>,
     pub cli_key: String,
     pub name: String,
     pub base_urls: Vec<String>,
@@ -110,6 +115,8 @@ pub struct ProviderExport {
     pub note: String,
     pub source_provider_id: Option<i64>,
     pub source_provider_cli_key: Option<String>,
+    #[serde(default)]
+    pub source_provider_uuid: Option<String>,
     pub bridge_type: Option<String>,
     #[serde(default)]
     pub account_usage_config: Option<serde_json::Value>,
@@ -261,16 +268,83 @@ fn validate_bundle_schema_version(schema_version: u32) -> AppResult<()> {
         schema_version,
         CONFIG_BUNDLE_SCHEMA_VERSION_V1
             | CONFIG_BUNDLE_SCHEMA_VERSION_V2
+            | CONFIG_BUNDLE_SCHEMA_VERSION_V3
             | CONFIG_BUNDLE_SCHEMA_VERSION
     ) {
         return Err(format!(
-            "SEC_INVALID_INPUT: unsupported config bundle schema_version={}, expected one of [{}, {}, {}]",
+            "SEC_INVALID_INPUT: unsupported config bundle schema_version={}, expected one of [{}, {}, {}, {}]",
             schema_version,
             CONFIG_BUNDLE_SCHEMA_VERSION_V1,
             CONFIG_BUNDLE_SCHEMA_VERSION_V2,
+            CONFIG_BUNDLE_SCHEMA_VERSION_V3,
             CONFIG_BUNDLE_SCHEMA_VERSION
         )
         .into());
+    }
+    Ok(())
+}
+
+fn prepare_provider_identities(
+    schema_version: u32,
+    providers: &mut [ProviderExport],
+) -> AppResult<()> {
+    if schema_version < CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION {
+        for provider in providers {
+            provider.provider_uuid = Some(crate::shared::uuid::new_uuid_v4());
+            provider.source_provider_uuid = None;
+        }
+        return Ok(());
+    }
+
+    let mut provider_uuids = HashSet::with_capacity(providers.len());
+    for provider in providers.iter() {
+        let provider_uuid = provider.provider_uuid.as_deref().ok_or_else(|| {
+            crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "config bundle v4 provider is missing provider_uuid",
+            )
+        })?;
+        if !crate::shared::uuid::is_canonical_uuid_v4(provider_uuid) {
+            return Err(crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "config bundle v4 provider_uuid must be a canonical UUIDv4",
+            ));
+        }
+        if !provider_uuids.insert(provider_uuid.to_string()) {
+            return Err(crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "config bundle v4 contains duplicate provider_uuid values",
+            ));
+        }
+    }
+
+    for provider in providers.iter() {
+        let provider_uuid = provider.provider_uuid.as_deref().expect("validated UUID");
+        let source_provider_uuid = provider.source_provider_uuid.as_deref();
+        if provider.source_provider_id.is_some() && source_provider_uuid.is_none() {
+            return Err(crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "config bundle v4 bridge provider is missing source_provider_uuid",
+            ));
+        }
+        let Some(source_provider_uuid) = source_provider_uuid else {
+            continue;
+        };
+        if !crate::shared::uuid::is_canonical_uuid_v4(source_provider_uuid)
+            || !provider_uuids.contains(source_provider_uuid)
+            || source_provider_uuid == provider_uuid
+        {
+            return Err(crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "config bundle v4 contains an invalid source_provider_uuid reference",
+            ));
+        }
+        if provider.bridge_type.is_none() {
+            return Err(crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "config bundle v4 source_provider_uuid requires bridge_type",
+            ));
+        }
     }
     Ok(())
 }
@@ -377,6 +451,8 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         image_gen_configs,
     } = bundle;
 
+    prepare_provider_identities(bundle_schema_version, &mut providers)?;
+
     if !imports_account_usage_snapshot {
         for provider in &mut providers {
             provider.account_usage_config = None;
@@ -413,6 +489,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
     settings_to_write.schema_version = settings::SCHEMA_VERSION;
 
     Ok(PreparedConfigImport {
+        bundle_schema_version,
         imports_full_skill_payload,
         imports_account_usage_snapshot,
         settings_to_write,
@@ -430,6 +507,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
 }
 
 pub(crate) struct PreparedConfigImport {
+    bundle_schema_version: u32,
     imports_full_skill_payload: bool,
     imports_account_usage_snapshot: bool,
     settings_to_write: settings::AppSettings,
@@ -458,10 +536,14 @@ pub fn config_import<R: tauri::Runtime>(
     let _import_guard = config_import_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
+    // Global lock order is config import -> managed Profile lifecycle. Profile
+    // operations never acquire the import lock in the opposite direction.
+    let _profile_lifecycle_guard = crate::codex_managed_profiles::lock_profile_lifecycle();
     #[cfg(test)]
     run_after_config_import_lock_acquired_test_hook();
 
     let PreparedConfigImport {
+        bundle_schema_version,
         imports_full_skill_payload,
         imports_account_usage_snapshot,
         mut settings_to_write,
@@ -479,6 +561,8 @@ pub fn config_import<R: tauri::Runtime>(
 
     let previous_settings = settings::read(app)?;
     let runtime_backups = rollback::capture_cli_runtime_backups(app)?;
+    let imported_codex_home =
+        crate::codex_paths::codex_home_dir_for_settings(app, &settings_to_write)?;
 
     let mut conn = db.open_connection()?;
     let now = config_import_timestamp();
@@ -492,9 +576,20 @@ pub fn config_import<R: tauri::Runtime>(
         Some(import::capture_legacy_skill_state(&tx)?)
     };
 
+    let local_provider_state = provider_local_state::LocalProviderState::capture(&tx)?;
+    local_provider_state.validate_rebind(
+        bundle_schema_version,
+        &providers,
+        &imported_codex_home,
+    )?;
+    let eligible_provider_uuids = provider_local_state::eligible_provider_uuids(&providers);
+    if bundle_schema_version >= CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION {
+        provider_local_state::LocalProviderState::detach(&tx)?;
+    }
+
     import::clear_existing_config_data(&tx, imports_full_skill_payload)?;
 
-    let result = import::import_into_transaction(
+    let imported = import::import_into_transaction(
         &tx,
         now,
         providers,
@@ -508,7 +603,16 @@ pub fn config_import<R: tauri::Runtime>(
         &installed_skills,
         &local_skills,
         legacy_skill_state.as_ref(),
+        bundle_schema_version >= CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION,
     )?;
+    if bundle_schema_version >= CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION {
+        local_provider_state.restore(
+            &tx,
+            &eligible_provider_uuids,
+            &imported.provider_id_by_uuid,
+        )?;
+    }
+    let result = imported.result;
 
     if let Some(image_gen_configs) = &image_gen_configs {
         import::replace_image_gen_configs(&tx, now, image_gen_configs)?;

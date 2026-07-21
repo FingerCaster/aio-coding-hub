@@ -8,6 +8,7 @@ import { copyText } from "../../../services/clipboard";
 import { logToConsole } from "../../../services/consoleLog";
 import { openDesktopUrl } from "../../../services/desktop/opener";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../services/gateway/upstreamRetryPolicy";
+import { providerModelsRefresh } from "../../../services/providers/providerModels";
 import {
   providerCopyApiKeyToClipboard,
   providerDelete,
@@ -35,6 +36,13 @@ vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
 vi.mock("../../../services/clipboard", () => ({ copyText: vi.fn() }));
 vi.mock("../../../services/desktop/opener", () => ({ openDesktopUrl: vi.fn() }));
 
+vi.mock("../../../services/providers/providerModels", async () => {
+  const actual = await vi.importActual<typeof import("../../../services/providers/providerModels")>(
+    "../../../services/providers/providerModels"
+  );
+  return { ...actual, providerModelsRefresh: vi.fn() };
+});
+
 vi.mock("../../../services/providers/providers", async () => {
   const actual = await vi.importActual<typeof import("../../../services/providers/providers")>(
     "../../../services/providers/providers"
@@ -59,6 +67,7 @@ vi.mock("../../../services/providers/providers", async () => {
 function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 1,
+    provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: "claude",
     name: "Existing",
     base_urls: ["https://example.com/v1"],
@@ -221,6 +230,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     vi.mocked(openDesktopUrl).mockReset();
     vi.mocked(logToConsole).mockReset();
     vi.mocked(toast).mockReset();
+    vi.mocked(providerModelsRefresh).mockReset();
   });
 
   it("supports Grok API key and OAuth modes without CX2CC", () => {
@@ -439,6 +449,56 @@ describe("pages/providers/ProviderEditorDialog", () => {
         })
       )
     );
+  });
+
+  it("saves a direct Codex provider before fetching its models", async () => {
+    const saved = makeProvider({
+      id: 8,
+      cli_key: "codex",
+      name: "Codex Provider",
+      base_urls: ["https://example.com/v1"],
+    });
+    vi.mocked(providerUpsert).mockResolvedValueOnce(saved);
+    vi.mocked(providerModelsRefresh).mockResolvedValueOnce({
+      providerId: 8,
+      providerUuid: "11111111-1111-4111-8111-111111111111",
+      protocol: "openai_compatible",
+      stale: false,
+      lastAttemptAt: 100,
+      lastSuccessAt: 100,
+      lastErrorCode: null,
+      models: [],
+    });
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+
+    render(
+      <ProviderEditorDialog
+        mode="create"
+        open={true}
+        cliKey="codex"
+        onSaved={onSaved}
+        onOpenChange={onOpenChange}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    fireEvent.change(dialog.getByPlaceholderText("default"), {
+      target: { value: "Codex Provider" },
+    });
+    fireEvent.change(dialog.getByPlaceholderText("sk-…"), { target: { value: "sk-test" } });
+    fireEvent.change(dialog.getByPlaceholderText(/中转 endpoint/), {
+      target: { value: "https://example.com/v1" },
+    });
+    fireEvent.click(dialog.getByRole("button", { name: "保存并获取模型" }));
+
+    await waitFor(() => expect(providerUpsert).toHaveBeenCalledOnce());
+    await waitFor(() => expect(providerModelsRefresh).toHaveBeenCalledWith(8, saved.provider_uuid));
+    expect(vi.mocked(providerUpsert).mock.invocationCallOrder[0]).toBeLessThan(
+      vi.mocked(providerModelsRefresh).mock.invocationCallOrder[0]
+    );
+    expect(onSaved).toHaveBeenCalledWith("codex");
+    expect(onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it("keeps the dialog open when provider upsert rejects during create save", async () => {
@@ -1127,6 +1187,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.click(dialog.getByRole("tab", { name: "API 密钥" }));
+    expect(dialog.getByRole("button", { name: "保存并获取模型" })).toBeInTheDocument();
 
     const baseUrlInput = dialog.getByPlaceholderText(/中转 endpoint/);
     fireEvent.change(baseUrlInput, {

@@ -371,6 +371,7 @@ mod tests {
             r#"
             INSERT INTO providers(
               id,
+              provider_uuid,
               cli_key,
               name,
               base_url,
@@ -385,9 +386,13 @@ mod tests {
               base_url_mode,
               supported_models_json,
               model_mapping_json
-            ) VALUES (?1, 'test-cli', ?2, 'https://example.test', '', 1, 100, 1, 1, 0, 1.0, '[]', 'order', '{}', '{}')
+            ) VALUES (?1, ?2, 'test-cli', ?3, 'https://example.test', '', 1, 100, 1, 1, 0, 1.0, '[]', 'order', '{}', '{}')
             "#,
-            params![provider_id, format!("provider-{provider_id}")],
+            params![
+                provider_id,
+                format!("00000000-0000-4000-8000-{provider_id:012x}"),
+                format!("provider-{provider_id}")
+            ],
         )
         .expect("insert provider");
     }

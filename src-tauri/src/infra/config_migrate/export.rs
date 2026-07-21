@@ -51,6 +51,7 @@ pub(super) fn export_providers(
             r#"
 SELECT
   id,
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -86,6 +87,8 @@ SELECT
   tags_json,
   note,
   source_provider_id,
+  (SELECT source.provider_uuid FROM providers source WHERE source.id = providers.source_provider_id)
+    AS source_provider_uuid,
   bridge_type
 FROM providers
 ORDER BY cli_key ASC, sort_order ASC, id ASC
@@ -106,6 +109,7 @@ ORDER BY cli_key ASC, sort_order ASC, id ASC
 
             Ok(ProviderExport {
                 id: row.get("id")?,
+                provider_uuid: Some(row.get("provider_uuid")?),
                 cli_key: row.get("cli_key")?,
                 name: row.get("name")?,
                 base_urls,
@@ -148,6 +152,7 @@ ORDER BY cli_key ASC, sort_order ASC, id ASC
                 source_provider_cli_key: row
                     .get::<_, Option<i64>>("source_provider_id")?
                     .and_then(|source_id| provider_cli_key_by_id.get(&source_id).cloned()),
+                source_provider_uuid: row.get("source_provider_uuid")?,
                 bridge_type: row.get("bridge_type")?,
                 account_usage_config: None,
                 account_usage_credentials: None,

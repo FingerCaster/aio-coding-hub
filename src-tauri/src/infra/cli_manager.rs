@@ -487,8 +487,8 @@ fn find_exe_in_path(names: &[String]) -> Option<PathBuf> {
     None
 }
 
-fn scan_executable(
-    app: &tauri::AppHandle,
+fn scan_executable<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
     cmd: &str,
 ) -> crate::shared::error::AppResult<Option<PathBuf>> {
     let names = exe_names_for(cmd);
@@ -716,8 +716,8 @@ fn runtime_path_for_executable(exe: &Path) -> crate::shared::error::AppResult<Os
     }
 }
 
-pub(crate) fn codex_launch_spec(
-    app: &tauri::AppHandle,
+pub(crate) fn codex_launch_spec<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<Option<CodexLaunchSpec>> {
     let exe = match resolve_executable_via_login_shell("codex") {
         Ok(Some(path)) => Some(path),

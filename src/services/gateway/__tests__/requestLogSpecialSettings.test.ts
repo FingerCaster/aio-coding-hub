@@ -7,6 +7,7 @@ import {
   hasExplicitCodexReasoningEffortSpecialSetting,
   hasModelRouteMappingSpecialSetting,
   resolveClaudeModelMappingFromSpecialSettings,
+  resolveAioManagedModelRouteFromSpecialSettings,
   resolveCodexReasoningEffort,
   resolveModelRouteMappingFromSpecialSettings,
 } from "../requestLogSpecialSettings";
@@ -159,6 +160,55 @@ describe("services/gateway/requestLogSpecialSettings", () => {
     expect(hasModelRouteMappingSpecialSetting(settings)).toBe(true);
   });
 
+  it("resolves only applied provider-scoped AIO managed routes", () => {
+    const settings = JSON.stringify([
+      {
+        type: "aio_managed_model_route",
+        canonicalModel: " aio/model-a ",
+        providerId: 11,
+        remoteModelId: " grok-4.5 ",
+        requestedUpstreamModel: " grok-4.5 ",
+        pricedModel: " grok-4.5 ",
+        applied: true,
+      },
+      {
+        type: "aio_managed_model_route",
+        canonicalModel: "aio/model-b",
+        providerId: 12,
+        remoteModelId: "gpt-5.5",
+        wireModel: "gpt-5.5-wire",
+        applied: true,
+      },
+    ]);
+
+    expect(resolveAioManagedModelRouteFromSpecialSettings(settings, 11)).toEqual({
+      canonicalModel: "aio/model-a",
+      providerId: 11,
+      providerUuid: null,
+      remoteModelId: "grok-4.5",
+      requestedUpstreamModel: "grok-4.5",
+      pricedModel: "grok-4.5",
+      applied: true,
+    });
+    expect(
+      resolveAioManagedModelRouteFromSpecialSettings(settings, 12)?.requestedUpstreamModel
+    ).toBe("gpt-5.5-wire");
+    expect(resolveAioManagedModelRouteFromSpecialSettings(settings, 99)).toBeNull();
+    expect(
+      resolveAioManagedModelRouteFromSpecialSettings(
+        JSON.stringify([
+          {
+            type: "aio_managed_model_route",
+            canonicalModel: "aio/model-a",
+            providerId: 11,
+            remoteModelId: "grok-4.5",
+            applied: false,
+          },
+        ])
+      )
+    ).toBeNull();
+  });
+
   it("ignores invalid and identity model route mappings", () => {
     const settings = JSON.stringify([
       {
@@ -194,6 +244,58 @@ describe("services/gateway/requestLogSpecialSettings", () => {
       terminalSettings
     );
     expect(chooseModelRouteAwareSpecialSettingsJson("bad-json", startSettings)).toBe(startSettings);
+  });
+
+  it("preserves an applied AIO managed route when start settings arrive late", () => {
+    const startSettings = JSON.stringify([
+      { type: "codex_reasoning_effort", source: "request", effort: "high" },
+    ]);
+    const managedRouteSettings = JSON.stringify([
+      {
+        type: "aio_managed_model_route",
+        canonicalModel: "aio/model-a",
+        providerId: 11,
+        remoteModelId: "grok-4.5",
+        requestedUpstreamModel: "grok-4.5",
+        applied: true,
+      },
+    ]);
+
+    expect(chooseModelRouteAwareSpecialSettingsJson(startSettings, managedRouteSettings)).toBe(
+      managedRouteSettings
+    );
+    expect(chooseModelRouteAwareSpecialSettingsJson(managedRouteSettings, startSettings)).toBe(
+      managedRouteSettings
+    );
+  });
+
+  it("never lets a managed-only attempt hide a real model route mismatch", () => {
+    const managedRouteSettings = JSON.stringify([
+      {
+        type: "aio_managed_model_route",
+        canonicalModel: "aio/model-a",
+        providerId: 11,
+        providerUuid: "22222222-2222-4222-8222-222222222222",
+        remoteModelId: "grok-4.5",
+        requestedUpstreamModel: "grok-4.5",
+        applied: true,
+      },
+    ]);
+    const mismatchSettings = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        requestedModel: "grok-4.5",
+        actualModel: "grok-4.5-preview",
+        mismatch: true,
+      },
+    ]);
+
+    expect(chooseModelRouteAwareSpecialSettingsJson(managedRouteSettings, mismatchSettings)).toBe(
+      mismatchSettings
+    );
+    expect(chooseModelRouteAwareSpecialSettingsJson(mismatchSettings, managedRouteSettings)).toBe(
+      mismatchSettings
+    );
   });
 
   it("identifies only the structured Codex system request marker", () => {

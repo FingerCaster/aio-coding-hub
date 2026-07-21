@@ -7,6 +7,10 @@ TypeScript bindings, frontend adapters, and React UI.
 
 - [Codex config contract](./codex-config-contract.md): typed config fields,
   patch semantics, raw TOML validation, generated bindings, and UI behavior.
+- [Codex managed model route contract](./codex-managed-model-route-contract.md):
+  stable provider/model identity, provider-scoped discovery, hash-owned profile
+  files and picker catalogs, explicit reasoning/context capabilities, exact
+  readable/legacy alias routing, and wire-vs-observed diagnostics.
 - [Gateway failover route contract](./gateway-failover-route-contract.md):
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.
@@ -43,6 +47,19 @@ When changing a Codex `config.toml` field:
    unset, invalid, and future values.
 4. Search for every complete `CodexConfigState` fixture before regenerating
    bindings.
+
+When changing Codex provider models, managed profiles, or alias routing:
+
+1. Read [Codex managed model route contract](./codex-managed-model-route-contract.md).
+2. Trace provider/model UUID identity through DB, IPC, generated bindings,
+   query keys, profile files, gateway selection, attempts, logs, and UI.
+3. Verify ordinary non-managed routing remains unchanged and test all four
+   raw-response observation paths before changing warning semantics.
+4. Keep filesystem ownership hash-based and fail closed on unsafe Codex-home
+   resolution or provider identity drift.
+5. For provider-model capability changes, trace the configured flag, effort
+   set/default, and context through schema migration, IPC, adapter/query, UI,
+   Profile creation gate, Profile-set hash, catalog rebuild, and compensation.
 
 When changing provider account-usage fetching:
 
@@ -141,6 +158,13 @@ When changing Trellis task archive or context validation:
   `pnpm check:generated-bindings`.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
+- When changing managed Codex models, verify exact UUID lookup, one bound
+  provider, readable-profile plus legacy-UUID lookup, no cross-provider
+  failover, canonical/wire/observed separation, stale-mismatch clearing,
+  profile/catalog no-clobber and hash ownership, proxy-time catalog restore,
+  provider-scoped query generation, explicit capability validation and v41
+  backfill, effort/context catalog projection, capability-update rollback, and
+  ordinary-route regression coverage together.
 - When changing account-usage refresh, verify forced fetches, late-result
   suppression, loading/error state, and provider/cache isolation together.
 - When changing the NewAPI account-usage adapter, verify the public status plus

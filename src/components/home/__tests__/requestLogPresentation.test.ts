@@ -37,6 +37,38 @@ function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
 }
 
 describe("components/home/requestLogPresentation", () => {
+  it("shows an AIO managed route as neutral audit information", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "aio_managed_model_route",
+        canonicalModel: "aio/model-uuid",
+        providerId: 17,
+        remoteModelId: "grok-4.5",
+        requestedUpstreamModel: "grok-4.5",
+        pricedModel: "grok-4.5",
+        applied: true,
+      },
+    ]);
+
+    const meta = buildRequestLogAuditMeta({
+      cli_key: "codex",
+      path: "/v1/responses",
+      status: 200,
+      special_settings_json: specialSettings,
+      final_provider_id: 17,
+    });
+
+    expect(meta.tags).toEqual([
+      expect.objectContaining({ label: "AIO 受管路由", className: expect.stringContaining("sky") }),
+    ]);
+    expect(meta.summary).toContain("固定路由到 Provider #17");
+    expect(meta.muted).toBe(false);
+    expect(
+      resolveRequestLogModelDisplayMeta("codex", "aio/model-uuid", specialSettings, null, 17)
+        .isSevereRouteMismatch
+    ).toBe(false);
+  });
+
   it("resolves Claude model mapping special settings with final provider preference", () => {
     const settings = JSON.stringify([
       { type: "noop" },

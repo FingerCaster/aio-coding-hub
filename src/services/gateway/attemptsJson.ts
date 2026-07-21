@@ -7,6 +7,7 @@ export type AttemptJsonEntry = {
   provider_id: number;
   provider_name: string;
   base_url: string;
+  requested_upstream_model?: string | null;
   outcome: string;
   status: number | null;
   provider_index?: number | null;

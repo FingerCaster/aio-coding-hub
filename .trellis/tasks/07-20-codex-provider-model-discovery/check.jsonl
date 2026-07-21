@@ -1,0 +1,13 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Check focused and full Rust gates required after shared gateway changes."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Verify alias routes do not broaden request budgets or bypass gate/circuit accounting."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Check generated bindings, frontend boundaries, config migration, gateway and complete regression scope."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Verify current profile format coexists with main config ownership and no unknown state is overwritten."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Verify provider/transition/attempt semantics and ordinary failover regression coverage."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"Verify shares remain additive, disabled and free of provider UUID/model/profile state."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Verify v1-v4 capability thresholds, preflight and all-or-nothing import behavior."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Verify config import retains existing lock order and concurrent-winner rollback safety."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Audit new helpers against existing URL, credential, body and atomic-file utilities."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Audit full source-to-store-to-IPC-to-UI data flow and shared decoder ownership."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/model-discovery-protocols.md","reason":"Check the adapter implements only the documented OpenAI-compatible contract and safety bounds."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/model-route-detection-alias-compat.md","reason":"Check all four response paths, real mismatch warnings, unobserved evidence and final-provider pricing."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/provider-identity-import-lifecycle.md","reason":"Check UUID lifecycle, local profile ownership, full import, copy and share semantics."}

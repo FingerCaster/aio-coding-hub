@@ -4,6 +4,7 @@
 /// a fixed 8 asterisks (does NOT reveal actual token length).
 ///
 /// Uses char-based indexing to avoid panics on (hypothetical) non-ASCII tokens.
+#[cfg(test)]
 pub(crate) fn mask_token(token: &str) -> String {
     let chars: Vec<char> = token.chars().collect();
     if chars.len() <= 10 {

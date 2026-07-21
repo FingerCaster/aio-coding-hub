@@ -16,12 +16,14 @@ import {
 import type { GatewayStatus } from "../services/gateway/gateway";
 import {
   cliProxyKeys,
+  codexManagedProfilesKeys,
   dataManagementKeys,
   gatewayKeys,
   mcpKeys,
   modelPricesKeys,
   oauthLimitsKeys,
   promptsKeys,
+  providerModelsKeys,
   providerLimitUsageKeys,
   providersKeys,
   requestLogsKeys,
@@ -32,6 +34,7 @@ import {
   workspacesKeys,
   wslKeys,
 } from "./keys";
+import { advanceProviderModelsGlobalGeneration } from "./providerModels";
 
 export const APP_DATA_RESET_STOPPED_GATEWAY_STATUS: GatewayStatus = {
   running: false,
@@ -71,6 +74,8 @@ const APP_DATA_RESET_MODEL_PRICES_COUNT_QUERY_KEY = [...modelPricesKeys.all, "co
 const APP_DATA_RESET_REMOVED_QUERY_KEYS: readonly QueryKey[] = [
   oauthLimitsKeys.all,
   providersKeys.all,
+  providerModelsKeys.all,
+  codexManagedProfilesKeys.all,
   requestLogsKeys.all,
   sortModesKeys.all,
   usageKeys.all,
@@ -88,6 +93,7 @@ const APP_DATA_RESET_REMOVED_QUERY_KEYS: readonly QueryKey[] = [
 ];
 
 export async function resetAppDataQueryCaches(queryClient: QueryClient) {
+  advanceProviderModelsGlobalGeneration(queryClient);
   // Destructive reset must not invalidate/refetch; that can recreate SQLite files before exit.
   await Promise.all(
     APP_DATA_RESET_REMOVED_QUERY_KEYS.map((queryKey) =>
