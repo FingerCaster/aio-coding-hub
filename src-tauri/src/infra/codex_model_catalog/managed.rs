@@ -1289,31 +1289,45 @@ mod tests {
     }
 
     #[test]
-    fn config_patch_round_trips_windows_paths_and_restores_original_value() {
+    fn config_patch_round_trips_native_paths_and_restores_original_value() {
         let current = br#"model_provider = "aio"
 [model_providers.aio]
 base_url = "http://127.0.0.1:37123/v1"
 "#;
-        let original = br#"model_catalog_json = "D:\\Catalogs\\custom.json"
-"#;
-        let generated = Path::new(r"D:\AIO Data\managed-model-catalog.json");
-        let patched = patch_model_catalog_config(current, Some(original), Some(generated))
-            .expect("patch generated");
+        let original_path = std::env::temp_dir()
+            .join("Codex Catalogs")
+            .join("custom.json");
+        let mut original = toml_edit::DocumentMut::new();
+        original["model_catalog_json"] = toml_edit::value(
+            original_path
+                .to_str()
+                .expect("temporary path must be UTF-8"),
+        );
+        let original = original.to_string().into_bytes();
+        let generated = std::env::temp_dir()
+            .join("AIO Data")
+            .join("managed-model-catalog.json");
+        let patched = patch_model_catalog_config(
+            current,
+            Some(original.as_slice()),
+            Some(generated.as_path()),
+        )
+        .expect("patch generated");
         let parsed = std::str::from_utf8(&patched)
             .unwrap()
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
         assert_eq!(parsed["model_catalog_json"].as_str(), generated.to_str());
 
-        let restored =
-            patch_model_catalog_config(&patched, Some(original), None).expect("restore original");
+        let restored = patch_model_catalog_config(&patched, Some(original.as_slice()), None)
+            .expect("restore original");
         let parsed = std::str::from_utf8(&restored)
             .unwrap()
             .parse::<toml_edit::DocumentMut>()
             .unwrap();
         assert_eq!(
             parsed["model_catalog_json"].as_str(),
-            Some(r"D:\Catalogs\custom.json")
+            original_path.to_str()
         );
     }
 }
