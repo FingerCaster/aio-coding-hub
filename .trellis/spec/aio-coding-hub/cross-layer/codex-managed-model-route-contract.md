@@ -161,6 +161,10 @@ codexManagedProfilesKeys.list()
   proxy is enabled, AIO owns one complete merged `model_catalog_json` containing
   the current Codex base catalog plus one visible `aio/<profile_name_key>` entry
   per managed profile.
+- Managed picker entries advertise the provider-neutral `low`, `medium`, and
+  `high` reasoning efforts with `medium` as the default, and enable the catalog
+  capability required for Codex to send the selected `reasoning.effort`.
+  Do not infer a different capability set from model or provider names.
 - If the pre-proxy root config contains an absolute user `model_catalog_json`,
   preserve that document, every existing model, and unknown fields as the base.
   Otherwise run the currently installed Codex executable with
@@ -206,6 +210,9 @@ codexManagedProfilesKeys.list()
 - A matching expected response produces no `model_route_mapping`. A different
   model or conflicting models produce the severe mapping. Missing, truncated,
   or unparsable evidence is `unobserved`: no alert and no verified-match claim.
+- A selected managed-model effort does not change canonical/wire/observed model
+  identity. If the upstream omits effort evidence, do not report an effort
+  mismatch; an explicitly different returned effort remains a real mismatch.
 - Later terminal evidence replaces earlier attempt evidence. A final `matched`
   or `unobserved` observation clears a stale mismatch; a later mismatch replaces
   the earlier mismatch. This prevents retry/failover history from becoming a

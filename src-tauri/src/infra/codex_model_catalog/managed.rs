@@ -17,6 +17,7 @@ const MAX_MANAGED_PROFILE_COUNT: usize = 256;
 const OWNER_METADATA_KEY: &str = "_aio_managed_model_catalog";
 const OWNER_SCHEMA_VERSION: u64 = 1;
 const MANAGED_BY: &str = "aio-coding-hub";
+const MANAGED_DEFAULT_REASONING_LEVEL: &str = "medium";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedCatalogProfile {
@@ -875,8 +876,30 @@ fn build_managed_model(
         "description".to_string(),
         json!(bounded_description(profile)),
     );
-    model.insert("default_reasoning_level".to_string(), Value::Null);
-    model.insert("supported_reasoning_levels".to_string(), json!([]));
+    // Codex only sends the selected reasoning effort when this catalog metadata
+    // advertises reasoning support. Keep the baseline provider-neutral and
+    // deterministic until provider-scoped capability discovery is available.
+    model.insert(
+        "default_reasoning_level".to_string(),
+        json!(MANAGED_DEFAULT_REASONING_LEVEL),
+    );
+    model.insert(
+        "supported_reasoning_levels".to_string(),
+        json!([
+            {
+                "effort": "low",
+                "description": "Fast responses with lighter reasoning"
+            },
+            {
+                "effort": "medium",
+                "description": "Balanced reasoning for everyday work"
+            },
+            {
+                "effort": "high",
+                "description": "Deeper reasoning for complex work"
+            }
+        ]),
+    );
     model.insert("visibility".to_string(), json!("list"));
     model.insert("supported_in_api".to_string(), json!(true));
     model.insert(
@@ -893,7 +916,7 @@ fn build_managed_model(
         "include_skills_usage_instructions".to_string(),
         json!(false),
     );
-    model.insert("supports_reasoning_summaries".to_string(), json!(false));
+    model.insert("supports_reasoning_summaries".to_string(), json!(true));
     model.insert("default_reasoning_summary".to_string(), json!("none"));
     model.insert("support_verbosity".to_string(), json!(false));
     model.insert("default_verbosity".to_string(), Value::Null);
@@ -1055,7 +1078,7 @@ mod tests {
     }
 
     #[test]
-    fn generated_catalog_preserves_base_and_clears_unproven_capabilities() {
+    fn generated_catalog_preserves_base_and_sets_managed_reasoning_capabilities() {
         let output = generate_catalog(
             &base_catalog(),
             &[profile()],
@@ -1072,8 +1095,28 @@ mod tests {
         let managed = &root["models"][1];
         assert_eq!(managed["slug"], json!("aio/grok"));
         assert_eq!(managed["visibility"], json!("list"));
-        assert_eq!(managed["supported_reasoning_levels"], json!([]));
-        assert_eq!(managed["default_reasoning_level"], Value::Null);
+        assert_eq!(
+            managed["supported_reasoning_levels"],
+            json!([
+                {
+                    "effort": "low",
+                    "description": "Fast responses with lighter reasoning"
+                },
+                {
+                    "effort": "medium",
+                    "description": "Balanced reasoning for everyday work"
+                },
+                {
+                    "effort": "high",
+                    "description": "Deeper reasoning for complex work"
+                }
+            ])
+        );
+        assert_eq!(
+            managed["default_reasoning_level"],
+            json!(MANAGED_DEFAULT_REASONING_LEVEL)
+        );
+        assert_eq!(managed["supports_reasoning_summaries"], json!(true));
         assert_eq!(managed["additional_speed_tiers"], json!([]));
         assert_eq!(managed["service_tiers"], json!([]));
         assert_eq!(managed["supports_parallel_tool_calls"], json!(false));

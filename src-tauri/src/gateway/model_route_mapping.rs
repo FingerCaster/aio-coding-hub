@@ -458,6 +458,32 @@ mod tests {
     }
 
     #[test]
+    fn skips_managed_wire_model_when_selected_effort_is_matched_or_unobserved() {
+        for actual_reasoning_effort in [None, Some("high")] {
+            assert!(build_model_route_mapping_setting(ModelRouteSettingInput {
+                cli_key: "codex",
+                requested_model: Some("grok-4.5"),
+                actual_model: Some("grok-4.5"),
+                actual_reasoning_effort,
+                special_settings: &[
+                    json!({
+                        "type": "aio_managed_model_route",
+                        "canonicalModel": "aio/grok-4-5",
+                        "wireModel": "grok-4.5"
+                    }),
+                    json!({
+                        "type": "codex_reasoning_effort",
+                        "effort": "high"
+                    }),
+                ],
+                provider_id: 7,
+                provider_name: "xAI",
+            })
+            .is_none());
+        }
+    }
+
+    #[test]
     fn skips_non_codex_routes() {
         assert!(build_model_route_mapping_setting(ModelRouteSettingInput {
             cli_key: "claude",

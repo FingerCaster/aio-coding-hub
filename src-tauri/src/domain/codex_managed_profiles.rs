@@ -1188,6 +1188,23 @@ mod tests {
             serde_json::json!("aio/grok")
         );
         assert_eq!(
+            generated["models"][1]["default_reasoning_level"],
+            serde_json::json!("medium")
+        );
+        assert_eq!(
+            generated["models"][1]["supported_reasoning_levels"]
+                .as_array()
+                .expect("managed reasoning levels")
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high"]
+        );
+        assert_eq!(
+            generated["models"][1]["supports_reasoning_summaries"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
             generated["models"][1]["future_required_field"]["kept"],
             serde_json::json!(true)
         );
@@ -1241,10 +1258,22 @@ mod tests {
             create(&app, &test_app.db, "real-smoke", &model_uuid).expect("create managed profile");
         let catalog = crate::codex_model_catalog::codex_model_catalog_get(&app)
             .expect("read model/list from installed Codex");
-        assert!(catalog
+        let managed = catalog
             .models
             .iter()
-            .any(|model| model.model == "aio/real-smoke"));
+            .find(|model| model.model == "aio/real-smoke")
+            .expect("managed picker model");
+        assert_eq!(managed.default_reasoning_effort.as_deref(), Some("medium"));
+        assert_eq!(
+            managed
+                .supported_reasoning_efforts
+                .as_ref()
+                .expect("managed reasoning efforts")
+                .iter()
+                .map(|effort| effort.reasoning_effort.as_str())
+                .collect::<Vec<_>>(),
+            vec!["low", "medium", "high"]
+        );
 
         delete(&app, &test_app.db, &profile.profile_uuid).expect("delete profile");
         let disabled =

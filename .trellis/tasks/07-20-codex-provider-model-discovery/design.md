@@ -190,7 +190,11 @@ model_provider = "aio"
 
 - 每个受管 Profile 生成一个 `slug = aio/<profile_name_key>` 的 `visibility = list` 条目。
 - 复制一个当前基础目录可见模板以保留未来必填字段，再清除 speed/service tier、升级提示、comp hash、搜索、并行工具和其他不能证明的能力。
-- `supported_reasoning_levels` 为空且默认推理档位为空，使 Codex 使用无显式推理档位的保守路径。
+- 受管模型统一声明 `low / medium / high`，默认 `medium`，并开启 Codex 发送
+  `reasoning.effort` 所需的 reasoning 能力位。首版不根据模型名或供应商名猜测能力；
+  这是 provider-neutral 的固定兼容基线，后续再评估 provider/model-scoped 能力配置。
+- effort 选择不改变受管模型的 canonical/wire/observed 模型比较。上游未回显 effort
+  时仍是未观察，不生成路由告警；只有上游明确回显不同 effort 时才保留现有严重告警。
 - 描述包含 AIO provider 名和真实远端模型 ID；picker 实际显示 slug，因此 slug 必须可读。
 - 若基础目录已包含同 slug，拒绝创建，不能覆盖用户模型定义。
 
