@@ -51,6 +51,7 @@ vi.mock("@dnd-kit/utilities", () => ({
 function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 1,
+    provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: "claude",
     name: "Test Provider",
     base_urls: ["https://example.com/v1"],
@@ -1075,6 +1076,17 @@ describe("pages/providers/SortableProviderCard", () => {
     fireEvent.click(screen.getByRole("button", { name: "分享" }));
 
     expect(onShare).toHaveBeenCalledWith(expect.objectContaining({ id: 1 }));
+  });
+
+  it("opens model management for the current provider", () => {
+    const onManageModels = vi.fn();
+    renderCard({ id: 17, cli_key: "codex" }, { onManageModels });
+
+    fireEvent.click(screen.getByRole("button", { name: "模型" }));
+
+    expect(onManageModels).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 17, cli_key: "codex" })
+    );
   });
 
   it("disables sharing when the provider references another provider", () => {

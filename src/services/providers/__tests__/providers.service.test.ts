@@ -73,6 +73,7 @@ vi.mock("../../consoleLog", async () => {
 function createProviderSummary(overrides: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 1,
+    provider_uuid: overrides.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: "claude",
     name: "P1",
     base_urls: ["https://example.com"],
@@ -158,6 +159,17 @@ describe("services/providers/providers", () => {
     vi.mocked(commands.providersList).mockResolvedValueOnce({ status: "ok", data: null as any });
 
     await expect(providersList("claude")).rejects.toThrow("IPC_NULL_RESULT: providers_list");
+  });
+
+  it("rejects a provider summary with a non-canonical provider UUID", async () => {
+    vi.mocked(commands.providersList).mockResolvedValueOnce({
+      status: "ok",
+      data: [createProviderSummary({ provider_uuid: "11111111-1111-1111-8111-111111111111" })],
+    });
+
+    await expect(providersList("claude")).rejects.toThrow(
+      "IPC_INVALID_UUID: providers.provider_uuid"
+    );
   });
 
   it("builds provider_upsert args as before", async () => {

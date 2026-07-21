@@ -12,7 +12,17 @@ import { useMemo, useState } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useSortable } from "@dnd-kit/sortable";
 import { CSS } from "@dnd-kit/utilities";
-import { Copy, GripVertical, Pencil, RefreshCw, Share2, Terminal, Trash2, Zap } from "lucide-react";
+import {
+  Copy,
+  GripVertical,
+  Library,
+  Pencil,
+  RefreshCw,
+  Share2,
+  Terminal,
+  Trash2,
+  Zap,
+} from "lucide-react";
 import { FREE_TAG } from "../../constants/providers";
 import type { GatewayProviderCircuitStatus } from "../../services/gateway/gateway";
 import { getGatewayCircuitDerivedState } from "../../query/gateway";
@@ -144,6 +154,7 @@ export type SortableProviderCardProps = {
   terminalLaunchCopying?: boolean;
   onTestAvailability?: (provider: ProviderSummary) => void;
   testAvailabilityLoading?: boolean;
+  onManageModels?: (provider: ProviderSummary) => void;
   onDuplicate?: (provider: ProviderSummary) => void;
   duplicateLoading?: boolean;
   onShare?: (provider: ProviderSummary) => void;
@@ -171,6 +182,7 @@ const ProviderCard = memo(function ProviderCard({
   terminalLaunchCopying = false,
   onTestAvailability,
   testAvailabilityLoading = false,
+  onManageModels,
   onDuplicate,
   duplicateLoading = false,
   onShare,
@@ -591,6 +603,19 @@ const ProviderCard = memo(function ProviderCard({
                 >
                   <Zap className="h-3.5 w-3.5" />
                   {testAvailabilityLoading ? "测试中…" : "测试"}
+                </Button>
+              ) : null}
+
+              {onManageModels ? (
+                <Button
+                  onClick={() => onManageModels(provider)}
+                  variant="secondary"
+                  size="sm"
+                  className="gap-1.5 px-2 py-1 text-[11px]"
+                  title="管理模型目录和 Codex Profile"
+                >
+                  <Library className="h-3.5 w-3.5" aria-hidden="true" />
+                  模型
                 </Button>
               ) : null}
 

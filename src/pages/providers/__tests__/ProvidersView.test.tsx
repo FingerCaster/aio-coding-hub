@@ -97,9 +97,18 @@ vi.mock("../../../services/providers/providers", async () => {
 });
 
 vi.mock("../ProviderEditorDialog", () => ({
-  ProviderEditorDialog: ({ mode, cliKey, provider, initialValues, onSaved, onOpenChange }: any) => (
+  ProviderEditorDialog: ({
+    mode,
+    cliKey,
+    provider,
+    initialValues,
+    onSaved,
+    onOpenChange,
+    onModelFetchFailedAfterSave,
+  }: any) => (
     <div
       data-testid="provider-editor"
+      data-provider-id={provider?.id ?? ""}
       data-initial-name={initialValues?.name ?? ""}
       data-api-key={initialValues?.api_key ?? ""}
       data-auth-mode={initialValues?.auth_mode ?? ""}
@@ -110,6 +119,20 @@ vi.mock("../ProviderEditorDialog", () => ({
       </button>
       <button type="button" onClick={() => onOpenChange?.(false)}>
         close-editor
+      </button>
+      <button
+        type="button"
+        onClick={() =>
+          onModelFetchFailedAfterSave?.({
+            id: 77,
+            provider_uuid: "77777777-7777-4777-8777-777777777777",
+            cli_key: cliKey ?? provider?.cli_key ?? "codex",
+            name: "Saved Provider",
+            api_key_configured: true,
+          })
+        }
+      >
+        model-fetch-failed
       </button>
     </div>
   ),
@@ -255,6 +278,39 @@ afterEach(() => {
 });
 
 describe("pages/providers/ProvidersView", () => {
+  it("switches a saved create flow to edit mode when model discovery fails", async () => {
+    vi.mocked(useProvidersListQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      error: null,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+
+    renderWithQuery(<ProvidersView activeCli="codex" setActiveCli={vi.fn()} />);
+    fireEvent.click(screen.getByRole("button", { name: "添加" }));
+    const createEditor = screen.getByTestId("provider-editor");
+    expect(createEditor).toHaveTextContent("create");
+
+    fireEvent.click(within(createEditor).getByRole("button", { name: "model-fetch-failed" }));
+
+    await waitFor(() => expect(screen.getByTestId("provider-editor")).toHaveTextContent("edit"));
+    expect(screen.getAllByTestId("provider-editor")).toHaveLength(1);
+    expect(screen.getByTestId("provider-editor")).toHaveAttribute("data-provider-id", "77");
+  });
+
   it("opens card sharing and switches CLI after a provider import", () => {
     vi.mocked(useProvidersListQuery).mockReturnValue({
       data: [

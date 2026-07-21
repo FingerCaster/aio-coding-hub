@@ -40,6 +40,8 @@ vi.mock("../../../services/providers/providers", async () => {
   };
 });
 
+const PROVIDER_UUID = "11111111-1111-4111-8111-111111111111";
+
 function makeStatus(partial: Partial<ProviderOAuthStatusResult> = {}): ProviderOAuthStatusResult {
   return {
     connected: partial.connected ?? true,
@@ -80,6 +82,7 @@ function makeDevicePoll(
 function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: partial.id ?? 9,
+    provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: partial.cli_key ?? "claude",
     name: partial.name ?? "OAuth Provider",
     base_urls: partial.base_urls ?? [],
@@ -120,6 +123,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
 function makeCtx(overrides: Partial<OAuthActionContext> = {}) {
   let attempt = 0;
   let currentAttempt = 0;
+  const editingProviderId = overrides.editingProviderId ?? null;
   const values = {
     name: "OAuth Provider",
     api_key: "",
@@ -138,8 +142,10 @@ function makeCtx(overrides: Partial<OAuthActionContext> = {}) {
   const ctx: OAuthActionContext = {
     mode: "create",
     cliKey: "claude",
-    editingProviderId: null,
-    editProvider: null,
+    editingProviderId,
+    editProvider:
+      overrides.editProvider ??
+      (editingProviderId == null ? null : makeProvider({ id: editingProviderId })),
     open: true,
     onOpenChange: vi.fn(),
     onSaved: vi.fn(),
@@ -187,6 +193,7 @@ function makeCtx(overrides: Partial<OAuthActionContext> = {}) {
     setOauthDeviceError: vi.fn(),
     persistProvider: vi.fn().mockResolvedValue(makeProvider({ id: 9 })),
     removeProvider: vi.fn().mockResolvedValue(true),
+    invalidateProviderModels: vi.fn(),
     beginOAuthLoginAttempt: vi.fn(() => {
       attempt += 1;
       currentAttempt = attempt;
@@ -240,6 +247,7 @@ describe("providerEditorOAuthActions", () => {
     expect(providerOAuthStartFlow).toHaveBeenCalledWith("claude", 9);
     expect(ctx.setOauthStatus).toHaveBeenCalledWith(makeStatus());
     expect(providerOAuthFetchLimits).toHaveBeenCalledWith(9);
+    expect(ctx.invalidateProviderModels).toHaveBeenCalledWith(9, PROVIDER_UUID);
     expect(toast).toHaveBeenCalledWith("OAuth 登录成功");
     expect(ctx.onSaved).toHaveBeenCalledWith("claude");
     expect(ctx.onOpenChange).toHaveBeenCalledWith(false);
@@ -326,6 +334,7 @@ describe("providerEditorOAuthActions", () => {
       }),
     });
     await handleOAuthLogin(staleStatus.ctx);
+    expect(staleStatus.ctx.invalidateProviderModels).toHaveBeenCalledWith(5, PROVIDER_UUID);
     expect(staleStatus.ctx.setOauthStatus).not.toHaveBeenCalled();
     expect(toast).not.toHaveBeenCalledWith("OAuth 登录成功");
 
@@ -388,6 +397,7 @@ describe("providerEditorOAuthActions", () => {
     expect(providerOAuthPollDeviceFlow).toHaveBeenCalledWith("flow-1");
     expect(ctx.clearActiveOAuthDeviceFlow).toHaveBeenCalledWith("flow-1");
     expect(ctx.setOauthStatus).toHaveBeenCalledWith(makeStatus());
+    expect(ctx.invalidateProviderModels).toHaveBeenCalledWith(9, PROVIDER_UUID);
     expect(toast).toHaveBeenCalledWith("设备码登录成功");
     expect(logToConsole).toHaveBeenCalledWith(
       "warn",
@@ -534,12 +544,15 @@ describe("providerEditorOAuthActions", () => {
     await handleOAuthRefresh(ctx);
     await handleOAuthRefresh(ctx);
     await handleOAuthRefresh(ctx);
+    expect(ctx.invalidateProviderModels).not.toHaveBeenCalled();
     await handleOAuthDisconnect(ctx);
     await handleOAuthDisconnect(ctx);
     await handleOAuthDisconnect(ctx);
 
     expect(ctx.setOauthStatus).toHaveBeenCalledWith(makeStatus());
     expect(ctx.setOauthStatus).toHaveBeenCalledWith(null);
+    expect(ctx.invalidateProviderModels).toHaveBeenCalledTimes(1);
+    expect(ctx.invalidateProviderModels).toHaveBeenCalledWith(7, PROVIDER_UUID);
     expect(toast).toHaveBeenCalledWith("Token 刷新成功");
     expect(toast).toHaveBeenCalledWith("Token 刷新失败");
     expect(toast).toHaveBeenCalledWith("Token 刷新失败：Error: refresh down");

@@ -42,6 +42,16 @@ export type ModelRouteMapping = {
   providerName: string | null;
 };
 
+export type AioManagedModelRoute = {
+  canonicalModel: string;
+  providerId: number;
+  providerUuid: string | null;
+  remoteModelId: string;
+  requestedUpstreamModel: string;
+  pricedModel: string | null;
+  applied: true;
+};
+
 type KnownCodexReasoningEffort = Exclude<CodexReasoningEffort, "unknown">;
 
 const CODEX_REASONING_EFFORTS = new Set<KnownCodexReasoningEffort>([
@@ -291,6 +301,53 @@ export function hasModelRouteMappingSpecialSetting(
   return resolveModelRouteMappingFromSpecialSettings(specialSettingsJson) !== null;
 }
 
+function normalizeAioManagedModelRouteSetting(
+  setting: ParsedRequestLogSpecialSetting
+): AioManagedModelRoute | null {
+  if (setting.type !== "aio_managed_model_route" || setting.applied !== true) return null;
+
+  const canonicalModel = normalizeRouteText(setting.canonicalModel);
+  const providerId = normalizeRouteNumber(setting.providerId);
+  const remoteModelId = normalizeRouteText(setting.remoteModelId);
+  if (!canonicalModel || providerId == null || providerId <= 0 || !remoteModelId) return null;
+
+  const requestedUpstreamModel =
+    normalizeRouteText(setting.requestedUpstreamModel) ??
+    normalizeRouteText(setting.wireModel) ??
+    remoteModelId;
+
+  return {
+    canonicalModel,
+    providerId,
+    providerUuid: normalizeRouteText(setting.providerUuid),
+    remoteModelId,
+    requestedUpstreamModel,
+    pricedModel: normalizeRouteText(setting.pricedModel),
+    applied: true,
+  };
+}
+
+export function resolveAioManagedModelRouteFromSpecialSettings(
+  specialSettingsJson: string | null | undefined,
+  finalProviderId?: number | null
+): AioManagedModelRoute | null {
+  const routes = parseRequestLogSpecialSettings(specialSettingsJson)
+    .map(normalizeAioManagedModelRouteSetting)
+    .filter((route): route is AioManagedModelRoute => route !== null);
+  if (routes.length === 0) return null;
+
+  if (finalProviderId != null) {
+    return (
+      routes
+        .slice()
+        .reverse()
+        .find((route) => route.providerId === finalProviderId) ?? null
+    );
+  }
+
+  return routes[routes.length - 1] ?? null;
+}
+
 function hasValidSpecialSettingsJson(value: string | null | undefined): boolean {
   return parseRequestLogSpecialSettings(value).length > 0;
 }
@@ -299,10 +356,15 @@ export function chooseModelRouteAwareSpecialSettingsJson(
   preferredSettings: string | null | undefined,
   fallbackSettings: string | null | undefined
 ): string | null {
-  const preferredHasRoute = hasModelRouteMappingSpecialSetting(preferredSettings);
-  const fallbackHasRoute = hasModelRouteMappingSpecialSetting(fallbackSettings);
-  if (preferredHasRoute) return preferredSettings ?? null;
-  if (fallbackHasRoute) return fallbackSettings ?? null;
+  if (hasModelRouteMappingSpecialSetting(preferredSettings)) return preferredSettings ?? null;
+  if (hasModelRouteMappingSpecialSetting(fallbackSettings)) return fallbackSettings ?? null;
+
+  if (resolveAioManagedModelRouteFromSpecialSettings(preferredSettings) !== null) {
+    return preferredSettings ?? null;
+  }
+  if (resolveAioManagedModelRouteFromSpecialSettings(fallbackSettings) !== null) {
+    return fallbackSettings ?? null;
+  }
 
   if (hasValidSpecialSettingsJson(preferredSettings)) return preferredSettings ?? null;
   if (hasValidSpecialSettingsJson(fallbackSettings)) return fallbackSettings ?? null;

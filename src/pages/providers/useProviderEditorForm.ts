@@ -26,6 +26,10 @@ import {
   useProviderOAuthStatusQuery,
   useProviderUpsertMutation,
 } from "../../query/providers";
+import {
+  invalidateProviderModelCatalog,
+  useProviderModelsRefreshMutation,
+} from "../../query/providerModels";
 import { useGatewayStatusQuery } from "../../query/gateway";
 import { useSettingsQuery } from "../../query/settings";
 import {
@@ -250,7 +254,14 @@ function buildAccountUsageState({
 }
 
 export function useProviderEditorForm(props: ProviderEditorDialogProps) {
-  const { open, onOpenChange, onSaved, codexProviders = [], bridgeSourceProviders } = props;
+  const {
+    open,
+    onOpenChange,
+    onSaved,
+    onModelFetchFailedAfterSave,
+    codexProviders = [],
+    bridgeSourceProviders,
+  } = props;
   const codexBridgeSourceProviders = bridgeSourceProviders ?? codexProviders;
 
   const mode = props.mode;
@@ -284,6 +295,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     DEFAULT_UPSTREAM_RETRY_POLICY
   );
   const [saving, setSaving] = useState(false);
+  const [savingWithModelFetch, setSavingWithModelFetch] = useState(false);
   const [copyingApiKey, setCopyingApiKey] = useState(false);
 
   const [authMode, setAuthMode] = useState<"api_key" | "oauth" | "cx2cc">(
@@ -315,6 +327,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const queryClient = useQueryClient();
   const providerUpsertMutation = useProviderUpsertMutation();
   const providerDeleteMutation = useProviderDeleteMutation();
+  const providerModelsRefreshMutation = useProviderModelsRefreshMutation();
   const { contributions: providerEditorContributions } = useContributionsForSlot(
     "providers.editor.sections"
   );
@@ -379,6 +392,12 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const setAuthModeFromUi = useCallback(
     (next: "api_key" | "oauth" | "cx2cc") => {
       setAuthMode(next);
+      if (next !== "cx2cc") {
+        // A bridge source is meaningful only while the bridge tab is active.
+        // Clear it when returning to a direct mode so model discovery follows
+        // the current form state instead of stale bridge metadata.
+        setCx2ccSourceValue("");
+      }
       if (next === "cx2cc" && cliKey === "claude") {
         setClaudeModels((prev) => withCx2ccDefaultModel(prev));
         setCostMultiplierValue(resolveCx2ccInheritedMultiplier(cx2ccSourceValue), {
@@ -388,7 +407,13 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
         });
       }
     },
-    [cliKey, cx2ccSourceValue, resolveCx2ccInheritedMultiplier, setCostMultiplierValue]
+    [
+      cliKey,
+      cx2ccSourceValue,
+      resolveCx2ccInheritedMultiplier,
+      setCostMultiplierValue,
+      setCx2ccSourceValue,
+    ]
   );
 
   const setCx2ccSourceValueFromUi = useCallback(
@@ -794,6 +819,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       open,
       onOpenChange: requestOpenChange,
       onSaved,
+      onModelFetchFailedAfterSave,
       ...buildPayloadContext(),
       saving,
       setSaving,
@@ -803,12 +829,15 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       refreshOauthStatus,
       clearAccountUsageSecretDraft,
       persistProvider: (input) => providerUpsertMutation.mutateAsync({ input }),
+      refreshProviderModels: (providerId, providerUuid) =>
+        providerModelsRefreshMutation.mutateAsync({ providerId, providerUuid }),
     }),
     [
       editProvider,
       open,
       requestOpenChange,
       onSaved,
+      onModelFetchFailedAfterSave,
       buildPayloadContext,
       saving,
       form.getValues,
@@ -817,6 +846,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       refreshOauthStatus,
       clearAccountUsageSecretDraft,
       providerUpsertMutation,
+      providerModelsRefreshMutation,
     ]
   );
 
@@ -840,6 +870,16 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       setOauthDeviceError,
       persistProvider: (input) => providerUpsertMutation.mutateAsync({ input }),
       removeProvider: (providerId) => providerDeleteMutation.mutateAsync({ cliKey, providerId }),
+      invalidateProviderModels: (providerId, providerUuid) => {
+        void invalidateProviderModelCatalog(queryClient, providerId, providerUuid, {
+          advanceGeneration: false,
+        }).catch((error) => {
+          logToConsole("warn", "OAuth 连接已更新，但模型目录缓存失效失败", {
+            provider_id: providerId,
+            error: String(error),
+          });
+        });
+      },
       beginOAuthLoginAttempt,
       isOAuthLoginAttemptCurrent,
       cancelOAuthDeviceFlow,
@@ -862,6 +902,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       refreshOauthStatus,
       providerUpsertMutation,
       providerDeleteMutation,
+      queryClient,
       beginOAuthLoginAttempt,
       isOAuthLoginAttemptCurrent,
       cancelOAuthDeviceFlow,
@@ -870,19 +911,34 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     ]
   );
 
+  const canFetchProviderModels =
+    cliKey === "codex" && authMode !== "cx2cc" && sourceProviderId == null;
+
+  const saveAndFetchModels = useCallback(async () => {
+    if (saving || savingWithModelFetch) return;
+    setSavingWithModelFetch(true);
+    try {
+      await runProviderEditorSave(buildSaveContext(), { refreshModels: true });
+    } finally {
+      setSavingWithModelFetch(false);
+    }
+  }, [buildSaveContext, saving, savingWithModelFetch]);
+
   return {
     mode,
     cliKey,
     editingProviderId,
     open,
     onOpenChange: requestOpenChange,
-    saving,
+    saving: saving || savingWithModelFetch,
+    savingWithModelFetch,
     title,
     description,
     authMode,
     setAuthMode: setAuthModeFromUi,
     supportsOAuth,
     supportsCx2cc,
+    canFetchProviderModels,
     register,
     setValue,
     watch,
@@ -965,6 +1021,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     accountUsageRefreshIntervalSeconds,
     setAccountUsageRefreshIntervalSeconds,
     save: () => runProviderEditorSave(buildSaveContext()),
+    saveAndFetchModels,
     copyApiKey: () => copyApiKeyAction(buildCopyApiKeyContext()),
     handleOAuthLogin: () => oauthLoginAction(buildOAuthContext()),
     handleOAuthDeviceLogin: () => oauthDeviceLoginAction(buildOAuthContext()),

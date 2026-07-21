@@ -12,6 +12,7 @@ import type {
 import type { ProviderEditorDialogFormInput } from "../../schemas/providerEditorDialog";
 import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
 import type { CodexBridgeTarget } from "./providerEditorUtils";
+import type { ProviderModelCatalog } from "../../services/providers/providerModels";
 
 /** Provider identity and lifecycle */
 export type ProviderActionContext = {
@@ -22,6 +23,7 @@ export type ProviderActionContext = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: (cliKey: CliKey) => void;
+  onModelFetchFailedAfterSave?: (provider: ProviderSummary) => void;
 };
 
 /** OAuth status payload shared by auth-related fields */
@@ -125,6 +127,10 @@ export type SaveActionContext = ProviderActionContext &
   Pick<FormActionContext, "saving" | "setSaving" | "form"> &
   Pick<AuthActionContext, "oauthStatus" | "setOauthStatus" | "refreshOauthStatus"> & {
     persistProvider: (input: ProviderUpsertInput) => Promise<ProviderSummary>;
+    refreshProviderModels: (
+      providerId: number,
+      providerUuid: string
+    ) => Promise<ProviderModelCatalog>;
     clearAccountUsageSecretDraft: () => void;
   };
 
@@ -146,6 +152,7 @@ export type OAuthActionContext = ProviderActionContext &
   > & {
     persistProvider: (input: ProviderUpsertInput) => Promise<ProviderSummary>;
     removeProvider: (providerId: number) => Promise<boolean>;
+    invalidateProviderModels: (providerId: number, providerUuid: string) => void;
     beginOAuthLoginAttempt: () => number;
     isOAuthLoginAttemptCurrent: (attemptId: number) => boolean;
     cancelOAuthDeviceFlow: (flowId: string) => void;

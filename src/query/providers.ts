@@ -40,7 +40,17 @@ import {
 import { logToConsole } from "../services/consoleLog";
 import { gatewayCircuitResetProvider } from "../services/gateway/gateway";
 import { formatUnknownError } from "../utils/errors";
-import { gatewayKeys, oauthLimitsKeys, providerAccountUsageKeys, providersKeys } from "./keys";
+import {
+  advanceProviderModelIdentityGenerationsForProviderId,
+  invalidateProviderModelCatalog,
+} from "./providerModels";
+import {
+  gatewayKeys,
+  oauthLimitsKeys,
+  providerAccountUsageKeys,
+  providerModelsKeys,
+  providersKeys,
+} from "./keys";
 
 export function useProvidersListQuery(cliKey: CliKey, options?: { enabled?: boolean }) {
   const normalizedCliKey = validateProviderCliKey(cliKey);
@@ -238,12 +248,41 @@ export function useProviderSetEnabledMutation() {
   });
 }
 
+function providerModelConnectionChanged(
+  previous: ProviderSummary | undefined,
+  saved: ProviderSummary,
+  input: ProviderUpsertInput
+) {
+  // A name, note, pricing, or display-only edit must not invalidate an in-flight
+  // catalog refresh. Connection identity changes still advance the generation so
+  // an older response cannot replace the backend-marked-stale catalog.
+  if (!previous || previous.provider_uuid !== saved.provider_uuid) return true;
+  if (
+    previous.base_url_mode !== saved.base_url_mode ||
+    previous.auth_mode !== saved.auth_mode ||
+    previous.source_provider_id !== saved.source_provider_id ||
+    previous.bridge_type !== saved.bridge_type ||
+    previous.base_urls.length !== saved.base_urls.length ||
+    previous.base_urls.some((url, index) => url !== saved.base_urls[index])
+  ) {
+    return true;
+  }
+
+  // The API key is intentionally write-only in the summary. A non-empty value
+  // in the submitted payload is therefore the only frontend-side signal that
+  // its connection credential changed.
+  return input.apiKey != null && input.apiKey.trim().length > 0;
+}
+
 export function useProviderUpsertMutation() {
   const queryClient = useQueryClient();
 
   return useMutation<ProviderSummary, Error, { input: ProviderUpsertInput }>({
     mutationFn: (input: { input: ProviderUpsertInput }) => providerUpsert(input.input),
-    onSuccess: (saved) => {
+    onSuccess: async (saved, variables) => {
+      const previous = queryClient
+        .getQueryData<ProviderSummary[] | null>(providersKeys.list(saved.cli_key))
+        ?.find((row) => row.id === saved.id);
       queryClient.setQueryData<ProviderSummary[] | null>(
         providersKeys.list(saved.cli_key),
         (prev) => {
@@ -261,6 +300,9 @@ export function useProviderUpsertMutation() {
       );
 
       queryClient.removeQueries({ queryKey: providerAccountUsageKeys.detail(saved.id) });
+      await invalidateProviderModelCatalog(queryClient, saved.id, saved.provider_uuid, {
+        advanceGeneration: providerModelConnectionChanged(previous, saved, variables.input),
+      });
       void queryClient.invalidateQueries({ queryKey: providersKeys.list(saved.cli_key) });
       void queryClient.invalidateQueries({ queryKey: gatewayKeys.circuitStatus(saved.cli_key) });
     },
@@ -273,7 +315,7 @@ export function useProviderDeleteMutation() {
   return useMutation({
     mutationFn: (input: { cliKey: CliKey; providerId: number; clearUsageStats?: boolean }) =>
       providerDelete(input.providerId, { clearUsageStats: input.clearUsageStats === true }),
-    onSuccess: (ok, input) => {
+    onSuccess: async (ok, input) => {
       if (!ok) return;
       const cliKey = validateProviderCliKey(input.cliKey);
 
@@ -282,6 +324,13 @@ export function useProviderDeleteMutation() {
         return prev.filter((row) => row.id !== input.providerId);
       });
       queryClient.removeQueries({ queryKey: providerAccountUsageKeys.detail(input.providerId) });
+      advanceProviderModelIdentityGenerationsForProviderId(queryClient, input.providerId);
+      await queryClient.cancelQueries({
+        queryKey: providerModelsKeys.catalogsByProvider(input.providerId),
+      });
+      queryClient.removeQueries({
+        queryKey: providerModelsKeys.catalogsByProvider(input.providerId),
+      });
     },
   });
 }
