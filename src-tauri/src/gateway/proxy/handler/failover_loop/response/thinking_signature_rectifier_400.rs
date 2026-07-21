@@ -480,6 +480,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx.provider_bridged),
             timeout_secs: None,
+            requested_upstream_model: provider_ctx.active_requested_model.map(str::to_string),
         });
 
         emit_attempt_event_and_log(

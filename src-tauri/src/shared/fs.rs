@@ -4,6 +4,63 @@ use std::path::Path;
 
 const WRITE_IF_CHANGED_COMPARE_MAX_BYTES: usize = 16 * 1024 * 1024;
 
+/// Atomically move one path without replacing an existing destination.
+///
+/// Callers use this for ownership capture and recovery, where an existence
+/// check followed by `rename` would reintroduce a clobber race.
+pub(crate) fn rename_file_no_replace(from: &Path, to: &Path) -> std::io::Result<()> {
+    rename_file_no_replace_impl(from, to)
+}
+
+#[cfg(windows)]
+fn rename_file_no_replace_impl(from: &Path, to: &Path) -> std::io::Result<()> {
+    use std::os::windows::ffi::OsStrExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{MoveFileExW, MOVEFILE_WRITE_THROUGH};
+
+    let from = from
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let to = to
+        .as_os_str()
+        .encode_wide()
+        .chain(std::iter::once(0))
+        .collect::<Vec<_>>();
+    let result = unsafe { MoveFileExW(from.as_ptr(), to.as_ptr(), MOVEFILE_WRITE_THROUGH) };
+    if result == 0 {
+        Err(std::io::Error::last_os_error())
+    } else {
+        Ok(())
+    }
+}
+
+#[cfg(any(target_os = "linux", target_os = "android", target_vendor = "apple"))]
+fn rename_file_no_replace_impl(from: &Path, to: &Path) -> std::io::Result<()> {
+    use rustix::fs::{renameat_with, RenameFlags, CWD};
+
+    renameat_with(CWD, from, CWD, to, RenameFlags::NOREPLACE).map_err(Into::into)
+}
+
+#[cfg(all(
+    unix,
+    not(any(target_os = "linux", target_os = "android", target_vendor = "apple"))
+))]
+fn rename_file_no_replace_impl(_from: &Path, _to: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unavailable on this platform",
+    ))
+}
+
+#[cfg(not(any(unix, windows)))]
+fn rename_file_no_replace_impl(_from: &Path, _to: &Path) -> std::io::Result<()> {
+    Err(std::io::Error::new(
+        std::io::ErrorKind::Unsupported,
+        "atomic no-replace rename is unavailable on this platform",
+    ))
+}
+
 #[cfg(not(windows))]
 fn replace_file_atomic(from: &Path, to: &Path) -> std::io::Result<()> {
     std::fs::rename(from, to)
@@ -388,6 +445,44 @@ pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> crate::shared::err
     write_file_atomic_with_replacer(path, bytes, replace_file_atomic)
 }
 
+pub(crate) fn write_file_atomic_create_new(
+    path: &Path,
+    bytes: &[u8],
+) -> crate::shared::error::AppResult<()> {
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)
+            .map_err(|error| format!("failed to create dir {}: {error}", parent.display()))?;
+    }
+
+    let (tmp_path, mut temp_file) = create_unique_atomic_temp(path)?;
+    use std::io::Write as _;
+    if let Err(error) = temp_file
+        .write_all(bytes)
+        .and_then(|()| temp_file.sync_all())
+    {
+        drop(temp_file);
+        let _ = std::fs::remove_file(&tmp_path);
+        return Err(format!("failed to write temp file {}: {error}", tmp_path.display()).into());
+    }
+    drop(temp_file);
+
+    let activation = rename_file_no_replace(&tmp_path, path);
+    match activation {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(crate::shared::error::AppError::new(
+                "FS_ALREADY_EXISTS",
+                format!("refusing to overwrite existing file {}", path.display()),
+            ))
+        }
+        Err(error) => {
+            let _ = std::fs::remove_file(&tmp_path);
+            Err(format!("failed to activate file {}: {error}", path.display()).into())
+        }
+    }
+}
+
 pub(crate) fn write_file_atomic_if_changed(
     path: &Path,
     bytes: &[u8],
@@ -586,6 +681,44 @@ mod tests {
         assert!(write_file_atomic_if_changed(&path, b"v2").expect("write"));
         let got = read_file_with_max_len(&path, 16).expect("read_file_with_max_len");
         assert_eq!(got, b"v2");
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn write_file_atomic_create_new_never_overwrites_existing_target() {
+        let dir = unique_tmp_dir();
+        let path = dir.join("profile.config.toml");
+        write_file_atomic_create_new(&path, b"first").expect("create");
+        let error = write_file_atomic_create_new(&path, b"second").expect_err("must not replace");
+        assert!(error.to_string().contains("FS_ALREADY_EXISTS"));
+        assert_eq!(std::fs::read(&path).expect("read"), b"first");
+        assert!(std::fs::read_dir(&dir)
+            .expect("read temp dir")
+            .all(|entry| !entry
+                .expect("temp entry")
+                .file_name()
+                .to_string_lossy()
+                .starts_with(".aio-atomic-")));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn rename_file_no_replace_moves_once_and_never_clobbers() {
+        let dir = unique_tmp_dir();
+        let source = dir.join("source.txt");
+        let target = dir.join("target.txt");
+        std::fs::write(&source, b"source").expect("write source");
+        std::fs::write(&target, b"target").expect("write target");
+
+        let error = rename_file_no_replace(&source, &target).expect_err("target exists");
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert_eq!(std::fs::read(&source).expect("source preserved"), b"source");
+        assert_eq!(std::fs::read(&target).expect("target preserved"), b"target");
+
+        std::fs::remove_file(&target).expect("remove target");
+        rename_file_no_replace(&source, &target).expect("move without replacement");
+        assert!(!source.exists());
+        assert_eq!(std::fs::read(&target).expect("moved target"), b"source");
         let _ = std::fs::remove_dir_all(&dir);
     }
 

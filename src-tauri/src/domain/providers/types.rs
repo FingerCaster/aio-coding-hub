@@ -287,6 +287,7 @@ pub struct ProviderExtensionValuesInput {
 #[derive(Debug, Clone, Serialize, specta::Type)]
 pub struct ProviderSummary {
     pub id: i64,
+    pub provider_uuid: String,
     pub cli_key: String,
     pub name: String,
     pub base_urls: Vec<String>,

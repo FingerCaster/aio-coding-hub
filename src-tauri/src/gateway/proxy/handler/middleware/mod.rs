@@ -10,6 +10,7 @@ pub(super) mod cli_proxy_guard;
 pub(super) mod codex_request_classifier;
 pub(super) mod codex_session_completion;
 pub(super) mod cx2cc_count_tokens_interceptor;
+pub(super) mod managed_model_route;
 pub(super) mod model_inference;
 pub(super) mod probe_interceptor;
 pub(super) mod provider_resolution;
@@ -24,6 +25,7 @@ pub(super) use cli_proxy_guard::CliProxyGuardMiddleware;
 pub(super) use codex_request_classifier::CodexRequestClassifierMiddleware;
 pub(super) use codex_session_completion::CodexSessionCompletionMiddleware;
 pub(super) use cx2cc_count_tokens_interceptor::Cx2ccCountTokensInterceptorMiddleware;
+pub(super) use managed_model_route::ManagedModelRouteMiddleware;
 pub(super) use model_inference::ModelInferenceMiddleware;
 pub(super) use probe_interceptor::ProbeInterceptorMiddleware;
 pub(super) use provider_resolution::ProviderResolutionMiddleware;
@@ -85,6 +87,7 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     // -- model inference results --
     pub(super) requested_model: Option<String>,
     pub(super) requested_model_location: Option<RequestedModelLocation>,
+    pub(super) managed_model_route: Option<crate::gateway::managed_model_route::ManagedModelRoute>,
 
     // -- request kind classification --
     pub(super) is_compact_request: bool,
@@ -136,6 +139,7 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             session_id: self.session_id,
             requested_model: self.requested_model,
             requested_model_location: self.requested_model_location,
+            managed_model_route: self.managed_model_route,
             effective_sort_mode_id: self.effective_sort_mode_id,
             providers: self.providers,
             session_bound_provider_id: self.session_bound_provider_id,

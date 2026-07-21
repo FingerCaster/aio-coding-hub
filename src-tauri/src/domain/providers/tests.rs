@@ -1,7 +1,10 @@
-use super::queries::{get_source_provider_for_gateway, pool_order_set};
+use super::queries::{
+    get_enabled_direct_codex_for_gateway_by_identity, get_source_provider_for_gateway,
+    pool_order_set,
+};
 use super::types::CX2CC_BRIDGE_TYPE;
 use super::*;
-use rusqlite::OptionalExtension;
+use rusqlite::{params, OptionalExtension};
 
 // -- ClaudeModels::map_model --
 
@@ -558,6 +561,109 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
 }
 
 #[test]
+fn provider_uuid_is_generated_preserved_on_edit_and_unique_per_copy() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("provider_uuid_lifecycle.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let original = upsert(&db, default_provider_params("UUID Original")).expect("create");
+    assert!(crate::shared::uuid::is_canonical_uuid_v4(
+        &original.provider_uuid
+    ));
+    let mut edit = default_provider_params("UUID Original");
+    edit.provider_id = Some(original.id);
+    edit.note = Some("edited".to_string());
+    let edited = upsert(&db, edit).expect("edit");
+    assert_eq!(edited.provider_uuid, original.provider_uuid);
+
+    let copy = upsert(&db, default_provider_params("UUID Copy")).expect("copy");
+    assert!(crate::shared::uuid::is_canonical_uuid_v4(
+        &copy.provider_uuid
+    ));
+    assert_ne!(copy.provider_uuid, original.provider_uuid);
+}
+
+#[test]
+fn managed_gateway_loader_accepts_only_enabled_direct_codex_provider() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("managed_gateway_loader.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut codex = default_provider_params("Codex Direct");
+    codex.cli_key = "codex".to_string();
+    let direct = upsert(&db, codex).expect("direct provider");
+    assert_eq!(
+        get_enabled_direct_codex_for_gateway_by_identity(&db, direct.id, &direct.provider_uuid,)
+            .expect("load direct")
+            .expect("direct exists")
+            .id,
+        direct.id
+    );
+
+    set_enabled(&db, direct.id, false).expect("disable");
+    assert!(get_enabled_direct_codex_for_gateway_by_identity(
+        &db,
+        direct.id,
+        &direct.provider_uuid,
+    )
+    .expect("load disabled")
+    .is_none());
+
+    let claude = upsert(&db, default_provider_params("Claude Direct")).expect("Claude provider");
+    assert!(get_enabled_direct_codex_for_gateway_by_identity(
+        &db,
+        claude.id,
+        &claude.provider_uuid,
+    )
+    .expect("load Claude")
+    .is_none());
+}
+
+#[test]
+fn provider_delete_is_blocked_while_managed_profile_references_its_model() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("managed_profile_delete_guard.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let mut params = default_provider_params("Managed Delete Guard");
+    params.cli_key = "codex".to_string();
+    let provider = upsert(&db, params).expect("provider");
+    let model_uuid = crate::shared::uuid::new_uuid_v4();
+    let profile_uuid = crate::shared::uuid::new_uuid_v4();
+    let conn = db.open_connection().expect("open db");
+    conn.execute(
+        r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, created_at, updated_at
+) VALUES (?1, ?2, 'grok-4.5', 'manual', 0, 1, 1)
+"#,
+        rusqlite::params![model_uuid, provider.id],
+    )
+    .expect("manual model");
+    conn.execute(
+        r#"
+INSERT INTO codex_managed_profiles(
+  profile_uuid, profile_name, profile_name_key, model_uuid,
+  codex_home_path, content_sha256, created_at, updated_at
+) VALUES (?1, 'guarded', 'guarded', ?2, 'C:/synthetic-codex-home', 'hash', 1, 1)
+"#,
+        rusqlite::params![profile_uuid, model_uuid],
+    )
+    .expect("profile metadata");
+    drop(conn);
+
+    let error = delete(&db, provider.id, false).expect_err("referenced provider must remain");
+    assert_eq!(error.code(), "PROVIDER_MANAGED_PROFILE_REFERENCED");
+    let conn = db.open_connection().expect("open db");
+    conn.execute(
+        "DELETE FROM codex_managed_profiles WHERE profile_uuid = ?1",
+        rusqlite::params![profile_uuid],
+    )
+    .expect("delete profile metadata");
+    drop(conn);
+    delete(&db, provider.id, false).expect("delete after unlink");
+}
+
+#[test]
 fn upsert_seeds_provider_account_usage_extension_owner_without_visible_plugin() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("providers_account_usage_extension.db");
@@ -1104,6 +1210,127 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
     )
     .expect("create oauth provider")
     .id
+}
+
+#[test]
+fn oauth_disconnect_marks_discovery_stale_but_automatic_refresh_does_not() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_oauth_disconnect_stale.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let provider_id = create_oauth_provider_for_cas_test(&db, "oauth-disconnect-stale");
+
+    update_oauth_tokens(
+        &db,
+        provider_id,
+        "oauth",
+        "codex_oauth",
+        "seed_access",
+        Some("seed_refresh"),
+        Some("seed_id"),
+        "https://auth.openai.com/oauth/token",
+        "client_seed",
+        None,
+        Some(2_000_000_000),
+        Some("seed@example.com"),
+    )
+    .expect("seed oauth tokens");
+    let expected_last_refreshed_at = get_oauth_details(&db, provider_id)
+        .expect("get seeded oauth details")
+        .oauth_last_refreshed_at;
+
+    let conn = db.open_connection().expect("open db for model state");
+    conn.execute(
+        r#"
+INSERT INTO provider_model_catalogs(
+  provider_id, protocol, stale, last_attempt_at, last_success_at, last_error_code
+) VALUES (?1, 'openai_compatible', 0, 1, 1, NULL)
+"#,
+        params![provider_id],
+    )
+    .expect("seed fresh model catalog");
+    conn.execute(
+        r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at
+) VALUES (?1, ?2, 'discovered-model', 'discovered', 0, 1, 1, 1)
+"#,
+        params![crate::shared::uuid::new_uuid_v4(), provider_id],
+    )
+    .expect("seed discovered model");
+    conn.execute(
+        r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at
+) VALUES (?1, ?2, 'manual-model', 'manual', 0, NULL, 1, 1)
+"#,
+        params![crate::shared::uuid::new_uuid_v4(), provider_id],
+    )
+    .expect("seed manual model");
+    drop(conn);
+
+    let auto_refreshed = update_oauth_tokens_if_last_refreshed_matches(
+        &db,
+        provider_id,
+        "oauth",
+        "codex_oauth",
+        "refreshed_access",
+        Some("refreshed_refresh"),
+        Some("refreshed_id"),
+        "https://auth.openai.com/oauth/token",
+        "client_refreshed",
+        None,
+        Some(2_000_000_100),
+        Some("refreshed@example.com"),
+        expected_last_refreshed_at,
+    )
+    .expect("automatic oauth token refresh");
+    assert!(auto_refreshed);
+
+    let conn = db.open_connection().expect("read pre-disconnect state");
+    let before_disconnect: (i64, i64, i64) = conn
+        .query_row(
+            r#"
+SELECT
+  (SELECT stale FROM provider_model_catalogs WHERE provider_id = ?1),
+  (SELECT stale FROM provider_models WHERE provider_id = ?1 AND source = 'discovered'),
+  (SELECT stale FROM provider_models WHERE provider_id = ?1 AND source = 'manual')
+"#,
+            params![provider_id],
+            |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+        )
+        .expect("read fresh discovery state");
+    assert_eq!(before_disconnect, (0, 0, 0));
+    drop(conn);
+
+    clear_oauth(&db, provider_id).expect("disconnect oauth");
+
+    let conn = db.open_connection().expect("read post-disconnect state");
+    let after_disconnect: (String, i64, i64, i64, i64) = conn
+        .query_row(
+            r#"
+SELECT
+  provider.auth_mode,
+  provider.oauth_access_token IS NULL,
+  catalog.stale,
+  (SELECT stale FROM provider_models WHERE provider_id = ?1 AND source = 'discovered'),
+  (SELECT stale FROM provider_models WHERE provider_id = ?1 AND source = 'manual')
+FROM providers provider
+JOIN provider_model_catalogs catalog ON catalog.provider_id = provider.id
+WHERE provider.id = ?1
+"#,
+            params![provider_id],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                ))
+            },
+        )
+        .expect("read stale discovery state");
+    assert_eq!(after_disconnect, ("api_key".to_string(), 1, 1, 1, 0));
 }
 
 #[test]

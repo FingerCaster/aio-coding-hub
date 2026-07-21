@@ -406,12 +406,13 @@ mod tests {
     }
 
     async fn spawn_capturing_json_upstream(
-        body: &'static str,
+        body: impl Into<String>,
     ) -> (
         String,
         tokio::sync::oneshot::Receiver<String>,
         tokio::task::JoinHandle<()>,
     ) {
+        let body = body.into();
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
             .await
             .expect("bind capturing json upstream stub");
@@ -848,6 +849,25 @@ mod tests {
         insert_codex_provider_with_priority(db, "Timeout Stub", base_url, 0)
     }
 
+    fn insert_managed_codex_model(db: &db::Db, provider_id: i64, remote_model_id: &str) -> String {
+        let conn = db.open_connection().expect("open provider db");
+        let provider = crate::providers::get_by_id(&conn, provider_id).expect("load provider");
+        drop(conn);
+        let catalog = crate::domain::provider_models::manual_upsert(
+            db,
+            provider_id,
+            &provider.provider_uuid,
+            remote_model_id,
+        )
+        .expect("insert managed Codex model");
+        let model = catalog
+            .models
+            .iter()
+            .find(|model| model.remote_model_id == remote_model_id)
+            .expect("managed model catalog entry");
+        format!("aio/{}", model.model_uuid)
+    }
+
     fn disable_upstream_retry_policy(settings: &mut settings::AppSettings) {
         settings.upstream_retry_policy.enabled = false;
     }
@@ -984,6 +1004,84 @@ mod tests {
             Value::Array(values) => values,
             _ => panic!("special settings json must be an array"),
         }
+    }
+
+    fn assert_managed_codex_matched_route_log(
+        log: &request_logs::RequestLogInsert,
+        canonical_model: &str,
+        provider_id: i64,
+        remote_model_id: &str,
+    ) {
+        assert_eq!(log.requested_model.as_deref(), Some(canonical_model));
+
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            attempts[0]
+                .get("requested_upstream_model")
+                .and_then(Value::as_str),
+            Some(remote_model_id)
+        );
+
+        let special_settings = parse_special_settings(log);
+        assert!(!special_settings.iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+        }));
+        let managed_route = special_settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("aio_managed_model_route")
+            })
+            .expect("managed route setting");
+        assert_eq!(
+            managed_route.get("canonicalModel").and_then(Value::as_str),
+            Some(canonical_model)
+        );
+        assert_eq!(
+            managed_route.get("providerId").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            managed_route.get("remoteModelId").and_then(Value::as_str),
+            Some(remote_model_id)
+        );
+        assert_eq!(
+            managed_route
+                .get("requestedUpstreamModel")
+                .and_then(Value::as_str),
+            Some(remote_model_id)
+        );
+        assert_eq!(
+            managed_route.get("applied").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            managed_route.get("observation").and_then(Value::as_str),
+            Some("matched")
+        );
+    }
+
+    async fn assert_no_additional_terminal_request_log(
+        log_rx: &mut tokio::sync::mpsc::Receiver<request_logs::RequestLogInsert>,
+    ) {
+        let duplicate_terminal = tokio::time::timeout(Duration::from_millis(100), async {
+            while let Some(item) = log_rx.recv().await {
+                if item.status.is_some() {
+                    return Some(item);
+                }
+            }
+            None
+        })
+        .await;
+        assert!(
+            !matches!(duplicate_terminal, Ok(Some(_))),
+            "managed route must emit exactly one terminal request log"
+        );
     }
 
     fn gateway_state(
@@ -3016,6 +3114,653 @@ mod tests {
                 .is_err(),
             "fail-closed beforeSend should not send the request upstream"
         );
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_alias_routes_only_to_its_bound_provider() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-codex-alias-route.sqlite"))
+            .expect("init test db");
+        let response_body = r#"{"id":"resp-managed","object":"response","model":"grok-4.5","output":[{"type":"message","content":[{"type":"output_text","text":"ok"}]}],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}"#;
+        let (bound_url, captured_rx, bound_task) =
+            spawn_capturing_json_upstream(response_body).await;
+        let (other_url, other_calls, other_task) =
+            spawn_counting_status_upstream(StatusCode::OK, response_body).await;
+        let bound_provider_id =
+            insert_codex_provider_with_priority(&db, "Managed Bound", bound_url, 0);
+        let other_provider_id =
+            insert_codex_provider_with_priority(&db, "Managed Other", other_url, 1);
+        let canonical_model = insert_managed_codex_model(&db, bound_provider_id, "grok-4.5");
+        let _other_canonical = insert_managed_codex_model(&db, other_provider_id, "grok-4.5");
+        let bound_provider_uuid = {
+            let conn = db.open_connection().expect("open db");
+            providers::get_by_id(&conn, bound_provider_id)
+                .expect("read bound provider")
+                .provider_uuid
+        };
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": false,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured_body = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("bound upstream request")
+            .expect("captured request body");
+        let captured_json: Value =
+            serde_json::from_str(&captured_body).expect("captured JSON body");
+        assert_eq!(
+            captured_json.get("model").and_then(Value::as_str),
+            Some("grok-4.5")
+        );
+        assert_eq!(
+            other_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "same-name model on another provider must not be called"
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(
+            log.requested_model.as_deref(),
+            Some(canonical_model.as_str())
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(bound_provider_id)
+        );
+        assert_eq!(
+            attempts[0]
+                .get("requested_upstream_model")
+                .and_then(Value::as_str),
+            Some("grok-4.5")
+        );
+        let special_settings = parse_special_settings(&log);
+        assert!(!special_settings.iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+        }));
+        let managed_route = special_settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("aio_managed_model_route")
+            })
+            .expect("managed route setting");
+        assert_eq!(
+            managed_route.get("providerId").and_then(Value::as_i64),
+            Some(bound_provider_id)
+        );
+        assert_eq!(
+            managed_route.get("providerUuid").and_then(Value::as_str),
+            Some(bound_provider_uuid.as_str())
+        );
+        assert_eq!(
+            managed_route.get("observation").and_then(Value::as_str),
+            Some("matched")
+        );
+
+        bound_task.abort();
+        other_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_alias_accepts_256_byte_model_id_at_utf8_boundary() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        // The byte cap lies inside this character at byte 200. This is a
+        // valid 256-byte catalog entry, so final wire validation must keep it
+        // intact instead of slicing it or treating it as a mutation.
+        let remote_model_id = format!("{}模{}", "a".repeat(199), "b".repeat(54));
+        assert_eq!(remote_model_id.len(), 256);
+        let response_body = serde_json::json!({
+            "id": "resp-managed-256",
+            "object": "response",
+            "model": remote_model_id.clone(),
+            "output": [{
+                "type": "message",
+                "content": [{ "type": "output_text", "text": "ok" }]
+            }],
+            "usage": { "input_tokens": 3, "output_tokens": 1, "total_tokens": 4 }
+        })
+        .to_string();
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-codex-256-model.sqlite"))
+            .expect("init test db");
+        let (upstream_url, captured_rx, upstream_task) =
+            spawn_capturing_json_upstream(response_body).await;
+        let provider_id = insert_codex_provider(&db, upstream_url);
+        let canonical_model = insert_managed_codex_model(&db, provider_id, &remote_model_id);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": false,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured_body = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("upstream request")
+            .expect("captured request body");
+        let captured_json: Value = serde_json::from_str(&captured_body).expect("captured JSON");
+        assert_eq!(
+            captured_json.get("model").and_then(Value::as_str),
+            Some(remote_model_id.as_str())
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        let special_settings = parse_special_settings(&log);
+        assert!(!special_settings.iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("model_route_mapping")
+        }));
+        let managed_route = special_settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("aio_managed_model_route")
+            })
+            .expect("managed route setting");
+        assert_eq!(
+            managed_route.get("remoteModelId").and_then(Value::as_str),
+            Some(remote_model_id.as_str())
+        );
+        assert_eq!(
+            managed_route
+                .get("requestedUpstreamModel")
+                .and_then(Value::as_str),
+            Some(remote_model_id.as_str())
+        );
+        assert_eq!(
+            managed_route.get("observation").and_then(Value::as_str),
+            Some("matched")
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_alias_failure_never_fails_over_to_another_provider() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-codex-no-failover.sqlite"))
+            .expect("init test db");
+        let (bound_url, bound_calls, bound_task) = spawn_counting_status_upstream(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"synthetic failure"}}"#,
+        )
+        .await;
+        let (other_url, other_calls, other_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"must-not-run","object":"response","model":"grok-4.5","output":[]}"#,
+        )
+        .await;
+        let bound_provider_id =
+            insert_codex_provider_with_priority(&db, "Managed Failing", bound_url, 0);
+        let other_provider_id =
+            insert_codex_provider_with_priority(&db, "Managed Success", other_url, 1);
+        let canonical_model = insert_managed_codex_model(&db, bound_provider_id, "grok-4.5");
+        let _other_canonical = insert_managed_codex_model(&db, other_provider_id, "grok-4.5");
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": false,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(bound_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            other_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "managed route must not cross provider boundaries"
+        );
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(
+            log.requested_model.as_deref(),
+            Some(canonical_model.as_str())
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(bound_provider_id)
+        );
+
+        bound_task.abort();
+        other_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_before_send_model_mutation_has_one_terminal_log_and_zero_upstream_calls()
+    {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-before-send-mutation.sqlite"))
+            .expect("init test db");
+        let (upstream_url, upstream_calls, upstream_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"must-not-run","object":"response","model":"grok-4.5","output":[]}"#,
+        )
+        .await;
+        let provider_id = insert_codex_provider(&db, upstream_url);
+        let canonical_model = insert_managed_codex_model(&db, provider_id, "grok-4.5");
+
+        let mut plugin = before_send_header_plugin();
+        set_granted_permissions(&mut plugin, &["request.body.read", "request.body.write"]);
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_request_handler("test.before-send", |ctx| {
+                let mut body: Value = serde_json::from_str(
+                    ctx.request.body.as_deref().expect("request body visible"),
+                )
+                .expect("request JSON");
+                body["model"] = Value::String("tampered-model".to_string());
+                GatewayHookResult {
+                    request_body: Some(body.to_string()),
+                    ..GatewayHookResult::continue_unchanged()
+                }
+            });
+        let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![plugin],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let state = gateway_state_with_plugin_pipeline(app_handle, db, log_tx, plugin_pipeline);
+        let active_requests = state.active_requests.clone();
+        let router = build_router(state);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": false,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_REQUEST);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("response JSON");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::ManagedModelInvalid.as_str())
+        );
+        assert_eq!(
+            upstream_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "mutated managed model must fail before network I/O"
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(400));
+        assert_eq!(
+            log.error_code.as_deref(),
+            Some(crate::gateway::proxy::GatewayErrorCode::ManagedModelInvalid.as_str())
+        );
+        assert_eq!(
+            log.requested_model.as_deref(),
+            Some(canonical_model.as_str())
+        );
+        let error_details: Value = serde_json::from_str(
+            log.error_details_json
+                .as_deref()
+                .expect("error details JSON"),
+        )
+        .expect("parse error details");
+        assert_eq!(
+            error_details.get("error_category").and_then(Value::as_str),
+            Some("NON_RETRYABLE_CLIENT_ERROR")
+        );
+        assert!(active_requests.snapshot().is_empty());
+
+        let duplicate_terminal = tokio::time::timeout(Duration::from_millis(100), async {
+            while let Some(item) = log_rx.recv().await {
+                if item.status.is_some() {
+                    return Some(item);
+                }
+            }
+            None
+        })
+        .await;
+        assert!(
+            !matches!(duplicate_terminal, Ok(Some(_))),
+            "managed model rejection must emit exactly one terminal request log"
+        );
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_alias_body_buffer_fake_200_keeps_matched_route_observation() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-body-fake-200.sqlite"))
+            .expect("init test db");
+        let fake_200_body = r#"{"model":"grok-4.5","error":{"message":"synthetic failure","type":"synthetic_error"}}"#;
+        let (upstream_url, captured_rx, upstream_task) =
+            spawn_capturing_json_upstream(fake_200_body).await;
+        let provider_id = insert_codex_provider(&db, upstream_url);
+        let canonical_model = insert_managed_codex_model(&db, provider_id, "grok-4.5");
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": false,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("response JSON");
+        assert_eq!(
+            payload.get("model").and_then(Value::as_str),
+            Some("grok-4.5")
+        );
+        assert_eq!(
+            payload.pointer("/error/type").and_then(Value::as_str),
+            Some("synthetic_error")
+        );
+
+        let captured_body = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("upstream request")
+            .expect("captured request body");
+        let captured_json: Value =
+            serde_json::from_str(&captured_body).expect("captured JSON body");
+        assert_eq!(
+            captured_json.get("model").and_then(Value::as_str),
+            Some("grok-4.5")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
+        assert_managed_codex_matched_route_log(
+            &log,
+            canonical_model.as_str(),
+            provider_id,
+            "grok-4.5",
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("body_error: code=GW_FAKE_200")
+        );
+        assert_no_additional_terminal_request_log(&mut log_rx).await;
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_alias_completed_sse_keeps_matched_route_observation() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-completed-sse.sqlite"))
+            .expect("init test db");
+        let sse_body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-managed-sse\",\"status\":\"completed\",\"model\":\"grok-4.5\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":1,\"output_tokens\":1,\"total_tokens\":2}}}\n\n"
+        );
+        let (upstream_url, upstream_task) = spawn_sse_upstream(sse_body).await;
+        let provider_id = insert_codex_provider(&db, upstream_url);
+        let canonical_model = insert_managed_codex_model(&db, provider_id, "grok-4.5");
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": true,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("response.output_text.delta"));
+        assert!(body_text.contains("response.completed"));
+        assert!(body_text.contains("resp-managed-sse"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        assert_managed_codex_matched_route_log(
+            &log,
+            canonical_model.as_str(),
+            provider_id,
+            "grok-4.5",
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_no_additional_terminal_request_log(&mut log_rx).await;
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn managed_codex_alias_incomplete_sse_keeps_matched_route_observation() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("managed-incomplete-sse.sqlite"))
+            .expect("init test db");
+        let incomplete_sse_body = concat!(
+            "event: response.incomplete\n",
+            "data: {\"type\":\"response.incomplete\",\"response\":{\"id\":\"resp-managed-incomplete\",\"status\":\"incomplete\",\"model\":\"grok-4.5\",\"output\":[]}}\n\n"
+        );
+        let (upstream_url, upstream_task) = spawn_sse_upstream(incomplete_sse_body).await;
+        let provider_id = insert_codex_provider(&db, upstream_url);
+        let canonical_model = insert_managed_codex_model(&db, provider_id, "grok-4.5");
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": canonical_model,
+                    "stream": true,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("response JSON");
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_FAKE_200")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
+        assert_managed_codex_matched_route_log(
+            &log,
+            canonical_model.as_str(),
+            provider_id,
+            "grok-4.5",
+        );
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("stream_error: code=GW_FAKE_200")
+        );
+        assert_no_additional_terminal_request_log(&mut log_rx).await;
+
         upstream_task.abort();
     }
 

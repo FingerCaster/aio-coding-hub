@@ -327,6 +327,10 @@ fn bounded_log_attempt(mut attempt: FailoverAttempt) -> FailoverAttempt {
         });
     }
     attempt.reason = truncate_optional_text(attempt.reason, REQUEST_END_LOG_REASON_MAX_CHARS);
+    attempt.requested_upstream_model = truncate_optional_text(
+        attempt.requested_upstream_model,
+        REQUEST_END_LOG_SHORT_TEXT_MAX_CHARS,
+    );
     attempt
 }
 
@@ -1053,6 +1057,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
             timeout_secs: None,
+            requested_upstream_model: None,
         }
     }
 
@@ -1086,6 +1091,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
             timeout_secs: Some(1),
+            requested_upstream_model: None,
         }
     }
 

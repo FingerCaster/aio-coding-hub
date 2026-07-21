@@ -1552,10 +1552,12 @@ pub(crate) fn import_provider_share(
     let auth = authentication_db_fields(&provider.authentication);
     let sort_order = next_sort_order(&tx, &provider.cli_key)?;
     let now = now_unix_seconds();
+    let provider_uuid = crate::shared::uuid::new_uuid_v4();
 
     tx.execute(
         r#"
 INSERT INTO providers(
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -1599,6 +1601,7 @@ INSERT INTO providers(
   created_at,
   updated_at
 ) VALUES (
+  :provider_uuid,
   :cli_key,
   :name,
   :base_url,
@@ -1645,6 +1648,7 @@ INSERT INTO providers(
 "#,
         named_params! {
             ":cli_key": provider.cli_key,
+            ":provider_uuid": provider_uuid,
             ":name": final_name,
             ":base_url": base_url,
             ":base_urls_json": base_urls_json,

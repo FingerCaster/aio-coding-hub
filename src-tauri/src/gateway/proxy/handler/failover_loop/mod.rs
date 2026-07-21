@@ -229,7 +229,7 @@ fn sync_codex_prepared_active_requested_model<R: tauri::Runtime>(
     prepared: &mut provider_iterator::PreparedProvider,
     active_requested_model: Option<&str>,
 ) {
-    if input.cli_key != "codex" {
+    if input.cli_key != "codex" || input.managed_model_route.is_some() {
         return;
     }
 
@@ -282,6 +282,7 @@ where
         created_at,
         session_id: &input.session_id,
         requested_model: &input.requested_model,
+        managed_model_route: input.managed_model_route.as_ref(),
         cx2cc_settings: &input.cx2cc_settings,
         effective_sort_mode_id: input.effective_sort_mode_id,
         special_settings: &input.special_settings,
@@ -327,9 +328,10 @@ where
             provider_iterator::PreparationOutcome::Skipped => continue,
             provider_iterator::PreparationOutcome::Terminal(reason) => {
                 let owned = finalize_owned_from_input(&input);
-                return finalize::terminal_bridge_error(finalize::TerminalBridgeErrorInput {
+                return finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
                     state: &input.state,
                     abort_guard: &mut abort_guard,
+                    status: StatusCode::BAD_REQUEST,
                     observe: input.observe_request,
                     attempts: std::mem::take(&mut run_state.attempts),
                     cli_key: owned.cli_key,

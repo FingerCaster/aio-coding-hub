@@ -55,15 +55,25 @@ fn normalize_codex_home_path(path: PathBuf) -> PathBuf {
 pub(crate) fn configured_codex_home_dir<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> Option<PathBuf> {
-    let home = home_dir(app).ok()?;
-
     settings::read(app)
         .ok()
         .filter(|settings| settings.codex_home_mode == settings::CodexHomeMode::Custom)
-        .map(|settings| settings.codex_home_override)
-        .filter(|value| !value.trim().is_empty())
-        .map(|value| resolve_under_home(&home, &value))
-        .map(normalize_codex_home_path)
+        .and_then(|settings| configured_codex_home_dir_for_settings(app, &settings).ok())
+        .flatten()
+}
+
+fn configured_codex_home_dir_for_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    app_settings: &settings::AppSettings,
+) -> crate::shared::error::AppResult<Option<PathBuf>> {
+    let value = app_settings.codex_home_override.trim();
+    if value.is_empty() {
+        return Ok(None);
+    }
+    let home = home_dir(app)?;
+    Ok(Some(normalize_codex_home_path(resolve_under_home(
+        &home, value,
+    ))))
 }
 
 pub fn codex_home_dir_user_default<R: tauri::Runtime>(
@@ -90,17 +100,22 @@ pub fn codex_home_dir_follow_env_or_default<R: tauri::Runtime>(
 pub fn codex_home_dir<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<PathBuf> {
-    let mode = settings::read(app)
-        .ok()
-        .map(|settings| settings.codex_home_mode)
-        .unwrap_or_default();
+    let app_settings = settings::read(app).unwrap_or_default();
+    codex_home_dir_for_settings(app, &app_settings)
+}
 
-    match mode {
+pub(crate) fn codex_home_dir_for_settings<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    app_settings: &settings::AppSettings,
+) -> crate::shared::error::AppResult<PathBuf> {
+    match app_settings.codex_home_mode {
         settings::CodexHomeMode::UserHomeDefault => codex_home_dir_user_default(app),
         settings::CodexHomeMode::FollowCodexHome => codex_home_dir_follow_env_or_default(app),
-        settings::CodexHomeMode::Custom => configured_codex_home_dir(app)
-            .map(Ok)
-            .unwrap_or_else(|| codex_home_dir_user_default(app)),
+        settings::CodexHomeMode::Custom => {
+            configured_codex_home_dir_for_settings(app, app_settings)?
+                .map(Ok)
+                .unwrap_or_else(|| codex_home_dir_user_default(app))
+        }
     }
 }
 

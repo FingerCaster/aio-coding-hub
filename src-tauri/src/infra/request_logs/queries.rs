@@ -1042,12 +1042,12 @@ INSERT INTO request_logs (
 
         conn.execute_batch(
             r#"
-INSERT INTO providers (id, cli_key, name, base_url, api_key_plaintext, enabled, priority,
+INSERT INTO providers (id, provider_uuid, cli_key, name, base_url, api_key_plaintext, enabled, priority,
   sort_order, cost_multiplier, created_at, updated_at)
-VALUES (7, 'codex', 'OpenAI Primary', 'https://example.com', '', 1, 100, 0, 1.0, 1, 1);
-INSERT INTO providers (id, cli_key, name, base_url, api_key_plaintext, enabled, priority,
+VALUES (7, '00000000-0000-4000-8000-000000000007', 'codex', 'OpenAI Primary', 'https://example.com', '', 1, 100, 0, 1.0, 1, 1);
+INSERT INTO providers (id, provider_uuid, cli_key, name, base_url, api_key_plaintext, enabled, priority,
   sort_order, cost_multiplier, source_provider_id, bridge_type, created_at, updated_at)
-VALUES (12, 'claude', 'Claude Bridge', 'https://example.com', '', 1, 100, 0, 1.0,
+VALUES (12, '00000000-0000-4000-8000-000000000012', 'claude', 'Claude Bridge', 'https://example.com', '', 1, 100, 0, 1.0,
   7, 'cx2cc', 1, 1);
 "#,
         )

@@ -30,6 +30,7 @@ where
     upstream: S,
     tracker: Arc<Mutex<usage::SseUsageTracker>>,
     observed_model: Arc<Mutex<Option<String>>>,
+    observed_conflicting_model: Arc<Mutex<Option<String>>>,
     observed_reasoning_effort: Arc<Mutex<Option<String>>>,
     _marker: std::marker::PhantomData<B>,
 }
@@ -43,12 +44,14 @@ where
         upstream: S,
         tracker: Arc<Mutex<usage::SseUsageTracker>>,
         observed_model: Arc<Mutex<Option<String>>>,
+        observed_conflicting_model: Arc<Mutex<Option<String>>>,
         observed_reasoning_effort: Arc<Mutex<Option<String>>>,
     ) -> Self {
         Self {
             upstream,
             tracker,
             observed_model,
+            observed_conflicting_model,
             observed_reasoning_effort,
             _marker: std::marker::PhantomData,
         }
@@ -58,6 +61,7 @@ where
         let _ = finalize_upstream_route_observation(
             &self.tracker,
             &self.observed_model,
+            &self.observed_conflicting_model,
             &self.observed_reasoning_effort,
         );
     }
@@ -66,28 +70,34 @@ where
 fn finalize_upstream_route_observation(
     tracker: &Arc<Mutex<usage::SseUsageTracker>>,
     observed_model: &Arc<Mutex<Option<String>>>,
+    observed_conflicting_model: &Arc<Mutex<Option<String>>>,
     observed_reasoning_effort: &Arc<Mutex<Option<String>>>,
-) -> (Option<String>, Option<String>) {
-    let route = {
+) -> usage::ModelRouteEvidence {
+    let evidence = {
         let mut tracker = match tracker.lock() {
             Ok(tracker) => tracker,
             Err(poisoned) => poisoned.into_inner(),
         };
         let _ = tracker.finalize();
-        tracker.best_effort_route()
+        tracker.best_effort_route_evidence()
     };
 
-    if let Some(model) = route.0.as_ref() {
+    if let Some(model) = evidence.first_model.as_ref() {
         if let Ok(mut observed) = observed_model.lock() {
             *observed = Some(model.clone());
         }
     }
-    if let Some(effort) = route.1.as_ref() {
+    if let Some(model) = evidence.first_conflicting_model.as_ref() {
+        if let Ok(mut observed) = observed_conflicting_model.lock() {
+            *observed = Some(model.clone());
+        }
+    }
+    if let Some(effort) = evidence.reasoning_effort.as_ref() {
         if let Ok(mut observed) = observed_reasoning_effort.lock() {
             *observed = Some(effort.clone());
         }
     }
-    route
+    evidence
 }
 
 impl<S, B> Stream for UpstreamModelObserverStream<S, B>
@@ -474,26 +484,34 @@ where
             error_code
         };
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-        let (actual_model, actual_reasoning_effort) = finalize_upstream_route_observation(
+        let route_evidence = finalize_upstream_route_observation(
             &self.ctx.upstream_route_tracker,
             &self.ctx.observed_upstream_model,
+            &self.ctx.observed_upstream_conflicting_model,
             &self.ctx.observed_upstream_reasoning_effort,
         );
         if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
-            &self.ctx.cli_key,
-            self.ctx.requested_model.as_deref(),
-            actual_model.as_deref(),
-            actual_reasoning_effort.as_deref(),
-            &self.ctx.special_settings,
-            self.ctx.provider_id,
-            &self.ctx.provider_name,
+            model_route_mapping::SharedModelRouteSettingInput {
+                cli_key: &self.ctx.cli_key,
+                requested_model: self.ctx.requested_upstream_model.as_deref(),
+                actual_model: route_evidence.first_model.as_deref(),
+                conflicting_actual_model: route_evidence.first_conflicting_model.as_deref(),
+                actual_reasoning_effort: route_evidence.reasoning_effort.as_deref(),
+                special_settings: &self.ctx.special_settings,
+                provider_id: self.ctx.provider_id,
+                provider_name: &self.ctx.provider_name,
+            },
         ) {
             response_fixer::push_model_route_mapping_special_setting(
                 &self.ctx.special_settings,
                 setting,
             );
         }
-        let requested_model = self.ctx.requested_model.clone().or(actual_model);
+        let requested_model = self
+            .ctx
+            .requested_model
+            .clone()
+            .or(route_evidence.first_model);
 
         emit_request_event_and_spawn_request_log(
             &self.ctx,
@@ -904,24 +922,25 @@ where
             usage::parse_usage_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
         };
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-        let actual_model = if self.truncated || self.buffer.is_empty() {
-            None
+        let route_evidence = if self.truncated || self.buffer.is_empty() {
+            usage::ModelRouteEvidence::default()
         } else {
-            usage::parse_model_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
-        };
-        let actual_reasoning_effort = if self.truncated || self.buffer.is_empty() {
-            None
-        } else {
-            usage::parse_reasoning_effort_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
+            usage::parse_model_route_evidence_from_json_or_sse_bytes(
+                &self.ctx.cli_key,
+                &self.buffer,
+            )
         };
         if let Some(setting) = model_route_mapping::build_model_route_mapping_setting_from_shared(
-            &self.ctx.cli_key,
-            self.ctx.requested_model.as_deref(),
-            actual_model.as_deref(),
-            actual_reasoning_effort.as_deref(),
-            &self.ctx.special_settings,
-            self.ctx.provider_id,
-            &self.ctx.provider_name,
+            model_route_mapping::SharedModelRouteSettingInput {
+                cli_key: &self.ctx.cli_key,
+                requested_model: self.ctx.requested_upstream_model.as_deref(),
+                actual_model: route_evidence.first_model.as_deref(),
+                conflicting_actual_model: route_evidence.first_conflicting_model.as_deref(),
+                actual_reasoning_effort: route_evidence.reasoning_effort.as_deref(),
+                special_settings: &self.ctx.special_settings,
+                provider_id: self.ctx.provider_id,
+                provider_name: &self.ctx.provider_name,
+            },
         ) {
             response_fixer::push_model_route_mapping_special_setting(
                 &self.ctx.special_settings,
@@ -932,7 +951,7 @@ where
             if self.truncated || self.buffer.is_empty() {
                 None
             } else {
-                actual_model.clone()
+                route_evidence.first_model.clone()
             }
         });
 
@@ -1093,6 +1112,8 @@ mod tests {
             attempts: Vec::new(),
             attempts_json: "[]".to_string(),
             requested_model: None,
+            requested_upstream_model: None,
+            managed_model_route: false,
             created_at_ms: 1_700_000_000_000,
             created_at: 1_700_000_000,
             provider_cooldown_secs: 0,
@@ -1103,6 +1124,7 @@ mod tests {
             auth_mode: "api_key".to_string(),
             upstream_route_tracker: Arc::new(Mutex::new(usage::SseUsageTracker::new("codex"))),
             observed_upstream_model: Arc::new(Mutex::new(None)),
+            observed_upstream_conflicting_model: Arc::new(Mutex::new(None)),
             observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),
             fake_200_detected: false,
             fake_200_quota_exhausted: false,
@@ -1183,6 +1205,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn upstream_route_observer_tracks_chunked_model_and_reasoning_effort() {
         let observed_model = Arc::new(Mutex::new(None));
+        let observed_conflict = Arc::new(Mutex::new(None));
         let observed_effort = Arc::new(Mutex::new(None));
         let route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
         let (upstream_tx, upstream_rx) =
@@ -1205,6 +1228,7 @@ mod tests {
             RelayBodyStream::new(upstream_rx),
             route_tracker,
             observed_model.clone(),
+            observed_conflict,
             observed_effort.clone(),
         );
         while let Some(item) = next_item(&mut observer).await {
@@ -1224,6 +1248,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn upstream_route_observer_finalizes_unterminated_tail_before_error() {
         let observed_model = Arc::new(Mutex::new(None));
+        let observed_conflict = Arc::new(Mutex::new(None));
         let observed_effort = Arc::new(Mutex::new(None));
         let route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
         let (upstream_tx, upstream_rx) =
@@ -1248,6 +1273,7 @@ mod tests {
             RelayBodyStream::new(upstream_rx),
             route_tracker,
             observed_model.clone(),
+            observed_conflict,
             observed_effort.clone(),
         );
         next_item(&mut observer)
@@ -1269,6 +1295,7 @@ mod tests {
     #[tokio::test(flavor = "current_thread")]
     async fn upstream_route_observer_does_not_snapshot_parse_small_pending_fragments() {
         let observed_model = Arc::new(Mutex::new(None));
+        let observed_conflict = Arc::new(Mutex::new(None));
         let observed_effort = Arc::new(Mutex::new(None));
         let route_tracker = Arc::new(Mutex::new(usage::SseUsageTracker::new("codex")));
         let payload = format!(
@@ -1291,6 +1318,7 @@ mod tests {
             RelayBodyStream::new(upstream_rx),
             route_tracker.clone(),
             observed_model.clone(),
+            observed_conflict,
             observed_effort.clone(),
         );
         for _ in 0..chunk_count {
@@ -1340,7 +1368,9 @@ mod tests {
         active_requests.register(active_request_start("trace-usage-tee-drain"));
         let mut ctx = test_stream_finalize_ctx(app.handle().clone(), db, log_tx, active_requests);
         ctx.requested_model = Some("gpt-5.5".to_string());
+        ctx.requested_upstream_model = Some("gpt-5.5".to_string());
         let observed_model = ctx.observed_upstream_model.clone();
+        let observed_conflict = ctx.observed_upstream_conflicting_model.clone();
         let observed_effort = ctx.observed_upstream_reasoning_effort.clone();
         let route_tracker = ctx.upstream_route_tracker.clone();
 
@@ -1357,6 +1387,7 @@ mod tests {
             RelayBodyStream::new(upstream_rx),
             route_tracker.clone(),
             observed_model.clone(),
+            observed_conflict,
             observed_effort.clone(),
         );
         let mut stream = UsageSseTeeStream::new(observer, ctx, None, None);
@@ -1855,6 +1886,7 @@ mod tests {
         active_requests.register(active_request_start("trace-usage-tee-drain"));
         let mut ctx = test_stream_finalize_ctx(app_handle, db, log_tx, active_requests);
         ctx.requested_model = Some("gpt-5.5".to_string());
+        ctx.requested_upstream_model = Some("gpt-5.5".to_string());
 
         let (raw_tx, raw_rx) = tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
         raw_tx
@@ -1869,6 +1901,7 @@ mod tests {
             RelayBodyStream::new(raw_rx),
             ctx.upstream_route_tracker.clone(),
             ctx.observed_upstream_model.clone(),
+            ctx.observed_upstream_conflicting_model.clone(),
             ctx.observed_upstream_reasoning_effort.clone(),
         );
         while let Some(chunk) = next_item(&mut observer).await {
@@ -1921,6 +1954,7 @@ mod tests {
         active_requests.register(active_request_start("trace-usage-tee-drain"));
         let mut ctx = test_stream_finalize_ctx(app_handle, db, log_tx, active_requests);
         ctx.requested_model = Some("gpt-5.5".to_string());
+        ctx.requested_upstream_model = Some("gpt-5.5".to_string());
         ctx.special_settings
             .lock()
             .expect("special settings lock")
@@ -1942,6 +1976,7 @@ mod tests {
             RelayBodyStream::new(raw_rx),
             ctx.upstream_route_tracker.clone(),
             ctx.observed_upstream_model.clone(),
+            ctx.observed_upstream_conflicting_model.clone(),
             ctx.observed_upstream_reasoning_effort.clone(),
         );
         while let Some(chunk) = next_item(&mut observer).await {
