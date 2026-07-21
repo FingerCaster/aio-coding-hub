@@ -868,6 +868,36 @@ mod tests {
         format!("aio/{}", model.model_uuid)
     }
 
+    fn insert_managed_codex_profile_alias(
+        db: &db::Db,
+        provider_id: i64,
+        remote_model_id: &str,
+        profile_name_key: &str,
+    ) -> String {
+        let legacy_alias = insert_managed_codex_model(db, provider_id, remote_model_id);
+        let model_uuid = legacy_alias
+            .strip_prefix("aio/")
+            .expect("legacy managed alias");
+        let conn = db.open_connection().expect("open provider db");
+        conn.execute(
+            r#"
+INSERT INTO codex_managed_profiles(
+  profile_uuid, profile_name, profile_name_key, model_uuid,
+  codex_home_path, content_sha256, created_at, updated_at
+) VALUES (?1, ?2, ?3, ?4, 'C:\codex', ?5, 1, 1)
+"#,
+            rusqlite::params![
+                crate::shared::uuid::new_uuid_v4(),
+                profile_name_key,
+                profile_name_key,
+                model_uuid,
+                "a".repeat(64)
+            ],
+        )
+        .expect("insert managed Codex profile alias");
+        format!("aio/{profile_name_key}")
+    }
+
     fn disable_upstream_retry_policy(settings: &mut settings::AppSettings) {
         settings.upstream_retry_policy.enabled = false;
     }
@@ -3145,7 +3175,8 @@ mod tests {
             insert_codex_provider_with_priority(&db, "Managed Bound", bound_url, 0);
         let other_provider_id =
             insert_codex_provider_with_priority(&db, "Managed Other", other_url, 1);
-        let canonical_model = insert_managed_codex_model(&db, bound_provider_id, "grok-4.5");
+        let canonical_model =
+            insert_managed_codex_profile_alias(&db, bound_provider_id, "grok-4.5", "grok-profile");
         let _other_canonical = insert_managed_codex_model(&db, other_provider_id, "grok-4.5");
         let bound_provider_uuid = {
             let conn = db.open_connection().expect("open db");

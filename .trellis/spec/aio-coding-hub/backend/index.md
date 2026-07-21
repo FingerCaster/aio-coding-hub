@@ -8,7 +8,8 @@ Rules for the root application's Rust backend and local gateway runtime.
   per-request provider attempts, reserved internal retries, strict model
   discovery, and cross-request circuit-breaker accounting.
 - [Codex managed model route contract](../cross-layer/codex-managed-model-route-contract.md):
-  exact alias lookup, one-provider routing, same-provider retry, and terminal
+  readable profile aliases plus legacy UUID lookup, complete picker catalog
+  lifecycle, one-provider routing, same-provider retry, and terminal
   wire-vs-observed route evidence.
 
 ## Pre-Development Checklist

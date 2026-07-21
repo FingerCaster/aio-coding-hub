@@ -19,6 +19,8 @@ const STDOUT_EVENT_CHANNEL_CAPACITY: usize = 32;
 const MAX_STDOUT_EVENT_COUNT: usize = 256;
 const MAX_STDOUT_TOTAL_BYTES: usize = 16 * 1024 * 1024;
 const MAX_STDERR_BYTES: usize = 16 * 1024;
+const BUNDLED_CATALOG_TIMEOUT: Duration = Duration::from_secs(20);
+const MAX_BUNDLED_CATALOG_BYTES: usize = 4 * 1024 * 1024;
 const MODEL_PAGE_LIMIT: u64 = 200;
 const MAX_MODEL_COUNT: usize = 1_000;
 const MAX_PAGE_COUNT: usize = 32;
@@ -102,6 +104,15 @@ pub(crate) fn fetch_model_catalog(
     let result = run_protocol(&mut child);
     child.shutdown(result.is_err());
     result
+}
+
+pub(crate) fn fetch_bundled_catalog(
+    launch: &CodexLaunchSpec,
+    codex_home: &Path,
+) -> Result<Vec<u8>, ProtocolError> {
+    let mut child =
+        ManagedOutputChild::spawn(launch, codex_home, &["debug", "models", "--bundled"])?;
+    child.wait_for_output(BUNDLED_CATALOG_TIMEOUT)
 }
 
 fn run_protocol(child: &mut ManagedChild) -> Result<Vec<CodexModelCapability>, ProtocolError> {
@@ -286,7 +297,7 @@ struct ManagedChild {
 
 impl ManagedChild {
     fn spawn(launch: &CodexLaunchSpec, codex_home: &Path) -> Result<Self, ProtocolError> {
-        let mut command = build_command(launch);
+        let mut command = build_command(launch, &["app-server", "--stdio"]);
         command
             .env("CODEX_HOME", codex_home)
             .env("PATH", &launch.runtime_path)
@@ -420,6 +431,195 @@ impl ManagedChild {
     }
 }
 
+#[derive(Debug)]
+struct BoundedOutput {
+    bytes: Vec<u8>,
+    exceeded: bool,
+}
+
+fn spawn_bounded_output_reader<R>(
+    mut reader: R,
+    limit: usize,
+) -> JoinHandle<io::Result<BoundedOutput>>
+where
+    R: Read + Send + 'static,
+{
+    thread::spawn(move || {
+        let mut retained = Vec::with_capacity(limit.min(8 * 1024));
+        let mut exceeded = false;
+        let mut chunk = [0_u8; 8 * 1024];
+        loop {
+            let read = reader.read(&mut chunk)?;
+            if read == 0 {
+                break;
+            }
+            let remaining = limit.saturating_sub(retained.len());
+            if remaining > 0 {
+                let keep = read.min(remaining);
+                retained.extend_from_slice(&chunk[..keep]);
+                exceeded |= keep < read;
+            } else {
+                exceeded = true;
+            }
+        }
+        Ok(BoundedOutput {
+            bytes: retained,
+            exceeded,
+        })
+    })
+}
+
+struct ManagedOutputChild {
+    child: Child,
+    stdout_task: Option<JoinHandle<io::Result<BoundedOutput>>>,
+    stderr_task: Option<JoinHandle<io::Result<BoundedOutput>>>,
+    finished: bool,
+    #[cfg(unix)]
+    process_id: u32,
+    #[cfg(windows)]
+    job: WindowsJob,
+}
+
+impl ManagedOutputChild {
+    fn spawn(
+        launch: &CodexLaunchSpec,
+        codex_home: &Path,
+        args: &[&str],
+    ) -> Result<Self, ProtocolError> {
+        let mut command = build_command(launch, args);
+        command
+            .env("CODEX_HOME", codex_home)
+            .env("PATH", &launch.runtime_path)
+            .stdin(Stdio::null())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped());
+        configure_command(&mut command);
+
+        let mut child = command.spawn().map_err(|_| ProtocolError::Spawn)?;
+        #[cfg(unix)]
+        let process_id = child.id();
+        #[cfg(windows)]
+        let job = match WindowsJob::attach(child.id()) {
+            Ok(job) => job,
+            Err(_) => {
+                terminate_windows_process_tree(child.id());
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(ProtocolError::Spawn);
+            }
+        };
+
+        let stdout = child.stdout.take().ok_or_else(|| {
+            let _ = child.kill();
+            let _ = child.wait();
+            ProtocolError::Spawn
+        })?;
+        let stderr = child.stderr.take().ok_or_else(|| {
+            let _ = child.kill();
+            let _ = child.wait();
+            ProtocolError::Spawn
+        })?;
+
+        Ok(Self {
+            child,
+            stdout_task: Some(spawn_bounded_output_reader(
+                stdout,
+                MAX_BUNDLED_CATALOG_BYTES,
+            )),
+            stderr_task: Some(spawn_bounded_output_reader(stderr, MAX_STDERR_BYTES)),
+            finished: false,
+            #[cfg(unix)]
+            process_id,
+            #[cfg(windows)]
+            job,
+        })
+    }
+
+    fn wait_for_output(&mut self, timeout: Duration) -> Result<Vec<u8>, ProtocolError> {
+        let deadline = Instant::now() + timeout;
+        let status = loop {
+            match self.child.try_wait() {
+                Ok(Some(status)) => break status,
+                Ok(None) if Instant::now() < deadline => {
+                    thread::sleep(Duration::from_millis(10));
+                }
+                Ok(None) => {
+                    self.terminate_tree();
+                    let _ = self.child.wait();
+                    self.finish_readers();
+                    self.finished = true;
+                    return Err(ProtocolError::Timeout);
+                }
+                Err(_) => {
+                    self.terminate_tree();
+                    let _ = self.child.wait();
+                    self.finish_readers();
+                    self.finished = true;
+                    return Err(ProtocolError::Spawn);
+                }
+            }
+        };
+
+        let stdout = self.collect_reader(true)?;
+        let _stderr = self.collect_reader(false)?;
+        self.finished = true;
+        #[cfg(windows)]
+        self.job.close();
+
+        if !status.success() {
+            return Err(ProtocolError::Spawn);
+        }
+        if stdout.exceeded || stdout.bytes.is_empty() {
+            return Err(ProtocolError::Malformed);
+        }
+        Ok(stdout.bytes)
+    }
+
+    fn collect_reader(&mut self, stdout: bool) -> Result<BoundedOutput, ProtocolError> {
+        let task = if stdout {
+            self.stdout_task.take()
+        } else {
+            self.stderr_task.take()
+        };
+        let Some(task) = task else {
+            return Ok(BoundedOutput {
+                bytes: Vec::new(),
+                exceeded: false,
+            });
+        };
+        task.join()
+            .map_err(|_| ProtocolError::Malformed)?
+            .map_err(|_| ProtocolError::Malformed)
+    }
+
+    fn finish_readers(&mut self) {
+        let _ = self.collect_reader(true);
+        let _ = self.collect_reader(false);
+        #[cfg(windows)]
+        self.job.close();
+    }
+
+    fn terminate_tree(&mut self) {
+        #[cfg(unix)]
+        terminate_unix_process_group(self.process_id);
+        #[cfg(windows)]
+        terminate_windows_process_tree(self.child.id());
+        let _ = self.child.kill();
+        #[cfg(windows)]
+        self.job.close();
+    }
+}
+
+impl Drop for ManagedOutputChild {
+    fn drop(&mut self) {
+        if !self.finished && self.child.try_wait().ok().flatten().is_none() {
+            self.terminate_tree();
+            let _ = self.child.wait();
+        }
+        self.finish_readers();
+    }
+}
+
 impl Drop for ManagedChild {
     fn drop(&mut self) {
         if self.child.try_wait().ok().flatten().is_none() {
@@ -428,28 +628,14 @@ impl Drop for ManagedChild {
     }
 }
 
-fn build_command(launch: &CodexLaunchSpec) -> Command {
-    #[cfg(windows)]
-    {
-        let is_script = launch
-            .executable
-            .extension()
-            .and_then(|value| value.to_str())
-            .map(|value| value.eq_ignore_ascii_case("cmd") || value.eq_ignore_ascii_case("bat"))
-            .unwrap_or(false);
-        if is_script {
-            let mut command = Command::new("cmd.exe");
-            command.args(["/D", "/S", "/C"]);
-            command.arg(format!(
-                "\"{}\" app-server --stdio",
-                launch.executable.to_string_lossy().replace('"', "\\\"")
-            ));
-            return command;
-        }
-    }
-
+fn build_command(launch: &CodexLaunchSpec, args: &[&str]) -> Command {
+    // Keep every argument separate. On Windows, `std::process::Command`
+    // launches `.cmd` / `.bat` wrappers with the platform's required shell
+    // handling. Rebuilding the invocation as one `cmd.exe /S /C` string makes
+    // Rust's quote escaping visible to `cmd.exe` (for example `\"codex.cmd\"`)
+    // and turns a valid script path into an unknown command.
     let mut command = Command::new(&launch.executable);
-    command.args(["app-server", "--stdio"]);
+    command.args(args);
     command
 }
 
@@ -686,6 +872,13 @@ mod tests {
     use serde_json::json;
     use std::io::{BufReader, Cursor};
 
+    #[cfg(windows)]
+    use super::fetch_bundled_catalog;
+    #[cfg(windows)]
+    use crate::cli_manager::CodexLaunchSpec;
+    #[cfg(windows)]
+    use std::fs;
+
     #[cfg(unix)]
     use super::{fetch_model_catalog, run_protocol_with_timeout};
     #[cfg(unix)]
@@ -812,6 +1005,38 @@ mod tests {
         let mut byte_budget = StdoutBudget::new(3, 10);
         assert!(byte_budget.record(10));
         assert!(!byte_budget.record(1));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn bundled_catalog_runs_cmd_wrapper_from_a_path_with_spaces() {
+        let root = tempfile::tempdir().expect("tempdir");
+        let fixture_root = root.path().join("codex cli fixture");
+        let codex_home = fixture_root.join("codex home");
+        let script_path = fixture_root.join("codex fixture.cmd");
+        fs::create_dir_all(&codex_home).expect("create fixture home");
+        fs::write(
+            &script_path,
+            concat!(
+                "@echo off\r\n",
+                "if not exist \"%CODEX_HOME%\" exit /b 9\r\n",
+                "if not \"%~1\"==\"debug\" exit /b 10\r\n",
+                "if not \"%~2\"==\"models\" exit /b 11\r\n",
+                "if not \"%~3\"==\"--bundled\" exit /b 12\r\n",
+                "echo {\"models\":[{\"slug\":\"fixture\"}]}\r\n",
+            ),
+        )
+        .expect("write cmd fixture");
+        let launch = CodexLaunchSpec {
+            executable: script_path,
+            runtime_path: std::env::var_os("PATH").expect("Windows test PATH must exist"),
+            version: Some("fixture".to_string()),
+        };
+
+        let output = fetch_bundled_catalog(&launch, &codex_home).expect("run cmd fixture");
+        let parsed: serde_json::Value =
+            serde_json::from_slice(&output).expect("parse fixture JSON");
+        assert_eq!(parsed["models"][0]["slug"], json!("fixture"));
     }
 
     #[cfg(unix)]

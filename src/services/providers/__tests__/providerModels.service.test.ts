@@ -69,7 +69,7 @@ function generatedProfile(overrides: Record<string, unknown> = {}) {
     providerUuid: PROVIDER_UUID,
     providerName: "Grok",
     remoteModelId: "grok-4.5",
-    canonicalModel: `aio/${MODEL_UUID}`,
+    canonicalModel: "aio/grok-work",
     fileStatus: "managed",
     createdAt: 100,
     updatedAt: 100,
@@ -207,13 +207,20 @@ describe("services/providers Codex managed profiles", () => {
     expect(commands.codexManagedProfileCreate).toHaveBeenCalledWith("grok-work", MODEL_UUID);
   });
 
-  it("rejects a profile whose canonical alias does not match its model UUID", async () => {
+  it("rejects a profile whose canonical alias does not match its normalized profile name", async () => {
     vi.mocked(commands.codexManagedProfilesList).mockResolvedValueOnce({
       status: "ok",
       data: [generatedProfile({ canonicalModel: "aio/another-model" })] as never,
     });
 
     await expect(codexManagedProfilesList()).rejects.toThrow("IPC_MANAGED_PROFILE_ALIAS_MISMATCH");
+  });
+
+  it("rejects UUID-shaped profile names reserved for legacy model aliases", async () => {
+    await expect(codexManagedProfileCreate(MODEL_UUID, MODEL_UUID)).rejects.toThrow(
+      "SEC_INVALID_INPUT: invalid profileName"
+    );
+    expect(commands.codexManagedProfileCreate).not.toHaveBeenCalled();
   });
 
   it("rejects a profile with a non-canonical provider UUID", async () => {

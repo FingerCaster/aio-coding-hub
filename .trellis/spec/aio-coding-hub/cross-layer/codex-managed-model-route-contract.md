@@ -9,8 +9,10 @@ Use this contract when changing any of the following:
 - provider identity, provider-model catalog schema, or config-bundle import;
 - OpenAI-compatible provider model discovery or manual model entries;
 - managed Codex profile files under `$CODEX_HOME`;
-- `aio/<model_uuid>` parsing, provider selection, wire-model rewriting, cost
-  attribution, or model-route diagnostics;
+- Codex picker `model_catalog_json` generation, proxy-time activation, or
+  bundled catalog process launch;
+- `aio/<profile_name_key>` / legacy `aio/<model_uuid>` parsing, provider
+  selection, wire-model rewriting, cost attribution, or model-route diagnostics;
 - provider-model/profile IPC, generated bindings, TanStack Query keys, or the
   provider model catalog UI.
 
@@ -19,9 +21,10 @@ The complete flow is:
 ```text
 provider_uuid + provider-scoped catalog
   -> model_uuid
-  -> $CODEX_HOME/<name>.config.toml
-  -> model = "aio/<model_uuid>" + model_provider = "aio"
-  -> exact DB lookup
+  -> profile_name_key + $CODEX_HOME/<name>.config.toml
+  -> model = "aio/<profile_name_key>" + model_provider = "aio"
+  -> complete merged model_catalog_json picker entry
+  -> exact profile lookup (or exact legacy model UUID lookup)
   -> one bound provider + remote_model_id
   -> wire-vs-observed route evidence
 ```
@@ -53,9 +56,11 @@ provider_models(
 
 codex_managed_profiles(
   profile_uuid TEXT PRIMARY KEY,
-  profile_name TEXT NOT NULL UNIQUE COLLATE NOCASE,
+  profile_name TEXT NOT NULL,
+  profile_name_key TEXT NOT NULL UNIQUE,
   model_uuid TEXT NOT NULL,
   content_sha256 TEXT NOT NULL,
+  codex_home_path TEXT NOT NULL,
   FOREIGN KEY(model_uuid) REFERENCES provider_models(model_uuid) ON DELETE RESTRICT
 )
 ```
@@ -76,12 +81,20 @@ The gateway resolves a server-owned route context:
 
 ```rust
 pub struct ManagedModelRoute {
-    canonical_model: String, // aio/<model_uuid>
+    canonical_model: String, // aio/<profile_name_key> or legacy aio/<model_uuid>
     model_uuid: String,
     provider_id: i64,
     provider_uuid: String,
     remote_model_id: String,
 }
+```
+
+The picker integration resolves and runs the installed Codex executable with
+structured arguments:
+
+```rust
+fetch_bundled_catalog(launch, codex_home) // debug models --bundled
+sync_current_locked(app)                  // rebuild/apply/restore catalog
 ```
 
 Frontend catalog keys include both identities:
@@ -103,6 +116,9 @@ codexManagedProfilesKeys.list()
   in or trusted from the Codex model alias.
 - Model identity is `(provider_uuid, model_uuid, remote_model_id)`. Equal remote
   IDs on two providers remain distinct entries and distinct aliases.
+- `profile_name_key` is the lowercase, case-insensitive product key used by new
+  picker aliases. UUID-shaped profile names are reserved so
+  `aio/<profile_name_key>` can never be ambiguous with the legacy UUID form.
 
 #### Provider-scoped discovery
 
@@ -126,7 +142,7 @@ codexManagedProfilesKeys.list()
 - AIO writes `$CODEX_HOME/<profile>.config.toml` with top-level keys only:
 
   ```toml
-  model = "aio/<model_uuid>"
+  model = "aio/<profile_name_key>"
   model_provider = "aio"
   ```
 
@@ -139,11 +155,36 @@ codexManagedProfilesKeys.list()
   remove only bytes whose hash still matches the file created by this action.
 - Codex-home resolution must fail closed on unsafe symlink/reparse layouts.
 
+#### Codex picker catalog lifecycle
+
+- Profile files do not populate `/model` by themselves. While the Codex CLI
+  proxy is enabled, AIO owns one complete merged `model_catalog_json` containing
+  the current Codex base catalog plus one visible `aio/<profile_name_key>` entry
+  per managed profile.
+- If the pre-proxy root config contains an absolute user `model_catalog_json`,
+  preserve that document, every existing model, and unknown fields as the base.
+  Otherwise run the currently installed Codex executable with
+  `debug models --bundled`; never substitute an AIO compile-time snapshot.
+- Generated catalog bytes carry owner, payload/profile/base hashes. Every
+  update verifies those hashes and the root-config snapshot; external edits or
+  concurrent drift fail closed instead of being overwritten.
+- Profile create/delete, DB mutation, profile file activation, generated
+  catalog activation, and root config patching share the managed-profile
+  lifecycle lock and compensate only bytes still owned by that operation.
+- Enabling/syncing the CLI proxy rebuilds the catalog. Disabling/restoring the
+  proxy restores the original `model_catalog_json` value or its absence. With
+  zero managed profiles, no generated picker catalog remains active.
+- On Windows, pass the resolved `.cmd` / `.bat` executable and each fixed
+  argument separately to `std::process::Command`. Do not rebuild the command as
+  a quoted `cmd.exe /S /C` string: Rust's quote escaping becomes literal to
+  `cmd.exe` and can turn `\"codex.cmd\"` into an unknown command.
+
 #### Exact managed routing
 
-- Only exact canonical `aio/<uuidv4>` values are considered managed aliases.
-  Prefix resemblance is not an authorization boundary; the UUID must resolve
-  to an existing model row and its exact provider identity.
+- New `aio/<profile_name_key>` values must resolve by exact managed-profile
+  lookup. Legacy exact canonical `aio/<uuidv4>` values resolve by model UUID.
+  Prefix resemblance is not an authorization boundary; either form must reach
+  an existing server-owned binding and its exact provider identity.
 - The bound provider must be an enabled direct Codex provider. It is the only
   candidate, session reuse is disabled, forced-provider conflicts fail closed,
   and cross-provider failover is forbidden. Common circuit/cooldown/limit/auth
@@ -154,7 +195,8 @@ codexManagedProfilesKeys.list()
 
 #### Canonical, wire, and observed models
 
-- `request_logs.requested_model` keeps the canonical `aio/<model_uuid>`.
+- `request_logs.requested_model` keeps the actual canonical alias selected by
+  Codex: new `aio/<profile_name_key>` or legacy `aio/<model_uuid>`.
 - Each attempt records `requested_upstream_model`, the final model actually
   selected for upstream transmission. Final wire-model synchronization is
   Codex/managed-route scoped and must not alter ordinary Claude/Grok logging.
@@ -196,7 +238,12 @@ codexManagedProfilesKeys.list()
 | Unknown same-name profile file | `CODEX_MANAGED_PROFILE_FILE_EXISTS`; do not overwrite |
 | Managed file hash differs on delete | Preserve file, remove metadata, return `filePreserved=true` |
 | Unsafe Codex home | `CODEX_MANAGED_PROFILE_HOME_UNSAFE`; no filesystem mutation |
+| UUID-shaped profile name | `SEC_INVALID_INPUT`; avoid new/legacy alias ambiguity |
 | `aio/` alias missing/invalid/not bound | `GW_MANAGED_MODEL_INVALID` before provider use |
+| Bundled Codex command cannot spawn or exits non-zero | `CODEX_MANAGED_MODEL_BUNDLED_UNAVAILABLE`; no partial profile/catalog/config commit |
+| Bundled Codex command times out | `CODEX_MANAGED_MODEL_BUNDLED_TIMEOUT`; terminate the process tree and leave state unchanged |
+| Bundled Codex output is empty, invalid, or oversized | `CODEX_MANAGED_MODEL_BUNDLED_INVALID`; no partial state |
+| Generated catalog owner/hash or root-config snapshot changed externally | Fail closed; preserve external bytes and roll back this lifecycle action |
 | Bound provider disabled, replaced, bridged, or UUID-mismatched | Fail closed; zero calls to another provider |
 | Forced provider differs from binding | `GW_MANAGED_MODEL_INVALID` |
 | Request plugin changes bound model/provider | `GW_MANAGED_MODEL_INVALID`; zero upstream calls |
@@ -210,7 +257,11 @@ codexManagedProfilesKeys.list()
 ### 5. Good / Base / Bad Cases
 
 - Good: two providers both expose `grok-4.5`; each receives a distinct
-  `model_uuid`, profile creation selects one, and only its provider is called.
+  `model_uuid`; profiles `grok-primary` and `grok-backup` expose distinct
+  readable aliases, and each request calls only its bound provider.
+- Good: an installed Windows Codex resolved as `C:\Program Files\...\codex.cmd`
+  is launched with separate `debug`, `models`, and `--bundled` arguments and its
+  complete bundled catalog becomes the merge base.
 - Good: a failed refresh leaves the previous discovered models visible as
   stale and leaves manual models unchanged.
 - Good: an early retry observes the wrong model, then the terminal retry is
@@ -219,12 +270,16 @@ codexManagedProfilesKeys.list()
   binding, retry, and cross-provider failover behavior.
 - Base: ordinary Claude/Grok plugin mutation does not opt into Codex final-wire
   audit synchronization.
+- Base: an old `aio/<model_uuid>` profile continues resolving to the same
+  provider-scoped model after readable picker aliases are introduced.
 - Bad: derive provider ownership from model prefix, `owned_by`, display name,
   numeric provider ID, or provider ordering.
 - Bad: rewrite `request_logs.requested_model` to the remote ID merely to avoid
   an alias mismatch warning.
 - Bad: treat `aio/anything` as trusted, or hide all mismatches whenever an AIO
   managed marker exists.
+- Bad: generate only AIO picker rows without a valid complete base catalog, or
+  wrap a Windows `.cmd` invocation into one manually escaped command string.
 - Bad: overwrite/delete a profile file because its filename appears in AIO's
   database without verifying the generated content hash.
 
@@ -238,8 +293,13 @@ codexManagedProfilesKeys.list()
   bounded body/count/ID, typed errors, stale preservation, connection-change
   races, and credential redaction.
 - Profile tests: current Codex file format, case-insensitive name collision,
-  no-clobber create, managed/missing/modified projection, hash compensation,
-  unsafe home, and metadata/file partial-failure recovery.
+  UUID-shaped-name rejection, readable alias, no-clobber create,
+  managed/missing/modified projection, hash compensation, unsafe home, and
+  metadata/file/catalog/config partial-failure recovery.
+- Picker tests: user-base unknown-field preservation, installed bundled-base
+  fallback, alias collision, owner/hash drift, zero-profile restore, proxy
+  enable/sync/disable rollback, Windows `.cmd` path-with-spaces launch, and a
+  real installed-Codex `model/list` smoke test for `aio/<profile_name_key>`.
 - Gateway route tests: exact alias validation, disabled/replaced provider,
   forced-provider conflict, one-candidate routing, no cross-provider failover,
   same-provider retry, plugin mutation fail-closed, and ordinary-route
@@ -260,19 +320,25 @@ codexManagedProfilesKeys.list()
 #### Wrong
 
 ```rust
-// Prefix grants trust, numeric IDs leak into long-lived client config, and
-// ordinary failover can route the same model name to another provider.
+// Prefix grants trust, numeric IDs leak into long-lived client config,
+// ordinary failover can route elsewhere, and manual cmd.exe quoting breaks
+// Windows npm wrappers.
 if requested_model.starts_with("aio/") {
     suppress_model_route_warning();
 }
 let provider_id = parse_provider_id(requested_model);
 route_with_normal_failover(provider_id, remote_model_id);
+
+Command::new("cmd.exe")
+    .args(["/D", "/S", "/C"])
+    .arg(format!("\\\"{}\\\" debug models --bundled", executable.display()));
 ```
 
 #### Correct
 
 ```rust
-let binding = resolve_managed_model_alias_exact(&canonical_alias)?;
+let binding = resolve_managed_model_alias(&db, &canonical_alias)?
+    .ok_or_else(managed_model_invalid)?;
 validate_canonical_uuid_v4(&binding.model_uuid)?;
 validate_exact_provider_identity(binding.provider_id, &binding.provider_uuid)?;
 
@@ -285,4 +351,7 @@ validate_again_immediately_before_send(&binding)?;
 request_log.requested_model = Some(canonical_alias);
 attempt.requested_upstream_model = Some(binding.remote_model_id.clone());
 apply_final_route_evidence(wire_model, observed_model);
+
+let mut command = Command::new(&launch.executable);
+command.args(["debug", "models", "--bundled"]);
 ```

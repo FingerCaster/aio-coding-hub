@@ -1016,18 +1016,18 @@ pub(crate) fn resolve_managed_model_alias(
     db: &db::Db,
     canonical: &str,
 ) -> AppResult<Option<ManagedModelBinding>> {
-    let Some(model_uuid) = canonical.strip_prefix("aio/") else {
+    let Some(alias_key) = canonical.strip_prefix("aio/") else {
         return Ok(None);
     };
-    if !crate::shared::uuid::is_canonical_uuid_v4(model_uuid)
-        || canonical.len() != "aio/".len() + 36
-    {
+    if alias_key.is_empty() || canonical.len() != "aio/".len() + alias_key.len() {
         return Ok(None);
     }
 
     let conn = db.open_connection()?;
-    conn.query_row(
-        r#"
+    if crate::shared::uuid::is_canonical_uuid_v4(alias_key) && alias_key.len() == 36 {
+        return conn
+            .query_row(
+                r#"
 SELECT model.model_uuid, model.provider_id, provider.provider_uuid, model.remote_model_id
 FROM provider_models model
 JOIN providers provider ON provider.id = model.provider_id
@@ -1036,18 +1036,41 @@ WHERE model.model_uuid = ?1
   AND provider.source_provider_id IS NULL
   AND provider.bridge_type IS NULL
 "#,
-        params![model_uuid],
-        |row| {
-            Ok(ManagedModelBinding {
-                model_uuid: row.get(0)?,
-                provider_id: row.get(1)?,
-                provider_uuid: row.get(2)?,
-                remote_model_id: row.get(3)?,
-            })
-        },
+                params![alias_key],
+                read_managed_model_binding,
+            )
+            .optional()
+            .map_err(|error| db_err!("failed to resolve managed model UUID alias: {error}"));
+    }
+    if !crate::codex_managed_profiles::is_valid_profile_name_key(alias_key) {
+        return Ok(None);
+    }
+
+    conn.query_row(
+        r#"
+SELECT model.model_uuid, model.provider_id, provider.provider_uuid, model.remote_model_id
+FROM codex_managed_profiles profile
+JOIN provider_models model ON model.model_uuid = profile.model_uuid
+JOIN providers provider ON provider.id = model.provider_id
+WHERE profile.profile_name_key = ?1
+  AND provider.cli_key = 'codex'
+  AND provider.source_provider_id IS NULL
+  AND provider.bridge_type IS NULL
+"#,
+        params![alias_key],
+        read_managed_model_binding,
     )
     .optional()
-    .map_err(|error| db_err!("failed to resolve managed model alias: {error}"))
+    .map_err(|error| db_err!("failed to resolve managed model profile alias: {error}"))
+}
+
+fn read_managed_model_binding(row: &rusqlite::Row<'_>) -> rusqlite::Result<ManagedModelBinding> {
+    Ok(ManagedModelBinding {
+        model_uuid: row.get(0)?,
+        provider_id: row.get(1)?,
+        provider_uuid: row.get(2)?,
+        remote_model_id: row.get(3)?,
+    })
 }
 
 #[cfg(test)]
@@ -1890,6 +1913,46 @@ INSERT INTO providers(
         assert_eq!(refreshed.provider_uuid, provider_uuid);
         assert_eq!(refreshed.models.len(), 1);
         assert_eq!(refreshed.models[0].remote_model_id, "discovered-model");
+    }
+
+    #[test]
+    fn managed_profile_alias_and_legacy_uuid_alias_resolve_same_binding() {
+        let test_app = ModelTestApp::new();
+        let provider_id = test_app.seed_provider();
+        let provider_uuid = direct_codex_provider_metadata(&test_app.db, provider_id)
+            .expect("read provider")
+            .provider_uuid;
+        let catalog = manual_upsert(&test_app.db, provider_id, &provider_uuid, "grok-4.5")
+            .expect("create model");
+        let model_uuid = catalog.models[0].model_uuid.clone();
+        let conn = test_app.db.open_connection().expect("open db");
+        conn.execute(
+            r#"
+INSERT INTO codex_managed_profiles(
+  profile_uuid, profile_name, profile_name_key, model_uuid,
+  codex_home_path, content_sha256, created_at, updated_at
+) VALUES (?1, 'Grok', 'grok', ?2, 'C:\codex', ?3, 1, 1)
+"#,
+            params![
+                crate::shared::uuid::new_uuid_v4(),
+                model_uuid,
+                "a".repeat(64)
+            ],
+        )
+        .expect("insert profile");
+
+        let readable = resolve_managed_model_alias(&test_app.db, "aio/grok")
+            .expect("resolve readable alias")
+            .expect("readable binding");
+        let legacy = resolve_managed_model_alias(&test_app.db, &format!("aio/{model_uuid}"))
+            .expect("resolve legacy alias")
+            .expect("legacy binding");
+        assert_eq!(readable, legacy);
+        assert_eq!(readable.provider_id, provider_id);
+        assert_eq!(readable.remote_model_id, "grok-4.5");
+        assert!(resolve_managed_model_alias(&test_app.db, "aio/Grok")
+            .expect("reject non-canonical profile key")
+            .is_none());
     }
 
     #[test]

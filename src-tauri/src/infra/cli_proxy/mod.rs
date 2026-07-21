@@ -143,6 +143,13 @@ struct FileSnapshot {
     bytes: Option<Vec<u8>>,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CodexProxyBaseline {
+    pub(crate) config_path: PathBuf,
+    pub(crate) config_bytes: Option<Vec<u8>>,
+    pub(crate) base_origin: String,
+}
+
 // -- Shared helpers ---------------------------------------------------------
 
 fn new_trace_id(prefix: &str) -> String {
@@ -255,6 +262,57 @@ fn write_manifest<R: tauri::Runtime>(
     ensure_cli_proxy_bytes_len(&bytes, CLI_PROXY_MANIFEST_MAX_BYTES, "CLI proxy manifest")?;
     write_file_atomic(&path, &bytes)?;
     Ok(())
+}
+
+pub(crate) fn codex_enabled_proxy_baseline<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<Option<CodexProxyBaseline>> {
+    let Some(manifest) = read_manifest(app, "codex")? else {
+        return Ok(None);
+    };
+    if !manifest.enabled {
+        return Ok(None);
+    }
+    let entry = manifest
+        .files
+        .iter()
+        .find(|entry| entry.kind == "codex_config_toml")
+        .ok_or_else(|| {
+            "CLI_PROXY_INVALID_MANIFEST: missing Codex config backup entry".to_string()
+        })?;
+    let config_path = codex::codex_config_path(app)?;
+    if Path::new(&entry.path) != config_path {
+        return Err(
+            "CODEX_MANAGED_MODEL_PROXY_REBIND_REQUIRED: Codex proxy target path changed".into(),
+        );
+    }
+
+    let config_bytes = if entry.existed {
+        let rel = entry.backup_rel.as_deref().ok_or_else(|| {
+            "CLI_PROXY_INVALID_MANIFEST: missing Codex config backup path".to_string()
+        })?;
+        let root = cli_proxy_root_dir(app, "codex")?;
+        let files_dir = cli_proxy_files_dir(&root);
+        Some(read_cli_proxy_file(&safe_backup_path(&files_dir, rel)?)?)
+    } else {
+        None
+    };
+    let base_origin = manifest.base_origin.clone().ok_or_else(|| {
+        "CLI_PROXY_INVALID_MANIFEST: enabled Codex proxy is missing base origin".to_string()
+    })?;
+
+    Ok(Some(CodexProxyBaseline {
+        config_path,
+        config_bytes,
+        base_origin,
+    }))
+}
+
+pub(crate) fn codex_proxy_config_is_applied<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+) -> bool {
+    is_proxy_config_applied(app, "codex", base_origin)
 }
 
 // -- Dispatch: target_files -------------------------------------------------
@@ -933,6 +991,24 @@ fn build_manifest_with_current_target_paths<R: tauri::Runtime>(
     })
 }
 
+fn rollback_codex_proxy_transaction<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    target_snapshots: &[FileSnapshot],
+    previous_manifest: Option<&CliProxyManifest>,
+    fallback_manifest: &CliProxyManifest,
+) -> crate::shared::error::AppResult<()> {
+    restore_file_snapshots(target_snapshots)?;
+    if let Some(previous_manifest) = previous_manifest {
+        write_manifest(app, "codex", previous_manifest)?;
+    } else {
+        let mut disabled_manifest = fallback_manifest.clone();
+        disabled_manifest.enabled = false;
+        disabled_manifest.updated_at = now_unix_seconds();
+        write_manifest(app, "codex", &disabled_manifest)?;
+    }
+    Ok(())
+}
+
 // -- Public API -------------------------------------------------------------
 
 pub fn status_all<R: tauri::Runtime>(
@@ -996,11 +1072,17 @@ pub fn set_enabled<R: tauri::Runtime>(
     } else {
         None
     };
+    let _codex_profile_lifecycle = if cli_key == "codex" {
+        Some(crate::codex_managed_profiles::lock_profile_lifecycle())
+    } else {
+        None
+    };
 
     let trace_id = new_trace_id("cli-proxy");
     let existing = read_manifest(app, cli_key)?;
 
     if enabled {
+        let previous_manifest = existing.clone();
         let should_backup = existing.as_ref().map(|m| !m.enabled).unwrap_or(true);
         let origin = Some(base_origin.to_string());
         let mut manifest = match if should_backup {
@@ -1047,20 +1129,69 @@ pub fn set_enabled<R: tauri::Runtime>(
             ));
         }
 
+        let codex_target_snapshots = if cli_key == "codex" {
+            match capture_current_target_state(app, cli_key)
+                .and_then(|captured| snapshot_target_files(&captured))
+            {
+                Ok(snapshots) => Some(snapshots),
+                Err(err) => {
+                    return Ok(CliProxyResult::failure(
+                        trace_id,
+                        cli_key,
+                        !should_backup,
+                        "CLI_PROXY_BACKUP_FAILED",
+                        err.to_string(),
+                        origin,
+                    ));
+                }
+            }
+        } else {
+            None
+        };
+
         return match apply_proxy_config(app, cli_key, base_origin) {
             Ok(()) => {
                 manifest.enabled = true;
                 manifest.base_origin = Some(base_origin.to_string());
                 manifest.updated_at = now_unix_seconds();
                 if let Err(err) = write_manifest(app, cli_key, &manifest) {
+                    if let Some(snapshots) = codex_target_snapshots.as_deref() {
+                        let _ = rollback_codex_proxy_transaction(
+                            app,
+                            snapshots,
+                            previous_manifest.as_ref(),
+                            &manifest,
+                        );
+                    }
                     return Ok(CliProxyResult::failure(
                         trace_id,
                         cli_key,
-                        true,
+                        !should_backup,
                         "CLI_PROXY_MANIFEST_WRITE_FAILED",
                         err.to_string(),
                         origin,
                     ));
+                }
+                if cli_key == "codex" {
+                    if let Err(err) = crate::codex_model_catalog::managed::sync_current_locked(app)
+                    {
+                        if let Some(snapshots) = codex_target_snapshots.as_deref() {
+                            let _ = rollback_codex_proxy_transaction(
+                                app,
+                                snapshots,
+                                previous_manifest.as_ref(),
+                                &manifest,
+                            );
+                        }
+                        return Ok(CliProxyResult::failure(
+                            trace_id,
+                            cli_key,
+                            !should_backup,
+                            "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
+                            err.to_string(),
+                            origin,
+                        ));
+                    }
                 }
 
                 Ok(CliProxyResult::success(
@@ -1085,12 +1216,21 @@ pub fn set_enabled<R: tauri::Runtime>(
                     manifest.enabled = false;
                     manifest.updated_at = now_unix_seconds();
                     let _ = write_manifest(app, cli_key, &manifest);
+                } else if cli_key == "codex" && !is_parse_error {
+                    if let Some(snapshots) = codex_target_snapshots.as_deref() {
+                        let _ = rollback_codex_proxy_transaction(
+                            app,
+                            snapshots,
+                            previous_manifest.as_ref(),
+                            &manifest,
+                        );
+                    }
                 }
 
                 Ok(CliProxyResult::failure(
                     trace_id,
                     cli_key,
-                    false,
+                    !should_backup,
                     "CLI_PROXY_ENABLE_FAILED",
                     err.to_string(),
                     origin,
@@ -1209,6 +1349,11 @@ pub fn sync_enabled<R: tauri::Runtime>(
         } else {
             None
         };
+        let _codex_profile_lifecycle = if cli_key == "codex" {
+            Some(crate::codex_managed_profiles::lock_profile_lifecycle())
+        } else {
+            None
+        };
 
         let trace_id = new_trace_id("cli-proxy-sync");
         let needs_target_rebind =
@@ -1254,6 +1399,22 @@ pub fn sync_enabled<R: tauri::Runtime>(
         if manifest.base_origin.as_deref() == Some(base_origin)
             && is_proxy_config_applied(app, cli_key, base_origin)
         {
+            if cli_key == "codex" {
+                match crate::codex_model_catalog::managed::sync_current_locked(app) {
+                    Ok(()) => {}
+                    Err(err) => {
+                        out.push(CliProxyResult::failure(
+                            trace_id,
+                            cli_key,
+                            true,
+                            "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
+                            err.to_string(),
+                            Some(base_origin.to_string()),
+                        ));
+                        continue;
+                    }
+                }
+            }
             out.push(CliProxyResult::success(
                 trace_id,
                 cli_key,
@@ -1276,11 +1437,73 @@ pub fn sync_enabled<R: tauri::Runtime>(
             continue;
         }
 
+        let previous_manifest = manifest.clone();
+        let codex_target_snapshots = if cli_key == "codex" {
+            match capture_current_target_state(app, cli_key)
+                .and_then(|captured| snapshot_target_files(&captured))
+            {
+                Ok(snapshots) => Some(snapshots),
+                Err(err) => {
+                    out.push(CliProxyResult::failure(
+                        trace_id,
+                        cli_key,
+                        true,
+                        "CLI_PROXY_BACKUP_FAILED",
+                        err.to_string(),
+                        Some(base_origin.to_string()),
+                    ));
+                    continue;
+                }
+            }
+        } else {
+            None
+        };
+
         match apply_proxy_config(app, cli_key, base_origin) {
             Ok(()) => {
                 manifest.base_origin = Some(base_origin.to_string());
                 manifest.updated_at = now_unix_seconds();
-                write_manifest(app, cli_key, &manifest)?;
+                if let Err(err) = write_manifest(app, cli_key, &manifest) {
+                    if let Some(snapshots) = codex_target_snapshots.as_deref() {
+                        let _ = rollback_codex_proxy_transaction(
+                            app,
+                            snapshots,
+                            Some(&previous_manifest),
+                            &manifest,
+                        );
+                    }
+                    out.push(CliProxyResult::failure(
+                        trace_id,
+                        cli_key,
+                        true,
+                        "CLI_PROXY_MANIFEST_WRITE_FAILED",
+                        err.to_string(),
+                        Some(base_origin.to_string()),
+                    ));
+                    continue;
+                }
+                if cli_key == "codex" {
+                    if let Err(err) = crate::codex_model_catalog::managed::sync_current_locked(app)
+                    {
+                        if let Some(snapshots) = codex_target_snapshots.as_deref() {
+                            let _ = rollback_codex_proxy_transaction(
+                                app,
+                                snapshots,
+                                Some(&previous_manifest),
+                                &manifest,
+                            );
+                        }
+                        out.push(CliProxyResult::failure(
+                            trace_id,
+                            cli_key,
+                            true,
+                            "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
+                            err.to_string(),
+                            Some(base_origin.to_string()),
+                        ));
+                        continue;
+                    }
+                }
                 out.push(CliProxyResult::success(
                     trace_id,
                     cli_key,
@@ -1290,6 +1513,14 @@ pub fn sync_enabled<R: tauri::Runtime>(
                 ));
             }
             Err(err) => {
+                if let Some(snapshots) = codex_target_snapshots.as_deref() {
+                    let _ = rollback_codex_proxy_transaction(
+                        app,
+                        snapshots,
+                        Some(&previous_manifest),
+                        &manifest,
+                    );
+                }
                 out.push(CliProxyResult::failure(
                     trace_id,
                     cli_key,
@@ -1309,6 +1540,7 @@ pub fn rebind_codex_home_after_change<R: tauri::Runtime>(
     base_origin: &str,
     apply_live: bool,
 ) -> crate::shared::error::AppResult<CliProxyResult> {
+    let _profile_lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
     codex::rebind_codex_home_after_change(app, base_origin, apply_live)
 }
 
@@ -1328,6 +1560,11 @@ pub fn restore_enabled_keep_state<R: tauri::Runtime>(
 
         let _grok_transaction = if cli_key == "grok" {
             Some(grok::transaction_lock()?)
+        } else {
+            None
+        };
+        let _codex_profile_lifecycle = if cli_key == "codex" {
+            Some(crate::codex_managed_profiles::lock_profile_lifecycle())
         } else {
             None
         };

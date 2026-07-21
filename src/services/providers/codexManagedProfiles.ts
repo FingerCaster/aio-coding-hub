@@ -33,7 +33,7 @@ export type CodexManagedProfileDeleteResult = {
 
 export function normalizeCodexProfileName(value: string): string {
   const profileName = value.trim();
-  if (!PROFILE_NAME_RE.test(profileName)) {
+  if (!PROFILE_NAME_RE.test(profileName) || isCanonicalUuidV4(profileName.toLowerCase())) {
     throw new Error("SEC_INVALID_INPUT: invalid profileName");
   }
   return profileName;
@@ -60,7 +60,7 @@ export function decodeCodexManagedProfile(
   const profileName = normalizeCodexProfileName(value.profileName);
   const modelUuid = validateModelUuid(value.modelUuid, "profile.modelUuid");
   const canonicalModel = value.canonicalModel.trim();
-  if (canonicalModel !== `aio/${modelUuid}`) {
+  if (canonicalModel !== `aio/${profileName.toLowerCase()}`) {
     throw new Error("IPC_MANAGED_PROFILE_ALIAS_MISMATCH");
   }
   if (

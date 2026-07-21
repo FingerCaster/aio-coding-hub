@@ -10,7 +10,9 @@ import {
   useProviderModelManualUpsertMutation,
   useProviderModelsRefreshMutation,
 } from "../../query/providerModels";
+import { useCliProxyStatusAllQuery } from "../../query/cliProxy";
 import type { CodexManagedProfile } from "../../services/providers/codexManagedProfiles";
+import { isCanonicalUuidV4 } from "../../services/providers/uuid";
 import {
   formatProviderModelFeatureError,
   formatProviderModelDiscoveryError,
@@ -39,7 +41,8 @@ export function suggestCodexProfileName(remoteModelId: string) {
     .replace(/[^a-z0-9_-]+/g, "-")
     .replace(/^-+|-+$/g, "")
     .slice(0, 64);
-  return normalized && /^[a-z0-9]/.test(normalized) ? normalized : "model-profile";
+  if (!normalized || !/^[a-z0-9]/.test(normalized)) return "model-profile";
+  return isCanonicalUuidV4(normalized) ? `profile-${normalized}`.slice(0, 64) : normalized;
 }
 
 function fileStatusLabel(status: CodexManagedProfile["fileStatus"]) {
@@ -67,6 +70,7 @@ export function ProviderModelCatalogDialog({
   const providerUuid = provider?.provider_uuid ?? null;
   const catalogQuery = useProviderModelCatalogQuery(providerId, providerUuid, { enabled: open });
   const profilesQuery = useCodexManagedProfilesQuery({ enabled: open });
+  const cliProxyStatusQuery = useCliProxyStatusAllQuery({ enabled: open });
   const refreshMutation = useProviderModelsRefreshMutation();
   const manualUpsertMutation = useProviderModelManualUpsertMutation();
   const manualDeleteMutation = useProviderModelManualDeleteMutation();
@@ -117,6 +121,11 @@ export function ProviderModelCatalogDialog({
         return left.remoteModelId.localeCompare(right.remoteModelId);
       });
   }, [catalog?.models, search]);
+  const codexProxyStatus = (cliProxyStatusQuery.data ?? []).find(
+    (status) => status.cli_key === "codex"
+  );
+  const codexProxyReady =
+    codexProxyStatus?.enabled === true && codexProxyStatus.applied_to_current_gateway !== false;
 
   const busy =
     refreshMutation.isPending ||
@@ -181,7 +190,9 @@ export function ProviderModelCatalogDialog({
       });
       setProfileModel(null);
       setProfileName("");
-      toast(`Profile ${created.profileName} 已创建`);
+      toast(
+        `Profile ${created.profileName} 已创建；请新建或重启 Codex 会话，然后通过 /model 选择 ${created.canonicalModel}`
+      );
     } catch (error) {
       toast(`创建 Profile 失败：${formatProviderModelFeatureError(error)}`);
     }
@@ -251,6 +262,29 @@ export function ProviderModelCatalogDialog({
               </span>
             </div>
           ) : null}
+
+          {cliProxyStatusQuery.error ? (
+            <div className="flex items-start gap-2 border-l-2 border-amber-400 bg-amber-50/70 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>暂时无法确认 Codex CLI 代理状态；创建 Profile 前请先确认代理已启用。</span>
+            </div>
+          ) : !codexProxyStatus?.enabled ? (
+            <div className="flex items-start gap-2 border-l-2 border-amber-400 bg-amber-50/70 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>
+                请先在 CLI 代理中开启 Codex 代理，AIO 才能把 Profile 加入 Codex 的 /model 目录。
+              </span>
+            </div>
+          ) : codexProxyStatus.applied_to_current_gateway === false ? (
+            <div className="flex items-start gap-2 border-l-2 border-amber-400 bg-amber-50/70 px-3 py-2 text-sm text-amber-800 dark:bg-amber-900/20 dark:text-amber-200">
+              <AlertTriangle className="mt-0.5 h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>Codex 代理配置尚未应用到当前网关，请先同步代理或启动网关。</span>
+            </div>
+          ) : (
+            <div className="border-l-2 border-emerald-500 bg-emerald-50/70 px-3 py-2 text-sm text-emerald-800 dark:bg-emerald-900/20 dark:text-emerald-200">
+              创建 Profile 后，请新建或重启 Codex 会话，再通过 /model 选择对应的 aio/ 条目。
+            </div>
+          )}
 
           <div className="grid gap-3 md:grid-cols-[minmax(0,1fr)_minmax(0,1fr)]">
             <label className="relative block min-w-0">
@@ -346,6 +380,7 @@ export function ProviderModelCatalogDialog({
                       model={model}
                       profiles={profilesByModel.get(model.modelUuid) ?? []}
                       disabled={busy}
+                      profileCreationDisabled={!codexProxyReady || cliProxyStatusQuery.isLoading}
                       onCreateProfile={() => {
                         setProfileModel(model);
                         setProfileName(suggestCodexProfileName(model.remoteModelId));
@@ -384,6 +419,14 @@ export function ProviderModelCatalogDialog({
             autoFocus
             disabled={profileCreateMutation.isPending}
           />
+          {profileName.trim() ? (
+            <div className="text-sm text-muted-foreground">
+              Codex /model 标识：
+              <span className="ml-1 break-all font-mono text-foreground">
+                aio/{profileName.trim().toLowerCase()}
+              </span>
+            </div>
+          ) : null}
           <div className="flex justify-end gap-2">
             <Button
               variant="secondary"
@@ -431,6 +474,7 @@ function ModelRow({
   model,
   profiles,
   disabled,
+  profileCreationDisabled,
   onCreateProfile,
   onDeleteManual,
   onDeleteProfile,
@@ -438,6 +482,7 @@ function ModelRow({
   model: ProviderModel;
   profiles: CodexManagedProfile[];
   disabled: boolean;
+  profileCreationDisabled: boolean;
   onCreateProfile: () => void;
   onDeleteManual: () => void;
   onDeleteProfile: (profile: CodexManagedProfile) => void;
@@ -465,8 +510,8 @@ function ModelRow({
                 key={profile.profileUuid}
                 className="inline-flex min-w-0 items-center gap-1 rounded-md border border-border px-2 py-1 text-xs"
               >
-                <span className="max-w-40 truncate font-medium" title={profile.profileName}>
-                  {profile.profileName}
+                <span className="max-w-40 truncate font-medium" title={profile.canonicalModel}>
+                  {profile.canonicalModel}
                 </span>
                 <span
                   className={cn(
@@ -496,8 +541,8 @@ function ModelRow({
           variant="secondary"
           size="sm"
           onClick={onCreateProfile}
-          disabled={disabled}
-          title="创建 Profile"
+          disabled={disabled || profileCreationDisabled}
+          title={profileCreationDisabled ? "请先启用并同步 Codex CLI 代理" : "创建 Profile"}
         >
           <FilePlus2 className="h-4 w-4" aria-hidden="true" />
           创建 Profile

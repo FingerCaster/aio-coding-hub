@@ -10,6 +10,7 @@
 - 即使不同供应商暴露同名模型，也能看出并选择真实的上游供应商。
 - 模型列表接口不可用时，供应商仍可保存、已有目录仍可使用，并可手工补录模型。
 - 生成的配置符合当前 Codex 版本，而不是继续写已废弃的 profile 格式。
+- 创建 Profile 后，用户可以在新建或重启的 Codex 会话中直接通过 `/model` 看见并选择该模型。
 
 ## Confirmed Product Decisions
 
@@ -22,9 +23,11 @@
 - 供应商仍被一个或多个受管 profile 引用时阻止删除，并向用户列出引用项；用户必须先删除 profile 或重新绑定供应商。
 - 首版自动发现只支持 Codex 直连供应商的 OpenAI-compatible `GET /v1/models`；Anthropic/Gemini native 统一使用手工录入回退。
 - 新增不可变 `provider_uuid` 作为供应商跨完整配置导入的稳定身份；普通编辑和完整配置 v4 导入保留 UUID，供应商复制和单供应商分享导入生成新 UUID。
-- 每个供应商模型拥有独立、不可猜测的 `model_uuid`；Codex profile 写入的 canonical 模型标识固定为 `aio/<model_uuid>`，服务端精确查表恢复 `provider + remote_model_id`，不在 alias 中暴露或信任数值 `provider_id`。
+- 每个供应商模型拥有独立、不可猜测的 `model_uuid`；新 Codex profile 写入可读的 `aio/<profile_name_key>`，服务端先精确查 Profile 再恢复 `model_uuid + provider + remote_model_id`。旧 `aio/<model_uuid>` 继续精确兼容，两种 alias 都不暴露或信任数值 `provider_id`。
 - 模型目录和受管 profile 首版保持为本机状态，不进入完整配置包或单供应商分享包。完整配置导入通过 `provider_uuid` 保留可重绑定的本机数据；若导入会让现有受管 profile 失去供应商则在破坏性操作前整体拒绝。
 - 受管 profile 元数据和生成内容哈希保存在数据库；`$CODEX_HOME/<name>.config.toml` 是派生文件。创建时不覆盖同名外部文件，删除时不删除已被外部修改的文件。
+- AIO 在 Codex CLI 代理启用期间维护完整合并模型目录；Codex 仍只有 `aio` 一个供应商，模型选择器中的可读 alias 由服务端 Profile 绑定精确解析。
+- 新 Profile alias 使用 `aio/<profile_name_key>`；旧测试版的 `aio/<model_uuid>` 继续兼容，不能因可读 alias 改造破坏已有 Profile。
 
 ## Confirmed Facts
 
@@ -68,7 +71,7 @@
 ### R1. Provider-scoped 模型目录
 
 - 每个目录条目必须显式携带 `provider_id` 与 `remote_model_id`。
-- 每个目录条目还必须拥有稳定 `model_uuid`；canonical alias 只接受服务端已有的精确 `aio/<model_uuid>` 绑定。
+- 每个目录条目还必须拥有稳定 `model_uuid`；新 `aio/<profile_name_key>` 和旧 `aio/<model_uuid>` 都只接受服务端已有的精确绑定，不能从字符串猜测供应商。
 - 同一供应商内按模型 ID 去重；不同供应商的同名模型必须作为不同条目保留和展示。
 - 目录必须区分远端发现项与手工项，并记录最近一次成功刷新状态；完整模型数组不得塞入高频读取的 `ProviderSummary`。
 
@@ -125,6 +128,16 @@
 - 模型目录与 profile 首版不随配置包跨机器迁移；新机器导入供应商后需要重新刷新模型并创建 profile。
 - 新能力不得改变未选择模型绑定时的现有供应商排序、会话绑定和 failover 行为。
 
+### R8. Codex 内模型可见性
+
+- 创建受管 Profile 后，AIO 必须将它加入 Codex 可读取的完整模型目录，不能只生成需要 `--profile` 才能使用的文件。
+- 用户已有 `model_catalog_json` 时必须以该目录为基础；否则使用当前已安装 Codex 的版本匹配 bundled 目录。不能用 AIO 编译时固定快照覆盖用户或未来 Codex 字段。
+- 合并目录必须保留基础目录全部模型和未知字段，并追加可见的 `aio/<profile_name_key>` 条目；不同 Profile 名必须映射到不同 slug。
+- 根 `config.toml` 只在 Codex CLI 代理启用期间指向 AIO 生成目录；关闭代理后恢复原 `model_catalog_json` 值或缺失状态。
+- 生成目录和配置写入必须有所有权验证、并发漂移检测和补偿。外部修改后失败关闭，不得静默覆盖或删除。
+- 删除 Profile 必须同步移除目录条目；删除最后一个 Profile 后恢复基础目录配置，不留下失效的 picker 项。
+- 目录是启动时配置，UI 必须提示“新建或重启 Codex 会话后生效”，不得宣称当前会话已热更新。
+
 ## Proposed MVP Boundary
 
 - Codex 直连供应商的 provider-scoped 持久化模型目录。
@@ -156,6 +169,11 @@
 - [ ] 新建、编辑、复制、单供应商分享导入和完整配置导入分别满足既定 UUID 生命周期；v4 bundle 的非法/重复 UUID 在删除当前配置前失败。
 - [ ] 同机完整配置 v4 导入保留仍存在供应商的本机模型/profile 关联；会造成受管 profile 悬空的导入在写数据库前失败，旧 v1-v3 包在存在本机受管 profile 时同样失败关闭。
 - [ ] 同名未受管 profile 文件不会被覆盖；受管文件被外部修改后不会被更新或删除，解除管理时保留外部文件。
+- [ ] 创建 Profile 后，新 Codex 进程的 `/model` 和 app-server `model/list` 可见 `aio/<profile_name_key>`，选择后请求仍固定落到绑定供应商。
+- [ ] 用户已有模型目录时其全部模型和未知字段仍存在；没有自定义目录时使用当前安装 Codex 的 bundled 目录，而不是 AIO 固定快照。
+- [ ] 关闭 Codex CLI 代理会恢复原 `model_catalog_json`；生成目录被外部修改或配置发生并发漂移时失败关闭且不覆盖用户状态。
+- [ ] 旧 `aio/<model_uuid>` 和新 `aio/<profile_name_key>` 都能解析到同一 provider-scoped 绑定，正常请求不产生路由误报，真实 mismatch 仍告警。
+- [ ] 创建、删除和应用启动同步失败时不会留下 DB、Profile 文件、模型目录或根配置的部分成功状态。
 - [ ] 未启用受管 profile/模型路由的现有 Codex 请求保持当前排序、会话绑定与 failover 语义。
 
 ## Out of Scope for the Proposed MVP
@@ -163,7 +181,6 @@
 - 后台定时刷新、启动时自动刷新和跨多个 Base URL 合并目录。
 - Anthropic native、Gemini native 等独立协议 adapter。
 - 根据名称或不完整元数据自动判断 Responses 兼容性。
-- 自动维护 Codex `model_catalog_json`。
 - 一次刷新后自动删除远端暂时消失的模型。
 - 为每个 AIO 供应商生成独立的 Codex `model_provider` 定义。
 - 将所有普通、非受管 Codex 模型请求改成强制模型感知路由。
@@ -180,3 +197,4 @@
 - `research/model-discovery-protocols.md`
 - `research/model-route-detection-alias-compat.md`
 - `research/provider-identity-import-lifecycle.md`
+- `research/codex-managed-model-picker.md`

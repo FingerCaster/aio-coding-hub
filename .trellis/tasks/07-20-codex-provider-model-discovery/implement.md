@@ -110,6 +110,16 @@ pnpm lint
 - [x] 更新相关 Trellis spec，记录 stable identity、managed alias 和 route-detection 合同。
 - [x] 在 worktree 分支提交；不操作 `main`，不推送 upstream。
 
+## 8. Codex 模型选择器集成（用户反馈修订）
+
+- [x] 新增当前 Codex bundled 完整目录的有界读取，并支持用户已有 `model_catalog_json` 作为基础。
+- [x] 生成带所有权/hash 的完整合并目录，追加 `aio/<profile_name_key>` 并保留基础未知字段。
+- [x] CLI proxy 启用、启动同步和关闭恢复正确维护根 `model_catalog_json`；无 Profile 时恢复基础状态。
+- [x] Profile 新建改写可读 alias，网关同时解析 Profile alias 与旧 UUID alias。
+- [x] 创建/删除 Profile 与目录/config 同锁预检和补偿，外部修改及并发漂移失败关闭。
+- [x] 前端展示 picker alias、代理前置条件和“新建/重启 Codex 会话后生效”提示。
+- [x] 增加 Rust、前端及真实 Codex app-server 聚焦回归，并重新执行完整质量门禁。
+
 最终命令：
 
 ```powershell
@@ -126,20 +136,22 @@ git diff --check
 最近完整验证（2026-07-21）：
 
 - `pnpm tauri:fmt`
-- `pnpm tauri:clippy`
-- `pnpm tauri:test`（2299 passed，3 ignored，附加集成测试均通过）
-- `pnpm test:unit`（296 files / 2586 tests passed）
+- `pnpm tauri:clippy`（`--all-targets --locked -- -D warnings`）
+- `pnpm tauri:test`（2311 library tests，附加集成测试均通过；真实 Codex smoke 为显式 ignored 手工用例）
+- `pnpm test:unit`（296 files / 2588 tests passed）
 - `pnpm typecheck`
 - `pnpm lint`
 - `pnpm check:generated-bindings`
 - `git diff --check`
+- `cargo test --manifest-path src-tauri/Cargo.toml bundled_catalog_runs_cmd_wrapper_from_a_path_with_spaces --lib --locked`
+- `cargo test --manifest-path src-tauri/Cargo.toml installed_codex_reads_the_generated_picker_alias --lib --locked -- --ignored`
 
 ## 首版决策与验证限制
 
 - `refresh_locks` 以稳定 `provider_uuid` 为 key，进程生命周期内保留小型 Map entry。首版优先避免并发刷新串写；entry 回收留作后续优化，不能以牺牲 provider identity 隔离为代价。
 - Linux 等价 Rust suite 已在 Docker 中通过，但容器以 root 运行，不能作为普通 Linux 用户遇到 `PermissionDenied` 的独立证明。no-clobber、hash ownership、unsafe Codex home 和失败补偿由跨平台单元/集成测试覆盖；非 root Linux 的真实 profile 文件权限场景仍属于手工验证限制。
-- 当前 Codex `0.134.0+` profile 使用 `$CODEX_HOME/<name>.config.toml` 顶层键；不再生成已废弃的 `[profiles.<name>]`。Codex 端始终只有 `model_provider = "aio"`。
-- 本任务保持在独立 worktree/branch；最终先展示提交分组，得到用户确认后才提交，不直接操作 `main` 或 push。
+- 当前 Codex `0.134.0+` profile 使用 `$CODEX_HOME/<name>.config.toml` 顶层键；不再生成已废弃的 `[profiles.<name>]`。Codex 端始终只有 `model_provider = "aio"`。Profile 文件本身不会进入 `/model`，必须完成第 8 阶段的合并目录同步。
+- 本任务保持在独立 worktree/branch；用户已授权验证通过后直接提交，不归档，不直接操作 `main` 或 push。
 
 ## 风险与回滚点
 

@@ -9,7 +9,8 @@ Codex 直连供应商
   -> 固定供应商获取 /v1/models 或手工录入
   -> provider-scoped 持久化模型
   -> 用户按需创建 <name>.config.toml
-  -> Codex 以 model_provider = "aio" 请求 aio/<model_uuid>
+  -> AIO 合并当前 Codex 完整模型目录并暴露 aio/<profile_name_key>
+  -> Codex 以 model_provider = "aio" 请求可读 alias
   -> AIO 精确查表并固定供应商
   -> 上游收到 remote_model_id
   -> 日志保留 canonical alias，路由检测比较 wire model 与原始响应 model
@@ -20,7 +21,7 @@ Codex 直连供应商
 ## 决策记录
 
 1. **Codex 始终只有 `aio` 一个 model provider。** 不生成 `aio-provider-*`，避免主 `config.toml` 的 provider 表、CLI proxy、remote compaction 与 profile 生命周期相互耦合。
-2. **alias 使用 opaque model UUID。** 格式固定为 `aio/<canonical-model-uuid>`。UUID 只用于精确查表，不能从 alias 推导、猜测或信任 provider。
+2. **新 alias 使用 Profile 名，旧 UUID alias 保持兼容。** 新建 Profile 暴露 `aio/<profile_name_key>`，服务端必须先精确查 Profile 再取得 `model_uuid`；既有 `aio/<canonical-model-uuid>` 继续精确查模型表。两种形式都不能从字符串推导或信任 provider。
 3. **provider 使用不可变 UUID。** 数值 `providers.id` 仍是当前数据库内部 ID；`provider_uuid` 用于配置导入和长期关联。
 4. **首版自动发现仅为 OpenAI-compatible。** 只对 `cli_key = codex` 且没有 `source_provider_id` / `bridge_type` 的直连供应商开放；其他供应商使用手工模型。
 5. **模型目录和 profile 是本机状态。** 配置包 v4 只携带 provider UUID，不携带模型缓存、手工模型、profile 元数据或 profile 文件。相同 UUID 的本机数据可在同机完整导入后继续使用；跨机器需要重新刷新和创建。
@@ -28,6 +29,8 @@ Codex 直连供应商
 7. **profile 首版创建/删除，不做原地改名或重绑。** 用户通过删除后重建完成变更，减少双文件重命名与回滚状态。
 8. **受管模型绑定覆盖普通排序，但不绕过健康门。** alias 查到的 provider 是唯一候选；它仍必须启用，并继续经过 circuit/cooldown/limit/auth 等公共 gate。同供应商内部重试保留，跨供应商 failover 禁止。
 9. **路由检测从比较语义上修复。** 不能靠 `aio/` 前缀或前端字符串特判消警；所有响应路径统一比较最终 wire model 与原始上游响应 model。
+10. **模型目录是完整合并覆盖。** 用户目录优先，否则运行当前 Codex 的 `debug models --bundled`；AIO 保留基础目录未知字段并追加受管项，不维护编译时固定模型快照。
+11. **目录只随 Codex CLI 代理激活。** 生成文件位于 AIO 应用数据目录，根 `model_catalog_json` 随代理启停安全接管/恢复；现有会话不热更新。
 
 ## 数据模型
 
@@ -162,7 +165,7 @@ codex_managed_profile_delete(profile_uuid)
 目标为当前 Codex home 下的 `<profile_name>.config.toml`：
 
 ```toml
-model = "aio/<model_uuid>"
+model = "aio/<profile_name_key>"
 model_provider = "aio"
 ```
 
@@ -175,6 +178,30 @@ model_provider = "aio"
 
 主 `config.toml` 中现有 `[model_providers.aio]` 仍由 CLI proxy 负责；profile 服务不写任意 `model_providers` 表。
 
+## Codex 模型选择器目录
+
+### 基础目录选择
+
+1. 若 CLI proxy 启用前的根配置包含绝对 `model_catalog_json`，有界读取并以其完整 JSON 为基础。
+2. 否则使用当前 Codex 可执行文件运行 `debug models --bundled`，限制执行时间、stdout/stderr 和模型数量。
+3. 基础目录必须是非空 `{"models":[...]}`；无效目录失败关闭，不能退化为只包含 AIO 模型的目录。
+
+### 合并与能力值
+
+- 每个受管 Profile 生成一个 `slug = aio/<profile_name_key>` 的 `visibility = list` 条目。
+- 复制一个当前基础目录可见模板以保留未来必填字段，再清除 speed/service tier、升级提示、comp hash、搜索、并行工具和其他不能证明的能力。
+- `supported_reasoning_levels` 为空且默认推理档位为空，使 Codex 使用无显式推理档位的保守路径。
+- 描述包含 AIO provider 名和真实远端模型 ID；picker 实际显示 slug，因此 slug 必须可读。
+- 若基础目录已包含同 slug，拒绝创建，不能覆盖用户模型定义。
+
+### 所有权、应用与恢复
+
+- 生成目录位于 AIO app-data 的 `cli-proxy/codex` 目录，并带保留顶层元数据：schema、owner、payload hash、Profile 集合 hash 和基础目录指纹。
+- 更新前验证现有文件的 owner/payload hash；不匹配视为外部修改并失败关闭。
+- Profile 创建/删除先预计算目录和根配置，提交 DB/文件后再 CAS 风格应用；任一步失败恢复之前的目录、配置、DB 和 Profile 文件。
+- CLI proxy 启用/启动同步会从当前 DB 重建目录；关闭代理通过原 backup 恢复 `model_catalog_json`。
+- 没有受管 Profile 时不激活生成目录，并恢复原根键状态。
+
 ## 网关受管路由
 
 ### 解析与选择
@@ -182,8 +209,8 @@ model_provider = "aio"
 在 `ModelInferenceMiddleware` 之后增加受管模型解析步骤：
 
 1. 非 `aio/` 模型原样进入现有链路。
-2. `aio/` 开头但 UUID 非 canonical、查无模型、provider/模型关系失效或 provider 已变成 bridge/source 时，以稳定 4xx 错误失败关闭。
-3. 查表成功后保存 `ManagedModelRoute { canonical_model, model_uuid, provider_id, remote_model_id }`，并将请求 JSON 的 model 改为 remote ID；`requested_model` 始终保留 canonical alias。
+2. `aio/<profile_name_key>` 必须精确命中受管 Profile；`aio/<uuidv4>` 继续作为旧兼容路径精确命中模型。其他 `aio/` 值、查无绑定或失效 provider 均以稳定 4xx 失败关闭。
+3. 查表成功后保存 `ManagedModelRoute { canonical_model, model_uuid, provider_id, remote_model_id }`，并将请求 JSON 的 model 改为 remote ID；`requested_model` 始终保留实际 canonical alias。
 4. 外部 forced-provider 与绑定 provider 不同则拒绝；相同可继续。
 5. provider resolution 直接加载唯一的当前 Codex provider，忽略普通 sort/session 候选顺序，但继续执行公共 provider gate。禁用、缺失、circuit/cooldown/limit/auth 失败时不切换其他 provider。
 6. 同一 provider 的显式重试策略仍生效；候选 provider 数固定为 1。
@@ -193,7 +220,7 @@ model_provider = "aio"
 ### 三层模型与路由检测
 
 ```text
-canonical requested model: request_logs.requested_model = aio/<model_uuid>
+canonical requested model: request_logs.requested_model = aio/<profile_name_key>（旧版可为 aio/<model_uuid>）
 wire model per attempt:    最终序列化给本次上游的 model
 observed upstream model:   bridge/fixer/plugin 之前原始响应中的 model
 ```
@@ -245,5 +272,6 @@ observed upstream model:   bridge/fixer/plugin 之前原始响应中的 model
 - migration：fresh/v39 backfill、UUID 唯一、重复迁移、provider CRUD/复制/分享/v1-v4 config import。
 - discovery：URL 去重、同 provider 多 Base URL、无跨 provider、401/403/404/405、timeout、redirect、非 JSON、空/非法/超限、历史保留、手工保留、stale。
 - profile：当前文件格式、TOML escaping、同名外部文件、缺失/修改文件删除、DB 失败补偿、provider/model 引用阻止。
+- model picker：用户目录/bundled 基础选择、完整字段保留、可读 slug、旧 UUID 兼容、目录所有权 hash、配置恢复、并发漂移、创建/删除补偿和新进程 app-server 可见性。
 - gateway：正常 alias、伪造/不存在/冲突 forced provider、禁用/bridge provider、无 failover、同 provider retry、四类响应检测、真实 mismatch、unobserved、SSE conflict、canonical log 与最终 provider 计价。
 - frontend：保存与保存并获取的两阶段结果、provider cache 隔离、同名模型、手工回退、profile 创建/删除和 modified-file 提示。

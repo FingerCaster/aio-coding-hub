@@ -56,6 +56,7 @@ pub struct CodexManagedProfileDeleteResult {
 struct ProfileRow {
     profile_uuid: String,
     profile_name: String,
+    profile_name_key: String,
     model_uuid: String,
     provider_id: i64,
     provider_uuid: String,
@@ -137,7 +138,34 @@ fn validate_profile_name(profile_name: &str) -> AppResult<String> {
             "profile_name must match [A-Za-z0-9][A-Za-z0-9_-]* and be at most 64 bytes",
         ));
     }
-    Ok(profile_name.to_ascii_lowercase())
+    let profile_name_key = profile_name.to_ascii_lowercase();
+    if crate::shared::uuid::is_canonical_uuid_v4(&profile_name_key) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "profile_name must not use the reserved UUID alias form",
+        ));
+    }
+    Ok(profile_name_key)
+}
+
+pub(crate) fn is_valid_profile_name_key(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= PROFILE_NAME_MAX_BYTES
+        && bytes[0].is_ascii_lowercase_or_digit()
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase_or_digit() || matches!(byte, b'_' | b'-'))
+}
+
+trait AsciiLowercaseOrDigit {
+    fn is_ascii_lowercase_or_digit(&self) -> bool;
+}
+
+impl AsciiLowercaseOrDigit for u8 {
+    fn is_ascii_lowercase_or_digit(&self) -> bool {
+        self.is_ascii_lowercase() || self.is_ascii_digit()
+    }
 }
 
 fn validate_uuid(value: &str, field: &str) -> AppResult<()> {
@@ -160,9 +188,16 @@ fn sha256_hex(bytes: &[u8]) -> String {
     value
 }
 
-fn render_profile(model_uuid: &str) -> AppResult<Vec<u8>> {
-    validate_uuid(model_uuid, "model_uuid")?;
-    let canonical_model = format!("aio/{model_uuid}");
+fn render_profile(profile_name_key: &str) -> AppResult<Vec<u8>> {
+    if !is_valid_profile_name_key(profile_name_key)
+        || crate::shared::uuid::is_canonical_uuid_v4(profile_name_key)
+    {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "profile_name_key is invalid",
+        ));
+    }
+    let canonical_model = format!("aio/{profile_name_key}");
     let mut document = toml_edit::DocumentMut::new();
     document["model"] = toml_edit::value(&canonical_model);
     document["model_provider"] = toml_edit::value("aio");
@@ -532,7 +567,7 @@ fn read_profiles(db: &db::Db, profile_uuid: Option<&str>) -> AppResult<Vec<Profi
     let mut statement = conn
         .prepare_cached(
             r#"
-SELECT profile.profile_uuid, profile.profile_name, profile.model_uuid,
+SELECT profile.profile_uuid, profile.profile_name, profile.profile_name_key, profile.model_uuid,
        model.provider_id, provider.provider_uuid, provider.name, model.remote_model_id,
        profile.codex_home_path, profile.content_sha256,
        profile.created_at, profile.updated_at
@@ -549,15 +584,16 @@ ORDER BY profile.profile_name_key ASC
             Ok(ProfileRow {
                 profile_uuid: row.get(0)?,
                 profile_name: row.get(1)?,
-                model_uuid: row.get(2)?,
-                provider_id: row.get(3)?,
-                provider_uuid: row.get(4)?,
-                provider_name: row.get(5)?,
-                remote_model_id: row.get(6)?,
-                codex_home_path: row.get(7)?,
-                content_sha256: row.get(8)?,
-                created_at: row.get(9)?,
-                updated_at: row.get(10)?,
+                profile_name_key: row.get(2)?,
+                model_uuid: row.get(3)?,
+                provider_id: row.get(4)?,
+                provider_uuid: row.get(5)?,
+                provider_name: row.get(6)?,
+                remote_model_id: row.get(7)?,
+                codex_home_path: row.get(8)?,
+                content_sha256: row.get(9)?,
+                created_at: row.get(10)?,
+                updated_at: row.get(11)?,
             })
         })
         .map_err(|error| db_err!("failed to query managed profiles: {error}"))?;
@@ -584,9 +620,18 @@ fn project_profile(row: ProfileRow) -> AppResult<CodexManagedProfile> {
             "managed Codex profile has an invalid provider_uuid",
         )
     })?;
+    if !is_valid_profile_name_key(&row.profile_name_key)
+        || validate_profile_name(&row.profile_name).ok().as_deref()
+            != Some(row.profile_name_key.as_str())
+    {
+        return Err(AppError::new(
+            "DB_INVALID_DATA",
+            "managed Codex profile has an invalid profile name key",
+        ));
+    }
     let path = profile_path(&row.codex_home_path, &row.profile_name)?;
     Ok(CodexManagedProfile {
-        canonical_model: format!("aio/{}", row.model_uuid),
+        canonical_model: format!("aio/{}", row.profile_name_key),
         file_status: file_status(&path, &row.content_sha256),
         profile_uuid: row.profile_uuid,
         profile_name: row.profile_name,
@@ -618,7 +663,7 @@ pub fn create<R: tauri::Runtime>(
     let profile_name_key = validate_profile_name(profile_name)?;
     validate_uuid(model_uuid, "model_uuid")?;
 
-    let conn = db.open_connection()?;
+    let mut conn = db.open_connection()?;
     let already_managed: bool = conn
         .query_row(
             "SELECT EXISTS(SELECT 1 FROM codex_managed_profiles WHERE profile_name_key = ?1)",
@@ -660,6 +705,17 @@ WHERE model.model_uuid = ?1
         .map_err(|error| db_err!("failed to query managed profile model: {error}"))?
         .ok_or_else(|| AppError::new("DB_NOT_FOUND", "provider model not found"))?;
 
+    let mut catalog_profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
+    catalog_profiles.push(
+        crate::codex_model_catalog::managed::ManagedCatalogProfile::new(
+            profile_name_key.clone(),
+            target.model_uuid.clone(),
+            target.provider_name.clone(),
+            target.remote_model_id.clone(),
+        )?,
+    );
+    catalog_profiles.sort_by(|left, right| left.profile_name_key.cmp(&right.profile_name_key));
+
     let codex_home = crate::codex_paths::codex_home_dir(app)?;
     validate_codex_home_layout(&codex_home)?;
     std::fs::create_dir_all(&codex_home).map_err(|error| {
@@ -683,7 +739,9 @@ WHERE model.model_uuid = ?1
         )
     })?;
     let path = canonical_home.join(format!("{profile_name}.config.toml"));
-    let content = render_profile(&target.model_uuid)?;
+    let catalog_plan =
+        crate::codex_model_catalog::managed::prepare_for_profiles(app, &catalog_profiles)?;
+    let content = render_profile(&profile_name_key)?;
     let content_sha256 = sha256_hex(&content);
     crate::shared::fs::write_file_atomic_create_new(&path, &content).map_err(|error| {
         if error.code() == "FS_ALREADY_EXISTS" {
@@ -701,10 +759,13 @@ WHERE model.model_uuid = ?1
 
     let profile_uuid = crate::shared::uuid::new_uuid_v4();
     let now = crate::shared::time::now_unix_seconds();
+    let transaction = conn
+        .transaction()
+        .map_err(|error| db_err!("failed to start managed Codex profile transaction: {error}"))?;
     let insert = if should_fail_profile_metadata_insert() {
         Err(rusqlite::Error::InvalidQuery)
     } else {
-        conn.execute(
+        transaction.execute(
             r#"
 INSERT INTO codex_managed_profiles(
   profile_uuid, profile_name, profile_name_key, model_uuid,
@@ -723,8 +784,25 @@ INSERT INTO codex_managed_profiles(
         )
     };
     if let Err(error) = insert {
+        drop(transaction);
         compensate_created_profile_file(&path, &content_sha256)?;
         return Err(db_err!("failed to insert managed Codex profile: {error}"));
+    }
+
+    let applied_catalog = match catalog_plan.apply(app) {
+        Ok(applied) => applied,
+        Err(error) => {
+            drop(transaction);
+            compensate_created_profile_file(&path, &content_sha256)?;
+            return Err(error);
+        }
+    };
+    if let Err(error) = transaction.commit() {
+        let catalog_rollback = applied_catalog.rollback();
+        let file_rollback = compensate_created_profile_file(&path, &content_sha256);
+        catalog_rollback?;
+        file_rollback?;
+        return Err(db_err!("failed to commit managed Codex profile: {error}"));
     }
 
     Ok(CodexManagedProfile {
@@ -735,20 +813,36 @@ INSERT INTO codex_managed_profiles(
         provider_uuid: target.provider_uuid,
         provider_name: target.provider_name,
         remote_model_id: target.remote_model_id,
-        canonical_model: format!("aio/{}", target.model_uuid),
+        canonical_model: format!("aio/{profile_name_key}"),
         file_status: CodexManagedProfileFileStatus::Managed,
         created_at: now,
         updated_at: now,
     })
 }
 
-pub fn delete(db: &db::Db, profile_uuid: &str) -> AppResult<CodexManagedProfileDeleteResult> {
+pub fn delete<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    db: &db::Db,
+    profile_uuid: &str,
+) -> AppResult<CodexManagedProfileDeleteResult> {
     let _guard = lock_profile_lifecycle();
     validate_uuid(profile_uuid, "profile_uuid")?;
     let row = read_profiles(db, Some(profile_uuid))?
         .into_iter()
         .next()
         .ok_or_else(|| AppError::new("DB_NOT_FOUND", "managed Codex profile not found"))?;
+    let mut conn = db.open_connection()?;
+    let mut catalog_profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
+    let previous_count = catalog_profiles.len();
+    catalog_profiles.retain(|profile| profile.profile_name_key != row.profile_name_key);
+    if catalog_profiles.len() + 1 != previous_count {
+        return Err(AppError::new(
+            "DB_INVALID_DATA",
+            "managed Codex profile catalog identity is inconsistent",
+        ));
+    }
+    let catalog_plan =
+        crate::codex_model_catalog::managed::prepare_for_profiles(app, &catalog_profiles)?;
     let path = profile_path(&row.codex_home_path, &row.profile_name)?;
     let captured = capture_profile_file(&path, &row.content_sha256, ProfileCapturePurpose::Delete)?;
     let (owned_isolated, mut external_file_preserved) = match captured {
@@ -763,26 +857,29 @@ pub fn delete(db: &db::Db, profile_uuid: &str) -> AppResult<CodexManagedProfileD
             (None, true)
         }
     };
-    let conn = db.open_connection()?;
+    let transaction = conn
+        .transaction()
+        .map_err(|error| db_err!("failed to start managed Codex profile transaction: {error}"))?;
 
     #[cfg(test)]
     let delete_result =
         if FAIL_NEXT_PROFILE_METADATA_DELETE.swap(false, std::sync::atomic::Ordering::SeqCst) {
             Err(rusqlite::Error::InvalidQuery)
         } else {
-            conn.execute(
+            transaction.execute(
                 "DELETE FROM codex_managed_profiles WHERE profile_uuid = ?1",
                 params![profile_uuid],
             )
         };
     #[cfg(not(test))]
-    let delete_result = conn.execute(
+    let delete_result = transaction.execute(
         "DELETE FROM codex_managed_profiles WHERE profile_uuid = ?1",
         params![profile_uuid],
     );
     let deleted = match delete_result {
         Ok(deleted) if deleted > 0 => deleted,
         Ok(_) => {
+            drop(transaction);
             if let Some(isolated) = owned_isolated.as_deref() {
                 restore_owned_isolated_file(&path, isolated, &row.content_sha256)?;
             }
@@ -792,6 +889,7 @@ pub fn delete(db: &db::Db, profile_uuid: &str) -> AppResult<CodexManagedProfileD
             ));
         }
         Err(error) => {
+            drop(transaction);
             if let Some(isolated) = owned_isolated.as_deref() {
                 restore_owned_isolated_file(&path, isolated, &row.content_sha256)?;
             }
@@ -800,6 +898,30 @@ pub fn delete(db: &db::Db, profile_uuid: &str) -> AppResult<CodexManagedProfileD
             ));
         }
     };
+
+    let applied_catalog = match catalog_plan.apply(app) {
+        Ok(applied) => applied,
+        Err(error) => {
+            drop(transaction);
+            if let Some(isolated) = owned_isolated.as_deref() {
+                restore_owned_isolated_file(&path, isolated, &row.content_sha256)?;
+            }
+            return Err(error);
+        }
+    };
+    if let Err(error) = transaction.commit() {
+        let catalog_rollback = applied_catalog.rollback();
+        let file_rollback = if let Some(isolated) = owned_isolated.as_deref() {
+            restore_owned_isolated_file(&path, isolated, &row.content_sha256)
+        } else {
+            Ok(())
+        };
+        catalog_rollback?;
+        file_rollback?;
+        return Err(db_err!(
+            "failed to commit managed Codex profile deletion: {error}"
+        ));
+    }
     if let Some(isolated) = owned_isolated.as_deref() {
         remove_owned_isolated_file(&path, isolated, &row.content_sha256)?;
     }
@@ -940,7 +1062,14 @@ mod tests {
             validate_profile_name("Grok_45-Test").unwrap(),
             "grok_45-test"
         );
-        for value in ["", "-bad", "has space", "../escape", "模型"] {
+        for value in [
+            "",
+            "-bad",
+            "has space",
+            "../escape",
+            "模型",
+            "550e8400-e29b-41d4-a716-446655440000",
+        ] {
             assert!(validate_profile_name(value).is_err(), "accepted {value}");
         }
         assert!(validate_profile_name(&"a".repeat(65)).is_err());
@@ -948,12 +1077,180 @@ mod tests {
 
     #[test]
     fn generated_profile_uses_current_top_level_format() {
-        let model_uuid = "550e8400-e29b-41d4-a716-446655440000";
-        let bytes = render_profile(model_uuid).expect("render");
+        let bytes = render_profile("grok-profile").expect("render");
         let text = String::from_utf8(bytes).expect("utf8");
-        assert!(text.contains(&format!("model = \"aio/{model_uuid}\"")));
+        assert!(text.contains("model = \"aio/grok-profile\""));
         assert!(text.contains("model_provider = \"aio\""));
         assert!(!text.contains("[profiles."));
+    }
+
+    #[test]
+    fn enabled_proxy_projects_profiles_into_picker_catalog_and_restores_on_delete() {
+        let test_app = ProfileTestApp::new();
+        let app = test_app.handle();
+        let codex_home = crate::codex_paths::codex_home_dir(&app).expect("Codex home");
+        std::fs::create_dir_all(&codex_home).expect("create Codex home");
+        let base_catalog_path = test_app.home.path().join("user-model-catalog.json");
+        let base_catalog: serde_json::Value = serde_json::from_str(
+            r#"{
+            "future_top_level": {"kept": true},
+            "models": [{
+                "slug": "gpt-base",
+                "display_name": "GPT Base",
+                "description": "base",
+                "default_reasoning_level": "high",
+                "supported_reasoning_levels": [{"effort": "high", "description": "deep"}],
+                "shell_type": "shell_command",
+                "visibility": "list",
+                "supported_in_api": true,
+                "priority": 1,
+                "additional_speed_tiers": [],
+                "service_tiers": [],
+                "default_service_tier": null,
+                "availability_nux": null,
+                "upgrade": null,
+                "base_instructions": "base instructions",
+                "model_messages": null,
+                "include_skills_usage_instructions": false,
+                "supports_reasoning_summaries": false,
+                "default_reasoning_summary": "none",
+                "support_verbosity": false,
+                "default_verbosity": null,
+                "apply_patch_tool_type": null,
+                "web_search_tool_type": "text",
+                "truncation_policy": {"mode": "tokens", "limit": 10000},
+                "supports_parallel_tool_calls": false,
+                "supports_image_detail_original": false,
+                "context_window": 128000,
+                "max_context_window": 128000,
+                "auto_compact_token_limit": 100000,
+                "comp_hash": null,
+                "effective_context_window_percent": 95,
+                "experimental_supported_tools": [],
+                "input_modalities": ["text"],
+                "supports_search_tool": false,
+                "use_responses_lite": false,
+                "auto_review_model_override": null,
+                "tool_mode": null,
+                "multi_agent_version": null,
+                "future_required_field": {"kept": true}
+            }]
+        }"#,
+        )
+        .expect("parse base catalog fixture");
+        std::fs::write(
+            &base_catalog_path,
+            serde_json::to_vec_pretty(&base_catalog).expect("serialize base catalog"),
+        )
+        .expect("write base catalog");
+        let config_path = crate::codex_paths::codex_config_toml_path(&app).expect("config path");
+        let mut original_config = toml_edit::DocumentMut::new();
+        original_config["model_catalog_json"] =
+            toml_edit::value(base_catalog_path.to_string_lossy().to_string());
+        std::fs::write(&config_path, original_config.to_string()).expect("write config");
+
+        let enabled = crate::cli_proxy::set_enabled(&app, "codex", true, "http://127.0.0.1:38123")
+            .expect("enable proxy");
+        assert!(enabled.ok, "{}", enabled.message);
+
+        let model_uuid = test_app.seed_model();
+        let profile = create(&app, &test_app.db, "Grok", &model_uuid).expect("create profile");
+        assert_eq!(profile.canonical_model, "aio/grok");
+        let profile_bytes =
+            std::fs::read(codex_home.join("Grok.config.toml")).expect("read managed profile");
+        assert!(String::from_utf8(profile_bytes)
+            .expect("profile UTF-8")
+            .contains("model = \"aio/grok\""));
+
+        let active_config = std::fs::read_to_string(&config_path).expect("read active config");
+        let active_config = active_config
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse active config");
+        let generated_path = PathBuf::from(
+            active_config["model_catalog_json"]
+                .as_str()
+                .expect("generated catalog path"),
+        );
+        assert_ne!(generated_path, base_catalog_path);
+        let generated_bytes = std::fs::read(&generated_path).expect("read generated catalog");
+        let generated: serde_json::Value =
+            serde_json::from_slice(&generated_bytes).expect("parse generated catalog");
+        assert_eq!(
+            generated["future_top_level"]["kept"],
+            serde_json::json!(true)
+        );
+        assert_eq!(
+            generated["models"][0]["slug"],
+            serde_json::json!("gpt-base")
+        );
+        assert_eq!(
+            generated["models"][1]["slug"],
+            serde_json::json!("aio/grok")
+        );
+        assert_eq!(
+            generated["models"][1]["future_required_field"]["kept"],
+            serde_json::json!(true)
+        );
+
+        let mut modified_generated = generated.clone();
+        modified_generated["models"][1]["description"] = serde_json::json!("external modification");
+        std::fs::write(
+            &generated_path,
+            serde_json::to_vec_pretty(&modified_generated).expect("serialize modification"),
+        )
+        .expect("modify generated catalog");
+        let create_error = create(&app, &test_app.db, "second", &model_uuid)
+            .expect_err("external catalog modification must fail closed");
+        assert_eq!(create_error.code(), "CODEX_MANAGED_MODEL_CATALOG_MODIFIED");
+        assert!(!codex_home.join("second.config.toml").exists());
+        assert_eq!(list(&test_app.db).expect("one managed profile").len(), 1);
+        std::fs::write(&generated_path, generated_bytes).expect("restore generated catalog");
+
+        delete(&app, &test_app.db, &profile.profile_uuid).expect("delete profile");
+        assert!(!generated_path.exists());
+        let restored_config = std::fs::read_to_string(&config_path).expect("read restored config");
+        let restored_config = restored_config
+            .parse::<toml_edit::DocumentMut>()
+            .expect("parse restored config");
+        assert_eq!(
+            restored_config["model_catalog_json"].as_str(),
+            base_catalog_path.to_str()
+        );
+
+        let disabled =
+            crate::cli_proxy::set_enabled(&app, "codex", false, "http://127.0.0.1:38123")
+                .expect("disable proxy");
+        assert!(disabled.ok, "{}", disabled.message);
+    }
+
+    #[test]
+    #[ignore = "requires an installed Codex CLI; run manually for picker compatibility"]
+    fn installed_codex_reads_the_generated_picker_alias() {
+        let test_app = ProfileTestApp::new();
+        let app = test_app.handle();
+        let enabled = crate::cli_proxy::set_enabled(&app, "codex", true, "http://127.0.0.1:38124")
+            .expect("enable proxy");
+        assert!(enabled.ok, "{}", enabled.message);
+
+        let launch = crate::cli_manager::codex_launch_spec(&app)
+            .expect("resolve Codex")
+            .expect("Codex CLI installed");
+        assert!(launch.executable.is_file());
+        let model_uuid = test_app.seed_model();
+        let profile =
+            create(&app, &test_app.db, "real-smoke", &model_uuid).expect("create managed profile");
+        let catalog = crate::codex_model_catalog::codex_model_catalog_get(&app)
+            .expect("read model/list from installed Codex");
+        assert!(catalog
+            .models
+            .iter()
+            .any(|model| model.model == "aio/real-smoke"));
+
+        delete(&app, &test_app.db, &profile.profile_uuid).expect("delete profile");
+        let disabled =
+            crate::cli_proxy::set_enabled(&app, "codex", false, "http://127.0.0.1:38124")
+                .expect("disable proxy");
+        assert!(disabled.ok, "{}", disabled.message);
     }
 
     #[test]
@@ -985,7 +1282,7 @@ mod tests {
         );
         let managed_path = codex_home.join("managed.config.toml");
         assert!(managed_path.exists());
-        let deleted = delete(&test_app.db, &managed.profile_uuid).expect("delete managed");
+        let deleted = delete(&app, &test_app.db, &managed.profile_uuid).expect("delete managed");
         assert!(deleted.deleted);
         assert!(!deleted.external_file_preserved);
         assert!(!managed_path.exists());
@@ -1002,7 +1299,7 @@ mod tests {
                 .file_status,
             CodexManagedProfileFileStatus::Missing
         );
-        let deleted = delete(&test_app.db, &missing.profile_uuid).expect("delete missing");
+        let deleted = delete(&app, &test_app.db, &missing.profile_uuid).expect("delete missing");
         assert!(deleted.deleted);
         assert!(!deleted.external_file_preserved);
 
@@ -1019,7 +1316,7 @@ mod tests {
                 .file_status,
             CodexManagedProfileFileStatus::Modified
         );
-        let deleted = delete(&test_app.db, &modified.profile_uuid).expect("unlink modified");
+        let deleted = delete(&app, &test_app.db, &modified.profile_uuid).expect("unlink modified");
         assert!(deleted.deleted);
         assert!(deleted.external_file_preserved);
         assert_eq!(
@@ -1041,7 +1338,7 @@ mod tests {
         let replacement = b"model = \"external-after-capture\"\n";
 
         install_profile_capture_test_hook(ProfileCapturePurpose::Delete, replacement);
-        let deleted = delete(&test_app.db, &profile.profile_uuid).expect("delete metadata");
+        let deleted = delete(&app, &test_app.db, &profile.profile_uuid).expect("delete metadata");
 
         assert!(deleted.deleted);
         assert!(deleted.external_file_preserved);
@@ -1091,7 +1388,7 @@ mod tests {
         std::fs::write(&path, captured_external).expect("replace before capture");
 
         install_profile_capture_test_hook(ProfileCapturePurpose::Delete, target_external);
-        let error = delete(&test_app.db, &profile.profile_uuid)
+        let error = delete(&app, &test_app.db, &profile.profile_uuid)
             .expect_err("occupied target requires explicit recovery");
 
         assert_eq!(error.code(), "CODEX_MANAGED_PROFILE_RECOVERY_REQUIRED");
@@ -1114,7 +1411,7 @@ mod tests {
 
         std::fs::remove_file(&path).expect("remove target external");
         std::fs::remove_file(&captures[0]).expect("remove recovery capture");
-        delete(&test_app.db, &profile.profile_uuid).expect("delete retained metadata");
+        delete(&app, &test_app.db, &profile.profile_uuid).expect("delete retained metadata");
     }
 
     #[test]
@@ -1129,7 +1426,8 @@ mod tests {
         let expected = std::fs::read(&path).expect("read before delete");
 
         FAIL_NEXT_PROFILE_METADATA_DELETE.store(true, std::sync::atomic::Ordering::SeqCst);
-        let error = delete(&test_app.db, &profile.profile_uuid).expect_err("injected failure");
+        let error =
+            delete(&app, &test_app.db, &profile.profile_uuid).expect_err("injected failure");
         assert_eq!(error.code(), "DB_ERROR");
         assert_eq!(std::fs::read(&path).expect("restored file"), expected);
         let listed = list(&test_app.db).expect("metadata remains");
@@ -1139,7 +1437,7 @@ mod tests {
             CodexManagedProfileFileStatus::Managed
         );
 
-        delete(&test_app.db, &profile.profile_uuid).expect("cleanup delete");
+        delete(&app, &test_app.db, &profile.profile_uuid).expect("cleanup delete");
         assert!(!path.exists());
     }
 
@@ -1189,7 +1487,7 @@ mod tests {
 
         let list_error = list(&test_app.db).expect_err("listing replaced home must fail");
         assert_eq!(list_error.code(), "CODEX_MANAGED_PROFILE_HOME_UNSAFE");
-        let delete_error = delete(&test_app.db, &profile.profile_uuid)
+        let delete_error = delete(&app, &test_app.db, &profile.profile_uuid)
             .expect_err("deleting through replaced home must fail");
         assert_eq!(delete_error.code(), "CODEX_MANAGED_PROFILE_HOME_UNSAFE");
         assert!(outside_home
@@ -1200,7 +1498,7 @@ mod tests {
 
         std::fs::remove_file(&codex_home).expect("remove replacement symlink");
         std::fs::rename(&original_home, &codex_home).expect("restore original Codex home");
-        delete(&test_app.db, &profile.profile_uuid).expect("cleanup profile");
+        delete(&app, &test_app.db, &profile.profile_uuid).expect("cleanup profile");
     }
 
     #[cfg(unix)]

@@ -104,9 +104,9 @@ pub(crate) async fn codex_managed_profile_delete(
     db_state: tauri::State<'_, DbInitState>,
     profile_uuid: String,
 ) -> Result<crate::codex_managed_profiles::CodexManagedProfileDeleteResult, String> {
-    let db = ensure_db_ready(app, db_state.inner()).await?;
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     blocking::run("codex_managed_profile_delete", move || {
-        crate::codex_managed_profiles::delete(&db, &profile_uuid)
+        crate::codex_managed_profiles::delete(&app, &db, &profile_uuid)
     })
     .await
     .map_err(Into::into)

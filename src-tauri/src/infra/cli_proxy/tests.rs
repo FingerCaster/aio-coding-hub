@@ -2344,14 +2344,14 @@ fn merge_restore_codex_config_preserves_user_changes() {
     let backup = write_temp(
         tmp.path(),
         "backup.toml",
-        b"[model_providers.openai]\nname = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n",
+        b"model_catalog_json = \"C:\\\\Catalogs\\\\user.json\"\n\n[model_providers.openai]\nname = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n",
     );
 
     // Current: proxy added its config, user added a new section
     let target = write_temp(
         tmp.path(),
         "config.toml",
-        b"model_provider = \"aio\"\npreferred_auth_method = \"apikey\"\n\n[model_providers.openai]\nname = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n\n[model_providers.aio]\nname = \"aio\"\nbase_url = \"http://127.0.0.1:37123/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n\n[user_section]\nfoo = \"bar\"\n\n[windows]\nsandbox = \"elevated\"\n",
+        b"model_provider = \"aio\"\npreferred_auth_method = \"apikey\"\nmodel_catalog_json = \"C:\\\\AIO\\\\managed-model-catalog.json\"\n\n[model_providers.openai]\nname = \"openai\"\nbase_url = \"https://api.openai.com/v1\"\n\n[model_providers.aio]\nname = \"aio\"\nbase_url = \"http://127.0.0.1:37123/v1\"\nwire_api = \"responses\"\nrequires_openai_auth = true\n\n[user_section]\nfoo = \"bar\"\n\n[windows]\nsandbox = \"elevated\"\n",
     );
 
     merge_restore_codex_config_toml(&target, &backup).unwrap();
@@ -2366,6 +2366,8 @@ fn merge_restore_codex_config_preserves_user_changes() {
         !result.contains("preferred_auth_method"),
         "preferred_auth_method should be removed: {result}"
     );
+    assert!(result.contains("model_catalog_json = \"C:\\\\Catalogs\\\\user.json\""));
+    assert!(!result.contains("managed-model-catalog.json"));
     // Proxy provider section removed
     assert!(!result.contains("[model_providers.aio]"));
     // Proxy windows sandbox removed
@@ -2441,4 +2443,83 @@ fn sync_enabled_resolves_drift_after_restore_enabled_keep_state() {
         Some(true),
         "sync_enabled should resolve the drift"
     );
+}
+
+#[test]
+fn codex_sync_rolls_back_proxy_changes_when_managed_catalog_refresh_fails() {
+    let test_app = CliProxyTestApp::new();
+    let handle = test_app.handle();
+    let old_origin = "http://127.0.0.1:37123";
+    let next_origin = "http://127.0.0.1:38123";
+    let config_path = codex_config_path(&handle).expect("Codex config path");
+    std::fs::create_dir_all(config_path.parent().expect("config parent"))
+        .expect("create config parent");
+    let invalid_catalog_path = test_app.home.path().join("invalid-catalog.json");
+    std::fs::write(&invalid_catalog_path, b"{").expect("write invalid catalog");
+    let mut original = toml_edit::DocumentMut::new();
+    original["model_catalog_json"] =
+        toml_edit::value(invalid_catalog_path.to_string_lossy().to_string());
+    std::fs::write(&config_path, original.to_string()).expect("write original config");
+
+    let enabled = set_enabled(&handle, "codex", true, old_origin).expect("enable Codex proxy");
+    assert!(enabled.ok, "{}", enabled.message);
+    let config_before = std::fs::read(&config_path).expect("read active config");
+
+    let db = crate::db::init(&handle).expect("init db");
+    let conn = db.open_connection().expect("open db");
+    let provider_uuid = crate::shared::uuid::new_uuid_v4();
+    conn.execute(
+        r#"
+INSERT INTO providers(
+  provider_uuid, cli_key, name, base_url, api_key_plaintext, enabled, created_at, updated_at
+) VALUES (?1, 'codex', 'Managed Catalog Failure', 'https://example.invalid/v1', 'key', 1, 1, 1)
+"#,
+        rusqlite::params![provider_uuid],
+    )
+    .expect("insert provider");
+    let provider_id = conn.last_insert_rowid();
+    let model_uuid = crate::shared::uuid::new_uuid_v4();
+    conn.execute(
+        r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, created_at, updated_at
+) VALUES (?1, ?2, 'grok-4.5', 'manual', 0, 1, 1)
+"#,
+        rusqlite::params![model_uuid, provider_id],
+    )
+    .expect("insert model");
+    conn.execute(
+        r#"
+INSERT INTO codex_managed_profiles(
+  profile_uuid, profile_name, profile_name_key, model_uuid,
+  codex_home_path, content_sha256, created_at, updated_at
+) VALUES (?1, 'grok', 'grok', ?2, ?3, ?4, 1, 1)
+"#,
+        rusqlite::params![
+            crate::shared::uuid::new_uuid_v4(),
+            model_uuid,
+            config_path.parent().expect("Codex home").to_string_lossy(),
+            "a".repeat(64)
+        ],
+    )
+    .expect("insert profile");
+
+    let results = sync_enabled(&handle, next_origin, true).expect("sync enabled proxies");
+    let codex = results
+        .iter()
+        .find(|result| result.cli_key == "codex")
+        .expect("Codex result");
+    assert!(!codex.ok);
+    assert_eq!(
+        codex.error_code.as_deref(),
+        Some("CLI_PROXY_MANAGED_MODEL_SYNC_FAILED")
+    );
+    assert_eq!(
+        std::fs::read(&config_path).expect("read rolled back config"),
+        config_before
+    );
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("Codex manifest");
+    assert_eq!(manifest.base_origin.as_deref(), Some(old_origin));
 }

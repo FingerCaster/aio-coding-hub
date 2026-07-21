@@ -2,6 +2,7 @@ import { QueryClientProvider } from "@tanstack/react-query";
 import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
+import { cliProxyStatusAll } from "../../../services/cli/cliProxy";
 import {
   codexManagedProfileCreate,
   codexManagedProfileDelete,
@@ -20,6 +21,13 @@ import { createTestQueryClient } from "../../../test/utils/reactQuery";
 import { ProviderModelCatalogDialog } from "../ProviderModelCatalogDialog";
 
 vi.mock("sonner", () => ({ toast: vi.fn() }));
+
+vi.mock("../../../services/cli/cliProxy", async () => {
+  const actual = await vi.importActual<typeof import("../../../services/cli/cliProxy")>(
+    "../../../services/cli/cliProxy"
+  );
+  return { ...actual, cliProxyStatusAll: vi.fn() };
+});
 
 vi.mock("../../../services/providers/providerModels", async () => {
   const actual = await vi.importActual<typeof import("../../../services/providers/providerModels")>(
@@ -137,7 +145,7 @@ function makeProfile(overrides: Partial<CodexManagedProfile> = {}): CodexManaged
     providerUuid: PROVIDER_UUID,
     providerName: "Grok Provider",
     remoteModelId: "same-model",
-    canonicalModel: `aio/${MODEL_UUID}`,
+    canonicalModel: "aio/grok-work",
     fileStatus: "managed",
     createdAt: 100,
     updatedAt: 100,
@@ -164,6 +172,15 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
     vi.mocked(codexManagedProfilesList).mockResolvedValue([]);
     vi.mocked(codexManagedProfileCreate).mockRejectedValue(new Error("unused"));
     vi.mocked(codexManagedProfileDelete).mockRejectedValue(new Error("unused"));
+    vi.mocked(cliProxyStatusAll).mockResolvedValue([
+      {
+        cli_key: "codex",
+        enabled: true,
+        base_origin: "http://127.0.0.1:37123",
+        current_gateway_origin: "http://127.0.0.1:37123",
+        applied_to_current_gateway: true,
+      },
+    ]);
   });
 
   it("shows stale discovery state and keeps manual models usable", async () => {
@@ -204,11 +221,11 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
         providerId: 8,
         providerUuid: "22222222-2222-4222-8222-222222222222",
         providerName: "Other Provider",
-        canonicalModel: `aio/${OTHER_MODEL_UUID}`,
+        canonicalModel: "aio/other-provider-profile",
       }),
     ]);
     vi.mocked(codexManagedProfileCreate).mockResolvedValueOnce(
-      makeProfile({ profileName: "same-model-work" })
+      makeProfile({ profileName: "same-model-work", canonicalModel: "aio/same-model-work" })
     );
 
     renderDialog();
@@ -232,11 +249,20 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
       expect(codexManagedProfileCreate).toHaveBeenCalledWith("same-model-work", MODEL_UUID)
     );
     expect(codexManagedProfileCreate).not.toHaveBeenCalledWith(expect.anything(), OTHER_MODEL_UUID);
+    await waitFor(() =>
+      expect(vi.mocked(toast)).toHaveBeenCalledWith(
+        "Profile same-model-work 已创建；请新建或重启 Codex 会话，然后通过 /model 选择 aio/same-model-work"
+      )
+    );
   });
 
   it("warns that an externally modified profile file will be preserved when deleting", async () => {
     vi.mocked(codexManagedProfilesList).mockResolvedValueOnce([
-      makeProfile({ profileName: "modified-profile", fileStatus: "modified" }),
+      makeProfile({
+        profileName: "modified-profile",
+        canonicalModel: "aio/modified-profile",
+        fileStatus: "modified",
+      }),
     ]);
     vi.mocked(codexManagedProfileDelete).mockResolvedValueOnce({
       deleted: true,
@@ -245,7 +271,7 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
 
     renderDialog();
 
-    expect(await screen.findByText("modified-profile")).toBeInTheDocument();
+    expect(await screen.findByText("aio/modified-profile")).toBeInTheDocument();
     expect(screen.getByText("文件已修改")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "删除 Profile modified-profile" }));
 
@@ -316,8 +342,26 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
     expect(screen.queryByText(/SYNTHETIC_PROFILE_SECRET/)).not.toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "重试 Profile" }));
 
-    expect(await screen.findByText("grok-work")).toBeInTheDocument();
+    expect(await screen.findByText("aio/grok-work")).toBeInTheDocument();
     expect(screen.queryByText("读取 Codex Profile 失败")).not.toBeInTheDocument();
     expect(codexManagedProfilesList).toHaveBeenCalledTimes(2);
+  });
+
+  it("requires the Codex CLI proxy before opening profile creation", async () => {
+    vi.mocked(cliProxyStatusAll).mockResolvedValueOnce([
+      {
+        cli_key: "codex",
+        enabled: false,
+        base_origin: null,
+        current_gateway_origin: "http://127.0.0.1:37123",
+        applied_to_current_gateway: null,
+      },
+    ]);
+
+    renderDialog();
+
+    expect(await screen.findByText(/请先在 CLI 代理中开启 Codex 代理/)).toBeInTheDocument();
+    expect(await screen.findByText("same-model")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建 Profile" })).toBeDisabled();
   });
 });
