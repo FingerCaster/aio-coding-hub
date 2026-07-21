@@ -31,6 +31,7 @@
 - 模型能力配置归属 provider-scoped 模型条目，而不是 Profile；同一模型创建的多个 Profile 共享推理强度和上下文窗口配置。
 - 新发现或新手工添加的模型必须先明确配置能力再创建 Profile；推理能力可明确配置为“不发送推理强度”，上下文窗口可明确保留为未知。
 - v40 已有模型升级到 v41 时回填当前 `low / medium / high`、默认 `medium` 的兼容基线，避免现有受管 Profile 升级后失效；不根据供应商名或模型名推断新模型能力。
+- `codex-auto-review` 等未使用受管 `aio/<profile_name_key>` / `aio/<model_uuid>` 的 Codex 系统模型请求不绑定当前业务 Profile 的供应商；它们仍通过唯一的 `aio` provider 进入网关，沿用普通供应商路由和跨供应商 failover。路由到其他支持该系统模型的供应商属于预期行为。
 
 ## Confirmed Facts
 

@@ -33,6 +33,7 @@ Codex 直连供应商
 11. **目录只随 Codex CLI 代理激活。** 生成文件位于 AIO 应用数据目录，根 `model_catalog_json` 随代理启停安全接管/恢复；现有会话不热更新。
 12. **模型能力由 provider-model 条目统一拥有。** Profile 只引用 `model_uuid`；新模型不按名称猜测能力，必须由用户明确保存一次能力配置。空 reasoning 集合表示不发送 reasoning，上下文可明确为未知。
 13. **v41 兼容优先。** v40 已有模型回填上一版固定 reasoning 基线，避免已创建 Profile 失效；之后新建的模型默认未配置。上下文只暴露一个标称 token 数，目录同时写 `context_window` 和 `max_context_window`，压缩阈值继续由 Codex 派生。
+14. **Codex 系统模型保持普通路由。** 受管目录条目的 `auto_review_model_override` 保持为空，并保留基础目录中的 `codex-auto-review` 系统模型。自动审核请求不继承当前受管业务模型的精确供应商绑定，而是通过唯一的 `aio` provider 使用现有普通排序、健康门和跨供应商 failover；落到其他支持供应商是预期行为。现有自动审核模型映射继续以中性信息展示，不能误报为受管业务 alias 的严重错路由。
 
 ## 数据模型
 
@@ -230,6 +231,12 @@ model_provider = "aio"
 6. 同一 provider 的显式重试策略仍生效；候选 provider 数固定为 1。
 
 查表结果必须来自服务端持久化行。前缀、模型名、provider 显示名和客户端提交的 provider ID 都不是授权依据。
+
+### Codex 系统模型边界
+
+- 只有精确命中服务端受管绑定的 `aio/<profile_name_key>` 或旧 `aio/<model_uuid>` 才进入上述单供应商路由；该业务请求不得跨供应商 failover。
+- `codex-auto-review` / `codex-auto-review-*` 等 Codex 系统请求即使由一个正在使用受管模型的父会话触发，也不转换成父会话 alias，不绑定父会话选择的供应商。
+- 系统请求仍使用 `model_provider = "aio"` 进入同一网关，但走普通候选选择和跨供应商 failover。自动审核逻辑模型到实际模型的预期映射继续可见但使用中性样式；这项例外不扩大 `aio/` alias 的信任边界，也不改变受管业务请求的 wire-vs-observed 检测。
 
 ### 三层模型与路由检测
 
