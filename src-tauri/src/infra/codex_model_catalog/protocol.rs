@@ -477,7 +477,7 @@ struct ManagedOutputChild {
     #[cfg(unix)]
     process_id: u32,
     #[cfg(windows)]
-    job: WindowsJob,
+    job: Option<WindowsJob>,
 }
 
 impl ManagedOutputChild {
@@ -500,7 +500,8 @@ impl ManagedOutputChild {
         let process_id = child.id();
         #[cfg(windows)]
         let job = match WindowsJob::attach(child.id()) {
-            Ok(job) => job,
+            Ok(job) => Some(job),
+            Err(_) if matches!(child.try_wait(), Ok(Some(_))) => None,
             Err(_) => {
                 terminate_windows_process_tree(child.id());
                 let _ = child.kill();
@@ -564,7 +565,9 @@ impl ManagedOutputChild {
         let _stderr = self.collect_reader(false)?;
         self.finished = true;
         #[cfg(windows)]
-        self.job.close();
+        if let Some(job) = self.job.as_mut() {
+            job.close();
+        }
 
         if !status.success() {
             return Err(ProtocolError::Spawn);
@@ -596,7 +599,9 @@ impl ManagedOutputChild {
         let _ = self.collect_reader(true);
         let _ = self.collect_reader(false);
         #[cfg(windows)]
-        self.job.close();
+        if let Some(job) = self.job.as_mut() {
+            job.close();
+        }
     }
 
     fn terminate_tree(&mut self) {
@@ -606,7 +611,9 @@ impl ManagedOutputChild {
         terminate_windows_process_tree(self.child.id());
         let _ = self.child.kill();
         #[cfg(windows)]
-        self.job.close();
+        if let Some(job) = self.job.as_mut() {
+            job.close();
+        }
     }
 }
 
