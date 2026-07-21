@@ -1,0 +1,16 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Gateway attempt/gate changes must follow the backend pre-development checklist."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Managed aliases must keep one provider candidate while preserving same-provider retry and common gate semantics."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Feature crosses Rust, generated bindings, frontend queries/UI, config migration and request-log presentation."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"Profile work must coexist with existing Codex config ownership and generated type boundaries."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Forced model routing must not regress provider gates, attempts, route projection or ordinary failover."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-share-contract.md","reason":"Provider UUID creation must preserve additive disabled share-import semantics and exclude local models/profiles."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Bundle v4 must preserve independent version thresholds, validation-before-mutation and rollback behavior."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Config import changes must stay inside the existing lock/CAS/rollback ownership model."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing URL, bounded body, atomic file and credential helpers instead of parallel implementations."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Defines the required typed data flow and generated boundary checks for this cross-layer feature."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/codex-provider-config-semantics.md","reason":"Current Codex 0.134+ independent profile file format and single aio provider evidence."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/backend-provider-model-flow.md","reason":"Existing provider CRUD, model discovery, gateway and config ownership evidence."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/frontend-provider-model-flow.md","reason":"Existing provider editor, Codex model catalog, query and UI integration points."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/model-discovery-protocols.md","reason":"Protocol-specific model-list behavior, limits and OpenAI-compatible MVP boundary."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/model-route-detection-alias-compat.md","reason":"Three-layer model semantics, four response paths and cost attribution requirements."}
+{"file":".trellis/tasks/07-20-codex-provider-model-discovery/research/provider-identity-import-lifecycle.md","reason":"Provider UUID lifecycle, config import, share/duplicate and profile ownership evidence."}
