@@ -28,6 +28,9 @@
 - 受管 profile 元数据和生成内容哈希保存在数据库；`$CODEX_HOME/<name>.config.toml` 是派生文件。创建时不覆盖同名外部文件，删除时不删除已被外部修改的文件。
 - AIO 在 Codex CLI 代理启用期间维护完整合并模型目录；Codex 仍只有 `aio` 一个供应商，模型选择器中的可读 alias 由服务端 Profile 绑定精确解析。
 - 新 Profile alias 使用 `aio/<profile_name_key>`；旧测试版的 `aio/<model_uuid>` 继续兼容，不能因可读 alias 改造破坏已有 Profile。
+- 模型能力配置归属 provider-scoped 模型条目，而不是 Profile；同一模型创建的多个 Profile 共享推理强度和上下文窗口配置。
+- 新发现或新手工添加的模型必须先明确配置能力再创建 Profile；推理能力可明确配置为“不发送推理强度”，上下文窗口可明确保留为未知。
+- v40 已有模型升级到 v41 时回填当前 `low / medium / high`、默认 `medium` 的兼容基线，避免现有受管 Profile 升级后失效；不根据供应商名或模型名推断新模型能力。
 
 ## Confirmed Facts
 
@@ -138,6 +141,15 @@
 - 删除 Profile 必须同步移除目录条目；删除最后一个 Profile 后恢复基础目录配置，不留下失效的 picker 项。
 - 目录是启动时配置，UI 必须提示“新建或重启 Codex 会话后生效”，不得宣称当前会话已热更新。
 
+### R9. Provider-model 能力配置
+
+- 每个 `provider_models` 条目必须持久化能力是否已配置、支持的 reasoning effort 集合、默认 effort 和可选上下文窗口；多个 Profile 只引用该模型级配置，不复制能力字段。
+- 首版支持 Codex 当前稳定识别的 `none / minimal / low / medium / high / xhigh / max / ultra` 档位；集合不得重复，非空集合必须选择其中一个默认值，空集合表示不发送 reasoning。
+- 上下文窗口为可选 token 数；填写时必须在首版有界范围内。生成 Codex 目录时将 `context_window` 与 `max_context_window` 写为相同值，`auto_compact_token_limit` 保持为空，由 Codex 自行派生。
+- 新发现和新手工模型不得自动获得猜测能力；能力未配置时保留模型行，但后端和 UI 都必须阻止创建 Profile。
+- 已有受管 Profile 的模型能力变更必须在同一所有权锁下重建受管 Codex 目录；外部目录/config 漂移时能力更新失败关闭，不能留下数据库与当前目录不一致。
+- 能力更新不改变 canonical/wire/observed 模型比较，也不增加 reasoning effort 告警豁免：上游未回显 effort 仍不告警，明确回显不同 effort 仍按现有规则告警。
+
 ## Proposed MVP Boundary
 
 - Codex 直连供应商的 provider-scoped 持久化模型目录。
@@ -175,6 +187,10 @@
 - [ ] 旧 `aio/<model_uuid>` 和新 `aio/<profile_name_key>` 都能解析到同一 provider-scoped 绑定，正常请求不产生路由误报，真实 mismatch 仍告警。
 - [ ] 创建、删除和应用启动同步失败时不会留下 DB、Profile 文件、模型目录或根配置的部分成功状态。
 - [ ] 未启用受管 profile/模型路由的现有 Codex 请求保持当前排序、会话绑定与 failover 语义。
+- [ ] 新模型在能力未配置时不能创建 Profile；可明确保存“无 reasoning + 未知上下文”的配置后创建。
+- [ ] 支持档位、默认档位和上下文窗口可在 provider 模型目录中编辑、持久化并经 IPC 往返，默认档位必须属于支持集合。
+- [ ] 已有 Profile 的模型能力变更会重建完整受管目录；Codex 新会话读取到对应档位和上下文窗口，外部目录/config 漂移时数据库更新回滚。
+- [ ] v40 -> v41 保留已有模型/Profile 行并回填兼容 reasoning 基线；新发现/手工模型保持未配置，不按名称猜测。
 
 ## Out of Scope for the Proposed MVP
 

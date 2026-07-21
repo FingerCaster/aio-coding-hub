@@ -75,6 +75,7 @@ struct ModelTarget {
     provider_uuid: String,
     provider_name: String,
     remote_model_id: String,
+    capabilities: crate::provider_models::ProviderModelCapabilities,
 }
 
 enum OwnedFileState {
@@ -678,11 +679,13 @@ pub fn create<R: tauri::Runtime>(
         ));
     }
 
-    let target = conn
+    let target_raw = conn
         .query_row(
             r#"
 SELECT model.model_uuid, model.provider_id, provider.provider_uuid,
-       provider.name, model.remote_model_id
+       provider.name, model.remote_model_id, model.capabilities_configured,
+       model.supported_reasoning_efforts_json, model.default_reasoning_effort,
+       model.context_window
 FROM provider_models model
 JOIN providers provider ON provider.id = model.provider_id
 WHERE model.model_uuid = ?1
@@ -692,18 +695,41 @@ WHERE model.model_uuid = ?1
 "#,
             params![model_uuid],
             |row| {
-                Ok(ModelTarget {
-                    model_uuid: row.get(0)?,
-                    provider_id: row.get(1)?,
-                    provider_uuid: row.get(2)?,
-                    provider_name: row.get(3)?,
-                    remote_model_id: row.get(4)?,
-                })
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, i64>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, i64>(5)? != 0,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                ))
             },
         )
         .optional()
         .map_err(|error| db_err!("failed to query managed profile model: {error}"))?
         .ok_or_else(|| AppError::new("DB_NOT_FOUND", "provider model not found"))?;
+    if !target_raw.5 {
+        return Err(AppError::new(
+            "PROVIDER_MODEL_CAPABILITIES_REQUIRED",
+            "provider model capabilities must be configured before creating a profile",
+        ));
+    }
+    let target = ModelTarget {
+        model_uuid: target_raw.0,
+        provider_id: target_raw.1,
+        provider_uuid: target_raw.2,
+        provider_name: target_raw.3,
+        remote_model_id: target_raw.4,
+        capabilities: crate::provider_models::decode_stored_capabilities(
+            true,
+            &target_raw.6,
+            target_raw.7.as_deref(),
+            target_raw.8,
+        )?,
+    };
 
     let mut catalog_profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
     catalog_profiles.push(
@@ -712,6 +738,7 @@ WHERE model.model_uuid = ?1
             target.model_uuid.clone(),
             target.provider_name.clone(),
             target.remote_model_id.clone(),
+            target.capabilities.clone(),
         )?,
     );
     catalog_profiles.sort_by(|left, right| left.profile_name_key.cmp(&right.profile_name_key));
@@ -1014,18 +1041,39 @@ mod tests {
                 },
             )
             .expect("seed provider");
-            crate::provider_models::manual_upsert(
+            let catalog = crate::provider_models::manual_upsert(
                 &self.db,
                 provider.id,
                 &provider.provider_uuid,
                 "grok-4.5",
             )
-            .expect("seed model")
-            .models
-            .into_iter()
-            .find(|model| model.remote_model_id == "grok-4.5")
-            .expect("manual model")
-            .model_uuid
+            .expect("seed model");
+            let model_uuid = catalog
+                .models
+                .into_iter()
+                .find(|model| model.remote_model_id == "grok-4.5")
+                .expect("manual model")
+                .model_uuid;
+            crate::provider_models::update_capabilities(
+                &self.handle(),
+                &self.db,
+                provider.id,
+                &provider.provider_uuid,
+                &model_uuid,
+                &crate::provider_models::ProviderModelCapabilitiesInput {
+                    supported_reasoning_efforts: vec![
+                        crate::provider_models::ProviderModelReasoningEffort::Low,
+                        crate::provider_models::ProviderModelReasoningEffort::Medium,
+                        crate::provider_models::ProviderModelReasoningEffort::High,
+                    ],
+                    default_reasoning_effort: Some(
+                        crate::provider_models::ProviderModelReasoningEffort::Medium,
+                    ),
+                    context_window: Some(128_000),
+                },
+            )
+            .expect("configure model capabilities");
+            model_uuid
         }
     }
 
@@ -1082,6 +1130,32 @@ mod tests {
         assert!(text.contains("model = \"aio/grok-profile\""));
         assert!(text.contains("model_provider = \"aio\""));
         assert!(!text.contains("[profiles."));
+    }
+
+    #[test]
+    fn profile_creation_requires_explicit_model_capabilities() {
+        let test_app = ProfileTestApp::new();
+        let app = test_app.handle();
+        let model_uuid = test_app.seed_model();
+        let conn = test_app.db.open_connection().expect("open db");
+        conn.execute(
+            r#"
+UPDATE provider_models
+SET capabilities_configured = 0,
+    supported_reasoning_efforts_json = '[]',
+    default_reasoning_effort = NULL,
+    context_window = NULL
+WHERE model_uuid = ?1
+"#,
+            params![model_uuid],
+        )
+        .expect("reset model capabilities");
+        drop(conn);
+
+        let error = create(&app, &test_app.db, "unconfigured", &model_uuid)
+            .expect_err("unconfigured model must not create a profile");
+        assert_eq!(error.code(), "PROVIDER_MODEL_CAPABILITIES_REQUIRED");
+        assert!(list(&test_app.db).expect("list profiles").is_empty());
     }
 
     #[test]
@@ -1205,9 +1279,135 @@ mod tests {
             serde_json::json!(true)
         );
         assert_eq!(
+            generated["models"][1]["context_window"],
+            serde_json::json!(128_000)
+        );
+        assert_eq!(
+            generated["models"][1]["max_context_window"],
+            serde_json::json!(128_000)
+        );
+        assert_eq!(
             generated["models"][1]["future_required_field"]["kept"],
             serde_json::json!(true)
         );
+
+        crate::provider_models::update_capabilities(
+            &app,
+            &test_app.db,
+            profile.provider_id,
+            &profile.provider_uuid,
+            &model_uuid,
+            &crate::provider_models::ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: vec![
+                    crate::provider_models::ProviderModelReasoningEffort::Minimal,
+                    crate::provider_models::ProviderModelReasoningEffort::Max,
+                ],
+                default_reasoning_effort: Some(
+                    crate::provider_models::ProviderModelReasoningEffort::Max,
+                ),
+                context_window: Some(1_000_000),
+            },
+        )
+        .expect("update capabilities and active catalog");
+        let generated_bytes = std::fs::read(&generated_path).expect("read updated catalog");
+        let generated: serde_json::Value =
+            serde_json::from_slice(&generated_bytes).expect("parse updated catalog");
+        assert_eq!(
+            generated["models"][1]["supported_reasoning_levels"]
+                .as_array()
+                .expect("updated reasoning levels")
+                .iter()
+                .filter_map(|level| level.get("effort").and_then(serde_json::Value::as_str))
+                .collect::<Vec<_>>(),
+            vec!["minimal", "max"]
+        );
+        assert_eq!(
+            generated["models"][1]["default_reasoning_level"],
+            serde_json::json!("max")
+        );
+        assert_eq!(
+            generated["models"][1]["context_window"],
+            serde_json::json!(1_000_000)
+        );
+        assert_eq!(
+            generated["models"][1]["max_context_window"],
+            serde_json::json!(1_000_000)
+        );
+
+        let config_before_commit_failure =
+            std::fs::read(&config_path).expect("read config before commit failure");
+        let conn = test_app.db.open_connection().expect("open commit probe db");
+        conn.execute_batch(
+            r#"
+CREATE TABLE provider_model_capability_commit_probe (
+  provider_id INTEGER,
+  FOREIGN KEY(provider_id) REFERENCES providers(id) DEFERRABLE INITIALLY DEFERRED
+);
+CREATE TRIGGER fail_provider_model_capability_commit
+AFTER UPDATE OF capabilities_configured, supported_reasoning_efforts_json,
+                default_reasoning_effort, context_window ON provider_models
+BEGIN
+  INSERT INTO provider_model_capability_commit_probe(provider_id) VALUES (-1);
+END;
+"#,
+        )
+        .expect("install deferred capability commit failure");
+        drop(conn);
+
+        let commit_error = crate::provider_models::update_capabilities(
+            &app,
+            &test_app.db,
+            profile.provider_id,
+            &profile.provider_uuid,
+            &model_uuid,
+            &crate::provider_models::ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: vec![
+                    crate::provider_models::ProviderModelReasoningEffort::Low,
+                ],
+                default_reasoning_effort: Some(
+                    crate::provider_models::ProviderModelReasoningEffort::Low,
+                ),
+                context_window: Some(64_000),
+            },
+        )
+        .expect_err("deferred constraint must fail capability commit");
+        assert_eq!(commit_error.code(), "DB_ERROR");
+        assert_eq!(
+            std::fs::read(&generated_path).expect("read catalog after commit rollback"),
+            generated_bytes
+        );
+        assert_eq!(
+            std::fs::read(&config_path).expect("read config after commit rollback"),
+            config_before_commit_failure
+        );
+        let persisted =
+            crate::provider_models::get(&test_app.db, profile.provider_id, &profile.provider_uuid)
+                .expect("read capabilities after commit rollback");
+        assert_eq!(
+            persisted.models[0].default_reasoning_effort,
+            Some(crate::provider_models::ProviderModelReasoningEffort::Max)
+        );
+        assert_eq!(persisted.models[0].context_window, Some(1_000_000));
+        let conn = test_app
+            .db
+            .open_connection()
+            .expect("open commit probe cleanup db");
+        let probe_rows: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM provider_model_capability_commit_probe",
+                [],
+                |row| row.get(0),
+            )
+            .expect("read rolled back commit probe");
+        assert_eq!(probe_rows, 0);
+        conn.execute_batch(
+            r#"
+DROP TRIGGER fail_provider_model_capability_commit;
+DROP TABLE provider_model_capability_commit_probe;
+"#,
+        )
+        .expect("remove capability commit failure");
+        drop(conn);
 
         let mut modified_generated = generated.clone();
         modified_generated["models"][1]["description"] = serde_json::json!("external modification");
@@ -1216,6 +1416,31 @@ mod tests {
             serde_json::to_vec_pretty(&modified_generated).expect("serialize modification"),
         )
         .expect("modify generated catalog");
+        let capability_error = crate::provider_models::update_capabilities(
+            &app,
+            &test_app.db,
+            profile.provider_id,
+            &profile.provider_uuid,
+            &model_uuid,
+            &crate::provider_models::ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_window: None,
+            },
+        )
+        .expect_err("external catalog modification must block capability update");
+        assert_eq!(
+            capability_error.code(),
+            "CODEX_MANAGED_MODEL_CATALOG_MODIFIED"
+        );
+        let persisted =
+            crate::provider_models::get(&test_app.db, profile.provider_id, &profile.provider_uuid)
+                .expect("read capabilities after rollback");
+        assert_eq!(
+            persisted.models[0].default_reasoning_effort,
+            Some(crate::provider_models::ProviderModelReasoningEffort::Max)
+        );
+        assert_eq!(persisted.models[0].context_window, Some(1_000_000));
         let create_error = create(&app, &test_app.db, "second", &model_uuid)
             .expect_err("external catalog modification must fail closed");
         assert_eq!(create_error.code(), "CODEX_MANAGED_MODEL_CATALOG_MODIFIED");

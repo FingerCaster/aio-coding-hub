@@ -8,6 +8,7 @@ import {
 import {
   formatProviderModelFeatureError,
   isCodexDirectProvider,
+  providerModelCapabilitiesUpdate,
   providerModelManualUpsert,
   providerModelsGet,
 } from "../providerModels";
@@ -24,6 +25,7 @@ vi.mock("../../../generated/bindings", async () => {
       providerModelsRefresh: vi.fn(),
       providerModelManualUpsert: vi.fn(),
       providerModelManualDelete: vi.fn(),
+      providerModelCapabilitiesUpdate: vi.fn(),
       codexManagedProfilesList: vi.fn(),
       codexManagedProfileCreate: vi.fn(),
       codexManagedProfileDelete: vi.fn(),
@@ -54,6 +56,10 @@ function generatedCatalog(overrides: Record<string, unknown> = {}) {
         lastSeenAt: 100,
         createdAt: 90,
         updatedAt: 100,
+        capabilitiesConfigured: true,
+        supportedReasoningEfforts: ["low", "medium", "high"],
+        defaultReasoningEffort: "medium",
+        contextWindow: 128_000,
       },
     ],
     ...overrides,
@@ -146,6 +152,64 @@ describe("services/providers provider models", () => {
 
     await expect(providerModelManualUpsert(7, PROVIDER_UUID, "界".repeat(86))).rejects.toThrow(
       "invalid remoteModelId"
+    );
+  });
+
+  it("normalizes and updates model capabilities through the provider-scoped command", async () => {
+    vi.mocked(commands.providerModelCapabilitiesUpdate).mockResolvedValueOnce({
+      status: "ok",
+      data: generatedCatalog({
+        models: [
+          {
+            ...generatedCatalog().models[0],
+            supportedReasoningEfforts: ["minimal", "max"],
+            defaultReasoningEffort: "max",
+            contextWindow: 1_000_000,
+          },
+        ],
+      }) as never,
+    });
+
+    await providerModelCapabilitiesUpdate(7, PROVIDER_UUID, MODEL_UUID, {
+      supportedReasoningEfforts: ["max", "minimal"],
+      defaultReasoningEffort: "max",
+      contextWindow: 1_000_000,
+    });
+    expect(commands.providerModelCapabilitiesUpdate).toHaveBeenCalledWith(
+      7,
+      PROVIDER_UUID,
+      MODEL_UUID,
+      {
+        supportedReasoningEfforts: ["minimal", "max"],
+        defaultReasoningEffort: "max",
+        contextWindow: 1_000_000,
+      }
+    );
+  });
+
+  it("rejects inconsistent capabilities and malformed unconfigured catalog rows", async () => {
+    await expect(
+      providerModelCapabilitiesUpdate(7, PROVIDER_UUID, MODEL_UUID, {
+        supportedReasoningEfforts: ["low"],
+        defaultReasoningEffort: "high",
+        contextWindow: 128_000,
+      })
+    ).rejects.toThrow("defaultReasoningEffort is not supported");
+    expect(commands.providerModelCapabilitiesUpdate).not.toHaveBeenCalled();
+
+    vi.mocked(commands.providerModelsGet).mockResolvedValueOnce({
+      status: "ok",
+      data: generatedCatalog({
+        models: [
+          {
+            ...generatedCatalog().models[0],
+            capabilitiesConfigured: false,
+          },
+        ],
+      }) as never,
+    });
+    await expect(providerModelsGet(7, PROVIDER_UUID)).rejects.toThrow(
+      "unconfigured model has capability values"
     );
   });
 

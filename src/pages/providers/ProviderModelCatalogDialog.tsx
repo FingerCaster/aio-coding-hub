@@ -1,11 +1,21 @@
 import { useEffect, useMemo, useState } from "react";
-import { AlertTriangle, FilePlus2, Library, Plus, RefreshCw, Search, Trash2 } from "lucide-react";
+import {
+  AlertTriangle,
+  FilePlus2,
+  Library,
+  Plus,
+  RefreshCw,
+  Search,
+  Settings2,
+  Trash2,
+} from "lucide-react";
 import { toast } from "sonner";
 import {
   useCodexManagedProfileCreateMutation,
   useCodexManagedProfileDeleteMutation,
   useCodexManagedProfilesQuery,
   useProviderModelCatalogQuery,
+  useProviderModelCapabilitiesUpdateMutation,
   useProviderModelManualDeleteMutation,
   useProviderModelManualUpsertMutation,
   useProviderModelsRefreshMutation,
@@ -16,7 +26,11 @@ import { isCanonicalUuidV4 } from "../../services/providers/uuid";
 import {
   formatProviderModelFeatureError,
   formatProviderModelDiscoveryError,
+  MODEL_CONTEXT_WINDOW_MAX_TOKENS,
+  MODEL_CONTEXT_WINDOW_MIN_TOKENS,
+  PROVIDER_MODEL_REASONING_EFFORTS,
   type ProviderModel,
+  type ProviderModelReasoningEffort,
 } from "../../services/providers/providerModels";
 import type { ProviderSummary } from "../../services/providers/providers";
 import { Button } from "../../ui/Button";
@@ -24,7 +38,9 @@ import { ConfirmDialog } from "../../ui/ConfirmDialog";
 import { Dialog } from "../../ui/Dialog";
 import { EmptyState } from "../../ui/EmptyState";
 import { Input } from "../../ui/Input";
+import { Select } from "../../ui/Select";
 import { Spinner } from "../../ui/Spinner";
+import { Switch } from "../../ui/Switch";
 import { cn } from "../../utils/cn";
 import { formatUnixSeconds } from "../../utils/formatters";
 
@@ -61,6 +77,19 @@ function fileStatusClassName(status: CodexManagedProfile["fileStatus"]) {
   return "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300";
 }
 
+function formatContextWindow(contextWindow: number | null) {
+  return contextWindow == null ? "未知上下文" : `上下文 ${contextWindow.toLocaleString()} tokens`;
+}
+
+function modelCapabilitySummary(model: ProviderModel) {
+  if (!model.capabilitiesConfigured) return "能力未配置";
+  const reasoning =
+    model.supportedReasoningEfforts.length > 0
+      ? `推理 ${model.supportedReasoningEfforts.join(" / ")} · 默认 ${model.defaultReasoningEffort}`
+      : "不发送推理强度";
+  return `${formatContextWindow(model.contextWindow)} · ${reasoning}`;
+}
+
 export function ProviderModelCatalogDialog({
   open,
   provider,
@@ -74,6 +103,7 @@ export function ProviderModelCatalogDialog({
   const refreshMutation = useProviderModelsRefreshMutation();
   const manualUpsertMutation = useProviderModelManualUpsertMutation();
   const manualDeleteMutation = useProviderModelManualDeleteMutation();
+  const capabilitiesUpdateMutation = useProviderModelCapabilitiesUpdateMutation();
   const profileCreateMutation = useCodexManagedProfileCreateMutation();
   const profileDeleteMutation = useCodexManagedProfileDeleteMutation();
   const [search, setSearch] = useState("");
@@ -81,6 +111,14 @@ export function ProviderModelCatalogDialog({
   const [profileModel, setProfileModel] = useState<ProviderModel | null>(null);
   const [profileName, setProfileName] = useState("");
   const [deleteProfileTarget, setDeleteProfileTarget] = useState<CodexManagedProfile | null>(null);
+  const [capabilityModel, setCapabilityModel] = useState<ProviderModel | null>(null);
+  const [reasoningEnabled, setReasoningEnabled] = useState(false);
+  const [selectedReasoningEfforts, setSelectedReasoningEfforts] = useState<
+    ProviderModelReasoningEffort[]
+  >([]);
+  const [defaultReasoningEffort, setDefaultReasoningEffort] =
+    useState<ProviderModelReasoningEffort | null>(null);
+  const [contextWindowText, setContextWindowText] = useState("");
 
   useEffect(() => {
     if (!open) return;
@@ -89,6 +127,7 @@ export function ProviderModelCatalogDialog({
     setProfileModel(null);
     setProfileName("");
     setDeleteProfileTarget(null);
+    setCapabilityModel(null);
   }, [open, providerId, providerUuid]);
 
   const catalog = catalogQuery.data ?? null;
@@ -132,7 +171,61 @@ export function ProviderModelCatalogDialog({
     manualUpsertMutation.isPending ||
     manualDeleteMutation.isPending ||
     profileCreateMutation.isPending ||
-    profileDeleteMutation.isPending;
+    profileDeleteMutation.isPending ||
+    capabilitiesUpdateMutation.isPending;
+
+  const parsedContextWindow = useMemo(() => {
+    const value = contextWindowText.trim();
+    if (!value) return null;
+    const parsed = Number(value);
+    if (
+      !Number.isSafeInteger(parsed) ||
+      parsed < MODEL_CONTEXT_WINDOW_MIN_TOKENS ||
+      parsed > MODEL_CONTEXT_WINDOW_MAX_TOKENS
+    ) {
+      return undefined;
+    }
+    return parsed;
+  }, [contextWindowText]);
+  const capabilityFormValid =
+    parsedContextWindow !== undefined &&
+    (!reasoningEnabled || (selectedReasoningEfforts.length > 0 && defaultReasoningEffort != null));
+
+  function openCapabilityConfig(model: ProviderModel) {
+    const supported = model.capabilitiesConfigured ? model.supportedReasoningEfforts : [];
+    setCapabilityModel(model);
+    setReasoningEnabled(supported.length > 0);
+    setSelectedReasoningEfforts(supported);
+    setDefaultReasoningEffort(model.capabilitiesConfigured ? model.defaultReasoningEffort : null);
+    setContextWindowText(
+      model.capabilitiesConfigured && model.contextWindow != null ? String(model.contextWindow) : ""
+    );
+  }
+
+  function setReasoningConfigurationEnabled(enabled: boolean) {
+    setReasoningEnabled(enabled);
+    if (enabled) {
+      setSelectedReasoningEfforts(["medium"]);
+      setDefaultReasoningEffort("medium");
+    } else {
+      setSelectedReasoningEfforts([]);
+      setDefaultReasoningEffort(null);
+    }
+  }
+
+  function toggleReasoningEffort(effort: ProviderModelReasoningEffort, checked: boolean) {
+    const selected = checked
+      ? PROVIDER_MODEL_REASONING_EFFORTS.filter(
+          (candidate) => candidate === effort || selectedReasoningEfforts.includes(candidate)
+        )
+      : selectedReasoningEfforts.filter((candidate) => candidate !== effort);
+    setSelectedReasoningEfforts(selected);
+    if (selected.length === 0) {
+      setDefaultReasoningEffort(null);
+    } else if (defaultReasoningEffort == null || !selected.includes(defaultReasoningEffort)) {
+      setDefaultReasoningEffort(selected[0]);
+    }
+  }
 
   async function refreshModels() {
     if (providerId == null || providerUuid == null) return;
@@ -195,6 +288,37 @@ export function ProviderModelCatalogDialog({
       );
     } catch (error) {
       toast(`创建 Profile 失败：${formatProviderModelFeatureError(error)}`);
+    }
+  }
+
+  async function saveCapabilities() {
+    if (
+      !capabilityModel ||
+      providerId == null ||
+      providerUuid == null ||
+      !capabilityFormValid ||
+      parsedContextWindow === undefined
+    ) {
+      return;
+    }
+    const shouldPromptRestart =
+      profilesQuery.error != null ||
+      (profilesByModel.get(capabilityModel.modelUuid) ?? []).length > 0;
+    try {
+      await capabilitiesUpdateMutation.mutateAsync({
+        providerId,
+        providerUuid,
+        modelUuid: capabilityModel.modelUuid,
+        supportedReasoningEfforts: reasoningEnabled ? selectedReasoningEfforts : [],
+        defaultReasoningEffort: reasoningEnabled ? defaultReasoningEffort : null,
+        contextWindow: parsedContextWindow,
+      });
+      setCapabilityModel(null);
+      toast(
+        shouldPromptRestart ? "模型能力已保存；请新建或重启 Codex 会话后生效" : "模型能力已保存"
+      );
+    } catch (error) {
+      toast(`保存模型能力失败：${formatProviderModelFeatureError(error)}`);
     }
   }
 
@@ -380,7 +504,14 @@ export function ProviderModelCatalogDialog({
                       model={model}
                       profiles={profilesByModel.get(model.modelUuid) ?? []}
                       disabled={busy}
-                      profileCreationDisabled={!codexProxyReady || cliProxyStatusQuery.isLoading}
+                      profileCreationDisabledReason={
+                        !model.capabilitiesConfigured
+                          ? "请先配置模型能力"
+                          : !codexProxyReady || cliProxyStatusQuery.isLoading
+                            ? "请先启用并同步 Codex CLI 代理"
+                            : null
+                      }
+                      onConfigureCapabilities={() => openCapabilityConfig(model)}
                       onCreateProfile={() => {
                         setProfileModel(model);
                         setProfileName(suggestCodexProfileName(model.remoteModelId));
@@ -393,6 +524,130 @@ export function ProviderModelCatalogDialog({
               )}
             </div>
           )}
+        </div>
+      </Dialog>
+
+      <Dialog
+        open={capabilityModel != null}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen && capabilitiesUpdateMutation.isPending) return;
+          if (!nextOpen) setCapabilityModel(null);
+        }}
+        title="配置模型能力"
+        description={capabilityModel ? `模型：${capabilityModel.remoteModelId}` : undefined}
+        className="max-w-xl"
+      >
+        <div className="space-y-5">
+          <div className="flex items-center justify-between gap-4 border-b border-border pb-4">
+            <label htmlFor="provider-model-reasoning-enabled" className="text-sm font-medium">
+              推理强度
+            </label>
+            <Switch
+              id="provider-model-reasoning-enabled"
+              checked={reasoningEnabled}
+              onCheckedChange={setReasoningConfigurationEnabled}
+              disabled={capabilitiesUpdateMutation.isPending}
+              aria-label="启用推理强度"
+            />
+          </div>
+
+          {reasoningEnabled ? (
+            <div className="space-y-3">
+              <div className="text-sm font-medium">支持档位</div>
+              <div className="grid grid-cols-2 gap-2 sm:grid-cols-4">
+                {PROVIDER_MODEL_REASONING_EFFORTS.map((effort) => (
+                  <label
+                    key={effort}
+                    className={cn(
+                      "flex h-9 min-w-0 items-center gap-2 border px-2.5 text-sm transition",
+                      selectedReasoningEfforts.includes(effort)
+                        ? "border-primary bg-primary/5 text-foreground"
+                        : "border-border text-muted-foreground"
+                    )}
+                  >
+                    <input
+                      type="checkbox"
+                      checked={selectedReasoningEfforts.includes(effort)}
+                      onChange={(event) =>
+                        toggleReasoningEffort(effort, event.currentTarget.checked)
+                      }
+                      disabled={capabilitiesUpdateMutation.isPending}
+                      className="h-4 w-4 shrink-0 accent-primary"
+                    />
+                    <span className="min-w-0 truncate font-mono">{effort}</span>
+                  </label>
+                ))}
+              </div>
+
+              <label className="block space-y-1.5 text-sm font-medium">
+                <span>默认档位</span>
+                <Select
+                  value={defaultReasoningEffort ?? ""}
+                  onChange={(event) =>
+                    setDefaultReasoningEffort(
+                      event.currentTarget.value as ProviderModelReasoningEffort
+                    )
+                  }
+                  disabled={
+                    selectedReasoningEfforts.length === 0 || capabilitiesUpdateMutation.isPending
+                  }
+                  aria-label="默认推理强度"
+                  className="w-full"
+                  mono
+                >
+                  <option value="">请选择</option>
+                  {selectedReasoningEfforts.map((effort) => (
+                    <option key={effort} value={effort}>
+                      {effort}
+                    </option>
+                  ))}
+                </Select>
+              </label>
+            </div>
+          ) : null}
+
+          <label className="block space-y-1.5 text-sm font-medium">
+            <span>上下文窗口（tokens）</span>
+            <Input
+              type="number"
+              inputMode="numeric"
+              min={MODEL_CONTEXT_WINDOW_MIN_TOKENS}
+              max={MODEL_CONTEXT_WINDOW_MAX_TOKENS}
+              step={1}
+              value={contextWindowText}
+              onChange={(event) => setContextWindowText(event.currentTarget.value)}
+              placeholder="未知"
+              aria-label="上下文窗口"
+              disabled={capabilitiesUpdateMutation.isPending}
+            />
+          </label>
+
+          {parsedContextWindow === undefined ? (
+            <div className="text-sm text-rose-600 dark:text-rose-300">
+              上下文窗口需为 {MODEL_CONTEXT_WINDOW_MIN_TOKENS.toLocaleString()} 至{" "}
+              {MODEL_CONTEXT_WINDOW_MAX_TOKENS.toLocaleString()} 的整数
+            </div>
+          ) : reasoningEnabled && selectedReasoningEfforts.length === 0 ? (
+            <div className="text-sm text-rose-600 dark:text-rose-300">至少选择一个推理档位</div>
+          ) : null}
+
+          <div className="flex justify-end gap-2">
+            <Button
+              variant="secondary"
+              onClick={() => setCapabilityModel(null)}
+              disabled={capabilitiesUpdateMutation.isPending}
+            >
+              取消
+            </Button>
+            <Button
+              variant="primary"
+              onClick={() => void saveCapabilities()}
+              disabled={!capabilityFormValid || capabilitiesUpdateMutation.isPending}
+            >
+              <Settings2 className="h-4 w-4" aria-hidden="true" />
+              {capabilitiesUpdateMutation.isPending ? "保存中…" : "保存"}
+            </Button>
+          </div>
         </div>
       </Dialog>
 
@@ -474,7 +729,8 @@ function ModelRow({
   model,
   profiles,
   disabled,
-  profileCreationDisabled,
+  profileCreationDisabledReason,
+  onConfigureCapabilities,
   onCreateProfile,
   onDeleteManual,
   onDeleteProfile,
@@ -482,7 +738,8 @@ function ModelRow({
   model: ProviderModel;
   profiles: CodexManagedProfile[];
   disabled: boolean;
-  profileCreationDisabled: boolean;
+  profileCreationDisabledReason: string | null;
+  onConfigureCapabilities: () => void;
   onCreateProfile: () => void;
   onDeleteManual: () => void;
   onDeleteProfile: (profile: CodexManagedProfile) => void;
@@ -502,6 +759,16 @@ function ModelRow({
               已过期
             </span>
           ) : null}
+        </div>
+        <div
+          className={cn(
+            "mt-1.5 text-xs",
+            model.capabilitiesConfigured
+              ? "text-muted-foreground"
+              : "text-amber-700 dark:text-amber-300"
+          )}
+        >
+          {modelCapabilitySummary(model)}
         </div>
         {profiles.length > 0 ? (
           <div className="mt-2 flex flex-wrap gap-2">
@@ -540,9 +807,20 @@ function ModelRow({
         <Button
           variant="secondary"
           size="sm"
+          onClick={onConfigureCapabilities}
+          disabled={disabled}
+          className="h-8 w-8 p-0"
+          title="配置模型能力"
+          aria-label={`配置模型能力 ${model.remoteModelId}`}
+        >
+          <Settings2 className="h-4 w-4" aria-hidden="true" />
+        </Button>
+        <Button
+          variant="secondary"
+          size="sm"
           onClick={onCreateProfile}
-          disabled={disabled || profileCreationDisabled}
-          title={profileCreationDisabled ? "请先启用并同步 Codex CLI 代理" : "创建 Profile"}
+          disabled={disabled || profileCreationDisabledReason != null}
+          title={profileCreationDisabledReason ?? "创建 Profile"}
         >
           <FilePlus2 className="h-4 w-4" aria-hidden="true" />
           创建 Profile

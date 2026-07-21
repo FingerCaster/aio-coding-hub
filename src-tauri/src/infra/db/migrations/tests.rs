@@ -2145,7 +2145,124 @@ PRAGMA user_version = 39;
 }
 
 #[test]
-fn fresh_v40_schema_rejects_missing_or_noncanonical_provider_uuid() {
+fn migrate_v40_to_v41_requires_provider_models_without_advancing() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch("PRAGMA user_version = 40;")
+        .expect("create missing-model fixture");
+
+    let error =
+        v40_to_v41::migrate_v40_to_v41(&mut conn).expect_err("missing provider_models must fail");
+    assert!(error.contains("requires the provider_models table"));
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version after failure");
+    assert_eq!(user_version, 40);
+}
+
+#[test]
+fn migrate_v40_to_v41_backfills_existing_models_and_defaults_new_rows_unconfigured() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch(
+        r#"
+CREATE TABLE provider_models (
+  model_uuid TEXT PRIMARY KEY,
+  provider_id INTEGER NOT NULL,
+  remote_model_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0,
+  last_seen_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(provider_id, remote_model_id)
+);
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, created_at, updated_at
+) VALUES ('old-model', 1, 'grok-4.5', 'manual', 0, 1, 1);
+PRAGMA user_version = 40;
+"#,
+    )
+    .expect("create v40 fixture");
+
+    v40_to_v41::migrate_v40_to_v41(&mut conn).expect("migrate v40->v41");
+    v40_to_v41::migrate_v40_to_v41(&mut conn).expect("repeat v40->v41");
+
+    let existing = conn
+        .query_row(
+            r#"
+SELECT capabilities_configured, supported_reasoning_efforts_json,
+       default_reasoning_effort, context_window
+FROM provider_models
+WHERE model_uuid = 'old-model'
+"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .expect("read backfilled model");
+    assert_eq!(
+        existing,
+        (
+            1,
+            r#"["low","medium","high"]"#.to_string(),
+            Some("medium".to_string()),
+            None,
+        )
+    );
+
+    conn.execute(
+        r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, created_at, updated_at
+) VALUES ('new-model', 1, 'gpt-new', 'manual', 0, 2, 2)
+"#,
+        [],
+    )
+    .expect("insert new model");
+    let new_model = conn
+        .query_row(
+            r#"
+SELECT capabilities_configured, supported_reasoning_efforts_json,
+       default_reasoning_effort, context_window
+FROM provider_models
+WHERE model_uuid = 'new-model'
+"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .expect("read new model defaults");
+    assert_eq!(new_model, (0, "[]".to_string(), None, None));
+
+    let context_error = conn
+        .execute(
+            "UPDATE provider_models SET context_window = 100 WHERE model_uuid = 'new-model'",
+            [],
+        )
+        .expect_err("bounded context window must reject tiny values");
+    assert!(context_error
+        .to_string()
+        .contains("CHECK constraint failed"));
+
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version");
+    assert_eq!(user_version, 41);
+}
+
+#[test]
+fn fresh_v41_schema_rejects_missing_or_noncanonical_provider_uuid() {
     let mut conn = Connection::open_in_memory().expect("open migration db");
     apply_migrations(&mut conn).expect("apply migrations");
 

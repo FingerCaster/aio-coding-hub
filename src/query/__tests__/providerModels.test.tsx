@@ -8,6 +8,7 @@ import {
   codexManagedProfilesList,
 } from "../../services/providers/codexManagedProfiles";
 import {
+  providerModelCapabilitiesUpdate,
   providerModelManualDelete,
   providerModelManualUpsert,
   providerModelsGet,
@@ -22,6 +23,7 @@ import {
   useCodexManagedProfileCreateMutation,
   useCodexManagedProfileDeleteMutation,
   useCodexManagedProfilesQuery,
+  useProviderModelCapabilitiesUpdateMutation,
   useProviderModelCatalogQuery,
   useProviderModelsRefreshMutation,
 } from "../providerModels";
@@ -37,6 +39,7 @@ vi.mock("../../services/providers/providerModels", async () => {
     providerModelsRefresh: vi.fn(),
     providerModelManualUpsert: vi.fn(),
     providerModelManualDelete: vi.fn(),
+    providerModelCapabilitiesUpdate: vi.fn(),
   };
 });
 
@@ -83,6 +86,10 @@ function catalog(
         lastSeenAt: 100,
         createdAt: 90,
         updatedAt: 100 + suffix.length,
+        capabilitiesConfigured: true,
+        supportedReasoningEfforts: ["low", "medium", "high"],
+        defaultReasoningEffort: "medium",
+        contextWindow: 128_000,
       },
     ],
   };
@@ -104,6 +111,7 @@ describe("query/providerModels", () => {
     vi.mocked(codexManagedProfileDelete).mockRejectedValue(new Error("unused"));
     vi.mocked(providerModelManualUpsert).mockRejectedValue(new Error("unused"));
     vi.mocked(providerModelManualDelete).mockRejectedValue(new Error("unused"));
+    vi.mocked(providerModelCapabilitiesUpdate).mockRejectedValue(new Error("unused"));
   });
 
   it("keeps identical remote model IDs isolated by provider cache key", async () => {
@@ -192,6 +200,60 @@ describe("query/providerModels", () => {
     expect(client.getQueryData(providerModelsKeys.catalog(7, PROVIDER_UUIDS[7]))).toEqual(
       refreshed
     );
+  });
+
+  it("commits a capability update only while the provider identity is current", async () => {
+    const pendingUpdate = deferred<ProviderModelCatalog>();
+    vi.mocked(providerModelCapabilitiesUpdate).mockReturnValueOnce(pendingUpdate.promise);
+    const client = createTestQueryClient();
+    const key = providerModelsKeys.catalog(7, PROVIDER_UUIDS[7]);
+    client.setQueryData(key, catalog(7, "before-capability-update"));
+    const wrapper = createQueryWrapper(client);
+    const mutation = renderHook(() => useProviderModelCapabilitiesUpdateMutation(), { wrapper });
+
+    let mutationPromise!: Promise<ProviderModelCatalog>;
+    act(() => {
+      mutationPromise = mutation.result.current.mutateAsync({
+        providerId: 7,
+        providerUuid: PROVIDER_UUIDS[7],
+        modelUuid: "33333333-3333-4333-8333-333333333333",
+        supportedReasoningEfforts: ["minimal", "max"],
+        defaultReasoningEffort: "max",
+        contextWindow: 1_000_000,
+      });
+    });
+    await waitFor(() =>
+      expect(providerModelCapabilitiesUpdate).toHaveBeenCalledWith(
+        7,
+        PROVIDER_UUIDS[7],
+        "33333333-3333-4333-8333-333333333333",
+        {
+          supportedReasoningEfforts: ["minimal", "max"],
+          defaultReasoningEffort: "max",
+          contextWindow: 1_000_000,
+        }
+      )
+    );
+
+    await invalidateProviderModelCatalog(client, 7, PROVIDER_UUIDS[7]);
+    const postEditCatalog = { ...catalog(7, "post-capability-edit"), stale: true };
+    client.setQueryData(key, postEditCatalog);
+    pendingUpdate.resolve({
+      ...catalog(7, "stale-capability-result"),
+      models: [
+        {
+          ...catalog(7, "stale-capability-result").models[0],
+          supportedReasoningEfforts: ["minimal", "max"],
+          defaultReasoningEffort: "max",
+          contextWindow: 1_000_000,
+        },
+      ],
+    });
+    await act(async () => {
+      await mutationPromise;
+    });
+
+    expect(client.getQueryData(key)).toEqual(postEditCatalog);
   });
 
   it("cancels a late catalog read and invalidates only the changed provider", async () => {

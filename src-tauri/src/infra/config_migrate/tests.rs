@@ -363,6 +363,31 @@ fn seed_direct_codex_provider(
     .expect("seed direct Codex provider")
 }
 
+fn configure_provider_model_for_profile(
+    test_app: &ConfigMigrateTestApp,
+    provider: &crate::providers::ProviderSummary,
+    model_uuid: &str,
+) {
+    crate::provider_models::update_capabilities(
+        &test_app.handle(),
+        &test_app.db,
+        provider.id,
+        &provider.provider_uuid,
+        model_uuid,
+        &crate::provider_models::ProviderModelCapabilitiesInput {
+            supported_reasoning_efforts: vec![
+                crate::provider_models::ProviderModelReasoningEffort::Low,
+                crate::provider_models::ProviderModelReasoningEffort::High,
+            ],
+            default_reasoning_effort: Some(
+                crate::provider_models::ProviderModelReasoningEffort::High,
+            ),
+            context_window: Some(262_144),
+        },
+    )
+    .expect("configure provider model capabilities");
+}
+
 #[test]
 fn config_export_import_round_trips_image_gen_configs() {
     let test_app = ConfigMigrateTestApp::new();
@@ -725,6 +750,7 @@ fn config_import_serializes_profile_create_until_runtime_failure_rollback_finish
     .models[0]
         .model_uuid
         .clone();
+    configure_provider_model_for_profile(&test_app, &provider, &model_uuid);
 
     let mut bundle = config_export(&app, &test_app.db).expect("export v4 bundle");
     let mut imported_settings = previous.clone();
@@ -3718,6 +3744,7 @@ fn config_v4_rebinds_local_models_and_profiles_by_provider_uuid() {
     )
     .expect("manual model");
     let manual_uuid = catalog.models[0].model_uuid.clone();
+    configure_provider_model_for_profile(&test_app, &provider, &manual_uuid);
     let profile =
         crate::codex_managed_profiles::create(&app, &test_app.db, "managed-rebind", &manual_uuid)
             .expect("create profile");
@@ -3779,6 +3806,19 @@ INSERT INTO provider_model_catalogs(
         crate::provider_models::ProviderModelSource::Manual
     );
     assert!(!restored_manual.stale);
+    assert!(restored_manual.capabilities_configured);
+    assert_eq!(
+        restored_manual.supported_reasoning_efforts,
+        vec![
+            crate::provider_models::ProviderModelReasoningEffort::Low,
+            crate::provider_models::ProviderModelReasoningEffort::High,
+        ]
+    );
+    assert_eq!(
+        restored_manual.default_reasoning_effort,
+        Some(crate::provider_models::ProviderModelReasoningEffort::High)
+    );
+    assert_eq!(restored_manual.context_window, Some(262_144));
     let restored_discovered = restored_catalog
         .models
         .iter()
@@ -3817,6 +3857,7 @@ fn config_import_with_local_profile_fails_before_clear_when_rebind_is_unprovable
     .models[0]
         .model_uuid
         .clone();
+    configure_provider_model_for_profile(&test_app, &provider, &model_uuid);
     let profile =
         crate::codex_managed_profiles::create(&app, &test_app.db, "managed-guard", &model_uuid)
             .expect("create profile");

@@ -10,10 +10,12 @@ import {
   type CodexManagedProfile,
 } from "../../../services/providers/codexManagedProfiles";
 import {
+  providerModelCapabilitiesUpdate,
   providerModelManualDelete,
   providerModelManualUpsert,
   providerModelsGet,
   providerModelsRefresh,
+  type ProviderModel,
   type ProviderModelCatalog,
 } from "../../../services/providers/providerModels";
 import type { ProviderSummary } from "../../../services/providers/providers";
@@ -39,6 +41,7 @@ vi.mock("../../../services/providers/providerModels", async () => {
     providerModelsRefresh: vi.fn(),
     providerModelManualUpsert: vi.fn(),
     providerModelManualDelete: vi.fn(),
+    providerModelCapabilitiesUpdate: vi.fn(),
   };
 });
 
@@ -120,18 +123,25 @@ function makeCatalog(overrides: Partial<ProviderModelCatalog> = {}): ProviderMod
     lastAttemptAt: 100,
     lastSuccessAt: 100,
     lastErrorCode: null,
-    models: [
-      {
-        modelUuid: MODEL_UUID,
-        providerId: 7,
-        remoteModelId: "same-model",
-        source: "discovered",
-        stale: false,
-        lastSeenAt: 100,
-        createdAt: 90,
-        updatedAt: 100,
-      },
-    ],
+    models: [makeModel()],
+    ...overrides,
+  };
+}
+
+function makeModel(overrides: Partial<ProviderModel> = {}): ProviderModel {
+  return {
+    modelUuid: MODEL_UUID,
+    providerId: 7,
+    remoteModelId: "same-model",
+    source: "discovered",
+    stale: false,
+    lastSeenAt: 100,
+    createdAt: 90,
+    updatedAt: 100,
+    capabilitiesConfigured: true,
+    supportedReasoningEfforts: ["low", "medium", "high"],
+    defaultReasoningEffort: "medium",
+    contextWindow: 128_000,
     ...overrides,
   };
 }
@@ -169,6 +179,7 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
     vi.mocked(providerModelsRefresh).mockRejectedValue(new Error("unused"));
     vi.mocked(providerModelManualUpsert).mockRejectedValue(new Error("unused"));
     vi.mocked(providerModelManualDelete).mockRejectedValue(new Error("unused"));
+    vi.mocked(providerModelCapabilitiesUpdate).mockRejectedValue(new Error("unused"));
     vi.mocked(codexManagedProfilesList).mockResolvedValue([]);
     vi.mocked(codexManagedProfileCreate).mockRejectedValue(new Error("unused"));
     vi.mocked(codexManagedProfileDelete).mockRejectedValue(new Error("unused"));
@@ -189,16 +200,12 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
         stale: true,
         lastErrorCode: "timeout",
         models: [
-          {
-            modelUuid: MODEL_UUID,
-            providerId: 7,
+          makeModel({
             remoteModelId: "manual-model",
             source: "manual",
             stale: true,
             lastSeenAt: null,
-            createdAt: 90,
-            updatedAt: 100,
-          },
+          }),
         ],
       })
     );
@@ -210,6 +217,104 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
     expect(screen.getByText("已过期")).toBeInTheDocument();
     expect(screen.getByText(/模型接口请求超时/)).toBeInTheDocument();
     expect(screen.getByRole("button", { name: "创建 Profile" })).toBeEnabled();
+  });
+
+  it("requires capabilities before profile creation and can explicitly save no reasoning", async () => {
+    const unconfiguredModel = makeModel({
+      capabilitiesConfigured: false,
+      supportedReasoningEfforts: [],
+      defaultReasoningEffort: null,
+      contextWindow: null,
+    });
+    vi.mocked(providerModelsGet).mockResolvedValueOnce(
+      makeCatalog({ models: [unconfiguredModel] })
+    );
+    vi.mocked(providerModelCapabilitiesUpdate).mockResolvedValueOnce(
+      makeCatalog({
+        models: [
+          makeModel({
+            supportedReasoningEfforts: [],
+            defaultReasoningEffort: null,
+            contextWindow: null,
+          }),
+        ],
+      })
+    );
+
+    renderDialog();
+
+    expect(await screen.findByText("能力未配置")).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "创建 Profile" })).toBeDisabled();
+    expect(screen.getByRole("button", { name: "创建 Profile" })).toHaveAttribute(
+      "title",
+      "请先配置模型能力"
+    );
+    fireEvent.click(screen.getByRole("button", { name: "配置模型能力 same-model" }));
+
+    const capabilityDialog = screen
+      .getByRole("heading", { name: "配置模型能力" })
+      .closest('[role="dialog"]') as HTMLElement | null;
+    if (!capabilityDialog) throw new Error("模型能力对话框不存在");
+    expect(
+      within(capabilityDialog).getByRole("switch", { name: "启用推理强度" })
+    ).not.toBeChecked();
+    expect(within(capabilityDialog).getByRole("spinbutton", { name: "上下文窗口" })).toHaveValue(
+      null
+    );
+    fireEvent.click(within(capabilityDialog).getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(providerModelCapabilitiesUpdate).toHaveBeenCalledWith(7, PROVIDER_UUID, MODEL_UUID, {
+        supportedReasoningEfforts: [],
+        defaultReasoningEffort: null,
+        contextWindow: null,
+      })
+    );
+    await waitFor(() => expect(vi.mocked(toast)).toHaveBeenCalledWith("模型能力已保存"));
+  });
+
+  it("saves reasoning efforts and context and prompts restart for an existing profile", async () => {
+    vi.mocked(codexManagedProfilesList).mockResolvedValueOnce([makeProfile()]);
+    vi.mocked(providerModelCapabilitiesUpdate).mockResolvedValueOnce(
+      makeCatalog({
+        models: [
+          makeModel({
+            supportedReasoningEfforts: ["low", "medium", "high", "max"],
+            defaultReasoningEffort: "max",
+            contextWindow: 1_000_000,
+          }),
+        ],
+      })
+    );
+
+    renderDialog();
+
+    expect(await screen.findByText("aio/grok-work")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "配置模型能力 same-model" }));
+    const capabilityDialog = screen
+      .getByRole("heading", { name: "配置模型能力" })
+      .closest('[role="dialog"]') as HTMLElement | null;
+    if (!capabilityDialog) throw new Error("模型能力对话框不存在");
+    expect(within(capabilityDialog).getByRole("switch", { name: "启用推理强度" })).toBeChecked();
+    fireEvent.click(within(capabilityDialog).getByRole("checkbox", { name: "max" }));
+    fireEvent.change(within(capabilityDialog).getByRole("combobox", { name: "默认推理强度" }), {
+      target: { value: "max" },
+    });
+    fireEvent.change(within(capabilityDialog).getByRole("spinbutton", { name: "上下文窗口" }), {
+      target: { value: "1000000" },
+    });
+    fireEvent.click(within(capabilityDialog).getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(providerModelCapabilitiesUpdate).toHaveBeenCalledWith(7, PROVIDER_UUID, MODEL_UUID, {
+        supportedReasoningEfforts: ["low", "medium", "high", "max"],
+        defaultReasoningEffort: "max",
+        contextWindow: 1_000_000,
+      })
+    );
+    await waitFor(() =>
+      expect(vi.mocked(toast)).toHaveBeenCalledWith("模型能力已保存；请新建或重启 Codex 会话后生效")
+    );
   });
 
   it("creates a profile for the selected provider-scoped model without merging a same-name model", async () => {
@@ -295,16 +400,11 @@ describe("pages/providers/ProviderModelCatalogDialog", () => {
     vi.mocked(providerModelsGet).mockResolvedValueOnce(
       makeCatalog({
         models: [
-          {
-            modelUuid: MODEL_UUID,
-            providerId: 7,
+          makeModel({
             remoteModelId: "manual-model",
             source: "manual",
-            stale: false,
             lastSeenAt: null,
-            createdAt: 90,
-            updatedAt: 100,
-          },
+          }),
         ],
       })
     );

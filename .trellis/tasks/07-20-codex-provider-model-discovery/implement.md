@@ -120,6 +120,16 @@ pnpm lint
 - [x] 前端展示 picker alias、代理前置条件和“新建/重启 Codex 会话后生效”提示。
 - [x] 增加 Rust、前端及真实 Codex app-server 聚焦回归，并重新执行完整质量门禁。
 
+## 9. Provider-model 能力与上下文配置（用户反馈修订）
+
+- [x] 新增 v40 -> v41 migration 与 fresh schema 字段；已有模型回填兼容 reasoning 基线，新模型默认未配置。
+- [x] 扩展 provider model DTO/query，严格校验 reasoning 集合、默认值和有界上下文窗口；完整配置 v4 本机状态保留新增字段。
+- [x] 新增能力更新 IPC/service/query mutation，并保持 provider ID + UUID 的晚到结果隔离。
+- [x] 扩展受管目录 profile 投影和集合 hash，按模型配置生成 reasoning 与 context 字段；创建 Profile 时后端拒绝未配置模型。
+- [x] 能力更新与受管目录重建共用 profile lifecycle lock，并覆盖目录/config 漂移、应用失败及 DB commit 失败回滚。
+- [x] 模型目录 UI 增加能力摘要与配置弹窗；未配置模型不可创建 Profile，已存在 Profile 保存后提示重启会话。
+- [x] 更新生成绑定、跨层 spec 和聚焦测试，完成 Rust/前端完整质量门禁并在 worktree 提交，不归档。
+
 最终命令：
 
 ```powershell
@@ -137,14 +147,15 @@ git diff --check
 
 - `pnpm tauri:fmt`
 - `pnpm tauri:clippy`（`--all-targets --locked -- -D warnings`）
-- `pnpm tauri:test`（2311 library tests，附加集成测试均通过；真实 Codex smoke 为显式 ignored 手工用例）
-- `pnpm test:unit`（296 files / 2588 tests passed）
+- `pnpm tauri:test`（2313 library tests passed / 4 ignored，附加集成测试均通过）
+- `pnpm test:unit`（296 files / 2593 tests passed）
 - `pnpm typecheck`
 - `pnpm lint`
 - `pnpm check:generated-bindings`
+- `pnpm check:spec-links`
 - `git diff --check`
 - `cargo test --manifest-path src-tauri/Cargo.toml bundled_catalog_runs_cmd_wrapper_from_a_path_with_spaces --lib --locked`
-- `cargo test --manifest-path src-tauri/Cargo.toml installed_codex_reads_the_generated_picker_alias --lib --locked -- --ignored`
+- `cargo test --manifest-path src-tauri/Cargo.toml installed_codex_reads_the_generated_picker_alias --lib --locked -- --ignored --nocapture`（本机 Codex `0.144.6` 通过）
 
 ## 首版决策与验证限制
 

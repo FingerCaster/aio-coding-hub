@@ -17,7 +17,6 @@ const MAX_MANAGED_PROFILE_COUNT: usize = 256;
 const OWNER_METADATA_KEY: &str = "_aio_managed_model_catalog";
 const OWNER_SCHEMA_VERSION: u64 = 1;
 const MANAGED_BY: &str = "aio-coding-hub";
-const MANAGED_DEFAULT_REASONING_LEVEL: &str = "medium";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct ManagedCatalogProfile {
@@ -25,6 +24,18 @@ pub(crate) struct ManagedCatalogProfile {
     pub(crate) model_uuid: String,
     pub(crate) provider_name: String,
     pub(crate) remote_model_id: String,
+    pub(crate) capabilities: crate::provider_models::ProviderModelCapabilities,
+}
+
+struct RawManagedCatalogProfile {
+    profile_name_key: String,
+    model_uuid: String,
+    provider_name: String,
+    remote_model_id: String,
+    capabilities_configured: bool,
+    supported_reasoning_efforts_json: String,
+    default_reasoning_effort: Option<String>,
+    context_window: Option<i64>,
 }
 
 impl ManagedCatalogProfile {
@@ -33,12 +44,14 @@ impl ManagedCatalogProfile {
         model_uuid: impl Into<String>,
         provider_name: impl Into<String>,
         remote_model_id: impl Into<String>,
+        capabilities: crate::provider_models::ProviderModelCapabilities,
     ) -> AppResult<Self> {
         let profile = Self {
             profile_name_key: profile_name_key.into(),
             model_uuid: model_uuid.into(),
             provider_name: provider_name.into(),
             remote_model_id: remote_model_id.into(),
+            capabilities,
         };
         validate_profile(&profile)?;
         Ok(profile)
@@ -46,6 +59,20 @@ impl ManagedCatalogProfile {
 
     fn alias(&self) -> String {
         format!("aio/{}", self.profile_name_key)
+    }
+
+    pub(crate) fn set_capabilities(
+        &mut self,
+        capabilities: crate::provider_models::ProviderModelCapabilities,
+    ) -> AppResult<()> {
+        capabilities.validate().map_err(|_| {
+            AppError::new(
+                "DB_INVALID_DATA",
+                "managed Codex model capabilities are invalid",
+            )
+        })?;
+        self.capabilities = capabilities;
+        Ok(())
     }
 }
 
@@ -225,7 +252,9 @@ pub(crate) fn load_profiles(conn: &Connection) -> AppResult<Vec<ManagedCatalogPr
     let mut statement = conn
         .prepare_cached(
             r#"
-SELECT profile.profile_name_key, profile.model_uuid, provider.name, model.remote_model_id
+SELECT profile.profile_name_key, profile.model_uuid, provider.name, model.remote_model_id,
+       model.capabilities_configured, model.supported_reasoning_efforts_json,
+       model.default_reasoning_effort, model.context_window
 FROM codex_managed_profiles profile
 JOIN provider_models model ON model.model_uuid = profile.model_uuid
 JOIN providers provider ON provider.id = model.provider_id
@@ -235,17 +264,43 @@ ORDER BY profile.profile_name_key ASC
         .map_err(|error| db_err!("failed to prepare managed model catalog query: {error}"))?;
     let rows = statement
         .query_map([], |row| {
-            Ok(ManagedCatalogProfile {
+            Ok(RawManagedCatalogProfile {
                 profile_name_key: row.get(0)?,
                 model_uuid: row.get(1)?,
                 provider_name: row.get(2)?,
                 remote_model_id: row.get(3)?,
+                capabilities_configured: row.get::<_, i64>(4)? != 0,
+                supported_reasoning_efforts_json: row.get(5)?,
+                default_reasoning_effort: row.get(6)?,
+                context_window: row.get(7)?,
             })
         })
         .map_err(|error| db_err!("failed to query managed model catalog profiles: {error}"))?;
-    let profiles = rows
+    let raw_profiles = rows
         .collect::<Result<Vec<_>, _>>()
         .map_err(|error| db_err!("failed to read managed model catalog profile: {error}"))?;
+    let mut profiles = Vec::with_capacity(raw_profiles.len());
+    for raw in raw_profiles {
+        if !raw.capabilities_configured {
+            return Err(AppError::new(
+                "DB_INVALID_DATA",
+                "managed Codex profile references an unconfigured model",
+            ));
+        }
+        let capabilities = crate::provider_models::decode_stored_capabilities(
+            true,
+            &raw.supported_reasoning_efforts_json,
+            raw.default_reasoning_effort.as_deref(),
+            raw.context_window,
+        )?;
+        profiles.push(ManagedCatalogProfile {
+            profile_name_key: raw.profile_name_key,
+            model_uuid: raw.model_uuid,
+            provider_name: raw.provider_name,
+            remote_model_id: raw.remote_model_id,
+            capabilities,
+        });
+    }
     validate_profiles(&profiles)?;
     Ok(profiles)
 }
@@ -381,6 +436,12 @@ fn validate_profile(profile: &ManagedCatalogProfile) -> AppResult<()> {
             "managed Codex profile remote model is invalid",
         ));
     }
+    profile.capabilities.validate().map_err(|_| {
+        AppError::new(
+            "DB_INVALID_DATA",
+            "managed Codex profile capabilities are invalid",
+        )
+    })?;
     Ok(())
 }
 
@@ -702,6 +763,13 @@ fn profile_set_sha256(profiles: &[ManagedCatalogProfile]) -> AppResult<String> {
                 "model_uuid": profile.model_uuid,
                 "provider_name": profile.provider_name,
                 "remote_model_id": profile.remote_model_id,
+                "supported_reasoning_efforts": profile.capabilities.supported_reasoning_efforts
+                    .iter()
+                    .map(|effort| effort.as_str())
+                    .collect::<Vec<_>>(),
+                "default_reasoning_effort": profile.capabilities.default_reasoning_effort
+                    .map(crate::provider_models::ProviderModelReasoningEffort::as_str),
+                "context_window": profile.capabilities.context_window,
             })
         })
         .collect::<Vec<_>>();
@@ -876,29 +944,28 @@ fn build_managed_model(
         "description".to_string(),
         json!(bounded_description(profile)),
     );
-    // Codex only sends the selected reasoning effort when this catalog metadata
-    // advertises reasoning support. Keep the baseline provider-neutral and
-    // deterministic until provider-scoped capability discovery is available.
+    let reasoning_levels = profile
+        .capabilities
+        .supported_reasoning_efforts
+        .iter()
+        .map(|effort| {
+            json!({
+                "effort": effort.as_str(),
+                "description": reasoning_effort_description(*effort),
+            })
+        })
+        .collect::<Vec<_>>();
     model.insert(
         "default_reasoning_level".to_string(),
-        json!(MANAGED_DEFAULT_REASONING_LEVEL),
+        profile
+            .capabilities
+            .default_reasoning_effort
+            .map(|effort| json!(effort.as_str()))
+            .unwrap_or(Value::Null),
     );
     model.insert(
         "supported_reasoning_levels".to_string(),
-        json!([
-            {
-                "effort": "low",
-                "description": "Fast responses with lighter reasoning"
-            },
-            {
-                "effort": "medium",
-                "description": "Balanced reasoning for everyday work"
-            },
-            {
-                "effort": "high",
-                "description": "Deeper reasoning for complex work"
-            }
-        ]),
+        json!(reasoning_levels),
     );
     model.insert("visibility".to_string(), json!("list"));
     model.insert("supported_in_api".to_string(), json!(true));
@@ -916,7 +983,10 @@ fn build_managed_model(
         "include_skills_usage_instructions".to_string(),
         json!(false),
     );
-    model.insert("supports_reasoning_summaries".to_string(), json!(true));
+    model.insert(
+        "supports_reasoning_summaries".to_string(),
+        json!(!profile.capabilities.supported_reasoning_efforts.is_empty()),
+    );
     model.insert("default_reasoning_summary".to_string(), json!("none"));
     model.insert("support_verbosity".to_string(), json!(false));
     model.insert("default_verbosity".to_string(), Value::Null);
@@ -924,8 +994,13 @@ fn build_managed_model(
     model.insert("web_search_tool_type".to_string(), json!("text"));
     model.insert("supports_parallel_tool_calls".to_string(), json!(false));
     model.insert("supports_image_detail_original".to_string(), json!(false));
-    model.insert("context_window".to_string(), Value::Null);
-    model.insert("max_context_window".to_string(), Value::Null);
+    let context_window = profile
+        .capabilities
+        .context_window
+        .map(Value::from)
+        .unwrap_or(Value::Null);
+    model.insert("context_window".to_string(), context_window.clone());
+    model.insert("max_context_window".to_string(), context_window);
     model.insert("auto_compact_token_limit".to_string(), Value::Null);
     model.insert("comp_hash".to_string(), Value::Null);
     model.insert("effective_context_window_percent".to_string(), json!(95));
@@ -937,6 +1012,22 @@ fn build_managed_model(
     model.insert("tool_mode".to_string(), Value::Null);
     model.insert("multi_agent_version".to_string(), Value::Null);
     model
+}
+
+fn reasoning_effort_description(
+    effort: crate::provider_models::ProviderModelReasoningEffort,
+) -> &'static str {
+    use crate::provider_models::ProviderModelReasoningEffort as Effort;
+    match effort {
+        Effort::None => "No additional reasoning",
+        Effort::Minimal => "Minimal reasoning",
+        Effort::Low => "Light reasoning",
+        Effort::Medium => "Balanced reasoning",
+        Effort::High => "Deep reasoning",
+        Effort::XHigh => "Very deep reasoning",
+        Effort::Max => "Maximum reasoning",
+        Effort::Ultra => "Ultra reasoning",
+    }
 }
 
 fn bounded_description(profile: &ManagedCatalogProfile) -> String {
@@ -1073,6 +1164,17 @@ mod tests {
             "11111111-1111-4111-8111-111111111111",
             "xAI",
             "grok-4.5",
+            crate::provider_models::ProviderModelCapabilities {
+                supported_reasoning_efforts: vec![
+                    crate::provider_models::ProviderModelReasoningEffort::Low,
+                    crate::provider_models::ProviderModelReasoningEffort::Medium,
+                    crate::provider_models::ProviderModelReasoningEffort::High,
+                ],
+                default_reasoning_effort: Some(
+                    crate::provider_models::ProviderModelReasoningEffort::Medium,
+                ),
+                context_window: Some(128_000),
+            },
         )
         .expect("profile")
     }
@@ -1100,23 +1202,23 @@ mod tests {
             json!([
                 {
                     "effort": "low",
-                    "description": "Fast responses with lighter reasoning"
+                    "description": "Light reasoning"
                 },
                 {
                     "effort": "medium",
-                    "description": "Balanced reasoning for everyday work"
+                    "description": "Balanced reasoning"
                 },
                 {
                     "effort": "high",
-                    "description": "Deeper reasoning for complex work"
+                    "description": "Deep reasoning"
                 }
             ])
         );
-        assert_eq!(
-            managed["default_reasoning_level"],
-            json!(MANAGED_DEFAULT_REASONING_LEVEL)
-        );
+        assert_eq!(managed["default_reasoning_level"], json!("medium"));
         assert_eq!(managed["supports_reasoning_summaries"], json!(true));
+        assert_eq!(managed["context_window"], json!(128_000));
+        assert_eq!(managed["max_context_window"], json!(128_000));
+        assert_eq!(managed["auto_compact_token_limit"], Value::Null);
         assert_eq!(managed["additional_speed_tiers"], json!([]));
         assert_eq!(managed["service_tiers"], json!([]));
         assert_eq!(managed["supports_parallel_tool_calls"], json!(false));
@@ -1124,6 +1226,32 @@ mod tests {
         assert_eq!(managed["input_modalities"], json!(["text"]));
         assert_eq!(managed["future_required_field"]["kept"], json!(true));
         validate_owned_catalog(&output).expect("owned");
+    }
+
+    #[test]
+    fn generated_catalog_supports_explicit_no_reasoning_and_unknown_context() {
+        let mut profile = profile();
+        profile
+            .set_capabilities(crate::provider_models::ProviderModelCapabilities {
+                supported_reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_window: None,
+            })
+            .expect("no reasoning capabilities");
+        let output = generate_catalog(
+            &base_catalog(),
+            &[profile],
+            "a".repeat(64).as_str(),
+            "b".repeat(64).as_str(),
+        )
+        .expect("generate");
+        let root: Value = serde_json::from_slice(&output).expect("json");
+        let managed = &root["models"][1];
+        assert_eq!(managed["supported_reasoning_levels"], json!([]));
+        assert_eq!(managed["default_reasoning_level"], Value::Null);
+        assert_eq!(managed["supports_reasoning_summaries"], json!(false));
+        assert_eq!(managed["context_window"], Value::Null);
+        assert_eq!(managed["max_context_window"], Value::Null);
     }
 
     #[test]

@@ -811,6 +811,27 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async providerModelCapabilitiesUpdate(
+    providerId: number,
+    providerUuid: string,
+    modelUuid: string,
+    capabilities: ProviderModelCapabilitiesInput
+  ): Promise<Result<ProviderModelCatalog, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("provider_model_capabilities_update", {
+          providerId,
+          providerUuid,
+          modelUuid,
+          capabilities,
+        }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async codexManagedProfilesList(): Promise<Result<CodexManagedProfile[], string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("codex_managed_profiles_list") };
@@ -3887,6 +3908,11 @@ export type ProviderLimitUsageRow = {
   window_weekly_start_ts: number;
   window_monthly_start_ts: number;
 };
+export type ProviderModelCapabilitiesInput = {
+  supportedReasoningEfforts: ProviderModelReasoningEffort[];
+  defaultReasoningEffort: ProviderModelReasoningEffort | null;
+  contextWindow: number | null;
+};
 export type ProviderModelCatalog = {
   providerId: number;
   providerUuid: string;
@@ -3906,7 +3932,20 @@ export type ProviderModelEntry = {
   lastSeenAt: number | null;
   createdAt: number;
   updatedAt: number;
+  capabilitiesConfigured: boolean;
+  supportedReasoningEfforts: ProviderModelReasoningEffort[];
+  defaultReasoningEffort: ProviderModelReasoningEffort | null;
+  contextWindow: number | null;
 };
+export type ProviderModelReasoningEffort =
+  | "none"
+  | "minimal"
+  | "low"
+  | "medium"
+  | "high"
+  | "xhigh"
+  | "max"
+  | "ultra";
 export type ProviderModelSource = "discovered" | "manual";
 export type ProviderOAuthDeviceCodeCancelResult = { cancelled: boolean };
 export type ProviderOAuthDeviceCodePollInput = { flowId: string };

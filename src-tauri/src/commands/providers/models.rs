@@ -69,6 +69,31 @@ pub(crate) async fn provider_model_manual_delete(
 
 #[tauri::command]
 #[specta::specta]
+pub(crate) async fn provider_model_capabilities_update(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    provider_id: i64,
+    provider_uuid: String,
+    model_uuid: String,
+    capabilities: crate::provider_models::ProviderModelCapabilitiesInput,
+) -> Result<crate::provider_models::ProviderModelCatalog, String> {
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
+    blocking::run("provider_model_capabilities_update", move || {
+        crate::provider_models::update_capabilities(
+            &app,
+            &db,
+            provider_id,
+            &provider_uuid,
+            &model_uuid,
+            &capabilities,
+        )
+    })
+    .await
+    .map_err(Into::into)
+}
+
+#[tauri::command]
+#[specta::specta]
 pub(crate) async fn codex_managed_profiles_list(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,

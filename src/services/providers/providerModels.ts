@@ -1,6 +1,7 @@
 import {
   commands,
   type ProviderModelCatalog as GeneratedProviderModelCatalog,
+  type ProviderModelReasoningEffort as GeneratedProviderModelReasoningEffort,
 } from "../../generated/bindings";
 import { invokeGeneratedIpc, mapGeneratedCommandResponse } from "../generatedIpc";
 import type { ProviderSummary } from "./providers";
@@ -8,6 +9,20 @@ import { validateProviderId } from "./providers";
 import { isCanonicalUuidV4 } from "./uuid";
 
 const MODEL_ID_MAX_BYTES = 256;
+export const MODEL_CONTEXT_WINDOW_MIN_TOKENS = 1_024;
+export const MODEL_CONTEXT_WINDOW_MAX_TOKENS = 10_000_000;
+export const PROVIDER_MODEL_REASONING_EFFORTS = [
+  "none",
+  "minimal",
+  "low",
+  "medium",
+  "high",
+  "xhigh",
+  "max",
+  "ultra",
+] as const satisfies readonly GeneratedProviderModelReasoningEffort[];
+export type ProviderModelReasoningEffort = (typeof PROVIDER_MODEL_REASONING_EFFORTS)[number];
+const PROVIDER_MODEL_REASONING_EFFORT_SET = new Set<string>(PROVIDER_MODEL_REASONING_EFFORTS);
 const PROVIDER_MODEL_DISCOVERY_ERROR_CODES = [
   "unauthorized",
   "forbidden",
@@ -42,6 +57,7 @@ const PROVIDER_MODEL_FEATURE_ERROR_LABELS: Readonly<Record<string, string>> = {
   PROVIDER_MODELS_INVALID_PROVIDER: "供应商配置无效",
   PROVIDER_MODELS_CONNECTION_CHANGED: "供应商连接信息已变化，请重新获取模型",
   PROVIDER_MODEL_MANAGED_PROFILE_REFERENCED: "该模型仍被 Codex Profile 使用",
+  PROVIDER_MODEL_CAPABILITIES_REQUIRED: "请先配置该模型的能力",
   CODEX_MANAGED_PROFILE_NAME_EXISTS: "Profile 名称已存在",
   CODEX_MANAGED_PROFILE_FILE_EXISTS: "已存在同名 Profile 文件，未覆盖",
   CODEX_MANAGED_PROFILE_HOME_UNSAFE: "Codex 配置目录不可安全访问",
@@ -78,6 +94,16 @@ export type ProviderModel = {
   lastSeenAt: number | null;
   createdAt: number;
   updatedAt: number;
+  capabilitiesConfigured: boolean;
+  supportedReasoningEfforts: ProviderModelReasoningEffort[];
+  defaultReasoningEffort: ProviderModelReasoningEffort | null;
+  contextWindow: number | null;
+};
+
+export type ProviderModelCapabilitiesInput = {
+  supportedReasoningEfforts: ProviderModelReasoningEffort[];
+  defaultReasoningEffort: ProviderModelReasoningEffort | null;
+  contextWindow: number | null;
 };
 
 export type ProviderModelCatalog = {
@@ -157,6 +183,55 @@ function requireRequiredTimestamp(value: number, label: string): number {
   return timestamp;
 }
 
+function requireReasoningEffort(value: unknown, label: string): ProviderModelReasoningEffort {
+  if (typeof value !== "string" || !PROVIDER_MODEL_REASONING_EFFORT_SET.has(value)) {
+    throw new Error(`IPC_INVALID_LITERAL: ${label}=${String(value)}`);
+  }
+  return value as ProviderModelReasoningEffort;
+}
+
+export function normalizeProviderModelCapabilities(
+  input: ProviderModelCapabilitiesInput
+): ProviderModelCapabilitiesInput {
+  const supported = input.supportedReasoningEfforts.map((effort, index) =>
+    requireReasoningEffort(effort, `supportedReasoningEfforts[${index}]`)
+  );
+  const unique = new Set(supported);
+  if (unique.size !== supported.length) {
+    throw new Error("SEC_INVALID_INPUT: duplicate supportedReasoningEfforts");
+  }
+  const normalizedSupported = PROVIDER_MODEL_REASONING_EFFORTS.filter((effort) =>
+    unique.has(effort)
+  );
+  const defaultReasoningEffort =
+    input.defaultReasoningEffort == null
+      ? null
+      : requireReasoningEffort(input.defaultReasoningEffort, "defaultReasoningEffort");
+  if (normalizedSupported.length === 0 && defaultReasoningEffort != null) {
+    throw new Error("SEC_INVALID_INPUT: defaultReasoningEffort requires supported efforts");
+  }
+  if (normalizedSupported.length > 0 && defaultReasoningEffort == null) {
+    throw new Error("SEC_INVALID_INPUT: defaultReasoningEffort is required");
+  }
+  if (defaultReasoningEffort != null && !unique.has(defaultReasoningEffort)) {
+    throw new Error("SEC_INVALID_INPUT: defaultReasoningEffort is not supported");
+  }
+  const contextWindow = input.contextWindow;
+  if (
+    contextWindow != null &&
+    (!Number.isSafeInteger(contextWindow) ||
+      contextWindow < MODEL_CONTEXT_WINDOW_MIN_TOKENS ||
+      contextWindow > MODEL_CONTEXT_WINDOW_MAX_TOKENS)
+  ) {
+    throw new Error("SEC_INVALID_INPUT: invalid contextWindow");
+  }
+  return {
+    supportedReasoningEfforts: normalizedSupported,
+    defaultReasoningEffort,
+    contextWindow,
+  };
+}
+
 export function normalizeRemoteModelId(value: string): string {
   const modelId = value.trim();
   if (
@@ -189,6 +264,29 @@ function decodeProviderModel(
     throw new Error(`IPC_INVALID_LITERAL: models.source=${String(value.source)}`);
   }
 
+  const capabilitiesConfigured = requireBoolean(
+    value.capabilitiesConfigured,
+    "models.capabilitiesConfigured"
+  );
+  const capabilities = normalizeProviderModelCapabilities({
+    supportedReasoningEfforts: value.supportedReasoningEfforts.map((effort, index) =>
+      requireReasoningEffort(effort, `models.supportedReasoningEfforts[${index}]`)
+    ),
+    defaultReasoningEffort:
+      value.defaultReasoningEffort == null
+        ? null
+        : requireReasoningEffort(value.defaultReasoningEffort, "models.defaultReasoningEffort"),
+    contextWindow: value.contextWindow,
+  });
+  if (
+    !capabilitiesConfigured &&
+    (capabilities.supportedReasoningEfforts.length > 0 ||
+      capabilities.defaultReasoningEffort != null ||
+      capabilities.contextWindow != null)
+  ) {
+    throw new Error("IPC_INVALID_MODEL_CAPABILITIES: unconfigured model has capability values");
+  }
+
   return {
     modelUuid: requireCanonicalUuid(value.modelUuid, "models.modelUuid"),
     providerId,
@@ -198,6 +296,8 @@ function decodeProviderModel(
     lastSeenAt: requireTimestamp(value.lastSeenAt, "models.lastSeenAt"),
     createdAt: requireRequiredTimestamp(value.createdAt, "models.createdAt"),
     updatedAt: requireRequiredTimestamp(value.updatedAt, "models.updatedAt"),
+    capabilitiesConfigured,
+    ...capabilities,
   };
 }
 
@@ -332,6 +432,39 @@ export async function providerModelManualDelete(
           normalizedProviderId,
           normalizedProviderUuid,
           normalizedModelUuid
+        ),
+        (value) =>
+          decodeExpectedProviderModelCatalog(value, normalizedProviderId, normalizedProviderUuid)
+      ),
+  });
+}
+
+export async function providerModelCapabilitiesUpdate(
+  providerId: number,
+  providerUuid: string,
+  modelUuid: string,
+  capabilities: ProviderModelCapabilitiesInput
+): Promise<ProviderModelCatalog> {
+  const normalizedProviderId = validateProviderId(providerId);
+  const normalizedProviderUuid = validateProviderUuid(providerUuid);
+  const normalizedModelUuid = validateModelUuid(modelUuid);
+  const normalizedCapabilities = normalizeProviderModelCapabilities(capabilities);
+  return invokeGeneratedIpc<ProviderModelCatalog>({
+    title: "保存模型能力失败",
+    cmd: "provider_model_capabilities_update",
+    args: {
+      providerId: normalizedProviderId,
+      providerUuid: normalizedProviderUuid,
+      modelUuid: normalizedModelUuid,
+      capabilities: normalizedCapabilities,
+    },
+    invoke: async () =>
+      mapGeneratedCommandResponse(
+        await commands.providerModelCapabilitiesUpdate(
+          normalizedProviderId,
+          normalizedProviderUuid,
+          normalizedModelUuid,
+          normalizedCapabilities
         ),
         (value) =>
           decodeExpectedProviderModelCatalog(value, normalizedProviderId, normalizedProviderUuid)

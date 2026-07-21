@@ -9,8 +9,8 @@ TypeScript bindings, frontend adapters, and React UI.
   patch semantics, raw TOML validation, generated bindings, and UI behavior.
 - [Codex managed model route contract](./codex-managed-model-route-contract.md):
   stable provider/model identity, provider-scoped discovery, hash-owned profile
-  files and picker catalogs, exact readable/legacy alias routing, and
-  wire-vs-observed diagnostics.
+  files and picker catalogs, explicit reasoning/context capabilities, exact
+  readable/legacy alias routing, and wire-vs-observed diagnostics.
 - [Gateway failover route contract](./gateway-failover-route-contract.md):
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.
@@ -57,6 +57,9 @@ When changing Codex provider models, managed profiles, or alias routing:
    raw-response observation paths before changing warning semantics.
 4. Keep filesystem ownership hash-based and fail closed on unsafe Codex-home
    resolution or provider identity drift.
+5. For provider-model capability changes, trace the configured flag, effort
+   set/default, and context through schema migration, IPC, adapter/query, UI,
+   Profile creation gate, Profile-set hash, catalog rebuild, and compensation.
 
 When changing provider account-usage fetching:
 
@@ -159,8 +162,9 @@ When changing Trellis task archive or context validation:
   provider, readable-profile plus legacy-UUID lookup, no cross-provider
   failover, canonical/wire/observed separation, stale-mismatch clearing,
   profile/catalog no-clobber and hash ownership, proxy-time catalog restore,
-  provider-scoped query generation, and ordinary-route regression coverage
-  together.
+  provider-scoped query generation, explicit capability validation and v41
+  backfill, effort/context catalog projection, capability-update rollback, and
+  ordinary-route regression coverage together.
 - When changing account-usage refresh, verify forced fetches, late-result
   suppression, loading/error state, and provider/cache isolation together.
 - When changing the NewAPI account-usage adapter, verify the public status plus

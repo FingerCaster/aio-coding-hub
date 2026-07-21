@@ -24,6 +24,10 @@ struct ModelRow {
     last_seen_at: Option<i64>,
     created_at: i64,
     updated_at: i64,
+    capabilities_configured: bool,
+    supported_reasoning_efforts_json: String,
+    default_reasoning_effort: Option<String>,
+    context_window: Option<i64>,
 }
 
 #[derive(Debug)]
@@ -165,8 +169,10 @@ INSERT INTO provider_model_catalogs(
             conn.execute(
                 r#"
 INSERT INTO provider_models(
-  model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8)
+  model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at,
+  capabilities_configured, supported_reasoning_efforts_json, default_reasoning_effort,
+  context_window
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 "#,
                 params![
                     model.model_uuid,
@@ -176,7 +182,11 @@ INSERT INTO provider_models(
                     stale,
                     model.last_seen_at,
                     model.created_at,
-                    model.updated_at
+                    model.updated_at,
+                    i64::from(model.capabilities_configured),
+                    model.supported_reasoning_efforts_json,
+                    model.default_reasoning_effort,
+                    model.context_window
                 ],
             )
             .map_err(|error| db_err!("failed to restore provider model: {error}"))?;
@@ -323,7 +333,9 @@ fn capture_models(conn: &Connection) -> AppResult<Vec<ModelRow>> {
         .prepare_cached(
             r#"
 SELECT provider.provider_uuid, model.model_uuid, model.remote_model_id, model.source,
-       model.last_seen_at, model.created_at, model.updated_at
+       model.last_seen_at, model.created_at, model.updated_at,
+       model.capabilities_configured, model.supported_reasoning_efforts_json,
+       model.default_reasoning_effort, model.context_window
 FROM provider_models model
 JOIN providers provider ON provider.id = model.provider_id
 ORDER BY provider.provider_uuid ASC, model.model_uuid ASC
@@ -340,6 +352,10 @@ ORDER BY provider.provider_uuid ASC, model.model_uuid ASC
                 last_seen_at: row.get(4)?,
                 created_at: row.get(5)?,
                 updated_at: row.get(6)?,
+                capabilities_configured: row.get::<_, i64>(7)? != 0,
+                supported_reasoning_efforts_json: row.get(8)?,
+                default_reasoning_effort: row.get(9)?,
+                context_window: row.get(10)?,
             })
         })
         .map_err(|error| db_err!("failed to capture local models: {error}"))?;

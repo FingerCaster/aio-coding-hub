@@ -4,7 +4,7 @@ use crate::db;
 use crate::shared::error::{db_err, AppError, AppResult};
 use crate::shared::time::now_unix_seconds;
 use rusqlite::{params, Connection, OptionalExtension, TransactionBehavior};
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
@@ -20,6 +20,96 @@ const DISCOVERY_MODEL_MAX_COUNT: usize = 2048;
 /// range before comparing models, otherwise a valid managed route can be
 /// rejected or a suffix mismatch can be hidden.
 pub(crate) const REMOTE_MODEL_ID_MAX_BYTES: usize = 256;
+pub const MODEL_CONTEXT_WINDOW_MIN_TOKENS: i64 = 1_024;
+pub const MODEL_CONTEXT_WINDOW_MAX_TOKENS: i64 = 10_000_000;
+
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, specta::Type, PartialEq, Eq, Hash)]
+#[serde(rename_all = "snake_case")]
+pub enum ProviderModelReasoningEffort {
+    None,
+    Minimal,
+    Low,
+    Medium,
+    High,
+    #[serde(rename = "xhigh")]
+    XHigh,
+    Max,
+    Ultra,
+}
+
+impl ProviderModelReasoningEffort {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::None => "none",
+            Self::Minimal => "minimal",
+            Self::Low => "low",
+            Self::Medium => "medium",
+            Self::High => "high",
+            Self::XHigh => "xhigh",
+            Self::Max => "max",
+            Self::Ultra => "ultra",
+        }
+    }
+
+    fn parse(value: &str) -> Option<Self> {
+        match value {
+            "none" => Some(Self::None),
+            "minimal" => Some(Self::Minimal),
+            "low" => Some(Self::Low),
+            "medium" => Some(Self::Medium),
+            "high" => Some(Self::High),
+            "xhigh" => Some(Self::XHigh),
+            "max" => Some(Self::Max),
+            "ultra" => Some(Self::Ultra),
+            _ => None,
+        }
+    }
+
+    fn rank(self) -> u8 {
+        match self {
+            Self::None => 0,
+            Self::Minimal => 1,
+            Self::Low => 2,
+            Self::Medium => 3,
+            Self::High => 4,
+            Self::XHigh => 5,
+            Self::Max => 6,
+            Self::Ultra => 7,
+        }
+    }
+}
+
+#[derive(Debug, Clone, Deserialize, specta::Type, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct ProviderModelCapabilitiesInput {
+    pub supported_reasoning_efforts: Vec<ProviderModelReasoningEffort>,
+    pub default_reasoning_effort: Option<ProviderModelReasoningEffort>,
+    pub context_window: Option<i64>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderModelCapabilities {
+    pub(crate) supported_reasoning_efforts: Vec<ProviderModelReasoningEffort>,
+    pub(crate) default_reasoning_effort: Option<ProviderModelReasoningEffort>,
+    pub(crate) context_window: Option<i64>,
+}
+
+impl ProviderModelCapabilities {
+    pub(crate) fn validate(&self) -> AppResult<()> {
+        let normalized = normalize_capabilities(&ProviderModelCapabilitiesInput {
+            supported_reasoning_efforts: self.supported_reasoning_efforts.clone(),
+            default_reasoning_effort: self.default_reasoning_effort,
+            context_window: self.context_window,
+        })?;
+        if normalized != *self {
+            return Err(AppError::new(
+                "DB_INVALID_DATA",
+                "provider model capabilities are not canonical",
+            ));
+        }
+        Ok(())
+    }
+}
 
 #[derive(Debug, Clone, Copy, Serialize, specta::Type, PartialEq, Eq)]
 #[serde(rename_all = "snake_case")]
@@ -49,6 +139,10 @@ pub struct ProviderModelEntry {
     pub last_seen_at: Option<i64>,
     pub created_at: i64,
     pub updated_at: i64,
+    pub capabilities_configured: bool,
+    pub supported_reasoning_efforts: Vec<ProviderModelReasoningEffort>,
+    pub default_reasoning_effort: Option<ProviderModelReasoningEffort>,
+    pub context_window: Option<i64>,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type, PartialEq, Eq)]
@@ -62,6 +156,21 @@ pub struct ProviderModelCatalog {
     pub last_success_at: Option<i64>,
     pub last_error_code: Option<String>,
     pub models: Vec<ProviderModelEntry>,
+}
+
+struct RawProviderModelEntry {
+    model_uuid: String,
+    provider_id: i64,
+    remote_model_id: String,
+    source: ProviderModelSource,
+    stale: bool,
+    last_seen_at: Option<i64>,
+    created_at: i64,
+    updated_at: i64,
+    capabilities_configured: bool,
+    supported_reasoning_efforts_json: String,
+    default_reasoning_effort: Option<String>,
+    context_window: Option<i64>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -230,6 +339,145 @@ fn validate_manual_model_id(value: &str) -> AppResult<&str> {
             ),
         )
     })
+}
+
+fn normalize_capabilities(
+    input: &ProviderModelCapabilitiesInput,
+) -> AppResult<ProviderModelCapabilities> {
+    let mut efforts = input.supported_reasoning_efforts.clone();
+    efforts.sort_by_key(|effort| effort.rank());
+    if efforts.windows(2).any(|pair| pair[0] == pair[1]) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "supported_reasoning_efforts must not contain duplicates",
+        ));
+    }
+
+    match (efforts.is_empty(), input.default_reasoning_effort) {
+        (true, Some(_)) => {
+            return Err(AppError::new(
+                "SEC_INVALID_INPUT",
+                "default_reasoning_effort must be empty when reasoning is disabled",
+            ));
+        }
+        (false, None) => {
+            return Err(AppError::new(
+                "SEC_INVALID_INPUT",
+                "default_reasoning_effort is required when reasoning efforts are configured",
+            ));
+        }
+        (false, Some(default)) if !efforts.contains(&default) => {
+            return Err(AppError::new(
+                "SEC_INVALID_INPUT",
+                "default_reasoning_effort must be included in supported_reasoning_efforts",
+            ));
+        }
+        _ => {}
+    }
+
+    if input.context_window.is_some_and(|value| {
+        !(MODEL_CONTEXT_WINDOW_MIN_TOKENS..=MODEL_CONTEXT_WINDOW_MAX_TOKENS).contains(&value)
+    }) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            format!(
+                "context_window must be between {MODEL_CONTEXT_WINDOW_MIN_TOKENS} and {MODEL_CONTEXT_WINDOW_MAX_TOKENS} tokens"
+            ),
+        ));
+    }
+
+    Ok(ProviderModelCapabilities {
+        supported_reasoning_efforts: efforts,
+        default_reasoning_effort: input.default_reasoning_effort,
+        context_window: input.context_window,
+    })
+}
+
+pub(crate) fn decode_stored_capabilities(
+    configured: bool,
+    efforts_json: &str,
+    default_effort: Option<&str>,
+    context_window: Option<i64>,
+) -> AppResult<ProviderModelCapabilities> {
+    let effort_values = serde_json::from_str::<Vec<String>>(efforts_json).map_err(|_| {
+        AppError::new(
+            "DB_INVALID_DATA",
+            "provider model reasoning efforts are invalid",
+        )
+    })?;
+    let supported_reasoning_efforts = effort_values
+        .iter()
+        .map(|value| {
+            ProviderModelReasoningEffort::parse(value).ok_or_else(|| {
+                AppError::new(
+                    "DB_INVALID_DATA",
+                    "provider model reasoning effort is unsupported",
+                )
+            })
+        })
+        .collect::<AppResult<Vec<_>>>()?;
+    let default_reasoning_effort = default_effort
+        .map(|value| {
+            ProviderModelReasoningEffort::parse(value).ok_or_else(|| {
+                AppError::new(
+                    "DB_INVALID_DATA",
+                    "provider model default reasoning effort is unsupported",
+                )
+            })
+        })
+        .transpose()?;
+
+    if !configured {
+        if !supported_reasoning_efforts.is_empty()
+            || default_reasoning_effort.is_some()
+            || context_window.is_some()
+        {
+            return Err(AppError::new(
+                "DB_INVALID_DATA",
+                "unconfigured provider model contains capability values",
+            ));
+        }
+        return Ok(ProviderModelCapabilities {
+            supported_reasoning_efforts,
+            default_reasoning_effort,
+            context_window,
+        });
+    }
+
+    let normalized = normalize_capabilities(&ProviderModelCapabilitiesInput {
+        supported_reasoning_efforts,
+        default_reasoning_effort,
+        context_window,
+    })
+    .map_err(|_| {
+        AppError::new(
+            "DB_INVALID_DATA",
+            "provider model capabilities are inconsistent",
+        )
+    })?;
+    let stored_efforts = effort_values.iter().map(String::as_str).collect::<Vec<_>>();
+    let normalized_efforts = normalized
+        .supported_reasoning_efforts
+        .iter()
+        .map(|effort| effort.as_str())
+        .collect::<Vec<_>>();
+    if stored_efforts != normalized_efforts {
+        return Err(AppError::new(
+            "DB_INVALID_DATA",
+            "provider model reasoning efforts are not canonical",
+        ));
+    }
+    Ok(normalized)
+}
+
+fn serialize_reasoning_efforts(efforts: &[ProviderModelReasoningEffort]) -> AppResult<String> {
+    serde_json::to_string(
+        &efforts
+            .iter()
+            .map(|effort| effort.as_str())
+            .collect::<Vec<_>>(),
+    )
+    .map_err(|_| AppError::new("SYSTEM_ERROR", "failed to serialize model capabilities"))
 }
 
 fn validate_expected_provider_uuid(value: &str) -> AppResult<&str> {
@@ -433,7 +681,9 @@ WHERE provider_id = ?1
     let mut statement = conn
         .prepare_cached(
             r#"
-SELECT model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at
+SELECT model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at,
+       capabilities_configured, supported_reasoning_efforts_json,
+       default_reasoning_effort, context_window
 FROM provider_models
 WHERE provider_id = ?1
 ORDER BY remote_model_id COLLATE NOCASE ASC, model_uuid ASC
@@ -454,7 +704,7 @@ ORDER BY remote_model_id COLLATE NOCASE ASC, model_uuid ASC
                     .into(),
                 )
             })?;
-            Ok(ProviderModelEntry {
+            Ok(RawProviderModelEntry {
                 model_uuid: row.get(0)?,
                 provider_id: row.get(1)?,
                 remote_model_id: row.get(2)?,
@@ -463,12 +713,36 @@ ORDER BY remote_model_id COLLATE NOCASE ASC, model_uuid ASC
                 last_seen_at: row.get(5)?,
                 created_at: row.get(6)?,
                 updated_at: row.get(7)?,
+                capabilities_configured: row.get::<_, i64>(8)? != 0,
+                supported_reasoning_efforts_json: row.get(9)?,
+                default_reasoning_effort: row.get(10)?,
+                context_window: row.get(11)?,
             })
         })
         .map_err(|error| db_err!("failed to query provider models: {error}"))?;
     let mut models = Vec::new();
     for row in rows {
-        models.push(row.map_err(|error| db_err!("failed to read provider model: {error}"))?);
+        let row = row.map_err(|error| db_err!("failed to read provider model: {error}"))?;
+        let capabilities = decode_stored_capabilities(
+            row.capabilities_configured,
+            &row.supported_reasoning_efforts_json,
+            row.default_reasoning_effort.as_deref(),
+            row.context_window,
+        )?;
+        models.push(ProviderModelEntry {
+            model_uuid: row.model_uuid,
+            provider_id: row.provider_id,
+            remote_model_id: row.remote_model_id,
+            source: row.source,
+            stale: row.stale,
+            last_seen_at: row.last_seen_at,
+            created_at: row.created_at,
+            updated_at: row.updated_at,
+            capabilities_configured: row.capabilities_configured,
+            supported_reasoning_efforts: capabilities.supported_reasoning_efforts,
+            default_reasoning_effort: capabilities.default_reasoning_effort,
+            context_window: capabilities.context_window,
+        });
     }
 
     Ok(ProviderModelCatalog {
@@ -591,6 +865,108 @@ pub fn manual_delete(
     let catalog = read_catalog_from_conn(&tx, provider_id, expected_provider_uuid)?;
     tx.commit()
         .map_err(|error| db_err!("failed to commit manual provider model: {error}"))?;
+    Ok(catalog)
+}
+
+pub fn update_capabilities<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    db: &db::Db,
+    provider_id: i64,
+    expected_provider_uuid: &str,
+    model_uuid: &str,
+    input: &ProviderModelCapabilitiesInput,
+) -> AppResult<ProviderModelCatalog> {
+    let _guard = crate::codex_managed_profiles::lock_profile_lifecycle();
+    let expected_provider_uuid = validate_expected_provider_uuid(expected_provider_uuid)?;
+    if !crate::shared::uuid::is_canonical_uuid_v4(model_uuid) {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            "model_uuid must be a canonical UUIDv4",
+        ));
+    }
+    let capabilities = normalize_capabilities(input)?;
+    let efforts_json = serialize_reasoning_efforts(&capabilities.supported_reasoning_efforts)?;
+
+    let mut conn = db.open_connection()?;
+    direct_codex_provider_metadata_for_identity_from_conn(
+        &conn,
+        provider_id,
+        expected_provider_uuid,
+    )?;
+    let model_exists: bool = conn
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM provider_models WHERE provider_id = ?1 AND model_uuid = ?2)",
+            params![provider_id, model_uuid],
+            |row| row.get(0),
+        )
+        .map_err(|error| db_err!("failed to query provider model capability target: {error}"))?;
+    if !model_exists {
+        return Err(AppError::new("DB_NOT_FOUND", "provider model not found"));
+    }
+
+    let mut catalog_profiles = crate::codex_model_catalog::managed::load_profiles(&conn)?;
+    let mut affects_active_catalog = false;
+    for profile in &mut catalog_profiles {
+        if profile.model_uuid == model_uuid {
+            profile.set_capabilities(capabilities.clone())?;
+            affects_active_catalog = true;
+        }
+    }
+    let catalog_plan = affects_active_catalog
+        .then(|| crate::codex_model_catalog::managed::prepare_for_profiles(app, &catalog_profiles))
+        .transpose()?;
+
+    let now = now_unix_seconds();
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|error| {
+            db_err!("failed to start provider model capability transaction: {error}")
+        })?;
+    direct_codex_provider_metadata_for_identity_from_conn(
+        &tx,
+        provider_id,
+        expected_provider_uuid,
+    )?;
+    let changed = tx
+        .execute(
+            r#"
+UPDATE provider_models
+SET capabilities_configured = 1,
+    supported_reasoning_efforts_json = ?1,
+    default_reasoning_effort = ?2,
+    context_window = ?3,
+    updated_at = ?4
+WHERE provider_id = ?5 AND model_uuid = ?6
+"#,
+            params![
+                efforts_json,
+                capabilities
+                    .default_reasoning_effort
+                    .map(ProviderModelReasoningEffort::as_str),
+                capabilities.context_window,
+                now,
+                provider_id,
+                model_uuid,
+            ],
+        )
+        .map_err(|error| db_err!("failed to update provider model capabilities: {error}"))?;
+    if changed == 0 {
+        return Err(AppError::new("DB_NOT_FOUND", "provider model not found"));
+    }
+    let catalog = read_catalog_from_conn(&tx, provider_id, expected_provider_uuid)?;
+
+    let applied_catalog = match catalog_plan {
+        Some(plan) => Some(plan.apply(app)?),
+        None => None,
+    };
+    if let Err(error) = tx.commit() {
+        if let Some(applied) = applied_catalog {
+            applied.rollback()?;
+        }
+        return Err(db_err!(
+            "failed to commit provider model capabilities: {error}"
+        ));
+    }
     Ok(catalog)
 }
 
@@ -1129,6 +1505,10 @@ INSERT INTO providers(
             .expect("insert provider");
             conn.last_insert_rowid()
         }
+
+        fn handle(&self) -> tauri::AppHandle<tauri::test::MockRuntime> {
+            self._app.handle().clone()
+        }
     }
 
     impl Drop for ModelTestApp {
@@ -1422,6 +1802,153 @@ INSERT INTO providers(
             parse_openai_models(r#"{"data":[{"name":"missing-id"}]}"#),
             Err(DiscoveryErrorCode::InvalidResponse)
         );
+    }
+
+    #[test]
+    fn model_capabilities_require_explicit_consistent_configuration() {
+        let test_app = ModelTestApp::new();
+        let provider_id = test_app.seed_provider();
+        let provider_uuid = direct_codex_provider_metadata(&test_app.db, provider_id)
+            .expect("read provider")
+            .provider_uuid;
+        let catalog = manual_upsert(&test_app.db, provider_id, &provider_uuid, "grok-4.5")
+            .expect("create model");
+        let model = &catalog.models[0];
+        assert!(!model.capabilities_configured);
+        assert!(model.supported_reasoning_efforts.is_empty());
+        assert_eq!(model.default_reasoning_effort, None);
+        assert_eq!(model.context_window, None);
+
+        let invalid_default = update_capabilities(
+            &test_app.handle(),
+            &test_app.db,
+            provider_id,
+            &provider_uuid,
+            &model.model_uuid,
+            &ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: vec![ProviderModelReasoningEffort::Low],
+                default_reasoning_effort: Some(ProviderModelReasoningEffort::High),
+                context_window: Some(128_000),
+            },
+        )
+        .expect_err("default outside supported set must fail");
+        assert_eq!(invalid_default.code(), "SEC_INVALID_INPUT");
+
+        let duplicate = update_capabilities(
+            &test_app.handle(),
+            &test_app.db,
+            provider_id,
+            &provider_uuid,
+            &model.model_uuid,
+            &ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: vec![
+                    ProviderModelReasoningEffort::Low,
+                    ProviderModelReasoningEffort::Low,
+                ],
+                default_reasoning_effort: Some(ProviderModelReasoningEffort::Low),
+                context_window: None,
+            },
+        )
+        .expect_err("duplicate efforts must fail");
+        assert_eq!(duplicate.code(), "SEC_INVALID_INPUT");
+
+        let invalid_context = update_capabilities(
+            &test_app.handle(),
+            &test_app.db,
+            provider_id,
+            &provider_uuid,
+            &model.model_uuid,
+            &ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_window: Some(MODEL_CONTEXT_WINDOW_MIN_TOKENS - 1),
+            },
+        )
+        .expect_err("tiny context must fail");
+        assert_eq!(invalid_context.code(), "SEC_INVALID_INPUT");
+
+        let updated = update_capabilities(
+            &test_app.handle(),
+            &test_app.db,
+            provider_id,
+            &provider_uuid,
+            &model.model_uuid,
+            &ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: vec![
+                    ProviderModelReasoningEffort::Max,
+                    ProviderModelReasoningEffort::Minimal,
+                ],
+                default_reasoning_effort: Some(ProviderModelReasoningEffort::Max),
+                context_window: Some(1_000_000),
+            },
+        )
+        .expect("configure model");
+        let model = &updated.models[0];
+        assert!(model.capabilities_configured);
+        assert_eq!(
+            model.supported_reasoning_efforts,
+            vec![
+                ProviderModelReasoningEffort::Minimal,
+                ProviderModelReasoningEffort::Max,
+            ]
+        );
+        assert_eq!(
+            model.default_reasoning_effort,
+            Some(ProviderModelReasoningEffort::Max)
+        );
+        assert_eq!(model.context_window, Some(1_000_000));
+
+        let model_uuid = model.model_uuid.clone();
+        let manual_result = manual_upsert(&test_app.db, provider_id, &provider_uuid, "grok-4.5")
+            .expect("repeat manual upsert");
+        let snapshot = capture_refresh_context(&test_app.db, provider_id)
+            .expect("capture refresh after capability update")
+            .snapshot;
+        assert!(record_refresh_success(
+            &test_app.db,
+            &snapshot,
+            2_000_000,
+            &["grok-4.5".to_string()]
+        )
+        .expect("repeat discovery refresh"));
+        let refresh_result = get(&test_app.db, provider_id, &provider_uuid)
+            .expect("read model after repeat refresh");
+        for catalog in [manual_result, refresh_result] {
+            let persisted = &catalog.models[0];
+            assert!(persisted.capabilities_configured);
+            assert_eq!(
+                persisted.supported_reasoning_efforts,
+                vec![
+                    ProviderModelReasoningEffort::Minimal,
+                    ProviderModelReasoningEffort::Max,
+                ]
+            );
+            assert_eq!(
+                persisted.default_reasoning_effort,
+                Some(ProviderModelReasoningEffort::Max)
+            );
+            assert_eq!(persisted.context_window, Some(1_000_000));
+        }
+
+        let no_reasoning = update_capabilities(
+            &test_app.handle(),
+            &test_app.db,
+            provider_id,
+            &provider_uuid,
+            &model_uuid,
+            &ProviderModelCapabilitiesInput {
+                supported_reasoning_efforts: Vec::new(),
+                default_reasoning_effort: None,
+                context_window: None,
+            },
+        )
+        .expect("explicit no-reasoning configuration");
+        assert!(no_reasoning.models[0].capabilities_configured);
+        assert!(no_reasoning.models[0]
+            .supported_reasoning_efforts
+            .is_empty());
+        assert_eq!(no_reasoning.models[0].default_reasoning_effort, None);
+        assert_eq!(no_reasoning.models[0].context_window, None);
     }
 
     #[test]

@@ -31,10 +31,12 @@ Codex 直连供应商
 9. **路由检测从比较语义上修复。** 不能靠 `aio/` 前缀或前端字符串特判消警；所有响应路径统一比较最终 wire model 与原始上游响应 model。
 10. **模型目录是完整合并覆盖。** 用户目录优先，否则运行当前 Codex 的 `debug models --bundled`；AIO 保留基础目录未知字段并追加受管项，不维护编译时固定模型快照。
 11. **目录只随 Codex CLI 代理激活。** 生成文件位于 AIO 应用数据目录，根 `model_catalog_json` 随代理启停安全接管/恢复；现有会话不热更新。
+12. **模型能力由 provider-model 条目统一拥有。** Profile 只引用 `model_uuid`；新模型不按名称猜测能力，必须由用户明确保存一次能力配置。空 reasoning 集合表示不发送 reasoning，上下文可明确为未知。
+13. **v41 兼容优先。** v40 已有模型回填上一版固定 reasoning 基线，避免已创建 Profile 失效；之后新建的模型默认未配置。上下文只暴露一个标称 token 数，目录同时写 `context_window` 和 `max_context_window`，压缩阈值继续由 Codex 派生。
 
 ## 数据模型
 
-数据库 schema 从 v39 升至 v40。UUID 由共享 Rust helper 生成规范小写 UUIDv4，不新增第三方依赖；导入值必须通过相同的 canonical 校验。
+数据库 schema 已从 v39 升至 v40；本次能力配置再升至 v41。UUID 由共享 Rust helper 生成规范小写 UUIDv4，不新增第三方依赖；导入值必须通过相同的 canonical 校验。
 
 ### `providers.provider_uuid`
 
@@ -73,6 +75,10 @@ stale               INTEGER NOT NULL DEFAULT 0
 last_seen_at        INTEGER
 created_at          INTEGER NOT NULL
 updated_at          INTEGER NOT NULL
+capabilities_configured INTEGER NOT NULL DEFAULT 0
+supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]'
+default_reasoning_effort TEXT
+context_window      INTEGER
 UNIQUE(provider_id, remote_model_id)
 FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
 ```
@@ -81,6 +87,10 @@ FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
 - 手工添加一个已发现模型时将其提升为 `manual`，后续刷新不得把它标记为远端消失。
 - 成功刷新后，本次未出现的 `discovered` 行标记 stale；不删除。`manual` 行保持有效。
 - provider 连接字段变化后 catalog 和全部 discovered 行标记 stale。
+- `capabilities_configured = 0` 表示新模型尚未经过用户确认；此时其余能力字段不能用于生成 Profile。
+- reasoning 集合按固定顺序规范化为 JSON；空数组是明确的“不要发送 reasoning”，而不是未配置。非空集合要求默认值属于集合。
+- `context_window` 为空表示用户明确选择未知；非空时首版接受 1,024..10,000,000 tokens。
+- v40 -> v41 为已有行写入 `capabilities_configured = 1`、`["low","medium","high"]` 和默认 `medium`；fresh schema 与迁移后的新插入均保持未配置默认值。
 
 ### `codex_managed_profiles`
 
@@ -190,9 +200,9 @@ model_provider = "aio"
 
 - 每个受管 Profile 生成一个 `slug = aio/<profile_name_key>` 的 `visibility = list` 条目。
 - 复制一个当前基础目录可见模板以保留未来必填字段，再清除 speed/service tier、升级提示、comp hash、搜索、并行工具和其他不能证明的能力。
-- 受管模型统一声明 `low / medium / high`，默认 `medium`，并开启 Codex 发送
-  `reasoning.effort` 所需的 reasoning 能力位。首版不根据模型名或供应商名猜测能力；
-  这是 provider-neutral 的固定兼容基线，后续再评估 provider/model-scoped 能力配置。
+- 每个受管模型从 `provider_models` 读取已验证的支持档位、默认档位和上下文窗口；Profile 集合 hash 必须包含这些字段，保证能力修改会触发目录重建。
+- reasoning 集合非空时写入 `supported_reasoning_levels`、`default_reasoning_level` 并开启 Codex 发送 `reasoning.effort` 所需的 `supports_reasoning_summaries`；集合为空时写空集合、空默认值并关闭该能力位。
+- 上下文已知时把 `context_window` 与 `max_context_window` 写成相同 token 数；未知时两者均为空。`auto_compact_token_limit` 始终为空，`effective_context_window_percent` 保持 Codex 当前兼容值 95。
 - effort 选择不改变受管模型的 canonical/wire/observed 模型比较。上游未回显 effort
   时仍是未观察，不生成路由告警；只有上游明确回显不同 effort 时才保留现有严重告警。
 - 描述包含 AIO provider 名和真实远端模型 ID；picker 实际显示 slug，因此 slug 必须可读。
@@ -253,6 +263,8 @@ observed upstream model:   bridge/fixer/plugin 之前原始响应中的 model
 - 新增/编辑 Codex 直连 provider 提供“保存”和“保存并获取模型”。后者先完成本地保存，再刷新；刷新失败显示“供应商已保存，模型获取失败”，不回滚 provider。
 - 现有 Codex 直连 provider 卡片增加模型目录入口。模型对话框提供刷新、最后成功时间、stale/error 状态、手工添加/删除和模型行。
 - 每个模型行按需提供创建 profile 操作；已有 profile 在同一行展示并可删除。Profile 名称在小型确认对话框中输入。
+- 每个模型行提供能力配置入口，展示配置状态、上下文和 reasoning 摘要；能力未配置时创建 Profile 按钮不可用。
+- 能力弹窗使用固定 effort 多选、所选集合内的默认 effort 下拉和可留空的上下文 token 输入。已有 Profile 的能力保存成功后提示新建或重启 Codex 会话。
 - 列表 key 使用 `model_uuid`，同名模型不会跨 provider 合并。发现目录与 Codex app-server 能力目录使用不同 service、query key 和 DTO。
 - 所有 mutation 只失效对应 provider model key及 managed profiles key；不把网络状态塞回 provider 列表快照。
 - 中性 `aio_managed_model_route` 可在请求详情显示普通路由说明，但不得使用严重告警样式。
@@ -268,7 +280,7 @@ observed upstream model:   bridge/fixer/plugin 之前原始响应中的 model
 
 - 非 `aio/` 请求完全沿用现有排序、会话和 failover。
 - 既有用户若手工使用 `aio/...` 作为普通上游模型，升级后会因保留前缀而失败关闭；这是防伪合同，需在 release notes 中说明。
-- schema v40 migration 事务失败时保持 v39 数据库；旧版应用不能读取新能力，但既有 provider 字段不被重写。
+- schema v40/v41 migration 事务失败时保持上一个版本数据库；旧版应用不能读取新能力，但既有 provider 字段不被重写。
 - UI/IPC 上线顺序由同一桌面版本保证；生成 bindings 必须与 Rust 一起提交。
 
 ## 验证矩阵

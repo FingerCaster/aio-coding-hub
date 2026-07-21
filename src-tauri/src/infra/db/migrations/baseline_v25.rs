@@ -246,6 +246,17 @@ CREATE TABLE IF NOT EXISTS provider_models (
   last_seen_at INTEGER,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  capabilities_configured INTEGER NOT NULL DEFAULT 0
+    CHECK(capabilities_configured IN (0, 1)),
+  supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+  default_reasoning_effort TEXT
+    CHECK(default_reasoning_effort IS NULL OR default_reasoning_effort IN (
+      'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'
+    )),
+  context_window INTEGER
+    CHECK(context_window IS NULL OR (
+      typeof(context_window) = 'integer' AND context_window BETWEEN 1024 AND 10000000
+    )),
   UNIQUE(provider_id, remote_model_id),
   FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
 );

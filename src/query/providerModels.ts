@@ -7,11 +7,13 @@ import {
   type CodexManagedProfile,
 } from "../services/providers/codexManagedProfiles";
 import {
+  providerModelCapabilitiesUpdate,
   providerModelManualDelete,
   providerModelManualUpsert,
   providerModelsGet,
   providerModelsRefresh,
   type ProviderModelCatalog,
+  type ProviderModelCapabilitiesInput,
   validateProviderUuid,
 } from "../services/providers/providerModels";
 import { validateProviderId } from "../services/providers/providers";
@@ -34,6 +36,12 @@ type CodexManagedProfileDeleteInput = {
   profileUuid: string;
   providerId: number;
   providerUuid: string;
+};
+
+type ProviderModelCapabilitiesUpdateInput = ProviderModelCapabilitiesInput & {
+  providerId: number;
+  providerUuid: string;
+  modelUuid: string;
 };
 
 const providerModelsGlobalGenerations = new WeakMap<QueryClient, number>();
@@ -349,6 +357,28 @@ export function useProviderModelManualDeleteMutation() {
   return useMutation({
     mutationFn: (input: { providerId: number; providerUuid: string; modelUuid: string }) =>
       providerModelManualDelete(input.providerId, input.providerUuid, input.modelUuid),
+    onMutate: (input): ProviderModelsMutationContext =>
+      captureProviderModelsMutationContext(queryClient, input.providerId, input.providerUuid),
+    onSuccess: (result, input, context) =>
+      commitCatalogResult(
+        queryClient,
+        input.providerId,
+        input.providerUuid,
+        result,
+        context ?? { globalGeneration: -1, identityGeneration: -1 }
+      ),
+  });
+}
+
+export function useProviderModelCapabilitiesUpdateMutation() {
+  const queryClient = useQueryClient();
+  return useMutation({
+    mutationFn: (input: ProviderModelCapabilitiesUpdateInput) =>
+      providerModelCapabilitiesUpdate(input.providerId, input.providerUuid, input.modelUuid, {
+        supportedReasoningEfforts: input.supportedReasoningEfforts,
+        defaultReasoningEffort: input.defaultReasoningEffort,
+        contextWindow: input.contextWindow,
+      }),
     onMutate: (input): ProviderModelsMutationContext =>
       captureProviderModelsMutationContext(queryClient, input.providerId, input.providerUuid),
     onSuccess: (result, input, context) =>

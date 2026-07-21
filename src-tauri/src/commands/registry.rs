@@ -105,6 +105,7 @@ macro_rules! generated_command_registry {
             provider_models_refresh => crate::commands::providers::provider_models_refresh,
             provider_model_manual_upsert => crate::commands::providers::provider_model_manual_upsert,
             provider_model_manual_delete => crate::commands::providers::provider_model_manual_delete,
+            provider_model_capabilities_update => crate::commands::providers::provider_model_capabilities_update,
             codex_managed_profiles_list => crate::commands::providers::codex_managed_profiles_list,
             codex_managed_profile_create => crate::commands::providers::codex_managed_profile_create,
             codex_managed_profile_delete => crate::commands::providers::codex_managed_profile_delete,
