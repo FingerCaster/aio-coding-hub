@@ -75,6 +75,8 @@ export const usageKeys = {
       providerId: number | null;
       folderKeys?: readonly string[] | null;
       dayStartHour?: number | null;
+      fullIdleGapMinutes?: number | null;
+      sessionBreakGapMinutes?: number | null;
       excludeCx2CcGatewayBridge?: boolean | null;
     }
   ) =>
@@ -88,6 +90,8 @@ export const usageKeys = {
       input.providerId,
       normalizeKeyParts(input.folderKeys ?? []),
       input.dayStartHour ?? null,
+      input.fullIdleGapMinutes ?? null,
+      input.sessionBreakGapMinutes ?? null,
       input.excludeCx2CcGatewayBridge ?? null,
     ] as const,
   leaderboardV2: (
@@ -101,6 +105,8 @@ export const usageKeys = {
       limit: number | null;
       folderKeys?: readonly string[] | null;
       dayStartHour?: number | null;
+      fullIdleGapMinutes?: number | null;
+      sessionBreakGapMinutes?: number | null;
       excludeCx2CcGatewayBridge?: boolean | null;
     }
   ) =>
@@ -116,29 +122,10 @@ export const usageKeys = {
       input.limit,
       normalizeKeyParts(input.folderKeys ?? []),
       input.dayStartHour ?? null,
+      input.fullIdleGapMinutes ?? null,
+      input.sessionBreakGapMinutes ?? null,
       input.excludeCx2CcGatewayBridge ?? null,
     ] as const,
-  dayDetailV1: (input: {
-    day: string;
-    cliKey: CliKey | null;
-    providerId: number | null;
-    folderLimit: number | null;
-    folderKeys?: readonly string[] | null;
-    dayStartHour?: number | null;
-    excludeCx2CcGatewayBridge?: boolean | null;
-  }) =>
-    [
-      ...usageAllKey,
-      "dayDetailV1",
-      input.day,
-      input.cliKey,
-      input.providerId,
-      input.folderLimit,
-      normalizeKeyParts(input.folderKeys ?? []),
-      input.dayStartHour ?? null,
-      input.excludeCx2CcGatewayBridge ?? null,
-    ] as const,
-  dayDetailV1Disabled: () => [...usageAllKey, "dayDetailV1", "disabled"] as const,
   folderOptionsV1: (
     period: UsagePeriod,
     input: {

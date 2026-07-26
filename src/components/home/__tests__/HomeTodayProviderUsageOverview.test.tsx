@@ -1,14 +1,27 @@
 import { act, fireEvent, render, screen, within } from "@testing-library/react";
+import type { UseQueryResult } from "@tanstack/react-query";
+import userEvent from "@testing-library/user-event";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { HomeTodayProviderUsageOverview } from "../HomeTodayProviderUsageOverview";
 import { useHomeTokenCostDataModel } from "../useHomeTokenCostDataModel";
+import { useUsageLeaderboardV2Query } from "../../../query/usage";
 import type { RequestLogSummary } from "../../../services/gateway/requestLogs";
 import type { TraceSession } from "../../../services/gateway/traceStore";
 import type { UsageLeaderboardRow } from "../../../services/usage/usage";
+import { HOME_USAGE_DEVELOPMENT_TIME_STORAGE_KEY } from "../../../services/home/homeUsageDevelopmentTime";
 
 vi.mock("../useHomeTokenCostDataModel", () => ({
   useHomeTokenCostDataModel: vi.fn(),
 }));
+
+vi.mock("../../../query/usage", async () => {
+  const actual =
+    await vi.importActual<typeof import("../../../query/usage")>("../../../query/usage");
+  return {
+    ...actual,
+    useUsageLeaderboardV2Query: vi.fn(),
+  };
+});
 
 function createActiveSession(
   providerName: string,
@@ -92,12 +105,21 @@ function createActiveRequestFromTrace(trace: TraceSession) {
 
 function createLeaderboardRow(
   overrides: Pick<UsageLeaderboardRow, "key" | "name"> &
-    Partial<Omit<UsageLeaderboardRow, "key" | "name">>
+    Partial<Omit<UsageLeaderboardRow, "key" | "name" | "hourly_estimated_development_time_ms">> & {
+      hourly_estimated_development_time_ms?: number[] | null;
+    }
 ): UsageLeaderboardRow {
-  const { key, name, ...rest } = overrides;
+  const {
+    key,
+    name,
+    folder_path = null,
+    hourly_estimated_development_time_ms = null,
+    ...rest
+  } = overrides;
   return {
     key,
     name,
+    folder_path,
     requests_total: 1,
     requests_success: 1,
     requests_failed: 0,
@@ -110,6 +132,9 @@ function createLeaderboardRow(
     total_duration_ms: 900,
     first_request_created_at_ms: null,
     last_request_created_at_ms: null,
+    last_request_completed_at_ms: null,
+    estimated_development_time_ms: null,
+    hourly_estimated_development_time_ms,
     avg_duration_ms: 900,
     avg_ttfb_ms: 200,
     avg_output_tokens_per_second: 90,
@@ -312,14 +337,65 @@ function rowCellTexts(row: HTMLElement) {
     .map((cell) => cell.textContent?.trim() ?? "");
 }
 
+function mockDayLeaderboardRows(
+  rows: Array<Pick<UsageLeaderboardRow, "key"> & Partial<UsageLeaderboardRow>>
+) {
+  const data = rows.map(({ key, name, ...row }) =>
+    createLeaderboardRow({ key, name: name ?? key, ...row })
+  );
+  const result = {
+    data,
+    isLoading: false,
+    isError: false,
+    isSuccess: true,
+    isFetching: false,
+    isPending: false,
+    isPaused: false,
+    isEnabled: true,
+    isLoadingError: false,
+    isRefetchError: false,
+    isRefetching: false,
+    isStale: false,
+    isFetched: true,
+    isFetchedAfterMount: true,
+    isPlaceholderData: false,
+    isInitialLoading: false,
+    status: "success",
+    fetchStatus: "idle",
+    failureCount: 0,
+    failureReason: null,
+    errorUpdateCount: 0,
+    dataUpdatedAt: Date.now(),
+    errorUpdatedAt: 0,
+    error: null,
+    refetch: vi.fn().mockResolvedValue({ data }),
+    promise: Promise.resolve(data),
+  } as UseQueryResult<UsageLeaderboardRow[]>;
+  vi.mocked(useUsageLeaderboardV2Query).mockReturnValue(result);
+}
+
 describe("components/home/HomeTodayProviderUsageOverview", () => {
   beforeEach(() => {
     vi.clearAllMocks();
     window.localStorage.removeItem("homeUsageDayStartHour");
+    window.localStorage.removeItem(HOME_USAGE_DEVELOPMENT_TIME_STORAGE_KEY);
     Object.defineProperty(document, "visibilityState", { value: "visible", configurable: true });
+    mockDayLeaderboardRows([
+      {
+        key: "2026-04-16",
+        first_request_created_at_ms: new Date(2026, 3, 16, 8, 15).getTime(),
+        last_request_completed_at_ms: new Date(2026, 3, 16, 23, 34).getTime(),
+        estimated_development_time_ms: 12_600_000,
+        hourly_estimated_development_time_ms: [
+          0, 0, 0, 0, 0, 0, 0, 0, 3_600_000, 1_800_000, 1_200_000, 0, 0, 0, 0, 0, 0, 0, 3_000_000,
+          0, 0, 0, 0, 3_000_000,
+        ],
+      },
+    ]);
   });
 
-  it("uses the fixed today provider query config and renders summary plus top providers", () => {
+  it("uses the fixed today provider query config and renders summary plus top providers", async () => {
+    const user = userEvent.setup();
     mockDataModel();
 
     render(<HomeTodayProviderUsageOverview devPreviewEnabled={true} activeSessions={[]} />);
@@ -334,6 +410,8 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           cliKey: null,
           providerId: null,
           dayStartHour: 0,
+          fullIdleGapMinutes: 15,
+          sessionBreakGapMinutes: 30,
           excludeCx2CcGatewayBridge: true,
         },
         previewFactor: 1,
@@ -350,22 +428,85 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
         },
       },
     });
+    expect(vi.mocked(useUsageLeaderboardV2Query)).toHaveBeenCalledWith(
+      "day",
+      "daily",
+      expect.objectContaining({
+        startTs: null,
+        endTs: null,
+        dayStartHour: 0,
+        fullIdleGapMinutes: 15,
+        sessionBreakGapMinutes: 30,
+        limit: null,
+        excludeCx2CcGatewayBridge: true,
+      }),
+      expect.objectContaining({
+        refetchIntervalMs: 60_000,
+        refetchOnMount: "always",
+      })
+    );
 
     const totalWithCacheCard = screen.getByText("含缓存总 Token").parentElement;
-    const inputOutputTokenCard = screen.getAllByText("输入+输出 Token")[0]?.parentElement;
-    const cacheHitRateCard = screen.getAllByText("缓存命中率")[0]?.parentElement;
-    const totalDurationCard = screen.getByText("请求总耗时").parentElement;
+    const inputOutputCacheCard = screen.getByText("输入+出/缓存率").parentElement;
+    const activityRangeCard = screen.getByText("活动范围").parentElement;
     expect(totalWithCacheCard).toBeTruthy();
-    expect(inputOutputTokenCard).toBeTruthy();
-    expect(cacheHitRateCard).toBeTruthy();
-    expect(totalDurationCard).toBeTruthy();
+    expect(inputOutputCacheCard).toBeTruthy();
+    expect(activityRangeCard).toBeTruthy();
     expect(within(totalWithCacheCard as HTMLElement).getByText("25.0K")).toBeInTheDocument();
-    expect(within(inputOutputTokenCard as HTMLElement).getByText("20.0K")).toBeInTheDocument();
-    expect(within(cacheHitRateCard as HTMLElement).getByText("18.8%")).toBeInTheDocument();
-    expect(within(totalDurationCard as HTMLElement).getByText("7m6s")).toBeInTheDocument();
-    expect(screen.getByText("总请求数")).toBeInTheDocument();
-    expect(screen.getByText("20")).toBeInTheDocument();
-    expect(screen.getAllByText("总花费").length).toBeGreaterThan(0);
+    expect(
+      within(inputOutputCacheCard as HTMLElement).getByText("20.0K/18.8%")
+    ).toBeInTheDocument();
+    expect(within(activityRangeCard as HTMLElement).getByText("08:15–23:34")).toBeInTheDocument();
+    fireEvent.click(activityRangeCard as HTMLElement);
+    expect(within(activityRangeCard as HTMLElement).queryByText("活动范围")).toBeNull();
+    expect(within(activityRangeCard as HTMLElement).getByLabelText("逐小时活动趋势")).toHaveClass(
+      "h-5"
+    );
+    fireEvent.keyDown(activityRangeCard as HTMLElement, { key: "Enter" });
+    expect(within(activityRangeCard as HTMLElement).getByText("活动范围")).toBeInTheDocument();
+    const estimatedDevelopmentTimeCard = screen.getByText("预估开发时间").closest(".relative");
+    expect(estimatedDevelopmentTimeCard).toBeTruthy();
+    expect(screen.getByText("预估开发时间").parentElement).toHaveClass("flex", "h-4", "leading-4");
+    expect(screen.getByText("含缓存总 Token")).toHaveClass("flex", "h-4", "leading-4");
+    expect(
+      within(estimatedDevelopmentTimeCard as HTMLElement).getByText("3h30m")
+    ).toBeInTheDocument();
+    expect(screen.queryByText("总请求数")).not.toBeInTheDocument();
+    const totalCostCard = screen.getAllByText("总花费")[0]?.parentElement;
+    expect(totalCostCard).toBeTruthy();
+    const summaryCards = totalWithCacheCard?.parentElement;
+    expect(summaryCards).toBeTruthy();
+    expect(
+      Array.from((summaryCards as HTMLElement).children).map((card) => card.textContent)
+    ).toEqual([
+      "含缓存总 Token25.0K",
+      "输入+出/缓存率20.0K/18.8%",
+      "活动范围08:15–23:34",
+      "预估开发时间3h30m",
+      "总花费$2.21",
+    ]);
+    expect(within(summaryCards as HTMLElement).queryByText("输入+输出 Token")).toBeNull();
+    expect(within(summaryCards as HTMLElement).queryByText("缓存命中率")).toBeNull();
+    expect(
+      (estimatedDevelopmentTimeCard as HTMLElement).compareDocumentPosition(
+        totalCostCard as HTMLElement
+      ) & Node.DOCUMENT_POSITION_FOLLOWING
+    ).toBeTruthy();
+    await user.hover(screen.getByText("预估开发时间").parentElement as HTMLElement);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("15–30 分钟逐步减少");
+    fireEvent.click(estimatedDevelopmentTimeCard as HTMLElement);
+    expect(
+      within(estimatedDevelopmentTimeCard as HTMLElement).getByText("请求总耗时")
+    ).toBeInTheDocument();
+    expect(
+      within(estimatedDevelopmentTimeCard as HTMLElement).getByText("7m6s")
+    ).toBeInTheDocument();
+    expect(estimatedDevelopmentTimeCard).toHaveAttribute("aria-pressed", "true");
+    fireEvent.keyDown(estimatedDevelopmentTimeCard as HTMLElement, { key: "Enter" });
+    expect(
+      within(estimatedDevelopmentTimeCard as HTMLElement).getByText("预估开发时间")
+    ).toBeInTheDocument();
+    expect(estimatedDevelopmentTimeCard).toHaveAttribute("aria-pressed", "false");
     expect(screen.getByText("$2.21")).toBeInTheDocument();
     const providerHeader = screen.getByText("供应商").closest("th");
     const usageTable = screen.getByRole("table", { name: "今日供应商用量" });
@@ -440,6 +581,18 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
   it("uses the shared stored statistics day start hour for today overview queries", () => {
     window.localStorage.setItem("homeUsageDayStartHour", "7");
     mockDataModel();
+    mockDayLeaderboardRows([
+      {
+        key: "2026-04-16",
+        first_request_created_at_ms: new Date(2026, 3, 16, 20, 0).getTime(),
+        last_request_completed_at_ms: new Date(2026, 3, 17, 2, 5).getTime(),
+        estimated_development_time_ms: 12_600_000,
+        hourly_estimated_development_time_ms: [
+          3_000_000, 0, 4_200_000, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 3_600_000,
+          1_800_000, 0, 0,
+        ],
+      },
+    ]);
 
     render(<HomeTodayProviderUsageOverview activeSessions={[]} />);
 
@@ -458,6 +611,31 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
         }),
       })
     );
+    expect(screen.getByText("20:00–次日02:05")).toBeInTheDocument();
+  });
+
+  it("uses shared development time thresholds for the top card query and tooltip", async () => {
+    const user = userEvent.setup();
+    window.localStorage.setItem(
+      HOME_USAGE_DEVELOPMENT_TIME_STORAGE_KEY,
+      JSON.stringify({ fullIdleGapMinutes: 10, sessionBreakGapMinutes: 45 })
+    );
+    mockDataModel();
+
+    render(<HomeTodayProviderUsageOverview activeSessions={[]} />);
+
+    expect(vi.mocked(useUsageLeaderboardV2Query)).toHaveBeenCalledWith(
+      "day",
+      "daily",
+      expect.objectContaining({
+        fullIdleGapMinutes: 10,
+        sessionBreakGapMinutes: 45,
+      }),
+      expect.anything()
+    );
+
+    await user.hover(screen.getByText("预估开发时间").parentElement as HTMLElement);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("10–45 分钟逐步减少");
   });
 
   it("disables polling while the page is hidden", () => {
@@ -476,6 +654,8 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           cliKey: null,
           providerId: null,
           dayStartHour: 0,
+          fullIdleGapMinutes: 15,
+          sessionBreakGapMinutes: 30,
           excludeCx2CcGatewayBridge: true,
         },
         previewFactor: 1,
@@ -870,6 +1050,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
         {
           key: "codex:88",
           name: "codex/鹿森",
+          folder_path: null,
           requests_total: 9,
           requests_success: 9,
           requests_failed: 0,
@@ -882,6 +1063,9 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           total_duration_ms: 7_380,
           first_request_created_at_ms: null,
           last_request_created_at_ms: null,
+          last_request_completed_at_ms: null,
+          estimated_development_time_ms: null,
+          hourly_estimated_development_time_ms: null,
           avg_duration_ms: 820,
           avg_ttfb_ms: 210,
           avg_output_tokens_per_second: 108,
@@ -954,6 +1138,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
         {
           key: "claude:1",
           name: "Claude Main",
+          folder_path: null,
           requests_total: 5,
           requests_success: 5,
           requests_failed: 0,
@@ -966,6 +1151,9 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           total_duration_ms: 4_500,
           first_request_created_at_ms: null,
           last_request_created_at_ms: null,
+          last_request_completed_at_ms: null,
+          estimated_development_time_ms: null,
+          hourly_estimated_development_time_ms: null,
           avg_duration_ms: 900,
           avg_ttfb_ms: 220,
           avg_output_tokens_per_second: 90,
@@ -987,6 +1175,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
         {
           key: "claude:1",
           name: "Claude Main",
+          folder_path: null,
           requests_total: 5,
           requests_success: 5,
           requests_failed: 0,
@@ -999,6 +1188,9 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
           total_duration_ms: 4_500,
           first_request_created_at_ms: null,
           last_request_created_at_ms: null,
+          last_request_completed_at_ms: null,
+          estimated_development_time_ms: null,
+          hourly_estimated_development_time_ms: null,
           avg_duration_ms: 900,
           avg_ttfb_ms: 220,
           avg_output_tokens_per_second: 90,
@@ -1088,7 +1280,7 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
     vi.useRealTimers();
   });
 
-  it("shows a dash for cache hit rate when the summary has no denominator", () => {
+  it("shows a dash when the activity range has no request timestamps", () => {
     mockDataModel({
       summary: {
         requests_total: 0,
@@ -1111,11 +1303,20 @@ describe("components/home/HomeTodayProviderUsageOverview", () => {
       },
       rows: [],
     });
+    mockDayLeaderboardRows([
+      {
+        key: "2026-04-16",
+        first_request_created_at_ms: null,
+        last_request_completed_at_ms: null,
+        estimated_development_time_ms: 0,
+      },
+    ]);
 
     render(<HomeTodayProviderUsageOverview />);
 
-    expect(screen.getByText("缓存命中率")).toBeInTheDocument();
-    expect(screen.getByText("—")).toBeInTheDocument();
+    const activityRangeCard = screen.getByText("活动范围").parentElement;
+    expect(activityRangeCard).toBeTruthy();
+    expect(within(activityRangeCard as HTMLElement).getByText("—")).toBeInTheDocument();
     expect(screen.getByText("总花费")).toBeInTheDocument();
   });
 

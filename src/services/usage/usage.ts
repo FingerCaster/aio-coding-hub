@@ -1,9 +1,5 @@
 import {
   commands,
-  type UsageDayDetailParams as GeneratedUsageDayDetailParams,
-  type UsageDayDetailV1,
-  type UsageDayFolderRow,
-  type UsageDayHourRow,
   type UsageFolderOptionV1,
   type UsageDayRow,
   type UsageHourlyRow,
@@ -25,6 +21,23 @@ import {
 } from "../generatedTypeUtils";
 import type { CliKey } from "../providers/providers";
 import { CLI_KEYS } from "../../constants/clis";
+import {
+  USAGE_DEFAULT_FULL_IDLE_GAP_MINUTES,
+  USAGE_DEFAULT_SESSION_BREAK_GAP_MINUTES,
+  USAGE_FULL_IDLE_GAP_MINUTES_MAX,
+  USAGE_FULL_IDLE_GAP_MINUTES_MIN,
+  USAGE_SESSION_BREAK_GAP_MINUTES_MAX,
+  USAGE_SESSION_BREAK_GAP_MINUTES_MIN,
+} from "../../constants/usageDevelopmentTime";
+
+export {
+  USAGE_DEFAULT_FULL_IDLE_GAP_MINUTES,
+  USAGE_DEFAULT_SESSION_BREAK_GAP_MINUTES,
+  USAGE_FULL_IDLE_GAP_MINUTES_MAX,
+  USAGE_FULL_IDLE_GAP_MINUTES_MIN,
+  USAGE_SESSION_BREAK_GAP_MINUTES_MAX,
+  USAGE_SESSION_BREAK_GAP_MINUTES_MIN,
+} from "../../constants/usageDevelopmentTime";
 
 const CLI_KEY_VALUES = CLI_KEYS;
 
@@ -35,11 +48,10 @@ export const USAGE_LEADERBOARD_V2_DEFAULT_LIMIT = 200;
 export const USAGE_LEADERBOARD_V2_MAX_LIMIT = 200;
 export const USAGE_HOURLY_SERIES_MIN_DAYS = 1;
 export const USAGE_HOURLY_SERIES_MAX_DAYS = 60;
-export const USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT = 50;
 export const USAGE_PROVIDER_CACHE_RATE_TREND_MAX_LIMIT = 200;
 
 export type UsageRange = "today" | "last7" | "last30" | "month" | "all";
-export type UsageScope = "cli" | "provider" | "model" | "day";
+export type UsageScope = "cli" | "provider" | "model" | "folder" | "day";
 export type UsagePeriod = "daily" | "weekly" | "monthly" | "allTime" | "custom";
 
 export type UsageProviderRow = Override<
@@ -63,28 +75,15 @@ export type NormalizedUsageQueryInputV2 = {
   providerId: number | null;
   folderKeys: string[] | null;
   dayStartHour: number | null;
+  fullIdleGapMinutes: number | null;
+  sessionBreakGapMinutes: number | null;
   excludeCx2CcGatewayBridge: boolean | null;
 };
-export type UsageDayDetailInput = Override<
-  OptionalNullableGeneratedFields<GeneratedUsageDayDetailParams>,
-  {
-    cliKey?: CliKey | null;
-  }
->;
 export type UsageProviderCacheRateTrendInput = Omit<
   UsageQueryInputV2,
-  "folderKeys" | "dayStartHour"
+  "folderKeys" | "dayStartHour" | "fullIdleGapMinutes" | "sessionBreakGapMinutes"
 > & {
   limit?: number | null;
-};
-export type NormalizedUsageDayDetailInput = {
-  day: string;
-  cliKey: CliKey | null;
-  providerId: number | null;
-  folderLimit: number | null;
-  folderKeys: string[] | null;
-  dayStartHour: number | null;
-  excludeCx2CcGatewayBridge: boolean | null;
 };
 
 export function normalizeUsageLeaderboardCsvExportFilePath(filePath: string): string {
@@ -140,14 +139,6 @@ export function normalizeUsageHourlySeriesDays(days: number): number {
   return normalized ?? USAGE_HOURLY_SERIES_MIN_DAYS;
 }
 
-export function normalizeUsageDayDetailFolderLimit(limit?: number | null): number | null {
-  return normalizeBoundedInteger(
-    "usage day detail folderLimit",
-    limit,
-    USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT
-  );
-}
-
 export function normalizeUsageProviderCacheRateTrendLimit(limit?: number | null): number | null {
   return normalizeBoundedInteger(
     "usage provider cache rate trend limit",
@@ -190,6 +181,19 @@ function normalizeUsageDayStartHour(value?: number | null): number | null {
   return value;
 }
 
+function normalizeDevelopmentTimeGapMinutes(
+  label: string,
+  value: number | null | undefined,
+  min: number,
+  max: number
+): number | null {
+  if (value == null) return null;
+  if (!Number.isSafeInteger(value) || value < min || value > max) {
+    throw new Error(`SEC_INVALID_INPUT: invalid ${label}=${value}`);
+  }
+  return value;
+}
+
 function normalizeUsageBoolean(label: string, value: boolean | null | undefined): boolean | null {
   if (value == null) return null;
   if (typeof value !== "boolean") {
@@ -227,6 +231,26 @@ export function normalizeUsageSummaryInput(input?: {
 }
 
 export function normalizeUsageQueryInputV2(input?: UsageQueryInputV2): NormalizedUsageQueryInputV2 {
+  const fullIdleGapMinutes = normalizeDevelopmentTimeGapMinutes(
+    "fullIdleGapMinutes",
+    input?.fullIdleGapMinutes,
+    USAGE_FULL_IDLE_GAP_MINUTES_MIN,
+    USAGE_FULL_IDLE_GAP_MINUTES_MAX
+  );
+  const sessionBreakGapMinutes = normalizeDevelopmentTimeGapMinutes(
+    "sessionBreakGapMinutes",
+    input?.sessionBreakGapMinutes,
+    USAGE_SESSION_BREAK_GAP_MINUTES_MIN,
+    USAGE_SESSION_BREAK_GAP_MINUTES_MAX
+  );
+  if (
+    (fullIdleGapMinutes ?? USAGE_DEFAULT_FULL_IDLE_GAP_MINUTES) >=
+    (sessionBreakGapMinutes ?? USAGE_DEFAULT_SESSION_BREAK_GAP_MINUTES)
+  ) {
+    throw new Error(
+      "SEC_INVALID_INPUT: fullIdleGapMinutes must be less than sessionBreakGapMinutes"
+    );
+  }
   return {
     startTs: normalizeUsageTimestamp("startTs", input?.startTs),
     endTs: normalizeUsageTimestamp("endTs", input?.endTs),
@@ -234,48 +258,11 @@ export function normalizeUsageQueryInputV2(input?: UsageQueryInputV2): Normalize
     providerId: normalizeUsageProviderId(input?.providerId),
     folderKeys: normalizeUsageFolderKeys(input?.folderKeys),
     dayStartHour: normalizeUsageDayStartHour(input?.dayStartHour),
+    fullIdleGapMinutes,
+    sessionBreakGapMinutes,
     excludeCx2CcGatewayBridge: normalizeUsageBoolean(
       "excludeCx2CcGatewayBridge",
       input?.excludeCx2CcGatewayBridge
-    ),
-  };
-}
-
-export function normalizeUsageDay(day: string): string {
-  const normalizedDay = day.trim();
-  const match = /^(\d{4})-(\d{2})-(\d{2})$/.exec(normalizedDay);
-  if (!match) {
-    throw new Error(`SEC_INVALID_INPUT: invalid day=${normalizedDay}`);
-  }
-
-  const year = Number(match[1]);
-  const month = Number(match[2]);
-  const date = Number(match[3]);
-  const parsed = new Date(Date.UTC(year, month - 1, date));
-  if (
-    parsed.getUTCFullYear() !== year ||
-    parsed.getUTCMonth() !== month - 1 ||
-    parsed.getUTCDate() !== date
-  ) {
-    throw new Error(`SEC_INVALID_INPUT: invalid day=${normalizedDay}`);
-  }
-
-  return normalizedDay;
-}
-
-export function normalizeUsageDayDetailInput(
-  input: UsageDayDetailInput
-): NormalizedUsageDayDetailInput {
-  return {
-    day: normalizeUsageDay(input.day),
-    cliKey: validateUsageCliKey(input.cliKey),
-    providerId: normalizeUsageProviderId(input.providerId),
-    folderLimit: normalizeUsageDayDetailFolderLimit(input.folderLimit),
-    folderKeys: normalizeUsageFolderKeys(input.folderKeys),
-    dayStartHour: normalizeUsageDayStartHour(input.dayStartHour),
-    excludeCx2CcGatewayBridge: normalizeUsageBoolean(
-      "excludeCx2CcGatewayBridge",
-      input.excludeCx2CcGatewayBridge
     ),
   };
 }
@@ -293,19 +280,8 @@ function buildQueryParamsV2(
     providerId: normalizedInput.providerId,
     folderKeys: normalizedInput.folderKeys,
     dayStartHour: normalizedInput.dayStartHour,
-    excludeCx2CcGatewayBridge: normalizedInput.excludeCx2CcGatewayBridge,
-  };
-}
-
-function buildUsageDayDetailParams(input: UsageDayDetailInput): GeneratedUsageDayDetailParams {
-  const normalizedInput = normalizeUsageDayDetailInput(input);
-  return {
-    day: normalizedInput.day,
-    cliKey: normalizedInput.cliKey,
-    providerId: normalizedInput.providerId,
-    folderLimit: normalizedInput.folderLimit,
-    folderKeys: normalizedInput.folderKeys,
-    dayStartHour: normalizedInput.dayStartHour,
+    fullIdleGapMinutes: normalizedInput.fullIdleGapMinutes,
+    sessionBreakGapMinutes: normalizedInput.sessionBreakGapMinutes,
     excludeCx2CcGatewayBridge: normalizedInput.excludeCx2CcGatewayBridge,
   };
 }
@@ -419,18 +395,6 @@ export async function usageLeaderboardV2(
   });
 }
 
-export async function usageDayDetailV1(input: UsageDayDetailInput) {
-  const params = buildUsageDayDetailParams(input);
-  return invokeGeneratedIpc<UsageDayDetailV1>({
-    title: "读取日期用量详情失败",
-    cmd: "usage_day_detail_v1",
-    args: {
-      params,
-    },
-    invoke: () => commands.usageDayDetailV1(params),
-  });
-}
-
 export async function usageFolderOptionsV1(period: UsagePeriod, input?: UsageQueryInputV2) {
   const params = buildQueryParamsV2(period, input);
   return invokeGeneratedIpc<UsageFolderOptionV1[]>({
@@ -480,9 +444,6 @@ export async function usageLeaderboardCsvExport(filePath: string, csv: string) {
 }
 
 export type {
-  UsageDayDetailV1,
-  UsageDayFolderRow,
-  UsageDayHourRow,
   UsageFolderOptionV1,
   UsageDayRow,
   UsageHourlyRow,

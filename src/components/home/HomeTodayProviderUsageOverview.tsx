@@ -1,5 +1,5 @@
-import { useMemo, useSyncExternalStore } from "react";
-import { Loader2 } from "lucide-react";
+import { useCallback, useMemo, useState, useSyncExternalStore } from "react";
+import { CircleHelp, Loader2 } from "lucide-react";
 import { useDocumentVisibility } from "../../hooks/useDocumentVisibility";
 import { useWindowForeground } from "../../hooks/useWindowForeground";
 import type { GatewayActiveSession } from "../../services/gateway/gateway";
@@ -12,27 +12,35 @@ import type { RequestLogSummary } from "../../services/gateway/requestLogs";
 import type { TraceSession } from "../../services/gateway/traceStore";
 import {
   HOME_USAGE_DEFAULT_DAY_START_HOUR,
+  formatUsageDayHourMinuteFromMs,
   readHomeUsageDayStartHourFromStorage,
   subscribeHomeUsageDayStartHour,
 } from "../../services/home/homeUsageDayBoundary";
+import {
+  HOME_USAGE_DEFAULT_FULL_IDLE_GAP_MINUTES,
+  HOME_USAGE_DEFAULT_SESSION_BREAK_GAP_MINUTES,
+  readHomeUsageFullIdleGapMinutesFromStorage,
+  readHomeUsageSessionBreakGapMinutesFromStorage,
+  subscribeHomeUsageDevelopmentTimeThresholds,
+} from "../../services/home/homeUsageDevelopmentTime";
 import type { UsageLeaderboardRow, UsageSummary } from "../../services/usage/usage";
+import { useUsageLeaderboardV2Query } from "../../query/usage";
 import { Card } from "../../ui/Card";
+import { Tooltip } from "../../ui/Tooltip";
 import { computeCacheHitRate } from "../../utils/cacheRateMetrics";
 import { formatTokensMillions } from "../../utils/chartHelpers";
-import {
-  formatCompactDurationMs,
-  formatInteger,
-  formatPercent,
-  formatUsdCompact,
-} from "../../utils/formatters";
+import { formatCompactDurationMs, formatPercent, formatUsdCompact } from "../../utils/formatters";
+import { formatUnknownError } from "../../utils/errors";
 import { computeStatusBadge } from "./requestLogPresentation";
 import { QueryErrorCard } from "../shared/QueryErrorCard";
 import {
   useHomeTokenCostDataModel,
   type HomeTokenCostDataModelQueryRefreshConfig,
 } from "./useHomeTokenCostDataModel";
+import { PREVIEW_TOKEN_DAY_ROWS } from "./previewTokenData";
+import { developmentTimeEstimateTooltip } from "./developmentTimeEstimate";
 
-const SUMMARY_SKELETON_KEYS = [0, 1, 2, 3, 4, 5];
+const SUMMARY_SKELETON_KEYS = [0, 1, 2, 3, 4];
 const PROVIDER_SKELETON_KEYS = [0, 1, 2];
 const MAX_PROVIDER_ROWS = 3;
 const REALTIME_PROVIDER_HINT_LIMIT = 20;
@@ -63,15 +71,6 @@ const EMPTY_ACTIVE_REQUESTS: ActiveRequestSnapshotItem[] = [];
 function formatTokenValue(value: number | null | undefined) {
   if (value == null || !Number.isFinite(value)) return "—";
   return formatTokensMillions(value);
-}
-
-function summaryCacheHitRate(summary: UsageSummary | null) {
-  if (!summary) return NaN;
-  return computeCacheHitRate(
-    summary.input_tokens,
-    summary.cache_creation_input_tokens,
-    summary.cache_read_input_tokens
-  );
 }
 
 type SummaryMetricAccent = "blue" | "purple" | "green" | "orange" | "cyan";
@@ -284,6 +283,7 @@ function createSyntheticProviderRow(entry: ActiveProviderEntry): UsageLeaderboar
         ? `running:${entry.cliKey ?? "provider"}:${entry.providerId}`
         : `running:${normalized || "unknown"}`,
     name: entry.displayName,
+    folder_path: null,
     requests_total: 0,
     requests_success: 0,
     requests_failed: 0,
@@ -296,6 +296,9 @@ function createSyntheticProviderRow(entry: ActiveProviderEntry): UsageLeaderboar
     total_duration_ms: 0,
     first_request_created_at_ms: null,
     last_request_created_at_ms: null,
+    last_request_completed_at_ms: null,
+    estimated_development_time_ms: null,
+    hourly_estimated_development_time_ms: null,
     avg_duration_ms: null,
     avg_ttfb_ms: null,
     avg_output_tokens_per_second: null,
@@ -465,6 +468,66 @@ function rowCacheHitRate(row: UsageLeaderboardRow) {
   );
 }
 
+function activityRangeText(row: UsageLeaderboardRow | null, dayStartHour: number) {
+  if (!row) return "—";
+  const first = row.first_request_created_at_ms;
+  const last = row.last_request_completed_at_ms;
+  if (first == null || last == null || !Number.isFinite(first) || !Number.isFinite(last)) {
+    return "—";
+  }
+  const firstText = formatUsageDayHourMinuteFromMs(first, row.key, dayStartHour);
+  let lastText = formatUsageDayHourMinuteFromMs(last, row.key, dayStartHour);
+  if (!firstText || !lastText) return "—";
+
+  const firstDate = new Date(first);
+  const lastDate = new Date(last);
+  if (
+    !lastText.startsWith("次日") &&
+    (firstDate.getFullYear() !== lastDate.getFullYear() ||
+      firstDate.getMonth() !== lastDate.getMonth() ||
+      firstDate.getDate() !== lastDate.getDate())
+  ) {
+    lastText = `次日${lastText}`;
+  }
+  return `${firstText}–${lastText}`;
+}
+
+type ActivityTrendHour = {
+  hour: number;
+  estimatedDevelopmentTimeMs: number;
+};
+
+function activityTrendHours(row: UsageLeaderboardRow | null): ActivityTrendHour[] {
+  const hourly = row?.hourly_estimated_development_time_ms;
+  const first = row?.first_request_created_at_ms;
+  const last = row?.last_request_completed_at_ms;
+  if (
+    first == null ||
+    last == null ||
+    !Number.isFinite(first) ||
+    !Number.isFinite(last) ||
+    !Array.isArray(hourly) ||
+    hourly.length !== 24
+  ) {
+    return [];
+  }
+  const startHour = new Date(first).getHours();
+  const endHour = new Date(last).getHours();
+  const hours: ActivityTrendHour[] = [];
+  for (let hour = startHour; hours.length < 24; hour = (hour + 1) % 24) {
+    hours.push({ hour, estimatedDevelopmentTimeMs: Math.max(0, Number(hourly[hour]) || 0) });
+    if (hour === endHour) break;
+  }
+  return hours;
+}
+
+function activityTrendBarClass(estimatedDevelopmentTimeMs: number) {
+  if (estimatedDevelopmentTimeMs <= 0) return "h-0.5 bg-slate-300 dark:bg-slate-600";
+  if (estimatedDevelopmentTimeMs >= 3_600_000) return "bg-blue-600";
+  if (estimatedDevelopmentTimeMs >= 1_800_000) return "bg-blue-500";
+  return "bg-blue-300 dark:bg-blue-400";
+}
+
 function TableHeaderLabel({ label, note }: { label: string; note?: string }) {
   return (
     <div className="inline-flex items-baseline gap-1 whitespace-nowrap normal-case">
@@ -478,18 +541,137 @@ function SummaryMetricCard({
   title,
   value,
   accent,
+  tooltip,
+  onClick,
+  ariaLabel,
+  ariaPressed,
 }: {
   title: string;
   value: string;
   accent: SummaryMetricAccent;
+  tooltip?: string;
+  onClick?: () => void;
+  ariaLabel?: string;
+  ariaPressed?: boolean;
 }) {
+  const interactive = onClick != null;
+  const titleClassName =
+    "flex h-4 items-center gap-1 text-[11px] font-medium leading-4 text-muted-foreground";
+  const titleNode = tooltip ? (
+    <div className={titleClassName}>
+      <span>{title}</span>
+      <CircleHelp aria-hidden="true" className="h-3 w-3 shrink-0" />
+    </div>
+  ) : (
+    <div className={titleClassName}>{title}</div>
+  );
   return (
-    <Card padding="sm" className="relative h-full overflow-hidden">
+    <Card
+      padding="sm"
+      role={interactive ? "button" : undefined}
+      tabIndex={interactive ? 0 : undefined}
+      aria-label={ariaLabel}
+      aria-pressed={interactive ? ariaPressed : undefined}
+      onClick={onClick}
+      onKeyDown={(event) => {
+        if (!interactive || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        onClick?.();
+      }}
+      className={`relative h-full overflow-hidden ${
+        interactive
+          ? "cursor-pointer outline-none transition-colors hover:bg-secondary/50 focus-visible:ring-2 focus-visible:ring-blue-500/70"
+          : ""
+      }`}
+    >
       <div className={`absolute inset-x-0 top-0 h-0.5 ${SUMMARY_METRIC_ACCENT_CLASS[accent]}`} />
-      <div className="text-[11px] font-medium text-muted-foreground">{title}</div>
+      {tooltip ? (
+        <Tooltip content={tooltip} contentClassName="max-w-[320px] leading-5">
+          {titleNode}
+        </Tooltip>
+      ) : (
+        titleNode
+      )}
       <div className="mt-1 font-mono text-sm font-semibold tracking-tight text-foreground">
         {value}
       </div>
+    </Card>
+  );
+}
+
+function ActivityRangeCard({
+  row,
+  dayStartHour,
+}: {
+  row: UsageLeaderboardRow | null;
+  dayStartHour: number;
+}) {
+  const rangeText = activityRangeText(row, dayStartHour);
+  const hours = activityTrendHours(row);
+  const [showTrend, setShowTrend] = useState(false);
+  const canShowTrend = hours.length > 0;
+  const toggleTrend = () => {
+    if (canShowTrend) setShowTrend((current) => !current);
+  };
+
+  return (
+    <Card
+      padding="sm"
+      role={canShowTrend ? "button" : undefined}
+      tabIndex={canShowTrend ? 0 : undefined}
+      onClick={toggleTrend}
+      onKeyDown={(event) => {
+        if (!canShowTrend || (event.key !== "Enter" && event.key !== " ")) return;
+        event.preventDefault();
+        toggleTrend();
+      }}
+      aria-label={canShowTrend ? `${showTrend ? "收起" : "展开"}活动趋势` : undefined}
+      className="relative h-full overflow-hidden outline-none focus-visible:ring-2 focus-visible:ring-blue-500/70"
+    >
+      <div className="absolute inset-x-0 top-0 h-0.5 bg-blue-500" />
+      {showTrend ? (
+        <>
+          <div className="flex h-4 items-center font-mono text-[11px] font-medium leading-4 tabular-nums text-muted-foreground">
+            {rangeText}
+          </div>
+          <div className="mt-1 flex h-5 items-end gap-px" aria-label="逐小时活动趋势">
+            {hours.map(({ hour, estimatedDevelopmentTimeMs }) => {
+              const height = Math.min(100, (estimatedDevelopmentTimeMs / 3_600_000) * 100);
+              const hourLabel = `${String(hour).padStart(2, "0")}:00–${String(
+                (hour + 1) % 24
+              ).padStart(2, "0")}:00`;
+              const tooltip = `${hourLabel}，预估开发时间 ${formatCompactDurationMs(
+                estimatedDevelopmentTimeMs
+              )}`;
+              return (
+                <Tooltip key={hour} content={tooltip} contentClassName="max-w-[240px] leading-5">
+                  <span className="flex h-full min-w-0 flex-1 cursor-help items-end">
+                    <span
+                      className={`w-full rounded-sm ${activityTrendBarClass(
+                        estimatedDevelopmentTimeMs
+                      )}`}
+                      style={
+                        estimatedDevelopmentTimeMs > 0
+                          ? { height: `${Math.max(4, height)}%` }
+                          : undefined
+                      }
+                    />
+                  </span>
+                </Tooltip>
+              );
+            })}
+          </div>
+        </>
+      ) : (
+        <>
+          <div className="flex h-4 items-center text-[11px] font-medium leading-4 text-muted-foreground">
+            活动范围
+          </div>
+          <div className="mt-1 font-mono text-sm font-semibold tracking-tight text-foreground">
+            {rangeText}
+          </div>
+        </>
+      )}
     </Card>
   );
 }
@@ -506,12 +688,29 @@ function SummaryMetricCardSkeleton() {
 function SummaryCards({
   summary,
   totalCostUsd,
+  activityRow,
+  dayStartHour,
+  estimatedDevelopmentTimeMs,
+  developmentTimeTooltip,
   loading,
 }: {
   summary: UsageSummary | null;
   totalCostUsd: number | null;
+  activityRow: UsageLeaderboardRow | null;
+  dayStartHour: number;
+  estimatedDevelopmentTimeMs: number | null;
+  developmentTimeTooltip: string;
   loading: boolean;
 }) {
+  const [showRequestDuration, setShowRequestDuration] = useState(false);
+  const inputOutputCacheValue = `${formatTokenValue(summary?.io_total_tokens)}/${formatPercent(
+    computeCacheHitRate(
+      summary?.input_tokens,
+      summary?.cache_creation_input_tokens,
+      summary?.cache_read_input_tokens
+    )
+  )}`;
+
   if (loading && !summary) {
     return (
       <div className="grid grid-cols-1 gap-2 sm:grid-cols-2 lg:grid-cols-3">
@@ -523,31 +722,26 @@ function SummaryCards({
   }
 
   return (
-    <div className="grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-6">
+    <div className="grid grid-cols-2 gap-2 lg:grid-cols-3 xl:grid-cols-5">
       <SummaryMetricCard
         title="含缓存总 Token"
         value={formatTokenValue(summary?.total_tokens)}
         accent="purple"
       />
+      <SummaryMetricCard title="输入+出/缓存率" value={inputOutputCacheValue} accent="blue" />
+      <ActivityRangeCard row={activityRow} dayStartHour={dayStartHour} />
       <SummaryMetricCard
-        title="输入+输出 Token"
-        value={formatTokenValue(summary?.io_total_tokens)}
-        accent="blue"
-      />
-      <SummaryMetricCard
-        title="缓存命中率"
-        value={formatPercent(summaryCacheHitRate(summary))}
-        accent="purple"
-      />
-      <SummaryMetricCard
-        title="总请求数"
-        value={formatInteger(summary?.requests_total)}
+        title={showRequestDuration ? "请求总耗时" : "预估开发时间"}
+        value={
+          showRequestDuration
+            ? formatCompactDurationMs(summary?.total_duration_ms)
+            : formatCompactDurationMs(estimatedDevelopmentTimeMs)
+        }
         accent="green"
-      />
-      <SummaryMetricCard
-        title="请求总耗时"
-        value={formatCompactDurationMs(summary?.total_duration_ms)}
-        accent="cyan"
+        tooltip={showRequestDuration ? undefined : developmentTimeTooltip}
+        onClick={() => setShowRequestDuration((current) => !current)}
+        ariaLabel={showRequestDuration ? "显示预估开发时间" : "显示请求总耗时"}
+        ariaPressed={showRequestDuration}
       />
       <SummaryMetricCard title="总花费" value={formatUsdCompact(totalCostUsd)} accent="orange" />
     </div>
@@ -608,6 +802,16 @@ export function HomeTodayProviderUsageOverview({
     readHomeUsageDayStartHourFromStorage,
     () => HOME_USAGE_DEFAULT_DAY_START_HOUR
   );
+  const fullIdleGapMinutes = useSyncExternalStore(
+    subscribeHomeUsageDevelopmentTimeThresholds,
+    readHomeUsageFullIdleGapMinutesFromStorage,
+    () => HOME_USAGE_DEFAULT_FULL_IDLE_GAP_MINUTES
+  );
+  const sessionBreakGapMinutes = useSyncExternalStore(
+    subscribeHomeUsageDevelopmentTimeThresholds,
+    readHomeUsageSessionBreakGapMinutesFromStorage,
+    () => HOME_USAGE_DEFAULT_SESSION_BREAK_GAP_MINUTES
+  );
   const queryRefreshConfig = useMemo<HomeTokenCostDataModelQueryRefreshConfig>(() => {
     const refetchIntervalMs: number | false = documentVisible
       ? OVERVIEW_REFRESH_INTERVAL_MS
@@ -630,10 +834,12 @@ export function HomeTodayProviderUsageOverview({
       input: {
         ...TODAY_PROVIDER_QUERY_BASE_INPUT,
         dayStartHour,
+        fullIdleGapMinutes,
+        sessionBreakGapMinutes,
       },
       previewFactor: 1,
     }),
-    [dayStartHour]
+    [dayStartHour, fullIdleGapMinutes, sessionBreakGapMinutes]
   );
   const model = useHomeTokenCostDataModel({
     scope: "provider",
@@ -641,10 +847,33 @@ export function HomeTodayProviderUsageOverview({
     devPreviewEnabled,
     queryRefreshConfig,
   });
+  const dayLeaderboardQuery = useUsageLeaderboardV2Query(
+    "day",
+    queryConfig.period,
+    {
+      ...queryConfig.input,
+      limit: null,
+    },
+    queryRefreshConfig.leaderboard
+  );
+  const todayUsageRow = useMemo(() => {
+    const rows = model.previewActive ? PREVIEW_TOKEN_DAY_ROWS : (dayLeaderboardQuery.data ?? []);
+    return rows[0] ?? null;
+  }, [dayLeaderboardQuery.data, model.previewActive]);
+  const estimatedDevelopmentTimeMs = todayUsageRow?.estimated_development_time_ms ?? null;
+  const refreshProviderUsage = model.refresh;
+  const refetchDayLeaderboard = dayLeaderboardQuery.refetch;
+  const refresh = useCallback(() => {
+    refreshProviderUsage();
+    void refetchDayLeaderboard();
+  }, [refetchDayLeaderboard, refreshProviderUsage]);
+  const errorText =
+    model.errorText ??
+    (dayLeaderboardQuery.error ? formatUnknownError(dayLeaderboardQuery.error) : null);
 
   useWindowForeground({
     enabled: true,
-    onForeground: model.refresh,
+    onForeground: refresh,
     throttleMs: 1000,
   });
 
@@ -680,13 +909,20 @@ export function HomeTodayProviderUsageOverview({
       <SummaryCards
         summary={model.summary}
         totalCostUsd={model.totalCostUsd}
-        loading={model.loading}
+        activityRow={todayUsageRow}
+        dayStartHour={dayStartHour}
+        estimatedDevelopmentTimeMs={estimatedDevelopmentTimeMs}
+        developmentTimeTooltip={developmentTimeEstimateTooltip(
+          fullIdleGapMinutes,
+          sessionBreakGapMinutes
+        )}
+        loading={model.loading || dayLeaderboardQuery.isLoading}
       />
 
       <QueryErrorCard
-        errorText={model.errorText}
-        loading={model.fetching}
-        onRetry={model.refresh}
+        errorText={errorText}
+        loading={model.fetching || dayLeaderboardQuery.isFetching}
+        onRetry={refresh}
         message="读取今日供应商用量失败，请重试；必要时查看 Console 日志。"
       />
 
