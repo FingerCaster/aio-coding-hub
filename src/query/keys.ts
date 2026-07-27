@@ -170,6 +170,28 @@ export const usageKeys = {
       input.limit,
       input.excludeCx2CcGatewayBridge ?? null,
     ] as const,
+  providerMetricsTrendV1: (
+    period: UsagePeriod,
+    input: {
+      startTs: number | null;
+      endTs: number | null;
+      cliKey: CliKey | null;
+      providerId: number | null;
+      limit: number | null;
+      excludeCx2CcGatewayBridge?: boolean | null;
+    }
+  ) =>
+    [
+      ...usageAllKey,
+      "providerMetricsTrendV1",
+      period,
+      input.startTs,
+      input.endTs,
+      input.cliKey,
+      input.providerId,
+      input.limit,
+      input.excludeCx2CcGatewayBridge ?? null,
+    ] as const,
 };
 
 const workspacesAllKey = ["workspaces"] as const;
