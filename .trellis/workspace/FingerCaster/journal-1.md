@@ -688,3 +688,35 @@ Merged pinned origin and upstream main in an isolated worktree, preserved fork c
 ### Next Steps
 
 - None - task complete
+
+
+## Session 20: Build local Windows MSI
+
+**Date**: 2026-07-29
+**Task**: Build local Windows MSI
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Built and independently verified an unsigned Windows x64 MSI from main@fab7a968 in a clean detached worktree; preserved the protected main worktree and performed no remote operations.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+(No commits - planning session)
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
