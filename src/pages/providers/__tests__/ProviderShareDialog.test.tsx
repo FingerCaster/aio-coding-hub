@@ -19,6 +19,7 @@ vi.mock("sonner", () => ({
 
 const provider = {
   id: 7,
+  provider_uuid: "11111111-1111-4111-8111-111111111111",
   cli_key: "claude",
   name: "Share Me",
   source_provider_id: null,

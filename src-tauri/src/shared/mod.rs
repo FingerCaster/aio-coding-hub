@@ -14,3 +14,4 @@ pub(crate) mod sqlite;
 pub(crate) mod text;
 pub(crate) mod time;
 pub(crate) mod user_home;
+pub(crate) mod uuid;

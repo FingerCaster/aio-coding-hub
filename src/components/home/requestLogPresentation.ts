@@ -15,6 +15,7 @@ import {
   hasClaudeModelMappingSpecialSetting,
   resolveModelRouteMappingFromSpecialSettings,
   parseRequestLogSpecialSettings,
+  resolveAioManagedModelRouteFromSpecialSettings,
   resolveCodexReasoningEffort,
   resolveClaudeModelMappingFromSpecialSettings,
   type ModelRouteMapping,
@@ -376,6 +377,10 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
     log.special_settings_json,
     log.final_provider_id
   );
+  const managedModelRoute = resolveAioManagedModelRouteFromSpecialSettings(
+    log.special_settings_json,
+    log.final_provider_id
+  );
 
   const tags: RequestLogAuditTag[] = [];
 
@@ -432,6 +437,16 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
     );
   }
 
+  if (managedModelRoute) {
+    tags.push(
+      auditTag(
+        "AIO 受管路由",
+        "bg-sky-50/80 text-sky-700 ring-1 ring-inset ring-sky-500/10 dark:bg-sky-500/15 dark:text-sky-200 dark:ring-sky-400/20",
+        `${managedModelRoute.canonicalModel} -> ${managedModelRoute.requestedUpstreamModel} · Provider #${managedModelRoute.providerId}`
+      )
+    );
+  }
+
   if (excludedFromStats) {
     tags.push(
       auditTag(
@@ -458,6 +473,8 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
           modelRouteMapping.actualReasoningEffort
         )}（预期行为，非路由故障）。`
       : `模型路由检测：${resolveModelRouteMismatchLabel(modelRouteMapping)}。`;
+  } else if (managedModelRoute) {
+    summary = `AIO 已将 ${managedModelRoute.canonicalModel} 固定路由到 Provider #${managedModelRoute.providerId} 的 ${managedModelRoute.requestedUpstreamModel}。`;
   } else if (isAllProvidersUnavailable) {
     summary = "当前没有可用 Provider，网关未继续向已熔断或冷却中的供应商发起上游请求。";
   } else if (isClientAbort) {

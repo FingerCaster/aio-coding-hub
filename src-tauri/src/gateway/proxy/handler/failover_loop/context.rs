@@ -28,6 +28,8 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) created_at: i64,
     pub(super) session_id: &'a Option<String>,
     pub(super) requested_model: &'a Option<String>,
+    pub(super) managed_model_route:
+        Option<&'a crate::gateway::managed_model_route::ManagedModelRoute>,
     pub(super) cx2cc_settings: &'a Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: &'a Arc<Mutex<Vec<serde_json::Value>>>,
@@ -57,6 +59,8 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) created_at: i64,
     pub(super) session_id: &'a Option<String>,
     pub(super) requested_model: &'a Option<String>,
+    pub(super) managed_model_route:
+        Option<&'a crate::gateway::managed_model_route::ManagedModelRoute>,
     pub(super) cx2cc_settings: &'a Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: &'a Arc<Mutex<Vec<serde_json::Value>>>,
@@ -96,6 +100,7 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             created_at: args.created_at,
             session_id: args.session_id,
             requested_model: args.requested_model,
+            managed_model_route: args.managed_model_route,
             cx2cc_settings: args.cx2cc_settings,
             effective_sort_mode_id: args.effective_sort_mode_id,
             special_settings: args.special_settings,
@@ -133,6 +138,7 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) created_at: i64,
     pub(super) session_id: Option<String>,
     pub(super) requested_model: Option<String>,
+    pub(super) managed_model_route: Option<crate::gateway::managed_model_route::ManagedModelRoute>,
     pub(super) cx2cc_settings: Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -163,6 +169,7 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             created_at: ctx.created_at,
             session_id: ctx.session_id.clone(),
             requested_model: ctx.requested_model.clone(),
+            managed_model_route: ctx.managed_model_route.cloned(),
             cx2cc_settings: ctx.cx2cc_settings.clone(),
             effective_sort_mode_id: ctx.effective_sort_mode_id,
             special_settings: Arc::clone(ctx.special_settings),
@@ -264,11 +271,14 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         attempt_started,
         attempts: attempts.to_vec(),
         attempts_json,
-        requested_model: provider_ctx
-            .active_requested_model
-            .as_ref()
-            .cloned()
-            .or_else(|| ctx.requested_model.clone()),
+        requested_model:
+            crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+                ctx.managed_model_route.as_ref(),
+                ctx.requested_model.as_deref(),
+                provider_ctx.active_requested_model.as_deref(),
+            ),
+        requested_upstream_model: provider_ctx.active_requested_model.clone(),
+        managed_model_route: ctx.managed_model_route.is_some(),
         created_at_ms: ctx.created_at_ms,
         created_at: ctx.created_at,
         provider_cooldown_secs: ctx.provider_cooldown_secs,
@@ -281,6 +291,7 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
             &ctx.cli_key,
         ))),
         observed_upstream_model: Arc::new(Mutex::new(None)),
+        observed_upstream_conflicting_model: Arc::new(Mutex::new(None)),
         observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),
         fake_200_detected: false,
         fake_200_quota_exhausted: false,

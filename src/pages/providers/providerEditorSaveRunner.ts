@@ -3,8 +3,15 @@ import { logToConsole } from "../../services/consoleLog";
 import type { SaveActionContext } from "./providerEditorActionContext";
 import { presentProviderEditorPayloadBuildError } from "./providerEditorFeedback";
 import { buildProviderEditorUpsertInput } from "./providerEditorSubmitModel";
+import {
+  formatProviderModelDiscoveryError,
+  formatProviderModelFeatureError,
+} from "../../services/providers/providerModels";
 
-export async function runProviderEditorSave(ctx: SaveActionContext) {
+export async function runProviderEditorSave(
+  ctx: SaveActionContext,
+  options: { refreshModels?: boolean } = {}
+) {
   if (ctx.saving) return;
 
   const built = buildProviderEditorUpsertInput({
@@ -63,7 +70,34 @@ export async function runProviderEditorSave(ctx: SaveActionContext) {
       note: saved.note,
       stream_idle_timeout_seconds: saved.stream_idle_timeout_seconds,
     });
-    toast(ctx.mode === "create" ? "Provider 已保存" : "Provider 已更新");
+    if (options.refreshModels) {
+      try {
+        const catalog = await ctx.refreshProviderModels(saved.id, saved.provider_uuid);
+        const refreshError = formatProviderModelDiscoveryError(catalog.lastErrorCode);
+        if (refreshError) {
+          toast(`Provider 已保存，模型获取失败：${refreshError}`);
+          ctx.onSaved(saved.cli_key);
+          ctx.onModelFetchFailedAfterSave?.(saved);
+          return;
+        }
+        toast(
+          `${ctx.mode === "create" ? "Provider 已保存" : "Provider 已更新"}，已获取 ${catalog.models.length} 个模型`
+        );
+      } catch (error) {
+        const safeError = formatProviderModelFeatureError(error);
+        logToConsole("warn", "Provider 已保存，但模型获取失败", {
+          cli: saved.cli_key,
+          provider_id: saved.id,
+          error: safeError,
+        });
+        toast(`Provider 已保存，模型获取失败：${safeError}`);
+        ctx.onSaved(saved.cli_key);
+        ctx.onModelFetchFailedAfterSave?.(saved);
+        return;
+      }
+    } else {
+      toast(ctx.mode === "create" ? "Provider 已保存" : "Provider 已更新");
+    }
 
     ctx.onSaved(saved.cli_key);
     ctx.onOpenChange(false);

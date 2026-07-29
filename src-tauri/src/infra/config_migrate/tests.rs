@@ -321,6 +321,73 @@ VALUES (?1, 'https://img.example.com/v1', 'gpt-image-2', ?2, 1, 1)
     .expect("insert image gen config");
 }
 
+fn seed_direct_codex_provider(
+    test_app: &ConfigMigrateTestApp,
+    name: &str,
+) -> crate::providers::ProviderSummary {
+    crate::providers::upsert(
+        &test_app.db,
+        crate::providers::ProviderUpsertParams {
+            provider_id: None,
+            cli_key: "codex".to_string(),
+            name: name.to_string(),
+            base_urls: vec!["https://example.invalid/v1".to_string()],
+            base_url_mode: crate::providers::ProviderBaseUrlMode::Order,
+            auth_mode: Some(crate::providers::ProviderAuthMode::ApiKey),
+            api_key: Some("test-key".to_string()),
+            enabled: true,
+            cost_multiplier: 1.0,
+            priority: Some(100),
+            claude_models: None,
+            model_mapping: None,
+            availability_test_model: None,
+            limit_5h_usd: None,
+            limit_daily_usd: None,
+            daily_reset_mode: Some(crate::providers::DailyResetMode::Fixed),
+            daily_reset_time: Some("00:00:00".to_string()),
+            limit_weekly_usd: None,
+            limit_monthly_usd: None,
+            limit_total_usd: None,
+            tags: None,
+            note: None,
+            source_provider_id: None,
+            bridge_type: None,
+            stream_idle_timeout_seconds: None,
+            extension_values: None,
+            account_usage_credentials_patch: None,
+            account_usage_credentials_copy_from_provider_id: None,
+            upstream_retry_policy_override: None,
+            upstream_retry_policy_override_specified: false,
+        },
+    )
+    .expect("seed direct Codex provider")
+}
+
+fn configure_provider_model_for_profile(
+    test_app: &ConfigMigrateTestApp,
+    provider: &crate::providers::ProviderSummary,
+    model_uuid: &str,
+) {
+    crate::provider_models::update_capabilities(
+        &test_app.handle(),
+        &test_app.db,
+        provider.id,
+        &provider.provider_uuid,
+        model_uuid,
+        &crate::provider_models::ProviderModelCapabilitiesInput {
+            supported_reasoning_efforts: vec![
+                crate::provider_models::ProviderModelReasoningEffort::Low,
+                crate::provider_models::ProviderModelReasoningEffort::High,
+            ],
+            default_reasoning_effort: Some(
+                crate::provider_models::ProviderModelReasoningEffort::High,
+            ),
+            context_window: Some(262_144),
+        },
+    )
+    .expect("configure provider model capabilities");
+}
+
 #[test]
 fn config_export_import_round_trips_image_gen_configs() {
     let test_app = ConfigMigrateTestApp::new();
@@ -655,6 +722,133 @@ fn config_import_serializes_second_import_until_first_finishes() {
         second_settings.log_retention_days
     );
     assert_eq!(canonical.auto_start, second_settings.auto_start);
+}
+
+#[test]
+fn config_import_serializes_profile_create_until_runtime_failure_rollback_finishes() {
+    use std::sync::mpsc;
+    use std::time::{Duration, Instant};
+
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let old_codex_home = test_app.home.path().join("codex-old");
+    let new_codex_home = test_app.home.path().join("codex-new");
+
+    let mut previous = settings::read(&app).expect("previous settings");
+    previous.codex_home_mode = settings::CodexHomeMode::Custom;
+    previous.codex_home_override = old_codex_home.to_string_lossy().into_owned();
+    settings::write(&app, &previous).expect("set original Codex home");
+
+    let provider = seed_direct_codex_provider(&test_app, "Concurrent Profile");
+    let model_uuid = crate::provider_models::manual_upsert(
+        &test_app.db,
+        provider.id,
+        &provider.provider_uuid,
+        "grok-4.5",
+    )
+    .expect("manual model")
+    .models[0]
+        .model_uuid
+        .clone();
+    configure_provider_model_for_profile(&test_app, &provider, &model_uuid);
+
+    let mut bundle = config_export(&app, &test_app.db).expect("export v4 bundle");
+    let mut imported_settings = previous.clone();
+    imported_settings.codex_home_override = new_codex_home.to_string_lossy().into_owned();
+    bundle.settings = serde_json::to_string(&imported_settings).expect("imported settings");
+
+    let (published_tx, published_rx) = mpsc::channel();
+    let (release_tx, release_rx) = mpsc::channel();
+    crate::app::autostart::set_after_whole_settings_cas_test_hook(Box::new(move || {
+        published_tx
+            .send(())
+            .expect("publish settings CAS boundary");
+        let _ = release_rx.recv();
+    }));
+    set_config_import_cli_runtime_sync_test_hook(Box::new(|| {
+        Some("forced runtime failure after Codex home publication".to_string())
+    }));
+    crate::codex_managed_profiles::reset_profile_lifecycle_lock_attempts_for_test();
+
+    let import_app = app.clone();
+    let import_db = test_app.db.clone();
+    let import_thread = std::thread::spawn(move || config_import(&import_app, &import_db, bundle));
+    published_rx
+        .recv_timeout(Duration::from_secs(5))
+        .expect("import must publish settings while holding the Profile lifecycle lock");
+
+    let create_app = app.clone();
+    let create_db = test_app.db.clone();
+    let create_model_uuid = model_uuid.clone();
+    let create_thread = std::thread::spawn(move || {
+        crate::codex_managed_profiles::create(
+            &create_app,
+            &create_db,
+            "rollback-create",
+            &create_model_uuid,
+        )
+    });
+
+    let deadline = Instant::now() + Duration::from_secs(5);
+    let attempted_profile_lock = loop {
+        if crate::codex_managed_profiles::profile_lifecycle_lock_attempts_for_test() >= 2 {
+            break true;
+        }
+        if Instant::now() >= deadline {
+            break false;
+        }
+        std::thread::yield_now();
+    };
+    let create_finished_while_import_paused = create_thread.is_finished();
+    let new_profile_existed_while_import_paused =
+        new_codex_home.join("rollback-create.config.toml").exists();
+
+    release_tx.send(()).expect("release import rollback");
+    let import_error = import_thread
+        .join()
+        .expect("join import")
+        .expect_err("runtime sync failure must roll back import");
+    clear_config_import_cli_runtime_sync_test_hook();
+    let created = create_thread
+        .join()
+        .expect("join profile create")
+        .expect("profile create after rollback");
+
+    assert!(
+        attempted_profile_lock,
+        "profile create must reach the lifecycle lock boundary"
+    );
+    assert!(
+        !create_finished_while_import_paused,
+        "profile create must wait for the complete import lifecycle"
+    );
+    assert!(
+        !new_profile_existed_while_import_paused,
+        "profile create must not write into the transient imported Codex home"
+    );
+    assert!(
+        import_error
+            .to_string()
+            .contains("forced runtime failure after Codex home publication"),
+        "unexpected import error: {import_error}"
+    );
+    assert_eq!(
+        crate::codex_paths::codex_home_dir(&app).expect("rolled-back Codex home"),
+        old_codex_home
+    );
+    assert!(
+        old_codex_home.join("rollback-create.config.toml").exists(),
+        "profile must be created only in the restored Codex home"
+    );
+    assert!(!new_codex_home.join("rollback-create.config.toml").exists());
+    assert_eq!(
+        created.file_status,
+        crate::codex_managed_profiles::CodexManagedProfileFileStatus::Managed
+    );
+    let listed = crate::codex_managed_profiles::list(&test_app.db).expect("list profiles");
+    assert!(listed
+        .iter()
+        .any(|profile| profile.profile_uuid == created.profile_uuid));
 }
 
 #[test]
@@ -1711,6 +1905,7 @@ INSERT INTO skills(
 #[test]
 fn validate_bundle_schema_version_accepts_current_version() {
     assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION).is_ok());
+    assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION_V3).is_ok());
     assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION_V2).is_ok());
     assert!(super::validate_bundle_schema_version(CONFIG_BUNDLE_SCHEMA_VERSION_V1).is_ok());
 }
@@ -1761,7 +1956,7 @@ fn config_export_includes_full_prompts_provider_and_skill_payload() {
     conn.execute(
         r#"
 INSERT INTO providers(
-  cli_key, name, base_url, base_urls_json, base_url_mode, auth_mode,
+  provider_uuid, cli_key, name, base_url, base_urls_json, base_url_mode, auth_mode,
   claude_models_json, supported_models_json, model_mapping_json, api_key_plaintext,
   enabled, priority, sort_order, cost_multiplier, limit_5h_usd, limit_daily_usd,
   daily_reset_mode, daily_reset_time, limit_weekly_usd, limit_monthly_usd, limit_total_usd,
@@ -1769,6 +1964,7 @@ INSERT INTO providers(
   oauth_token_uri, oauth_client_id, oauth_client_secret, oauth_expires_at, oauth_email,
   oauth_refresh_lead_s, oauth_last_refreshed_at, oauth_last_error, created_at, updated_at
 ) VALUES (
+  '550e8400-e29b-41d4-a716-446655440000',
   'codex', 'oauth-provider', 'https://api.example.com', '["https://api.example.com","https://backup.example.com"]',
   'order', 'oauth', '{"main":"gpt-5.4"}', '{"gpt-5.4":true}', '{"gpt-5.4":"gpt-5.4"}', '',
   1, 100, 0, 1.25, 1.0, 2.0, 'fixed', '00:00:00', 3.0, 4.0, 5.0, '["team"]', 'note',
@@ -2085,6 +2281,7 @@ fn config_import_v2_restores_full_prompt_and_skill_payload() {
     let bundle = ConfigBundle {
         providers: vec![ProviderExport {
             id: Some(1),
+            provider_uuid: None,
             cli_key: "codex".to_string(),
             name: "oauth-provider".to_string(),
             base_urls: vec![
@@ -2124,6 +2321,7 @@ fn config_import_v2_restores_full_prompt_and_skill_payload() {
             note: "note".to_string(),
             source_provider_id: None,
             source_provider_cli_key: None,
+            source_provider_uuid: None,
             bridge_type: None,
             account_usage_config: None,
             account_usage_credentials: None,
@@ -3483,6 +3681,227 @@ fn skill_md_and_source_metadata_use_dedicated_prewrite_budgets() {
     .expect_err("oversized metadata must fail");
     assert!(error.to_string().contains("source metadata too large"));
     assert!(!metadata_target.exists());
+}
+
+#[test]
+fn config_v4_provider_uuid_preflight_rejects_invalid_duplicate_and_broken_sources() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let first = seed_direct_codex_provider(&test_app, "UUID First");
+    let second = seed_direct_codex_provider(&test_app, "UUID Second");
+
+    let mut invalid = config_export(&app, &test_app.db).expect("export invalid probe");
+    invalid.providers[0].provider_uuid = Some("not-a-uuid".to_string());
+    let error = prepare_config_import(invalid)
+        .err()
+        .expect("invalid UUID must fail");
+    assert_eq!(error.code(), "SEC_INVALID_INPUT");
+
+    let mut duplicate = config_export(&app, &test_app.db).expect("export duplicate probe");
+    let repeated = duplicate.providers[0].provider_uuid.clone();
+    duplicate.providers[1].provider_uuid = repeated;
+    let error = prepare_config_import(duplicate)
+        .err()
+        .expect("duplicate UUID must fail");
+    assert_eq!(error.code(), "SEC_INVALID_INPUT");
+
+    let mut missing_source = config_export(&app, &test_app.db).expect("export source probe");
+    let target = missing_source
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == Some(first.id))
+        .expect("first provider");
+    target.source_provider_id = Some(second.id);
+    target.source_provider_uuid = None;
+    target.bridge_type = Some("cx2cc".to_string());
+    let error = prepare_config_import(missing_source)
+        .err()
+        .expect("missing source UUID must fail");
+    assert_eq!(error.code(), "SEC_INVALID_INPUT");
+
+    let mut standalone = config_export(&app, &test_app.db).expect("export standalone probe");
+    let target = standalone
+        .providers
+        .iter_mut()
+        .find(|provider| provider.id == Some(first.id))
+        .expect("first provider");
+    target.bridge_type = Some("cx2cc".to_string());
+    assert!(target.source_provider_id.is_none());
+    assert!(target.source_provider_uuid.is_none());
+    prepare_config_import(standalone).expect("standalone bridge remains importable");
+}
+
+#[test]
+fn config_v4_rebinds_local_models_and_profiles_by_provider_uuid() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let provider = seed_direct_codex_provider(&test_app, "Managed Rebind");
+    let catalog = crate::provider_models::manual_upsert(
+        &test_app.db,
+        provider.id,
+        &provider.provider_uuid,
+        "grok-4.5",
+    )
+    .expect("manual model");
+    let manual_uuid = catalog.models[0].model_uuid.clone();
+    configure_provider_model_for_profile(&test_app, &provider, &manual_uuid);
+    let profile =
+        crate::codex_managed_profiles::create(&app, &test_app.db, "managed-rebind", &manual_uuid)
+            .expect("create profile");
+    let discovered_uuid = crate::shared::uuid::new_uuid_v4();
+    {
+        let conn = test_app.db.open_connection().expect("open db");
+        conn.execute(
+            r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, last_seen_at, created_at, updated_at
+) VALUES (?1, ?2, 'gpt-5', 'discovered', 0, 10, 10, 10)
+"#,
+            params![discovered_uuid, provider.id],
+        )
+        .expect("insert discovered model");
+        conn.execute(
+            r#"
+INSERT INTO provider_model_catalogs(
+  provider_id, protocol, stale, last_attempt_at, last_success_at, last_error_code
+) VALUES (?1, 'openai_compatible', 0, 10, 10, NULL)
+"#,
+            params![provider.id],
+        )
+        .expect("insert catalog");
+    }
+
+    let bundle = config_export(&app, &test_app.db).expect("export v4");
+    let exported = bundle
+        .providers
+        .iter()
+        .find(|candidate| candidate.id == Some(provider.id))
+        .expect("exported provider");
+    assert_eq!(
+        exported.provider_uuid.as_deref(),
+        Some(provider.provider_uuid.as_str())
+    );
+    config_import(&app, &test_app.db, bundle).expect("import v4");
+
+    let restored_provider = crate::providers::list_by_cli(&test_app.db, "codex")
+        .expect("list providers")
+        .into_iter()
+        .find(|candidate| candidate.provider_uuid == provider.provider_uuid)
+        .expect("restored provider");
+    assert_ne!(restored_provider.id, provider.id);
+    let restored_catalog = crate::provider_models::get(
+        &test_app.db,
+        restored_provider.id,
+        &restored_provider.provider_uuid,
+    )
+    .expect("restored catalog");
+    assert!(restored_catalog.stale);
+    let restored_manual = restored_catalog
+        .models
+        .iter()
+        .find(|model| model.model_uuid == manual_uuid)
+        .expect("restored manual model");
+    assert_eq!(
+        restored_manual.source,
+        crate::provider_models::ProviderModelSource::Manual
+    );
+    assert!(!restored_manual.stale);
+    assert!(restored_manual.capabilities_configured);
+    assert_eq!(
+        restored_manual.supported_reasoning_efforts,
+        vec![
+            crate::provider_models::ProviderModelReasoningEffort::Low,
+            crate::provider_models::ProviderModelReasoningEffort::High,
+        ]
+    );
+    assert_eq!(
+        restored_manual.default_reasoning_effort,
+        Some(crate::provider_models::ProviderModelReasoningEffort::High)
+    );
+    assert_eq!(restored_manual.context_window, Some(262_144));
+    let restored_discovered = restored_catalog
+        .models
+        .iter()
+        .find(|model| model.model_uuid == discovered_uuid)
+        .expect("restored discovered model");
+    assert_eq!(
+        restored_discovered.source,
+        crate::provider_models::ProviderModelSource::Discovered
+    );
+    assert!(restored_discovered.stale);
+
+    let restored_profile = crate::codex_managed_profiles::list(&test_app.db)
+        .expect("list profiles")
+        .into_iter()
+        .find(|candidate| candidate.profile_uuid == profile.profile_uuid)
+        .expect("restored profile");
+    assert_eq!(restored_profile.provider_id, restored_provider.id);
+    assert_eq!(
+        restored_profile.file_status,
+        crate::codex_managed_profiles::CodexManagedProfileFileStatus::Managed
+    );
+}
+
+#[test]
+fn config_import_with_local_profile_fails_before_clear_when_rebind_is_unprovable() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let provider = seed_direct_codex_provider(&test_app, "Managed Guard");
+    let model_uuid = crate::provider_models::manual_upsert(
+        &test_app.db,
+        provider.id,
+        &provider.provider_uuid,
+        "grok-4.5",
+    )
+    .expect("manual model")
+    .models[0]
+        .model_uuid
+        .clone();
+    configure_provider_model_for_profile(&test_app, &provider, &model_uuid);
+    let profile =
+        crate::codex_managed_profiles::create(&app, &test_app.db, "managed-guard", &model_uuid)
+            .expect("create profile");
+
+    let mut legacy = config_export(&app, &test_app.db).expect("export legacy probe");
+    legacy.schema_version = CONFIG_BUNDLE_SCHEMA_VERSION_V3;
+    let error = config_import(&app, &test_app.db, legacy).expect_err("legacy import must fail");
+    assert_eq!(error.code(), "CONFIG_IMPORT_MANAGED_PROFILE_CONFLICT");
+
+    let mut missing = config_export(&app, &test_app.db).expect("export missing probe");
+    missing.providers.retain(|candidate| {
+        candidate.provider_uuid.as_deref() != Some(provider.provider_uuid.as_str())
+    });
+    let error = config_import(&app, &test_app.db, missing).expect_err("missing provider must fail");
+    assert_eq!(error.code(), "CONFIG_IMPORT_MANAGED_PROFILE_CONFLICT");
+
+    let mut changed_type = config_export(&app, &test_app.db).expect("export type probe");
+    changed_type
+        .providers
+        .iter_mut()
+        .find(|candidate| {
+            candidate.provider_uuid.as_deref() == Some(provider.provider_uuid.as_str())
+        })
+        .expect("guard provider")
+        .cli_key = "claude".to_string();
+    let error = config_import(&app, &test_app.db, changed_type)
+        .expect_err("provider type change must fail");
+    assert_eq!(error.code(), "CONFIG_IMPORT_MANAGED_PROFILE_CONFLICT");
+
+    let current_provider = crate::providers::list_by_cli(&test_app.db, "codex")
+        .expect("provider remains")
+        .into_iter()
+        .find(|candidate| candidate.provider_uuid == provider.provider_uuid)
+        .expect("guard provider remains");
+    assert_eq!(current_provider.id, provider.id);
+    let current_profile = crate::codex_managed_profiles::list(&test_app.db)
+        .expect("profile remains")
+        .into_iter()
+        .find(|candidate| candidate.profile_uuid == profile.profile_uuid)
+        .expect("guard profile remains");
+    assert_eq!(
+        current_profile.file_status,
+        crate::codex_managed_profiles::CodexManagedProfileFileStatus::Managed
+    );
 }
 
 #[cfg(unix)]

@@ -221,6 +221,19 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
     raw: &[u8],
     error_code: &'static str,
 ) -> LoopControl {
+    crate::gateway::model_route_mapping::observe_model_route_from_bytes(
+        crate::gateway::model_route_mapping::ModelRouteBytesInput {
+            cli_key: ctx.cli_key.as_str(),
+            requested_model: provider_ctx
+                .active_requested_model
+                .or(ctx.requested_model.as_deref()),
+            response_bytes: raw,
+            special_settings: ctx.special_settings,
+            provider_id: provider_ctx.provider_id,
+            provider_name: provider_ctx.provider_name_base.as_str(),
+        },
+    );
+
     let CommonCtx {
         state,
         trace_id,
@@ -238,6 +251,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         provider_index,
         provider_bridged,
         session_reuse,
+        active_requested_model,
         ..
     } = provider_ctx;
     let AttemptCtx {
@@ -352,6 +366,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
+        requested_upstream_model: active_requested_model.map(str::to_string),
     });
 
     emit_attempt_event_and_log(
@@ -432,6 +447,7 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         circuit_trigger_error_code: None,
         provider_bridged: Some(provider_ctx_owned.provider_bridged),
         timeout_secs: None,
+        requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -450,31 +466,33 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         &common.special_settings,
     );
 
-    let requested_model_for_log = resolve_requested_model_for_log(
-        common.requested_model.clone(),
-        provider_ctx_owned.active_requested_model.as_deref(),
-        common.cli_key.as_str(),
-        raw,
-    );
-    let actual_model = usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), raw);
-    let actual_reasoning_effort =
-        usage::parse_reasoning_effort_from_json_or_sse_bytes(common.cli_key.as_str(), raw);
-    if let Some(setting) =
-        crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
+    let requested_model_for_log = if common.managed_model_route.is_some() {
+        crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+            common.managed_model_route.as_ref(),
+            common.requested_model.as_deref(),
+            provider_ctx_owned.active_requested_model.as_deref(),
+        )
+    } else {
+        resolve_requested_model_for_log(
+            common.requested_model.clone(),
+            provider_ctx_owned.active_requested_model.as_deref(),
             common.cli_key.as_str(),
-            provider_ctx_owned
+            raw,
+        )
+    };
+    crate::gateway::model_route_mapping::observe_model_route_from_bytes(
+        crate::gateway::model_route_mapping::ModelRouteBytesInput {
+            cli_key: common.cli_key.as_str(),
+            requested_model: provider_ctx_owned
                 .active_requested_model
                 .as_deref()
                 .or(common.requested_model.as_deref()),
-            actual_model.as_deref(),
-            actual_reasoning_effort.as_deref(),
-            &common.special_settings,
+            response_bytes: raw,
+            special_settings: &common.special_settings,
             provider_id,
-            provider_ctx_owned.provider_name_base.as_str(),
-        )
-    {
-        response_fixer::push_model_route_mapping_special_setting(&common.special_settings, setting);
-    }
+            provider_name: provider_ctx_owned.provider_name_base.as_str(),
+        },
+    );
 
     let now_unix = now_unix_seconds() as i64;
     let change = provider_router::record_failure_and_emit_transition(
@@ -1109,6 +1127,7 @@ where
             circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx_owned.provider_bridged),
             timeout_secs: None,
+            requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -1165,6 +1184,7 @@ where
         let trace_id = common.trace_id.clone();
         let upstream_route_tracker = ctx.upstream_route_tracker.clone();
         let observed_upstream_model = ctx.observed_upstream_model.clone();
+        let observed_upstream_conflicting_model = ctx.observed_upstream_conflicting_model.clone();
         let observed_upstream_reasoning_effort = ctx.observed_upstream_reasoning_effort.clone();
         let active_requested_model_for_bridge = provider_ctx_owned
             .active_requested_model
@@ -1181,6 +1201,7 @@ where
                     upstream,
                     upstream_route_tracker.clone(),
                     observed_upstream_model.clone(),
+                    observed_upstream_conflicting_model.clone(),
                     observed_upstream_reasoning_effort.clone(),
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
@@ -1227,6 +1248,7 @@ where
                     upstream,
                     upstream_route_tracker.clone(),
                     observed_upstream_model.clone(),
+                    observed_upstream_conflicting_model.clone(),
                     observed_upstream_reasoning_effort.clone(),
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
@@ -1274,6 +1296,7 @@ where
                     upstream,
                     upstream_route_tracker.clone(),
                     observed_upstream_model.clone(),
+                    observed_upstream_conflicting_model.clone(),
                     observed_upstream_reasoning_effort.clone(),
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
@@ -1315,6 +1338,7 @@ where
                     upstream,
                     upstream_route_tracker,
                     observed_upstream_model,
+                    observed_upstream_conflicting_model,
                     observed_upstream_reasoning_effort,
                 );
                 let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(

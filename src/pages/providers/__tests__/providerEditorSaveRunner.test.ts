@@ -12,6 +12,7 @@ vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
 function makeSavedProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: partial.id ?? 1,
+    provider_uuid: partial.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: partial.cli_key ?? "claude",
     name: partial.name ?? "Saved Provider",
     base_urls: partial.base_urls ?? ["https://example.com/v1"],
@@ -64,6 +65,7 @@ function makeContext(overrides: Partial<SaveActionContext> = {}): SaveActionCont
     open: true,
     onOpenChange: vi.fn(),
     onSaved: vi.fn(),
+    onModelFetchFailedAfterSave: vi.fn(),
     authMode: "api_key",
     codexBridgeTarget: "openai_chat",
     baseUrlMode: "order",
@@ -91,6 +93,7 @@ function makeContext(overrides: Partial<SaveActionContext> = {}): SaveActionCont
     refreshOauthStatus: vi.fn().mockResolvedValue(null),
     clearAccountUsageSecretDraft: vi.fn(),
     persistProvider: vi.fn().mockResolvedValue(makeSavedProvider()),
+    refreshProviderModels: vi.fn(),
     ...overrides,
   };
 }
@@ -159,5 +162,84 @@ describe("pages/providers/providerEditorSaveRunner", () => {
     expect(ctx.clearAccountUsageSecretDraft).toHaveBeenCalledOnce();
     expect(ctx.onOpenChange).toHaveBeenCalledWith(false);
     expect(ctx.setSaving).toHaveBeenLastCalledWith(false);
+  });
+
+  it("saves first and closes only after model refresh succeeds", async () => {
+    const saved = makeSavedProvider({ id: 7, cli_key: "codex" });
+    const ctx = makeContext({
+      cliKey: "codex",
+      persistProvider: vi.fn().mockResolvedValue(saved),
+      refreshProviderModels: vi.fn().mockResolvedValue({
+        providerId: 7,
+        providerUuid: "11111111-1111-4111-8111-111111111111",
+        protocol: "openai_compatible",
+        stale: false,
+        lastAttemptAt: 10,
+        lastSuccessAt: 10,
+        lastErrorCode: null,
+        models: [],
+      }),
+    });
+
+    await runProviderEditorSave(ctx, { refreshModels: true });
+
+    expect(ctx.persistProvider).toHaveBeenCalledOnce();
+    expect(ctx.refreshProviderModels).toHaveBeenCalledWith(7, saved.provider_uuid);
+    expect(ctx.onSaved).toHaveBeenCalledWith("codex");
+    expect(ctx.onOpenChange).toHaveBeenCalledWith(false);
+    expect(vi.mocked(toast)).toHaveBeenCalledWith("Provider 已保存，已获取 0 个模型");
+  });
+
+  it("keeps the editor open when model refresh fails after save", async () => {
+    const saved = makeSavedProvider({ id: 7, cli_key: "codex" });
+    const ctx = makeContext({
+      cliKey: "codex",
+      persistProvider: vi.fn().mockResolvedValue(saved),
+      refreshProviderModels: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("UNKNOWN_FAILURE: https://example.test/v1?api_key=SYNTHETIC_REFRESH_SECRET")
+        ),
+    });
+
+    await runProviderEditorSave(ctx, { refreshModels: true });
+
+    expect(ctx.persistProvider).toHaveBeenCalledOnce();
+    expect(ctx.refreshProviderModels).toHaveBeenCalledWith(7, saved.provider_uuid);
+    expect(ctx.onSaved).toHaveBeenCalledWith("codex");
+    expect(ctx.onModelFetchFailedAfterSave).toHaveBeenCalledWith(saved);
+    expect(ctx.onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      expect.stringContaining("Provider 已保存，模型获取失败")
+    );
+    expect(JSON.stringify(vi.mocked(toast).mock.calls)).not.toContain("SYNTHETIC_REFRESH_SECRET");
+    expect(ctx.setSaving).toHaveBeenLastCalledWith(false);
+  });
+
+  it("keeps the saved provider editable when discovery returns a catalog error", async () => {
+    const saved = makeSavedProvider({ id: 7, cli_key: "codex" });
+    const ctx = makeContext({
+      cliKey: "codex",
+      persistProvider: vi.fn().mockResolvedValue(saved),
+      refreshProviderModels: vi.fn().mockResolvedValue({
+        providerId: 7,
+        providerUuid: "11111111-1111-4111-8111-111111111111",
+        protocol: "openai_compatible",
+        stale: true,
+        lastAttemptAt: 10,
+        lastSuccessAt: null,
+        lastErrorCode: "timeout",
+        models: [],
+      }),
+    });
+
+    await runProviderEditorSave(ctx, { refreshModels: true });
+
+    expect(ctx.onSaved).toHaveBeenCalledWith("codex");
+    expect(ctx.onModelFetchFailedAfterSave).toHaveBeenCalledWith(saved);
+    expect(ctx.onOpenChange).not.toHaveBeenCalledWith(false);
+    expect(vi.mocked(toast)).toHaveBeenCalledWith(
+      "Provider 已保存，模型获取失败：模型接口请求超时"
+    );
   });
 });

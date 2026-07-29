@@ -25,6 +25,7 @@ pub(super) enum EarlyErrorKind {
     CliProxyDisabled,
     BodyTooLarge,
     LargeBodyMissingModel,
+    ManagedModelInvalid,
     InvalidCliKey,
     NoEnabledProvider,
     // Provider selection failed for infrastructure reasons (DB / blocking
@@ -58,6 +59,12 @@ pub(super) fn early_error_contract(kind: EarlyErrorKind) -> EarlyErrorContract {
             status: StatusCode::BAD_REQUEST,
             error_code: GatewayErrorCode::LargeBodyMissingModel.as_str(),
             error_category: None,
+            excluded_from_stats: false,
+        },
+        EarlyErrorKind::ManagedModelInvalid => EarlyErrorContract {
+            status: StatusCode::BAD_REQUEST,
+            error_code: GatewayErrorCode::ManagedModelInvalid.as_str(),
+            error_category: Some(ErrorCategory::NonRetryableClientError.as_str()),
             excluded_from_stats: false,
         },
         EarlyErrorKind::InvalidCliKey => EarlyErrorContract {

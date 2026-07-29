@@ -38,6 +38,22 @@ export const providersKeys = {
     [...providersAllKey, "oauthStatus", providerId] as const,
 };
 
+const providerModelsAllKey = ["providerModels"] as const;
+export const providerModelsKeys = {
+  all: providerModelsAllKey,
+  catalogs: () => [...providerModelsAllKey, "catalog"] as const,
+  catalogsByProvider: (providerId: number) =>
+    [...providerModelsAllKey, "catalog", providerId] as const,
+  catalog: (providerId: number | null, providerUuid: string | null) =>
+    [...providerModelsAllKey, "catalog", providerId, providerUuid] as const,
+};
+
+const codexManagedProfilesAllKey = ["codexManagedProfiles"] as const;
+export const codexManagedProfilesKeys = {
+  all: codexManagedProfilesAllKey,
+  list: () => [...codexManagedProfilesAllKey, "list"] as const,
+};
+
 const gatewayAllKey = ["gateway"] as const;
 export const gatewayKeys = {
   all: gatewayAllKey,

@@ -316,14 +316,14 @@ fn parse_model_nested_message() {
 }
 
 #[test]
-fn parse_model_truncates_at_utf8_character_boundary() {
-    let model = "模".repeat(67);
+fn parse_model_truncates_at_256_byte_utf8_character_boundary() {
+    let model = "模".repeat(86);
     let body = serde_json::to_vec(&serde_json::json!({ "model": model })).expect("json body");
 
     let parsed = parse_model_from_json_bytes(&body).expect("model");
 
-    assert_eq!(parsed, "模".repeat(66));
-    assert_eq!(parsed.len(), 198);
+    assert_eq!(parsed, "模".repeat(85));
+    assert_eq!(parsed.len(), 255);
 }
 
 #[test]
@@ -380,6 +380,20 @@ fn best_effort_route_reads_finalized_unterminated_event() {
     assert_eq!(reasoning_effort.as_deref(), Some("high"));
     assert_eq!(tracker.event_json_parse_attempts(), 1);
     assert!(tracker.completion_seen());
+}
+
+#[test]
+fn route_evidence_keeps_first_conflict_when_later_frames_return_to_first_model() {
+    let sse = b"data: {\"model\":\"wire-model\"}\n\n\
+                data: {\"model\":\"other-model\"}\n\n\
+                data: {\"model\":\"wire-model\"}\n\n";
+    let evidence = parse_model_route_evidence_from_json_or_sse_bytes("codex", sse);
+
+    assert_eq!(evidence.first_model.as_deref(), Some("wire-model"));
+    assert_eq!(
+        evidence.first_conflicting_model.as_deref(),
+        Some("other-model")
+    );
 }
 
 #[test]

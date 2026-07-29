@@ -50,9 +50,13 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
         method: ctx.method_hint.clone(),
         path: ctx.forwarded_path.clone(),
         query: ctx.query.clone(),
-        requested_model: active_requested_model
-            .map(str::to_string)
-            .or_else(|| ctx.requested_model.clone()),
+        requested_model:
+            crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+                ctx.managed_model_route,
+                ctx.requested_model.as_deref(),
+                active_requested_model,
+            ),
+        requested_upstream_model: active_requested_model.map(str::to_string),
         special_settings_json: response_fixer::special_settings_json(ctx.special_settings),
         attempt_index,
         provider_id,

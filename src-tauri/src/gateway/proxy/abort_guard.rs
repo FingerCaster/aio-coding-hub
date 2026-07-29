@@ -194,6 +194,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(true),
             timeout_secs: None,
+            requested_upstream_model: None,
         };
 
         let logged_attempts: Vec<FailoverAttempt> = Some(attempt.clone()).iter().cloned().collect();

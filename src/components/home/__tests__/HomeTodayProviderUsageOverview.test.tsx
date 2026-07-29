@@ -56,6 +56,7 @@ function createRunningTrace(
         path: "/v1/messages",
         query: null,
         requested_model: null,
+        requested_upstream_model: null,
         special_settings_json: null,
         attempt_index: 1,
         provider_id: providerId,

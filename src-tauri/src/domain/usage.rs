@@ -1,5 +1,6 @@
 //! Usage: Parse upstream usage/model information from JSON and SSE streams.
 
+use crate::domain::provider_models::REMOTE_MODEL_ID_MAX_BYTES;
 use crate::shared::cli_key::CliKey;
 use serde_json::{json, Value};
 
@@ -142,11 +143,11 @@ fn sanitize_model(model: &str) -> Option<String> {
     if model.is_empty() {
         return None;
     }
-    if model.len() <= 200 {
+    if model.len() <= REMOTE_MODEL_ID_MAX_BYTES {
         return Some(model.to_string());
     }
 
-    let mut end = 200;
+    let mut end = REMOTE_MODEL_ID_MAX_BYTES;
     while !model.is_char_boundary(end) {
         end -= 1;
     }
@@ -239,6 +240,7 @@ pub fn parse_model_from_json_bytes(body: &[u8]) -> Option<String> {
     None
 }
 
+#[cfg(test)]
 pub fn parse_reasoning_effort_from_json_bytes(body: &[u8]) -> Option<String> {
     let value: Value = serde_json::from_slice(body).ok()?;
     extract_reasoning_effort_from_json_value(&value)
@@ -471,6 +473,7 @@ pub fn parse_model_from_json_or_sse_bytes(cli_key: &str, body: &[u8]) -> Option<
     })
 }
 
+#[cfg(test)]
 pub fn parse_reasoning_effort_from_json_or_sse_bytes(cli_key: &str, body: &[u8]) -> Option<String> {
     parse_reasoning_effort_from_json_bytes(body).or_else(|| {
         let mut tracker = SseUsageTracker::new(cli_key);
@@ -478,6 +481,31 @@ pub fn parse_reasoning_effort_from_json_or_sse_bytes(cli_key: &str, body: &[u8])
         let _ = tracker.finalize();
         tracker.best_effort_reasoning_effort()
     })
+}
+
+#[derive(Debug, Clone, Default, PartialEq, Eq)]
+pub struct ModelRouteEvidence {
+    pub first_model: Option<String>,
+    pub first_conflicting_model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+pub fn parse_model_route_evidence_from_json_or_sse_bytes(
+    cli_key: &str,
+    body: &[u8],
+) -> ModelRouteEvidence {
+    if let Ok(value) = serde_json::from_slice::<Value>(body) {
+        return ModelRouteEvidence {
+            first_model: extract_model_from_json_value(&value),
+            first_conflicting_model: None,
+            reasoning_effort: extract_reasoning_effort_from_json_value(&value),
+        };
+    }
+
+    let mut tracker = SseUsageTracker::new(cli_key);
+    tracker.ingest_chunk(body);
+    let _ = tracker.finalize();
+    tracker.best_effort_route_evidence()
 }
 
 fn merge_metrics(base: &UsageMetrics, patch: &UsageMetrics) -> UsageMetrics {
@@ -522,6 +550,8 @@ pub struct SseUsageTracker {
     claude_message_start: Option<UsageMetrics>,
     claude_message_delta: Option<UsageMetrics>,
     last_generic: Option<UsageMetrics>,
+    first_model: Option<String>,
+    first_conflicting_model: Option<String>,
     last_model: Option<String>,
     last_reasoning_effort: Option<String>,
     completion_seen: bool,
@@ -706,6 +736,8 @@ impl SseUsageTracker {
             claude_message_start: None,
             claude_message_delta: None,
             last_generic: None,
+            first_model: None,
+            first_conflicting_model: None,
             last_model: None,
             last_reasoning_effort: None,
             completion_seen: false,
@@ -986,6 +1018,7 @@ impl SseUsageTracker {
         }
 
         if let Some(model) = extract_model_from_json_value(data) {
+            self.record_model_evidence(&model);
             self.last_model = Some(model);
         }
         if let Some(effort) = extract_reasoning_effort_from_json_value(data) {
@@ -1056,12 +1089,33 @@ impl SseUsageTracker {
         (self.last_model.clone(), self.last_reasoning_effort.clone())
     }
 
+    pub fn best_effort_route_evidence(&self) -> ModelRouteEvidence {
+        ModelRouteEvidence {
+            first_model: self.first_model.clone(),
+            first_conflicting_model: self.first_conflicting_model.clone(),
+            reasoning_effort: self.last_reasoning_effort.clone(),
+        }
+    }
+
     pub fn best_effort_model(&self) -> Option<String> {
         self.best_effort_route().0
     }
 
+    #[cfg(test)]
     pub fn best_effort_reasoning_effort(&self) -> Option<String> {
         self.best_effort_route().1
+    }
+
+    fn record_model_evidence(&mut self, model: &str) {
+        let Some(first) = self.first_model.as_deref() else {
+            self.first_model = Some(model.to_string());
+            return;
+        };
+        if self.first_conflicting_model.is_none()
+            && !first.trim().eq_ignore_ascii_case(model.trim())
+        {
+            self.first_conflicting_model = Some(model.to_string());
+        }
     }
 
     #[cfg(test)]

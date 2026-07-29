@@ -638,6 +638,7 @@ describe("home/RequestLogDetailDialog", () => {
               path: "/v1/messages",
               query: null,
               requested_model: "claude-3",
+              requested_upstream_model: null,
               special_settings_json: null,
               attempt_index: 0,
               provider_id: 42,

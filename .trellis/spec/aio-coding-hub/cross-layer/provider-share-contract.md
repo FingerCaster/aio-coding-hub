@@ -412,7 +412,7 @@ extension value may contain only
 | Imported account-mode provider | Disabled, no credentials, explicit configuration required |
 | Imported provider is refreshed before credentials are set | Send no account request |
 | Local duplicate is requested | Copy private credentials in the same backend transaction |
-| Whole-config v3 export is requested | Follow config-migration contract, not share policy |
+| Whole-config v4 export is requested | Follow config-migration contract, not share policy |
 
 ### 5. Good / Base / Bad Cases
 

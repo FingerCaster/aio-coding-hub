@@ -36,6 +36,7 @@ import {
 } from "../generatedTypeUtils";
 import { createRiskyIpcConfirm } from "../ipcConfirm";
 import { CLI_KEYS, type CliKey } from "../../constants/clis";
+import { isCanonicalUuidV4 } from "./uuid";
 
 export type {
   ProviderAvailabilityResult,
@@ -162,6 +163,9 @@ function toProviderAuthMode(value: string, label: string): ProviderAuthMode {
 }
 
 export function toProviderSummary(value: GeneratedProviderSummary): ProviderSummary {
+  if (!isCanonicalUuidV4(value.provider_uuid)) {
+    throw new Error("IPC_INVALID_UUID: providers.provider_uuid");
+  }
   return {
     ...value,
     cli_key: toCliKey(value.cli_key, "providers.cli_key"),

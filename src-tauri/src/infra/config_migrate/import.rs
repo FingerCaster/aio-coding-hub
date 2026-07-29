@@ -18,6 +18,18 @@ pub(super) struct LegacySkillState {
     pub(super) active_workspace_skill_keys_by_cli: HashMap<String, Vec<String>>,
 }
 
+pub(super) struct ImportedConfig {
+    pub(super) result: ConfigImportResult,
+    pub(super) provider_id_by_uuid: HashMap<String, i64>,
+}
+
+struct PendingProviderSourceLink {
+    provider_id: i64,
+    source_provider_id_exported: Option<i64>,
+    source_provider_cli_key: Option<String>,
+    source_provider_uuid: Option<String>,
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn import_into_transaction(
     tx: &Connection,
@@ -33,17 +45,20 @@ pub(super) fn import_into_transaction(
     installed_skills: &[InstalledSkillExport],
     local_skills: &[LocalSkillExport],
     legacy_skill_state: Option<&LegacySkillState>,
-) -> AppResult<ConfigImportResult> {
+    use_provider_uuid_links: bool,
+) -> AppResult<ImportedConfig> {
     let mut provider_id_by_cli_and_name: HashMap<(String, String), i64> = HashMap::new();
     let mut provider_id_by_source_id: HashMap<i64, i64> = HashMap::new();
+    let mut provider_id_by_uuid: HashMap<String, i64> = HashMap::new();
     let mut first_provider_id_by_cli_key: HashMap<String, i64> = HashMap::new();
     let mut provider_sort_order_by_cli_key: HashMap<String, i64> = HashMap::new();
-    let mut pending_provider_source_links: Vec<(i64, Option<i64>, Option<String>)> = Vec::new();
+    let mut pending_provider_source_links = Vec::new();
     let mut providers_imported = 0_u32;
 
     for provider in providers {
         let ProviderExport {
             id,
+            provider_uuid,
             cli_key,
             name,
             base_urls,
@@ -80,10 +95,17 @@ pub(super) fn import_into_transaction(
             note,
             source_provider_id,
             source_provider_cli_key,
+            source_provider_uuid,
             bridge_type,
             account_usage_config,
             account_usage_credentials,
         } = provider;
+        let provider_uuid = provider_uuid.ok_or_else(|| {
+            crate::shared::error::AppError::new(
+                "SEC_INVALID_INPUT",
+                "provider_uuid is missing after config import preflight",
+            )
+        })?;
 
         let sort_order = provider_sort_order_by_cli_key
             .entry(cli_key.clone())
@@ -95,6 +117,7 @@ pub(super) fn import_into_transaction(
         tx.execute(
             r#"
 INSERT INTO providers(
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -134,9 +157,10 @@ INSERT INTO providers(
   bridge_type,
   created_at,
   updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, NULL, ?36, ?37, ?37)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, NULL, ?37, ?38, ?38)
 "#,
             params![
+                provider_uuid,
                 cli_key,
                 name,
                 base_url_primary,
@@ -232,29 +256,37 @@ INSERT INTO providers(
         if let Some(exported_id) = id {
             provider_id_by_source_id.insert(exported_id, provider_id);
         }
-        pending_provider_source_links.push((
+        provider_id_by_uuid.insert(provider_uuid, provider_id);
+        pending_provider_source_links.push(PendingProviderSourceLink {
             provider_id,
-            source_provider_id,
+            source_provider_id_exported: source_provider_id,
             source_provider_cli_key,
-        ));
+            source_provider_uuid,
+        });
         *sort_order += 1;
         providers_imported += 1;
     }
 
-    for (provider_id, source_provider_id_exported, source_provider_cli_key) in
-        pending_provider_source_links
-    {
-        let source_provider_id = if let Some(exported_id) = source_provider_id_exported {
+    for link in pending_provider_source_links {
+        let source_provider_id = if use_provider_uuid_links {
+            link.source_provider_uuid
+                .as_ref()
+                .and_then(|provider_uuid| provider_id_by_uuid.get(provider_uuid).copied())
+        } else if let Some(exported_id) = link.source_provider_id_exported {
             provider_id_by_source_id.get(&exported_id).copied()
         } else {
             None
         };
 
-        let source_provider_id = source_provider_id.or_else(|| {
-            source_provider_cli_key
-                .as_ref()
-                .and_then(|cli_key| first_provider_id_by_cli_key.get(cli_key).copied())
-        });
+        let source_provider_id = if use_provider_uuid_links {
+            source_provider_id
+        } else {
+            source_provider_id.or_else(|| {
+                link.source_provider_cli_key
+                    .as_ref()
+                    .and_then(|cli_key| first_provider_id_by_cli_key.get(cli_key).copied())
+            })
+        };
 
         let Some(source_id) = source_provider_id else {
             continue;
@@ -262,7 +294,7 @@ INSERT INTO providers(
 
         tx.execute(
             "UPDATE providers SET source_provider_id = ?1, updated_at = ?2 WHERE id = ?3",
-            params![source_id, now, provider_id],
+            params![source_id, now, link.provider_id],
         )
         .map_err(|e| db_err!("failed to update provider source_provider_id: {e}"))?;
     }
@@ -287,15 +319,18 @@ INSERT INTO providers(
         (0, 0)
     };
 
-    Ok(ConfigImportResult {
-        providers_imported,
-        sort_modes_imported,
-        workspaces_imported,
-        prompts_imported,
-        mcp_servers_imported,
-        skill_repos_imported,
-        installed_skills_imported,
-        local_skills_imported,
+    Ok(ImportedConfig {
+        result: ConfigImportResult {
+            providers_imported,
+            sort_modes_imported,
+            workspaces_imported,
+            prompts_imported,
+            mcp_servers_imported,
+            skill_repos_imported,
+            installed_skills_imported,
+            local_skills_imported,
+        },
+        provider_id_by_uuid,
     })
 }
 

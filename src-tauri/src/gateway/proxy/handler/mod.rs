@@ -36,10 +36,10 @@ use early_error::extract_forced_provider_id;
 use middleware::{
     BillingHeaderRectifierMiddleware, BodyReaderMiddleware, CliProxyGuardMiddleware,
     CodexRequestClassifierMiddleware, CodexSessionCompletionMiddleware,
-    Cx2ccCountTokensInterceptorMiddleware, MiddlewareAction, ModelInferenceMiddleware,
-    ProbeInterceptorMiddleware, ProviderResolutionMiddleware, ProxyContext,
-    RecursionGuardMiddleware, RequestFingerprintMiddleware, RuntimeSettingsMiddleware,
-    WarmupInterceptorMiddleware,
+    Cx2ccCountTokensInterceptorMiddleware, ManagedModelRouteMiddleware, MiddlewareAction,
+    ModelInferenceMiddleware, ProbeInterceptorMiddleware, ProviderResolutionMiddleware,
+    ProxyContext, RecursionGuardMiddleware, RequestFingerprintMiddleware,
+    RuntimeSettingsMiddleware, WarmupInterceptorMiddleware,
 };
 
 type SpecialSettings = Arc<Mutex<Vec<serde_json::Value>>>;
@@ -191,6 +191,7 @@ where
         provider_health_neutral: is_codex_model_discovery,
         requested_model: None,
         requested_model_location: None,
+        managed_model_route: None,
         is_compact_request: false,
         runtime_settings: None,
         session_id: None,
@@ -236,49 +237,55 @@ where
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 6. Probe interceptor (Claude probe requests).
+    // 6. Managed model alias resolution.
+    let ctx = match ManagedModelRouteMiddleware::run(ctx).await {
+        MiddlewareAction::Continue(ctx) => *ctx,
+        MiddlewareAction::ShortCircuit(resp) => return resp,
+    };
+
+    // 7. Probe interceptor (Claude probe requests).
     let ctx = match ProbeInterceptorMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 7. Runtime settings reader.
+    // 8. Runtime settings reader.
     let ctx = match RuntimeSettingsMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 8. Warmup interceptor (requires runtime_settings).
+    // 9. Warmup interceptor (requires runtime_settings).
     let ctx = match WarmupInterceptorMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 9. Codex session ID completion.
+    // 10. Codex session ID completion.
     let ctx = match CodexSessionCompletionMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 10. Billing header rectifier.
+    // 11. Billing header rectifier.
     let ctx = match BillingHeaderRectifierMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 11. Provider resolution (session routing + provider selection).
+    // 12. Provider resolution (session routing + provider selection).
     let ctx = match ProviderResolutionMiddleware::run(ctx).await {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 12. CX2CC count_tokens compatibility.
+    // 13. CX2CC count_tokens compatibility.
     let ctx = match Cx2ccCountTokensInterceptorMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
 
-    // 13. Request fingerprinting + recent error cache gate.
+    // 14. Request fingerprinting + recent error cache gate.
     let ctx = match RequestFingerprintMiddleware::run(ctx) {
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
@@ -468,6 +475,7 @@ mod tests {
             provider_health_neutral: false,
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
+            managed_model_route: None,
             is_compact_request: false,
             runtime_settings: None,
             session_id: Some("session-start".to_string()),
@@ -531,6 +539,7 @@ mod tests {
             provider_health_neutral: false,
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
+            managed_model_route: None,
             is_compact_request: false,
             runtime_settings: None,
             session_id: None,
@@ -585,6 +594,7 @@ mod tests {
             provider_health_neutral: false,
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
+            managed_model_route: None,
             is_compact_request: false,
             runtime_settings: None,
             session_id: Some("session-guard".to_string()),

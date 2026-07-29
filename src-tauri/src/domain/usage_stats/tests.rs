@@ -274,6 +274,7 @@ fn insert_migrated_provider(
         r#"
 INSERT INTO providers (
   id,
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -295,6 +296,7 @@ INSERT INTO providers (
   ?1,
   ?2,
   ?3,
+  ?4,
   'https://example.invalid',
   '[]',
   'order',
@@ -308,11 +310,18 @@ INSERT INTO providers (
   1.0,
   '{}',
   '{}',
-  ?4,
-  ?5
+  ?5,
+  ?6
 );
         "#,
-        params![id, cli_key, name, source_provider_id, bridge_type],
+        params![
+            id,
+            format!("00000000-0000-4000-8000-{id:012x}"),
+            cli_key,
+            name,
+            source_provider_id,
+            bridge_type
+        ],
     )
     .expect("insert migrated provider");
 }

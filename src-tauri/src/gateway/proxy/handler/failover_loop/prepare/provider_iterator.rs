@@ -351,11 +351,16 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         Some(id) => (id == provider_id && provider_index == 1).then_some(true),
         None => None,
     };
+    let active_requested_model = input
+        .managed_model_route
+        .as_ref()
+        .map(|route| route.remote_model_id.as_str())
+        .or(input.requested_model.as_deref());
     let provider_ctx = ProviderCtx {
         provider_id,
         provider_name_base: &provider_name_base,
         provider_base_url_base: &provider_base_url_base,
-        active_requested_model: input.requested_model.as_deref(),
+        active_requested_model,
         auth_mode: provider.auth_mode.as_str(),
         provider_index,
         provider_bridged,
@@ -424,7 +429,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         upstream_forwarded_path,
         upstream_query,
         upstream_body_bytes,
-        active_requested_model: input.requested_model.clone(),
+        active_requested_model: active_requested_model.map(str::to_string),
         strip_request_content_encoding,
         request_body_mutated_before_attempt,
         gemini_oauth_response_mode,

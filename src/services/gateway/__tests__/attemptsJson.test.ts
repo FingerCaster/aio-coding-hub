@@ -9,6 +9,7 @@ describe("services/gateway/attemptsJson", () => {
           provider_id: 1,
           provider_name: "Provider A",
           base_url: "https://example.com",
+          requested_upstream_model: "grok-4.5",
           outcome: "success",
           status: 200,
           timeout_secs: 30,
@@ -20,6 +21,7 @@ describe("services/gateway/attemptsJson", () => {
     expect(attempts?.[0]).toMatchObject({
       provider_id: 1,
       provider_name: "Provider A",
+      requested_upstream_model: "grok-4.5",
       outcome: "success",
       timeout_secs: 30,
     });

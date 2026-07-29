@@ -209,10 +209,12 @@ fn ensure_patches_do_not_repopulate_default_route_members() {
         (2_i64, "p2", 1_i64),
         (3_i64, "p3", 2_i64),
     ] {
+        let provider_uuid = crate::shared::uuid::new_uuid_v4();
         conn.execute(
             r#"
 INSERT INTO providers(
   id,
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -221,9 +223,9 @@ INSERT INTO providers(
   created_at,
   updated_at,
   sort_order
-) VALUES (?1, 'claude', ?2, 'https://example.com', 'sk', 1, 1, 1, ?3)
+) VALUES (?1, ?2, 'claude', ?3, 'https://example.com', 'sk', 1, 1, 1, ?4)
 "#,
-            rusqlite::params![id, name, sort_order],
+            rusqlite::params![id, provider_uuid, name, sort_order],
         )
         .expect("insert provider");
     }
@@ -866,6 +868,32 @@ fn test_has_index(conn: &Connection, index: &str) -> bool {
     .unwrap_or(false)
 }
 
+fn test_has_trigger(conn: &Connection, trigger: &str) -> bool {
+    conn.query_row(
+        "SELECT 1 FROM sqlite_master WHERE type = 'trigger' AND name = ?1 LIMIT 1",
+        [trigger],
+        |_| Ok(true),
+    )
+    .unwrap_or(false)
+}
+
+fn assert_no_v40_provider_model_schema(conn: &Connection) {
+    for table in [
+        "provider_model_catalogs",
+        "provider_models",
+        "codex_managed_profiles",
+    ] {
+        assert!(!test_has_table(conn, table), "unexpected {table}");
+    }
+    assert!(!test_has_index(conn, "idx_providers_provider_uuid"));
+    for trigger in [
+        "providers_provider_uuid_insert_guard",
+        "providers_provider_uuid_update_guard",
+    ] {
+        assert!(!test_has_trigger(conn, trigger), "unexpected {trigger}");
+    }
+}
+
 #[test]
 fn strict_v29_patch_adds_sort_mode_provider_enabled_column() {
     let mut conn = Connection::open_in_memory().expect("open in-memory sqlite");
@@ -882,6 +910,26 @@ CREATE TABLE prompts (
   enabled INTEGER NOT NULL DEFAULT 0,
   created_at INTEGER NOT NULL,
   updated_at INTEGER NOT NULL,
+  UNIQUE(cli_key, name)
+);
+
+CREATE TABLE providers (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  cli_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  base_url TEXT NOT NULL,
+  base_urls_json TEXT NOT NULL DEFAULT '[]',
+  base_url_mode TEXT NOT NULL DEFAULT 'order',
+  claude_models_json TEXT NOT NULL DEFAULT '{}',
+  supported_models_json TEXT NOT NULL DEFAULT '{}',
+  model_mapping_json TEXT NOT NULL DEFAULT '{}',
+  api_key_plaintext TEXT NOT NULL,
+  enabled INTEGER NOT NULL DEFAULT 1,
+  priority INTEGER NOT NULL DEFAULT 100,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  sort_order INTEGER NOT NULL DEFAULT 0,
+  cost_multiplier REAL NOT NULL DEFAULT 1.0,
   UNIQUE(cli_key, name)
 );
 
@@ -1936,4 +1984,321 @@ PRAGMA user_version = 37;
         )
         .expect("credential count after cascade");
     assert_eq!(credential_count, 0);
+}
+
+#[test]
+fn migrate_v39_to_v40_rejects_missing_providers_without_advancing() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch("PRAGMA user_version = 39;")
+        .expect("create missing-provider fixture");
+
+    let error =
+        v39_to_v40::migrate_v39_to_v40(&mut conn).expect_err("missing providers table must fail");
+    assert!(error.contains("requires the providers table"));
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version after failure");
+    assert_eq!(user_version, 39);
+    assert_no_v40_provider_model_schema(&conn);
+}
+
+#[test]
+fn migrate_v39_to_v40_rejects_existing_invalid_provider_uuids_without_repair() {
+    for invalid in [None, Some(""), Some("not-a-canonical-uuid")] {
+        let mut conn = Connection::open_in_memory().expect("open migration db");
+        conn.execute_batch(
+            r#"
+CREATE TABLE providers(
+  id INTEGER PRIMARY KEY,
+  cli_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  provider_uuid TEXT
+);
+PRAGMA user_version = 39;
+"#,
+        )
+        .expect("create dirty v39 fixture");
+        conn.execute(
+            "INSERT INTO providers(id, cli_key, name, provider_uuid) VALUES (1, 'codex', 'dirty', ?1)",
+            rusqlite::params![invalid],
+        )
+        .expect("insert dirty provider UUID");
+
+        let error = v39_to_v40::migrate_v39_to_v40(&mut conn)
+            .expect_err("existing invalid provider UUID must fail");
+        assert_eq!(error, "existing provider UUID is invalid");
+        if let Some(invalid) = invalid.filter(|value| !value.is_empty()) {
+            assert!(!error.contains(invalid), "error must not echo stored UUID");
+        }
+        let user_version: i64 = conn
+            .pragma_query_value(None, "user_version", |row| row.get(0))
+            .expect("user version after failure");
+        assert_eq!(user_version, 39);
+        assert_no_v40_provider_model_schema(&conn);
+    }
+}
+
+#[test]
+fn migrate_v39_to_v40_rejects_duplicate_existing_provider_uuids_without_partial_schema() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch(
+        r#"
+CREATE TABLE providers(
+  id INTEGER PRIMARY KEY,
+  cli_key TEXT NOT NULL,
+  name TEXT NOT NULL,
+  provider_uuid TEXT
+);
+PRAGMA user_version = 39;
+"#,
+    )
+    .expect("create duplicate v39 fixture");
+    let duplicate = "550e8400-e29b-41d4-a716-446655440000";
+    for id in [1_i64, 2_i64] {
+        conn.execute(
+            "INSERT INTO providers(id, cli_key, name, provider_uuid) VALUES (?1, 'codex', 'duplicate', ?2)",
+            rusqlite::params![id, duplicate],
+        )
+        .expect("insert duplicate provider UUID");
+    }
+
+    let error =
+        v39_to_v40::migrate_v39_to_v40(&mut conn).expect_err("duplicate provider UUIDs must fail");
+    assert_eq!(error, "existing provider UUIDs are not unique");
+    assert!(
+        !error.contains(duplicate),
+        "error must not echo stored UUID"
+    );
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version after failure");
+    assert_eq!(user_version, 39);
+    assert_no_v40_provider_model_schema(&conn);
+}
+
+#[test]
+fn migrate_v39_to_v40_backfills_canonical_provider_uuids_and_is_idempotent() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch(
+        r#"
+PRAGMA foreign_keys = ON;
+CREATE TABLE providers(
+  id INTEGER PRIMARY KEY,
+  cli_key TEXT NOT NULL,
+  name TEXT NOT NULL
+);
+INSERT INTO providers(id, cli_key, name) VALUES
+  (1, 'codex', 'one'),
+  (2, 'claude', 'two');
+PRAGMA user_version = 39;
+"#,
+    )
+    .expect("create v39 fixture");
+
+    v39_to_v40::migrate_v39_to_v40(&mut conn).expect("migrate v39->v40");
+    v39_to_v40::migrate_v39_to_v40(&mut conn).expect("repeat v39->v40");
+
+    let provider_uuids = conn
+        .prepare("SELECT provider_uuid FROM providers ORDER BY id ASC")
+        .expect("prepare UUID query")
+        .query_map([], |row| row.get::<_, String>(0))
+        .expect("query UUIDs")
+        .collect::<Result<Vec<_>, _>>()
+        .expect("read UUIDs");
+    assert_eq!(provider_uuids.len(), 2);
+    assert_ne!(provider_uuids[0], provider_uuids[1]);
+    assert!(provider_uuids
+        .iter()
+        .all(|value| crate::shared::uuid::is_canonical_uuid_v4(value)));
+    for table in [
+        "provider_model_catalogs",
+        "provider_models",
+        "codex_managed_profiles",
+    ] {
+        assert!(test_has_table(&conn, table), "missing {table}");
+    }
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version");
+    assert_eq!(user_version, 40);
+
+    let update_error = conn
+        .execute(
+            "UPDATE providers SET provider_uuid = ?1 WHERE id = 1",
+            rusqlite::params![crate::shared::uuid::new_uuid_v4()],
+        )
+        .expect_err("provider UUID must be immutable");
+    assert!(update_error
+        .to_string()
+        .contains("provider_uuid is immutable"));
+
+    let extra_hyphen = "550e8400-e29b-41d4-a716-44665544000-";
+    let insert_error = conn
+        .execute(
+            "INSERT INTO providers(id, cli_key, name, provider_uuid) VALUES (3, 'codex', 'bad', ?1)",
+            rusqlite::params![extra_hyphen],
+        )
+        .expect_err("incremental trigger must reject an extra UUID hyphen");
+    assert!(insert_error
+        .to_string()
+        .contains("provider_uuid must be a canonical UUID"));
+}
+
+#[test]
+fn migrate_v40_to_v41_requires_provider_models_without_advancing() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch("PRAGMA user_version = 40;")
+        .expect("create missing-model fixture");
+
+    let error =
+        v40_to_v41::migrate_v40_to_v41(&mut conn).expect_err("missing provider_models must fail");
+    assert!(error.contains("requires the provider_models table"));
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version after failure");
+    assert_eq!(user_version, 40);
+}
+
+#[test]
+fn migrate_v40_to_v41_backfills_existing_models_and_defaults_new_rows_unconfigured() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    conn.execute_batch(
+        r#"
+CREATE TABLE provider_models (
+  model_uuid TEXT PRIMARY KEY,
+  provider_id INTEGER NOT NULL,
+  remote_model_id TEXT NOT NULL,
+  source TEXT NOT NULL,
+  stale INTEGER NOT NULL DEFAULT 0,
+  last_seen_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  UNIQUE(provider_id, remote_model_id)
+);
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, created_at, updated_at
+) VALUES ('old-model', 1, 'grok-4.5', 'manual', 0, 1, 1);
+PRAGMA user_version = 40;
+"#,
+    )
+    .expect("create v40 fixture");
+
+    v40_to_v41::migrate_v40_to_v41(&mut conn).expect("migrate v40->v41");
+    v40_to_v41::migrate_v40_to_v41(&mut conn).expect("repeat v40->v41");
+
+    let existing = conn
+        .query_row(
+            r#"
+SELECT capabilities_configured, supported_reasoning_efforts_json,
+       default_reasoning_effort, context_window
+FROM provider_models
+WHERE model_uuid = 'old-model'
+"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .expect("read backfilled model");
+    assert_eq!(
+        existing,
+        (
+            1,
+            r#"["low","medium","high"]"#.to_string(),
+            Some("medium".to_string()),
+            None,
+        )
+    );
+
+    conn.execute(
+        r#"
+INSERT INTO provider_models(
+  model_uuid, provider_id, remote_model_id, source, stale, created_at, updated_at
+) VALUES ('new-model', 1, 'gpt-new', 'manual', 0, 2, 2)
+"#,
+        [],
+    )
+    .expect("insert new model");
+    let new_model = conn
+        .query_row(
+            r#"
+SELECT capabilities_configured, supported_reasoning_efforts_json,
+       default_reasoning_effort, context_window
+FROM provider_models
+WHERE model_uuid = 'new-model'
+"#,
+            [],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<i64>>(3)?,
+                ))
+            },
+        )
+        .expect("read new model defaults");
+    assert_eq!(new_model, (0, "[]".to_string(), None, None));
+
+    let context_error = conn
+        .execute(
+            "UPDATE provider_models SET context_window = 100 WHERE model_uuid = 'new-model'",
+            [],
+        )
+        .expect_err("bounded context window must reject tiny values");
+    assert!(context_error
+        .to_string()
+        .contains("CHECK constraint failed"));
+
+    let user_version: i64 = conn
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .expect("user version");
+    assert_eq!(user_version, 41);
+}
+
+#[test]
+fn fresh_v41_schema_rejects_missing_or_noncanonical_provider_uuid() {
+    let mut conn = Connection::open_in_memory().expect("open migration db");
+    apply_migrations(&mut conn).expect("apply migrations");
+
+    let missing = conn
+        .execute(
+            r#"
+INSERT INTO providers(cli_key, name, base_url, api_key_plaintext, created_at, updated_at)
+VALUES ('codex', 'missing', 'https://example.invalid/v1', 'key', 1, 1)
+"#,
+            [],
+        )
+        .expect_err("missing UUID must fail");
+    assert!(missing.to_string().contains("provider_uuid"));
+
+    for invalid in [
+        "550E8400-E29B-41D4-A716-446655440000",
+        "550e8400-e29b-11d4-a716-446655440000",
+        "550e8400-e29b-41d4-c716-446655440000",
+        "550e8400-e29b-41d4-a716-44665544000z",
+        "550e8400-e29b-41d4-a716-44665544000-",
+    ] {
+        let error = conn
+            .execute(
+                r#"
+INSERT INTO providers(
+  provider_uuid, cli_key, name, base_url, api_key_plaintext, created_at, updated_at
+) VALUES (?1, 'codex', ?1, 'https://example.invalid/v1', 'key', 1, 1)
+"#,
+                rusqlite::params![invalid],
+            )
+            .expect_err("invalid UUID must fail");
+        assert!(
+            error
+                .to_string()
+                .contains("provider_uuid must be a canonical UUID"),
+            "unexpected error for {invalid}: {error}"
+        );
+    }
 }

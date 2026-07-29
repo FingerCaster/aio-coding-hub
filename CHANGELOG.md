@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.60.30](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.29...aio-coding-hub-v0.60.30) (2026-07-21)
+
+
+### Features
+
+* add provider model catalog UI ([f59cb45](https://github.com/FingerCaster/aio-coding-hub/commit/f59cb4588db1420a7b49c4adb2bdd0c4a745d1c7))
+* add provider model discovery and managed profiles ([b444b98](https://github.com/FingerCaster/aio-coding-hub/commit/b444b9819faf25c9c69cf0e2f7e59010240e4ef8))
+* complete managed model gateway routing ([71662b6](https://github.com/FingerCaster/aio-coding-hub/commit/71662b622a10ce406839a3e65c3ed9b0ee598508))
+* configure managed Codex model capabilities ([ee50ac8](https://github.com/FingerCaster/aio-coding-hub/commit/ee50ac8c55b4a7706b3d72052d0b8f6058b2f2b6))
+* expose managed profiles in Codex model picker ([884b258](https://github.com/FingerCaster/aio-coding-hub/commit/884b258a7cddf4bc573e58b8aafb3bd7eb07f98b))
+
+
+### Bug Fixes
+
+* clear 0.60.30 release blockers ([f7b7ea8](https://github.com/FingerCaster/aio-coding-hub/commit/f7b7ea86ab9c24cb734f761c44eeda1b2cb82529))
+* expose reasoning effort for managed Codex models ([85ea3fb](https://github.com/FingerCaster/aio-coding-hub/commit/85ea3fbb143e3926aabb8f62887e4dd9fa8ca883))
+* stabilize bundled Codex catalog launch ([6bd591a](https://github.com/FingerCaster/aio-coding-hub/commit/6bd591a38cc68fc12b747b16b645beaad6bf9bdd))
+
 ## [0.60.29](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.28...aio-coding-hub-v0.60.29) (2026-07-19)
 
 

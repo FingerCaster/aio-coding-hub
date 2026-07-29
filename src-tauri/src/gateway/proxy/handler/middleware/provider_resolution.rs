@@ -8,7 +8,7 @@ use crate::gateway::proxy::handler::early_error::{
 };
 use crate::gateway::proxy::handler::provider_selection::{
     resolve_session_bound_provider_id, resolve_session_routing_decision,
-    select_providers_with_session_binding,
+    select_providers_with_session_binding, ProviderSelection,
 };
 use crate::gateway::response_fixer;
 
@@ -27,7 +27,7 @@ impl ProviderResolutionMiddleware {
             ctx.is_claude_count_tokens,
         );
         ctx.session_id = decision.session_id;
-        ctx.allow_session_reuse = decision.allow_session_reuse;
+        ctx.allow_session_reuse = decision.allow_session_reuse && ctx.managed_model_route.is_none();
 
         // --- provider selection ---
         // Runs rusqlite queries; keep them off the async worker via the bounded
@@ -37,13 +37,35 @@ impl ProviderResolutionMiddleware {
             let cli_key = ctx.cli_key.clone();
             let session_id = ctx.session_id.clone();
             let created_at = ctx.created_at;
+            let managed_provider_identity = ctx
+                .managed_model_route
+                .as_ref()
+                .map(|route| (route.provider_id, route.provider_uuid.clone()));
             crate::blocking::run("gateway_provider_selection", move || {
-                select_providers_with_session_binding(
-                    &state,
-                    &cli_key,
-                    session_id.as_deref(),
-                    created_at,
-                )
+                if let Some((provider_id, provider_uuid)) = managed_provider_identity {
+                    let providers =
+                        crate::providers::get_enabled_direct_codex_for_gateway_by_identity(
+                            &state.db,
+                            provider_id,
+                            &provider_uuid,
+                        )?
+                        .into_iter()
+                        .collect();
+                    Ok(ProviderSelection {
+                        effective_sort_mode_id: None,
+                        providers,
+                        bound_provider_order: None,
+                        active_sort_mode_id: None,
+                        session_bound_sort_mode_id: None,
+                    })
+                } else {
+                    select_providers_with_session_binding(
+                        &state,
+                        &cli_key,
+                        session_id.as_deref(),
+                        created_at,
+                    )
+                }
             })
             .await
         };

@@ -67,6 +67,8 @@ pub(super) enum AttemptSendOutcome {
     OAuthInjectFailed,
     /// Plugin blocked the request before the upstream send.
     PluginBlocked(String),
+    /// A request plugin changed a server-managed model binding before send.
+    ManagedModelInvalid(String),
 }
 
 /// URL build failure from the shared prepared-send primitive.
@@ -85,6 +87,7 @@ pub(super) enum PreparedSendOutcome {
     UrlBuildFailed(PreparedUrlBuildFailure),
     OAuthInjectFailed(Box<FailoverAttempt>),
     PluginBlocked(String),
+    ManagedModelInvalid(String),
 }
 
 /// Build request headers, inject auth, clean body, send upstream, and return
@@ -129,7 +132,10 @@ where
                 &circuit_before,
                 prepared,
             );
-            let provider_ctx = build_provider_ctx(prepared);
+            let provider_ctx = ProviderCtx {
+                active_requested_model: None,
+                ..build_provider_ctx(prepared)
+            };
             let ctrl = handle_url_build_failure(
                 ctx,
                 input,
@@ -146,6 +152,9 @@ where
             AttemptSendOutcome::OAuthInjectFailed
         }
         PreparedSendOutcome::PluginBlocked(reason) => AttemptSendOutcome::PluginBlocked(reason),
+        PreparedSendOutcome::ManagedModelInvalid(reason) => {
+            AttemptSendOutcome::ManagedModelInvalid(reason)
+        }
     }
 }
 
@@ -161,7 +170,7 @@ pub(super) async fn send_prepared_upstream<R>(
     retry_index: u32,
     attempt_index: u32,
     first_byte_timeout: Option<std::time::Duration>,
-    abort_guard: Option<&mut RequestAbortGuard<R>>,
+    mut abort_guard: Option<&mut RequestAbortGuard<R>>,
 ) -> PreparedSendOutcome
 where
     R: tauri::Runtime,
@@ -182,17 +191,18 @@ where
         }
     };
 
-    // --- Emit "started" attempt event ---
-    if let Some(abort_guard) = abort_guard {
-        emit_started_event(
-            input,
-            prepared,
-            attempt_index,
-            retry_index,
-            attempt_started_ms,
-            &circuit_before,
-            abort_guard,
-        );
+    if input.managed_model_route.is_none() {
+        if let Some(abort_guard) = abort_guard.as_deref_mut() {
+            emit_started_event(
+                input,
+                prepared,
+                attempt_index,
+                retry_index,
+                attempt_started_ms,
+                &circuit_before,
+                abort_guard,
+            );
+        }
     }
 
     // --- Build headers + inject auth ---
@@ -294,6 +304,29 @@ where
     }
 
     headers = semantic_headers;
+    if let Err(reason) = sync_final_wire_model(input, prepared, &body_state_for_attempt) {
+        return PreparedSendOutcome::ManagedModelInvalid(reason);
+    }
+    if let Some(route) = input.managed_model_route.as_ref() {
+        crate::gateway::managed_model_route::mark_applied(
+            &input.special_settings,
+            route,
+            route.remote_model_id.as_str(),
+        );
+    }
+    if input.managed_model_route.is_some() {
+        if let Some(abort_guard) = abort_guard {
+            emit_started_event(
+                input,
+                prepared,
+                attempt_index,
+                retry_index,
+                attempt_started_ms,
+                &circuit_before,
+                abort_guard,
+            );
+        }
+    }
     let upstream_body = body_state_for_attempt
         .finalize_for_upstream(&mut headers, crate::gateway::util::max_request_body_bytes());
 
@@ -347,6 +380,46 @@ fn sync_before_send_body_output(
     prepared.upstream_body_bytes = output_body;
     prepared.strip_request_content_encoding = true;
     prepared.request_body_mutated_before_attempt = true;
+}
+
+fn sync_final_wire_model<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    prepared: &mut PreparedProvider,
+    body: &crate::gateway::proxy::request_body::GatewayRequestBody,
+) -> Result<(), String> {
+    if !should_sync_final_wire_model(&input.cli_key, input.managed_model_route.is_some()) {
+        return Ok(());
+    }
+
+    let body_json = serde_json::from_slice::<serde_json::Value>(body.decoded().as_ref()).ok();
+    let final_model = crate::gateway::util::infer_requested_model_info(
+        &prepared.upstream_forwarded_path,
+        prepared.upstream_query.as_deref(),
+        body_json.as_ref(),
+    )
+    .model;
+
+    if let Some(route) = input.managed_model_route.as_ref() {
+        validate_managed_wire_model(route, prepared.provider_id, final_model.as_deref())?;
+    }
+
+    prepared.active_requested_model = final_model;
+    Ok(())
+}
+
+fn should_sync_final_wire_model(cli_key: &str, managed_model_route: bool) -> bool {
+    managed_model_route || cli_key == "codex"
+}
+
+fn validate_managed_wire_model(
+    route: &crate::gateway::managed_model_route::ManagedModelRoute,
+    provider_id: i64,
+    final_model: Option<&str>,
+) -> Result<(), String> {
+    if provider_id != route.provider_id || final_model != Some(route.remote_model_id.as_str()) {
+        return Err("managed model binding changed before upstream send".to_string());
+    }
+    Ok(())
 }
 
 fn try_build_url(prepared: &PreparedProvider) -> Result<reqwest::Url, String> {
@@ -536,13 +609,15 @@ fn emit_started_event<R: tauri::Runtime>(
         circuit_trigger_error_code: None,
         provider_bridged: Some(prepared.provider_bridged),
         timeout_secs: None,
+        requested_upstream_model: prepared.active_requested_model.clone(),
     };
-    abort_guard.update_requested_model(
-        prepared
-            .active_requested_model
-            .clone()
-            .or_else(|| input.requested_model.clone()),
-    );
+    let audit_requested_model =
+        crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+            input.managed_model_route.as_ref(),
+            input.requested_model.as_deref(),
+            prepared.active_requested_model.as_deref(),
+        );
+    abort_guard.update_requested_model(audit_requested_model.clone());
     let started_event = input.observe_request.then(|| {
         bound_attempt_event(GatewayAttemptEvent {
             trace_id: input.trace_id.clone(),
@@ -551,10 +626,8 @@ fn emit_started_event<R: tauri::Runtime>(
             method: input.method_hint.clone(),
             path: input.forwarded_path.clone(),
             query: input.query.clone(),
-            requested_model: prepared
-                .active_requested_model
-                .clone()
-                .or_else(|| input.requested_model.clone()),
+            requested_model: audit_requested_model,
+            requested_upstream_model: prepared.active_requested_model.clone(),
             special_settings_json: crate::gateway::response_fixer::special_settings_json(
                 &input.special_settings,
             ),
@@ -591,6 +664,14 @@ fn emit_started_event<R: tauri::Runtime>(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    #[test]
+    fn final_wire_model_sync_is_scoped_to_codex_or_managed_routes() {
+        assert!(should_sync_final_wire_model("codex", false));
+        assert!(should_sync_final_wire_model("claude", true));
+        assert!(!should_sync_final_wire_model("claude", false));
+        assert!(!should_sync_final_wire_model("grok", false));
+    }
 
     #[test]
     fn body_sanitizer_outcome_records_setting_without_touching_headers() {

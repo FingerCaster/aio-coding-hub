@@ -9,6 +9,24 @@ use crate::shared::time::now_unix_seconds;
 use rusqlite::{params, params_from_iter, Connection, OptionalExtension};
 use std::collections::{HashMap, HashSet};
 
+fn mark_provider_discovery_stale(
+    conn: &Connection,
+    provider_id: i64,
+    now: i64,
+) -> crate::shared::error::AppResult<()> {
+    conn.execute(
+        "UPDATE provider_model_catalogs SET stale = 1 WHERE provider_id = ?1",
+        params![provider_id],
+    )
+    .map_err(|e| db_err!("failed to mark provider model catalog stale: {e}"))?;
+    conn.execute(
+        "UPDATE provider_models SET stale = 1, updated_at = ?1 WHERE provider_id = ?2 AND source = 'discovered'",
+        params![now, provider_id],
+    )
+    .map_err(|e| db_err!("failed to mark discovered provider models stale: {e}"))?;
+    Ok(())
+}
+
 pub(super) fn retry_policy_override_from_json(
     raw: Option<String>,
 ) -> Option<crate::settings::UpstreamRetryPolicy> {
@@ -105,6 +123,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
 
     Ok(ProviderSummary {
         id: decoded.id,
+        provider_uuid: row.get("provider_uuid")?,
         cli_key,
         name: decoded.name,
         base_urls: decoded.base_urls,
@@ -290,6 +309,7 @@ pub(crate) fn get_by_id(
             r#"
 SELECT
   id,
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -585,6 +605,7 @@ pub fn list_by_cli(
             r#"
 SELECT
   id,
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -953,6 +974,58 @@ WHERE id = ?1{enabled_filter} AND source_provider_id IS NULL AND bridge_type IS 
         })?;
     fill_gateway_extension_values(&conn, &mut provider)?;
     Ok((provider, cli_key_owned))
+}
+
+pub(crate) fn get_enabled_direct_codex_for_gateway_by_identity(
+    db: &db::Db,
+    provider_id: i64,
+    provider_uuid: &str,
+) -> crate::shared::error::AppResult<Option<ProviderForGateway>> {
+    let conn = db.open_connection()?;
+    let mut provider = conn
+        .query_row(
+            r#"
+SELECT
+  id,
+  name,
+  base_url,
+  base_urls_json,
+  base_url_mode,
+  api_key_plaintext,
+  claude_models_json,
+  model_mapping_json,
+  availability_test_model,
+  limit_5h_usd,
+  limit_daily_usd,
+  daily_reset_mode,
+  daily_reset_time,
+  limit_weekly_usd,
+  limit_monthly_usd,
+  limit_total_usd,
+  auth_mode,
+  oauth_provider_type,
+  source_provider_id,
+  bridge_type,
+  stream_idle_timeout_seconds,
+  upstream_retry_policy_json
+FROM providers
+WHERE id = ?1
+  AND provider_uuid = ?2
+  AND cli_key = 'codex'
+  AND enabled = 1
+  AND source_provider_id IS NULL
+  AND bridge_type IS NULL
+"#,
+            params![provider_id, provider_uuid],
+            |row| map_gateway_provider_row(row, "codex"),
+        )
+        .optional()
+        .map_err(|e| db_err!("failed to query managed model provider: {e}"))?;
+
+    if let Some(provider) = provider.as_mut() {
+        fill_gateway_extension_values(&conn, provider)?;
+    }
+    Ok(provider)
 }
 
 /// Resolve the effective API credential for a provider.
@@ -1377,10 +1450,12 @@ pub fn upsert(
             let tags_json_value = serde_json::to_string(&tags_normalized)
                 .map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
             let note_value = normalize_note(note.as_deref())?;
+            let provider_uuid = crate::shared::uuid::new_uuid_v4();
 
             tx.execute(
                 r#"
 INSERT INTO providers(
+  provider_uuid,
   cli_key,
   name,
   base_url,
@@ -1411,9 +1486,10 @@ INSERT INTO providers(
   upstream_retry_policy_json,
   created_at,
   updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, '{}', ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
 "#,
                 params![
+                    provider_uuid,
                     cli_key,
                     name,
                     base_url_primary,
@@ -1497,12 +1573,16 @@ INSERT INTO providers(
                 Option<i64>,
                 Option<String>,
                 String,
+                String,
+                String,
+                Option<i64>,
+                Option<String>,
             );
             let existing: Option<ExistingProviderRow> = tx
                 .query_row(
-                    "SELECT cli_key, api_key_plaintext, priority, claude_models_json, auth_mode, daily_reset_mode, daily_reset_time, tags_json, note, availability_test_model, stream_idle_timeout_seconds, upstream_retry_policy_json, model_mapping_json FROM providers WHERE id = ?1",
+                    "SELECT cli_key, api_key_plaintext, priority, claude_models_json, auth_mode, daily_reset_mode, daily_reset_time, tags_json, note, availability_test_model, stream_idle_timeout_seconds, upstream_retry_policy_json, model_mapping_json, base_urls_json, base_url_mode, source_provider_id, bridge_type FROM providers WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?, row.get(12)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?, row.get(15)?, row.get(16)?)),
                 )
                 .optional()
                 .map_err(|e| db_err!("failed to query provider: {e}"))?;
@@ -1521,6 +1601,10 @@ INSERT INTO providers(
                 existing_stream_idle_timeout_seconds,
                 existing_upstream_retry_policy_json,
                 existing_model_mapping_json,
+                existing_base_urls_json,
+                existing_base_url_mode,
+                existing_source_provider_id,
+                existing_bridge_type,
             )) = existing
             else {
                 return Err("DB_NOT_FOUND: provider not found".to_string().into());
@@ -1637,6 +1721,12 @@ INSERT INTO providers(
                 } else {
                     existing_upstream_retry_policy_json
                 };
+            let connection_changed = existing_base_urls_json != base_urls_json
+                || existing_base_url_mode != base_url_mode.as_str()
+                || existing_auth_mode_raw != next_auth_mode
+                || existing_api_key != next_api_key
+                || existing_source_provider_id != source_provider_id
+                || existing_bridge_type != bridge_type;
 
             tx.execute(
                 r#"
@@ -1713,6 +1803,10 @@ WHERE id = ?27
                 other => db_err!("failed to update provider: {other}"),
             })?;
 
+            if connection_changed {
+                mark_provider_discovery_stale(&tx, id, now)?;
+            }
+
             crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
                 &tx,
                 extension_values.as_deref(),
@@ -1760,6 +1854,53 @@ pub fn delete(
     let tx = conn
         .transaction()
         .map_err(|e| db_err!("failed to start transaction: {e}"))?;
+    let profile_names = {
+        let mut statement = tx
+            .prepare_cached(
+                r#"
+SELECT profile.profile_name
+FROM codex_managed_profiles profile
+JOIN provider_models model ON model.model_uuid = profile.model_uuid
+WHERE model.provider_id = ?1
+ORDER BY profile.profile_name_key ASC
+LIMIT 21
+"#,
+            )
+            .map_err(|e| db_err!("failed to prepare managed profile reference query: {e}"))?;
+        let rows = statement
+            .query_map(params![provider_id], |row| row.get::<_, String>(0))
+            .map_err(|e| db_err!("failed to query managed profile references: {e}"))?;
+        let mut names = Vec::new();
+        for row in rows {
+            names.push(row.map_err(|e| db_err!("failed to read managed profile reference: {e}"))?);
+        }
+        names
+    };
+    if !profile_names.is_empty() {
+        let truncated = profile_names.len() > 20;
+        let mut visible = profile_names
+            .into_iter()
+            .take(20)
+            .collect::<Vec<_>>()
+            .join(", ");
+        if truncated {
+            visible.push_str(", ...");
+        }
+        return Err(crate::shared::error::AppError::new(
+            "PROVIDER_MANAGED_PROFILE_REFERENCED",
+            format!("provider is referenced by managed profiles: {visible}"),
+        ));
+    }
+    tx.execute(
+        "DELETE FROM provider_model_catalogs WHERE provider_id = ?1",
+        params![provider_id],
+    )
+    .map_err(|e| db_err!("failed to delete provider model catalog: {e}"))?;
+    tx.execute(
+        "DELETE FROM provider_models WHERE provider_id = ?1",
+        params![provider_id],
+    )
+    .map_err(|e| db_err!("failed to delete provider models: {e}"))?;
     let changed = tx
         .execute("DELETE FROM providers WHERE id = ?1", params![provider_id])
         .map_err(|e| db_err!("failed to delete provider: {e}"))?;
@@ -2002,9 +2143,12 @@ pub(crate) fn update_oauth_tokens(
     expires_at: Option<i64>,
     email: Option<&str>,
 ) -> crate::shared::error::AppResult<()> {
-    let conn = db.open_connection()?;
+    let mut conn = db.open_connection()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| db_err!("failed to start OAuth token update transaction: {e}"))?;
     let now = crate::shared::time::now_unix_seconds();
-    conn.execute(
+    tx.execute(
         r#"
 UPDATE providers SET
   auth_mode = ?1,
@@ -2038,6 +2182,9 @@ WHERE id = ?12
         ],
     )
     .map_err(|e| crate::shared::error::db_err!("failed to update OAuth tokens: {e}"))?;
+    mark_provider_discovery_stale(&tx, provider_id, now)?;
+    tx.commit()
+        .map_err(|e| db_err!("failed to commit OAuth token update: {e}"))?;
     Ok(())
 }
 
@@ -2113,9 +2260,12 @@ pub(crate) fn clear_oauth(
     db: &crate::db::Db,
     provider_id: i64,
 ) -> crate::shared::error::AppResult<()> {
-    let conn = db.open_connection()?;
+    let mut conn = db.open_connection()?;
+    let tx = conn
+        .transaction()
+        .map_err(|e| db_err!("failed to start OAuth clear transaction: {e}"))?;
     let now = crate::shared::time::now_unix_seconds();
-    conn.execute(
+    tx.execute(
         r#"
 UPDATE providers SET
   auth_mode = 'api_key',
@@ -2136,6 +2286,9 @@ WHERE id = ?2
         rusqlite::params![now, provider_id],
     )
     .map_err(|e| crate::shared::error::db_err!("failed to clear OAuth: {e}"))?;
+    mark_provider_discovery_stale(&tx, provider_id, now)?;
+    tx.commit()
+        .map_err(|e| db_err!("failed to commit OAuth clear: {e}"))?;
     Ok(())
 }
 

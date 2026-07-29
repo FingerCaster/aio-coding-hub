@@ -318,6 +318,15 @@ pub(crate) fn effective_cost_basis(
         return Some(EffectiveCostBasis { cli_key, model });
     }
 
+    if let Some(model) =
+        semantics::resolve_aio_managed_model_priced_model(special_settings_json, final_provider_id)
+    {
+        return Some(EffectiveCostBasis {
+            cli_key: cli_key.to_string(),
+            model,
+        });
+    }
+
     let model = requested_model
         .map(str::trim)
         .filter(|v| !v.is_empty())?

@@ -16,9 +16,11 @@ import { Switch } from "../../ui/Switch";
 import { ProviderEditorDialog } from "./ProviderEditorDialog";
 import { ProviderImportDialog } from "./ProviderImportDialog";
 import { ProviderShareDialog } from "./ProviderShareDialog";
+import { ProviderModelCatalogDialog } from "./ProviderModelCatalogDialog";
 import { SortableProviderCard } from "./SortableProviderCard";
 import { SortableProviderOrderItem } from "./SortableProviderOrderItem";
 import { useProvidersViewDataModel } from "./hooks/useProvidersViewDataModel";
+import { isCodexDirectProvider } from "../../services/providers/providerModels";
 
 export type ProvidersViewProps = {
   activeCli: CliKey;
@@ -126,6 +128,9 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
   const [clearUsageStatsOnDelete, setClearUsageStatsOnDelete] = useState(false);
   const [shareTarget, setShareTarget] = useState<(typeof providers)[number] | null>(null);
   const [importDialogOpen, setImportDialogOpen] = useState(false);
+  const [modelCatalogTarget, setModelCatalogTarget] = useState<(typeof providers)[number] | null>(
+    null
+  );
 
   useEffect(() => {
     const pendingRestore = pendingProvidersScrollRestoreRef.current;
@@ -373,6 +378,9 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
                           terminalLaunchCopying={Boolean(terminalCopyingByProviderId[provider.id])}
                           onTestAvailability={testProviderAvailability}
                           testAvailabilityLoading={Boolean(testingByProviderId[provider.id])}
+                          onManageModels={
+                            isCodexDirectProvider(provider) ? setModelCatalogTarget : undefined
+                          }
                           onDuplicate={duplicateProvider}
                           duplicateLoading={Boolean(duplicatingByProviderId[provider.id])}
                           onShare={setShareTarget}
@@ -557,6 +565,10 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
           onSaved={(cliKey) => {
             captureProvidersListScrollPosition(cliKey);
           }}
+          onModelFetchFailedAfterSave={(savedProvider) => {
+            setCreateDialogState(null);
+            setEditTarget(savedProvider);
+          }}
         />
       ) : null}
 
@@ -573,6 +585,7 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
           onSaved={(cliKey) => {
             captureProvidersListScrollPosition(cliKey);
           }}
+          onModelFetchFailedAfterSave={setEditTarget}
         />
       ) : null}
 
@@ -589,6 +602,14 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
         onOpenChange={setImportDialogOpen}
         onImported={(provider) => {
           setActiveCli(provider.cli_key);
+        }}
+      />
+
+      <ProviderModelCatalogDialog
+        open={modelCatalogTarget != null}
+        provider={modelCatalogTarget}
+        onOpenChange={(nextOpen) => {
+          if (!nextOpen) setModelCatalogTarget(null);
         }}
       />
 

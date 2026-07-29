@@ -67,14 +67,16 @@ pub(super) fn finalize_circuit_and_session<R: tauri::Runtime>(
         let _ = provider_router::record_success_and_emit_transition(
             provider_router::RecordCircuitArgs::from_stream_ctx(ctx, now_unix),
         );
-        if let Some(session_id) = ctx.session_id.as_deref() {
-            ctx.session.bind_success(
-                &ctx.cli_key,
-                session_id,
-                ctx.provider_id,
-                ctx.sort_mode_id,
-                now_unix,
-            );
+        if !ctx.managed_model_route {
+            if let Some(session_id) = ctx.session_id.as_deref() {
+                ctx.session.bind_success(
+                    &ctx.cli_key,
+                    session_id,
+                    ctx.provider_id,
+                    ctx.sort_mode_id,
+                    now_unix,
+                );
+            }
         }
     } else if ctx.fake_200_detected && (200..300).contains(&ctx.status) {
         // Fake 200: upstream returned HTTP 200 but body contained an error payload.
@@ -146,6 +148,8 @@ mod tests {
             attempts: Vec::new(),
             attempts_json: "[]".to_string(),
             requested_model: None,
+            requested_upstream_model: None,
+            managed_model_route: false,
             created_at_ms: 1_700_000_000_000,
             created_at: 1_700_000_000,
             provider_cooldown_secs: 0,
@@ -158,6 +162,7 @@ mod tests {
                 "codex",
             ))),
             observed_upstream_model: Arc::new(Mutex::new(None)),
+            observed_upstream_conflicting_model: Arc::new(Mutex::new(None)),
             observed_upstream_reasoning_effort: Arc::new(Mutex::new(None)),
             fake_200_detected: false,
             fake_200_quota_exhausted: false,

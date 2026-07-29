@@ -13,6 +13,7 @@ vi.mock("../../services/providers/providerShare", () => ({
 function provider(id: number, cliKey: ProviderSummary["cli_key"], name: string): ProviderSummary {
   return {
     id,
+    provider_uuid: `00000000-0000-4000-8000-${String(id).padStart(12, "0")}`,
     cli_key: cliKey,
     name,
     base_urls: [],

@@ -27,6 +27,7 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(normalized?.status).toBe(200);
     expect(normalized?.attempts).toHaveLength(1);
     expect(normalized?.attempts[0]?.provider_id).toBe(7);
+    expect(normalized?.attempts[0]?.requested_upstream_model).toBeNull();
     // Nested mapping is camelCase inside an otherwise snake_case payload.
     expect(normalized?.claude_model_mapping?.effectiveModel).toBe("gpt-5.4");
     expect(normalized?.cache_read_input_tokens).toBe(800);
@@ -71,6 +72,7 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(normalized).not.toBeNull();
     expect(normalized?.attempt_index).toBe(1);
     expect(normalized?.outcome).toBe("success");
+    expect(normalized?.requested_upstream_model).toBeNull();
     expect(normalized?.claude_model_mapping?.requestedModel).toBe("claude-sonnet-4-5");
   });
 

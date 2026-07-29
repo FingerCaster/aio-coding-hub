@@ -138,6 +138,18 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
                     origin,
                 ));
             }
+            if let Err(err) = crate::codex_model_catalog::managed::sync_current_locked(app) {
+                let _ = write_manifest(app, "codex", &previous_manifest);
+                let _ = restore_file_snapshots(&target_snapshots);
+                return Ok(CliProxyResult::failure(
+                    trace_id,
+                    "codex",
+                    true,
+                    "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
+                    err.to_string(),
+                    origin,
+                ));
+            }
         }
 
         return Ok(CliProxyResult::success(
@@ -177,6 +189,19 @@ pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
                 "codex",
                 true,
                 "CLI_PROXY_REBIND_APPLY_FAILED",
+                err.to_string(),
+                origin,
+            ));
+        }
+        if let Err(err) = crate::codex_model_catalog::managed::sync_current_locked(app) {
+            let _ = write_manifest(app, "codex", &previous_manifest);
+            let _ = restore_file_snapshots(&backup_snapshots);
+            let _ = restore_file_snapshots(&target_snapshots);
+            return Ok(CliProxyResult::failure(
+                trace_id,
+                "codex",
+                true,
+                "CLI_PROXY_MANAGED_MODEL_SYNC_FAILED",
                 err.to_string(),
                 origin,
             ));
@@ -243,8 +268,9 @@ pub(super) fn merge_restore_codex_auth_json(
 }
 
 /// Merge-restore Codex `config.toml`: revert the proxy-managed root keys
-/// (`model_provider`, `preferred_auth_method`) and the `[model_providers.aio]`
-/// section / `[windows] sandbox` while preserving user changes.
+/// (`model_provider`, `preferred_auth_method`, `model_catalog_json`) and the
+/// `[model_providers.aio]` section / `[windows] sandbox` while preserving user
+/// changes.
 pub(super) fn merge_restore_codex_config_toml(
     target_path: &Path,
     backup_path: &Path,
@@ -284,6 +310,14 @@ pub(super) fn merge_restore_codex_config_toml(
         &mut lines,
         "preferred_auth_method",
         backup_auth_method.as_deref(),
+    );
+
+    // --- Revert root `model_catalog_json` ---
+    let backup_model_catalog = find_root_key_value(&backup_lines, "model_catalog_json");
+    revert_root_key(
+        &mut lines,
+        "model_catalog_json",
+        backup_model_catalog.as_deref(),
     );
 
     // --- Remove the proxy-injected `[model_providers.aio]` section ---

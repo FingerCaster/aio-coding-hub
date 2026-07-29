@@ -5,9 +5,11 @@ import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reac
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
 import {
   appAboutKeys,
+  codexManagedProfilesKeys,
   dataManagementKeys,
   gatewayKeys,
   modelPricesKeys,
+  providerModelsKeys,
   providersKeys,
   requestLogsKeys,
   settingsKeys,
@@ -101,6 +103,9 @@ describe("query/dataManagement", () => {
     });
     client.setQueryData(gatewayKeys.sessions(), [{ session_id: "session-1" }]);
     client.setQueryData(providersKeys.list("codex"), [{ id: 1 }]);
+    const providerUuid = "11111111-1111-4111-8111-111111111111";
+    client.setQueryData(providerModelsKeys.catalog(1, providerUuid), { providerId: 1 });
+    client.setQueryData(codexManagedProfilesKeys.list(), [{ providerId: 1 }]);
     client.setQueryData(requestLogsKeys.listAll(null), [{ id: 1 }]);
     client.setQueryData(usageKeys.summary("today", { cliKey: null }), { requests_total: 3 });
     client.setQueryData(modelPricesKeys.aliases(), { aliases: [] });
@@ -116,6 +121,8 @@ describe("query/dataManagement", () => {
     );
     expect(client.getQueryData(gatewayKeys.sessions())).toBeUndefined();
     expect(client.getQueryData(providersKeys.list("codex"))).toBeUndefined();
+    expect(client.getQueryData(providerModelsKeys.catalog(1, providerUuid))).toBeUndefined();
+    expect(client.getQueryData(codexManagedProfilesKeys.list())).toBeUndefined();
     expect(client.getQueryData(requestLogsKeys.listAll(null))).toBeUndefined();
     expect(client.getQueryData(usageKeys.summary("today", { cliKey: null }))).toBeUndefined();
     expect(client.getQueryData(modelPricesKeys.aliases())).toBeUndefined();

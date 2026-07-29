@@ -101,6 +101,7 @@ export async function handleOAuthLogin(ctx: OAuthActionContext) {
 
   try {
     let targetProviderId = ctx.editingProviderId;
+    let targetProviderUuid = ctx.editProvider?.provider_uuid ?? null;
     if (!targetProviderId) {
       if (!ctx.form.getValues().name?.trim()) {
         toast("请先填写 Provider 名称");
@@ -118,6 +119,7 @@ export async function handleOAuthLogin(ctx: OAuthActionContext) {
 
       const saved = await ctx.persistProvider(built.value.payload);
       targetProviderId = saved.id;
+      targetProviderUuid = saved.provider_uuid;
       autoSavedProviderId = saved.id;
       shouldRollbackAutoSavedProvider = true;
       if (!isCurrentAttempt()) {
@@ -130,6 +132,9 @@ export async function handleOAuthLogin(ctx: OAuthActionContext) {
       await rollbackAutoSavedProvider();
       return;
     }
+    if (!targetProviderUuid) {
+      throw new Error("SEC_INVALID_STATE: provider UUID is unavailable");
+    }
     const result = await whenOAuthAttemptCurrent(
       providerOAuthStartFlow(ctx.cliKey, targetProviderId),
       isCurrentAttempt,
@@ -137,6 +142,7 @@ export async function handleOAuthLogin(ctx: OAuthActionContext) {
     );
     if (result.success) {
       shouldRollbackAutoSavedProvider = false;
+      ctx.invalidateProviderModels(targetProviderId, targetProviderUuid);
 
       let status: Awaited<ReturnType<OAuthActionContext["refreshOauthStatus"]>> = null;
       try {
@@ -289,6 +295,7 @@ export async function handleOAuthDeviceLogin(ctx: OAuthActionContext) {
 
   try {
     let targetProviderId = ctx.editingProviderId;
+    let targetProviderUuid = ctx.editProvider?.provider_uuid ?? null;
     if (!targetProviderId) {
       if (!ctx.form.getValues().name?.trim()) {
         toast("请先填写 Provider 名称");
@@ -306,12 +313,17 @@ export async function handleOAuthDeviceLogin(ctx: OAuthActionContext) {
 
       const saved = await ctx.persistProvider(built.value.payload);
       targetProviderId = saved.id;
+      targetProviderUuid = saved.provider_uuid;
       autoSavedProviderId = saved.id;
       shouldRollbackAutoSavedProvider = true;
       if (!isCurrentAttempt()) {
         await rollbackAutoSavedProvider();
         return;
       }
+    }
+
+    if (!targetProviderUuid) {
+      throw new Error("SEC_INVALID_STATE: provider UUID is unavailable");
     }
 
     const start = await providerOAuthStartDeviceFlow(targetProviderId);
@@ -346,6 +358,7 @@ export async function handleOAuthDeviceLogin(ctx: OAuthActionContext) {
       );
       if (result.completed) {
         shouldRollbackAutoSavedProvider = false;
+        ctx.invalidateProviderModels(targetProviderId, targetProviderUuid);
         ctx.clearActiveOAuthDeviceFlow(start.flow_id);
         ctx.setOauthDevicePolling(false);
         ctx.setOauthDeviceFlow(null);
@@ -467,11 +480,12 @@ export async function handleOAuthRefresh(ctx: OAuthActionContext) {
 }
 
 export async function handleOAuthDisconnect(ctx: OAuthActionContext) {
-  if (!ctx.editingProviderId) return;
+  if (!ctx.editingProviderId || !ctx.editProvider?.provider_uuid) return;
   ctx.setOauthLoading(true);
   try {
     const result = await providerOAuthDisconnect(ctx.editingProviderId);
     if (result.success) {
+      ctx.invalidateProviderModels(ctx.editingProviderId, ctx.editProvider.provider_uuid);
       ctx.setOauthStatus(null);
       toast("已断开 OAuth 连接");
       logToConsole("info", `OAuth 已断开连接：${ctx.form.getValues().name}`, {

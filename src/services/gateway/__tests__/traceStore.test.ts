@@ -56,6 +56,7 @@ function makeAttemptEvent(overrides: Partial<GatewayAttemptEvent> = {}): Gateway
     circuit_failure_threshold: null,
     claude_model_mapping: null,
     ...overrides,
+    requested_upstream_model: overrides.requested_upstream_model ?? null,
   };
 }
 
@@ -432,6 +433,67 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
+  it("keeps terminal mismatch when a managed-only attempt arrives out of order", async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(0);
+
+    const { ingestTraceAttempt, ingestTraceRequest, useTraceStore } = await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+    const mismatchSettings = JSON.stringify([
+      {
+        type: "model_route_mapping",
+        requestedModel: "grok-4.5",
+        actualModel: "grok-4.5-preview",
+        mismatch: true,
+      },
+    ]);
+    const managedOnlySettings = JSON.stringify([
+      {
+        type: "aio_managed_model_route",
+        canonicalModel: "aio/model-a",
+        providerId: 11,
+        providerUuid: "22222222-2222-4222-8222-222222222222",
+        remoteModelId: "grok-4.5",
+        requestedUpstreamModel: "grok-4.5",
+        applied: true,
+      },
+    ]);
+
+    act(() => {
+      ingestTraceRequest(
+        makeRequestEvent({
+          trace_id: "t-managed-route-order",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          requested_model: "aio/model-a",
+          special_settings_json: mismatchSettings,
+          status: 200,
+        })
+      );
+    });
+
+    act(() => {
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "t-managed-route-order",
+          cli_key: "codex",
+          method: "POST",
+          path: "/v1/responses",
+          requested_model: "aio/model-a",
+          special_settings_json: managedOnlySettings,
+          attempt_index: 1,
+          provider_id: 11,
+        })
+      );
+    });
+
+    expect(result.current.traces[0]?.special_settings_json).toBe(mismatchSettings);
+    expect(result.current.traces[0]?.summary?.special_settings_json).toBe(mismatchSettings);
+
+    vi.useRealTimers();
+  });
+
   it("stores Claude model mapping from attempts and lets completion override it", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);
@@ -639,6 +701,7 @@ describe("services/gateway/traceStore", () => {
       base_url: `https://p${index}.example`,
       outcome: "failed",
       status: 500,
+      requested_upstream_model: null,
     }));
 
     act(() => {

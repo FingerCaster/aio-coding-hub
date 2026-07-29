@@ -751,6 +751,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
+        requested_upstream_model: provider_ctx.active_requested_model.map(str::to_string),
     });
 
     emit_attempt_event_and_log(
@@ -797,12 +798,18 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 created_at,
                 session_id,
                 requested_model,
+                managed_model_route,
                 special_settings,
                 enable_response_fixer,
                 response_fixer_non_stream_config,
                 ..
             } = CommonCtxOwned::from(ctx);
-            let requested_model_for_log = active_requested_model.clone().or(requested_model);
+            let requested_model_for_log =
+                crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+                    managed_model_route.as_ref(),
+                    requested_model.as_deref(),
+                    active_requested_model.as_deref(),
+                );
 
             if let (Some(mut response_headers), Some(mut body_bytes)) =
                 (abort_response_headers, abort_body_bytes)

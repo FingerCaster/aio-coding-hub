@@ -1,4 +1,5 @@
 use super::proxy::GatewayErrorCode;
+use crate::domain::provider_models::REMOTE_MODEL_ID_MAX_BYTES;
 use axum::http::{header, HeaderMap};
 use std::borrow::Cow;
 use std::collections::hash_map::DefaultHasher;
@@ -380,12 +381,7 @@ fn sanitize_model(model: &str) -> Option<String> {
     if model.is_empty() {
         return None;
     }
-    let model = if model.len() > 200 {
-        model[..200].to_string()
-    } else {
-        model.to_string()
-    };
-    Some(model)
+    Some(utf8_prefix(model, REMOTE_MODEL_ID_MAX_BYTES).to_string())
 }
 
 fn extract_model_from_query(query: &str) -> Option<String> {
@@ -563,10 +559,10 @@ pub(super) fn ensure_cli_required_headers(cli_key: &str, headers: &mut HeaderMap
 mod tests {
     use super::{
         compute_all_providers_unavailable_fingerprint, compute_request_fingerprint,
-        inject_provider_auth, lossy_utf8_preview, normalize_query_for_fingerprint,
-        parse_request_body_limit_mb, redacted_headers_for_debug, DEFAULT_MAX_REQUEST_BODY_MB,
-        FINGERPRINT_DEBUG_COMPONENT_MAX_BYTES, MAX_DEBUG_HEADER_VALUE_PREVIEW_BYTES,
-        MAX_REQUEST_BODY_MB, MIN_REQUEST_BODY_MB,
+        infer_requested_model_info, inject_provider_auth, lossy_utf8_preview,
+        normalize_query_for_fingerprint, parse_request_body_limit_mb, redacted_headers_for_debug,
+        DEFAULT_MAX_REQUEST_BODY_MB, FINGERPRINT_DEBUG_COMPONENT_MAX_BYTES,
+        MAX_DEBUG_HEADER_VALUE_PREVIEW_BYTES, MAX_REQUEST_BODY_MB, MIN_REQUEST_BODY_MB,
     };
     use axum::http::{header, HeaderMap, HeaderValue};
 
@@ -598,6 +594,20 @@ mod tests {
     fn normalize_query_keeps_order_when_duplicate_keys_exist() {
         let normalized = normalize_query_for_fingerprint(Some("a=2&a=1&b=3"));
         assert_eq!(normalized.as_deref(), Some("a=2&a=1&b=3"));
+    }
+
+    #[test]
+    fn inferred_model_preserves_valid_256_byte_utf8_value() {
+        // Byte 200 lands inside the three-byte character. A raw `[..200]`
+        // slice would panic, while a 200-byte cap would reject this valid
+        // provider-model ID during managed-route wire validation.
+        let model = format!("{}模{}", "a".repeat(199), "b".repeat(54));
+        assert_eq!(model.len(), 256);
+        let body = serde_json::json!({ "model": model });
+
+        let info = infer_requested_model_info("/v1/responses", None, Some(&body));
+
+        assert_eq!(info.model.as_deref(), body["model"].as_str());
     }
 
     #[test]

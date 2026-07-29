@@ -555,6 +555,7 @@ where
                     circuit_recover_at_unix: None,
                     circuit_trigger_error_code: None,
                     timeout_secs: None,
+                    requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -648,6 +649,7 @@ where
                     circuit_recover_at_unix: None,
                     circuit_trigger_error_code: None,
                     timeout_secs: None,
+                    requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
                 });
 
                 emit_attempt_event_and_log_with_circuit_before(
@@ -930,6 +932,20 @@ where
     }
 
     if (200..300).contains(&status.as_u16()) && is_fake_200_non_stream_body(body_bytes.as_ref()) {
+        crate::gateway::model_route_mapping::observe_model_route_from_bytes(
+            crate::gateway::model_route_mapping::ModelRouteBytesInput {
+                cli_key: common.cli_key.as_str(),
+                requested_model: provider_ctx_owned
+                    .active_requested_model
+                    .as_deref()
+                    .or(common.requested_model.as_deref()),
+                response_bytes: body_bytes.as_ref(),
+                special_settings: &common.special_settings,
+                provider_id,
+                provider_name: provider_ctx_owned.provider_name_base.as_str(),
+            },
+        );
+
         let error_code = GatewayErrorCode::Fake200.as_str();
         let duration_ms = started.elapsed().as_millis();
         let quota_exhausted =
@@ -971,6 +987,7 @@ where
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             timeout_secs: None,
+            requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
         });
 
         emit_attempt_event_and_log_with_circuit_before(
@@ -1036,10 +1053,12 @@ where
             return LoopControl::BreakRetry;
         }
 
-        let requested_model_for_log = provider_ctx_owned
-            .active_requested_model
-            .clone()
-            .or_else(|| common.requested_model.clone());
+        let requested_model_for_log =
+            crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+                common.managed_model_route.as_ref(),
+                common.requested_model.as_deref(),
+                provider_ctx_owned.active_requested_model.as_deref(),
+            );
         emit_request_event_and_enqueue_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
                 deps: RequestEndDeps::new(
@@ -1085,10 +1104,19 @@ where
         ));
     }
 
-    let upstream_actual_model_before_bridge =
-        usage::parse_model_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
-    let upstream_actual_reasoning_effort_before_bridge =
-        usage::parse_reasoning_effort_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    crate::gateway::model_route_mapping::observe_model_route_from_bytes(
+        crate::gateway::model_route_mapping::ModelRouteBytesInput {
+            cli_key: common.cli_key.as_str(),
+            requested_model: provider_ctx_owned
+                .active_requested_model
+                .as_deref()
+                .or(common.requested_model.as_deref()),
+            response_bytes: body_bytes.as_ref(),
+            special_settings: &common.special_settings,
+            provider_id,
+            provider_name: provider_ctx_owned.provider_name_base.as_str(),
+        },
+    );
 
     // Bridge providers translate upstream protocol responses back to client protocol.
     let bridge_response_cache_body = body_bytes.clone();
@@ -1176,12 +1204,14 @@ where
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
+                requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
             });
 
             let verbose_provider_error = ctx.verbose_provider_error;
-            let resp = finalize::terminal_bridge_error(finalize::TerminalBridgeErrorInput {
+            let resp = finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
                 state,
                 abort_guard,
+                status: StatusCode::BAD_REQUEST,
                 observe: common.observe,
                 attempts: std::mem::take(attempts),
                 cli_key: common.cli_key,
@@ -1249,6 +1279,7 @@ where
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
+        requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
     });
 
     emit_attempt_event_and_log_with_circuit_before(
@@ -1330,29 +1361,20 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let actual_model = upstream_actual_model_before_bridge;
-    if let Some(setting) =
-        crate::gateway::model_route_mapping::build_model_route_mapping_setting_from_shared(
-            common.cli_key.as_str(),
-            provider_ctx_owned
-                .active_requested_model
-                .as_deref()
-                .or(common.requested_model.as_deref()),
-            actual_model.as_deref(),
-            upstream_actual_reasoning_effort_before_bridge.as_deref(),
-            &common.special_settings,
-            provider_id,
-            provider_ctx_owned.provider_name_base.as_str(),
+    let requested_model_for_log = if common.managed_model_route.is_some() {
+        crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+            common.managed_model_route.as_ref(),
+            common.requested_model.as_deref(),
+            provider_ctx_owned.active_requested_model.as_deref(),
         )
-    {
-        response_fixer::push_model_route_mapping_special_setting(&common.special_settings, setting);
-    }
-    let requested_model_for_log = resolve_requested_model_for_log(
-        common.requested_model.clone(),
-        provider_ctx_owned.active_requested_model.as_deref(),
-        common.cli_key.as_str(),
-        &body_bytes,
-    );
+    } else {
+        resolve_requested_model_for_log(
+            common.requested_model.clone(),
+            provider_ctx_owned.active_requested_model.as_deref(),
+            common.cli_key.as_str(),
+            &body_bytes,
+        )
+    };
 
     let body = Body::from(body_bytes);
     let mut builder = Response::builder().status(status);
@@ -1397,7 +1419,7 @@ where
             last.circuit_failure_count = Some(change.after.failure_count);
             last.circuit_failure_threshold = Some(change.after.failure_threshold);
         }
-        if (200..300).contains(&status.as_u16()) {
+        if (200..300).contains(&status.as_u16()) && common.managed_model_route.is_none() {
             if let Some(session_id) = common.session_id.as_deref() {
                 state.session.bind_success(
                     &common.cli_key,

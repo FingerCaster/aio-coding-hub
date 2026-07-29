@@ -6,6 +6,7 @@
   "path": "/v1/messages",
   "query": "beta=true",
   "requested_model": "claude-sonnet-4-5",
+  "requested_upstream_model": null,
   "special_settings_json": null,
   "attempt_index": 1,
   "provider_id": 7,

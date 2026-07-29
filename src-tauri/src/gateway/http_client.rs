@@ -7,7 +7,7 @@ use crate::settings::{self, AppSettings, GatewayListenMode};
 use crate::{gateway::listen, wsl};
 use if_addrs::get_if_addrs;
 use reqwest::dns::{Addrs, Name, Resolve, Resolving};
-use reqwest::{Client, StatusCode, Url};
+use reqwest::{Client, ClientBuilder, StatusCode, Url};
 use std::collections::BTreeSet;
 use std::env;
 use std::error::Error as StdError;
@@ -20,6 +20,9 @@ static GLOBAL_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
 
 /// Current proxy URL (for logging and status queries).
 static CURRENT_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
+
+/// Current raw proxy URL, kept private so scoped clients can preserve credentials.
+static CURRENT_RAW_PROXY_URL: OnceLock<RwLock<Option<String>>> = OnceLock::new();
 
 /// Current gateway self-loop context.
 static GATEWAY_SELF_CONTEXT: OnceLock<RwLock<GatewaySelfCheckContext>> = OnceLock::new();
@@ -85,6 +88,7 @@ pub fn init(proxy_url: Option<&str>) -> Result<(), String> {
     }
 
     let _ = CURRENT_PROXY_URL.set(RwLock::new(effective_url.map(mask_url)));
+    let _ = CURRENT_RAW_PROXY_URL.set(RwLock::new(effective_url.map(str::to_string)));
 
     tracing::info!(
         "[HttpClient] Initialized: {}",
@@ -581,6 +585,15 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
         });
         *url = effective_url.map(mask_url);
     }
+    if let Some(lock) = CURRENT_RAW_PROXY_URL.get() {
+        let mut url = lock.write().unwrap_or_else(|poisoned| {
+            tracing::warn!("[HttpClient] Recovered poisoned raw proxy URL lock");
+            poisoned.into_inner()
+        });
+        *url = effective_url.map(str::to_string);
+    } else {
+        let _ = CURRENT_RAW_PROXY_URL.set(RwLock::new(effective_url.map(str::to_string)));
+    }
 
     tracing::info!(
         "[HttpClient] Proxy applied: {}",
@@ -614,6 +627,29 @@ pub fn get_current_proxy_url() -> Option<String> {
         .get()
         .and_then(|lock| lock.read().ok())
         .and_then(|url| url.clone())
+}
+
+/// Build a request-scoped client while preserving the gateway's current proxy policy.
+pub(crate) fn build_client_with_current_proxy(
+    user_agent: &str,
+    connect_timeout: Duration,
+    request_timeout: Duration,
+    redirect_policy: reqwest::redirect::Policy,
+) -> Result<Client, String> {
+    let proxy_url = CURRENT_RAW_PROXY_URL
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|url| url.clone());
+    let builder = Client::builder()
+        .user_agent(user_agent)
+        .connect_timeout(connect_timeout)
+        .timeout(request_timeout)
+        .redirect(redirect_policy)
+        .pool_max_idle_per_host(10)
+        .tcp_keepalive(Duration::from_secs(60));
+    configure_proxy(builder, proxy_url.as_deref())?
+        .build()
+        .map_err(|error| format!("Failed to build HTTP client: {error}"))
 }
 
 /// Check if proxy is currently enabled.
@@ -785,7 +821,7 @@ fn normalize_host_token(host: &str) -> Option<String> {
 
 /// Build HTTP client with optional proxy.
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
-    let mut builder = Client::builder()
+    let builder = Client::builder()
         .user_agent(format!(
             "aio-coding-hub-gateway/{}",
             env!("CARGO_PKG_VERSION")
@@ -794,6 +830,15 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         .pool_max_idle_per_host(10)
         .tcp_keepalive(Duration::from_secs(60));
 
+    configure_proxy(builder, proxy_url)?
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+fn configure_proxy(
+    mut builder: ClientBuilder,
+    proxy_url: Option<&str>,
+) -> Result<ClientBuilder, String> {
     if let Some(url) = proxy_url {
         validate_proxy_url(url)?;
         if proxy_uses_socks5_local_dns(url) {
@@ -810,9 +855,7 @@ fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
         tracing::debug!("[HttpClient] Following system proxy (no explicit proxy configured)");
     }
 
-    builder
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+    Ok(builder)
 }
 
 /// Check if system proxy environment variables point to the gateway.
@@ -1308,6 +1351,46 @@ mod tests {
             .recv_timeout(Duration::from_secs(3))
             .expect("proxy should receive exit ip request");
         assert!(request.starts_with("GET http://ifconfig.me/ip HTTP/1.1"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_scoped_client_uses_current_proxy_and_preserves_redirect_policy() {
+        let _guard = use_http_proxy_test_url();
+        let (proxy_url, request_rx) = spawn_http_proxy_server_with_response(
+            b"HTTP/1.1 302 Found\r\nLocation: http://example.com/next\r\nContent-Length: 0\r\nConnection: close\r\n\r\n"
+                .to_vec(),
+        );
+        let credentialed_proxy_url =
+            proxy_url.replacen("http://", "http://proxy-user:proxy-secret@", 1);
+        set_gateway_self_context(build_self_check_context(
+            37123,
+            &["127.0.0.1".to_string(), "localhost".to_string()],
+        ));
+        init(Some(&credentialed_proxy_url)).expect("init credentialed proxy");
+
+        let client = build_client_with_current_proxy(
+            "aio-model-discovery-test",
+            Duration::from_secs(1),
+            Duration::from_secs(2),
+            reqwest::redirect::Policy::none(),
+        )
+        .expect("build scoped client");
+        let response = client
+            .get("http://example.com/models")
+            .send()
+            .await
+            .expect("scoped proxied request");
+        assert_eq!(response.status(), StatusCode::FOUND);
+
+        let request = request_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("proxy should receive scoped request");
+        assert!(request.starts_with("GET http://example.com/models HTTP/1.1"));
+        let public_proxy_url = get_current_proxy_url().expect("masked proxy status");
+        assert!(!public_proxy_url.contains("proxy-user"));
+        assert!(!public_proxy_url.contains("proxy-secret"));
+
+        apply_proxy(None).expect("restore direct client");
     }
 
     #[tokio::test(flavor = "current_thread")]

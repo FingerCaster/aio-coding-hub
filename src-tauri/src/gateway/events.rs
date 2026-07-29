@@ -108,6 +108,7 @@ pub(super) struct FailoverAttempt {
     // (never parsed out of `outcome`); serializes as explicit null per the
     // gateway event contract.
     pub(super) timeout_secs: Option<u32>,
+    pub(super) requested_upstream_model: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq, Eq, specta::Type)]
@@ -183,6 +184,7 @@ pub(crate) struct GatewayAttemptEvent {
     pub(super) path: String,
     pub(super) query: Option<String>,
     pub(super) requested_model: Option<String>,
+    pub(super) requested_upstream_model: Option<String>,
     pub(super) special_settings_json: Option<String>,
     pub(super) attempt_index: u32,
     pub(super) provider_id: i64,
@@ -436,6 +438,10 @@ fn bound_failover_attempt(mut attempt: FailoverAttempt) -> FailoverAttempt {
     attempt.base_url = truncate_chars(attempt.base_url, EVENT_URL_MAX_CHARS);
     attempt.outcome = truncate_chars(attempt.outcome, EVENT_STATE_MAX_CHARS);
     truncate_optional_chars(&mut attempt.reason, EVENT_QUERY_MAX_CHARS);
+    truncate_optional_chars(
+        &mut attempt.requested_upstream_model,
+        EVENT_SHORT_TEXT_MAX_CHARS,
+    );
     attempt
 }
 
@@ -510,6 +516,10 @@ pub(super) fn bound_attempt_event(mut payload: GatewayAttemptEvent) -> GatewayAt
     payload.path = truncate_chars(payload.path, EVENT_PATH_MAX_CHARS);
     truncate_optional_chars(&mut payload.query, EVENT_QUERY_MAX_CHARS);
     truncate_optional_chars(&mut payload.requested_model, EVENT_SHORT_TEXT_MAX_CHARS);
+    truncate_optional_chars(
+        &mut payload.requested_upstream_model,
+        EVENT_SHORT_TEXT_MAX_CHARS,
+    );
     bound_special_settings_json_for_event(
         &mut payload.special_settings_json,
         EVENT_QUERY_MAX_CHARS,
@@ -752,6 +762,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
             timeout_secs: None,
+            requested_upstream_model: None,
         }
     }
 
@@ -874,6 +885,7 @@ mod tests {
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
+                requested_upstream_model: None,
             }],
             input_tokens: Some(1200),
             output_tokens: Some(350),
@@ -944,6 +956,7 @@ mod tests {
             path: "/v1/messages".to_string(),
             query: Some("beta=true".to_string()),
             requested_model: Some("claude-sonnet-4-5".to_string()),
+            requested_upstream_model: None,
             special_settings_json: None,
             attempt_index: 1,
             provider_id: 7,
@@ -1154,6 +1167,7 @@ mod tests {
             path: repeated_ascii(EVENT_PATH_MAX_CHARS + 1),
             query: Some(repeated_ascii(EVENT_QUERY_MAX_CHARS + 1)),
             requested_model: Some(repeated_ascii(EVENT_SHORT_TEXT_MAX_CHARS + 1)),
+            requested_upstream_model: Some(repeated_ascii(EVENT_SHORT_TEXT_MAX_CHARS + 1)),
             special_settings_json: Some(repeated_ascii(EVENT_QUERY_MAX_CHARS + 1)),
             attempt_index: 1,
             provider_id: 7,
@@ -1194,6 +1208,10 @@ mod tests {
             Some(EVENT_SHORT_TEXT_MAX_CHARS)
         );
         assert_eq!(
+            bounded.requested_upstream_model.as_deref().map(ascii_len),
+            Some(EVENT_SHORT_TEXT_MAX_CHARS)
+        );
+        assert_eq!(
             ascii_len(&bounded.provider_name),
             EVENT_SHORT_TEXT_MAX_CHARS
         );
@@ -1229,6 +1247,7 @@ mod tests {
             path: "/v1/messages".to_string(),
             query: None,
             requested_model: Some("claude-sonnet".to_string()),
+            requested_upstream_model: Some("gpt-5.4".to_string()),
             special_settings_json: None,
             attempt_index: 1,
             provider_id: 7,

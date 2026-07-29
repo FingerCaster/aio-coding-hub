@@ -27,6 +27,7 @@ type ProviderEditorDialogBaseProps = {
   open: boolean;
   onOpenChange: (open: boolean) => void;
   onSaved: (cliKey: CliKey) => void;
+  onModelFetchFailedAfterSave?: (provider: ProviderSummary) => void;
   codexProviders?: ProviderSummary[];
   bridgeSourceProviders?: ProviderSummary[];
 };
@@ -140,12 +141,21 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
               disabled={f.saving}
             />
           </div>
-          <div className="flex items-center gap-2">
+          <div className="flex flex-wrap items-center justify-end gap-2">
             <Button onClick={() => f.onOpenChange(false)} variant="secondary" disabled={f.saving}>
               取消
             </Button>
+            {f.canFetchProviderModels ? (
+              <Button
+                onClick={() => void f.saveAndFetchModels()}
+                variant="secondary"
+                disabled={f.saving}
+              >
+                {f.savingWithModelFetch ? "保存并获取中…" : "保存并获取模型"}
+              </Button>
+            ) : null}
             <Button onClick={f.save} variant="primary" disabled={f.saving}>
-              {f.saving ? "保存中…" : "保存"}
+              {f.saving && !f.savingWithModelFetch ? "保存中…" : "保存"}
             </Button>
           </div>
         </div>

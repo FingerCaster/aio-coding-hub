@@ -559,6 +559,7 @@ mod tests {
     fn provider_runtime_reset_decision_handles_create_and_non_sensitive_edits() {
         let next = providers::ProviderSummary {
             id: 1,
+            provider_uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             cli_key: "claude".to_string(),
             name: "Provider A".to_string(),
             base_urls: vec!["https://api.example.com".to_string()],
@@ -649,6 +650,7 @@ mod tests {
     fn provider_runtime_reset_decision_detects_sensitive_claude_changes() {
         let previous = providers::ProviderSummary {
             id: 1,
+            provider_uuid: "550e8400-e29b-41d4-a716-446655440000".to_string(),
             cli_key: "claude".to_string(),
             name: "Provider A".to_string(),
             base_urls: vec!["https://api.old.example.com".to_string()],

@@ -31,6 +31,7 @@ vi.mock("../../../../services/providers/providers", async () => {
 function makeProvider(overrides: Partial<ProviderSummary> = {}): ProviderSummary {
   return {
     id: 1,
+    provider_uuid: overrides.provider_uuid ?? "11111111-1111-4111-8111-111111111111",
     cli_key: "claude",
     name: "Claude OAuth Provider",
     base_urls: [],

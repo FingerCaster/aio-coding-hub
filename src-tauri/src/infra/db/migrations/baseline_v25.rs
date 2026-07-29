@@ -21,6 +21,7 @@ CREATE TABLE IF NOT EXISTS schema_migrations (
 
 CREATE TABLE IF NOT EXISTS providers (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider_uuid TEXT NOT NULL UNIQUE,
   cli_key TEXT NOT NULL,
   name TEXT NOT NULL,
   base_url TEXT NOT NULL,
@@ -42,6 +43,31 @@ CREATE TABLE IF NOT EXISTS providers (
 
 CREATE INDEX IF NOT EXISTS idx_providers_cli_key ON providers(cli_key);
 CREATE INDEX IF NOT EXISTS idx_providers_cli_key_sort_order ON providers(cli_key, sort_order);
+CREATE UNIQUE INDEX IF NOT EXISTS idx_providers_provider_uuid ON providers(provider_uuid);
+
+CREATE TRIGGER IF NOT EXISTS providers_provider_uuid_insert_guard
+BEFORE INSERT ON providers
+WHEN NEW.provider_uuid IS NULL
+  OR length(NEW.provider_uuid) <> 36
+  OR lower(NEW.provider_uuid) <> NEW.provider_uuid
+  OR substr(NEW.provider_uuid, 9, 1) <> '-'
+  OR substr(NEW.provider_uuid, 14, 1) <> '-'
+  OR substr(NEW.provider_uuid, 19, 1) <> '-'
+  OR substr(NEW.provider_uuid, 24, 1) <> '-'
+  OR substr(NEW.provider_uuid, 15, 1) <> '4'
+  OR substr(NEW.provider_uuid, 20, 1) NOT IN ('8', '9', 'a', 'b')
+  OR length(replace(NEW.provider_uuid, '-', '')) <> 32
+  OR replace(NEW.provider_uuid, '-', '') GLOB '*[^0-9a-f]*'
+BEGIN
+  SELECT RAISE(ABORT, 'provider_uuid must be a canonical UUID');
+END;
+
+CREATE TRIGGER IF NOT EXISTS providers_provider_uuid_update_guard
+BEFORE UPDATE OF provider_uuid ON providers
+WHEN NEW.provider_uuid IS NULL OR NEW.provider_uuid <> OLD.provider_uuid
+BEGIN
+  SELECT RAISE(ABORT, 'provider_uuid is immutable');
+END;
 
 CREATE TABLE IF NOT EXISTS request_logs (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -199,6 +225,59 @@ CREATE TABLE IF NOT EXISTS provider_extension_values (
 
 CREATE INDEX IF NOT EXISTS idx_provider_extension_values_plugin_namespace
   ON provider_extension_values(plugin_id, namespace);
+
+CREATE TABLE IF NOT EXISTS provider_model_catalogs (
+  provider_id INTEGER PRIMARY KEY,
+  protocol TEXT NOT NULL DEFAULT 'openai_compatible'
+    CHECK(protocol = 'openai_compatible'),
+  stale INTEGER NOT NULL DEFAULT 1 CHECK(stale IN (0, 1)),
+  last_attempt_at INTEGER,
+  last_success_at INTEGER,
+  last_error_code TEXT,
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+
+CREATE TABLE IF NOT EXISTS provider_models (
+  model_uuid TEXT PRIMARY KEY,
+  provider_id INTEGER NOT NULL,
+  remote_model_id TEXT NOT NULL,
+  source TEXT NOT NULL CHECK(source IN ('discovered', 'manual')),
+  stale INTEGER NOT NULL DEFAULT 0 CHECK(stale IN (0, 1)),
+  last_seen_at INTEGER,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  capabilities_configured INTEGER NOT NULL DEFAULT 0
+    CHECK(capabilities_configured IN (0, 1)),
+  supported_reasoning_efforts_json TEXT NOT NULL DEFAULT '[]',
+  default_reasoning_effort TEXT
+    CHECK(default_reasoning_effort IS NULL OR default_reasoning_effort IN (
+      'none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max', 'ultra'
+    )),
+  context_window INTEGER
+    CHECK(context_window IS NULL OR (
+      typeof(context_window) = 'integer' AND context_window BETWEEN 1024 AND 10000000
+    )),
+  UNIQUE(provider_id, remote_model_id),
+  FOREIGN KEY(provider_id) REFERENCES providers(id) ON DELETE CASCADE
+);
+
+CREATE INDEX IF NOT EXISTS idx_provider_models_provider_id
+  ON provider_models(provider_id);
+
+CREATE TABLE IF NOT EXISTS codex_managed_profiles (
+  profile_uuid TEXT PRIMARY KEY,
+  profile_name TEXT NOT NULL,
+  profile_name_key TEXT NOT NULL UNIQUE,
+  model_uuid TEXT NOT NULL,
+  codex_home_path TEXT NOT NULL,
+  content_sha256 TEXT NOT NULL,
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL,
+  FOREIGN KEY(model_uuid) REFERENCES provider_models(model_uuid) ON DELETE RESTRICT
+);
+
+CREATE INDEX IF NOT EXISTS idx_codex_managed_profiles_model_uuid
+  ON codex_managed_profiles(model_uuid);
 
 CREATE TABLE IF NOT EXISTS provider_account_usage_credentials (
   provider_id INTEGER PRIMARY KEY,

@@ -66,6 +66,34 @@ pub(crate) fn resolve_cx2cc_cost_basis(
     }
 }
 
+pub(crate) fn resolve_aio_managed_model_priced_model(
+    special_settings_json: Option<&str>,
+    final_provider_id: Option<i64>,
+) -> Option<String> {
+    let final_provider_id = final_provider_id.filter(|provider_id| *provider_id > 0)?;
+    let raw = special_settings_json.map(trim_json_whitespace)?;
+    if raw.is_empty() {
+        return None;
+    }
+    let settings = serde_json::from_str::<Vec<Value>>(raw).ok()?;
+
+    settings.iter().rev().find_map(|setting| {
+        let object = setting.as_object()?;
+        if object.get("type").and_then(Value::as_str) != Some("aio_managed_model_route")
+            || object.get("applied").and_then(Value::as_bool) != Some(true)
+            || object.get("providerId").and_then(Value::as_i64) != Some(final_provider_id)
+        {
+            return None;
+        }
+        object
+            .get("pricedModel")
+            .and_then(Value::as_str)
+            .map(trim_json_whitespace)
+            .filter(|model| !model.is_empty())
+            .map(str::to_string)
+    })
+}
+
 fn parse_cost_basis(setting: &Value) -> Option<Cx2ccCostBasis> {
     let obj = setting.as_object()?;
     if obj.get("type").and_then(Value::as_str) != Some("cx2cc_cost_basis") {
@@ -202,5 +230,43 @@ mod tests {
                 "raw={raw:?}"
             );
         }
+    }
+
+    #[test]
+    fn managed_model_pricing_requires_applied_matching_provider() {
+        let json = serde_json::json!([
+            {
+                "type": "aio_managed_model_route",
+                "providerId": 7,
+                "pricedModel": "not-applied",
+                "applied": false
+            },
+            {
+                "type": "aio_managed_model_route",
+                "providerId": 8,
+                "pricedModel": "wrong-provider",
+                "applied": true
+            },
+            {
+                "type": "aio_managed_model_route",
+                "providerId": 7,
+                "pricedModel": "grok-4.5",
+                "applied": true
+            }
+        ])
+        .to_string();
+
+        assert_eq!(
+            resolve_aio_managed_model_priced_model(Some(&json), Some(7)).as_deref(),
+            Some("grok-4.5")
+        );
+        assert_eq!(
+            resolve_aio_managed_model_priced_model(Some(&json), Some(9)),
+            None
+        );
+        assert_eq!(
+            resolve_aio_managed_model_priced_model(Some(&json), None),
+            None
+        );
     }
 }

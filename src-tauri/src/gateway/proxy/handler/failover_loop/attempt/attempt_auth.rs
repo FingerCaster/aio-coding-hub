@@ -114,6 +114,7 @@ fn inject_oauth_auth<R: tauri::Runtime>(
                     circuit_trigger_error_code: None,
                     provider_bridged: Some(prepared.provider_bridged),
                     timeout_secs: None,
+                    requested_upstream_model: None,
                 }));
             }
             Ok(())
@@ -148,6 +149,7 @@ fn inject_oauth_auth<R: tauri::Runtime>(
                 circuit_trigger_error_code: None,
                 provider_bridged: Some(prepared.provider_bridged),
                 timeout_secs: None,
+                requested_upstream_model: None,
             }))
         }
     }

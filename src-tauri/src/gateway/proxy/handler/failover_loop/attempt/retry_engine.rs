@@ -103,6 +103,72 @@ where
             reason,
             loop_state.attempts.clone(),
         )),
+        AttemptSendOutcome::ManagedModelInvalid(reason) => {
+            let category = ErrorCategory::NonRetryableClientError;
+            let error_code = GatewayErrorCode::ManagedModelInvalid.as_str();
+            let attempt_started_ms = ctx.started.elapsed().as_millis();
+            loop_state.attempts.push(FailoverAttempt {
+                provider_id: prepared.provider_id,
+                provider_name: prepared.provider_name_base.clone(),
+                base_url: prepared.provider_base_url_base.clone(),
+                outcome: format!("managed_model_invalid: code={error_code}"),
+                status: Some(StatusCode::BAD_REQUEST.as_u16()),
+                provider_index: Some(prepared.provider_index),
+                retry_index: Some(indices.retry_index),
+                session_reuse: prepared.session_reuse,
+                provider_bridged: Some(prepared.provider_bridged),
+                error_category: Some(category.as_str()),
+                error_code: Some(error_code),
+                decision: Some(FailoverDecision::Abort.as_str()),
+                reason: Some(reason.clone()),
+                selection_method: dc::selection_method(
+                    prepared.provider_index,
+                    indices.retry_index,
+                    prepared.session_reuse,
+                ),
+                reason_code: Some(category.reason_code()),
+                attempt_started_ms: Some(attempt_started_ms),
+                attempt_duration_ms: Some(0),
+                circuit_state_before: Some(prepared.circuit_snapshot.state.as_str()),
+                circuit_state_after: None,
+                circuit_failure_count: Some(prepared.circuit_snapshot.failure_count),
+                circuit_failure_threshold: Some(prepared.circuit_snapshot.failure_threshold),
+                circuit_recover_at_unix: None,
+                circuit_trigger_error_code: None,
+                timeout_secs: None,
+                requested_upstream_model: prepared.active_requested_model.clone(),
+            });
+            let requested_model =
+                crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+                    ctx.managed_model_route,
+                    ctx.requested_model.as_deref(),
+                    prepared.active_requested_model.as_deref(),
+                );
+            let response = finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
+                state: ctx.state,
+                abort_guard: loop_state.abort_guard,
+                status: StatusCode::BAD_REQUEST,
+                observe: ctx.observe,
+                attempts: std::mem::take(loop_state.attempts),
+                cli_key: ctx.cli_key.clone(),
+                method_hint: ctx.method_hint.clone(),
+                forwarded_path: ctx.forwarded_path.clone(),
+                query: ctx.query.clone(),
+                trace_id: ctx.trace_id.clone(),
+                started: ctx.started,
+                created_at_ms: ctx.created_at_ms,
+                created_at: ctx.created_at,
+                session_id: ctx.session_id.clone(),
+                requested_model,
+                special_settings: std::sync::Arc::clone(ctx.special_settings),
+                verbose_provider_error: ctx.verbose_provider_error,
+                error_category: category.as_str(),
+                error_code,
+                reason,
+            })
+            .await;
+            LoopControl::Return(response)
+        }
         AttemptSendOutcome::Response(resp, timing) => {
             response_router::route_response(
                 ctx,
