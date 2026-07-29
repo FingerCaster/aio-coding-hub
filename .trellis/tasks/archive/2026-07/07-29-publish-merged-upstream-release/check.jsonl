@@ -1,0 +1,4 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/tasks/archive/2026-07/07-29-publish-merged-upstream-release/research/release-state.md", "reason": "Independent release state, PR, tag, workflow, and target checks."}
+{"file": ".trellis/tasks/archive/2026-07/07-29-merge-latest-upstream-main/research/completion-evidence.md", "reason": "Verify released source matches the fully checked integration."}
+{"file": ".trellis/tasks/archive/2026-07/07-29-build-local-windows-msi/research/build-result.md", "reason": "Verify the tested MSI baseline and source revision."}
