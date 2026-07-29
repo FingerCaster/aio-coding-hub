@@ -1,0 +1,3 @@
+{"_example": "Fill with {\"file\": \"<path>\", \"reason\": \"<why>\"}. Put spec/research files only — no code paths. Run `python .trellis/scripts/get_context.py --mode packages` to list available specs. Delete this line once real entries are added."}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "Root application quality and generated-artifact expectations."}
+{"file": ".trellis/tasks/archive/2026-07/07-29-build-local-windows-msi/research/build-contract.md", "reason": "Pinned source, canonical MSI command, output path, and safety constraints."}
