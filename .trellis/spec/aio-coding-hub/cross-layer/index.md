@@ -35,6 +35,9 @@ TypeScript bindings, frontend adapters, and React UI.
   lock-internal field-owned RMW, whole-snapshot CAS, and safe rollback.
 - [Trellis task context archive contract](./trellis-task-context-archive-contract.md):
   exact self-reference rewriting and repository-wide context validation before archive commit.
+- [Usage insights contract](./usage-insights-contract.md): folder identity and
+  filtering, estimated development time, provider metric trends, generated
+  bindings, query-key ownership, and Home/Usage UI behavior.
 
 ## Pre-Development Checklist
 
@@ -141,6 +144,14 @@ When changing Trellis task archive or context validation:
 2. Keep path rewriting JSON-aware and limited to the archived task's exact `file` prefix.
 3. Validate all active and archived manifests before archive auto-commit.
 
+When changing usage folders, development-time estimates, or provider metrics trends:
+
+1. Read [Usage insights contract](./usage-insights-contract.md).
+2. Trace request-log/session metadata through Rust aggregation, generated
+   bindings, frontend normalization, query keys, and both Home/Usage views.
+3. Keep folder filters, gap thresholds, day boundaries, trend buckets, and
+   provider identity rules aligned across every consumer.
+
 ## Quality Check
 
 - Regenerate and verify `src/generated/bindings.ts` from Rust source.
@@ -156,6 +167,9 @@ When changing Trellis task archive or context validation:
   unrelated Image Gen/Grok fields survive and CAS preserves newer owner values.
 - Run focused tests, `pnpm typecheck`, `pnpm lint`, `pnpm tauri:fmt`, and
   `pnpm check:generated-bindings`.
+- When changing usage insights, verify folder-filter parity, unknown-folder
+  retention, development-time gap/hour/day arithmetic, trend metric validity,
+  complete normalized query keys, generated bindings, and UI empty/error states.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
 - When changing managed Codex models, verify exact UUID lookup, one bound
