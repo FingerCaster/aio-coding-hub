@@ -2,9 +2,7 @@
 
 ## Goal
 
-为 AIO Coding Hub 定义一套可实施的 Codex 第三方供应商模型发现与配置方案：用户保存供应商后，可以主动获取或手工录入该供应商的模型，并按需创建 Codex profile。Codex 始终通过唯一的 `model_provider = "aio"` 连接 AIO 网关，再由网关根据受管模型关联把请求发往对应的 AIO 供应商。
-
-本任务当前处于调研与需求收敛阶段，不修改产品代码。
+为 AIO Coding Hub 实现一套稳定的 Codex 第三方供应商模型发现与配置能力：用户保存 Codex 直连供应商后，可以主动获取或手工录入该供应商的模型，并按需创建 Codex profile。Codex 始终通过唯一的 `model_provider = "aio"` 连接 AIO 网关，再由网关根据服务端受管模型关联把请求固定发往对应的 AIO 供应商。
 
 ## User Value
 
@@ -12,6 +10,7 @@
 - 即使不同供应商暴露同名模型，也能看出并选择真实的上游供应商。
 - 模型列表接口不可用时，供应商仍可保存、已有目录仍可使用，并可手工补录模型。
 - 生成的配置符合当前 Codex 版本，而不是继续写已废弃的 profile 格式。
+- 创建 Profile 后，用户可以在新建或重启的 Codex 会话中直接通过 `/model` 看见并选择该模型。
 
 ## Confirmed Product Decisions
 
@@ -22,6 +21,17 @@
 - 受管 profile 使用 AIO 生成的稳定、供应商限定模型标识；网关解析该标识并向上游恢复真实模型 ID，以支持不同供应商的同名模型。
 - 预期的“AIO 模型标识 -> 上游真实模型 ID”还原不得触发现有模型路由检测误报。
 - 供应商仍被一个或多个受管 profile 引用时阻止删除，并向用户列出引用项；用户必须先删除 profile 或重新绑定供应商。
+- 首版自动发现只支持 Codex 直连供应商的 OpenAI-compatible `GET /v1/models`；Anthropic/Gemini native 统一使用手工录入回退。
+- 新增不可变 `provider_uuid` 作为供应商跨完整配置导入的稳定身份；普通编辑和完整配置 v4 导入保留 UUID，供应商复制和单供应商分享导入生成新 UUID。
+- 每个供应商模型拥有独立、不可猜测的 `model_uuid`；新 Codex profile 写入可读的 `aio/<profile_name_key>`，服务端先精确查 Profile 再恢复 `model_uuid + provider + remote_model_id`。旧 `aio/<model_uuid>` 继续精确兼容，两种 alias 都不暴露或信任数值 `provider_id`。
+- 模型目录和受管 profile 首版保持为本机状态，不进入完整配置包或单供应商分享包。完整配置导入通过 `provider_uuid` 保留可重绑定的本机数据；若导入会让现有受管 profile 失去供应商则在破坏性操作前整体拒绝。
+- 受管 profile 元数据和生成内容哈希保存在数据库；`$CODEX_HOME/<name>.config.toml` 是派生文件。创建时不覆盖同名外部文件，删除时不删除已被外部修改的文件。
+- AIO 在 Codex CLI 代理启用期间维护完整合并模型目录；Codex 仍只有 `aio` 一个供应商，模型选择器中的可读 alias 由服务端 Profile 绑定精确解析。
+- 新 Profile alias 使用 `aio/<profile_name_key>`；旧测试版的 `aio/<model_uuid>` 继续兼容，不能因可读 alias 改造破坏已有 Profile。
+- 模型能力配置归属 provider-scoped 模型条目，而不是 Profile；同一模型创建的多个 Profile 共享推理强度和上下文窗口配置。
+- 新发现或新手工添加的模型必须先明确配置能力再创建 Profile；推理能力可明确配置为“不发送推理强度”，上下文窗口可明确保留为未知。
+- v40 已有模型升级到 v41 时回填当前 `low / medium / high`、默认 `medium` 的兼容基线，避免现有受管 Profile 升级后失效；不根据供应商名或模型名推断新模型能力。
+- `codex-auto-review` 等未使用受管 `aio/<profile_name_key>` / `aio/<model_uuid>` 的 Codex 系统模型请求不绑定当前业务 Profile 的供应商；它们仍通过唯一的 `aio` provider 进入网关，沿用普通供应商路由和跨供应商 failover。路由到其他支持该系统模型的供应商属于预期行为。
 
 ## Confirmed Facts
 
@@ -58,12 +68,14 @@
 - Anthropic native 与 Gemini native 虽然支持列举模型，但鉴权、响应结构和分页都不同，需要独立 adapter。
 - 第三方 `/models` 结果只能证明模型 ID 可见，不能证明该模型兼容 Codex Responses API，也不能伪装成带推理档位等元数据的 Codex 能力目录。
 - 模型身份必须是 `(provider_id, remote_model_id)`；模型前缀、`owned_by`、显示名和供应商名称都不能用于反推归属。
+- 当前完整配置导入会删除并重新插入 provider，自增 `provider_id` 不稳定；长期 alias 必须使用不可变 UUID 查表，而不是数值 ID。
 
 ## Requirements
 
 ### R1. Provider-scoped 模型目录
 
 - 每个目录条目必须显式携带 `provider_id` 与 `remote_model_id`。
+- 每个目录条目还必须拥有稳定 `model_uuid`；新 `aio/<profile_name_key>` 和旧 `aio/<model_uuid>` 都只接受服务端已有的精确绑定，不能从字符串猜测供应商。
 - 同一供应商内按模型 ID 去重；不同供应商的同名模型必须作为不同条目保留和展示。
 - 目录必须区分远端发现项与手工项，并记录最近一次成功刷新状态；完整模型数组不得塞入高频读取的 `ProviderSummary`。
 
@@ -73,6 +85,7 @@
 - 发现请求不得跨 AIO 供应商 failover；否则会污染模型归属。
 - 请求构造必须正确处理 Base URL 已包含版本路径的情况，不能盲目拼接出 `/v1/v1/models`。
 - 首版发现协议应显式选择或持久化，不能通过并发尝试多个厂商协议后按首个 `200` 猜测类型。
+- 首版协议固定为 `openai_compatible`，且只对 `cli_key = codex`、无 bridge/source 引用的直连供应商开放。
 
 ### R3. 保存、刷新与手工回退
 
@@ -93,8 +106,9 @@
 - 首版按用户操作创建 profile，不根据发现目录自动批量生成。
 - Profile 必须写当前 `$CODEX_HOME/<name>.config.toml` 格式，不能生成旧式 `[profiles.<name>]`。
 - 所有受管 profile 都写 `model_provider = "aio"`；不得为单个 AIO 供应商生成额外的 Codex model provider 定义。
-- Profile 的产品数据必须显式保存 profile 名、`provider_id` 与 `model_id`，不能只保存模型名后再猜供应商。
+- Profile 的产品数据必须显式保存 profile 名和 `model_uuid`，查询 DTO 必须投影当前 `provider_id + remote_model_id`，不能只保存模型名后再猜供应商。
 - AIO 不得覆盖无法验证为自身管理的外部 profile 或自定义 `model_providers` 配置。
+- Profile 首版只支持创建和删除；改名或重新绑定通过删除后重新创建完成。
 
 ### R6. 受管 profile 路由
 
@@ -113,9 +127,29 @@
 
 - 供应商模型目录与 Codex 能力目录必须保持独立类型、IPC、缓存键和失效逻辑。
 - 删除供应商前必须在同一后端操作中检查受管 profile 引用；存在引用时拒绝删除并返回有界的 profile 引用信息，不得级联删除 profile 或留下失联 profile。
-- 供应商禁用、复制、分享以及完整配置导入导出时，模型目录和受管 profile 的行为必须在设计阶段明确并具备测试。
-- 若受管 profile 与模型关联需要跨机器稳定，不能直接依赖可变供应商名称；数据库自增 ID 是否足够稳定需要在设计前解决。
+- 供应商禁用时保留模型和 profile 但受管请求失败关闭；复制和单供应商分享不复制模型/profile，且生成新 `provider_uuid`。
+- 完整配置 v4 保留 `provider_uuid`，同机导入后本机模型/profile 按 UUID 继续关联；包内 UUID 非法或重复、旧版包与本机受管 profile 无法安全重绑定时整体拒绝。
+- 模型目录与 profile 首版不随配置包跨机器迁移；新机器导入供应商后需要重新刷新模型并创建 profile。
 - 新能力不得改变未选择模型绑定时的现有供应商排序、会话绑定和 failover 行为。
+
+### R8. Codex 内模型可见性
+
+- 创建受管 Profile 后，AIO 必须将它加入 Codex 可读取的完整模型目录，不能只生成需要 `--profile` 才能使用的文件。
+- 用户已有 `model_catalog_json` 时必须以该目录为基础；否则使用当前已安装 Codex 的版本匹配 bundled 目录。不能用 AIO 编译时固定快照覆盖用户或未来 Codex 字段。
+- 合并目录必须保留基础目录全部模型和未知字段，并追加可见的 `aio/<profile_name_key>` 条目；不同 Profile 名必须映射到不同 slug。
+- 根 `config.toml` 只在 Codex CLI 代理启用期间指向 AIO 生成目录；关闭代理后恢复原 `model_catalog_json` 值或缺失状态。
+- 生成目录和配置写入必须有所有权验证、并发漂移检测和补偿。外部修改后失败关闭，不得静默覆盖或删除。
+- 删除 Profile 必须同步移除目录条目；删除最后一个 Profile 后恢复基础目录配置，不留下失效的 picker 项。
+- 目录是启动时配置，UI 必须提示“新建或重启 Codex 会话后生效”，不得宣称当前会话已热更新。
+
+### R9. Provider-model 能力配置
+
+- 每个 `provider_models` 条目必须持久化能力是否已配置、支持的 reasoning effort 集合、默认 effort 和可选上下文窗口；多个 Profile 只引用该模型级配置，不复制能力字段。
+- 首版支持 Codex 当前稳定识别的 `none / minimal / low / medium / high / xhigh / max / ultra` 档位；集合不得重复，非空集合必须选择其中一个默认值，空集合表示不发送 reasoning。
+- 上下文窗口为可选 token 数；填写时必须在首版有界范围内。生成 Codex 目录时将 `context_window` 与 `max_context_window` 写为相同值，`auto_compact_token_limit` 保持为空，由 Codex 自行派生。
+- 新发现和新手工模型不得自动获得猜测能力；能力未配置时保留模型行，但后端和 UI 都必须阻止创建 Profile。
+- 已有受管 Profile 的模型能力变更必须在同一所有权锁下重建受管 Codex 目录；外部目录/config 漂移时能力更新失败关闭，不能留下数据库与当前目录不一致。
+- 能力更新不改变 canonical/wire/observed 模型比较，也不增加 reasoning effort 告警豁免：上游未回显 effort 仍不告警，明确回显不同 effort 仍按现有规则告警。
 
 ## Proposed MVP Boundary
 
@@ -125,6 +159,7 @@
 - 刷新失败保留最近一次成功目录，远端消失项标记过期而不立即删除。
 - 用户从指定供应商的目录按需创建受管 profile，不自动批量创建。
 - 受管 profile 始终使用单一 `model_provider = "aio"`，由 AIO 网关把请求固定到所选供应商。
+- 完整配置包只迁移稳定供应商 UUID，不迁移模型缓存、手工模型或 profile 文件；该取舍作为首版决策记录，后续再评估跨机器迁移。
 
 ## Acceptance Criteria
 
@@ -144,24 +179,32 @@
 - [ ] 上游没有模型证据时记录为未观察，不误报、不宣称已验证；同一 SSE 出现冲突模型时采用确定性规则且不能被最后一个相同值掩盖。
 - [ ] 终态日志保留 canonical AIO 标识，成本计算使用与 `final_provider_id` 匹配的远端计价模型；失败 attempt 的模型不能污染计价。
 - [ ] 删除仍被受管 profile 引用的供应商会被后端拒绝，并返回引用的 profile；删除或重新绑定全部引用后才能删除供应商。
+- [ ] 新建、编辑、复制、单供应商分享导入和完整配置导入分别满足既定 UUID 生命周期；v4 bundle 的非法/重复 UUID 在删除当前配置前失败。
+- [ ] 同机完整配置 v4 导入保留仍存在供应商的本机模型/profile 关联；会造成受管 profile 悬空的导入在写数据库前失败，旧 v1-v3 包在存在本机受管 profile 时同样失败关闭。
+- [ ] 同名未受管 profile 文件不会被覆盖；受管文件被外部修改后不会被更新或删除，解除管理时保留外部文件。
+- [ ] 创建 Profile 后，新 Codex 进程的 `/model` 和 app-server `model/list` 可见 `aio/<profile_name_key>`，选择后请求仍固定落到绑定供应商。
+- [ ] 用户已有模型目录时其全部模型和未知字段仍存在；没有自定义目录时使用当前安装 Codex 的 bundled 目录，而不是 AIO 固定快照。
+- [ ] 关闭 Codex CLI 代理会恢复原 `model_catalog_json`；生成目录被外部修改或配置发生并发漂移时失败关闭且不覆盖用户状态。
+- [ ] 旧 `aio/<model_uuid>` 和新 `aio/<profile_name_key>` 都能解析到同一 provider-scoped 绑定，正常请求不产生路由误报，真实 mismatch 仍告警。
+- [ ] 创建、删除和应用启动同步失败时不会留下 DB、Profile 文件、模型目录或根配置的部分成功状态。
 - [ ] 未启用受管 profile/模型路由的现有 Codex 请求保持当前排序、会话绑定与 failover 语义。
+- [ ] 新模型在能力未配置时不能创建 Profile；可明确保存“无 reasoning + 未知上下文”的配置后创建。
+- [ ] 支持档位、默认档位和上下文窗口可在 provider 模型目录中编辑、持久化并经 IPC 往返，默认档位必须属于支持集合。
+- [ ] 已有 Profile 的模型能力变更会重建完整受管目录；Codex 新会话读取到对应档位和上下文窗口，外部目录/config 漂移时数据库更新回滚。
+- [ ] v40 -> v41 保留已有模型/Profile 行并回填兼容 reasoning 基线；新发现/手工模型保持未配置，不按名称猜测。
 
 ## Out of Scope for the Proposed MVP
 
 - 后台定时刷新、启动时自动刷新和跨多个 Base URL 合并目录。
 - Anthropic native、Gemini native 等独立协议 adapter。
 - 根据名称或不完整元数据自动判断 Responses 兼容性。
-- 自动维护 Codex `model_catalog_json`。
 - 一次刷新后自动删除远端暂时消失的模型。
 - 为每个 AIO 供应商生成独立的 Codex `model_provider` 定义。
 - 将所有普通、非受管 Codex 模型请求改成强制模型感知路由。
 - 未经单独产品决策的同名模型故障转移池。
-- 当前调研阶段的产品代码实现。
-
-## Open Questions
-
-1. 跨机器导入配置时，是否要求受管 profile 继续指向同一逻辑供应商；若要求，需要不可变 UUID，而不能只依赖本机自增 ID。
-2. 首版是否确认只支持 OpenAI-compatible 自动发现，其余协议统一手工回退？
+- 模型目录、手工模型和受管 profile 的跨机器配置包迁移。
+- 受管 profile 原地改名、原地重新绑定和任意附加 TOML 字段编辑。
+- WSL 内独立 Codex home 的 profile 文件同步。
 
 ## Research Evidence
 
@@ -170,3 +213,5 @@
 - `research/frontend-provider-model-flow.md`
 - `research/model-discovery-protocols.md`
 - `research/model-route-detection-alias-compat.md`
+- `research/provider-identity-import-lifecycle.md`
+- `research/codex-managed-model-picker.md`

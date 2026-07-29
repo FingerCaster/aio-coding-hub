@@ -357,4 +357,3 @@ provider-aware 能力目录上做自动推理强度调整。
 - `.trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md`
 - `.trellis/spec/aio-coding-hub/cross-layer/index.md`
 - `.trellis/spec/guides/cross-layer-thinking-guide.md`
-

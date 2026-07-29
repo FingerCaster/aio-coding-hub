@@ -34,6 +34,26 @@ Fork product-behavior conflicts still use the repository decision gate: pause wi
 - Do not place the fix in the merge task, merge commit, or conflict-resolution commit.
 - Keep validation reports explicit about merge regressions versus known upstream-origin defects.
 
+## Local Bookkeeping Semantic Conflicts
+
+When local-only task/archive commits are merged with a newer `origin/main`, Git
+can add `.trellis/tasks/<name>` without a textual conflict even though the same
+logical task is already present under `.trellis/tasks/archive/**/<name>`. Audit
+active and archived task names after the origin merge, not only unmerged index
+entries.
+
+If a completed task appears in both places:
+
+- preserve the archived task's `completed` status and completion date;
+- carry newer origin artifacts and research into the archived directory;
+- rewrite exact/boundary self-references with the production archive helper;
+- run `task.py validate --all`; and
+- remove the duplicate active directory only after proving the archive contains
+  every newer non-status artifact.
+
+Do not blanket-keep the archive or the active directory. Either choice can
+silently discard newer task evidence or reopen completed work.
+
 If an upstream-origin defect fails a required gate, report that fact without silently patching it in the merge task. Release or follow-up ordering is a separate decision; it does not widen the merge scope.
 
 ## Wrong vs Correct
