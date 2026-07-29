@@ -720,3 +720,37 @@ Built and independently verified an unsigned Windows x64 MSI from main@fab7a968 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Publish aio-coding-hub v0.60.31
+
+**Date**: 2026-07-29
+**Task**: Publish aio-coding-hub v0.60.31
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Closed the stale release PR, passed both main and release-commit CI/dev-build gates, merged validated PR #18, published signed v0.60.31 assets for all four supported platforms, verified latest.json and the configured Homebrew safe-skip path, and preserved the protected dirty worktree.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `07e5455be3490053b172bd0277a7a03ca416ed07` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

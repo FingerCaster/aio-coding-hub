@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 20
+- **Total Sessions**: 21
 - **Last Active**: 2026-07-29
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~722 | Active |
+| `journal-1.md` | ~756 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 21 | 2026-07-29 | Publish aio-coding-hub v0.60.31 | `07e5455be3490053b172bd0277a7a03ca416ed07` | `main` |
 | 20 | 2026-07-29 | Build local Windows MSI | - | `main` |
 | 19 | 2026-07-29 | Merge upstream main 4f02ba3d | `79689ec6`, `3247c09e`, `4fc55593`, `ed886d61` | `main` |
 | 18 | 2026-07-22 | 完成 Codex 供应商模型发现与路由配置发布 | `884b258a`, `85ea3fbb`, `ee50ac8c`, `99470984`, `33b21e56`, `f7b7ea86`, `6bd591a3`, `1a551cbe` | `main` |
