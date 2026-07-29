@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 18
-- **Last Active**: 2026-07-22
+- **Total Sessions**: 19
+- **Last Active**: 2026-07-29
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~653 | Active |
+| `journal-1.md` | ~690 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 19 | 2026-07-29 | Merge upstream main 4f02ba3d | `79689ec6`, `3247c09e`, `4fc55593`, `ed886d61` | `main` |
 | 18 | 2026-07-22 | 完成 Codex 供应商模型发现与路由配置发布 | `884b258a`, `85ea3fbb`, `ee50ac8c`, `99470984`, `33b21e56`, `f7b7ea86`, `6bd591a3`, `1a551cbe` | `main` |
 | 17 | 2026-07-20 | 发布 aio-coding-hub v0.60.29 | `4f2621ab30d2e5feebde4e963029e3708bf1156f`, `495e9d1b1275a304c800a432a92427751ccb5fb1`, `76fbdea5ec31788136332a08170bf5feedbe2523` | `release-0-60-29-preflight` |
 | 16 | 2026-07-20 | 修复设置保存误触发自启动 | `54ba206e` | `main` |
