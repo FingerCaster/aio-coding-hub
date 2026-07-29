@@ -1,0 +1,6 @@
+{"file":"AGENTS.md","reason":"Apply origin-default, explicit upstream authorization, fetch-only remote safety, conflict policy, release-workflow guard, and local hook PATH rules."}
+{"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"Keep the synchronization integration-only and classify pinned-upstream defects as out of scope."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"Preserve provider-scoped query/cache ownership while importing OAuth status refresh and usage UI changes."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-oauth-device-flow-contract.md","reason":"Preserve bounded, secret-free OAuth behavior while importing Claude OAuth identity changes."}
+{"file":".trellis/tasks/07-29-merge-latest-upstream-main/research/upstream-drift.md","reason":"Use the fixed SHAs, upstream commit inventory, conflict preview, and semantic-overlap audit."}
+{"file":".trellis/tasks/07-29-merge-latest-upstream-main/design.md","reason":"Use the pinned inputs, conflict matrix, semantic audit, and dirty-worktree preservation design."}
