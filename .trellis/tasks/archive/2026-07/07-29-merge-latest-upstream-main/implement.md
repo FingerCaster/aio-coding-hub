@@ -98,3 +98,12 @@
 - Before main integration: retain the isolated branch/worktree unchanged.
 - During main integration: use the named stash and branch ancestry; never
   reset, rebase, force checkout, or discard user changes.
+
+## Completion Record
+
+All implementation, validation, independent review, protected main integration,
+and worktree-restoration steps above are complete. Exact commits, gate results,
+conflict decisions, remote state, stash identity, and the byte-level restoration
+manifest are recorded in `research/completion-evidence.md`. Task archive and
+journal commits are the remaining automatic `trellis-finish-work` bookkeeping
+steps.

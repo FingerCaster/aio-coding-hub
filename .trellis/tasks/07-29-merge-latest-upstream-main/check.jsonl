@@ -1,7 +1,0 @@
-{"file":"AGENTS.md","reason":"Review remote safety, release metadata, fork behavior preservation, and hook/test requirements."}
-{"file":".trellis/spec/guides/upstream-merge-scope-guide.md","reason":"Reject unrelated upstream-origin fixes and require evidence for every merge-specific edit."}
-{"file":".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md","reason":"Check cache ownership, invalidation scope, late-result safety, and display-only behavior after merge."}
-{"file":".trellis/tasks/07-29-merge-latest-upstream-main/research/upstream-drift.md","reason":"Compare the committed result against the fixed upstream change set and predicted conflict/overlap inventory."}
-{"file":".trellis/tasks/07-29-merge-latest-upstream-main/prd.md","reason":"Verify every acceptance criterion, especially exact ancestry and user worktree restoration."}
-{"file":".trellis/tasks/07-29-merge-latest-upstream-main/design.md","reason":"Audit all predicted and actual conflict decisions plus auto-merged semantic overlap."}
-{"file":".trellis/tasks/07-29-merge-latest-upstream-main/implement.md","reason":"Confirm focused/full gates, review loop, task finish, and final main integration were completed."}
