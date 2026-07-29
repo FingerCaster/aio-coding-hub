@@ -22,6 +22,7 @@ import type {
 } from "./providerEditorActionContext";
 import {
   fetchProviderOAuthStatus,
+  writeProviderOAuthStatusCache,
   useProviderDeleteMutation,
   useProviderOAuthStatusQuery,
   useProviderUpsertMutation,
@@ -598,6 +599,13 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     [editingProviderId, queryClient]
   );
 
+  const writeOauthStatusCache = useCallback(
+    (status: OAuthStatusValue, providerId?: number | null) => {
+      writeProviderOAuthStatusCache(queryClient, providerId ?? editingProviderId, status);
+    },
+    [editingProviderId, queryClient]
+  );
+
   const cancelOAuthDeviceFlow = useCallback((flowId: string) => {
     void providerOAuthCancelDeviceFlow(flowId).catch((err) => {
       logToConsole("warn", "取消设备码登录失败", { error: String(err) });
@@ -861,6 +869,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       oauthStatus,
       setOauthStatus,
       refreshOauthStatus,
+      writeOauthStatusCache,
       setOauthLoading,
       oauthDeviceFlow,
       setOauthDeviceFlow,
@@ -900,6 +909,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       oauthDevicePolling,
       oauthDeviceError,
       refreshOauthStatus,
+      writeOauthStatusCache,
       providerUpsertMutation,
       providerDeleteMutation,
       queryClient,

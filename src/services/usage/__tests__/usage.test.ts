@@ -2,13 +2,11 @@ import { describe, expect, it, vi } from "vitest";
 import { commands } from "../../../generated/bindings";
 import { logToConsole } from "../../consoleLog";
 import {
-  USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT,
   USAGE_HOURLY_SERIES_MAX_DAYS,
   USAGE_LEADERBOARD_MAX_LIMIT,
   USAGE_LEADERBOARD_V2_MAX_LIMIT,
   USAGE_LIMIT_MIN,
-  USAGE_PROVIDER_CACHE_RATE_TREND_MAX_LIMIT,
-  type UsageDayDetailV1,
+  USAGE_PROVIDER_TREND_MAX_LIMIT,
   type UsageFolderOptionV1,
   type UsageDayRow,
   type UsageHourlyRow,
@@ -16,18 +14,14 @@ import {
   type UsageProviderCacheRateTrendRowV1,
   type UsageProviderRow,
   type UsageSummary,
-  normalizeUsageDay,
-  normalizeUsageDayDetailInput,
-  normalizeUsageDayDetailFolderLimit,
   normalizeUsageHourlySeriesDays,
   normalizeUsageLeaderboardCsvExportContent,
   normalizeUsageLeaderboardCsvExportFilePath,
   normalizeUsageLeaderboardLimit,
   normalizeUsageLeaderboardV2Limit,
-  normalizeUsageProviderCacheRateTrendLimit,
+  normalizeUsageProviderTrendLimit,
   normalizeUsageQueryInputV2,
   validateUsageCliKey,
-  usageDayDetailV1,
   usageFolderOptionsV1,
   usageHourlySeries,
   usageLeaderboardDay,
@@ -51,7 +45,6 @@ vi.mock("../../../generated/bindings", async () => {
       usageLeaderboardProvider: vi.fn(),
       usageLeaderboardDay: vi.fn(),
       usageHourlySeries: vi.fn(),
-      usageDayDetailV1: vi.fn(),
       usageFolderOptionsV1: vi.fn(),
       usageSummaryV2: vi.fn(),
       usageLeaderboardV2: vi.fn(),
@@ -160,11 +153,15 @@ function makeUsageLeaderboardRow(
     total_duration_ms: 120,
     first_request_created_at_ms: null,
     last_request_created_at_ms: null,
+    last_request_completed_at_ms: null,
+    estimated_development_time_ms: null,
+    hourly_estimated_development_time_ms: null,
     avg_duration_ms: 120,
     avg_ttfb_ms: 30,
     avg_output_tokens_per_second: 10,
     cost_usd: 1.23,
     ...overrides,
+    folder_path: overrides.folder_path ?? null,
   };
 }
 
@@ -179,39 +176,6 @@ function makeUsageProviderCacheRateTrendRow(
     denom_tokens: 300,
     cache_read_input_tokens: 30,
     requests_success: 1,
-    ...overrides,
-  };
-}
-
-function makeUsageDayDetail(overrides: Partial<UsageDayDetailV1> = {}): UsageDayDetailV1 {
-  return {
-    day: "2026-04-22",
-    folders: [
-      {
-        key: "/tmp/project",
-        name: "project",
-        folder_path: "/tmp/project",
-        requests_total: 1,
-        requests_success: 1,
-        requests_failed: 0,
-        total_tokens: 300,
-        io_total_tokens: 300,
-        input_tokens: 100,
-        output_tokens: 200,
-        cache_creation_input_tokens: 0,
-        cache_read_input_tokens: 0,
-        avg_duration_ms: 120,
-        avg_ttfb_ms: 30,
-        avg_output_tokens_per_second: 10,
-        cost_usd: 1.23,
-      },
-    ],
-    hours: Array.from({ length: 24 }, (_, hour) => ({
-      hour,
-      requests_total: hour === 13 ? 1 : 0,
-      total_tokens: hour === 13 ? 300 : 0,
-      io_total_tokens: hour === 13 ? 300 : 0,
-    })),
     ...overrides,
   };
 }
@@ -262,10 +226,6 @@ describe("services/usage/usage", () => {
       status: "ok",
       data: [makeUsageHourlyRow()],
     });
-    vi.mocked(commands.usageDayDetailV1).mockResolvedValue({
-      status: "ok",
-      data: makeUsageDayDetail(),
-    });
     vi.mocked(commands.usageFolderOptionsV1).mockResolvedValue({
       status: "ok",
       data: [makeUsageFolderOption()],
@@ -297,16 +257,6 @@ describe("services/usage/usage", () => {
     await usageLeaderboardDay("today", { cliKey: "gemini", limit: 20 });
 
     const hourlyRows = await usageHourlySeries(15);
-    const dayDetail = await usageDayDetailV1({
-      day: "2026-04-22",
-      cliKey: null,
-      providerId: null,
-      folderLimit: 8,
-      folderKeys: ["/tmp/project"],
-      dayStartHour: 5,
-      excludeCx2CcGatewayBridge: true,
-    });
-
     const summaryV2 = await usageSummaryV2("custom");
     await usageSummaryV2("custom", {
       startTs: 1,
@@ -315,6 +265,8 @@ describe("services/usage/usage", () => {
       providerId: 7,
       folderKeys: ["/tmp/project"],
       dayStartHour: 5,
+      fullIdleGapMinutes: 10,
+      sessionBreakGapMinutes: 30,
       excludeCx2CcGatewayBridge: true,
     });
 
@@ -327,8 +279,11 @@ describe("services/usage/usage", () => {
       limit: null,
       folderKeys: ["/tmp/project"],
       dayStartHour: 6,
+      fullIdleGapMinutes: 10,
+      sessionBreakGapMinutes: 30,
       excludeCx2CcGatewayBridge: true,
     });
+    await usageLeaderboardV2("folder", "custom");
     const folderOptions = await usageFolderOptionsV1("custom", {
       startTs: 1,
       endTs: 2,
@@ -357,7 +312,6 @@ describe("services/usage/usage", () => {
     expect(providerRows[0]?.cli_key).toBe("claude");
     expect(dayRows[0]?.day).toBe("2026-04-22");
     expect(hourlyRows[0]?.hour).toBe(13);
-    expect(dayDetail.folders[0]?.name).toBe("project");
     expect(summaryV2.requests_total).toBe(2);
     expect(leaderboardRows[0]?.key).toBe("provider:1");
     expect(folderOptions[0]?.key).toBe("/tmp/project");
@@ -371,15 +325,6 @@ describe("services/usage/usage", () => {
     expect(commands.usageLeaderboardDay).toHaveBeenNthCalledWith(1, "today", null, null);
     expect(commands.usageLeaderboardDay).toHaveBeenNthCalledWith(2, "today", "gemini", 20);
     expect(commands.usageHourlySeries).toHaveBeenCalledWith(15);
-    expect(commands.usageDayDetailV1).toHaveBeenCalledWith({
-      day: "2026-04-22",
-      cliKey: null,
-      providerId: null,
-      folderLimit: 8,
-      folderKeys: ["/tmp/project"],
-      dayStartHour: 5,
-      excludeCx2CcGatewayBridge: true,
-    });
     expect(commands.usageSummaryV2).toHaveBeenNthCalledWith(1, {
       period: "custom",
       startTs: null,
@@ -388,6 +333,8 @@ describe("services/usage/usage", () => {
       providerId: null,
       folderKeys: null,
       dayStartHour: null,
+      fullIdleGapMinutes: null,
+      sessionBreakGapMinutes: null,
       excludeCx2CcGatewayBridge: null,
     });
     expect(commands.usageSummaryV2).toHaveBeenNthCalledWith(2, {
@@ -398,6 +345,8 @@ describe("services/usage/usage", () => {
       providerId: 7,
       folderKeys: ["/tmp/project"],
       dayStartHour: 5,
+      fullIdleGapMinutes: 10,
+      sessionBreakGapMinutes: 30,
       excludeCx2CcGatewayBridge: true,
     });
     expect(commands.usageLeaderboardV2).toHaveBeenNthCalledWith(
@@ -411,6 +360,8 @@ describe("services/usage/usage", () => {
         providerId: null,
         folderKeys: null,
         dayStartHour: null,
+        fullIdleGapMinutes: null,
+        sessionBreakGapMinutes: null,
         excludeCx2CcGatewayBridge: null,
       },
       null
@@ -426,7 +377,26 @@ describe("services/usage/usage", () => {
         providerId: 9,
         folderKeys: ["/tmp/project"],
         dayStartHour: 6,
+        fullIdleGapMinutes: 10,
+        sessionBreakGapMinutes: 30,
         excludeCx2CcGatewayBridge: true,
+      },
+      null
+    );
+    expect(commands.usageLeaderboardV2).toHaveBeenNthCalledWith(
+      3,
+      "folder",
+      {
+        period: "custom",
+        startTs: null,
+        endTs: null,
+        cliKey: null,
+        providerId: null,
+        folderKeys: null,
+        dayStartHour: null,
+        fullIdleGapMinutes: null,
+        sessionBreakGapMinutes: null,
+        excludeCx2CcGatewayBridge: null,
       },
       null
     );
@@ -438,6 +408,8 @@ describe("services/usage/usage", () => {
       providerId: 9,
       folderKeys: null,
       dayStartHour: 7,
+      fullIdleGapMinutes: null,
+      sessionBreakGapMinutes: null,
       excludeCx2CcGatewayBridge: true,
     });
     expect(commands.usageProviderCacheRateTrendV1).toHaveBeenCalledWith(
@@ -449,6 +421,8 @@ describe("services/usage/usage", () => {
         providerId: 11,
         folderKeys: null,
         dayStartHour: null,
+        fullIdleGapMinutes: null,
+        sessionBreakGapMinutes: null,
         excludeCx2CcGatewayBridge: true,
       },
       20
@@ -462,17 +436,12 @@ describe("services/usage/usage", () => {
   it("normalizes usage filters before ipc", async () => {
     vi.mocked(commands.usageSummary).mockClear();
     vi.mocked(commands.usageSummaryV2).mockClear();
-    vi.mocked(commands.usageDayDetailV1).mockClear();
     vi.mocked(commands.usageLeaderboardCsvExport).mockClear();
 
     vi.mocked(commands.usageSummary).mockResolvedValue({ status: "ok", data: makeUsageSummary() });
     vi.mocked(commands.usageSummaryV2).mockResolvedValue({
       status: "ok",
       data: makeUsageSummary(),
-    });
-    vi.mocked(commands.usageDayDetailV1).mockResolvedValue({
-      status: "ok",
-      data: makeUsageDayDetail(),
     });
 
     expect(validateUsageCliKey(" claude ")).toBe("claude");
@@ -485,6 +454,8 @@ describe("services/usage/usage", () => {
         providerId: 7,
         folderKeys: [" /b ", "/a", "/a", " "],
         dayStartHour: 5,
+        fullIdleGapMinutes: 10,
+        sessionBreakGapMinutes: 45,
         excludeCx2CcGatewayBridge: true,
       })
     ).toEqual({
@@ -494,30 +465,12 @@ describe("services/usage/usage", () => {
       providerId: 7,
       folderKeys: ["/a", "/b"],
       dayStartHour: 5,
+      fullIdleGapMinutes: 10,
+      sessionBreakGapMinutes: 45,
       excludeCx2CcGatewayBridge: true,
     });
-    expect(normalizeUsageDay(" 2026-04-22 ")).toBe("2026-04-22");
     expect(normalizeUsageLeaderboardCsvExportFilePath(" /tmp/usage.csv ")).toBe("/tmp/usage.csv");
     expect(normalizeUsageLeaderboardCsvExportContent("\uFEFF排名\r\n")).toBe("\uFEFF排名\r\n");
-    expect(
-      normalizeUsageDayDetailInput({
-        day: " 2026-04-22 ",
-        cliKey: " codex " as never,
-        providerId: 9,
-        folderLimit: 999,
-        folderKeys: [" /tmp/project ", "/tmp/project"],
-        dayStartHour: 6,
-        excludeCx2CcGatewayBridge: false,
-      })
-    ).toEqual({
-      day: "2026-04-22",
-      cliKey: "codex",
-      providerId: 9,
-      folderLimit: USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT,
-      folderKeys: ["/tmp/project"],
-      dayStartHour: 6,
-      excludeCx2CcGatewayBridge: false,
-    });
 
     await usageSummary("today", { cliKey: " claude " as never });
     await usageSummaryV2("custom", {
@@ -527,18 +480,10 @@ describe("services/usage/usage", () => {
       providerId: 7,
       folderKeys: [" /b ", "/a", "/a", " "],
       dayStartHour: 5,
+      fullIdleGapMinutes: 10,
+      sessionBreakGapMinutes: 45,
       excludeCx2CcGatewayBridge: true,
     });
-    await usageDayDetailV1({
-      day: " 2026-04-22 ",
-      cliKey: " codex " as never,
-      providerId: 9,
-      folderLimit: 999,
-      folderKeys: [" /tmp/project ", "/tmp/project"],
-      dayStartHour: 6,
-      excludeCx2CcGatewayBridge: false,
-    });
-
     expect(commands.usageSummary).toHaveBeenCalledWith("today", "claude");
     expect(commands.usageSummaryV2).toHaveBeenCalledWith({
       period: "custom",
@@ -548,23 +493,15 @@ describe("services/usage/usage", () => {
       providerId: 7,
       folderKeys: ["/a", "/b"],
       dayStartHour: 5,
+      fullIdleGapMinutes: 10,
+      sessionBreakGapMinutes: 45,
       excludeCx2CcGatewayBridge: true,
-    });
-    expect(commands.usageDayDetailV1).toHaveBeenCalledWith({
-      day: "2026-04-22",
-      cliKey: "codex",
-      providerId: 9,
-      folderLimit: USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT,
-      folderKeys: ["/tmp/project"],
-      dayStartHour: 6,
-      excludeCx2CcGatewayBridge: false,
     });
   });
 
   it("rejects invalid usage filters before ipc", async () => {
     vi.mocked(commands.usageSummary).mockClear();
     vi.mocked(commands.usageSummaryV2).mockClear();
-    vi.mocked(commands.usageDayDetailV1).mockClear();
     vi.mocked(commands.usageLeaderboardCsvExport).mockClear();
 
     await expect(usageSummary("today", { cliKey: "opencode" as never })).rejects.toThrow(
@@ -584,10 +521,15 @@ describe("services/usage/usage", () => {
     await expect(usageSummaryV2("daily", { dayStartHour: 10 })).rejects.toThrow(
       "SEC_INVALID_INPUT"
     );
-    await expect(usageDayDetailV1({ day: "2026-04-22", dayStartHour: -1 })).rejects.toThrow(
+    await expect(usageSummaryV2("daily", { fullIdleGapMinutes: 0 })).rejects.toThrow(
       "SEC_INVALID_INPUT"
     );
-    await expect(usageDayDetailV1({ day: "2026-02-31" })).rejects.toThrow("SEC_INVALID_INPUT");
+    await expect(usageSummaryV2("daily", { sessionBreakGapMinutes: 61 })).rejects.toThrow(
+      "SEC_INVALID_INPUT"
+    );
+    await expect(
+      usageSummaryV2("daily", { fullIdleGapMinutes: 30, sessionBreakGapMinutes: 30 })
+    ).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(usageLeaderboardCsvExport("   ", "排名\r\n")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(usageLeaderboardCsvExport("/tmp/usage.csv", "\uFEFF  ")).rejects.toThrow(
       "SEC_INVALID_INPUT"
@@ -595,7 +537,6 @@ describe("services/usage/usage", () => {
 
     expect(commands.usageSummary).not.toHaveBeenCalled();
     expect(commands.usageSummaryV2).not.toHaveBeenCalled();
-    expect(commands.usageDayDetailV1).not.toHaveBeenCalled();
     expect(commands.usageLeaderboardCsvExport).not.toHaveBeenCalled();
   });
 
@@ -604,7 +545,6 @@ describe("services/usage/usage", () => {
     vi.mocked(commands.usageLeaderboardDay).mockClear();
     vi.mocked(commands.usageHourlySeries).mockClear();
     vi.mocked(commands.usageLeaderboardV2).mockClear();
-    vi.mocked(commands.usageDayDetailV1).mockClear();
     vi.mocked(commands.usageProviderCacheRateTrendV1).mockClear();
 
     vi.mocked(commands.usageLeaderboardProvider).mockResolvedValue({
@@ -623,10 +563,6 @@ describe("services/usage/usage", () => {
       status: "ok",
       data: [makeUsageLeaderboardRow()],
     });
-    vi.mocked(commands.usageDayDetailV1).mockResolvedValue({
-      status: "ok",
-      data: makeUsageDayDetail(),
-    });
     vi.mocked(commands.usageProviderCacheRateTrendV1).mockResolvedValue({
       status: "ok",
       data: [makeUsageProviderCacheRateTrendRow()],
@@ -637,19 +573,12 @@ describe("services/usage/usage", () => {
     expect(normalizeUsageLeaderboardLimit(999)).toBe(USAGE_LEADERBOARD_MAX_LIMIT);
     expect(normalizeUsageLeaderboardV2Limit(999)).toBe(USAGE_LEADERBOARD_V2_MAX_LIMIT);
     expect(normalizeUsageHourlySeriesDays(999)).toBe(USAGE_HOURLY_SERIES_MAX_DAYS);
-    expect(normalizeUsageDayDetailFolderLimit(999)).toBe(USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT);
-    expect(normalizeUsageProviderCacheRateTrendLimit(999)).toBe(
-      USAGE_PROVIDER_CACHE_RATE_TREND_MAX_LIMIT
-    );
+    expect(normalizeUsageProviderTrendLimit(999)).toBe(USAGE_PROVIDER_TREND_MAX_LIMIT);
 
     await usageLeaderboardProvider("today", { limit: 0 });
     await usageLeaderboardDay("today", { limit: 999 });
     await usageHourlySeries(999);
     await usageLeaderboardV2("provider", "custom", { limit: 999 });
-    await usageDayDetailV1({
-      day: "2026-04-22",
-      folderLimit: 999,
-    });
     await usageProviderCacheRateTrendV1("daily", { limit: 999 });
 
     expect(commands.usageLeaderboardProvider).toHaveBeenCalledWith("today", null, USAGE_LIMIT_MIN);
@@ -664,12 +593,9 @@ describe("services/usage/usage", () => {
       expect.objectContaining({ period: "custom" }),
       USAGE_LEADERBOARD_V2_MAX_LIMIT
     );
-    expect(commands.usageDayDetailV1).toHaveBeenCalledWith(
-      expect.objectContaining({ folderLimit: USAGE_DAY_DETAIL_FOLDER_MAX_LIMIT })
-    );
     expect(commands.usageProviderCacheRateTrendV1).toHaveBeenCalledWith(
       expect.objectContaining({ period: "daily" }),
-      USAGE_PROVIDER_CACHE_RATE_TREND_MAX_LIMIT
+      USAGE_PROVIDER_TREND_MAX_LIMIT
     );
   });
 

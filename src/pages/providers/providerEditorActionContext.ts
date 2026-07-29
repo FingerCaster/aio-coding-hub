@@ -35,6 +35,8 @@ export type AuthActionContext = {
   oauthStatus: OAuthStatusValue;
   setOauthStatus: (v: OAuthStatusValue) => void;
   refreshOauthStatus: (providerId?: number | null) => Promise<OAuthStatusValue>;
+  /** 将 OAuth 状态直接写入 React Query 缓存，保持编辑器快照与本地状态一致。 */
+  writeOauthStatusCache: (status: OAuthStatusValue, providerId?: number | null) => void;
   oauthLoading: boolean;
   setOauthLoading: (v: boolean) => void;
   oauthDeviceFlow: ProviderOAuthDeviceCodeStartResult | null;
@@ -142,6 +144,7 @@ export type OAuthActionContext = ProviderActionContext &
     | "oauthStatus"
     | "setOauthStatus"
     | "refreshOauthStatus"
+    | "writeOauthStatusCache"
     | "setOauthLoading"
     | "oauthDeviceFlow"
     | "setOauthDeviceFlow"

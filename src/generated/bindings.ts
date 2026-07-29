@@ -2144,6 +2144,20 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async usageProviderMetricsTrendV1(
+    params: UsageQueryParams,
+    limit: number | null
+  ): Promise<Result<UsageProviderMetricsTrendRowV1[], string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("usage_provider_metrics_trend_v1", { params, limit }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async imageGenConfigGet(adapterId: string): Promise<Result<ImageGenConfigView, string>> {
     try {
       return { status: "ok", data: await TAURI_INVOKE("image_gen_config_get", { adapterId }) };
@@ -4474,12 +4488,16 @@ export type UsageHourlyRow = {
 export type UsageLeaderboardRow = {
   key: string;
   name: string;
+  folder_path: string | null;
   requests_total: number;
   requests_success: number;
   requests_failed: number;
   total_duration_ms: number;
   first_request_created_at_ms: number | null;
   last_request_created_at_ms: number | null;
+  last_request_completed_at_ms: number | null;
+  estimated_development_time_ms: number | null;
+  hourly_estimated_development_time_ms: number[] | null;
   total_tokens: number;
   io_total_tokens: number;
   input_tokens: number;
@@ -4498,6 +4516,16 @@ export type UsageProviderCacheRateTrendRowV1 = {
   name: string;
   denom_tokens: number;
   cache_read_input_tokens: number;
+  requests_success: number;
+};
+export type UsageProviderMetricsTrendRowV1 = {
+  day: string;
+  hour: number | null;
+  key: string;
+  name: string;
+  avg_duration_ms: number | null;
+  avg_ttfb_ms: number | null;
+  avg_output_tokens_per_second: number | null;
   requests_success: number;
 };
 export type UsageProviderRow = {
@@ -4526,6 +4554,8 @@ export type UsageQueryParams = {
   providerId: number | null;
   folderKeys: string[] | null;
   dayStartHour: number | null;
+  fullIdleGapMinutes: number | null;
+  sessionBreakGapMinutes: number | null;
   excludeCx2CcGatewayBridge: boolean | null;
 };
 export type UsageSummary = {

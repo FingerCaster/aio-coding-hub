@@ -235,6 +235,7 @@ macro_rules! generated_command_registry {
             usage_day_detail_v1 => crate::commands::usage::usage_day_detail_v1,
             usage_folder_options_v1 => crate::commands::usage::usage_folder_options_v1,
             usage_provider_cache_rate_trend_v1 => crate::commands::usage::usage_provider_cache_rate_trend_v1,
+            usage_provider_metrics_trend_v1 => crate::commands::usage::usage_provider_metrics_trend_v1,
             // ── image_gen ──
             image_gen_config_get => crate::commands::image_gen::image_gen_config_get,
             image_gen_config_set => crate::commands::image_gen::image_gen_config_set,
