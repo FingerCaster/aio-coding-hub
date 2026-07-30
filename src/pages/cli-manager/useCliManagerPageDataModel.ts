@@ -506,7 +506,6 @@ export function useCliManagerPageDataModel() {
       return false;
     }
 
-    await refreshCodex();
     toast(enabled ? "已开启 Codex OAuth 兼容代理模式" : "已关闭 Codex OAuth 兼容代理模式");
     return true;
   }

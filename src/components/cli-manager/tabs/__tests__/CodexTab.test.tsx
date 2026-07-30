@@ -345,6 +345,42 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     expect(persistCodexOauthCompatibleProxyMode).toHaveBeenCalledWith(true);
   });
 
+  it("shows and clears the Codex OAuth proxy saving state", () => {
+    const persistCodexOauthCompatibleProxyMode = vi.fn().mockResolvedValue(true);
+    const { rerender } = renderTab({
+      appSettings: createAppSettings({ codex_oauth_compatible_proxy_mode: false }),
+      commonSettingsSaving: true,
+      persistCodexOauthCompatibleProxyMode,
+    });
+
+    expect(screen.getByLabelText("正在更新 Codex OAuth 兼容代理模式")).toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "切换 Codex OAuth 兼容代理模式" })).toBeDisabled();
+
+    rerender(
+      <CliManagerCodexTab
+        codexAvailable="available"
+        codexLoading={false}
+        codexConfigLoading={false}
+        codexConfigSaving={false}
+        codexConfigTomlLoading={false}
+        codexConfigTomlSaving={false}
+        codexInfo={createCodexInfo()}
+        codexConfig={createCodexConfig()}
+        codexConfigToml={null}
+        appSettings={createAppSettings({ codex_oauth_compatible_proxy_mode: false })}
+        commonSettingsSaving={false}
+        refreshCodex={vi.fn()}
+        openCodexConfigDir={vi.fn()}
+        persistCodexConfig={vi.fn()}
+        persistCodexConfigToml={vi.fn().mockResolvedValue(true)}
+        persistCodexOauthCompatibleProxyMode={persistCodexOauthCompatibleProxyMode}
+      />
+    );
+
+    expect(screen.queryByLabelText("正在更新 Codex OAuth 兼容代理模式")).not.toBeInTheDocument();
+    expect(screen.getByRole("switch", { name: "切换 Codex OAuth 兼容代理模式" })).toBeEnabled();
+  });
+
   it("persists the global provider test model and supports manual Provider Sync", async () => {
     const persistCommonSettings = vi
       .fn()

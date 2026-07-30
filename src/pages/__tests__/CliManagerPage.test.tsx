@@ -2,7 +2,7 @@ import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { QueryClientProvider } from "@tanstack/react-query";
 import { MemoryRouter } from "react-router-dom";
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { ReactElement } from "react";
+import { useState, type ReactElement } from "react";
 import { toast } from "sonner";
 import { tauriDialogOpen, tauriOpenPath } from "../../test/mocks/tauri";
 import type { AppSettings, SettingsMutationResult } from "../../services/settings/settings";
@@ -107,37 +107,54 @@ vi.mock("../../components/cli-manager/tabs/CodexTab", () => ({
     persistCodexConfig,
     persistCodexConfigToml,
     persistCodexHomeSettings,
+    persistCodexOauthCompatibleProxyMode,
     pickCodexHomeDirectory,
     syncCodexProvider,
-  }: any) => (
-    <div>
-      <div>codex-tab</div>
-      <button type="button" onClick={() => refreshCodex()}>
-        refresh-codex
-      </button>
-      <button type="button" onClick={() => openCodexConfigDir()}>
-        open-codex-dir
-      </button>
-      <button type="button" onClick={() => pickCodexHomeDirectory?.()}>
-        pick-codex-dir
-      </button>
-      <button type="button" onClick={() => persistCodexConfig({ foo: "bar" })}>
-        save-codex
-      </button>
-      <button type="button" onClick={() => void persistCodexConfigToml?.('model = "gpt-5"')}>
-        save-codex-toml
-      </button>
-      <button type="button" onClick={() => syncCodexProvider?.()}>
-        手动 Provider Sync
-      </button>
-      <button
-        type="button"
-        onClick={() => persistCodexHomeSettings?.("custom", "D:\\Work\\CodexHome")}
-      >
-        save-codex-home
-      </button>
-    </div>
-  ),
+  }: any) => {
+    const [oauthResult, setOauthResult] = useState<boolean | null>(null);
+    return (
+      <div>
+        <div>codex-tab</div>
+        <button type="button" onClick={() => refreshCodex()}>
+          refresh-codex
+        </button>
+        <button type="button" onClick={() => openCodexConfigDir()}>
+          open-codex-dir
+        </button>
+        <button type="button" onClick={() => pickCodexHomeDirectory?.()}>
+          pick-codex-dir
+        </button>
+        <button type="button" onClick={() => persistCodexConfig({ foo: "bar" })}>
+          save-codex
+        </button>
+        <button type="button" onClick={() => void persistCodexConfigToml?.('model = "gpt-5"')}>
+          save-codex-toml
+        </button>
+        <button type="button" onClick={() => syncCodexProvider?.()}>
+          手动 Provider Sync
+        </button>
+        <button
+          type="button"
+          onClick={() => persistCodexHomeSettings?.("custom", "D:\\Work\\CodexHome")}
+        >
+          save-codex-home
+        </button>
+        <button
+          type="button"
+          onClick={() =>
+            void Promise.resolve(persistCodexOauthCompatibleProxyMode?.(true)).then((result) =>
+              setOauthResult(result ?? false)
+            )
+          }
+        >
+          enable-codex-oauth-proxy
+        </button>
+        <output aria-label="codex-oauth-result">
+          {oauthResult == null ? "pending" : String(oauthResult)}
+        </output>
+      </div>
+    );
+  },
 }));
 
 vi.mock("../../components/cli-manager/tabs/GeminiTab", () => ({
@@ -1254,5 +1271,94 @@ describe("pages/CliManagerPage", () => {
     expect(codexTomlRefetch).not.toHaveBeenCalled();
     expect(codexInfoRefetch).not.toHaveBeenCalled();
     expect(toast).not.toHaveBeenCalledWith("Codex 目录已切换");
+  });
+
+  it("returns true for OAuth proxy mode without waiting for Codex model catalog refresh", async () => {
+    const commonMutation = {
+      isPending: false,
+      mutateAsync: vi
+        .fn()
+        .mockResolvedValue(
+          createSettingsMutationResult({ codex_oauth_compatible_proxy_mode: true })
+        ),
+    };
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(commonMutation as any);
+
+    const codexConfigRefetch = vi.fn().mockResolvedValue({
+      data: { config_path: "C:\\Users\\tester\\.codex\\config.toml" },
+      isError: false,
+    });
+    const codexTomlRefetch = vi.fn().mockResolvedValue({ data: {}, isError: false });
+    const codexInfoRefetch = vi.fn().mockResolvedValue({
+      data: { found: true, executable_path: "C:\\bin\\codex.exe", version: "1.2.3" },
+      isError: false,
+    });
+    const catalogRefresh = vi.fn(() => new Promise<void>(() => {}));
+
+    vi.mocked(useCliManagerCodexConfigQuery).mockReturnValue({
+      data: { config_path: "C:\\Users\\tester\\.codex\\config.toml" },
+      isFetching: false,
+      refetch: codexConfigRefetch,
+    } as any);
+    vi.mocked(useCliManagerCodexConfigTomlQuery).mockReturnValue({
+      data: { config_path: "C:\\Users\\tester\\.codex\\config.toml", toml: "" },
+      isFetching: false,
+      refetch: codexTomlRefetch,
+    } as any);
+    vi.mocked(useCliManagerCodexInfoQuery).mockReturnValue({
+      data: { found: true, executable_path: "C:\\bin\\codex.exe", version: "1.2.3" },
+      isFetching: false,
+      refetch: codexInfoRefetch,
+    } as any);
+    vi.mocked(useCliManagerCodexModelCatalogRefresh).mockReturnValue(catalogRefresh as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+    fireEvent.click(screen.getByRole("button", { name: "enable-codex-oauth-proxy" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("codex-oauth-result")).toHaveTextContent("true")
+    );
+    expect(commonMutation.mutateAsync).toHaveBeenCalledWith(
+      expect.objectContaining({
+        codex_oauth_compatible_proxy_mode: true,
+        upstream_proxy_password: { mode: "preserve" },
+      })
+    );
+    expect(codexConfigRefetch).not.toHaveBeenCalled();
+    expect(codexTomlRefetch).not.toHaveBeenCalled();
+    expect(codexInfoRefetch).not.toHaveBeenCalled();
+    expect(catalogRefresh).not.toHaveBeenCalled();
+    expect(toast).toHaveBeenCalledWith("已开启 Codex OAuth 兼容代理模式");
+  });
+
+  it("returns false and exposes the stable OAuth proxy sync error", async () => {
+    const commonMutation = {
+      isPending: false,
+      mutateAsync: vi
+        .fn()
+        .mockRejectedValue(
+          new Error("CODEX_OAUTH_PROXY_SYNC_FAILED: failed to update Codex projection")
+        ),
+    };
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(commonMutation as any);
+
+    renderWithProviders(<CliManagerPage />);
+    fireEvent.click(screen.getByRole("tab", { name: "Codex" }));
+    await screen.findByText("codex-tab");
+    fireEvent.click(screen.getByRole("button", { name: "enable-codex-oauth-proxy" }));
+
+    await waitFor(() =>
+      expect(screen.getByLabelText("codex-oauth-result")).toHaveTextContent("false")
+    );
+    expect(toast).toHaveBeenCalledWith(
+      "更新通用网关参数失败（code CODEX_OAUTH_PROXY_SYNC_FAILED）：failed to update Codex projection"
+    );
+    expect(logToConsole).toHaveBeenCalledWith(
+      "error",
+      "更新通用网关参数失败",
+      expect.objectContaining({ error_code: "CODEX_OAUTH_PROXY_SYNC_FAILED" })
+    );
   });
 });

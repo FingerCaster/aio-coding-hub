@@ -2,6 +2,7 @@
 
 mod parsing;
 mod patching;
+pub(crate) mod provider_projection;
 mod types;
 
 pub use types::{
@@ -146,8 +147,11 @@ pub(crate) fn restore_codex_cli_proxy_backup_snapshot(
 
 fn remove_path_if_exists(path: &Path) -> crate::shared::error::AppResult<()> {
     match fs::symlink_metadata(path) {
-        Ok(metadata) if metadata.is_dir() => fs::remove_dir_all(path)
-            .map_err(|err| format!("failed to remove dir {}: {err}", path.display()).into()),
+        Ok(metadata) if metadata.is_dir() => Err(format!(
+            "SEC_INVALID_INPUT: refusing to remove unexpected backup directory path={}",
+            path.display()
+        )
+        .into()),
         Ok(_) => fs::remove_file(path)
             .map_err(|err| format!("failed to remove file {}: {err}", path.display()).into()),
         Err(err) if err.kind() == std::io::ErrorKind::NotFound => Ok(()),
@@ -290,6 +294,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     toml: String,
 ) -> crate::shared::error::AppResult<CodexConfigState> {
+    let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
     let path = codex_paths::codex_config_toml_path(app)?;
     if path.exists() && is_symlink(&path)? {
         return Err(format!(
@@ -300,9 +305,77 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     }
 
     let bytes = codex_config_normalize_raw_toml(toml)?;
-    let backup_bytes = bytes.clone();
+    let current = read_optional_codex_config_file(&path)?;
+    let baseline = super::cli_proxy::codex_enabled_proxy_baseline(app)?;
+    let (backup_bytes, next, requires_provider_sync) = match baseline.as_ref() {
+        Some(baseline) => {
+            let baseline_before = baseline.config_bytes.as_deref().unwrap_or_default();
+            let previous_base_url = format!("{}/v1", baseline.base_origin.trim_end_matches('/'));
+            let expected = super::cli_proxy::project_codex_config_from_baseline(
+                app,
+                baseline.config_bytes.clone(),
+                current.as_deref(),
+                &baseline.base_origin,
+                Some(&previous_base_url),
+            )?;
+            let merged = provider_projection::merge_raw_user_changes(
+                baseline_before,
+                &expected,
+                current.as_deref().unwrap_or_default(),
+                &bytes,
+            )?;
+            let previous_provider =
+                provider_projection::desired_provider_key_from_config(baseline_before)?;
+            let target_provider = provider_projection::desired_provider_key_from_config(&merged)?;
+            let requires_provider_sync = previous_provider != target_provider;
+            let backup_bytes = if requires_provider_sync {
+                provider_projection::reconcile_provider_identity(&merged, target_provider, None)?
+            } else {
+                merged
+            };
+            let next = super::cli_proxy::project_codex_config_from_baseline(
+                app,
+                Some(backup_bytes.clone()),
+                current.as_deref(),
+                &baseline.base_origin,
+                Some(&previous_base_url),
+            )?;
+            (backup_bytes, next, requires_provider_sync)
+        }
+        None => {
+            let previous_provider = provider_projection::desired_provider_key_from_config(
+                current.as_deref().unwrap_or_default(),
+            )?;
+            let target_provider = provider_projection::desired_provider_key_from_config(&bytes)?;
+            let requires_provider_sync = previous_provider != target_provider;
+            let next = if requires_provider_sync {
+                provider_projection::reconcile_provider_identity(&bytes, target_provider, None)?
+            } else {
+                bytes
+            };
+            (next.clone(), next, requires_provider_sync)
+        }
+    };
+    ensure_codex_config_len(&backup_bytes, "codex config backup")?;
+    ensure_codex_config_len(&next, "codex config.toml")?;
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
-    if let Err(err) = write_file_atomic_if_changed(&path, &bytes) {
+    let write_result = if requires_provider_sync {
+        let next_text = String::from_utf8(next.clone())
+            .map_err(|_| "SEC_INVALID_INPUT: codex config.toml must be valid UTF-8".to_string())?;
+        let target_provider = codex_config_patch_target_provider(&next_text)?;
+        crate::infra::codex_provider_sync::codex_provider_sync(
+            app,
+            crate::infra::codex_provider_sync::CodexProviderSyncContext {
+                trigger: "codex_config_toml_set_raw".to_string(),
+                target_provider,
+                config_bytes: Some(next),
+            },
+        )
+        .map(|_| ())
+    } else {
+        write_file_atomic_if_changed(&path, &next).map(|_| ())
+    };
+    if let Err(err) = write_result {
         if let Some(snapshot) = backup_snapshot.as_ref() {
             restore_codex_cli_proxy_backup_snapshot(snapshot)?;
         }
@@ -315,6 +388,7 @@ pub fn codex_config_set<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     patch: CodexConfigPatch,
 ) -> crate::shared::error::AppResult<CodexConfigState> {
+    let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
     let path = codex_paths::codex_config_toml_path(app)?;
     if path.exists() && is_symlink(&path)? {
         return Err(format!(
@@ -325,10 +399,44 @@ pub fn codex_config_set<R: tauri::Runtime>(
     }
 
     let current = read_optional_codex_config_file(&path)?;
+    let baseline = super::cli_proxy::codex_enabled_proxy_baseline(app)?;
     let requires_provider_sync = patch_requires_provider_sync(&patch);
-    let next = codex_config_next_bytes(current, patch)?;
+    let backup_bytes = match baseline.as_ref() {
+        Some(baseline) => {
+            let baseline_before = baseline.config_bytes.as_deref().unwrap_or_default();
+            let previous_base_url = format!("{}/v1", baseline.base_origin.trim_end_matches('/'));
+            let expected = super::cli_proxy::project_codex_config_from_baseline(
+                app,
+                baseline.config_bytes.clone(),
+                current.as_deref(),
+                &baseline.base_origin,
+                Some(&previous_base_url),
+            )?;
+            let baseline_with_external_changes = provider_projection::merge_raw_user_changes(
+                baseline_before,
+                &expected,
+                current.as_deref().unwrap_or_default(),
+                current.as_deref().unwrap_or_default(),
+            )?;
+            codex_config_next_bytes(Some(baseline_with_external_changes), patch.clone())?
+        }
+        None => codex_config_next_bytes(current.clone(), patch.clone())?,
+    };
+    let next = match baseline.as_ref() {
+        Some(baseline) => {
+            let previous_base_url = format!("{}/v1", baseline.base_origin.trim_end_matches('/'));
+            super::cli_proxy::project_codex_config_from_baseline(
+                app,
+                Some(backup_bytes.clone()),
+                current.as_deref(),
+                &baseline.base_origin,
+                Some(&previous_base_url),
+            )?
+        }
+        None => backup_bytes.clone(),
+    };
+    ensure_codex_config_len(&backup_bytes, "codex config backup")?;
     ensure_codex_config_len(&next, "codex config.toml")?;
-    let backup_bytes = next.clone();
     let backup_snapshot = sync_codex_cli_proxy_backup_if_enabled(app, &backup_bytes)?;
 
     if requires_provider_sync {

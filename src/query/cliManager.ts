@@ -32,7 +32,7 @@ import {
   type GrokProxyPreferences,
   type SimpleCliInfo,
 } from "../services/cli/cliManager";
-import { cliManagerKeys } from "./keys";
+import { cliManagerKeys, cliProxyKeys } from "./keys";
 
 const CODEX_CONFIG_MUTATION_SCOPE = "codex-config";
 const CODEX_MODEL_CATALOG_STALE_TIME = 5 * 60 * 1000;
@@ -210,6 +210,7 @@ export function useCliManagerCodexConfigSetMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }
@@ -227,6 +228,7 @@ export function useCliManagerCodexConfigTomlSetMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }
@@ -239,6 +241,7 @@ export function useCliManagerCodexProviderSyncMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }

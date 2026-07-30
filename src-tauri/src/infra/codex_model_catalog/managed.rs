@@ -387,11 +387,43 @@ pub(crate) fn prepare_for_profiles<R: tauri::Runtime>(
 }
 
 pub(crate) fn sync_current_locked<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<()> {
+    #[cfg(test)]
+    OAUTH_SYNC_CATALOG_INVOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
     let db = crate::db::init(app)?;
     let conn = db.open_connection()?;
     let profiles = load_profiles(&conn)?;
     let _applied = prepare_for_profiles(app, &profiles)?.apply(app)?;
     Ok(())
+}
+
+pub(crate) fn preserve_active_binding<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    baseline: Option<&[u8]>,
+    current: Option<&[u8]>,
+    projected: &[u8],
+) -> AppResult<Vec<u8>> {
+    let generated = managed_catalog_path(app)?;
+    let original = parse_original_catalog_path(baseline)?;
+    let current_path = parse_catalog_path(current, "current")?;
+    validate_current_catalog_binding(current.unwrap_or_default(), original.as_deref(), &generated)?;
+    let generated_path =
+        (current_path.as_deref() == Some(generated.as_path())).then_some(generated.as_path());
+    patch_model_catalog_config(projected, baseline, generated_path)
+}
+
+#[cfg(test)]
+thread_local! {
+    static OAUTH_SYNC_CATALOG_INVOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_sync_current_invocations_for_test() {
+    OAUTH_SYNC_CATALOG_INVOCATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn sync_current_invocations_for_test() -> usize {
+    OAUTH_SYNC_CATALOG_INVOCATIONS.with(std::cell::Cell::get)
 }
 
 fn managed_catalog_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<PathBuf> {

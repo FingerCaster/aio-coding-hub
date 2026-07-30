@@ -786,10 +786,12 @@ function CodexConfigLocationSection({
 function CodexOauthProxySection({
   appSettings,
   proxyModeControlsDisabled,
+  proxyModeSaving,
   persistCodexOauthCompatibleProxyMode,
 }: {
   appSettings: AppSettings;
   proxyModeControlsDisabled: boolean;
+  proxyModeSaving: boolean;
   persistCodexOauthCompatibleProxyMode?: (enabled: boolean) => Promise<boolean> | boolean;
 }) {
   return (
@@ -806,12 +808,20 @@ function CodexOauthProxySection({
             ，会保留 <span className="font-mono">requires_openai_auth = true</span>。
           </div>
         </div>
-        <Switch
-          aria-label="切换 Codex OAuth 兼容代理模式"
-          checked={appSettings.codex_oauth_compatible_proxy_mode}
-          onCheckedChange={(checked) => void persistCodexOauthCompatibleProxyMode?.(checked)}
-          disabled={proxyModeControlsDisabled}
-        />
+        <div className="flex h-6 shrink-0 items-center gap-2">
+          {proxyModeSaving ? (
+            <RefreshCw
+              aria-label="正在更新 Codex OAuth 兼容代理模式"
+              className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+            />
+          ) : null}
+          <Switch
+            aria-label="切换 Codex OAuth 兼容代理模式"
+            checked={appSettings.codex_oauth_compatible_proxy_mode}
+            onCheckedChange={(checked) => void persistCodexOauthCompatibleProxyMode?.(checked)}
+            disabled={proxyModeControlsDisabled}
+          />
+        </div>
       </div>
     </div>
   );
@@ -1751,7 +1761,7 @@ function useCodexTabController({
   const providerTestModelControlsDisabled =
     commonSettingsSaving || !appSettings || !persistCommonSettings;
   const proxyModeControlsDisabled =
-    commonSettingsControlsDisabled || !persistCodexOauthCompatibleProxyMode;
+    commonSettingsControlsDisabled || commonSettingsSaving || !persistCodexOauthCompatibleProxyMode;
 
   async function refreshCodexStatus() {
     if (saving) return;
@@ -2033,6 +2043,7 @@ function useCodexTabController({
     providerTestModelControlsDisabled,
     configLocationControlsDisabled,
     proxyModeControlsDisabled,
+    proxyModeSaving: commonSettingsSaving,
     effectiveSandboxMode,
     effectiveFastModeEnabled,
     modelSuggestions,
@@ -2145,6 +2156,7 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
             <CodexOauthProxySection
               appSettings={appSettings}
               proxyModeControlsDisabled={controller.proxyModeControlsDisabled}
+              proxyModeSaving={controller.proxyModeSaving}
               persistCodexOauthCompatibleProxyMode={props.persistCodexOauthCompatibleProxyMode}
             />
           ) : null}

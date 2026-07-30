@@ -8,7 +8,7 @@ import { settingsGatewayRectifierSet } from "../../services/settings/settingsGat
 import { createTestAppSettings } from "../../test/fixtures/settings";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
-import { settingsKeys } from "../keys";
+import { cliManagerKeys, cliProxyKeys, settingsKeys } from "../keys";
 import {
   getSettingsReadProtection,
   SETTINGS_READONLY_MESSAGE,
@@ -16,6 +16,7 @@ import {
   useSettingsCodexSessionIdCompletionSetMutation,
   useSettingsGatewayRectifierSetMutation,
   useSettingsQuery,
+  useSettingsPatchMutation,
   useSettingsSetMutation,
 } from "../settings";
 
@@ -190,6 +191,43 @@ describe("query/settings", () => {
 
     expect(client.getQueryData(settingsKeys.get())).toEqual(initial);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: settingsKeys.get() });
+  });
+
+  it("useSettingsPatchMutation invalidates Codex projection queries for OAuth mode", async () => {
+    setTauriRuntime();
+
+    const updated = createTestAppSettings({ codex_oauth_compatible_proxy_mode: true });
+    vi.mocked(settingsSet).mockResolvedValue({
+      settings: updated,
+      runtime: {
+        gateway_rebound: false,
+        cli_proxy_synced: true,
+        wsl_auto_sync_triggered: false,
+        gateway_status: {
+          running: false,
+          port: null,
+          base_url: null,
+          listen_addr: null,
+        },
+      },
+    });
+
+    const client = createTestQueryClient();
+    client.setQueryData(settingsKeys.get(), createTestAppSettings());
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useSettingsPatchMutation(), { wrapper });
+    await act(async () => {
+      await result.current.mutateAsync({ codex_oauth_compatible_proxy_mode: true });
+    });
+
+    expect(settingsSet).toHaveBeenCalledWith(
+      expect.objectContaining({ codexOauthCompatibleProxyMode: true })
+    );
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 
   it("useSettingsGatewayRectifierSetMutation updates cache", async () => {

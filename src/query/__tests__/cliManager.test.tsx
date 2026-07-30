@@ -32,7 +32,7 @@ import {
 } from "../../services/cli/cliManager";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
-import { cliManagerKeys } from "../keys";
+import { cliManagerKeys, cliProxyKeys } from "../keys";
 import {
   pickCliAvailable,
   useCliManagerClaudeHooksQuery,
@@ -551,6 +551,7 @@ describe("query/cliManager", () => {
 
     expect(client.getQueryData(cliManagerKeys.codexConfig())).toEqual(updated);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 
   it("useCliManagerCodexConfigTomlSetMutation updates config cache and invalidates config+toml", async () => {
@@ -572,6 +573,7 @@ describe("query/cliManager", () => {
     expect(client.getQueryData(cliManagerKeys.codexConfig())).toEqual(updated);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 
   it("useCliManagerCodexProviderSyncMutation invalidates codex config and toml", async () => {
@@ -603,6 +605,7 @@ describe("query/cliManager", () => {
     expect(cliManagerCodexProviderSync).toHaveBeenCalledWith();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 
   it("useCliManagerGeminiConfigSetMutation updates cache and invalidates", async () => {

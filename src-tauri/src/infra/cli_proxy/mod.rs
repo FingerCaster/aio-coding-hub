@@ -23,6 +23,75 @@ pub(super) const CLI_PROXY_FILE_MAX_BYTES: usize = 1024 * 1024;
 
 static TRACE_COUNTER: AtomicU64 = AtomicU64::new(1);
 
+#[cfg(test)]
+type CodexOauthSyncTestHook = Box<dyn FnMut() -> Option<String> + Send>;
+
+#[cfg(test)]
+type CodexOauthAfterLockTestHook = Box<dyn FnMut() + Send>;
+
+#[cfg(test)]
+fn codex_oauth_sync_test_hook() -> &'static std::sync::Mutex<Option<CodexOauthSyncTestHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<CodexOauthSyncTestHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+fn codex_oauth_after_lock_test_hook(
+) -> &'static std::sync::Mutex<Option<CodexOauthAfterLockTestHook>> {
+    static HOOK: std::sync::OnceLock<std::sync::Mutex<Option<CodexOauthAfterLockTestHook>>> =
+        std::sync::OnceLock::new();
+    HOOK.get_or_init(|| std::sync::Mutex::new(None))
+}
+
+#[cfg(test)]
+pub(crate) fn set_codex_oauth_sync_test_hook(hook: CodexOauthSyncTestHook) {
+    *codex_oauth_sync_test_hook()
+        .lock()
+        .expect("Codex OAuth sync test hook") = Some(hook);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_codex_oauth_sync_test_hook() {
+    *codex_oauth_sync_test_hook()
+        .lock()
+        .expect("Codex OAuth sync test hook") = None;
+}
+
+#[cfg(test)]
+pub(crate) fn set_codex_oauth_after_lock_test_hook(hook: CodexOauthAfterLockTestHook) {
+    *codex_oauth_after_lock_test_hook()
+        .lock()
+        .expect("Codex OAuth after-lock test hook") = Some(hook);
+}
+
+#[cfg(test)]
+pub(crate) fn clear_codex_oauth_after_lock_test_hook() {
+    *codex_oauth_after_lock_test_hook()
+        .lock()
+        .expect("Codex OAuth after-lock test hook") = None;
+}
+
+#[cfg(test)]
+fn run_codex_oauth_sync_test_hook() -> Option<String> {
+    codex_oauth_sync_test_hook()
+        .lock()
+        .expect("Codex OAuth sync test hook")
+        .as_mut()
+        .and_then(|hook| hook())
+}
+
+#[cfg(test)]
+fn run_codex_oauth_after_lock_test_hook() {
+    if let Some(hook) = codex_oauth_after_lock_test_hook()
+        .lock()
+        .expect("Codex OAuth after-lock test hook")
+        .as_mut()
+    {
+        hook();
+    }
+}
+
 // -- Public types -----------------------------------------------------------
 
 #[derive(Debug, Clone, Serialize, Deserialize, specta::Type)]
@@ -293,7 +362,11 @@ pub(crate) fn codex_enabled_proxy_baseline<R: tauri::Runtime>(
         })?;
         let root = cli_proxy_root_dir(app, "codex")?;
         let files_dir = cli_proxy_files_dir(&root);
-        Some(read_cli_proxy_file(&safe_backup_path(&files_dir, rel)?)?)
+        let backup_path = safe_backup_path(&files_dir, rel)?;
+        Some(
+            read_cli_proxy_file(&backup_path)
+                .map_err(|err| format!("CODEX_CONFIG_BACKUP_REFRESH_FAILED: {err}"))?,
+        )
     } else {
         None
     };
@@ -387,6 +460,9 @@ fn apply_proxy_config<R: tauri::Runtime>(
     let mut prepared_writes: Vec<(PathBuf, Vec<u8>)> = Vec::with_capacity(targets.len());
 
     for t in targets {
+        if should_skip_manifest_entry_for_current_settings(app, cli_key, t.kind) {
+            continue;
+        }
         let current = read_optional_cli_proxy_file(&t.path)?;
 
         let bytes = match cli_key {
@@ -412,25 +488,24 @@ fn apply_proxy_config<R: tauri::Runtime>(
             }
             "codex" => {
                 if t.kind == "codex_config_toml" {
-                    let build_result = if codex_oauth_compatible_proxy_mode(app) {
-                        codex::build_codex_config_toml_oauth_compatible(
-                            current.clone(),
-                            &format!("{base_origin}/v1"),
-                            codex::CodexConfigPlatform::current(),
-                        )
-                    } else {
-                        codex::build_codex_config_toml(
-                            current.clone(),
-                            &format!("{base_origin}/v1"),
-                            codex::CodexConfigPlatform::current(),
-                        )
-                    };
+                    let (canonical, previous_base_url) =
+                        codex_projection_baseline(app, current.clone())?;
+                    let build_result = project_codex_config_from_baseline(
+                        app,
+                        canonical,
+                        current.as_deref(),
+                        base_origin,
+                        previous_base_url.as_deref(),
+                    );
                     match build_result {
                         Ok(b) => b,
                         Err(err) => {
-                            if let Some(original_bytes) = current.as_ref() {
-                                let backup_path = t.path.with_extension("toml.invalid-backup");
-                                let _ = write_cli_proxy_file_atomic(&backup_path, original_bytes);
+                            if err.to_string().contains("CLI_PROXY_INVALID_TOML") {
+                                if let Some(original_bytes) = current.as_ref() {
+                                    let backup_path = t.path.with_extension("toml.invalid-backup");
+                                    let _ =
+                                        write_cli_proxy_file_atomic(&backup_path, original_bytes);
+                                }
                             }
                             return Err(err);
                         }
@@ -439,9 +514,12 @@ fn apply_proxy_config<R: tauri::Runtime>(
                     match codex::build_codex_auth_json(current.clone()) {
                         Ok(b) => b,
                         Err(err) => {
-                            if let Some(original_bytes) = current.as_ref() {
-                                let backup_path = t.path.with_extension("json.invalid-backup");
-                                let _ = write_cli_proxy_file_atomic(&backup_path, original_bytes);
+                            if err.to_string().contains("CLI_PROXY_INVALID_AUTH_JSON") {
+                                if let Some(original_bytes) = current.as_ref() {
+                                    let backup_path = t.path.with_extension("json.invalid-backup");
+                                    let _ =
+                                        write_cli_proxy_file_atomic(&backup_path, original_bytes);
+                                }
                             }
                             return Err(err);
                         }
@@ -469,6 +547,57 @@ fn apply_proxy_config<R: tauri::Runtime>(
     }
 
     Ok(())
+}
+
+pub(crate) fn project_codex_config_from_baseline<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    baseline: Option<Vec<u8>>,
+    current: Option<&[u8]>,
+    base_origin: &str,
+    previous_base_url: Option<&str>,
+) -> crate::shared::error::AppResult<Vec<u8>> {
+    let projected = codex::build_codex_config_toml_for_existing_proxy(
+        baseline.clone(),
+        &format!("{}/v1", base_origin.trim_end_matches('/')),
+        previous_base_url,
+        codex::CodexConfigPlatform::current(),
+        codex_oauth_compatible_proxy_mode(app),
+    )?;
+    crate::codex_model_catalog::managed::preserve_active_binding(
+        app,
+        baseline.as_deref(),
+        current,
+        &projected,
+    )
+}
+
+fn codex_projection_baseline<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    fallback: Option<Vec<u8>>,
+) -> crate::shared::error::AppResult<(Option<Vec<u8>>, Option<String>)> {
+    let Some(manifest) = read_manifest(app, "codex")? else {
+        return Ok((fallback, None));
+    };
+    let previous_base_url = manifest
+        .base_origin
+        .as_deref()
+        .map(|origin| format!("{}/v1", origin.trim_end_matches('/')));
+    let Some(entry) = manifest
+        .files
+        .iter()
+        .find(|entry| entry.kind == "codex_config_toml")
+    else {
+        return Ok((fallback, previous_base_url));
+    };
+    if !entry.existed {
+        return Ok((None, previous_base_url));
+    }
+    let rel = entry.backup_rel.as_deref().ok_or_else(|| {
+        "CLI_PROXY_INVALID_MANIFEST: missing Codex config backup path".to_string()
+    })?;
+    let root = cli_proxy_root_dir(app, "codex")?;
+    let backup_path = safe_backup_path(&cli_proxy_files_dir(&root), rel)?;
+    Ok((Some(read_cli_proxy_file(&backup_path)?), previous_base_url))
 }
 
 // -- Dispatch: restore_from_manifest ----------------------------------------
@@ -1085,6 +1214,18 @@ pub fn set_enabled<R: tauri::Runtime>(
         let previous_manifest = existing.clone();
         let should_backup = existing.as_ref().map(|m| !m.enabled).unwrap_or(true);
         let origin = Some(base_origin.to_string());
+        if cli_key == "codex" && should_backup {
+            if let Err(err) = codex::preflight_proxy_config(app, base_origin) {
+                return Ok(CliProxyResult::failure(
+                    trace_id,
+                    cli_key,
+                    false,
+                    "CLI_PROXY_ENABLE_FAILED",
+                    err.to_string(),
+                    origin,
+                ));
+            }
+        }
         let mut manifest = match if should_backup {
             backup_for_enable(app, cli_key, base_origin, existing.clone())
         } else {
@@ -1322,6 +1463,173 @@ pub fn startup_repair_incomplete_enable<R: tauri::Runtime>(
     }
 
     Ok(out)
+}
+
+pub fn sync_codex_oauth_enabled<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+    apply_live: bool,
+) -> crate::shared::error::AppResult<CliProxyResult> {
+    if !base_origin.starts_with("http://") && !base_origin.starts_with("https://") {
+        return Err("SEC_INVALID_INPUT: base_origin must start with http:// or https://".into());
+    }
+    let trace_id = new_trace_id("cli-proxy-codex-oauth-sync");
+    let origin = Some(base_origin.to_string());
+    let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
+    #[cfg(test)]
+    run_codex_oauth_after_lock_test_hook();
+    let Some(mut manifest) = read_manifest(app, "codex")? else {
+        return Ok(CliProxyResult::success(
+            trace_id,
+            "codex",
+            false,
+            "Codex 代理未启用，无需同步 OAuth 模式".to_string(),
+            origin,
+        ));
+    };
+    if !manifest.enabled {
+        return Ok(CliProxyResult::success(
+            trace_id,
+            "codex",
+            false,
+            "Codex 代理未启用，无需同步 OAuth 模式".to_string(),
+            origin,
+        ));
+    }
+    if manifest_target_paths_changed(app, &manifest)? {
+        return Ok(CliProxyResult::failure(
+            trace_id,
+            "codex",
+            true,
+            "CLI_PROXY_REBIND_REQUIRED",
+            "Codex 目录已变化，请先完成目录重绑".to_string(),
+            origin,
+        ));
+    }
+
+    let previous_manifest = manifest.clone();
+    let captured = capture_codex_oauth_target_state(app)?;
+    let target_snapshots = snapshot_target_files(&captured)?;
+    let backup_snapshots = snapshot_backup_files(app, "codex", &captured)?;
+
+    let apply_result = (|| -> crate::shared::error::AppResult<()> {
+        ensure_manifest_has_current_targets(app, "codex", &mut manifest)?;
+        if codex_oauth_compatible_proxy_mode(app) {
+            restore_codex_auth_for_oauth_mode(app, &manifest)?;
+        }
+        apply_proxy_config(app, "codex", base_origin)?;
+        #[cfg(test)]
+        if let Some(error) = run_codex_oauth_sync_test_hook() {
+            return Err(format!("CODEX_OAUTH_PROXY_SYNC_FAILED: {error}").into());
+        }
+        if !codex::is_proxy_config_applied(app, base_origin) {
+            return Err("CODEX_OAUTH_PROXY_SYNC_FAILED: projected config validation failed".into());
+        }
+        manifest.base_origin = Some(base_origin.to_string());
+        manifest.updated_at = now_unix_seconds();
+        write_manifest(app, "codex", &manifest)?;
+        Ok(())
+    })();
+
+    if let Err(error) = apply_result {
+        let recovery_errors = [
+            restore_file_snapshots(&target_snapshots).err(),
+            restore_file_snapshots(&backup_snapshots).err(),
+            write_manifest(app, "codex", &previous_manifest).err(),
+        ]
+        .into_iter()
+        .flatten()
+        .map(|error| error.to_string())
+        .collect::<Vec<_>>();
+        if !recovery_errors.is_empty() {
+            return Ok(CliProxyResult::failure(
+                trace_id,
+                "codex",
+                true,
+                "CODEX_OAUTH_PROXY_RECOVERY_REQUIRED",
+                format!(
+                    "OAuth projection failed and prior files could not be fully restored: {}",
+                    recovery_errors.join("; ")
+                ),
+                origin,
+            ));
+        }
+        return Ok(CliProxyResult::failure(
+            trace_id,
+            "codex",
+            true,
+            "CODEX_OAUTH_PROXY_SYNC_FAILED",
+            error.to_string(),
+            origin,
+        ));
+    }
+
+    let message = if apply_live {
+        "已同步 Codex OAuth 兼容代理模式"
+    } else {
+        "已更新 Codex OAuth 兼容代理配置，网关启动后继续使用"
+    };
+    Ok(CliProxyResult::success(
+        trace_id,
+        "codex",
+        true,
+        message.to_string(),
+        origin,
+    ))
+}
+
+fn capture_codex_oauth_target_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<Vec<PendingBackupEntry>> {
+    let targets = [
+        (
+            "codex_config_toml",
+            codex::codex_config_path(app)?,
+            "config.toml",
+        ),
+        ("codex_auth_json", codex::codex_auth_path(app)?, "auth.json"),
+    ];
+    targets
+        .into_iter()
+        .map(|(kind, path, backup_name)| {
+            let bytes = read_optional_cli_proxy_file(&path)?;
+            Ok(PendingBackupEntry {
+                kind: kind.to_string(),
+                path,
+                backup_name,
+                existed: bytes.is_some(),
+                backup_bytes: bytes,
+            })
+        })
+        .collect()
+}
+
+fn restore_codex_auth_for_oauth_mode<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    manifest: &CliProxyManifest,
+) -> crate::shared::error::AppResult<()> {
+    let Some(entry) = manifest
+        .files
+        .iter()
+        .find(|entry| entry.kind == "codex_auth_json")
+    else {
+        return Ok(());
+    };
+    let target = PathBuf::from(&entry.path);
+    if !entry.existed {
+        if target.exists() {
+            std::fs::remove_file(&target)
+                .map_err(|error| format!("failed to remove {}: {error}", target.display()))?;
+        }
+        return Ok(());
+    }
+    let rel = entry
+        .backup_rel
+        .as_deref()
+        .ok_or_else(|| "CLI_PROXY_INVALID_MANIFEST: missing Codex auth backup path".to_string())?;
+    let root = cli_proxy_root_dir(app, "codex")?;
+    let backup = safe_backup_path(&cli_proxy_files_dir(&root), rel)?;
+    codex::merge_restore_codex_auth_json(&target, &backup)
 }
 
 pub fn sync_enabled<R: tauri::Runtime>(
