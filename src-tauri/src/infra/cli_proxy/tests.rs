@@ -2763,7 +2763,7 @@ fn route_on_structured_and_raw_user_fields_survive_disable_without_polluting_bas
 }
 
 #[test]
-fn route_on_raw_remote_toggle_uses_provider_sync_and_reprojects_drifted_live() {
+fn route_on_raw_remote_toggle_skips_history_preflight_and_reprojects_drifted_live() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
     let codex_running = CodexAppRunningOverrideGuard::set(false);
@@ -2785,22 +2785,11 @@ fn route_on_raw_remote_toggle_uses_provider_sync_and_reprojects_drifted_live() {
             .expect("backup lookup")
             .expect("backup path");
     let live_before = std::fs::read_to_string(&config_path).expect("live before");
-    let backup_before = std::fs::read(&backup_path).expect("backup before");
     let raw = format!("{live_before}\n[features]\nremote_compaction = true\n");
 
     codex_running.update(true);
-    let error = crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw.clone())
-        .expect_err("provider sync process guard must run")
-        .to_string();
-    assert!(
-        error.contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"),
-        "{error}"
-    );
-    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), live_before);
-    assert_eq!(std::fs::read(&backup_path).unwrap(), backup_before);
-
-    codex_running.update(false);
-    crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw).expect("raw remote toggle");
+    crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw)
+        .expect("raw config-only remote toggle must skip the process guard");
     let active = std::fs::read_to_string(&config_path).expect("active config");
     let baseline = std::fs::read_to_string(&backup_path).expect("baseline");
     assert!(active.contains("remote_compaction = true"), "{active}");
