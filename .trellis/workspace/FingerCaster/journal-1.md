@@ -720,3 +720,39 @@ Built and independently verified an unsigned Windows x64 MSI from main@fab7a968 
 ### Next Steps
 
 - None - task complete
+
+
+## Session 21: Stabilize Codex OAuth proxy and remote compaction
+
+**Date**: 2026-07-30
+**Task**: Stabilize Codex OAuth proxy and remote compaction
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/fix-codex-oauth-proxy-remote-compaction`
+
+### Summary
+
+Fixed OAuth-compatible proxy projection, provider collision handling, bounded remote-compaction history sync, catalog baseline repair, and bidirectional sync-scope prompts.
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `6cf0aa21` | (see git log) |
+| `d7ba5735` | (see git log) |
+| `cae82c5e` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
