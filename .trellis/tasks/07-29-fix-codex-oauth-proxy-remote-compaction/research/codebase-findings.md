@@ -76,6 +76,13 @@
 
 - `src-tauri/src/infra/codex_config/tests.rs:798` 起只覆盖简单的 `aio` 与 `OpenAI` 往返，没有已有目标、双 provider、引号、dotted/nested 或逐字节不变的冲突测试。
 - `src-tauri/src/infra/cli_proxy/tests.rs` 有 OAuth 与 status 基础测试，但没有 `remote_compaction = true` 下启用、修复、重绑、同步、关闭的完整回归。
+
+## MSI 测试反馈根因（2026-07-30）
+
+- `src-tauri/src/infra/codex_provider_sync.rs` 的 `SessionChange` 同时保存 `original_text` 和 `next_text`；收集阶段对每个 rollout 执行整文件 `fs::read`，随后 `snapshot_paths` 又把所有变更 session 与 SQLite sidecar 读入 `FileSnapshot.bytes`。提交前会同时驻留原文、改写结果和第二份快照，峰值内存随历史总量线性放大，能够解释约 26 GB 占用。
+- `build_change_set` 没有历史同步范围参数，任何 remote provider identity 变化都会递归遍历 `sessions`、`archived_sessions`，并收集 SQLite 与 `.codex-global-state.json`；因此 UI 仅想修改当前配置也会触发昂贵迁移。
+- `src-tauri/src/infra/codex_model_catalog/managed.rs` 从 enabled proxy manifest backup 解析 `model_catalog_json`。若旧版本/失败恢复已让 backup 指向 AIO generated catalog，`reject_generated_path_as_base` 会返回用户观察到的 `CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID`。当前事务只计划 live config 与 generated catalog，缺少对已污染 backup 的定向迁移。
+- 修复边界：`sync_history = false` 必须在目录枚举前短路；完整同步采用 path-only change set、逐文件流式原子改写和磁盘 rollback；catalog 迁移只处理 backup binding 与当前 AIO generated path 精确相等的情况，不扩展为任意 catalog 自动清理。
 - `src-tauri/tests/cli_proxy_startup_recovery.rs` 没有覆盖 proxy 开启期间通过设置页保存普通字段后再关闭的恢复结果。
 - `src/query/__tests__/cliManager.test.tsx` 没有断言 remote/raw/provider sync 会失效 proxy status。
 - `src/pages/__tests__/CliManagerPage.test.tsx` 和 `CodexTab.test.tsx` 没有证明 OAuth 开关不等待模型目录，也没有覆盖后端同步失败后的 pending 收敛。

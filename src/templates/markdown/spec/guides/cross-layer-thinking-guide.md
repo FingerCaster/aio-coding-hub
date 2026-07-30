@@ -715,6 +715,15 @@ After implementation:
 - [ ] Tested with edge cases (null, empty, invalid)
 - [ ] Verified error handling at each boundary
 - [ ] Checked data survives round-trip
+- [ ] For optional bulk migration, branched on scope before directory/database
+      enumeration; an opt-out does not pay discovery cost
+- [ ] Kept preconditions that exist only for the optional migration, such as a
+      required closed process, inside the same scope branch; config-only paths
+      must not fail a preflight for side effects they explicitly declined
+- [ ] For large file sets, retained paths and bounded records rather than
+      aggregate original/rewritten bytes; rollback payloads live on disk
+- [ ] On Windows atomic replacement, closed every source/reader handle for the
+      target before final rename/MoveFileEx and tested the real Windows path
 - [ ] Updated generated bindings or documented why not
 - [ ] Verified generated bindings are actually consumed where they are claimed
       to be authoritative

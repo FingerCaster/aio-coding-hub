@@ -217,8 +217,8 @@ restore_managed_provider_projection(current: &[u8], baseline: &[u8]) -> AppResul
 - Integration-test direct URL -> route-off toggle -> enable -> disable; assert
   the original URL and custom fields return.
 - With routing on, test structured and raw user-owned edits, remote provider
-  switching, current-live drift healing, process-running failure rollback, and
-  byte-identical zero-write conflicts.
+  switching, current-live drift healing, explicit-history process-running
+  zero-write rejection, and byte-identical provider conflicts.
 - UI-test that `OpenAI` under remote compaction does not show repair and that
   provider/config/settings mutations invalidate config, raw config, and proxy
   status queries.
@@ -233,4 +233,115 @@ rename_provider_with_string_replace(&mut config, "aio", "OpenAI");
 // Correct: merge only user-owned deltas into baseline, then project once.
 let baseline = merge_raw_user_changes(&backup, &expected, &current_live, &submitted)?;
 let live = project_active_provider(&baseline, gateway_url, previous_managed_url)?;
+```
+
+## Scenario: Scope And Bound Codex Provider History Sync
+
+### 1. Scope / Trigger
+
+Use this contract whenever a Codex config mutation can change the managed
+provider identity, or whenever rollout, SQLite session, or global-state provider
+metadata is migrated.
+
+### 2. Signatures
+
+```rust
+cli_manager_codex_config_set(
+    patch: CodexConfigPatch,
+    sync_history: Option<bool>,
+) -> Result<CodexConfigState, String>
+
+CodexProviderSyncContext {
+    trigger: String,
+    target_provider: String,
+    config_bytes: Option<Vec<u8>>,
+    sync_history: bool,
+}
+```
+
+Frontend services expose the transient option as
+`{ syncHistory?: boolean }`. It is command input, never a persisted
+`config.toml` field.
+
+### 3. Contracts
+
+- Enabling or disabling `remote_compaction` from the settings UI must offer
+  cancel, config-only, and config-plus-history actions. Cancel performs zero
+  mutation, and the dialog title/patch value must match the requested direction.
+- The dialog is controlled: while either action is pending, its switch, all
+  three buttons, Escape, and outside-click close are disabled. Close it only
+  after a non-null successful result; on a null result or rejected promise,
+  preserve the requested direction, clear pending, and allow retry.
+- Config-only is the default for structured/raw saves and callers that omit the
+  option. Manual Provider Sync is always full history sync.
+- `sync_history = false` must branch before the Codex App process check and
+  before enumerating `sessions`,
+  `archived_sessions`, Codex SQLite databases, or
+  `.codex-global-state.json`. Provider/config projection still commits even
+  while Codex App is running; config symlink, size, TOML, and atomic-write
+  safety checks still apply.
+- `sync_history = true` must run the process check before acquiring or writing
+  any history-sync target. Manual Provider Sync remains in this scope.
+- Full history discovery retains rollout paths only. Read and rewrite JSONL one
+  line at a time, atomically replace one file at a time, and keep rollback bytes
+  on disk. Never retain every original rollout, rewritten rollout, or SQLite
+  sidecar in memory.
+- A rollback entry is `{ target_path, backup_path, existed }`. Restore existing
+  files atomically from the disk backup; remove sidecars that did not exist
+  before the transaction. Attempt every rollback entry before reporting a
+  combined `CODEX_PROVIDER_SYNC_ROLLBACK_FAILED`.
+- On Windows, the rollout reader must be dropped before `MoveFileExW` replaces
+  the target. A streaming closure must own the reader rather than borrow a
+  reader that remains live across finalization.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| UI enable or disable is cancelled | Zero config/history writes |
+| `sync_history = false` with invalid/unreadable history | Config update succeeds without touching history |
+| `sync_history = true` with invalid rollout UTF-8 | Fail before commit, or restore every started write |
+| `sync_history = false`, Codex App is running | Skip process/history preflight and commit config projection |
+| `sync_history = true`, Codex App is running | Preserve the existing process-closed error and zero writes |
+| SQLite creates a new WAL/SHM sidecar before failure | Rollback removes the previously absent sidecar |
+| Any restore entry fails | Continue other restores, then return `CODEX_PROVIDER_SYNC_ROLLBACK_FAILED` |
+
+### 5. Good / Base / Bad Cases
+
+- Good: a user with many gigabytes of sessions selects config-only and the
+  command never opens a history directory.
+- Base: manual Provider Sync migrates rollout/SQLite/global state and returns a
+  managed disk-backup path.
+- Bad: scan history before checking the scope, store `Vec<u8>` originals and
+  rewritten bytes in every change-set entry, or keep a Windows source handle
+  open during atomic replacement.
+
+### 6. Tests Required
+
+- UI-test all three actions for both enable and disable, including the target
+  boolean, `syncHistory` option, direction-specific title, controlled close,
+  pending state, and retry after null/rejected async results.
+- Service/query tests must assert `syncHistory` reaches the generated command.
+- Integration-test config-only against deliberately invalid rollout UTF-8 and
+  a forced running-process result; assert unchanged history plus updated
+  provider config without a process-closed error.
+- Integration-test explicit history sync against the same running-process
+  result; assert `CODEX_PROVIDER_SYNC_PROCESS_RUNNING` and zero writes.
+- Test explicit full migration, multi-file/large-row streaming, CRLF
+  preservation, idempotence, SQLite/global updates, and byte-exact rollback.
+- On Windows, execute the real atomic replacement path; a mock rename is not
+  sufficient to prove source handles are released.
+
+### 7. Wrong vs Correct
+
+```rust
+// Wrong: scope is checked after an aggregate in-memory history scan.
+let changes = collect_all_history_with_original_and_next_bytes(home)?;
+if !sync_history { return write_config_only(); }
+
+// Correct: exclude history at the boundary and retain paths only.
+let history = sync_history.then(|| collect_history_paths(home)).transpose()?;
+for path in history.into_iter().flatten() {
+    stream_rewrite_to_atomic_temp(path)?;
+}
 ```

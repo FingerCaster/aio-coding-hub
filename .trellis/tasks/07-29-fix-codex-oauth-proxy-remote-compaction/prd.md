@@ -10,6 +10,8 @@
 - 用户反馈开启 `remote_compaction` 后，AIO 会按功能要求把 provider 从 `aio` 改为 `OpenAI`，但侧栏 Codex 路由仍显示“修复”。
 - 用户补充：开启 `remote_compaction` 前没有检查是否已经存在 `OpenAI` provider；已有同名 provider 时，当前导入/重命名路径会报错。
 - 用户询问路由关闭时 Codex 配置是否仍可编辑以及是否会被覆盖；该任务需要把配置所有权边界写清并用回归测试固定。
+- MSI 测试反馈：切换 `remote_compaction` 时 AIO 内存曾增长到约 26 GB。代码审计确认 provider sync 会同时保留所有待改 rollout 的原始/改写字节，并再次快照 rollout 与 SQLite 文件，峰值随历史总量增长。
+- 另一设备曾在切换 `remote_compaction`、OAuth 兼容模式和设置路由期间返回 `CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID: the AIO-generated catalog cannot be used as its own base catalog`，说明旧版本或失败恢复可能已把 AIO 生成目录写入启用前基线。
 
 ## Confirmed Facts
 
@@ -33,7 +35,10 @@
 - R5a：用户确认采用以下冲突规则：若现有 `OpenAI` provider 与当前 AIO 本地代理投影语义等价，则自动识别、复用并去重；若地址或用户自有字段冲突，则在写入前拒绝并提示用户先重命名/处理该 provider，禁止无条件覆盖。
 - R6：路由关闭时，AIO 普通 Codex 配置修改应持久化且不被后台代理同步覆盖；随后开启路由应先捕获最新直连配置作为基线。路由开启期间，AIO 设置页修改的用户字段必须同步进可恢复基线，而代理拥有字段只存在于活动投影中。
 - R7：路由关闭/恢复后不得残留 AIO 代理地址、AIO 注入认证字段、AIO 生成的模型目录绑定或仅为活动投影创建的 provider 表；用户原有字段和 provider 表必须保留。
-- R8：`remote_compaction` 开关涉及 Codex provider sync 的既有安全约束保持不变，包括 Codex App 运行检查、原子写入、失败回滚和备份。
+- R8：`sync_history = true` 的 `remote_compaction` 历史迁移保持 Codex App 运行检查、原子写入、失败回滚和备份；`sync_history = false` 不进入 Codex App 进程预检，只保留配置文件自身的安全校验与原子写入。
+- R9：开启或关闭 `remote_compaction` 时都必须弹窗让用户选择“仅更新配置”或“同步会话记录”；取消不得产生变更。自动/原始配置保存默认只更新配置，手动 Provider Sync 仍执行完整历史同步。
+- R10：历史同步必须使用有界内存的流式处理和磁盘备份回滚；不得把全部 rollout 原文、改写结果或 SQLite 快照同时留在内存。
+- R11：若且仅若已启用 proxy 的备份基线把 `model_catalog_json` 精确指向 AIO 当前生成目录，必须在同一事务中清除此污染绑定、回退到 bundled catalog 并修复备份；其他用户自定义目录继续失败关闭或原样保留。
 
 ## Acceptance Criteria
 
@@ -48,6 +53,10 @@
 - [ ] AC7：覆盖 provider 表的无引号、单引号、双引号形式及嵌套表冲突，确保检测不依赖脆弱的字符串包含判断。
 - [ ] AC8：代理关闭时修改普通 Codex 字段后再启用、停用路由，修改仍存在；代理开启时通过 AIO 修改普通字段后停用路由，修改也仍存在，而代理拥有字段被正确移除或恢复。
 - [ ] AC9：无受管 Profile、有受管 Profile、OAuth 兼容模式开/关、`remote_compaction` 开/关的组合均有聚焦回归覆盖，且现有非 Codex CLI 代理行为不回归。
+- [ ] AC10：开启和关闭 `remote_compaction` 的弹窗都具有取消、仅更新配置、同步会话记录三个分支；取消零写入，“仅更新配置”不执行 Codex App 进程预检或历史扫描，“同步会话记录”显式执行进程预检与对应方向的历史迁移；提交期间禁止开关、按钮、Escape 和外部点击关闭，异步失败后保留原方向并恢复可重试状态。
+- [ ] AC11：`sync_history = false` 时不检测 Codex App 进程，也不枚举 `sessions`、`archived_sessions`、SQLite 或 `.codex-global-state.json`；即使 Codex App 正在运行或历史路径不可读，配置更新仍可完成。
+- [ ] AC12：`sync_history = true` 能处理大体量、多文件 rollout，峰值保留内容不随历史总量线性增长；任一写入失败仍逐字节恢复 rollout、SQLite、global state 和配置。
+- [ ] AC13：已污染的 AIO 生成目录基线能被事务性修复，之后启用、同步和停用路由不再触发 self-base 错误；非 AIO 自定义目录不会被误删。
 
 ## Out of Scope
 

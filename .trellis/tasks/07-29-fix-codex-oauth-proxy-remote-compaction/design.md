@@ -142,7 +142,7 @@ manifest backup（用户基线）
 
 禁止在持有 Codex sync lock 时反向等待 gateway lifecycle lock。测试 hook 应覆盖并发保存与 proxy sync，证明最终 backup/live 是同一 generation。
 
-`remote_compaction` provider sync 继续使用现有 Codex App 运行检查、rollout/SQLite/global state 预检和回滚。新增的 backup/live 快照包裹在它外层：backup 写失败时不启动 provider sync；provider sync 失败时恢复 backup；成功后不再执行可能失败的无关工作。
+仅 `sync_history = true` 的 `remote_compaction` provider sync 使用现有 Codex App 运行检查、rollout/SQLite/global state 预检和回滚。`sync_history = false` 在这些历史迁移预检之前分支，只提交配置/backup/live 事务；配置文件自身的 symlink、大小、TOML 和原子写校验继续执行。新增的 backup/live 快照包裹在它外层：backup 写失败时不启动 provider sync；provider sync 失败时恢复 backup；成功后不再执行可能失败的无关工作。
 
 ## OAuth-only 快速同步
 
@@ -194,7 +194,7 @@ Codex `applied_to_current_gateway` 使用与写入相同的 structured projectio
 | `CODEX_REMOTE_COMPACTION_PROVIDER_CONFLICT` | target provider 地址、托管字段或用户字段冲突 | config/backup/rollout/SQLite/global state 全部不变 |
 | `CODEX_PROXY_OWNED_FIELD_EDIT` | proxy 开启时 raw TOML 改动活动拥有字段 | backup/live 不变 |
 | `CODEX_OAUTH_PROXY_SYNC_FAILED` | OAuth 设置已写但活动 Codex 投影失败 | CAS 恢复旧设置和旧投影；恢复失败升级为 recovery-required 错误 |
-| 既有 provider sync 错误 | Codex App 运行、文件或 DB 预检/提交失败 | 延续既有 provider sync 回滚，并额外恢复 proxy backup 快照 |
+| `sync_history = true` 的 provider sync 错误 | Codex App 运行、历史文件或 DB 预检/提交失败 | 延续既有 provider sync 回滚，并额外恢复 proxy backup 快照 |
 
 所有错误日志禁止记录 auth 内容、API key、token、完整 TOML 或 rollout body。冲突错误只报告字段路径与处理建议。
 
@@ -205,6 +205,28 @@ Codex `applied_to_current_gateway` 使用与写入相同的 structured projectio
 - 没有 managed profiles 时 OAuth-only 路径也不启动 catalog 子进程。
 - 有 managed profiles 时 OAuth-only 路径保留现有 `model_catalog_json` 投影，不重建 catalog；完整 enable/rebind/startup sync 仍负责目录一致性。
 - 代码回滚不需要 DB downgrade。新版本若遇到无法证明的旧 backup 污染会失败关闭，不进行破坏性自动清理。
+
+## MSI 测试反馈追加设计
+
+### Provider Sync 范围
+
+配置 mutation 增加显式、瞬时的 `sync_history` 选项，不把该选择写入 Codex 配置。结构化开启或关闭 `remote_compaction` 时都由 UI 弹窗选择；普通结构化保存和 raw TOML 保存默认 `false`，手动 Provider Sync 固定为 `true`。无论是否同步历史，当前 config/backup/provider 身份都必须完成一致更新。
+
+弹窗以用户点击时的目标布尔值为受控状态。提交期间开关、三个按钮、Escape 和遮罩关闭全部禁用；只有配置 mutation 返回非空成功结果才关闭。返回 `null` 或 Promise 拒绝时保持原方向，结束 pending 后允许用户重试；页面数据模型继续负责错误提示。
+
+`sync_history = false` 不执行 Codex App 进程检测，且 change set 不进入 rollout、SQLite 和 global state 收集函数。`sync_history = true` 才执行进程检测，并迁移 rollout `session_meta` provider、SQLite 会话关联字段和 `.codex-global-state.json`。因此“仅更新配置”不是先预检/扫描后跳过，而是从调用边界完全排除历史迁移。
+
+### 有界历史迁移
+
+`SessionChange` 只保存目标路径。发现阶段逐行读取 JSONL，只标记确有 provider 变化的文件；提交阶段逐个文件流式改写到同目录临时文件并原子替换。change set、日志和错误均不保留 rollout body。
+
+rollback 不再把 session/SQLite/global state 全量读入内存。provider sync 先创建磁盘备份并记录 `{ target, backup, existed }`，失败时从备份逐文件恢复，原本不存在的 sidecar 则删除。`sync_history = true` 时配置和历史属于同一事务边界，并保留双重 Codex App 进程检查；`sync_history = false` 只提交配置事务，不执行该检查。
+
+### Catalog 基线自修复
+
+`CodexProxyBaseline` 同时暴露实际 backup 路径。当 backup 中 `model_catalog_json` 规范化后精确等于当前 AIO generated catalog 路径时，将其识别为可证明的旧版污染：从 backup TOML 删除该绑定，以 bundled catalog 作为本次 base，并把 backup、generated catalog、live config 作为同一 prepared transaction 提交和回滚。
+
+修复只接受这一精确等值证据。任意其他外部路径、缺失文件或无法解析内容仍沿用既有校验，不猜测用户意图；底层 `reject_generated_path_as_base` 保留为最终 fail-closed 防线。
 
 ## 验证矩阵
 
@@ -231,6 +253,8 @@ Codex `applied_to_current_gateway` 使用与写入相同的 structured projectio
 - OAuth handler 不调用或等待 model catalog refresh，延迟的 catalog promise 不能阻塞 switch。
 - settings success/error/sync error 都结束 pending；失败显示 toast并回到旧值。
 - OAuth、remote patch、raw save、provider sync 后均失效 proxy status。
+- remote 开启和关闭都弹出同一范围选择，标题和提交的目标布尔值必须与切换方向一致。
+- remote config-only 在 Codex App 运行时仍成功；显式 history sync 在同一条件下保持 `CODEX_PROVIDER_SYNC_PROCESS_RUNNING` 且零写入。
 - status true 时 Sidebar 不显示“修复”，status false 时仍可执行真正修复。
 
 ### 全量门禁

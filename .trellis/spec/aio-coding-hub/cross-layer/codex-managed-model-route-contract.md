@@ -218,6 +218,16 @@ codexManagedProfilesKeys.list()
   preserve that document, every existing model, and unknown fields as the base.
   Otherwise run the currently installed Codex executable with
   `debug models --bundled`; never substitute an AIO compile-time snapshot.
+- If an enabled proxy backup from an older/failed flow points
+  `model_catalog_json` exactly (or canonically) at AIO's current generated
+  catalog, treat only that binding as provable baseline pollution. Prepare a
+  sanitized backup with the binding removed and use the installed bundled
+  catalog as the base. Arbitrary user catalog paths are never sanitized.
+- Baseline repair, generated catalog update, and live config projection are one
+  ordered transaction. Snapshot and drift-check all three before writing;
+  apply backup -> generated -> live, roll back in reverse, attempt every
+  rollback, and return `CODEX_MANAGED_MODEL_RECOVERY_REQUIRED` if compensation
+  cannot restore every owned file.
 - Generated catalog bytes carry owner, payload/profile/base hashes. Every
   update verifies those hashes and the root-config snapshot; external edits or
   concurrent drift fail closed instead of being overwritten.
@@ -305,6 +315,9 @@ codexManagedProfilesKeys.list()
 | Bundled Codex command times out | `CODEX_MANAGED_MODEL_BUNDLED_TIMEOUT`; terminate the process tree and leave state unchanged |
 | Bundled Codex output is empty, invalid, or oversized | `CODEX_MANAGED_MODEL_BUNDLED_INVALID`; no partial state |
 | Generated catalog owner/hash or root-config snapshot changed externally | Fail closed; preserve external bytes and roll back this lifecycle action |
+| Enabled backup catalog equals current AIO generated catalog | Remove only that backup binding, use bundled base, and transact backup/generated/live |
+| Enabled backup catalog is any other user path | Preserve it and apply ordinary user-catalog validation; never auto-clean |
+| Baseline/generated/live compensation fails | `CODEX_MANAGED_MODEL_RECOVERY_REQUIRED` after attempting all remaining rollbacks |
 | Bound provider disabled, replaced, bridged, or UUID-mismatched | Fail closed; zero calls to another provider |
 | Forced provider differs from binding | `GW_MANAGED_MODEL_INVALID` |
 | Request plugin changes bound model/provider | `GW_MANAGED_MODEL_INVALID`; zero upstream calls |
@@ -375,6 +388,10 @@ codexManagedProfilesKeys.list()
   Assert configured efforts/default/context, explicit no-reasoning/unknown
   context, Profile-set hash invalidation, drift-before-write failure, and exact
   catalog/config/DB restoration after a forced commit failure.
+- Catalog recovery tests: a proxy backup bound to the exact AIO generated path
+  is sanitized before base selection; a different absolute user path is
+  unchanged; forced generated/live write failures restore the original backup,
+  generated catalog, and live config bytes or surface recovery-required.
 - Gateway route tests: exact alias validation, disabled/replaced provider,
   forced-provider conflict, one-candidate routing, no cross-provider failover,
   same-provider retry, plugin mutation fail-closed, and ordinary-route
@@ -411,6 +428,10 @@ route_with_normal_failover(provider_id, remote_model_id);
 Command::new("cmd.exe")
     .args(["/D", "/S", "/C"])
     .arg(format!("\\\"{}\\\" debug models --bundled", executable.display()));
+
+// A generated catalog cannot safely become its own base.
+let base = read_catalog(baseline.model_catalog_json)?;
+generate_catalog(&base, profiles)?;
 ```
 
 #### Correct
@@ -438,4 +459,8 @@ apply_final_route_evidence(wire_model, observed_model);
 
 let mut command = Command::new(&launch.executable);
 command.args(["debug", "models", "--bundled"]);
+
+let baseline = prepare_catalog_baseline(proxy_backup, generated_path)?;
+let source = base_catalog_source(baseline.catalog_path.as_deref())?;
+apply_backup_generated_and_live_transaction(baseline, source, profiles)?;
 ```

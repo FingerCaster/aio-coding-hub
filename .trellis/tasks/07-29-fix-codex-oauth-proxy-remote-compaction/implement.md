@@ -12,6 +12,10 @@
 8. 删除 `persistCodexOauthCompatibleProxyMode` 对完整 `refreshCodex()` 的同步等待；为 OAuth switch 补齐 pending 可见状态和成功/失败收敛。
 9. 在 settings/Codex mutations 后定向失效 config/raw/proxy status 查询；保留 Sidebar 真 drift 的“修复”入口，不添加 UI 特判。
 10. 补齐 Rust provider/config/proxy/settings 与 TS query/page/sidebar 回归测试，执行 focused tests 后跑全量质量门禁。
+11. 为 Codex config set 增加瞬时 `sync_history` 调用选项；remote 开启和关闭 UI 都提供取消、仅配置、同步会话三个分支，自动配置保存默认不迁移历史且不执行 Codex App 进程预检，只有显式同步会话与手动 Provider Sync 才执行完整预检和迁移。
+12. 把 provider sync 的 rollout 发现/改写改为逐行流式处理，并用磁盘备份路径替代 session/SQLite 全量内存快照；补齐大文件、零遍历和失败逐字节回滚测试。
+13. 为已启用 proxy backup 精确指向 AIO generated catalog 的旧版污染增加事务性迁移：清除 backup 绑定、使用 bundled base，并与 live/generated 写入共同回滚。
+14. 更新 bindings、前后端测试和 Trellis 规范，重新执行 focused 与全量质量门禁，生成新的 MSI 供验证；任务保持未归档。
 
 ## Planned Files
 
@@ -22,11 +26,16 @@
 - `src-tauri/src/infra/cli_proxy/codex.rs`：provider-aware build/status/restore 与 OAuth-only 投影。
 - `src-tauri/src/infra/cli_proxy/mod.rs`：共享同步入口、事务快照与 Codex lifecycle 调用。
 - `src-tauri/src/infra/cli_proxy/tests.rs`：enable/repair/sync/rebind/disable 组合回归。
+- `src-tauri/src/infra/codex_provider_sync.rs`：历史同步范围、有界流式迁移和磁盘回滚。
+- `src-tauri/src/infra/codex_model_catalog/managed.rs`：已污染 proxy backup 的精确识别与事务修复。
+- `src-tauri/src/shared/fs.rs`：复用现有原子替换语义的流式写入入口。
+- `src-tauri/src/commands/cli_manager.rs`、`src/services/cliManagerService.ts`、generated bindings：传递瞬时 `sync_history` 选项。
 - `src-tauri/src/app/settings_service.rs`：同步结果错误化和 settings rollback 测试。
 - `src-tauri/tests/codex_provider_sync.rs`：冲突前零写入和 provider sync rollback。
 - `src-tauri/tests/cli_proxy_startup_recovery.rs`：活动期用户字段保存与关闭恢复。
 - `src/pages/cli-manager/useCliManagerPageDataModel.ts`：OAuth 快速关键路径。
 - `src/components/cli-manager/tabs/CodexTab.tsx`：switch pending 表达。
+- `src/components/cli-manager/tabs/CodexTab.tsx`：remote 开启/关闭范围选择弹窗、受控关闭与失败后 pending 收敛。
 - `src/query/settings.ts`、`src/query/cliManager.ts`：proxy status 定向失效。
 - `src/pages/__tests__/CliManagerPage.test.tsx`、`src/components/cli-manager/tabs/__tests__/CodexTab.test.tsx`、`src/query/__tests__/settings.test.tsx`、`src/query/__tests__/cliManager.test.tsx`、`src/ui/__tests__/Sidebar.test.tsx`：前端回归。
 
