@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.32](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.31...aio-coding-hub-v0.60.32) (2026-07-30)
+
+
+### Bug Fixes
+
+* **codex:** bound remote compaction provider sync ([d7ba573](https://github.com/FingerCaster/aio-coding-hub/commit/d7ba57358fcb32d07a469f24fcf1f0be3757a7a1))
+* **codex:** stabilize OAuth proxy provider projection ([6cf0aa2](https://github.com/FingerCaster/aio-coding-hub/commit/6cf0aa21d74e4d6a363130c7fcc4d390b0f0426b))
+
 ## [0.60.31](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.30...aio-coding-hub-v0.60.31) (2026-07-29)
 
 
