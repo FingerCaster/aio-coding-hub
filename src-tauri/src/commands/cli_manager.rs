@@ -58,9 +58,10 @@ pub(crate) async fn cli_manager_codex_config_get(
 pub(crate) async fn cli_manager_codex_config_set(
     app: tauri::AppHandle,
     patch: codex_config::CodexConfigPatch,
+    sync_history: Option<bool>,
 ) -> Result<codex_config::CodexConfigState, String> {
     blocking::run("cli_manager_codex_config_set", move || {
-        codex_config::codex_config_set(&app, patch)
+        codex_config::codex_config_set_with_options(&app, patch, sync_history.unwrap_or(false))
     })
     .await
     .map_err(Into::into)

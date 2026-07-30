@@ -474,9 +474,18 @@ pub fn cli_manager_codex_config_set_json<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     patch: serde_json::Value,
 ) -> crate::shared::error::AppResult<serde_json::Value> {
+    cli_manager_codex_config_set_with_history_json(app, patch, false)
+}
+
+pub fn cli_manager_codex_config_set_with_history_json<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    patch: serde_json::Value,
+    sync_history: bool,
+) -> crate::shared::error::AppResult<serde_json::Value> {
     let patch: crate::infra::codex_config::CodexConfigPatch = serde_json::from_value(patch)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid codex config patch: {e}"))?;
-    let state = crate::infra::codex_config::codex_config_set(app, patch)?;
+    let state =
+        crate::infra::codex_config::codex_config_set_with_options(app, patch, sync_history)?;
     serialize_json(state)
 }
 

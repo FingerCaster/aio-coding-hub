@@ -24,6 +24,7 @@ import {
   type ClaudeSettingsPatch,
   type ClaudeSettingsState,
   type CodexConfigPatch,
+  type CodexConfigSetOptions,
   type CodexConfigState,
   type CodexModelCatalogState,
   type GeminiConfigPatch,
@@ -202,7 +203,8 @@ export function useCliManagerCodexConfigSetMutation() {
 
   return useMutation({
     scope: { id: CODEX_CONFIG_MUTATION_SCOPE },
-    mutationFn: (patch: CodexConfigPatch) => cliManagerCodexConfigSet(patch),
+    mutationFn: ({ patch, syncHistory }: { patch: CodexConfigPatch } & CodexConfigSetOptions) =>
+      cliManagerCodexConfigSet(patch, { syncHistory }),
     onSuccess: (next) => {
       if (!next) return;
       queryClient.setQueryData<CodexConfigState | null>(cliManagerKeys.codexConfig(), next);

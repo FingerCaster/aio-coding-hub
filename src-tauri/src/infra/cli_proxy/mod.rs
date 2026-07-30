@@ -215,6 +215,7 @@ struct FileSnapshot {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct CodexProxyBaseline {
     pub(crate) config_path: PathBuf,
+    pub(crate) config_backup_path: Option<PathBuf>,
     pub(crate) config_bytes: Option<Vec<u8>>,
     pub(crate) base_origin: String,
 }
@@ -356,19 +357,22 @@ pub(crate) fn codex_enabled_proxy_baseline<R: tauri::Runtime>(
         );
     }
 
-    let config_bytes = if entry.existed {
+    let (config_bytes, config_backup_path) = if entry.existed {
         let rel = entry.backup_rel.as_deref().ok_or_else(|| {
             "CLI_PROXY_INVALID_MANIFEST: missing Codex config backup path".to_string()
         })?;
         let root = cli_proxy_root_dir(app, "codex")?;
         let files_dir = cli_proxy_files_dir(&root);
         let backup_path = safe_backup_path(&files_dir, rel)?;
-        Some(
-            read_cli_proxy_file(&backup_path)
-                .map_err(|err| format!("CODEX_CONFIG_BACKUP_REFRESH_FAILED: {err}"))?,
+        (
+            Some(
+                read_cli_proxy_file(&backup_path)
+                    .map_err(|err| format!("CODEX_CONFIG_BACKUP_REFRESH_FAILED: {err}"))?,
+            ),
+            Some(backup_path),
         )
     } else {
-        None
+        (None, None)
     };
     let base_origin = manifest.base_origin.clone().ok_or_else(|| {
         "CLI_PROXY_INVALID_MANIFEST: enabled Codex proxy is missing base origin".to_string()
@@ -376,6 +380,7 @@ pub(crate) fn codex_enabled_proxy_baseline<R: tauri::Runtime>(
 
     Ok(Some(CodexProxyBaseline {
         config_path,
+        config_backup_path,
         config_bytes,
         base_origin,
     }))

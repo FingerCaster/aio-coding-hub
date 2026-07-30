@@ -350,7 +350,8 @@ describe("services/cli/cliManager", () => {
 
     await cliManagerCodexConfigSet({ model: "gpt-5" });
     expect(commands.cliManagerCodexConfigSet).toHaveBeenCalledWith(
-      expect.objectContaining({ model: "gpt-5" })
+      expect.objectContaining({ model: "gpt-5" }),
+      false
     );
     const ordinaryPatch = vi.mocked(commands.cliManagerCodexConfigSet).mock.calls[0]?.[0];
     expect(ordinaryPatch).toHaveProperty("approvals_reviewer", null);
@@ -360,7 +361,15 @@ describe("services/cli/cliManager", () => {
     vi.mocked(commands.cliManagerCodexConfigSet).mockClear();
     await cliManagerCodexConfigSet({ approvals_reviewer: "auto_review" });
     expect(commands.cliManagerCodexConfigSet).toHaveBeenCalledWith(
-      expect.objectContaining({ approvals_reviewer: "auto_review" })
+      expect.objectContaining({ approvals_reviewer: "auto_review" }),
+      false
+    );
+
+    vi.mocked(commands.cliManagerCodexConfigSet).mockClear();
+    await cliManagerCodexConfigSet({ features_remote_compaction: true }, { syncHistory: true });
+    expect(commands.cliManagerCodexConfigSet).toHaveBeenCalledWith(
+      expect.objectContaining({ features_remote_compaction: true }),
+      true
     );
 
     vi.mocked(commands.cliManagerCodexConfigSet).mockClear();

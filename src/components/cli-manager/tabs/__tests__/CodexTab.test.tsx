@@ -1,5 +1,5 @@
 import type { ComponentProps } from "react";
-import { fireEvent, render, screen, waitFor, within } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor, within } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cliManagerCodexConfigTomlValidate } from "../../../../services/cli/cliManager";
@@ -184,6 +184,182 @@ describe("components/cli-manager/tabs/CodexTab", () => {
       ok: true,
       error: null,
     });
+  });
+
+  it("asks how to handle session history before enabling remote compaction", async () => {
+    const persistCodexConfig = vi.fn().mockResolvedValue(createCodexConfig());
+    renderTab({ persistCodexConfig });
+    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
+    expect(remoteItem).toBeTruthy();
+    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+
+    fireEvent.click(remoteSwitch);
+    let dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    expect(persistCodexConfig).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(
+      screen.queryByRole("dialog", { name: "开启 remote_compaction" })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(remoteSwitch);
+    dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "仅更新配置" }));
+    await waitFor(() =>
+      expect(persistCodexConfig).toHaveBeenLastCalledWith(
+        { features_remote_compaction: true },
+        { syncHistory: false }
+      )
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "开启 remote_compaction" })
+      ).not.toBeInTheDocument()
+    );
+
+    fireEvent.click(remoteSwitch);
+    dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "同步会话记录" }));
+    await waitFor(() =>
+      expect(persistCodexConfig).toHaveBeenLastCalledWith(
+        { features_remote_compaction: true },
+        { syncHistory: true }
+      )
+    );
+  });
+
+  it("asks how to handle session history before disabling remote compaction", async () => {
+    const persistCodexConfig = vi.fn().mockResolvedValue(createCodexConfig());
+    renderTab({
+      codexConfig: createCodexConfig({ features_remote_compaction: true }),
+      persistCodexConfig,
+    });
+    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
+    expect(remoteItem).toBeTruthy();
+    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+
+    fireEvent.click(remoteSwitch);
+    let dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    expect(persistCodexConfig).not.toHaveBeenCalled();
+    fireEvent.click(within(dialog).getByRole("button", { name: "取消" }));
+    expect(
+      screen.queryByRole("dialog", { name: "关闭 remote_compaction" })
+    ).not.toBeInTheDocument();
+
+    fireEvent.click(remoteSwitch);
+    dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "仅更新配置" }));
+    await waitFor(() =>
+      expect(persistCodexConfig).toHaveBeenLastCalledWith(
+        { features_remote_compaction: false },
+        { syncHistory: false }
+      )
+    );
+    await waitFor(() =>
+      expect(
+        screen.queryByRole("dialog", { name: "关闭 remote_compaction" })
+      ).not.toBeInTheDocument()
+    );
+
+    fireEvent.click(remoteSwitch);
+    dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "同步会话记录" }));
+    await waitFor(() =>
+      expect(persistCodexConfig).toHaveBeenLastCalledWith(
+        { features_remote_compaction: false },
+        { syncHistory: true }
+      )
+    );
+  });
+
+  it("keeps the requested remote compaction direction while history sync is pending", async () => {
+    let resolvePersist!: (value: ReturnType<typeof createCodexConfig>) => void;
+    const persistCodexConfig = vi.fn(
+      () =>
+        new Promise<ReturnType<typeof createCodexConfig>>((resolve) => {
+          resolvePersist = resolve;
+        })
+    );
+    renderTab({
+      codexConfig: createCodexConfig({ features_remote_compaction: true }),
+      persistCodexConfig,
+    });
+    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
+    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+
+    fireEvent.click(remoteSwitch);
+    const dialog = screen.getByRole("dialog", { name: "关闭 remote_compaction" });
+    fireEvent.click(within(dialog).getByRole("button", { name: "同步会话记录" }));
+
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "关闭 remote_compaction" })).toBe(dialog);
+      expect(remoteSwitch).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "取消" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "仅更新配置" })).toBeDisabled();
+      expect(within(dialog).getByRole("button", { name: "同步会话记录" })).toBeDisabled();
+    });
+    fireEvent.keyDown(dialog, { key: "Escape" });
+    expect(screen.getByRole("dialog", { name: "关闭 remote_compaction" })).toBe(dialog);
+    const overlay = Array.from(document.querySelectorAll<HTMLElement>('[data-state="open"]')).find(
+      (element) => element.classList.contains("bg-black/30")
+    );
+    expect(overlay).toBeTruthy();
+    fireEvent.click(overlay as HTMLElement);
+    expect(screen.getByRole("dialog", { name: "关闭 remote_compaction" })).toBe(dialog);
+    expect(persistCodexConfig).toHaveBeenCalledWith(
+      { features_remote_compaction: false },
+      { syncHistory: true }
+    );
+
+    await act(async () => {
+      resolvePersist(createCodexConfig({ features_remote_compaction: false }));
+    });
+    await waitFor(() => {
+      expect(
+        screen.queryByRole("dialog", { name: "关闭 remote_compaction" })
+      ).not.toBeInTheDocument();
+      expect(remoteSwitch).toBeEnabled();
+    });
+  });
+
+  it("keeps the remote compaction choice open and retryable after async failures", async () => {
+    const persistCodexConfig = vi
+      .fn()
+      .mockResolvedValueOnce(null)
+      .mockRejectedValueOnce(new Error("save failed"));
+    renderTab({ persistCodexConfig });
+    const remoteItem = screen.getByText("remote_compaction").parentElement?.parentElement;
+    const remoteSwitch = within(remoteItem as HTMLElement).getByRole("switch");
+
+    fireEvent.click(remoteSwitch);
+    const dialog = screen.getByRole("dialog", { name: "开启 remote_compaction" });
+    const configOnlyButton = within(dialog).getByRole("button", { name: "仅更新配置" });
+    const syncHistoryButton = within(dialog).getByRole("button", { name: "同步会话记录" });
+
+    fireEvent.click(configOnlyButton);
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "开启 remote_compaction" })).toBe(dialog);
+      expect(remoteSwitch).toBeEnabled();
+      expect(configOnlyButton).toBeEnabled();
+      expect(syncHistoryButton).toBeEnabled();
+    });
+    expect(persistCodexConfig).toHaveBeenNthCalledWith(
+      1,
+      { features_remote_compaction: true },
+      { syncHistory: false }
+    );
+
+    fireEvent.click(syncHistoryButton);
+    await waitFor(() => {
+      expect(screen.getByRole("dialog", { name: "开启 remote_compaction" })).toBe(dialog);
+      expect(remoteSwitch).toBeEnabled();
+      expect(configOnlyButton).toBeEnabled();
+      expect(syncHistoryButton).toBeEnabled();
+    });
+    expect(persistCodexConfig).toHaveBeenNthCalledWith(
+      2,
+      { features_remote_compaction: true },
+      { syncHistory: true }
+    );
   });
 
   it("renders only supported Codex model reasoning effort options", () => {

@@ -2619,7 +2619,8 @@ custom = "keep"
     let patch: crate::infra::codex_config::CodexConfigPatch =
         serde_json::from_value(serde_json::json!({ "features_remote_compaction": true }))
             .expect("config patch");
-    crate::infra::codex_config::codex_config_set(&handle, patch).expect("route-off toggle");
+    crate::infra::codex_config::codex_config_set_with_options(&handle, patch, false)
+        .expect("route-off toggle");
     let config_path = codex_config_path(&handle).expect("config path");
     let direct_remote = std::fs::read_to_string(&config_path).expect("direct remote config");
     assert!(
@@ -2707,7 +2708,8 @@ fn route_on_structured_and_raw_user_fields_survive_disable_without_polluting_bas
     let patch: crate::infra::codex_config::CodexConfigPatch =
         serde_json::from_value(serde_json::json!({ "model": "after-structured" }))
             .expect("config patch");
-    crate::infra::codex_config::codex_config_set(&handle, patch).expect("structured save");
+    crate::infra::codex_config::codex_config_set_with_options(&handle, patch, false)
+        .expect("structured save");
 
     let live = std::fs::read_to_string(&config_path).expect("live config");
     assert!(live.contains("model = \"after-structured\""), "{live}");

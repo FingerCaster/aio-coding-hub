@@ -34,6 +34,12 @@ import { RadioGroup } from "../../../ui/RadioGroup";
 import { Select } from "../../../ui/Select";
 import { Switch } from "../../../ui/Switch";
 import {
+  Dialog as DialogRoot,
+  DialogContent,
+  DialogDescription,
+  DialogTitle,
+} from "../../../ui/shadcn/dialog";
+import {
   resolveReasoningOptions,
   ultraConflictText,
   type ReasoningOptionView,
@@ -314,7 +320,10 @@ export type CliManagerCodexTabProps = {
   codexHomeSettingsSaving?: boolean;
   refreshCodex: () => Promise<void> | void;
   openCodexConfigDir: () => Promise<void> | void;
-  persistCodexConfig: (patch: CodexConfigPatch) => Promise<CodexConfigState | null>;
+  persistCodexConfig: (
+    patch: CodexConfigPatch,
+    options?: { syncHistory?: boolean }
+  ) => Promise<CodexConfigState | null>;
   persistCodexConfigToml: (toml: string) => Promise<boolean> | boolean;
   syncCodexProvider?: () => Promise<void> | void;
   persistCommonSettings?: (
@@ -1330,6 +1339,33 @@ function CodexFeaturesSection({
   effectiveFastModeEnabled: boolean;
   persistCodexConfig: CliManagerCodexTabProps["persistCodexConfig"];
 }) {
+  const [remoteCompactionTarget, setRemoteCompactionTarget] = useState<boolean | null>(null);
+  const [remoteCompactionChoicePending, setRemoteCompactionChoicePending] = useState(false);
+  const remoteCompactionEnabled = boolOrDefault(codexConfig.features_remote_compaction, false);
+  const remoteCompactionControlsDisabled = saving || remoteCompactionChoicePending;
+
+  async function persistRemoteCompactionChoice(syncHistory: boolean) {
+    const target = remoteCompactionTarget;
+    if (target === null) return;
+
+    setRemoteCompactionChoicePending(true);
+    try {
+      const updated = await persistCodexConfig(
+        { features_remote_compaction: target },
+        { syncHistory }
+      );
+      if (updated) setRemoteCompactionTarget(null);
+    } catch {
+      // The page data model owns user-facing error reporting. Keep the choice open for retry.
+    } finally {
+      setRemoteCompactionChoicePending(false);
+    }
+  }
+
+  function handleRemoteCompactionChange(checked: boolean) {
+    setRemoteCompactionTarget(checked);
+  }
+
   return (
     <div className="rounded-lg border border-border bg-white p-5 dark:bg-secondary">
       <h3 className="mb-3 flex items-center gap-2 text-sm font-semibold text-foreground">
@@ -1342,13 +1378,52 @@ function CodexFeaturesSection({
           subtitle="实验性：启用 remote compaction（需要 ChatGPT 身份验证）。"
         >
           <Switch
-            checked={boolOrDefault(codexConfig.features_remote_compaction, false)}
-            onCheckedChange={(checked) =>
-              void persistCodexConfig({ features_remote_compaction: checked })
-            }
-            disabled={saving}
+            checked={remoteCompactionEnabled}
+            onCheckedChange={handleRemoteCompactionChange}
+            disabled={remoteCompactionControlsDisabled}
           />
         </SettingItem>
+
+        <DialogRoot
+          open={remoteCompactionTarget !== null}
+          onOpenChange={(open) => {
+            if (!open && !remoteCompactionChoicePending) setRemoteCompactionTarget(null);
+          }}
+        >
+          <DialogContent className="max-w-md rounded-lg">
+            <div className="border-b border-border px-5 py-4">
+              <DialogTitle>
+                {remoteCompactionTarget === false ? "关闭" : "开启"} remote_compaction
+              </DialogTitle>
+              <DialogDescription className="mt-1.5">
+                会话记录较多时，同步历史可能需要一些时间。
+              </DialogDescription>
+            </div>
+            <div className="flex flex-wrap justify-end gap-2 px-5 py-4">
+              <Button
+                variant="secondary"
+                onClick={() => setRemoteCompactionTarget(null)}
+                disabled={remoteCompactionControlsDisabled}
+              >
+                取消
+              </Button>
+              <Button
+                variant="secondary"
+                onClick={() => void persistRemoteCompactionChoice(false)}
+                disabled={remoteCompactionControlsDisabled}
+              >
+                仅更新配置
+              </Button>
+              <Button
+                variant="primary"
+                onClick={() => void persistRemoteCompactionChoice(true)}
+                disabled={remoteCompactionControlsDisabled}
+              >
+                同步会话记录
+              </Button>
+            </div>
+          </DialogContent>
+        </DialogRoot>
 
         <SettingItem
           label="fast_mode"

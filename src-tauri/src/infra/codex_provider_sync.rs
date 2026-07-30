@@ -2,7 +2,8 @@
 
 use crate::shared::error::AppResult;
 use crate::shared::fs::{
-    is_symlink, read_optional_file_with_max_len, write_file_atomic_if_changed,
+    is_symlink, open_regular_file_no_follow, read_optional_file_with_max_len,
+    write_file_atomic_if_changed, write_file_atomic_with,
 };
 use crate::shared::time::{now_unix_millis, now_unix_seconds};
 use rusqlite::{Connection, OpenFlags};
@@ -10,6 +11,7 @@ use serde::Serialize;
 use serde_json::{Map, Value};
 use std::collections::HashSet;
 use std::fs;
+use std::io::{BufRead as _, BufReader, Write as _};
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU8, Ordering};
 
@@ -53,13 +55,7 @@ pub struct CodexProviderSyncContext {
     pub trigger: String,
     pub target_provider: String,
     pub config_bytes: Option<Vec<u8>>,
-}
-
-#[derive(Debug, Clone)]
-struct FileSnapshot {
-    path: PathBuf,
-    existed: bool,
-    bytes: Option<Vec<u8>>,
+    pub sync_history: bool,
 }
 
 #[derive(Debug, Clone)]
@@ -75,8 +71,6 @@ struct SyncChangeSet {
 #[derive(Debug, Clone)]
 struct SessionChange {
     path: PathBuf,
-    original_text: Vec<u8>,
-    next_text: Vec<u8>,
 }
 
 #[derive(Debug, Clone)]
@@ -90,11 +84,22 @@ struct SqliteDbChange {
 #[derive(Debug, Clone)]
 struct GlobalStateChange {
     path: PathBuf,
-    original_bytes: Option<Vec<u8>>,
     next_bytes: Option<Vec<u8>>,
     bak_path: PathBuf,
-    bak_next_bytes: Option<Option<Vec<u8>>>,
     updated_workspace_roots: Vec<String>,
+}
+
+#[derive(Debug, Clone)]
+struct DiskBackupEntry {
+    target_path: PathBuf,
+    backup_path: PathBuf,
+    existed: bool,
+}
+
+#[derive(Debug, Clone)]
+struct ProviderSyncBackup {
+    backup_dir: PathBuf,
+    entries: Vec<DiskBackupEntry>,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -116,13 +121,13 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
 ) -> AppResult<CodexProviderSyncResult> {
     let home = crate::codex_paths::codex_home_dir(app)?;
     let target_provider = resolve_target_provider(&context.target_provider)?;
-    if codex_app_is_running()? {
+    if context.sync_history && codex_app_is_running()? {
         return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
     }
     let lock_path = home.join(PROVIDER_SYNC_LOCK_FILE);
     let _lock_guard = acquire_lock(&lock_path)?;
 
-    if codex_app_is_running()? {
+    if context.sync_history && codex_app_is_running()? {
         return Err("CODEX_PROVIDER_SYNC_PROCESS_RUNNING: Codex App is running".into());
     }
 
@@ -170,8 +175,7 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
         });
     }
 
-    let backup_dir = create_backup(&home, &context, &change_set)?;
-    let mut snapshots = snapshot_paths(&home, &config_path, &change_set)?;
+    let backup = create_backup(&home, &config_path, &context, &change_set)?;
     let mut writes_started = false;
     let result = (|| -> AppResult<CodexProviderSyncResult> {
         if let Some(bytes) = change_set.config_bytes.as_ref() {
@@ -180,7 +184,7 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
         }
         for change in &change_set.session_changes {
             writes_started = true;
-            let _ = write_file_atomic_if_changed(&change.path, &change.next_text)?;
+            rewrite_rollout_session_meta_providers(&change.path, &target_provider)?;
         }
         if !change_set.sqlite_changes.is_empty() {
             writes_started = true;
@@ -198,7 +202,7 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
             status: "synced".to_string(),
             target_provider,
             trigger: context.trigger,
-            backup_dir: Some(backup_dir.to_string_lossy().to_string()),
+            backup_dir: Some(backup.backup_dir.to_string_lossy().to_string()),
             changed_session_files: change_set
                 .session_changes
                 .iter()
@@ -216,9 +220,9 @@ pub fn codex_provider_sync<R: tauri::Runtime>(
         Ok(out) => Ok(out),
         Err(err) => {
             if writes_started {
-                if let Err(rollback_err) = restore_snapshots(&mut snapshots) {
+                if let Err(rollback_err) = restore_backup(&backup) {
                     return Err(format!(
-                        "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed to restore snapshots after {err}; rollback error: {rollback_err}"
+                        "CODEX_PROVIDER_SYNC_ROLLBACK_FAILED: failed to restore disk backup after {err}; rollback error: {rollback_err}"
                     )
                     .into());
                 }
@@ -242,6 +246,7 @@ pub fn codex_provider_sync_current<R: tauri::Runtime>(
             trigger: trigger.into(),
             target_provider,
             config_bytes: None,
+            sync_history: true,
         },
     )
 }
@@ -260,6 +265,7 @@ pub fn codex_provider_sync_from_config_bytes<R: tauri::Runtime>(
             trigger: trigger.into(),
             target_provider,
             config_bytes: Some(config_bytes),
+            sync_history: true,
         },
     )
 }
@@ -449,11 +455,15 @@ fn build_change_set<R: tauri::Runtime>(
         }
     }
 
-    let session_changes =
-        collect_session_changes(home, current_provider, &context.target_provider)?;
-    let sqlite_changes = collect_sqlite_changes(home, current_provider, &context.target_provider)?;
-    let global_state_change =
-        collect_global_state_change(home, current_provider, &context.target_provider)?;
+    let (session_changes, sqlite_changes, global_state_change) = if context.sync_history {
+        (
+            collect_session_changes(home, current_provider, &context.target_provider)?,
+            collect_sqlite_changes(home, current_provider, &context.target_provider)?,
+            collect_global_state_change(home, current_provider, &context.target_provider)?,
+        )
+    } else {
+        (Vec::new(), Vec::new(), None)
+    };
 
     let updated_workspace_roots = global_state_change
         .as_ref()
@@ -625,57 +635,98 @@ fn collect_rollout_changes(
         {
             continue;
         }
-        let bytes = fs::read(&path)
-            .map_err(|e| format!("failed to read rollout file {}: {e}", path.display()))?;
-        let next_bytes = rewrite_rollout_session_meta_providers(&bytes, target_provider)?;
-        if next_bytes != bytes {
-            out.push(SessionChange {
-                path,
-                original_text: bytes,
-                next_text: next_bytes,
-            });
+        if rollout_needs_provider_rewrite(&path, target_provider)? {
+            out.push(SessionChange { path });
         }
     }
     Ok(())
 }
 
-fn rewrite_rollout_session_meta_providers(
-    bytes: &[u8],
-    target_provider: &str,
-) -> AppResult<Vec<u8>> {
-    let text = String::from_utf8(bytes.to_vec())
-        .map_err(|_| "SEC_INVALID_INPUT: rollout jsonl must be valid UTF-8".to_string())?;
-    let mut out = String::with_capacity(text.len());
-    for segment in text.split_inclusive('\n') {
-        let (line, ending) = split_line_ending(segment);
-        let next_line = match serde_json::from_str::<Value>(line) {
-            Ok(mut value) if value.get("type").and_then(Value::as_str) == Some("session_meta") => {
-                if let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) {
-                    payload.insert(
-                        "model_provider".to_string(),
-                        Value::String(target_provider.to_string()),
-                    );
-                    serde_json::to_string(&value)
-                        .map_err(|e| format!("failed to rewrite rollout row: {e}"))?
-                } else {
-                    line.to_string()
-                }
-            }
-            _ => line.to_string(),
-        };
-        out.push_str(&next_line);
-        out.push_str(ending);
+fn rollout_needs_provider_rewrite(path: &Path, target_provider: &str) -> AppResult<bool> {
+    let file = open_regular_file_no_follow(path)?
+        .ok_or_else(|| format!("failed to read rollout file {}: not found", path.display()))?;
+    let mut reader = BufReader::new(file);
+    let mut buffer = Vec::new();
+    let mut needs_rewrite = false;
+    loop {
+        buffer.clear();
+        let read = reader
+            .read_until(b'\n', &mut buffer)
+            .map_err(|e| format!("failed to read rollout file {}: {e}", path.display()))?;
+        if read == 0 {
+            break;
+        }
+        let (line, _) = split_line_ending_bytes(&buffer);
+        if rewrite_rollout_line(line, target_provider)?.is_some() {
+            needs_rewrite = true;
+        }
     }
-    Ok(out.into_bytes())
+    Ok(needs_rewrite)
 }
 
-fn split_line_ending(segment: &str) -> (&str, &str) {
-    if let Some(line) = segment.strip_suffix("\r\n") {
-        (line, "\r\n")
-    } else if let Some(line) = segment.strip_suffix('\n') {
-        (line, "\n")
+fn rewrite_rollout_session_meta_providers(path: &Path, target_provider: &str) -> AppResult<()> {
+    let file = open_regular_file_no_follow(path)?
+        .ok_or_else(|| format!("failed to read rollout file {}: not found", path.display()))?;
+    let mut reader = BufReader::new(file);
+    write_file_atomic_with(path, move |output| {
+        let mut buffer = Vec::new();
+        loop {
+            buffer.clear();
+            let read = reader
+                .read_until(b'\n', &mut buffer)
+                .map_err(|e| format!("failed to read rollout file {}: {e}", path.display()))?;
+            if read == 0 {
+                break;
+            }
+            let (line, ending) = split_line_ending_bytes(&buffer);
+            if let Some(next_line) = rewrite_rollout_line(line, target_provider)? {
+                output.write_all(&next_line).map_err(|e| {
+                    format!("failed to rewrite rollout file {}: {e}", path.display())
+                })?;
+            } else {
+                output.write_all(line).map_err(|e| {
+                    format!("failed to rewrite rollout file {}: {e}", path.display())
+                })?;
+            }
+            output
+                .write_all(ending)
+                .map_err(|e| format!("failed to rewrite rollout file {}: {e}", path.display()))?;
+        }
+        Ok(())
+    })
+}
+
+fn rewrite_rollout_line(line: &[u8], target_provider: &str) -> AppResult<Option<Vec<u8>>> {
+    std::str::from_utf8(line)
+        .map_err(|_| "SEC_INVALID_INPUT: rollout jsonl must be valid UTF-8".to_string())?;
+    let Ok(mut value) = serde_json::from_slice::<Value>(line) else {
+        return Ok(None);
+    };
+    if value.get("type").and_then(Value::as_str) != Some("session_meta") {
+        return Ok(None);
+    }
+    let Some(payload) = value.get_mut("payload").and_then(Value::as_object_mut) else {
+        return Ok(None);
+    };
+    if payload.get("model_provider").and_then(Value::as_str) == Some(target_provider) {
+        return Ok(None);
+    }
+    payload.insert(
+        "model_provider".to_string(),
+        Value::String(target_provider.to_string()),
+    );
+    serde_json::to_vec(&value)
+        .map(Some)
+        .map_err(|e| format!("failed to rewrite rollout row: {e}").into())
+}
+
+fn split_line_ending_bytes(segment: &[u8]) -> (&[u8], &[u8]) {
+    if let Some(line) = segment.strip_suffix(b"\r\n") {
+        (line, b"\r\n")
+    } else if let Some(line) = segment.strip_suffix(b"\n") {
+        (line, b"\n")
     } else {
-        (segment, "")
+        (segment, b"")
     }
 }
 
@@ -939,8 +990,8 @@ fn collect_global_state_change(
     if !metadata.is_file() {
         return Ok(None);
     }
-    let original_bytes = fs::read(&path)
-        .map_err(|e| format!("failed to snapshot global state {}: {e}", path.display()))?;
+    let original_bytes = crate::shared::fs::read_file_with_max_len(&path, PROVIDER_SYNC_MAX_BYTES)
+        .map_err(|e| format!("failed to read global state {}: {e}", path.display()))?;
     let original: Value = serde_json::from_slice(&original_bytes)
         .map_err(|e| format!("failed to parse global state {}: {e}", path.display()))?;
     let mut next = normalized_global_state(&original);
@@ -958,10 +1009,8 @@ fn collect_global_state_change(
     let bak_path = home.join(".codex-global-state.json.bak");
     Ok(Some(GlobalStateChange {
         path,
-        original_bytes: Some(original_bytes),
         next_bytes: Some(next_bytes),
         bak_path,
-        bak_next_bytes: Some(None),
         updated_workspace_roots: next
             .get("electron-saved-workspace-roots")
             .and_then(Value::as_array)
@@ -987,24 +1036,19 @@ fn apply_global_state_change(change: &GlobalStateChange) -> AppResult<()> {
     if let Some(bytes) = change.next_bytes.as_ref() {
         let _ = write_file_atomic_if_changed(&change.path, bytes)?;
     }
-    match change.bak_next_bytes.as_ref() {
-        Some(Some(bytes)) => {
-            let _ = write_file_atomic_if_changed(&change.bak_path, bytes)?;
-        }
-        Some(None) if change.bak_path.exists() => {
-            fs::remove_file(&change.bak_path)
-                .map_err(|e| format!("failed to remove bak {}: {e}", change.bak_path.display()))?;
-        }
-        Some(None) | None => {}
+    if change.bak_path.exists() {
+        fs::remove_file(&change.bak_path)
+            .map_err(|e| format!("failed to remove bak {}: {e}", change.bak_path.display()))?;
     }
     Ok(())
 }
 
 fn create_backup(
     home: &Path,
+    config_path: &Path,
     context: &CodexProviderSyncContext,
     change_set: &SyncChangeSet,
-) -> AppResult<PathBuf> {
+) -> AppResult<ProviderSyncBackup> {
     let root = home.join(PROVIDER_SYNC_BACKUP_ROOT);
     ensure_safe_operational_dir(&root, "Codex provider sync backup root")?;
     fs::create_dir_all(&root)
@@ -1033,75 +1077,53 @@ fn create_backup(
         sqlite_files: Vec::new(),
         global_state_path: None,
     };
+    let mut entries = Vec::new();
 
-    let config_path = home.join("config.toml");
-    if let Some(metadata) = non_symlink_metadata(&config_path, "Codex config.toml backup source")? {
-        if !metadata.is_file() {
-            return Err(format!(
-                "SEC_INVALID_INPUT: Codex config.toml backup source is not a file path={}",
-                config_path.display()
-            )
-            .into());
-        }
+    if change_set.config_bytes.is_some() {
         let target = backup_dir.join("config.toml");
-        fs::copy(&config_path, &target)
-            .map_err(|e| format!("failed to backup {}: {e}", config_path.display()))?;
-        manifest.config_path = Some(target.to_string_lossy().to_string());
+        let entry = create_disk_backup_entry(config_path, &target, "Codex config.toml")?;
+        if entry.existed {
+            manifest.config_path = Some(target.to_string_lossy().to_string());
+        }
+        entries.push(entry);
     }
 
     for change in &change_set.session_changes {
         let target = backup_dir.join(change.path.strip_prefix(home).unwrap_or(&change.path));
-        if let Some(parent) = target.parent() {
-            fs::create_dir_all(parent)
-                .map_err(|e| format!("failed to create backup parent {}: {e}", parent.display()))?;
+        let entry = create_disk_backup_entry(&change.path, &target, "Codex session file")?;
+        if entry.existed {
+            manifest
+                .session_files
+                .push(target.to_string_lossy().to_string());
         }
-        fs::write(&target, &change.original_text).map_err(|e| {
-            format!(
-                "failed to backup session file {}: {e}",
-                change.path.display()
-            )
-        })?;
-        manifest
-            .session_files
-            .push(target.to_string_lossy().to_string());
+        entries.push(entry);
     }
 
     for change in &change_set.sqlite_changes {
         for source in codex_sqlite_sidecar_paths(&change.path) {
-            let Some(metadata) = non_symlink_metadata(&source, "Codex sqlite backup source")?
-            else {
-                continue;
-            };
-            if !metadata.is_file() {
-                continue;
-            }
             let target = backup_dir.join(source.strip_prefix(home).unwrap_or(&source));
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent).map_err(|e| {
-                    format!("failed to create backup parent {}: {e}", parent.display())
-                })?;
+            let entry = create_disk_backup_entry(&source, &target, "Codex sqlite file")?;
+            if entry.existed {
+                manifest
+                    .sqlite_files
+                    .push(target.to_string_lossy().to_string());
             }
-            fs::copy(&source, &target)
-                .map_err(|e| format!("failed to backup sqlite file {}: {e}", source.display()))?;
-            manifest
-                .sqlite_files
-                .push(target.to_string_lossy().to_string());
+            entries.push(entry);
         }
     }
 
     if let Some(change) = change_set.global_state_change.as_ref() {
         let target = backup_dir.join(".codex-global-state.json");
-        fs::write(
-            &target,
-            change.original_bytes.as_deref().unwrap_or_default(),
-        )
-        .map_err(|e| {
-            format!(
-                "failed to backup global state {}: {e}",
-                change.path.display()
-            )
-        })?;
-        manifest.global_state_path = Some(target.to_string_lossy().to_string());
+        let entry = create_disk_backup_entry(&change.path, &target, "Codex global state")?;
+        if entry.existed {
+            manifest.global_state_path = Some(target.to_string_lossy().to_string());
+        }
+        entries.push(entry);
+        entries.push(create_disk_backup_entry(
+            &change.bak_path,
+            &backup_dir.join(".codex-global-state.json.bak"),
+            "Codex global state backup",
+        )?);
     }
 
     fs::write(
@@ -1111,68 +1133,81 @@ fn create_backup(
     )
     .map_err(|e| format!("failed to write backup manifest: {e}"))?;
 
-    Ok(backup_dir)
+    Ok(ProviderSyncBackup {
+        backup_dir,
+        entries,
+    })
 }
 
-fn snapshot_paths(
-    home: &Path,
-    config_path: &Path,
-    change_set: &SyncChangeSet,
-) -> AppResult<Vec<FileSnapshot>> {
-    let mut snapshots = Vec::new();
-    snapshots.push(snapshot_path(config_path)?);
-    snapshots.push(snapshot_path(&home.join("config.toml.bak"))?);
-    for change in &change_set.session_changes {
-        snapshots.push(snapshot_path(&change.path)?);
-    }
-    for change in &change_set.sqlite_changes {
-        for path in codex_sqlite_sidecar_paths(&change.path) {
-            snapshots.push(snapshot_path(&path)?);
-        }
-    }
-    if let Some(change) = change_set.global_state_change.as_ref() {
-        snapshots.push(snapshot_path(&change.path)?);
-        snapshots.push(snapshot_path(&change.bak_path)?);
-    }
-    Ok(snapshots)
-}
-
-fn snapshot_path(path: &Path) -> AppResult<FileSnapshot> {
-    let Some(metadata) = non_symlink_metadata(path, "Codex provider sync snapshot")? else {
-        return Ok(FileSnapshot {
-            path: path.to_path_buf(),
+fn create_disk_backup_entry(
+    path: &Path,
+    backup_path: &Path,
+    label: &str,
+) -> AppResult<DiskBackupEntry> {
+    let Some(metadata) = non_symlink_metadata(path, label)? else {
+        return Ok(DiskBackupEntry {
+            target_path: path.to_path_buf(),
+            backup_path: backup_path.to_path_buf(),
             existed: false,
-            bytes: None,
         });
     };
     if !metadata.is_file() {
         return Err(format!(
-            "SEC_INVALID_INPUT: snapshot target is not a file path={}",
+            "SEC_INVALID_INPUT: {label} backup source is not a file path={}",
             path.display()
         )
         .into());
-    };
-    let bytes =
-        fs::read(path).map_err(|e| format!("failed to snapshot {}: {e}", path.display()))?;
-    Ok(FileSnapshot {
-        path: path.to_path_buf(),
+    }
+    if let Some(parent) = backup_path.parent() {
+        fs::create_dir_all(parent)
+            .map_err(|e| format!("failed to create backup parent {}: {e}", parent.display()))?;
+    }
+    fs::copy(path, backup_path).map_err(|e| format!("failed to backup {}: {e}", path.display()))?;
+    Ok(DiskBackupEntry {
+        target_path: path.to_path_buf(),
+        backup_path: backup_path.to_path_buf(),
         existed: true,
-        bytes: Some(bytes),
     })
 }
 
-fn restore_snapshots(snapshots: &mut [FileSnapshot]) -> AppResult<()> {
-    for snapshot in snapshots.iter().rev() {
-        if snapshot.existed {
-            if let Some(bytes) = snapshot.bytes.as_ref() {
-                fs::write(&snapshot.path, bytes)
-                    .map_err(|e| format!("failed to restore {}: {e}", snapshot.path.display()))?;
-            }
-        } else if snapshot.path.exists() {
-            fs::remove_file(&snapshot.path).map_err(|e| {
-                format!("failed to remove restored {}: {e}", snapshot.path.display())
-            })?;
+fn restore_backup(backup: &ProviderSyncBackup) -> AppResult<()> {
+    let mut errors = Vec::new();
+    for entry in backup.entries.iter().rev() {
+        if let Err(error) = restore_backup_entry(entry) {
+            errors.push(error.to_string());
         }
+    }
+    if errors.is_empty() {
+        Ok(())
+    } else {
+        Err(format!("provider sync rollback failures: {}", errors.join("; ")).into())
+    }
+}
+
+fn restore_backup_entry(entry: &DiskBackupEntry) -> AppResult<()> {
+    if entry.existed {
+        let mut source = open_regular_file_no_follow(&entry.backup_path)?.ok_or_else(|| {
+            format!(
+                "provider sync backup disappeared: {}",
+                entry.backup_path.display()
+            )
+        })?;
+        write_file_atomic_with(&entry.target_path, |target| {
+            std::io::copy(&mut source, target).map_err(|e| {
+                crate::shared::error::AppError::from(format!(
+                    "failed to restore {}: {e}",
+                    entry.target_path.display()
+                ))
+            })?;
+            Ok(())
+        })?;
+    } else if entry.target_path.exists() {
+        fs::remove_file(&entry.target_path).map_err(|e| {
+            format!(
+                "failed to remove restored {}: {e}",
+                entry.target_path.display()
+            )
+        })?;
     }
     Ok(())
 }

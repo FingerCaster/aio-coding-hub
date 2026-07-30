@@ -292,10 +292,14 @@ export const commands = {
     }
   },
   async cliManagerCodexConfigSet(
-    patch: CodexConfigPatch
+    patch: CodexConfigPatch,
+    syncHistory: boolean | null
   ): Promise<Result<CodexConfigState, string>> {
     try {
-      return { status: "ok", data: await TAURI_INVOKE("cli_manager_codex_config_set", { patch }) };
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("cli_manager_codex_config_set", { patch, syncHistory }),
+      };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };

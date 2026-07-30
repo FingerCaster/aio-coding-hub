@@ -192,34 +192,37 @@ base_url = "http://127.0.0.1:37124/v1"
 }
 
 #[test]
-fn codex_config_set_refuses_when_codex_is_running() {
+fn codex_config_set_with_history_refuses_when_codex_is_running_without_writes() {
     let app = support::TestApp::new();
     let handle = app.handle();
+    let home = codex_home(&handle);
 
-    write_codex_config(
-        &handle,
-        r#"model_provider = "aio"
-
-[model_providers.aio]
-name = "aio"
-base_url = "http://127.0.0.1:37124/v1"
-"#,
-    );
+    write_codex_config(&handle, AIO_CONFIG);
+    let rollout_path = home.join("sessions/2026/rollout-running.jsonl");
+    write_rollout(&rollout_path, "aio", "thread-running");
+    let config_before = read_codex_config(&handle);
+    let rollout_before = fs::read(&rollout_path).expect("read rollout before sync");
 
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
         true,
     ));
-    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
+    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
         &handle,
         serde_json::json!({ "features_remote_compaction": true }),
+        true,
     );
     aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
 
-    let err = result.expect_err("running codex should block sync");
+    let err = result.expect_err("running codex should block explicit history sync");
     let err_text = err.to_string();
     assert!(
         err_text.contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"),
         "unexpected error: {err_text}"
+    );
+    assert_eq!(read_codex_config(&handle), config_before);
+    assert_eq!(
+        fs::read(&rollout_path).expect("read rollout after rejected sync"),
+        rollout_before
     );
 }
 
@@ -243,6 +246,58 @@ fn codex_config_set_non_provider_patch_does_not_require_codex_to_be_closed() {
     let got = read_codex_config(&handle);
     assert!(got.contains("model_reasoning_effort = \"high\""), "{got}");
     assert!(got.contains("model_provider = \"aio\""), "{got}");
+}
+
+#[test]
+fn codex_config_set_without_history_succeeds_while_codex_runs_without_reading_rollouts() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let home = codex_home(&handle);
+    write_codex_config(&handle, AIO_CONFIG);
+    let rollout_path = home.join("sessions/2026/rollout-invalid-utf8.jsonl");
+    fs::create_dir_all(rollout_path.parent().unwrap()).expect("create sessions");
+    fs::write(&rollout_path, b"\xff\xfe\xfd").expect("write invalid rollout");
+
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
+        true,
+    ));
+    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_json(
+        &handle,
+        serde_json::json!({ "features_remote_compaction": true }),
+    );
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    result.expect("config-only save must not inspect rollout history");
+    assert_eq!(fs::read(&rollout_path).unwrap(), b"\xff\xfe\xfd");
+    assert!(
+        read_codex_config(&handle).contains("model_provider = \"OpenAI\""),
+        "config provider should still be updated"
+    );
+}
+
+#[test]
+fn codex_config_set_with_history_explicitly_migrates_rollouts() {
+    let app = support::TestApp::new();
+    let handle = app.handle();
+    let home = codex_home(&handle);
+    write_codex_config(&handle, AIO_CONFIG);
+    let rollout_path = home.join("sessions/2026/rollout-explicit-history.jsonl");
+    write_rollout(&rollout_path, "aio", "thread-explicit");
+
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(Some(
+        false,
+    ));
+    let result = aio_coding_hub_lib::test_support::cli_manager_codex_config_set_with_history_json(
+        &handle,
+        serde_json::json!({ "features_remote_compaction": true }),
+        true,
+    );
+    aio_coding_hub_lib::test_support::codex_provider_sync_set_running_override_for_tests(None);
+
+    result.expect("explicit history sync");
+    assert!(fs::read_to_string(rollout_path)
+        .unwrap()
+        .contains("\"model_provider\":\"OpenAI\""));
 }
 
 #[test]

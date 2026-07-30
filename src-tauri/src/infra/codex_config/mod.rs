@@ -369,6 +369,7 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
                 trigger: "codex_config_toml_set_raw".to_string(),
                 target_provider,
                 config_bytes: Some(next),
+                sync_history: false,
             },
         )
         .map(|_| ())
@@ -384,9 +385,10 @@ pub fn codex_config_toml_set_raw<R: tauri::Runtime>(
     codex_config_get(app)
 }
 
-pub fn codex_config_set<R: tauri::Runtime>(
+pub fn codex_config_set_with_options<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     patch: CodexConfigPatch,
+    sync_history: bool,
 ) -> crate::shared::error::AppResult<CodexConfigState> {
     let _lifecycle = crate::codex_managed_profiles::lock_profile_lifecycle();
     let path = codex_paths::codex_config_toml_path(app)?;
@@ -449,6 +451,7 @@ pub fn codex_config_set<R: tauri::Runtime>(
                 trigger: "codex_config_set".to_string(),
                 target_provider,
                 config_bytes: Some(next),
+                sync_history,
             },
         ) {
             if let Some(snapshot) = backup_snapshot.as_ref() {
