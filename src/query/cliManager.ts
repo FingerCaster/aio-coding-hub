@@ -24,6 +24,7 @@ import {
   type ClaudeSettingsPatch,
   type ClaudeSettingsState,
   type CodexConfigPatch,
+  type CodexConfigSetOptions,
   type CodexConfigState,
   type CodexModelCatalogState,
   type GeminiConfigPatch,
@@ -32,7 +33,7 @@ import {
   type GrokProxyPreferences,
   type SimpleCliInfo,
 } from "../services/cli/cliManager";
-import { cliManagerKeys } from "./keys";
+import { cliManagerKeys, cliProxyKeys } from "./keys";
 
 const CODEX_CONFIG_MUTATION_SCOPE = "codex-config";
 const CODEX_MODEL_CATALOG_STALE_TIME = 5 * 60 * 1000;
@@ -202,7 +203,8 @@ export function useCliManagerCodexConfigSetMutation() {
 
   return useMutation({
     scope: { id: CODEX_CONFIG_MUTATION_SCOPE },
-    mutationFn: (patch: CodexConfigPatch) => cliManagerCodexConfigSet(patch),
+    mutationFn: ({ patch, syncHistory }: { patch: CodexConfigPatch } & CodexConfigSetOptions) =>
+      cliManagerCodexConfigSet(patch, { syncHistory }),
     onSuccess: (next) => {
       if (!next) return;
       queryClient.setQueryData<CodexConfigState | null>(cliManagerKeys.codexConfig(), next);
@@ -210,6 +212,7 @@ export function useCliManagerCodexConfigSetMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }
@@ -227,6 +230,7 @@ export function useCliManagerCodexConfigTomlSetMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }
@@ -239,6 +243,7 @@ export function useCliManagerCodexProviderSyncMutation() {
     onSettled: () => {
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
       queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+      queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
     },
   });
 }

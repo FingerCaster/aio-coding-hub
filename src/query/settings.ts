@@ -14,7 +14,7 @@ import {
   settingsGatewayRectifierSet,
   type GatewayRectifierSettingsPatch,
 } from "../services/settings/settingsGatewayRectifier";
-import { gatewayKeys, settingsKeys } from "./keys";
+import { cliManagerKeys, cliProxyKeys, gatewayKeys, settingsKeys } from "./keys";
 
 export const SETTINGS_READONLY_MESSAGE =
   "设置文件读取失败，已进入只读保护。请先修复或恢复 settings.json 后刷新页面。";
@@ -66,10 +66,19 @@ export function useSettingsSetMutation() {
   return useMutation({
     mutationFn: (input: SettingsSetInput) => settingsSet(input),
     onSuccess: (result) => syncSettingsMutationCaches(queryClient, result),
-    onSettled: () => {
+    onSettled: (_data, _error, input) => {
       queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+      if (input.codexOauthCompatibleProxyMode != null) {
+        invalidateCodexProxyProjectionQueries(queryClient);
+      }
     },
   });
+}
+
+function invalidateCodexProxyProjectionQueries(queryClient: ReturnType<typeof useQueryClient>) {
+  queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfig() });
+  queryClient.invalidateQueries({ queryKey: cliManagerKeys.codexConfigToml() });
+  queryClient.invalidateQueries({ queryKey: cliProxyKeys.statusAll() });
 }
 
 function syncSettingsMutationCaches(
@@ -93,8 +102,11 @@ export function useSettingsPatchMutation() {
       return settingsSet(createSettingsSetInput(current, patch));
     },
     onSuccess: (result) => syncSettingsMutationCaches(queryClient, result),
-    onSettled: () => {
+    onSettled: (_data, _error, patch) => {
       queryClient.invalidateQueries({ queryKey: settingsKeys.get() });
+      if (Object.prototype.hasOwnProperty.call(patch, "codex_oauth_compatible_proxy_mode")) {
+        invalidateCodexProxyProjectionQueries(queryClient);
+      }
     },
   });
 }

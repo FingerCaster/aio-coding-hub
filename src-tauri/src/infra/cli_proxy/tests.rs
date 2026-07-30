@@ -45,6 +45,25 @@ struct CliProxyTestApp {
     app: tauri::App<tauri::test::MockRuntime>,
 }
 
+struct CodexAppRunningOverrideGuard;
+
+impl CodexAppRunningOverrideGuard {
+    fn set(running: bool) -> Self {
+        crate::infra::codex_provider_sync::set_codex_app_running_override_for_tests(Some(running));
+        Self
+    }
+
+    fn update(&self, running: bool) {
+        crate::infra::codex_provider_sync::set_codex_app_running_override_for_tests(Some(running));
+    }
+}
+
+impl Drop for CodexAppRunningOverrideGuard {
+    fn drop(&mut self) {
+        crate::infra::codex_provider_sync::set_codex_app_running_override_for_tests(None);
+    }
+}
+
 impl CliProxyTestApp {
     fn new() -> Self {
         let lock = crate::test_support::test_env_lock();
@@ -1106,7 +1125,7 @@ trusted_roots = ["C:\\work"]
 }
 
 #[test]
-fn codex_proxy_dedupes_multiple_base_tables() {
+fn codex_proxy_rejects_toml_with_duplicate_base_tables() {
     let input = r#"
 [model_providers."aio"]
 base_url = "http://old-1/v1"
@@ -1118,23 +1137,16 @@ base_url = "http://old-2/v1"
 trust_level = "trusted"
 "#;
 
-    let out = build_codex_config_toml(
+    let error = build_codex_config_toml(
         Some(input.as_bytes().to_vec()),
         "http://new/v1",
         CodexConfigPlatform::Other,
     )
-    .expect("build");
-    let s = String::from_utf8(out).expect("utf8");
+    .expect_err("duplicate TOML tables must be rejected")
+    .to_string();
 
-    let count = s.matches("[model_providers.aio]").count()
-        + s.matches("[model_providers.\"aio\"]").count()
-        + s.matches("[model_providers.'aio']").count();
-    assert_eq!(count, 1, "{s}");
-    assert!(s.contains("base_url = \"http://new/v1\""), "{s}");
-    assert!(
-        s.contains("[model_providers.aio.projects.\"C:\\\\work\"]"),
-        "{s}"
-    );
+    assert!(error.contains("CLI_PROXY_INVALID_TOML"), "{error}");
+    assert!(error.contains("duplicate key"), "{error}");
 }
 
 #[test]
@@ -1595,6 +1607,27 @@ fn codex_oauth_compatible_status_reports_drift_when_old_apikey_preference_remain
 }
 
 #[test]
+fn codex_normal_status_requires_exact_placeholder_auth_projection() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_cli_proxy_manifest(&handle, "codex", true, Some(base_origin));
+    write_codex_proxy_files(&handle, base_origin);
+    std::fs::write(
+        codex_auth_path(&handle).expect("auth path"),
+        br#"{"OPENAI_API_KEY":"user-owned-key","auth_mode":"apikey"}"#,
+    )
+    .expect("write wrong auth projection");
+
+    let rows = status_all(&handle, Some(base_origin)).expect("status_all");
+    let codex = rows
+        .into_iter()
+        .find(|row| row.cli_key == "codex")
+        .expect("codex row");
+    assert_eq!(codex.applied_to_current_gateway, Some(false));
+}
+
+#[test]
 fn disabling_codex_oauth_compatible_proxy_restores_config_and_leaves_auth_json() {
     let app = CliProxyTestApp::new();
     let handle = app.handle();
@@ -1669,11 +1702,8 @@ foo = "bar"
     );
 
     set_codex_oauth_compatible_proxy_mode(&handle, false);
-    let sync_rows = sync_enabled(&handle, base_origin, true).expect("sync after mode switch");
-    let codex_row = sync_rows
-        .into_iter()
-        .find(|row| row.cli_key == "codex")
-        .expect("codex sync row");
+    let codex_row =
+        sync_codex_oauth_enabled(&handle, base_origin, true).expect("sync after mode switch");
     assert!(codex_row.ok, "{codex_row:?}");
 
     let config_after_sync =
@@ -2522,4 +2552,502 @@ INSERT INTO codex_managed_profiles(
         .expect("read manifest")
         .expect("Codex manifest");
     assert_eq!(manifest.base_origin.as_deref(), Some(old_origin));
+}
+
+#[test]
+fn remote_compaction_openai_projection_is_applied_repaired_and_restored() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let direct = format!(
+        r#"model_provider = "OpenAI"
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "{base_origin}/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+remote_compaction = true
+"#
+    );
+    write_codex_direct_files(&handle, &direct, "{}");
+
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let enabled_text = std::fs::read_to_string(&config_path).expect("enabled config");
+    assert!(enabled_text.contains("model_provider = \"OpenAI\""));
+    assert!(!enabled_text.contains("[model_providers.aio]"));
+    assert!(codex::is_proxy_config_applied(&handle, base_origin));
+
+    let repaired = set_enabled(&handle, "codex", true, base_origin).expect("repair Codex");
+    assert!(repaired.ok, "{repaired:?}");
+    let repaired_text = std::fs::read_to_string(&config_path).expect("repaired config");
+    assert!(repaired_text.contains("model_provider = \"OpenAI\""));
+    assert!(!repaired_text.contains("[model_providers.aio]"));
+
+    let disabled = set_enabled(&handle, "codex", false, base_origin).expect("disable Codex");
+    assert!(disabled.ok, "{disabled:?}");
+    assert_eq!(
+        std::fs::read_to_string(config_path).unwrap().trim_end(),
+        direct.trim_end()
+    );
+}
+
+#[test]
+fn direct_provider_remote_toggle_enables_openai_overlay_and_restores_direct_url() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let _codex_closed = CodexAppRunningOverrideGuard::set(false);
+    let base_origin = "http://127.0.0.1:37123";
+    let direct_url = "https://direct-provider.example/v1";
+    write_codex_direct_files(
+        &handle,
+        &format!(
+            r#"model_provider = "aio"
+[model_providers.aio]
+name = "aio"
+base_url = "{direct_url}"
+custom = "keep"
+"#
+        ),
+        "{}",
+    );
+
+    let patch: crate::infra::codex_config::CodexConfigPatch =
+        serde_json::from_value(serde_json::json!({ "features_remote_compaction": true }))
+            .expect("config patch");
+    crate::infra::codex_config::codex_config_set_with_options(&handle, patch, false)
+        .expect("route-off toggle");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let direct_remote = std::fs::read_to_string(&config_path).expect("direct remote config");
+    assert!(
+        direct_remote.contains("model_provider = \"OpenAI\""),
+        "{direct_remote}"
+    );
+    assert!(direct_remote.contains(direct_url), "{direct_remote}");
+
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+    let active = std::fs::read_to_string(&config_path).expect("active config");
+    assert!(active.contains("model_provider = \"OpenAI\""), "{active}");
+    assert!(
+        active.contains(&format!("base_url = \"{base_origin}/v1\"")),
+        "{active}"
+    );
+    assert!(!active.contains(direct_url), "{active}");
+
+    let disabled = set_enabled(&handle, "codex", false, base_origin).expect("disable Codex");
+    assert!(disabled.ok, "{disabled:?}");
+    let restored = std::fs::read_to_string(config_path).expect("restored config");
+    assert!(
+        restored.contains("model_provider = \"OpenAI\""),
+        "{restored}"
+    );
+    assert!(restored.contains(direct_url), "{restored}");
+    assert!(restored.contains("custom = \"keep\""), "{restored}");
+    assert!(!restored.contains(base_origin), "{restored}");
+}
+
+#[test]
+fn enabling_remote_compaction_rejects_conflicting_openai_before_backup_or_config_write() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let direct = format!(
+        r#"model_provider = "aio"
+
+[model_providers.aio]
+name = "aio"
+base_url = "{base_origin}/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://user-provider.invalid/v1"
+wire_api = "responses"
+requires_openai_auth = true
+
+[features]
+remote_compaction = true
+"#
+    );
+    write_codex_direct_files(&handle, &direct, "{}");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let before = std::fs::read(&config_path).expect("config before");
+
+    let result = set_enabled(&handle, "codex", true, base_origin).expect("enable result");
+    assert!(!result.ok, "{result:?}");
+    assert!(
+        result
+            .message
+            .contains("CODEX_REMOTE_COMPACTION_PROVIDER_CONFLICT"),
+        "{result:?}"
+    );
+    assert_eq!(std::fs::read(&config_path).unwrap(), before);
+    assert!(read_manifest(&handle, "codex").unwrap().is_none());
+}
+
+#[test]
+fn route_on_structured_and_raw_user_fields_survive_disable_without_polluting_baseline() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(&handle, "model = \"before\"\n", "{}");
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let config_path = codex_config_path(&handle).expect("config path");
+    let mut externally_edited = std::fs::read_to_string(&config_path).expect("live config");
+    externally_edited.push_str("\n[external_user]\nkeep = \"yes\"\n");
+    std::fs::write(&config_path, externally_edited).expect("external user edit");
+
+    let patch: crate::infra::codex_config::CodexConfigPatch =
+        serde_json::from_value(serde_json::json!({ "model": "after-structured" }))
+            .expect("config patch");
+    crate::infra::codex_config::codex_config_set_with_options(&handle, patch, false)
+        .expect("structured save");
+
+    let live = std::fs::read_to_string(&config_path).expect("live config");
+    assert!(live.contains("model = \"after-structured\""), "{live}");
+    assert!(live.contains("[external_user]"), "{live}");
+    assert!(live.contains(&format!("base_url = \"{base_origin}/v1\"")));
+    let raw = format!("raw_user_field = \"keep\"\n{live}");
+    crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw).expect("raw user save");
+
+    let backup_path =
+        backup_file_path_for_enabled_manifest(&handle, "codex", "codex_config_toml", "config.toml")
+            .expect("backup lookup")
+            .expect("backup path");
+    let baseline = std::fs::read_to_string(&backup_path).expect("baseline");
+    assert!(baseline.contains("model = \"after-structured\""));
+    assert!(baseline.contains("raw_user_field = \"keep\""));
+    assert!(baseline.contains("[external_user]"), "{baseline}");
+    assert!(!baseline.contains(base_origin), "{baseline}");
+
+    let live_before_rejected_edit = std::fs::read(&config_path).unwrap();
+    let backup_before_rejected_edit = std::fs::read(&backup_path).unwrap();
+    let owned_edit = String::from_utf8(live_before_rejected_edit.clone())
+        .unwrap()
+        .replace(
+            &format!("base_url = \"{base_origin}/v1\""),
+            "base_url = \"https://owned-edit.invalid/v1\"",
+        );
+    let error = crate::infra::codex_config::codex_config_toml_set_raw(&handle, owned_edit)
+        .expect_err("owned raw edit must fail")
+        .to_string();
+    assert!(error.contains("CODEX_PROXY_OWNED_FIELD_EDIT"), "{error}");
+    assert_eq!(
+        std::fs::read(&config_path).unwrap(),
+        live_before_rejected_edit
+    );
+    assert_eq!(
+        std::fs::read(&backup_path).unwrap(),
+        backup_before_rejected_edit
+    );
+
+    let disabled = set_enabled(&handle, "codex", false, base_origin).expect("disable Codex");
+    assert!(disabled.ok, "{disabled:?}");
+    let restored = std::fs::read_to_string(config_path).expect("restored config");
+    assert!(
+        restored.contains("model = \"after-structured\""),
+        "{restored}"
+    );
+    assert!(restored.contains("raw_user_field = \"keep\""), "{restored}");
+    assert!(restored.contains("[external_user]"), "{restored}");
+    assert!(!restored.contains(base_origin), "{restored}");
+    assert!(!restored.contains("[model_providers.aio]"), "{restored}");
+}
+
+#[test]
+fn route_on_raw_remote_toggle_uses_provider_sync_and_reprojects_drifted_live() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let codex_running = CodexAppRunningOverrideGuard::set(false);
+    let base_origin = "http://127.0.0.1:37123";
+    let direct_url = "https://direct-provider.example/v1";
+    write_codex_direct_files(
+        &handle,
+        &format!(
+            "model_provider = \"aio\"\n[model_providers.aio]\nname = \"aio\"\nbase_url = \"{direct_url}\"\n"
+        ),
+        "{}",
+    );
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let config_path = codex_config_path(&handle).expect("config path");
+    let backup_path =
+        backup_file_path_for_enabled_manifest(&handle, "codex", "codex_config_toml", "config.toml")
+            .expect("backup lookup")
+            .expect("backup path");
+    let live_before = std::fs::read_to_string(&config_path).expect("live before");
+    let backup_before = std::fs::read(&backup_path).expect("backup before");
+    let raw = format!("{live_before}\n[features]\nremote_compaction = true\n");
+
+    codex_running.update(true);
+    let error = crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw.clone())
+        .expect_err("provider sync process guard must run")
+        .to_string();
+    assert!(
+        error.contains("CODEX_PROVIDER_SYNC_PROCESS_RUNNING"),
+        "{error}"
+    );
+    assert_eq!(std::fs::read_to_string(&config_path).unwrap(), live_before);
+    assert_eq!(std::fs::read(&backup_path).unwrap(), backup_before);
+
+    codex_running.update(false);
+    crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw).expect("raw remote toggle");
+    let active = std::fs::read_to_string(&config_path).expect("active config");
+    let baseline = std::fs::read_to_string(&backup_path).expect("baseline");
+    assert!(active.contains("remote_compaction = true"), "{active}");
+    assert!(active.contains("model_provider = \"OpenAI\""), "{active}");
+    assert!(
+        active.contains(&format!("base_url = \"{base_origin}/v1\"")),
+        "{active}"
+    );
+    assert!(
+        baseline.contains("model_provider = \"OpenAI\""),
+        "{baseline}"
+    );
+    assert!(baseline.contains(direct_url), "{baseline}");
+
+    let drifted = active.replace(
+        &format!("base_url = \"{base_origin}/v1\""),
+        "base_url = \"http://127.0.0.1:39999/v1\"",
+    );
+    std::fs::write(&config_path, &drifted).expect("write drifted live");
+    let submitted = format!("user_after_drift = \"keep\"\n{drifted}");
+    crate::infra::codex_config::codex_config_toml_set_raw(&handle, submitted)
+        .expect("raw save heals pre-existing owned drift");
+    let healed = std::fs::read_to_string(&config_path).expect("healed config");
+    assert!(
+        healed.contains(&format!("base_url = \"{base_origin}/v1\"")),
+        "{healed}"
+    );
+    assert!(!healed.contains("39999"), "{healed}");
+    assert!(healed.contains("user_after_drift = \"keep\""), "{healed}");
+}
+
+#[test]
+fn route_on_raw_remote_conflict_leaves_live_and_baseline_unchanged() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let _codex_running = CodexAppRunningOverrideGuard::set(true);
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        "model_provider = \"aio\"\n[model_providers.aio]\nname = \"aio\"\nbase_url = \"https://direct-aio.example/v1\"\n",
+        "{}",
+    );
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let backup_path =
+        backup_file_path_for_enabled_manifest(&handle, "codex", "codex_config_toml", "config.toml")
+            .expect("backup lookup")
+            .expect("backup path");
+    let conflicting_baseline = br#"model_provider = "aio"
+[model_providers.aio]
+name = "aio"
+base_url = "http://127.0.0.1:37123/v1"
+[model_providers.OpenAI]
+name = "OpenAI"
+base_url = "https://user-openai.example/v1"
+"#;
+    std::fs::write(&backup_path, conflicting_baseline).expect("write conflicting baseline");
+    let live_before = std::fs::read(&config_path).expect("live before");
+    let backup_before = std::fs::read(&backup_path).expect("backup before");
+    let raw = format!(
+        "{}\n[features]\nremote_compaction = true\n",
+        String::from_utf8(live_before.clone()).unwrap()
+    );
+    let error = crate::infra::codex_config::codex_config_toml_set_raw(&handle, raw)
+        .expect_err("conflicting target must fail before writes")
+        .to_string();
+    assert!(
+        error.contains("CODEX_REMOTE_COMPACTION_PROVIDER_CONFLICT"),
+        "{error}"
+    );
+    assert!(!error.contains("user-openai.example"), "{error}");
+    assert_eq!(std::fs::read(config_path).unwrap(), live_before);
+    assert_eq!(std::fs::read(backup_path).unwrap(), backup_before);
+
+    let repair = set_enabled(&handle, "codex", true, base_origin).expect("repair result");
+    assert!(!repair.ok, "{repair:?}");
+    assert!(repair
+        .message
+        .contains("CODEX_REMOTE_COMPACTION_PROVIDER_CONFLICT"));
+    assert!(!codex_config_path(&handle)
+        .unwrap()
+        .with_extension("toml.invalid-backup")
+        .exists());
+}
+
+#[test]
+fn oauth_only_sync_restores_auth_when_switching_from_normal_mode() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    let original_auth = r#"{
+  "tokens": { "access": "oauth-token" },
+  "profile": "teacher"
+}"#;
+    write_codex_direct_files(&handle, "model = \"gpt-5\"\n", original_auth);
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable normal mode");
+    assert!(enabled.ok, "{enabled:?}");
+    let auth_path = codex_auth_path(&handle).expect("auth path");
+    assert!(std::fs::read_to_string(&auth_path)
+        .unwrap()
+        .contains("OPENAI_API_KEY"));
+
+    set_codex_oauth_compatible_proxy_mode(&handle, true);
+    crate::codex_model_catalog::managed::reset_sync_current_invocations_for_test();
+    let synced = sync_codex_oauth_enabled(&handle, base_origin, true).expect("OAuth-only sync");
+    assert!(synced.ok, "{synced:?}");
+    assert_eq!(
+        crate::codex_model_catalog::managed::sync_current_invocations_for_test(),
+        0,
+        "OAuth-only sync must not rebuild or discover the managed catalog"
+    );
+
+    let config = std::fs::read_to_string(codex_config_path(&handle).expect("config path")).unwrap();
+    let auth = std::fs::read_to_string(auth_path).unwrap();
+    assert!(!config.contains("preferred_auth_method = \"apikey\""));
+    assert!(config.contains(&format!("base_url = \"{base_origin}/v1\"")));
+    let restored_auth: serde_json::Value = serde_json::from_str(&auth).expect("restored auth");
+    let original_auth: serde_json::Value =
+        serde_json::from_str(original_auth).expect("original auth");
+    assert_eq!(restored_auth, original_auth);
+}
+
+#[test]
+fn oauth_only_sync_is_a_pure_noop_when_manifest_is_disabled() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(&handle, "model = \"gpt-5\"\n", "{}");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let auth_path = codex_auth_path(&handle).expect("auth path");
+    let config_before = std::fs::read(&config_path).unwrap();
+    let auth_before = std::fs::read(&auth_path).unwrap();
+
+    let result = sync_codex_oauth_enabled(&handle, base_origin, true).expect("disabled no-op");
+    assert!(result.ok, "{result:?}");
+    assert!(!result.enabled);
+    assert_eq!(std::fs::read(config_path).unwrap(), config_before);
+    assert_eq!(std::fs::read(auth_path).unwrap(), auth_before);
+    assert!(read_manifest(&handle, "codex").unwrap().is_none());
+}
+
+#[test]
+fn oauth_only_sync_reads_manifest_after_lifecycle_lock_and_preserves_disable_winner() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(&handle, "model = \"gpt-5\"\n", "{}");
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let hook_handle = handle.clone();
+    set_codex_oauth_after_lock_test_hook(Box::new(move || {
+        let mut manifest = read_manifest(&hook_handle, "codex")
+            .expect("read manifest in lock hook")
+            .expect("Codex manifest in lock hook");
+        manifest.enabled = false;
+        manifest.updated_at = manifest.updated_at.saturating_add(1);
+        write_manifest(&hook_handle, "codex", &manifest).expect("commit disable winner");
+    }));
+
+    let result = sync_codex_oauth_enabled(&handle, base_origin, true).expect("OAuth-only sync");
+    clear_codex_oauth_after_lock_test_hook();
+    assert!(result.ok, "{result:?}");
+    assert!(
+        !result.enabled,
+        "stale enabled manifest must not be replayed"
+    );
+    let manifest = read_manifest(&handle, "codex")
+        .expect("read manifest")
+        .expect("Codex manifest");
+    assert!(!manifest.enabled);
+}
+
+#[test]
+fn oauth_only_sync_with_managed_profile_keeps_catalog_binding_without_catalog_refresh() {
+    let app = CliProxyTestApp::new();
+    let handle = app.handle();
+    let base_origin = "http://127.0.0.1:37123";
+    write_codex_direct_files(
+        &handle,
+        "model_provider = \"OpenAI\"\n[model_providers.OpenAI]\nname = \"OpenAI\"\nbase_url = \"https://direct.example/v1\"\n[features]\nremote_compaction = true\n",
+        r#"{"tokens":{"access":"oauth-token"}}"#,
+    );
+    let enabled = set_enabled(&handle, "codex", true, base_origin).expect("enable Codex");
+    assert!(enabled.ok, "{enabled:?}");
+
+    let db = crate::db::init(&handle).expect("init db");
+    let conn = db.open_connection().expect("open db");
+    let provider_uuid = crate::shared::uuid::new_uuid_v4();
+    conn.execute(
+        "INSERT INTO providers(provider_uuid, cli_key, name, base_url, api_key_plaintext, enabled, created_at, updated_at) VALUES (?1, 'codex', 'Managed', 'https://example.invalid/v1', 'key', 1, 1, 1)",
+        rusqlite::params![provider_uuid],
+    )
+    .expect("insert provider");
+    let provider_id = conn.last_insert_rowid();
+    let model_uuid = crate::shared::uuid::new_uuid_v4();
+    conn.execute(
+        "INSERT INTO provider_models(model_uuid, provider_id, remote_model_id, source, stale, capabilities_configured, supported_reasoning_efforts_json, default_reasoning_effort, context_window, created_at, updated_at) VALUES (?1, ?2, 'gpt-managed', 'manual', 0, 1, '[\"medium\"]', 'medium', 200000, 1, 1)",
+        rusqlite::params![model_uuid, provider_id],
+    )
+    .expect("insert model");
+    conn.execute(
+        "INSERT INTO codex_managed_profiles(profile_uuid, profile_name, profile_name_key, model_uuid, codex_home_path, content_sha256, created_at, updated_at) VALUES (?1, 'managed', 'managed', ?2, ?3, ?4, 1, 1)",
+        rusqlite::params![crate::shared::uuid::new_uuid_v4(), model_uuid, codex_config_path(&handle).unwrap().parent().unwrap().to_string_lossy().to_string(), "a".repeat(64)],
+    )
+    .expect("insert profile");
+    drop(conn);
+
+    let catalog_root = crate::app_paths::app_data_dir(&handle)
+        .unwrap()
+        .join("cli-proxy")
+        .join("codex");
+    let catalog_root = std::fs::canonicalize(catalog_root).expect("canonical catalog root");
+    let generated_path = catalog_root.join("managed-model-catalog.json");
+    std::fs::write(&generated_path, b"{}\n").expect("write generated catalog fixture");
+    let config_path = codex_config_path(&handle).expect("config path");
+    let mut config = std::fs::read_to_string(&config_path)
+        .unwrap()
+        .parse::<toml_edit::DocumentMut>()
+        .unwrap();
+    config["model_catalog_json"] = toml_edit::value(generated_path.to_string_lossy().to_string());
+    std::fs::write(&config_path, config.to_string()).expect("bind generated catalog");
+
+    settings::update(&handle, |settings| {
+        settings.codex_oauth_compatible_proxy_mode = true;
+        Ok(())
+    })
+    .expect("enable OAuth setting");
+    crate::codex_model_catalog::managed::reset_sync_current_invocations_for_test();
+    let synced = sync_codex_oauth_enabled(&handle, base_origin, true).expect("OAuth-only sync");
+    assert!(synced.ok, "{synced:?}");
+    assert_eq!(
+        crate::codex_model_catalog::managed::sync_current_invocations_for_test(),
+        0
+    );
+    let config = std::fs::read_to_string(config_path).expect("synced config");
+    assert!(config.contains("model_provider = \"OpenAI\""), "{config}");
+    assert!(
+        config.contains(&generated_path.to_string_lossy().to_string()),
+        "{config}"
+    );
+    assert!(
+        !config.contains("preferred_auth_method = \"apikey\""),
+        "{config}"
+    );
+    let auth = std::fs::read_to_string(codex_auth_path(&handle).unwrap()).unwrap();
+    assert!(auth.contains("oauth-token"), "{auth}");
+    assert!(!auth.contains("OPENAI_API_KEY"), "{auth}");
 }

@@ -32,7 +32,7 @@ import {
 } from "../../services/cli/cliManager";
 import { createQueryWrapper, createTestQueryClient } from "../../test/utils/reactQuery";
 import { setTauriRuntime } from "../../test/utils/tauriRuntime";
-import { cliManagerKeys } from "../keys";
+import { cliManagerKeys, cliProxyKeys } from "../keys";
 import {
   pickCliAvailable,
   useCliManagerClaudeHooksQuery,
@@ -546,11 +546,35 @@ describe("query/cliManager", () => {
 
     const { result } = renderHook(() => useCliManagerCodexConfigSetMutation(), { wrapper });
     await act(async () => {
-      await result.current.mutateAsync({ model: "gpt-5" });
+      await result.current.mutateAsync({ patch: { model: "gpt-5" } });
     });
 
+    expect(cliManagerCodexConfigSet).toHaveBeenCalledWith(
+      { model: "gpt-5" },
+      { syncHistory: undefined }
+    );
     expect(client.getQueryData(cliManagerKeys.codexConfig())).toEqual(updated);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
+  });
+
+  it("passes the explicit Codex history sync scope to the service", async () => {
+    setTauriRuntime();
+    vi.mocked(cliManagerCodexConfigSet).mockResolvedValue(makeCodexConfigState());
+    const wrapper = createQueryWrapper(createTestQueryClient());
+    const { result } = renderHook(() => useCliManagerCodexConfigSetMutation(), { wrapper });
+
+    await act(async () => {
+      await result.current.mutateAsync({
+        patch: { features_remote_compaction: true },
+        syncHistory: true,
+      });
+    });
+
+    expect(cliManagerCodexConfigSet).toHaveBeenCalledWith(
+      { features_remote_compaction: true },
+      { syncHistory: true }
+    );
   });
 
   it("useCliManagerCodexConfigTomlSetMutation updates config cache and invalidates config+toml", async () => {
@@ -572,6 +596,7 @@ describe("query/cliManager", () => {
     expect(client.getQueryData(cliManagerKeys.codexConfig())).toEqual(updated);
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 
   it("useCliManagerCodexProviderSyncMutation invalidates codex config and toml", async () => {
@@ -603,6 +628,7 @@ describe("query/cliManager", () => {
     expect(cliManagerCodexProviderSync).toHaveBeenCalledWith();
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
   });
 
   it("useCliManagerGeminiConfigSetMutation updates cache and invalidates", async () => {
@@ -877,7 +903,7 @@ describe("query/cliManager", () => {
 
     let configCall!: Promise<CodexConfigState>;
     await act(async () => {
-      configCall = configMutation.result.current.mutateAsync({ model: "first" });
+      configCall = configMutation.result.current.mutateAsync({ patch: { model: "first" } });
       await Promise.resolve();
     });
     await waitFor(() => expect(cliManagerCodexConfigSet).toHaveBeenCalledTimes(1));
@@ -927,7 +953,7 @@ describe("query/cliManager", () => {
 
     await act(async () => {
       await claudeMutation.result.current.mutateAsync({ model: "new-claude" });
-      await codexMutation.result.current.mutateAsync({ model: "new-codex" });
+      await codexMutation.result.current.mutateAsync({ patch: { model: "new-codex" } });
       await tomlMutation.result.current.mutateAsync({ toml: 'model = "new-codex"' });
       await geminiMutation.result.current.mutateAsync({ modelName: "new-gemini" });
     });

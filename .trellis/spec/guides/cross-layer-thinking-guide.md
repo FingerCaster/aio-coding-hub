@@ -120,6 +120,15 @@ After implementation:
       casting payload fields locally
 - [ ] Checked that derived state points back to the source event identifier
       (`seq`, `id`, `version`) instead of inventing a second cursor
+- [ ] For optional bulk migration, branched on scope before directory/database
+      enumeration; an opt-out does not pay discovery cost
+- [ ] Kept preconditions that exist only for the optional migration, such as a
+      required closed process, inside the same scope branch; config-only paths
+      must not fail a preflight for side effects they explicitly declined
+- [ ] For large file sets, retained paths and bounded records rather than
+      aggregate original/rewritten bytes; rollback payloads live on disk
+- [ ] On Windows atomic replacement, closed every source/reader handle for the
+      target before final rename/MoveFileEx and tested the real Windows path
 
 ---
 

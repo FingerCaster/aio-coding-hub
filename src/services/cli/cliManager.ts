@@ -35,6 +35,7 @@ export type ClaudeHookGroup = GeneratedClaudeHookGroup;
 export type ClaudeHooksSetInput = GeneratedClaudeHooksSetInput;
 export type CodexConfigState = GeneratedCodexConfigState;
 export type CodexConfigPatch = Partial<GeneratedCodexConfigPatch>;
+export type CodexConfigSetOptions = { syncHistory?: boolean };
 export type CodexConfigTomlState = GeneratedCodexConfigTomlState;
 export type CodexConfigTomlValidationError = GeneratedCodexConfigTomlValidationError;
 export type CodexConfigTomlValidationResult = GeneratedCodexConfigTomlValidationResult;
@@ -191,14 +192,18 @@ export async function cliManagerCodexConfigGet() {
   });
 }
 
-export async function cliManagerCodexConfigSet(patch: CodexConfigPatch) {
+export async function cliManagerCodexConfigSet(
+  patch: CodexConfigPatch,
+  options: CodexConfigSetOptions = {}
+) {
   const normalizedPatch = toCodexConfigPatch(patch);
+  const syncHistory = options.syncHistory ?? false;
   return invokeGeneratedIpc<CodexConfigState>({
     title: "保存 Codex 配置失败",
     cmd: "cli_manager_codex_config_set",
-    args: { patch: normalizedPatch },
+    args: { patch: normalizedPatch, syncHistory },
     invoke: () =>
-      commands.cliManagerCodexConfigSet(normalizedPatch) as Promise<
+      commands.cliManagerCodexConfigSet(normalizedPatch, syncHistory) as Promise<
         GeneratedCommandResult<CodexConfigState>
       >,
   });

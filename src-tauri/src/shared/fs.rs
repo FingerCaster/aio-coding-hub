@@ -381,17 +381,34 @@ fn write_file_atomic_with_replacer(
     bytes: &[u8],
     replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
 ) -> crate::shared::error::AppResult<()> {
+    write_file_atomic_with_writer_and_replacer(
+        path,
+        |file| {
+            use std::io::Write as _;
+            file.write_all(bytes)
+                .map_err(|error| format!("failed to write atomic temp file: {error}").into())
+        },
+        replace,
+    )
+}
+
+fn write_file_atomic_with_writer_and_replacer(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> crate::shared::error::AppResult<()>,
+    replace: impl FnOnce(&Path, &Path) -> std::io::Result<()>,
+) -> crate::shared::error::AppResult<()> {
     if let Some(parent) = path.parent() {
         std::fs::create_dir_all(parent)
             .map_err(|e| format!("failed to create dir {}: {e}", parent.display()))?;
     }
 
     let (tmp_path, mut temp_file) = create_unique_atomic_temp(path)?;
-    use std::io::Write as _;
-    if let Err(error) = temp_file
-        .write_all(bytes)
-        .and_then(|()| temp_file.sync_all())
-    {
+    let write_result = write(&mut temp_file).and_then(|()| {
+        temp_file
+            .sync_all()
+            .map_err(|error| format!("failed to sync atomic temp file: {error}").into())
+    });
+    if let Err(error) = write_result {
         drop(temp_file);
         let _ = std::fs::remove_file(&tmp_path);
         return Err(format!("failed to write temp file {}: {error}", tmp_path.display()).into());
@@ -443,6 +460,13 @@ fn create_unique_atomic_temp(
 
 pub(crate) fn write_file_atomic(path: &Path, bytes: &[u8]) -> crate::shared::error::AppResult<()> {
     write_file_atomic_with_replacer(path, bytes, replace_file_atomic)
+}
+
+pub(crate) fn write_file_atomic_with(
+    path: &Path,
+    write: impl FnOnce(&mut std::fs::File) -> crate::shared::error::AppResult<()>,
+) -> crate::shared::error::AppResult<()> {
+    write_file_atomic_with_writer_and_replacer(path, write, replace_file_atomic)
 }
 
 pub(crate) fn write_file_atomic_create_new(

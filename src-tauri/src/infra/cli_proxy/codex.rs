@@ -10,8 +10,6 @@ use super::{
     write_cli_proxy_file_atomic, write_manifest, CliProxyResult, PLACEHOLDER_KEY,
 };
 
-pub(super) const CODEX_PROVIDER_KEY: &str = "aio";
-
 pub(super) fn codex_config_path<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> AppResult<PathBuf> {
@@ -22,6 +20,21 @@ pub(super) fn codex_auth_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> A
     crate::codex_paths::codex_auth_json_path(app)
 }
 
+pub(super) fn preflight_proxy_config<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+) -> AppResult<()> {
+    let current = read_optional_cli_proxy_file(&codex_config_path(app)?)?;
+    let _ = build_codex_config_toml_for_existing_proxy(
+        current,
+        &format!("{}/v1", base_origin.trim_end_matches('/')),
+        None,
+        CodexConfigPlatform::current(),
+        super::codex_oauth_compatible_proxy_mode(app),
+    )?;
+    Ok(())
+}
+
 pub(super) fn is_codex_proxy_target_state<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     let config_path = match codex_config_path(app) {
         Ok(path) => path,
@@ -29,13 +42,11 @@ pub(super) fn is_codex_proxy_target_state<R: tauri::Runtime>(app: &tauri::AppHan
     };
 
     let config = match read_cli_proxy_file(&config_path) {
-        Ok(content) => String::from_utf8_lossy(&content).to_string(),
+        Ok(content) => content,
         Err(_) => return false,
     };
-
-    // Check for either normal mode ("aio") or remote_compaction mode ("OpenAI")
-    let has_proxy_provider = check_provider_config_basic(&config, CODEX_PROVIDER_KEY)
-        || check_provider_config_basic(&config, "OpenAI");
+    let has_proxy_provider =
+        crate::infra::codex_config::provider_projection::has_managed_provider_identity(&config);
     if super::codex_oauth_compatible_proxy_mode(app) {
         return has_proxy_provider;
     }
@@ -57,19 +68,6 @@ pub(super) fn is_codex_proxy_target_state<R: tauri::Runtime>(app: &tauri::AppHan
         && auth.get("auth_mode").and_then(|value| value.as_str()) == Some("apikey");
 
     has_proxy_provider && has_proxy_auth
-}
-
-/// Basic check for model_provider and model_providers table (without base_url check).
-fn check_provider_config_basic(config: &str, provider_key: &str) -> bool {
-    let expected_provider = format!("model_provider = \"{provider_key}\"");
-    let expected_table_unquoted = format!("[model_providers.{provider_key}]");
-    let expected_table_double = format!("[model_providers.\"{provider_key}\"]");
-    let expected_table_single = format!("[model_providers.'{provider_key}']");
-
-    config.contains(&expected_provider)
-        && (config.contains(&expected_table_unquoted)
-            || config.contains(&expected_table_double)
-            || config.contains(&expected_table_single))
 }
 
 pub(super) fn rebind_codex_manifest_after_home_change<R: tauri::Runtime>(
@@ -278,10 +276,13 @@ pub(super) fn merge_restore_codex_config_toml(
     let current_bytes = read_optional_cli_proxy_file(target_path)?;
     let backup_bytes = read_cli_proxy_file(backup_path)?;
 
-    let current_str = current_bytes
-        .as_deref()
-        .map(|b| String::from_utf8_lossy(b).to_string())
-        .unwrap_or_default();
+    let current =
+        crate::infra::codex_config::provider_projection::restore_managed_provider_projection(
+            current_bytes.as_deref().unwrap_or_default(),
+            &backup_bytes,
+        )?;
+    let current_str = String::from_utf8(current)
+        .map_err(|_| "CLI_PROXY_INVALID_TOML: config.toml must be valid UTF-8".to_string())?;
     let backup_str = String::from_utf8_lossy(&backup_bytes).to_string();
 
     let mut lines: Vec<String> = if current_str.is_empty() {
@@ -295,14 +296,6 @@ pub(super) fn merge_restore_codex_config_toml(
     } else {
         backup_str.lines().map(|l| l.to_string()).collect()
     };
-
-    // --- Revert root `model_provider` ---
-    let backup_model_provider = find_root_key_value(&backup_lines, "model_provider");
-    revert_root_key(
-        &mut lines,
-        "model_provider",
-        backup_model_provider.as_deref(),
-    );
 
     // --- Revert root `preferred_auth_method` ---
     let backup_auth_method = find_root_key_value(&backup_lines, "preferred_auth_method");
@@ -319,14 +312,6 @@ pub(super) fn merge_restore_codex_config_toml(
         "model_catalog_json",
         backup_model_catalog.as_deref(),
     );
-
-    // --- Remove the proxy-injected `[model_providers.aio]` section ---
-    // If the backup had this section, we leave it; otherwise remove it.
-    let backup_had_aio =
-        !find_model_provider_base_table_indices(&backup_lines, CODEX_PROVIDER_KEY).is_empty();
-    if !backup_had_aio {
-        remove_model_provider_section(&mut lines, CODEX_PROVIDER_KEY);
-    }
 
     // --- Revert `[windows] sandbox` ---
     // If the backup did not have `[windows]` sandbox, remove the one the proxy added.
@@ -386,26 +371,6 @@ pub(super) fn revert_root_key(lines: &mut Vec<String>, key: &str, backup_value: 
     }
 }
 
-/// Remove `[model_providers.<provider_key>]` section and its nested tables.
-pub(super) fn remove_model_provider_section(lines: &mut Vec<String>, provider_key: &str) {
-    // Remove base tables
-    loop {
-        let indices = find_model_provider_base_table_indices(lines, provider_key);
-        if indices.is_empty() {
-            break;
-        }
-        let start = indices[0];
-        let end = find_next_table_header(lines, start.saturating_add(1));
-        lines.drain(start..end);
-    }
-
-    // Remove nested tables
-    while let Some(start) = find_model_provider_nested_table_index(lines, provider_key) {
-        let end = find_next_table_header(lines, start.saturating_add(1));
-        lines.drain(start..end);
-    }
-}
-
 /// Check if backup lines contain a `[windows]` section with `sandbox` key.
 pub(super) fn has_windows_sandbox(lines: &[String]) -> bool {
     let Some(start) = lines.iter().position(|l| l.trim() == "[windows]") else {
@@ -452,150 +417,37 @@ pub(super) fn find_next_table_header(lines: &[String], from: usize) -> usize {
         .unwrap_or(lines.len())
 }
 
-fn insert_model_provider_section(
-    lines: &mut Vec<String>,
-    insert_at: usize,
-    provider_key: &str,
-    base_url: &str,
-) {
-    let header = format!("[model_providers.{provider_key}]");
-    let section = [
-        header,
-        format!("name = \"{provider_key}\""),
-        format!("base_url = \"{base_url}\""),
-        "wire_api = \"responses\"".to_string(),
-        "requires_openai_auth = true".to_string(),
+fn move_model_provider_base_before_nested(lines: &mut Vec<String>, provider_key: &str) {
+    let base_headers = [
+        format!("[model_providers.{provider_key}]"),
+        format!("[model_providers.\"{provider_key}\"]"),
+        format!("[model_providers.'{provider_key}']"),
     ];
-
-    lines.splice(insert_at..insert_at, section);
-}
-
-pub(super) fn is_model_provider_base_header_line(trimmed: &str, provider_key: &str) -> bool {
-    trimmed == format!("[model_providers.{provider_key}]")
-        || trimmed == format!("[model_providers.\"{provider_key}\"]")
-        || trimmed == format!("[model_providers.'{provider_key}']")
-}
-
-pub(super) fn find_model_provider_base_table_indices(
-    lines: &[String],
-    provider_key: &str,
-) -> Vec<usize> {
-    lines
+    let nested_prefixes = [
+        format!("[model_providers.{provider_key}."),
+        format!("[model_providers.\"{provider_key}\"."),
+        format!("[model_providers.'{provider_key}'."),
+    ];
+    let Some(base_start) = lines
         .iter()
-        .enumerate()
-        .filter_map(|(idx, line)| {
-            is_model_provider_base_header_line(line.trim(), provider_key).then_some(idx)
-        })
-        .collect()
-}
-
-pub(super) fn find_model_provider_nested_table_index(
-    lines: &[String],
-    provider_key: &str,
-) -> Option<usize> {
-    let prefix_unquoted = format!("[model_providers.{provider_key}.");
-    let prefix_double = format!("[model_providers.\"{provider_key}\".");
-    let prefix_single = format!("[model_providers.'{provider_key}'.");
-
-    lines.iter().position(|line| {
-        let trimmed = line.trim();
-        trimmed.starts_with(&prefix_unquoted)
-            || trimmed.starts_with(&prefix_double)
-            || trimmed.starts_with(&prefix_single)
-    })
-}
-
-fn patch_model_provider_base_table(
-    lines: &mut Vec<String>,
-    start: usize,
-    provider_key: &str,
-    base_url: &str,
-) {
-    let end = find_next_table_header(lines, start.saturating_add(1));
-
-    let mut body: Vec<String> = Vec::new();
-    for line in lines[start.saturating_add(1)..end].iter() {
-        let trimmed = line.trim_start();
-        if trimmed.starts_with('#') {
-            body.push(line.clone());
-            continue;
-        }
-
-        let Some((k, _)) = trimmed.split_once('=') else {
-            body.push(line.clone());
-            continue;
-        };
-
-        match k.trim() {
-            "name" | "base_url" | "wire_api" | "requires_openai_auth" => {}
-            _ => body.push(line.clone()),
-        }
-    }
-
-    let managed = [
-        format!("name = \"{provider_key}\""),
-        format!("base_url = \"{base_url}\""),
-        "wire_api = \"responses\"".to_string(),
-        "requires_openai_auth = true".to_string(),
-    ];
-
-    let mut patched: Vec<String> = Vec::with_capacity(managed.len() + body.len());
-    patched.extend(managed);
-    if !body.is_empty()
-        && !body.first().is_some_and(|l| l.trim().is_empty())
-        && !patched.last().is_some_and(|l| l.trim().is_empty())
-    {
-        patched.push(String::new());
-    }
-    patched.extend(body);
-
-    lines.splice(start.saturating_add(1)..end, patched);
-}
-
-pub(super) fn upsert_model_provider_base_table(
-    lines: &mut Vec<String>,
-    provider_key: &str,
-    base_url: &str,
-) {
-    let mut bases = find_model_provider_base_table_indices(lines, provider_key);
-    bases.sort();
-
-    // Ensure there is exactly one base table, and keep nested tables intact.
-    if let Some(&keep_start) = bases.first() {
-        let nested_start = find_model_provider_nested_table_index(lines, provider_key);
-
-        // Remove duplicates first (from bottom) to keep indices stable.
-        for start in bases.into_iter().rev() {
-            if start == keep_start {
-                continue;
-            }
-            let end = find_next_table_header(lines, start.saturating_add(1));
-            lines.drain(start..end);
-        }
-
-        patch_model_provider_base_table(lines, keep_start, provider_key, base_url);
-
-        // TOML requires parent tables appear before nested child tables. If the base table
-        // is currently after a nested table, move it before the first nested occurrence.
-        if let Some(nested_start) = nested_start {
-            if keep_start > nested_start {
-                let end = find_next_table_header(lines, keep_start.saturating_add(1));
-                let block: Vec<String> = lines.drain(keep_start..end).collect();
-                lines.splice(nested_start..nested_start, block);
-            }
-        }
+        .position(|line| base_headers.iter().any(|header| line.trim() == header))
+    else {
+        return;
+    };
+    let Some(nested_start) = lines.iter().position(|line| {
+        nested_prefixes
+            .iter()
+            .any(|prefix| line.trim().starts_with(prefix))
+    }) else {
+        return;
+    };
+    if base_start < nested_start {
         return;
     }
 
-    // No base table found: insert before the first nested table if it exists, otherwise append.
-    let mut insert_at =
-        find_model_provider_nested_table_index(lines, provider_key).unwrap_or(lines.len());
-    if insert_at > 0 && !lines[insert_at.saturating_sub(1)].trim().is_empty() {
-        lines.insert(insert_at, String::new());
-        insert_at += 1;
-    }
-
-    insert_model_provider_section(lines, insert_at, provider_key, base_url);
+    let base_end = find_next_table_header(lines, base_start.saturating_add(1));
+    let block: Vec<String> = lines.drain(base_start..base_end).collect();
+    lines.splice(nested_start..nested_start, block);
 }
 
 /// Upsert a root-level `key = "value"` line before any `[table]` header.
@@ -630,10 +482,6 @@ fn upsert_root_toml_key(lines: &mut Vec<String>, key: &str, value: &str, trailin
     if trailing_blank && insert_at + 1 < lines.len() && !lines[insert_at + 1].trim().is_empty() {
         lines.insert(insert_at + 1, String::new());
     }
-}
-
-pub(super) fn upsert_root_model_provider(lines: &mut Vec<String>, value: &str) {
-    upsert_root_toml_key(lines, "model_provider", value, true);
 }
 
 pub(super) fn upsert_root_preferred_auth_method(lines: &mut Vec<String>, value: &str) {
@@ -706,46 +554,71 @@ impl CodexConfigPlatform {
     }
 }
 
+#[cfg(test)]
 pub(super) fn build_codex_config_toml(
     current: Option<Vec<u8>>,
     base_url: &str,
     platform: CodexConfigPlatform,
 ) -> AppResult<Vec<u8>> {
-    build_codex_config_toml_with_auth_strategy(current, base_url, platform, false)
+    build_codex_config_toml_with_auth_strategy(current, base_url, None, platform, false)
 }
 
+#[cfg(test)]
 pub(super) fn build_codex_config_toml_oauth_compatible(
     current: Option<Vec<u8>>,
     base_url: &str,
     platform: CodexConfigPlatform,
 ) -> AppResult<Vec<u8>> {
-    build_codex_config_toml_with_auth_strategy(current, base_url, platform, true)
+    build_codex_config_toml_with_auth_strategy(current, base_url, None, platform, true)
+}
+
+pub(super) fn build_codex_config_toml_for_existing_proxy(
+    current: Option<Vec<u8>>,
+    base_url: &str,
+    previous_base_url: Option<&str>,
+    platform: CodexConfigPlatform,
+    oauth_compatible: bool,
+) -> AppResult<Vec<u8>> {
+    build_codex_config_toml_with_auth_strategy(
+        current,
+        base_url,
+        previous_base_url,
+        platform,
+        oauth_compatible,
+    )
 }
 
 fn build_codex_config_toml_with_auth_strategy(
     current: Option<Vec<u8>>,
     base_url: &str,
+    previous_base_url: Option<&str>,
     platform: CodexConfigPlatform,
     oauth_compatible: bool,
 ) -> AppResult<Vec<u8>> {
-    let input = current
-        .as_deref()
-        .map(|b| String::from_utf8_lossy(b).to_string())
-        .unwrap_or_default();
+    let projected = crate::infra::codex_config::provider_projection::project_active_provider(
+        current.as_deref().unwrap_or_default(),
+        base_url,
+        previous_base_url,
+    )?;
+    let provider_key =
+        crate::infra::codex_config::provider_projection::desired_provider_key_from_config(
+            &projected,
+        )?;
+    let input = String::from_utf8(projected)
+        .map_err(|_| "CLI_PROXY_INVALID_TOML: config.toml must be valid UTF-8".to_string())?;
 
     let mut lines: Vec<String> = if input.is_empty() {
         Vec::new()
     } else {
         input.lines().map(|l| l.to_string()).collect()
     };
+    move_model_provider_base_before_nested(&mut lines, provider_key.as_str());
 
-    upsert_root_model_provider(&mut lines, CODEX_PROVIDER_KEY);
     if oauth_compatible {
         remove_root_preferred_auth_method_if_api_key(&mut lines);
     } else {
         upsert_root_preferred_auth_method(&mut lines, "apikey");
     }
-    upsert_model_provider_base_table(&mut lines, CODEX_PROVIDER_KEY, base_url);
     if platform == CodexConfigPlatform::Windows {
         upsert_windows_sandbox(&mut lines);
     }
@@ -786,11 +659,7 @@ pub(super) fn build_codex_auth_json(current: Option<Vec<u8>>) -> AppResult<Vec<u
     Ok(out)
 }
 
-/// Provider key used when remote_compaction is enabled (Codex requires "OpenAI" for Remote Compact).
-const CODEX_REMOTE_COMPACTION_PROVIDER_KEY: &str = "OpenAI";
-
 /// Check whether Codex proxy config is currently applied.
-/// Supports both normal mode (provider key = "aio") and remote_compaction mode (provider key = "OpenAI").
 pub(super) fn is_proxy_config_applied<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     base_origin: &str,
@@ -801,28 +670,18 @@ pub(super) fn is_proxy_config_applied<R: tauri::Runtime>(
     };
 
     let config = match read_cli_proxy_file(&config_path) {
-        Ok(v) => String::from_utf8_lossy(&v).to_string(),
+        Ok(v) => v,
         Err(_) => return false,
     };
-
-    let expected_base = format!("base_url = \"{base_origin}/v1\"");
-
-    // Check base_url first - this must always be present
-    if !config.contains(&expected_base) {
-        return false;
-    }
-
-    // Check for either normal mode ("aio") or remote_compaction mode ("OpenAI")
-    let has_normal_provider = check_provider_config(&config, CODEX_PROVIDER_KEY);
-    let has_remote_compaction_provider =
-        check_provider_config(&config, CODEX_REMOTE_COMPACTION_PROVIDER_KEY);
-
-    if !has_normal_provider && !has_remote_compaction_provider {
+    if !crate::infra::codex_config::provider_projection::is_managed_projection_applied(
+        &config,
+        &format!("{base_origin}/v1"),
+    ) {
         return false;
     }
 
     if super::codex_oauth_compatible_proxy_mode(app) {
-        return !has_root_preferred_auth_method_api_key(&config);
+        return !has_root_preferred_auth_method_api_key(&String::from_utf8_lossy(&config));
     }
 
     let auth_path = match codex_auth_path(app) {
@@ -837,25 +696,8 @@ pub(super) fn is_proxy_config_applied<R: tauri::Runtime>(
         Ok(v) => v,
         Err(_) => return false,
     };
-    auth.get("OPENAI_API_KEY")
-        .and_then(|v| v.as_str())
-        .is_some()
-}
-
-/// Check if the config contains the expected model_provider and model_providers table for a given key.
-fn check_provider_config(config: &str, provider_key: &str) -> bool {
-    let expected_provider = format!("model_provider = \"{provider_key}\"");
-    let expected_table_unquoted = format!("[model_providers.{provider_key}]");
-    let expected_table_double = format!("[model_providers.\"{provider_key}\"]");
-    let expected_table_single = format!("[model_providers.'{provider_key}']");
-
-    if !config.contains(&expected_provider) {
-        return false;
-    }
-
-    config.contains(&expected_table_unquoted)
-        || config.contains(&expected_table_double)
-        || config.contains(&expected_table_single)
+    auth.get("OPENAI_API_KEY").and_then(|value| value.as_str()) == Some(PLACEHOLDER_KEY)
+        && auth.get("auth_mode").and_then(|value| value.as_str()) == Some("apikey")
 }
 
 /// Public entry point called from `sync_enabled` and `rebind_codex_home_after_change`.

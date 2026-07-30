@@ -85,10 +85,17 @@ struct FileSnapshot {
 #[derive(Debug)]
 struct PreparedCatalogChange {
     baseline: crate::cli_proxy::CodexProxyBaseline,
+    baseline_backup: Option<AppliedFileChange>,
     config_before: FileSnapshot,
     config_after: Vec<u8>,
     generated_before: FileSnapshot,
     generated_after: Option<Vec<u8>>,
+}
+
+struct PreparedCatalogBaseline {
+    config_bytes: Option<Vec<u8>>,
+    catalog_path: Option<PathBuf>,
+    backup_change: Option<AppliedFileChange>,
 }
 
 #[derive(Debug)]
@@ -96,7 +103,7 @@ pub(crate) struct ManagedCatalogPlan {
     change: Option<PreparedCatalogChange>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct AppliedFileChange {
     before: FileSnapshot,
     after: Option<Vec<u8>>,
@@ -106,6 +113,7 @@ struct AppliedFileChange {
 pub(crate) struct AppliedManagedCatalog {
     config: Option<AppliedFileChange>,
     generated: Option<AppliedFileChange>,
+    baseline_backup: Option<AppliedFileChange>,
 }
 
 impl ManagedCatalogPlan {
@@ -121,6 +129,7 @@ impl ManagedCatalogPlan {
             return Ok(AppliedManagedCatalog {
                 config: None,
                 generated: None,
+                baseline_backup: None,
             });
         };
 
@@ -146,54 +155,195 @@ impl ManagedCatalogPlan {
         )?;
         ensure_snapshot_unchanged(&change.generated_before, GENERATED_CATALOG_MAX_BYTES)?;
 
-        let mut generated_change = None;
-        if change.generated_before.bytes != change.generated_after {
-            apply_generated_catalog_state(
-                &change.generated_before.path,
-                change.generated_after.as_deref(),
+        apply_prepared_catalog_files(
+            change.baseline_backup,
+            change.config_before,
+            change.config_after,
+            change.generated_before,
+            change.generated_after,
+        )
+    }
+}
+
+fn apply_prepared_catalog_files(
+    baseline_backup: Option<AppliedFileChange>,
+    config_before: FileSnapshot,
+    config_after: Vec<u8>,
+    generated_before: FileSnapshot,
+    generated_after: Option<Vec<u8>>,
+) -> AppResult<AppliedManagedCatalog> {
+    let mut baseline_backup_change = None;
+    if let Some(planned) = baseline_backup.as_ref() {
+        ensure_snapshot_unchanged(&planned.before, crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES)?;
+        if planned.before.bytes != planned.after {
+            let after = planned.after.as_deref().ok_or_else(|| {
+                AppError::new(
+                    "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                    "the repaired Codex proxy baseline cannot be empty",
+                )
+            })?;
+            crate::cli_proxy::write_cli_proxy_file_atomic(&planned.before.path, after).map_err(
+                |error| {
+                    AppError::new(
+                        "CODEX_MANAGED_MODEL_CONFIG_WRITE_FAILED",
+                        format!("failed to repair Codex proxy baseline: {error}"),
+                    )
+                },
             )?;
-            generated_change = Some(AppliedFileChange {
-                before: change.generated_before.clone(),
-                after: change.generated_after.clone(),
-            });
+            baseline_backup_change = Some(planned.clone());
         }
+    }
 
-        let mut config_change = None;
-        if change.config_before.bytes.as_deref() != Some(change.config_after.as_slice()) {
-            if let Err(error) = crate::cli_proxy::write_cli_proxy_file_atomic(
-                &change.config_before.path,
-                &change.config_after,
-            ) {
-                if let Some(applied) = generated_change.take() {
-                    let _ = rollback_file_change(&applied, GENERATED_CATALOG_MAX_BYTES);
-                }
-                return Err(AppError::new(
-                    "CODEX_MANAGED_MODEL_CONFIG_WRITE_FAILED",
-                    format!("failed to update Codex config.toml: {error}"),
-                ));
-            }
-            config_change = Some(AppliedFileChange {
-                before: change.config_before,
-                after: Some(change.config_after),
-            });
+    let mut generated_change = None;
+    if generated_before.bytes != generated_after {
+        let result = injected_catalog_apply_failure(CatalogApplyStage::Generated).and_then(|()| {
+            apply_generated_catalog_state(&generated_before.path, generated_after.as_deref())
+        });
+        if let Err(error) = result {
+            return Err(rollback_catalog_apply_failure(
+                error,
+                None,
+                baseline_backup_change.as_ref(),
+            ));
         }
+        generated_change = Some(AppliedFileChange {
+            before: generated_before.clone(),
+            after: generated_after.clone(),
+        });
+    }
 
-        Ok(AppliedManagedCatalog {
-            config: config_change,
-            generated: generated_change,
-        })
+    let mut config_change = None;
+    if config_before.bytes.as_deref() != Some(config_after.as_slice()) {
+        let result = injected_catalog_apply_failure(CatalogApplyStage::Config).and_then(|()| {
+            crate::cli_proxy::write_cli_proxy_file_atomic(&config_before.path, &config_after)
+                .map_err(|error| {
+                    AppError::new(
+                        "CODEX_MANAGED_MODEL_CONFIG_WRITE_FAILED",
+                        format!("failed to update Codex config.toml: {error}"),
+                    )
+                })
+        });
+        if let Err(error) = result {
+            return Err(rollback_catalog_apply_failure(
+                error,
+                generated_change.as_ref(),
+                baseline_backup_change.as_ref(),
+            ));
+        }
+        config_change = Some(AppliedFileChange {
+            before: config_before,
+            after: Some(config_after),
+        });
+    }
+
+    Ok(AppliedManagedCatalog {
+        config: config_change,
+        generated: generated_change,
+        baseline_backup: baseline_backup_change,
+    })
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogApplyStage {
+    Generated,
+    Config,
+}
+
+#[cfg(not(test))]
+fn injected_catalog_apply_failure(_stage: CatalogApplyStage) -> AppResult<()> {
+    Ok(())
+}
+
+#[cfg(test)]
+thread_local! {
+    static CATALOG_APPLY_FAILURE: std::cell::Cell<Option<CatalogApplyStage>> = const {
+        std::cell::Cell::new(None)
+    };
+}
+
+#[cfg(test)]
+fn injected_catalog_apply_failure(stage: CatalogApplyStage) -> AppResult<()> {
+    let should_fail = CATALOG_APPLY_FAILURE.with(|failure| {
+        if failure.get() == Some(stage) {
+            failure.set(None);
+            true
+        } else {
+            false
+        }
+    });
+    if should_fail {
+        Err(AppError::new(
+            "CODEX_MANAGED_MODEL_TEST_WRITE_FAILED",
+            format!("injected {stage:?} catalog write failure"),
+        ))
+    } else {
+        Ok(())
     }
 }
 
 impl AppliedManagedCatalog {
     pub(crate) fn rollback(self) -> AppResult<()> {
+        let mut errors = Vec::new();
         if let Some(config) = self.config.as_ref() {
-            rollback_file_change(config, crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES)?;
+            if let Err(error) =
+                rollback_file_change(config, crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES)
+            {
+                errors.push(error.to_string());
+            }
         }
         if let Some(generated) = self.generated.as_ref() {
-            rollback_file_change(generated, GENERATED_CATALOG_MAX_BYTES)?;
+            if let Err(error) = rollback_file_change(generated, GENERATED_CATALOG_MAX_BYTES) {
+                errors.push(error.to_string());
+            }
+        }
+        if let Some(baseline_backup) = self.baseline_backup.as_ref() {
+            if let Err(error) =
+                rollback_file_change(baseline_backup, crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES)
+            {
+                errors.push(error.to_string());
+            }
+        }
+        if !errors.is_empty() {
+            return Err(AppError::new(
+                "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+                format!(
+                    "failed to roll back managed catalog transaction: {}",
+                    errors.join("; ")
+                ),
+            ));
         }
         Ok(())
+    }
+}
+
+fn rollback_catalog_apply_failure(
+    original: AppError,
+    generated: Option<&AppliedFileChange>,
+    baseline_backup: Option<&AppliedFileChange>,
+) -> AppError {
+    let mut errors = Vec::new();
+    if let Some(generated) = generated {
+        if let Err(error) = rollback_file_change(generated, GENERATED_CATALOG_MAX_BYTES) {
+            errors.push(error.to_string());
+        }
+    }
+    if let Some(baseline_backup) = baseline_backup {
+        if let Err(error) =
+            rollback_file_change(baseline_backup, crate::cli_proxy::CLI_PROXY_FILE_MAX_BYTES)
+        {
+            errors.push(error.to_string());
+        }
+    }
+    if errors.is_empty() {
+        original
+    } else {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            format!(
+                "managed catalog update failed ({original}); rollback also failed: {}",
+                errors.join("; ")
+            ),
+        )
     }
 }
 
@@ -328,10 +478,10 @@ pub(crate) fn prepare_for_profiles<R: tauri::Runtime>(
         .map(validate_owned_catalog)
         .transpose()?;
 
-    let original_catalog_path = parse_original_catalog_path(baseline.config_bytes.as_deref())?;
-    if let Some(path) = original_catalog_path.as_deref() {
-        reject_generated_path_as_base(path, &generated_path)?;
-    }
+    let prepared_baseline = prepare_catalog_baseline(&baseline, &generated_path)?;
+    let baseline_bytes = prepared_baseline.config_bytes;
+    let baseline_backup = prepared_baseline.backup_change;
+    let original_catalog_path = prepared_baseline.catalog_path;
 
     let config_before = snapshot_cli_proxy_file(&baseline.config_path)?;
     let current_config = config_before.bytes.as_deref().ok_or_else(|| {
@@ -371,13 +521,14 @@ pub(crate) fn prepare_for_profiles<R: tauri::Runtime>(
     let desired_catalog_path = (!profiles.is_empty()).then_some(generated_path.as_path());
     let config_after = patch_model_catalog_config(
         current_config,
-        baseline.config_bytes.as_deref(),
+        baseline_bytes.as_deref(),
         desired_catalog_path,
     )?;
 
     Ok(ManagedCatalogPlan {
         change: Some(PreparedCatalogChange {
             baseline,
+            baseline_backup,
             config_before,
             config_after,
             generated_before,
@@ -387,11 +538,43 @@ pub(crate) fn prepare_for_profiles<R: tauri::Runtime>(
 }
 
 pub(crate) fn sync_current_locked<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<()> {
+    #[cfg(test)]
+    OAUTH_SYNC_CATALOG_INVOCATIONS.with(|count| count.set(count.get().saturating_add(1)));
     let db = crate::db::init(app)?;
     let conn = db.open_connection()?;
     let profiles = load_profiles(&conn)?;
     let _applied = prepare_for_profiles(app, &profiles)?.apply(app)?;
     Ok(())
+}
+
+pub(crate) fn preserve_active_binding<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    baseline: Option<&[u8]>,
+    current: Option<&[u8]>,
+    projected: &[u8],
+) -> AppResult<Vec<u8>> {
+    let generated = managed_catalog_path(app)?;
+    let original = parse_original_catalog_path(baseline)?;
+    let current_path = parse_catalog_path(current, "current")?;
+    validate_current_catalog_binding(current.unwrap_or_default(), original.as_deref(), &generated)?;
+    let generated_path =
+        (current_path.as_deref() == Some(generated.as_path())).then_some(generated.as_path());
+    patch_model_catalog_config(projected, baseline, generated_path)
+}
+
+#[cfg(test)]
+thread_local! {
+    static OAUTH_SYNC_CATALOG_INVOCATIONS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
+
+#[cfg(test)]
+pub(crate) fn reset_sync_current_invocations_for_test() {
+    OAUTH_SYNC_CATALOG_INVOCATIONS.with(|count| count.set(0));
+}
+
+#[cfg(test)]
+pub(crate) fn sync_current_invocations_for_test() -> usize {
+    OAUTH_SYNC_CATALOG_INVOCATIONS.with(std::cell::Cell::get)
 }
 
 fn managed_catalog_path<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> AppResult<PathBuf> {
@@ -556,6 +739,55 @@ fn parse_original_catalog_path(config: Option<&[u8]>) -> AppResult<Option<PathBu
     parse_catalog_path(config, "original")
 }
 
+fn prepare_catalog_baseline(
+    baseline: &crate::cli_proxy::CodexProxyBaseline,
+    generated_path: &Path,
+) -> AppResult<PreparedCatalogBaseline> {
+    let configured_catalog_path = parse_original_catalog_path(baseline.config_bytes.as_deref())?;
+    if !configured_catalog_path
+        .as_deref()
+        .is_some_and(|path| catalog_paths_match(path, generated_path))
+    {
+        if let Some(path) = configured_catalog_path.as_deref() {
+            reject_generated_path_as_base(path, generated_path)?;
+        }
+        return Ok(PreparedCatalogBaseline {
+            config_bytes: baseline.config_bytes.clone(),
+            catalog_path: configured_catalog_path,
+            backup_change: None,
+        });
+    }
+
+    let backup_path = baseline.config_backup_path.as_ref().ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "the polluted Codex proxy baseline has no recoverable backup path",
+        )
+    })?;
+    let before = snapshot_cli_proxy_file(backup_path)?;
+    if before.bytes != baseline.config_bytes {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_CONFIG_DRIFT",
+            "the Codex proxy baseline changed while preparing catalog repair",
+        ));
+    }
+    let current = before.bytes.as_deref().ok_or_else(|| {
+        AppError::new(
+            "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED",
+            "the polluted Codex proxy baseline disappeared",
+        )
+    })?;
+    let repaired = patch_model_catalog_config(current, None, None)?;
+    Ok(PreparedCatalogBaseline {
+        config_bytes: Some(repaired.clone()),
+        catalog_path: None,
+        backup_change: Some(AppliedFileChange {
+            before,
+            after: Some(repaired),
+        }),
+    })
+}
+
 fn parse_catalog_path(config: Option<&[u8]>, source: &str) -> AppResult<Option<PathBuf>> {
     let Some(config) = config else {
         return Ok(None);
@@ -679,7 +911,17 @@ fn patch_model_catalog_config(
 }
 
 fn reject_generated_path_as_base(base: &Path, generated: &Path) -> AppResult<()> {
-    let same = if base == generated {
+    if catalog_paths_match(base, generated) {
+        return Err(AppError::new(
+            "CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID",
+            "the AIO-generated catalog cannot be used as its own base catalog",
+        ));
+    }
+    Ok(())
+}
+
+fn catalog_paths_match(base: &Path, generated: &Path) -> bool {
+    if base == generated {
         true
     } else {
         match (
@@ -689,14 +931,7 @@ fn reject_generated_path_as_base(base: &Path, generated: &Path) -> AppResult<()>
             (Ok(base), Ok(generated)) => base == generated,
             _ => false,
         }
-    };
-    if same {
-        return Err(AppError::new(
-            "CODEX_MANAGED_MODEL_BASE_CATALOG_INVALID",
-            "the AIO-generated catalog cannot be used as its own base catalog",
-        ));
     }
-    Ok(())
 }
 
 fn base_catalog_source<R: tauri::Runtime>(
@@ -1329,5 +1564,193 @@ base_url = "http://127.0.0.1:37123/v1"
             parsed["model_catalog_json"].as_str(),
             original_path.to_str()
         );
+    }
+
+    fn catalog_transaction_fixture(
+        dir: &Path,
+    ) -> (
+        Option<AppliedFileChange>,
+        FileSnapshot,
+        Vec<u8>,
+        FileSnapshot,
+        Option<Vec<u8>>,
+    ) {
+        let baseline_path = dir.join("config.toml.backup");
+        let config_path = dir.join("config.toml");
+        let generated_path = dir.join(GENERATED_CATALOG_FILE_NAME);
+        let baseline_before = b"baseline-before".to_vec();
+        let config_before = b"config-before".to_vec();
+        let generated_before = b"generated-before".to_vec();
+        std::fs::write(&baseline_path, &baseline_before).expect("write baseline fixture");
+        std::fs::write(&config_path, &config_before).expect("write config fixture");
+        std::fs::write(&generated_path, &generated_before).expect("write catalog fixture");
+
+        (
+            Some(AppliedFileChange {
+                before: FileSnapshot {
+                    path: baseline_path,
+                    bytes: Some(baseline_before),
+                },
+                after: Some(b"baseline-after".to_vec()),
+            }),
+            FileSnapshot {
+                path: config_path,
+                bytes: Some(config_before),
+            },
+            b"config-after".to_vec(),
+            FileSnapshot {
+                path: generated_path,
+                bytes: Some(generated_before),
+            },
+            Some(b"generated-after".to_vec()),
+        )
+    }
+
+    #[test]
+    fn catalog_file_transaction_applies_and_rolls_back_all_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (baseline, config, config_after, generated, generated_after) =
+            catalog_transaction_fixture(temp.path());
+        let baseline_path = baseline.as_ref().unwrap().before.path.clone();
+        let config_path = config.path.clone();
+        let generated_path = generated.path.clone();
+
+        let applied = apply_prepared_catalog_files(
+            baseline,
+            config,
+            config_after.clone(),
+            generated,
+            generated_after.clone(),
+        )
+        .expect("apply catalog transaction");
+
+        assert_eq!(std::fs::read(&baseline_path).unwrap(), b"baseline-after");
+        assert_eq!(std::fs::read(&config_path).unwrap(), config_after);
+        assert_eq!(
+            std::fs::read(&generated_path).unwrap(),
+            generated_after.unwrap()
+        );
+
+        applied.rollback().expect("roll back catalog transaction");
+        assert_eq!(std::fs::read(baseline_path).unwrap(), b"baseline-before");
+        assert_eq!(std::fs::read(config_path).unwrap(), b"config-before");
+        assert_eq!(std::fs::read(generated_path).unwrap(), b"generated-before");
+    }
+
+    #[test]
+    fn catalog_file_transaction_rolls_back_prior_stages_after_write_failures() {
+        for failure_stage in [CatalogApplyStage::Generated, CatalogApplyStage::Config] {
+            let temp = tempfile::tempdir().expect("tempdir");
+            let (baseline, config, config_after, generated, generated_after) =
+                catalog_transaction_fixture(temp.path());
+            let baseline_path = baseline.as_ref().unwrap().before.path.clone();
+            let config_path = config.path.clone();
+            let generated_path = generated.path.clone();
+            CATALOG_APPLY_FAILURE.with(|failure| failure.set(Some(failure_stage)));
+
+            let error = apply_prepared_catalog_files(
+                baseline,
+                config,
+                config_after,
+                generated,
+                generated_after,
+            )
+            .expect_err("injected catalog write should fail");
+
+            assert_eq!(error.code(), "CODEX_MANAGED_MODEL_TEST_WRITE_FAILED");
+            assert_eq!(std::fs::read(baseline_path).unwrap(), b"baseline-before");
+            assert_eq!(std::fs::read(config_path).unwrap(), b"config-before");
+            assert_eq!(std::fs::read(generated_path).unwrap(), b"generated-before");
+        }
+    }
+
+    #[test]
+    fn catalog_rollback_reports_recovery_required_and_continues_other_files() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let (baseline, config, config_after, generated, generated_after) =
+            catalog_transaction_fixture(temp.path());
+        let baseline_path = baseline.as_ref().unwrap().before.path.clone();
+        let config_path = config.path.clone();
+        let generated_path = generated.path.clone();
+        let applied = apply_prepared_catalog_files(
+            baseline,
+            config,
+            config_after,
+            generated,
+            generated_after,
+        )
+        .expect("apply catalog transaction");
+        std::fs::write(&config_path, b"external-change").expect("create rollback drift");
+
+        let error = applied
+            .rollback()
+            .expect_err("config drift must block rollback");
+
+        assert_eq!(error.code(), "CODEX_MANAGED_MODEL_RECOVERY_REQUIRED");
+        assert_eq!(std::fs::read(config_path).unwrap(), b"external-change");
+        assert_eq!(std::fs::read(generated_path).unwrap(), b"generated-before");
+        assert_eq!(std::fs::read(baseline_path).unwrap(), b"baseline-before");
+    }
+
+    #[test]
+    fn generated_catalog_binding_in_proxy_backup_is_prepared_for_repair() {
+        let dir = std::env::temp_dir().join(format!(
+            "aio-catalog-baseline-repair-{}",
+            crate::shared::uuid::new_uuid_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let generated = dir.join(GENERATED_CATALOG_FILE_NAME);
+        let backup_path = dir.join("config.toml.backup");
+        let mut document = toml_edit::DocumentMut::new();
+        document["model"] = toml_edit::value("gpt-5");
+        document["model_catalog_json"] = toml_edit::value(generated.to_string_lossy().to_string());
+        let polluted = document.to_string().into_bytes();
+        std::fs::write(&backup_path, &polluted).expect("write polluted backup");
+        let baseline = crate::cli_proxy::CodexProxyBaseline {
+            config_path: dir.join("config.toml"),
+            config_backup_path: Some(backup_path),
+            config_bytes: Some(polluted),
+            base_origin: "http://127.0.0.1:37123".to_string(),
+        };
+
+        let prepared = prepare_catalog_baseline(&baseline, &generated).expect("prepare repair");
+
+        assert!(prepared.catalog_path.is_none());
+        assert!(prepared.backup_change.is_some());
+        let repaired = std::str::from_utf8(prepared.config_bytes.as_deref().unwrap())
+            .unwrap()
+            .parse::<toml_edit::DocumentMut>()
+            .unwrap();
+        assert!(repaired.get("model_catalog_json").is_none());
+        assert_eq!(repaired["model"].as_str(), Some("gpt-5"));
+        let _ = std::fs::remove_dir_all(dir);
+    }
+
+    #[test]
+    fn user_catalog_binding_is_not_prepared_for_repair() {
+        let dir = std::env::temp_dir().join(format!(
+            "aio-user-catalog-baseline-{}",
+            crate::shared::uuid::new_uuid_v4()
+        ));
+        std::fs::create_dir_all(&dir).expect("create temp dir");
+        let generated = dir.join(GENERATED_CATALOG_FILE_NAME);
+        let user_catalog = dir.join("user-catalog.json");
+        let mut document = toml_edit::DocumentMut::new();
+        document["model_catalog_json"] =
+            toml_edit::value(user_catalog.to_string_lossy().to_string());
+        let original = document.to_string().into_bytes();
+        let baseline = crate::cli_proxy::CodexProxyBaseline {
+            config_path: dir.join("config.toml"),
+            config_backup_path: Some(dir.join("config.toml.backup")),
+            config_bytes: Some(original.clone()),
+            base_origin: "http://127.0.0.1:37123".to_string(),
+        };
+
+        let prepared = prepare_catalog_baseline(&baseline, &generated).expect("keep user path");
+
+        assert_eq!(prepared.config_bytes, Some(original));
+        assert_eq!(prepared.catalog_path, Some(user_catalog));
+        assert!(prepared.backup_change.is_none());
+        let _ = std::fs::remove_dir_all(dir);
     }
 }

@@ -407,6 +407,7 @@ pub(crate) struct CodexSessionIdCompletionUpdate {
 #[derive(Debug, Clone)]
 struct SettingsRuntimePlan {
     cli_proxy_sync_required: bool,
+    codex_oauth_only_sync: bool,
     #[cfg(windows)]
     wsl_auto_sync_required: bool,
 }
@@ -496,6 +497,8 @@ impl SettingsRuntimePlan {
             previous.codex_oauth_compatible_proxy_mode != next.codex_oauth_compatible_proxy_mode;
         let cli_proxy_sync_required =
             gateway_rebind_required || codex_home_changed || codex_proxy_mode_changed;
+        let codex_oauth_only_sync =
+            codex_proxy_mode_changed && !gateway_rebind_required && !codex_home_changed;
         #[cfg(windows)]
         let wsl_auto_sync_required = next.wsl_auto_config
             && next.gateway_listen_mode != settings::GatewayListenMode::Localhost
@@ -507,6 +510,7 @@ impl SettingsRuntimePlan {
                 || gateway_rebind_required);
         Self {
             cli_proxy_sync_required,
+            codex_oauth_only_sync,
             #[cfg(windows)]
             wsl_auto_sync_required,
         }
@@ -1134,7 +1138,8 @@ async fn sync_cli_proxy_for_settings<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     base_origin: String,
     apply_live: bool,
-) -> bool {
+    codex_oauth_only: bool,
+) -> Result<bool, String> {
     let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
     let status = crate::gateway_runtime_access::try_app_gateway_status(app).unwrap_or(
         crate::gateway::GatewayStatus {
@@ -1158,6 +1163,24 @@ async fn sync_cli_proxy_for_settings<R: tauri::Runtime>(
         (base_origin, apply_live && status.running)
     };
 
+    if codex_oauth_only {
+        let result = blocking::run("settings_set_codex_oauth_proxy_sync", {
+            let app = app.clone();
+            let base_origin = base_origin.clone();
+            move || cli_proxy::sync_codex_oauth_enabled(&app, &base_origin, apply_live)
+        })
+        .await
+        .map_err(|error| format!("CODEX_OAUTH_PROXY_SYNC_FAILED: {error}"))?;
+        if result.ok {
+            return Ok(true);
+        }
+        let code = result
+            .error_code
+            .as_deref()
+            .unwrap_or("CODEX_OAUTH_PROXY_SYNC_FAILED");
+        return Err(format!("{code}: {}", result.message));
+    }
+
     match blocking::run("settings_set_cli_proxy_sync", {
         let app = app.clone();
         move || cli_proxy::sync_enabled(&app, &base_origin, apply_live)
@@ -1174,7 +1197,7 @@ async fn sync_cli_proxy_for_settings<R: tauri::Runtime>(
                     "settings update cli proxy sync completed with partial failures"
                 );
             }
-            failed_count == 0
+            Ok(failed_count == 0)
         }
         Err(err) => {
             tracing::warn!(
@@ -1182,8 +1205,39 @@ async fn sync_cli_proxy_for_settings<R: tauri::Runtime>(
                 apply_live,
                 "settings update cli proxy sync failed"
             );
-            false
+            Ok(false)
         }
+    }
+}
+
+async fn converge_codex_oauth_proxy_to_canonical<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Option<String> {
+    let canonical = match settings::read(app) {
+        Ok(settings) => settings,
+        Err(error) => {
+            return Some(format!(
+                "SETTINGS_RECOVERY_REQUIRED: failed to read canonical settings: {error}"
+            ));
+        }
+    };
+    let status = crate::gateway_runtime_access::try_app_gateway_status(app).unwrap_or(
+        crate::gateway::GatewayStatus {
+            running: false,
+            port: None,
+            base_url: None,
+            listen_addr: None,
+        },
+    );
+    let base_origin = status
+        .base_url
+        .or_else(|| crate::gateway::planned_base_url(&canonical).ok())
+        .unwrap_or_else(|| format!("http://127.0.0.1:{}", canonical.preferred_port));
+    match sync_cli_proxy_for_settings(app, base_origin, status.running, true).await {
+        Ok(_) => None,
+        Err(error) => Some(format!(
+            "SETTINGS_RECOVERY_REQUIRED: failed to converge Codex OAuth proxy: {error}"
+        )),
     }
 }
 
@@ -1448,7 +1502,32 @@ pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
 
     let cli_proxy_synced = if runtime_plan.cli_proxy_sync_required {
         let base_origin = crate::gateway::planned_base_url(&canonical_settings)?;
-        sync_cli_proxy_for_settings(&app, base_origin, false).await
+        match sync_cli_proxy_for_settings(
+            &app,
+            base_origin,
+            false,
+            runtime_plan.codex_oauth_only_sync,
+        )
+        .await
+        {
+            Ok(synced) => synced,
+            Err(sync_error) => {
+                let recovery_error = rollback_after_runtime_sync_failure(
+                    &app,
+                    &previous_token,
+                    &committed_token,
+                    auto_start_token,
+                )
+                .await;
+                let convergence_error = converge_codex_oauth_proxy_to_canonical(&app).await;
+                let recovery_suffix = [recovery_error, convergence_error]
+                    .into_iter()
+                    .flatten()
+                    .map(|error| format!("; {error}"))
+                    .collect::<String>();
+                return Err(format!("{sync_error}{recovery_suffix}"));
+            }
+        }
     } else {
         false
     };
@@ -1683,6 +1762,7 @@ async fn settings_set_impl_with_gateway(
         }
     }
 
+    drop(_gateway_lifecycle);
     let final_settings = committed_settings;
     let runtime_plan = SettingsRuntimePlan::from_settings(&previous_settings, &final_settings);
     let gateway_rebound = convergence_state.rebound;
@@ -1698,7 +1778,35 @@ async fn settings_set_impl_with_gateway(
         } else {
             crate::gateway::planned_base_url(&final_settings)?
         };
-        sync_cli_proxy_for_settings(&app, base_origin, gateway_status.running).await
+        match sync_cli_proxy_for_settings(
+            &app,
+            base_origin,
+            gateway_status.running,
+            runtime_plan.codex_oauth_only_sync,
+        )
+        .await
+        {
+            Ok(synced) => synced,
+            Err(sync_error) => {
+                let recovery_error = rollback_settings_transaction(
+                    &app,
+                    db_state,
+                    &previous_settings,
+                    &previous_token,
+                    &committed_token,
+                    auto_start_token,
+                    &previous_gateway_status,
+                )
+                .await;
+                let convergence_error = converge_codex_oauth_proxy_to_canonical(&app).await;
+                let recovery_suffix = [recovery_error.err(), convergence_error]
+                    .into_iter()
+                    .flatten()
+                    .map(|error| format!("; {error}"))
+                    .collect::<String>();
+                return Err(format!("{sync_error}{recovery_suffix}"));
+            }
+        }
     } else {
         false
     };
@@ -2886,5 +2994,147 @@ mod tests {
         *settings_runtime_sync_test_hook()
             .lock()
             .expect("settings runtime sync test hook lock") = None;
+    }
+
+    #[test]
+    fn oauth_proxy_sync_failure_rolls_back_committed_setting_and_live_projection() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous settings");
+        assert!(!previous.codex_oauth_compatible_proxy_mode);
+        let base_origin = crate::gateway::planned_base_url(&previous).expect("planned origin");
+
+        let config_path = crate::codex_paths::codex_config_toml_path(&handle).expect("config path");
+        let auth_path = crate::codex_paths::codex_auth_json_path(&handle).expect("auth path");
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("create config parent");
+        std::fs::write(&config_path, "model = \"gpt-5\"\n").expect("write config");
+        std::fs::write(&auth_path, "{}\n").expect("write auth");
+        let enabled = cli_proxy::set_enabled(&handle, "codex", true, &base_origin)
+            .expect("enable Codex proxy");
+        assert!(enabled.ok, "{enabled:?}");
+        let live_before = std::fs::read(&config_path).expect("live before");
+
+        let mut sync_calls = 0usize;
+        cli_proxy::set_codex_oauth_sync_test_hook(Box::new(move || {
+            sync_calls += 1;
+            (sync_calls == 1).then(|| "forced OAuth projection failure".to_string())
+        }));
+
+        let update: SettingsUpdate = serde_json::from_value(serde_json::json!({
+            "preferredPort": previous.preferred_port,
+            "logRetentionDays": previous.log_retention_days,
+            "failoverMaxAttemptsPerProvider": previous.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": previous.failover_max_providers_to_try,
+            "codexOauthCompatibleProxyMode": true
+        }))
+        .expect("settings update");
+        let error =
+            tauri::async_runtime::block_on(settings_set_impl_for_test(handle.clone(), update))
+                .expect_err("OAuth projection failure must surface");
+        assert!(error.contains("CODEX_OAUTH_PROXY_SYNC_FAILED"), "{error}");
+
+        let canonical = settings::read(&handle).expect("canonical settings");
+        assert!(!canonical.codex_oauth_compatible_proxy_mode);
+        assert_eq!(std::fs::read(config_path).unwrap(), live_before);
+        cli_proxy::clear_codex_oauth_sync_test_hook();
+    }
+
+    #[test]
+    fn oauth_proxy_sync_failure_preserves_concurrent_winner_and_converges_projection() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous settings");
+        let base_origin = crate::gateway::planned_base_url(&previous).expect("planned origin");
+        let config_path = crate::codex_paths::codex_config_toml_path(&handle).expect("config path");
+        let auth_path = crate::codex_paths::codex_auth_json_path(&handle).expect("auth path");
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("create config parent");
+        std::fs::write(&config_path, "model = \"gpt-5\"\n").expect("write config");
+        std::fs::write(&auth_path, "{}\n").expect("write auth");
+        let enabled = cli_proxy::set_enabled(&handle, "codex", true, &base_origin)
+            .expect("enable Codex proxy");
+        assert!(enabled.ok, "{enabled:?}");
+
+        let mut sync_calls = 0usize;
+        cli_proxy::set_codex_oauth_sync_test_hook(Box::new(move || {
+            sync_calls += 1;
+            (sync_calls == 1).then(|| "forced OAuth projection failure".to_string())
+        }));
+        let winner_retention = previous.log_retention_days.saturating_add(1);
+        let winner_handle = handle.clone();
+        set_before_settings_runtime_rollback_test_hook(Box::new(move || {
+            settings::update(&winner_handle, |winner| {
+                winner.codex_oauth_compatible_proxy_mode = true;
+                winner.log_retention_days = winner_retention;
+                Ok(())
+            })
+            .expect("commit concurrent OAuth winner");
+        }));
+
+        let update: SettingsUpdate = serde_json::from_value(serde_json::json!({
+            "preferredPort": previous.preferred_port,
+            "logRetentionDays": previous.log_retention_days,
+            "failoverMaxAttemptsPerProvider": previous.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": previous.failover_max_providers_to_try,
+            "codexOauthCompatibleProxyMode": true
+        }))
+        .expect("settings update");
+        let error =
+            tauri::async_runtime::block_on(settings_set_impl_for_test(handle.clone(), update))
+                .expect_err("first OAuth projection failure must surface");
+        assert!(error.contains("CODEX_OAUTH_PROXY_SYNC_FAILED"), "{error}");
+
+        let canonical = settings::read(&handle).expect("canonical winner");
+        assert!(canonical.codex_oauth_compatible_proxy_mode);
+        assert_eq!(canonical.log_retention_days, winner_retention);
+        let config = std::fs::read_to_string(config_path).expect("converged config");
+        let auth = std::fs::read_to_string(auth_path).expect("converged auth");
+        assert!(!config.contains("preferred_auth_method = \"apikey\""));
+        assert!(!auth.contains("OPENAI_API_KEY"));
+        cli_proxy::clear_codex_oauth_sync_test_hook();
+    }
+
+    #[test]
+    fn oauth_proxy_sync_failure_surfaces_settings_recovery_failure() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let previous = settings::read(&handle).expect("previous settings");
+        let base_origin = crate::gateway::planned_base_url(&previous).expect("planned origin");
+        let config_path = crate::codex_paths::codex_config_toml_path(&handle).expect("config path");
+        let auth_path = crate::codex_paths::codex_auth_json_path(&handle).expect("auth path");
+        std::fs::create_dir_all(config_path.parent().expect("config parent"))
+            .expect("create config parent");
+        std::fs::write(&config_path, "model = \"gpt-5\"\n").expect("write config");
+        std::fs::write(&auth_path, "{}\n").expect("write auth");
+        let enabled = cli_proxy::set_enabled(&handle, "codex", true, &base_origin)
+            .expect("enable Codex proxy");
+        assert!(enabled.ok, "{enabled:?}");
+
+        cli_proxy::set_codex_oauth_sync_test_hook(Box::new(|| {
+            Some("forced OAuth projection failure".to_string())
+        }));
+        set_before_settings_runtime_rollback_test_hook(Box::new(|| {
+            crate::settings::set_settings_finalize_failpoint_for_tests(true);
+            crate::settings::set_settings_finalize_restore_failpoint_for_tests(true);
+        }));
+
+        let update: SettingsUpdate = serde_json::from_value(serde_json::json!({
+            "preferredPort": previous.preferred_port,
+            "logRetentionDays": previous.log_retention_days,
+            "failoverMaxAttemptsPerProvider": previous.failover_max_attempts_per_provider,
+            "failoverMaxProvidersToTry": previous.failover_max_providers_to_try,
+            "codexOauthCompatibleProxyMode": true
+        }))
+        .expect("settings update");
+        let error =
+            tauri::async_runtime::block_on(settings_set_impl_for_test(handle.clone(), update))
+                .expect_err("settings rollback recovery failure must surface");
+        assert!(error.contains("CODEX_OAUTH_PROXY_SYNC_FAILED"), "{error}");
+        assert!(error.contains("SETTINGS_RECOVERY_REQUIRED"), "{error}");
+        cli_proxy::clear_codex_oauth_sync_test_hook();
     }
 }

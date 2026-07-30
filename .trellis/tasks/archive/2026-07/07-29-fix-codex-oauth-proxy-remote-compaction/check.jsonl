@@ -1,0 +1,8 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"检查 Rust 边界、错误处理、原子性和测试门禁。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"检查跨前端、settings、proxy、配置和 provider sync 的一致性。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"核对 TOML、provider sync 和 remote_compaction 行为没有回归。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md","reason":"核对 managed profile/catalog 生命周期及 proxy 开关边界。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"核对设置提交、并发 winner、回滚和恢复错误语义。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查没有复制 provider 推导、冲突或 status 规则。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 mutation、缓存失效、文件与数据库副作用闭环。"}
+{"file": ".trellis/tasks/archive/2026-07/07-29-fix-codex-oauth-proxy-remote-compaction/research/codebase-findings.md", "reason": "对照已确认根因和测试缺口做回归审计。"}

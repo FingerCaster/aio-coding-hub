@@ -506,7 +506,6 @@ export function useCliManagerPageDataModel() {
       return false;
     }
 
-    await refreshCodex();
     toast(enabled ? "已开启 Codex OAuth 兼容代理模式" : "已关闭 Codex OAuth 兼容代理模式");
     return true;
   }
@@ -531,12 +530,15 @@ export function useCliManagerPageDataModel() {
     }
   }
 
-  async function persistCodexConfig(patch: CodexConfigPatch): Promise<CodexConfigState | null> {
+  async function persistCodexConfig(
+    patch: CodexConfigPatch,
+    options: { syncHistory?: boolean } = {}
+  ): Promise<CodexConfigState | null> {
     if (codexConfigWriting) return null;
     if (!codexConfig) return null;
 
     try {
-      const updated = await codexConfigSetMutation.mutateAsync(patch);
+      const updated = await codexConfigSetMutation.mutateAsync({ patch, ...options });
       if (!updated) {
         toast("更新 Codex 配置失败：未返回更新后的配置");
         return null;

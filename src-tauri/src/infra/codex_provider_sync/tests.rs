@@ -1,6 +1,91 @@
 use super::*;
 
 #[test]
+fn session_change_retains_only_the_rollout_path() {
+    assert_eq!(
+        std::mem::size_of::<SessionChange>(),
+        std::mem::size_of::<PathBuf>()
+    );
+}
+
+#[test]
+fn rollout_rewrite_streams_file_and_preserves_non_session_rows() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let path = temp.path().join("rollout-streaming.jsonl");
+    let untouched = "x".repeat(2 * 1024 * 1024);
+    std::fs::write(
+        &path,
+        format!(
+            "{{\"type\":\"session_meta\",\"payload\":{{\"model_provider\":\"aio\"}}}}\r\n{untouched}\n"
+        ),
+    )
+    .expect("write rollout");
+
+    assert!(rollout_needs_provider_rewrite(&path, "OpenAI").expect("discover change"));
+    rewrite_rollout_session_meta_providers(&path, "OpenAI").expect("rewrite rollout");
+
+    let rewritten = std::fs::read_to_string(&path).expect("read rollout");
+    assert!(rewritten.starts_with(
+        "{\"payload\":{\"model_provider\":\"OpenAI\"},\"type\":\"session_meta\"}\r\n"
+    ));
+    assert!(rewritten.ends_with(&format!("{untouched}\n")));
+    assert!(!rollout_needs_provider_rewrite(&path, "OpenAI").expect("idempotent discover"));
+}
+
+#[test]
+fn disk_backup_restores_sqlite_bytes_and_removes_new_sidecars() {
+    let temp = tempfile::tempdir().expect("tempdir");
+    let target_dir = temp.path().join("target");
+    let backup_dir = temp.path().join("backup");
+    std::fs::create_dir_all(&target_dir).expect("create target dir");
+    std::fs::create_dir_all(&backup_dir).expect("create backup dir");
+
+    let db = target_dir.join("state.db");
+    let wal = target_dir.join("state.db-wal");
+    let shm = target_dir.join("state.db-shm");
+    let new_wal = target_dir.join("other.db-wal");
+    let before = [
+        (&db, backup_dir.join("state.db"), b"db-before".as_slice()),
+        (
+            &wal,
+            backup_dir.join("state.db-wal"),
+            b"wal-before".as_slice(),
+        ),
+        (
+            &shm,
+            backup_dir.join("state.db-shm"),
+            b"shm-before".as_slice(),
+        ),
+    ];
+    let mut entries = Vec::new();
+    for (target, backup_path, bytes) in &before {
+        std::fs::write(target, bytes).expect("write original sqlite bytes");
+        entries.push(
+            create_disk_backup_entry(target, backup_path, "sqlite test file")
+                .expect("create sqlite backup"),
+        );
+        std::fs::write(target, b"changed").expect("mutate sqlite file");
+    }
+    entries.push(DiskBackupEntry {
+        target_path: new_wal.clone(),
+        backup_path: backup_dir.join("other.db-wal"),
+        existed: false,
+    });
+    std::fs::write(&new_wal, b"created-during-sync").expect("create new sidecar");
+
+    restore_backup(&ProviderSyncBackup {
+        backup_dir,
+        entries,
+    })
+    .expect("restore sqlite backup");
+
+    for (target, _, bytes) in before {
+        assert_eq!(std::fs::read(target).expect("read restored bytes"), bytes);
+    }
+    assert!(!new_wal.exists(), "new WAL sidecar should be removed");
+}
+
+#[test]
 fn target_provider_rejects_unmanaged_raw_toml() {
     let err = codex_provider_target_from_config_text(
         "model_provider = \"Anthropic\"\n[model_providers.Anthropic]\nname = \"Anthropic\"\n",

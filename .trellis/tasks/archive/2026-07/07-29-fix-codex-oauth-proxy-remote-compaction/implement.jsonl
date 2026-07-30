@@ -1,0 +1,8 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Rust infra、app service、原子文件写入和测试的后端入口规范。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Codex 配置、CLI proxy、settings 与 React query 的跨层入口规范。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-config-contract.md","reason":"结构化/原始 TOML patch、remote_compaction 和 provider sync 契约。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/codex-managed-model-route-contract.md","reason":"aio profile 仅在 proxy 开启时生效及 model_catalog_json 所有权边界。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"settings owned-field CAS、运行时同步与失败回滚要求。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"要求 provider key 推导和状态检查复用单一实现。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"用于验证 UI 到 Rust 文件/DB 副作用的完整数据流。"}
+{"file": ".trellis/tasks/archive/2026-07/07-29-fix-codex-oauth-proxy-remote-compaction/research/codebase-findings.md", "reason": "本任务根因、历史回归、代码锚点和测试缺口。"}

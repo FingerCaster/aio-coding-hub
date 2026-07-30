@@ -411,6 +411,38 @@ describe("ui/Sidebar", () => {
     expect(screen.queryByRole("button", { name: "修复 Claude 代理" })).not.toBeInTheDocument();
   });
 
+  it.each([
+    [true, false],
+    [false, true],
+  ])(
+    "uses backend application status %s for the Codex remote-compaction repair action",
+    (appliedToCurrentGateway, expectsRepair) => {
+      cliProxyMocks.current = {
+        ...cliProxyMocks.current,
+        cliProxyEnabled: { claude: true, codex: true, gemini: false, grok: false },
+        cliProxyAppliedToCurrentGateway: {
+          claude: true,
+          codex: appliedToCurrentGateway,
+          gemini: null,
+          grok: null,
+        },
+      };
+
+      render(
+        <MemoryRouter>
+          <Sidebar />
+        </MemoryRouter>
+      );
+
+      const repair = screen.queryByRole("button", { name: "修复 Codex 代理" });
+      if (expectsRepair) {
+        expect(repair).toBeInTheDocument();
+      } else {
+        expect(repair).not.toBeInTheDocument();
+      }
+    }
+  );
+
   it("keeps the CLI proxy conflict confirmation dialog in the sidebar flow", () => {
     cliProxyMocks.current = {
       ...cliProxyMocks.current,

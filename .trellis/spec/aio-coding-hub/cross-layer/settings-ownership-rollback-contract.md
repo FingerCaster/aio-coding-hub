@@ -189,3 +189,90 @@ const update = { ...input, autoStart: input.autoStart ?? null };
   the best available durable settings bytes (backup or retained writer temp),
   clean only writer-owned temporary output, and never claim that canonical
   settings are usable.
+
+## Scenario: Commit Codex OAuth-Compatible Proxy Mode
+
+### 1. Scope / Trigger
+
+Apply this scenario when `enable_codex_oauth_compatible_proxy` changes. It is a
+settings-owned value with a compensating Codex config/auth projection, not a
+gateway-wide or model-catalog refresh.
+
+### 2. Signatures
+
+```rust
+sync_codex_oauth_enabled<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    base_origin: &str,
+    apply_live: bool,
+) -> AppResult<CliProxyResult>
+```
+
+The frontend command awaits only the settings mutation. Successful mutation
+invalidates settings, Codex structured/raw config, and CLI proxy status queries;
+it must not await `refreshCodexModelCatalog`.
+
+### 3. Contracts
+
+- Commit the setting under settings ownership, then run OAuth-only projection.
+- OAuth-only projection acquires the Codex lifecycle lock before reading the
+  manifest. Missing or disabled manifest is a successful no-op.
+- Enabled projection updates only the existing Codex config/auth/manifest
+  targets. It preserves an active managed `model_catalog_json` binding and must
+  not rebuild/discover the model catalog.
+- Sync failure returns `CODEX_OAUTH_PROXY_SYNC_FAILED`, restores target/backup/
+  manifest snapshots, then rolls back only the setting value still owned by the
+  failed writer.
+- If owned rollback loses to a newer settings writer, preserve that winner and
+  converge Codex projection to the latest canonical value. If rollback or
+  convergence fails, append `SETTINGS_RECOVERY_REQUIRED`.
+- Never hold the gateway lifecycle lock while entering a helper that reacquires
+  it; lock ordering must make forward progress in both gateway-running and
+  gateway-stopped paths.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Proxy manifest absent or disabled | Persist setting; no config/auth/catalog write |
+| Enabled proxy projection succeeds | Persist setting and coherent config/auth/manifest |
+| Projection fails, token still owned | Restore previous setting and exact target snapshots |
+| Projection fails after concurrent winner | Preserve winner; reproject to canonical winner |
+| Snapshot restoration fails | `CODEX_OAUTH_PROXY_RECOVERY_REQUIRED` |
+| Settings rollback/convergence fails | Include `SETTINGS_RECOVERY_REQUIRED` |
+
+### 5. Good / Base / Bad Cases
+
+- Good: toggle returns after the settings/projection transaction; query refresh
+  happens asynchronously and a stalled model catalog cannot stall the switch.
+- Base: routing is disabled; the preference persists and no proxy file is
+  rewritten until a later explicit enable uses it.
+- Bad: swallow projection failure after saving settings, or invoke full
+  `sync_enabled` / bundled-catalog discovery for an OAuth-only toggle.
+
+### 6. Tests Required
+
+- Count catalog sync calls and assert zero for enabled, disabled, and managed
+  profile OAuth-only cases; preserve `model_catalog_json` binding.
+- Force projection failure and assert prior config, auth, backup, manifest, and
+  owned setting are restored.
+- Deterministically race manifest disable after lifecycle-lock contention; the
+  locked reread must observe disabled and must not replay stale enabled state.
+- Deterministically commit a concurrent settings winner during rollback; assert
+  the winner survives and runtime converges to it.
+- Frontend-test a never-resolving catalog refresh; the switch mutation still
+  resolves and failures surface stable error text.
+
+### 7. Wrong vs Correct
+
+```rust
+// Wrong: stale manifest read, full catalog sync, and ignored failure.
+let manifest = read_manifest(app, "codex")?;
+let _ = sync_enabled(app, base_origin, apply_live).await;
+
+// Correct: the OAuth-only helper locks before reading and failure is transactional.
+let result = sync_codex_oauth_enabled(app, base_origin, apply_live)?;
+if !result.ok {
+    rollback_owned_setting_and_converge_canonical(app, result)?;
+}
+```
