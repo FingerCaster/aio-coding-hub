@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.33](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.32...aio-coding-hub-v0.60.33) (2026-07-31)
+
+
+### Bug Fixes
+
+* sync provider deletion and identify log attempts ([#20](https://github.com/FingerCaster/aio-coding-hub/pull/20)) ([45691b8](https://github.com/FingerCaster/aio-coding-hub/commit/45691b89c495bb011fd89f97b6953dd6e5d988ae))
+
 ## [0.60.32](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.31...aio-coding-hub-v0.60.32) (2026-07-30)
 
 
