@@ -27,7 +27,7 @@
 
 ## 提交与 MSI
 
-- [ ] 按仓库要求为 hook 补齐当前 Node/pnpm 目录到 `PATH`，提交到独立分支；不推送、不合并 `main`。
+- [x] 按仓库要求为 hook 补齐当前 Node/pnpm 目录到 `PATH`，提交到独立分支；不推送、不合并 `main`。
 - [x] 在无 CI/updater 私钥污染的本地环境运行 `pnpm tauri:build:win:x64`。
 - [x] 只接受本次构建后生成且数量恰为一个的 `src-tauri/target/x86_64-pc-windows-msvc/release/bundle/msi/*.msi`。
 - [x] 记录 MSI 绝对路径、文件名、字节数和 SHA-256；确认构建未产生非预期受控文件差异。

@@ -29,7 +29,7 @@
 - [x] 历史日志中的已删除 provider 使用历史名称快照；名称未知或 ID 无效时采用明确且不崩溃的回退标签。
 - [x] 两项行为均有回归测试，且相关现有测试、全量质量门禁全部通过。
 - [x] Windows MSI 构建成功，安装包路径、文件名、大小和校验摘要可报告。
-- [ ] 所有提交仅存在于 `FingerCaster/fix-provider-delete-log-display`（或该独立 worktree 的后续任务分支），未合并到 `main`。
+- [x] 所有提交仅存在于 `FingerCaster/fix-provider-delete-log-display`（或该独立 worktree 的后续任务分支），未合并到 `main`。
 
 ## Out Of Scope
 
