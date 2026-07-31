@@ -16,13 +16,12 @@ import {
 } from "../services/providers/sortModes";
 import { sortModesKeys } from "./keys";
 
+export function sortModeProvidersQueryPrefix(cliKey: CliKey) {
+  return [...sortModesKeys.all, "providers", validateProviderCliKey(cliKey)] as const;
+}
+
 export function sortModeProvidersQueryKey(modeId: number, cliKey: CliKey) {
-  return [
-    ...sortModesKeys.all,
-    "providers",
-    validateProviderCliKey(cliKey),
-    validateSortModeId(modeId),
-  ] as const;
+  return [...sortModeProvidersQueryPrefix(cliKey), validateSortModeId(modeId)] as const;
 }
 
 export function useSortModesListQuery(options: { enabled?: boolean } = {}) {
@@ -55,7 +54,7 @@ export function useSortModeProvidersListQuery(
   return useQuery({
     queryKey:
       modeId == null
-        ? [...sortModesKeys.all, "providers", cliKey, null]
+        ? [...sortModeProvidersQueryPrefix(cliKey), null]
         : sortModeProvidersQueryKey(modeId, cliKey),
     queryFn: () => {
       if (modeId == null) {

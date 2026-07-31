@@ -45,6 +45,18 @@ type ProviderChainAttempt = {
   circuit_trigger_error_code: string | null;
 };
 
+function formatProviderIdentity(providerName: unknown, providerId: unknown): string {
+  const normalizedName = typeof providerName === "string" ? providerName.trim() : "";
+  const providerLabel =
+    normalizedName && normalizedName.toLowerCase() !== "unknown" && normalizedName !== "未知"
+      ? normalizedName
+      : "未知供应商";
+  const hasStableId =
+    typeof providerId === "number" && Number.isSafeInteger(providerId) && providerId > 0;
+
+  return hasStableId ? `${providerLabel} (#${providerId})` : `${providerLabel} (ID 不可用)`;
+}
+
 export function ProviderChainView({
   attemptLogs,
   attemptLogsLoading,
@@ -168,14 +180,10 @@ export function ProviderChainView({
   const startAttempt = attempts[0] ?? null;
   const finalAttempt = attempts.length > 0 ? attempts[attempts.length - 1] : null;
   const startProviderLabel = startAttempt
-    ? startAttempt.provider_name && startAttempt.provider_name !== "未知"
-      ? startAttempt.provider_name
-      : `未知（id=${startAttempt.provider_id}）`
+    ? formatProviderIdentity(startAttempt.provider_name, startAttempt.provider_id)
     : "—";
   const finalProviderLabel = finalAttempt
-    ? finalAttempt.provider_name && finalAttempt.provider_name !== "未知"
-      ? finalAttempt.provider_name
-      : `未知（id=${finalAttempt.provider_id}）`
+    ? formatProviderIdentity(finalAttempt.provider_name, finalAttempt.provider_id)
     : "—";
   const finalSuccess = finalAttempt ? finalAttempt.outcome === "success" : false;
 
@@ -248,6 +256,7 @@ function AttemptCard({
   const [expanded, setExpanded] = useState(true);
   const success = attempt.outcome === "success";
   const skipped = attempt.outcome === "skipped";
+  const providerIdentity = formatProviderIdentity(attempt.provider_name, attempt.provider_id);
 
   const hasCircuitBreaker =
     attempt.circuit_state_after != null || attempt.circuit_state_before != null;
@@ -295,6 +304,9 @@ function AttemptCard({
                     ? `重试 #${attempt.attempt_index}`
                     : `请求失败`}
             </span>
+            <span className="min-w-0 break-words text-sm font-medium text-foreground">
+              {providerIdentity}
+            </span>
             {attempt.attempt_duration_ms != null ? (
               <span className="text-xs text-muted-foreground">
                 +{attempt.attempt_duration_ms}ms
@@ -325,8 +337,8 @@ function AttemptCard({
         {expanded && (
           <div className="px-4 pb-4 space-y-3 border-t border-border/50 pt-3">
             <div className="text-sm text-muted-foreground">
-              Provider ID:{" "}
-              <span className="font-semibold text-foreground">{attempt.provider_id}</span>
+              供应商：
+              <span className="font-semibold text-foreground">{providerIdentity}</span>
             </div>
 
             {/* Decision tags */}
