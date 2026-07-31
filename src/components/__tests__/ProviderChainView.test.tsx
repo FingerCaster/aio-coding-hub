@@ -39,6 +39,8 @@ describe("components/ProviderChainView", () => {
     expect(screen.getByText("尝试 JSON 解析失败")).toBeInTheDocument();
     expect(screen.getByText("起始供应商：")).toBeInTheDocument();
     expect(screen.getByText("最终供应商：")).toBeInTheDocument();
+    expect(screen.getAllByText("P1 (#1)")).toHaveLength(3);
+    expect(screen.getAllByText("P2 (#2)")).toHaveLength(3);
 
     rerender(
       <ProviderChainView
@@ -92,14 +94,133 @@ describe("components/ProviderChainView", () => {
       />
     );
     expect(screen.getByText("数据源：request_logs.attempts_json（结构化）")).toBeInTheDocument();
-    expect(screen.getAllByText("未知（id=99）").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("未知供应商 (#99)")).toHaveLength(4);
     expect(screen.getByText("请求失败")).toBeInTheDocument();
     // Error reason is displayed in the error block
     expect(screen.getByText("because")).toBeInTheDocument();
-    // Provider ID shown in detail body
-    expect(screen.getByText("99")).toBeInTheDocument();
+    // Unified provider identity is shown in the detail body
+    expect(screen.getByText("供应商：")).toBeInTheDocument();
     // Endpoint shown in detail body
     expect(screen.getByText("https://p99")).toBeInTheDocument();
+  });
+
+  it("trims the snapshot name and keeps identity visible when an empty-url attempt is collapsed", () => {
+    render(
+      <ProviderChainView
+        attemptLogs={[
+          {
+            attempt_index: 1,
+            provider_id: 7,
+            provider_name: "  Provider A  ",
+            base_url: "",
+            outcome: "success",
+            status: 200,
+          },
+        ]}
+        attemptLogsLoading={false}
+        attemptsJson={null}
+      />
+    );
+
+    expect(screen.getAllByText("Provider A (#7)")).toHaveLength(4);
+    expect(screen.queryByText("端点")).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: /请求成功 Provider A \(#7\)/ }));
+
+    expect(screen.getAllByText("Provider A (#7)")).toHaveLength(3);
+    expect(screen.queryByText("供应商：")).not.toBeInTheDocument();
+  });
+
+  it("distinguishes providers with the same name and URL by stable ID", () => {
+    render(
+      <ProviderChainView
+        attemptLogs={[
+          {
+            attempt_index: 1,
+            provider_id: 7,
+            provider_name: "Provider A",
+            base_url: "https://shared.example",
+            outcome: "failed",
+            status: 500,
+          },
+          {
+            attempt_index: 2,
+            provider_id: 8,
+            provider_name: "Provider A",
+            base_url: "https://shared.example",
+            outcome: "success",
+            status: 200,
+          },
+        ]}
+        attemptLogsLoading={false}
+        attemptsJson={null}
+      />
+    );
+
+    expect(screen.getAllByText("Provider A (#7)")).toHaveLength(3);
+    expect(screen.getAllByText("Provider A (#8)")).toHaveLength(3);
+
+    fireEvent.click(screen.getByRole("button", { name: /Provider A \(#7\)/ }));
+    fireEvent.click(screen.getByRole("button", { name: /Provider A \(#8\)/ }));
+
+    expect(screen.getByRole("button", { name: /Provider A \(#7\)/ })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: /Provider A \(#8\)/ })).toBeInTheDocument();
+  });
+
+  it.each([
+    ["empty", "", 11],
+    ["whitespace", "   ", 12],
+    ["Unknown", "Unknown", 13],
+    ["unknown", "unknown", 14],
+    ["mixed-case unknown", "uNkNoWn", 15],
+    ["Chinese unknown", "未知", 16],
+  ])("normalizes a %s provider name", (_caseName, providerName, providerId) => {
+    render(
+      <ProviderChainView
+        attemptLogs={[
+          {
+            attempt_index: 1,
+            provider_id: providerId,
+            provider_name: providerName,
+            base_url: "",
+            outcome: "failed",
+            status: null,
+          },
+        ]}
+        attemptLogsLoading={false}
+        attemptsJson={null}
+      />
+    );
+
+    expect(screen.getAllByText(`未知供应商 (#${providerId})`)).toHaveLength(4);
+  });
+
+  it.each([
+    ["zero", 0],
+    ["negative", -1],
+    ["fractional", 1.5],
+    ["unsafe", Number.MAX_SAFE_INTEGER + 1],
+    ["missing", null],
+  ])("does not render an invalid %s provider ID", (_caseName, providerId) => {
+    render(
+      <ProviderChainView
+        attemptLogs={[
+          {
+            attempt_index: 1,
+            provider_id: providerId as number,
+            provider_name: "Provider A",
+            base_url: "",
+            outcome: "failed",
+            status: null,
+          },
+        ]}
+        attemptLogsLoading={false}
+        attemptsJson={null}
+      />
+    );
+
+    expect(screen.getAllByText("Provider A (ID 不可用)")).toHaveLength(4);
+    expect(screen.queryByText(`#${String(providerId)}`)).not.toBeInTheDocument();
   });
 
   it("renders skipped summary attempts with fallback values and collapsed details", () => {
@@ -125,14 +246,14 @@ describe("components/ProviderChainView", () => {
 
     expect(screen.getByText("当前显示的是摘要链路，未拿到逐次尝试日志")).toBeInTheDocument();
     expect(screen.getByText("最终失败")).toBeInTheDocument();
-    expect(screen.getAllByText("未知（id=0）")).toHaveLength(2);
+    expect(screen.getAllByText("未知供应商 (ID 不可用)")).toHaveLength(4);
     expect(screen.getByText("跳过")).toBeInTheDocument();
     expect(screen.getByText("priority")).toBeInTheDocument();
     expect(screen.getByText("retry")).toBeInTheDocument();
     expect(screen.getByText("closed")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: /跳过/ }));
-    expect(screen.queryByText("Provider ID:")).not.toBeInTheDocument();
+    expect(screen.queryByText("供应商：")).not.toBeInTheDocument();
   });
 
   it("renders reason and circuit attribution for circuit-gate skipped attempts", () => {
@@ -293,7 +414,7 @@ describe("components/ProviderChainView", () => {
 
     expect(screen.getByText("起始供应商：")).toBeInTheDocument();
     expect(screen.getByText("最终供应商：")).toBeInTheDocument();
-    expect(screen.getByText("Fallback")).toBeInTheDocument();
+    expect(screen.getAllByText("Fallback (#8)").length).toBeGreaterThan(0);
     expect(screen.getByText("最终成功")).toBeInTheDocument();
     expect(screen.getByText("重试 #1")).toBeInTheDocument();
     expect(screen.getByText("+31ms")).toBeInTheDocument();

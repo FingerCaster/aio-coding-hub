@@ -1,0 +1,8 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/index.md", "reason": "根应用跨层契约索引与质量门禁"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md", "reason": "请求日志 route/attempt 身份与展示契约"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/provider-account-usage-query-contract.md", "reason": "provider 删除缓存所有权与不可中止 IPC 竞态规则"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/provider-deletion-and-attempt-identity-contract.md", "reason": "provider 删除路由缓存提交边界与历史 attempt 身份契约"}
+{"file": ".trellis/spec/guides/cross-layer-thinking-guide.md", "reason": "删除与日志展示的跨层数据流检查"}
+{"file": ".trellis/tasks/archive/2026-07/07-31-fix-provider-delete-log-display/research/provider-deletion.md", "reason": "删除根因、缓存族和测试证据"}
+{"file": ".trellis/tasks/archive/2026-07/07-31-fix-provider-delete-log-display/research/decision-chain-provider-display.md", "reason": "历史 provider 快照与展示格式证据"}
+{"file": ".trellis/tasks/archive/2026-07/07-31-fix-provider-delete-log-display/research/validation-msi.md", "reason": "完整门禁与 MSI 构建命令"}

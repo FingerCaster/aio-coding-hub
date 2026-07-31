@@ -18,6 +18,9 @@ TypeScript bindings, frontend adapters, and React UI.
   one TanStack Query owner for automatic, timed, and forced manual refreshes,
   bounded NewAPI model-token/account protocols, private credential ownership,
   and validated sub2api daily-limit projection.
+- [Provider deletion and attempt identity contract](./provider-deletion-and-attempt-identity-contract.md):
+  persisted route cascades, cancel/filter/invalidate cache reconciliation, and
+  request-time provider identity in decision-chain displays.
 - [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
@@ -81,6 +84,16 @@ When changing provider account-usage fetching:
 7. Confirm account usage remains display-only and that fixtures/specs contain
    no upstream body/message, credential, PII, live host, token name, or actual
    account amount.
+
+When changing provider deletion or request-log provider identity:
+
+1. Read [Provider deletion and attempt identity contract](./provider-deletion-and-attempt-identity-contract.md).
+2. Trace stable provider ID through SQLite route foreign keys, frontend query
+   families, and historical attempt snapshots.
+3. Keep route cache cancellation, ID filtering, and invalidation contiguous;
+   test late uncancellable query completion.
+4. Render request-time name plus ID without looking up the current provider or
+   treating URL/name as identity.
 
 When changing Codex or Grok device authorization:
 
@@ -181,6 +194,11 @@ When changing usage folders, development-time estimates, or provider metrics tre
   ordinary-route regression coverage together.
 - When changing account-usage refresh, verify forced fetches, late-result
   suppression, loading/error state, and provider/cache isolation together.
+- When changing provider deletion, verify persisted cascade, failure atomicity,
+  all cached route families, cross-CLI isolation, and reverse-completion races.
+- When changing decision-chain provider identity, verify the same snapshot
+  label in summaries and collapsed/expanded attempts, including deleted,
+  unknown, invalid-ID, same-name, and same-URL cases.
 - When changing the NewAPI account-usage adapter, verify the public status plus
   two Bearer billing requests, trailing `/v1` normalization, same-origin and
   no-redirect rules, exact unit/formula/expiry parsing, per-response body caps,
