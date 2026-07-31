@@ -790,3 +790,38 @@ Fixed OAuth-compatible proxy projection, provider collision handling, bounded re
 ### Next Steps
 
 - None - task complete
+
+
+## Session 23: 修复供应商删除残留与决策链身份展示
+
+**Date**: 2026-07-31
+**Task**: 修复供应商删除残留与决策链身份展示
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/fix-provider-delete-log-display`
+
+### Summary
+
+同步清理供应商列表、Default 与所有排序模板缓存，使用请求时名称和稳定 ID 展示决策链；补齐前端竞态、UI 与 Rust 级联回归测试，并通过全量门禁及 Windows x64 MSI 构建。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `45691b89` | (see git log) |
+| `b30b8a72` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete
