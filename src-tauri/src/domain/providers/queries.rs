@@ -858,23 +858,7 @@ pub(crate) fn list_enabled_for_gateway_using_active_mode(
     })
 }
 
-pub(crate) fn active_sort_mode_id_for_gateway(
-    db: &db::Db,
-    cli_key: &str,
-) -> crate::shared::error::AppResult<Option<i64>> {
-    validate_cli_key(cli_key)?;
-    let conn = db.open_connection()?;
-
-    conn.query_row(
-        "SELECT mode_id FROM sort_mode_active WHERE cli_key = ?1",
-        params![cli_key],
-        |row| row.get::<_, Option<i64>>(0),
-    )
-    .optional()
-    .map_err(|e| db_err!("failed to query sort_mode_active: {e}"))
-    .map(Option::flatten)
-}
-
+#[cfg(test)]
 pub(crate) fn list_enabled_for_gateway_in_mode(
     db: &db::Db,
     cli_key: &str,

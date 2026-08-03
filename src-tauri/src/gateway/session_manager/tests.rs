@@ -182,6 +182,353 @@ fn clear_cli_bindings_removes_only_target_cli() {
 }
 
 #[test]
+fn compaction_trigger_is_reserved_once_and_drop_releases_it() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("claude", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("claude", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("claude", "s1", now + 1)
+        .expect("compaction generation");
+
+    let reservation = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 2,
+        )
+        .expect("first reservation");
+    assert!(manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 2,
+        )
+        .is_none());
+
+    drop(reservation);
+    assert!(manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 3,
+        )
+        .is_some());
+}
+
+#[test]
+fn trigger_commit_consumes_at_dispatch_and_rollback_restores_opportunity() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("claude", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("claude", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("claude", "s1", now + 1)
+        .expect("compaction generation");
+    let reservation = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 2,
+        )
+        .expect("reservation");
+
+    let commit = reservation.commit(now + 3).expect("commit");
+    let consumed = manager
+        .routing_snapshot("claude", "s1", now + 3)
+        .expect("snapshot");
+    assert_eq!(consumed.consumed_compaction_generation, generation);
+
+    assert!(commit.rollback());
+    let restored = manager
+        .routing_snapshot("claude", "s1", now + 4)
+        .expect("snapshot");
+    assert_eq!(restored.consumed_compaction_generation, 0);
+}
+
+#[test]
+fn codex_fingerprint_commit_consumes_observed_generation_without_consuming_a_newer_one() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("codex", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("codex", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("codex", "s1", now + 1)
+        .expect("compaction generation");
+    let reservation = manager
+        .try_reserve_probe_trigger(
+            "codex",
+            "s1",
+            SessionProbeTrigger::CodexCompactionFingerprint {
+                fingerprint: "compact-a".to_string(),
+                pending_generation: Some(generation),
+            },
+            now + 2,
+        )
+        .expect("compound reservation");
+
+    let newer_generation = manager
+        .mark_compaction_completed("codex", "s1", now + 3)
+        .expect("concurrent newer generation");
+    let _commit = reservation.commit(now + 4).expect("compound commit");
+    let snapshot = manager
+        .routing_snapshot("codex", "s1", now + 5)
+        .expect("snapshot");
+
+    assert_eq!(snapshot.consumed_compaction_generation, generation);
+    assert_eq!(snapshot.completed_compaction_generation, newer_generation);
+    assert_eq!(
+        snapshot.last_codex_compaction_fingerprint.as_deref(),
+        Some("compact-a")
+    );
+}
+
+#[test]
+fn codex_fingerprint_dispatch_consumes_both_triggers_after_probe_failure() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("codex", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("codex", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("codex", "s1", now + 1)
+        .expect("compaction generation");
+    let trigger = SessionProbeTrigger::CodexCompactionFingerprint {
+        fingerprint: "compact-a".to_string(),
+        pending_generation: Some(generation),
+    };
+    let _commit = manager
+        .try_reserve_probe_trigger("codex", "s1", trigger.clone(), now + 2)
+        .expect("compound reservation")
+        .commit(now + 3)
+        .expect("compound commit");
+
+    let snapshot = manager
+        .routing_snapshot("codex", "s1", now + 4)
+        .expect("snapshot");
+    assert_eq!(snapshot.consumed_compaction_generation, generation);
+    assert!(manager
+        .try_reserve_probe_trigger("codex", "s1", trigger, now + 5)
+        .is_none());
+    assert!(manager
+        .try_reserve_probe_trigger(
+            "codex",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 5,
+        )
+        .is_none());
+}
+
+#[test]
+fn codex_fingerprint_rollback_restores_both_compound_trigger_fields() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("codex", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("codex", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("codex", "s1", now + 1)
+        .expect("compaction generation");
+    let commit = manager
+        .try_reserve_probe_trigger(
+            "codex",
+            "s1",
+            SessionProbeTrigger::CodexCompactionFingerprint {
+                fingerprint: "compact-a".to_string(),
+                pending_generation: Some(generation),
+            },
+            now + 2,
+        )
+        .expect("compound reservation")
+        .commit(now + 3)
+        .expect("compound commit");
+
+    assert!(commit.rollback());
+    let snapshot = manager
+        .routing_snapshot("codex", "s1", now + 4)
+        .expect("snapshot");
+    assert_eq!(snapshot.consumed_compaction_generation, 0);
+    assert_eq!(snapshot.last_codex_compaction_fingerprint, None);
+}
+
+#[test]
+fn clearing_invalid_binding_discards_all_failback_state_before_rebind() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("codex", "s1", Some(7), Some(vec![2, 1]), now);
+    manager.bind_success("codex", "s1", 2, Some(7), now);
+    let generation = manager
+        .mark_compaction_completed("codex", "s1", now + 1)
+        .expect("compaction generation");
+    let _commit = manager
+        .try_reserve_probe_trigger(
+            "codex",
+            "s1",
+            SessionProbeTrigger::CodexCompactionFingerprint {
+                fingerprint: "old-compact".to_string(),
+                pending_generation: Some(generation),
+            },
+            now + 2,
+        )
+        .expect("old reservation")
+        .commit(now + 3)
+        .expect("old commit");
+
+    assert!(manager.clear_bound_provider("codex", "s1", now + 4));
+    assert!(manager.routing_snapshot("codex", "s1", now + 4).is_none());
+
+    manager.bind_success("codex", "s1", 1, None, now + 5);
+    let rebound = manager
+        .routing_snapshot("codex", "s1", now + 6)
+        .expect("rebound snapshot");
+    assert_eq!(manager.get_bound_provider("codex", "s1", now + 6), Some(1));
+    assert_eq!(rebound.route, SessionRouteFingerprint::new(None, vec![]));
+    assert_eq!(rebound.completed_compaction_generation, 0);
+    assert_eq!(rebound.consumed_compaction_generation, 0);
+    assert_eq!(rebound.last_codex_compaction_fingerprint, None);
+}
+
+#[test]
+fn trigger_rollback_ignores_unrelated_revision_changes() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("claude", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("claude", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("claude", "s1", now + 1)
+        .expect("compaction generation");
+    let reservation = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 2,
+        )
+        .expect("reservation");
+    let commit = reservation.commit(now + 3).expect("commit");
+
+    let next_generation = manager
+        .mark_compaction_completed("claude", "s1", now + 4)
+        .expect("unrelated completed generation update");
+    assert_eq!(next_generation, generation + 1);
+    assert!(manager.confirm_route(
+        "claude",
+        "s1",
+        &SessionRouteFingerprint::new(Some(9), vec![2, 1]),
+        now + 5,
+    ));
+
+    assert!(commit.rollback());
+    let restored = manager
+        .routing_snapshot("claude", "s1", now + 6)
+        .expect("snapshot");
+    assert_eq!(restored.completed_compaction_generation, generation + 1);
+    assert_eq!(restored.consumed_compaction_generation, 0);
+    assert_eq!(restored.route.sort_mode_id, Some(9));
+    assert_eq!(restored.route.provider_order, vec![2, 1]);
+}
+
+#[test]
+fn trigger_rollback_rejects_when_same_field_has_a_newer_commit() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("claude", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("claude", "s1", 2, None, now);
+    let first_generation = manager
+        .mark_compaction_completed("claude", "s1", now + 1)
+        .expect("first generation");
+    let first_commit = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(first_generation),
+            now + 2,
+        )
+        .expect("first reservation")
+        .commit(now + 3)
+        .expect("first commit");
+
+    let second_generation = manager
+        .mark_compaction_completed("claude", "s1", now + 4)
+        .expect("second generation");
+    let _second_commit = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(second_generation),
+            now + 5,
+        )
+        .expect("second reservation")
+        .commit(now + 6)
+        .expect("second commit");
+
+    assert!(!first_commit.rollback());
+    let snapshot = manager
+        .routing_snapshot("claude", "s1", now + 7)
+        .expect("snapshot");
+    assert_eq!(snapshot.consumed_compaction_generation, second_generation);
+}
+
+#[test]
+fn expired_trigger_reservation_cannot_commit_and_can_be_reserved_again() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_sort_mode("claude", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("claude", "s1", 2, None, now);
+    let generation = manager
+        .mark_compaction_completed("claude", "s1", now + 1)
+        .expect("compaction generation");
+    let reservation = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            now + 2,
+        )
+        .expect("reservation");
+
+    let expired_at = now + 2 + TRIGGER_RESERVATION_TTL_SECS;
+    assert!(reservation.commit(expired_at).is_none());
+    assert!(manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::CompactionGeneration(generation),
+            expired_at,
+        )
+        .is_some());
+}
+
+#[test]
+fn route_commit_rollback_restores_absent_provider_order_exactly() {
+    let manager = Arc::new(SessionManager::new());
+    let now = 1_000;
+    manager.bind_success("claude", "s1", 2, None, now);
+    let route = SessionRouteFingerprint::new(Some(7), vec![1, 2]);
+    let reservation = manager
+        .try_reserve_probe_trigger(
+            "claude",
+            "s1",
+            SessionProbeTrigger::RouteChanged(route),
+            now + 1,
+        )
+        .expect("route reservation");
+
+    let commit = reservation.commit(now + 2).expect("route commit");
+    assert!(commit.rollback());
+
+    let guard = manager.bindings.lock_or_recover();
+    let binding = guard
+        .iter()
+        .find_map(|(key, binding)| (key.session_id == "s1").then_some(binding))
+        .expect("binding");
+    assert!(binding.provider_order.is_none());
+}
+
+#[test]
 fn extract_session_id_fallback_uses_message_fingerprint_and_ignores_user_agent() {
     let body = serde_json::json!({
         "messages": [

@@ -5,10 +5,12 @@ use futures_core::Stream;
 use std::pin::Pin;
 use std::task::{Context, Poll};
 
+#[cfg(test)]
 pub(in crate::gateway) struct RelayBodyStream {
     rx: tokio::sync::mpsc::Receiver<Result<Bytes, reqwest::Error>>,
 }
 
+#[cfg(test)]
 impl RelayBodyStream {
     pub(in crate::gateway) fn new(
         rx: tokio::sync::mpsc::Receiver<Result<Bytes, reqwest::Error>>,
@@ -17,6 +19,7 @@ impl RelayBodyStream {
     }
 }
 
+#[cfg(test)]
 impl Stream for RelayBodyStream {
     type Item = Result<Bytes, reqwest::Error>;
 

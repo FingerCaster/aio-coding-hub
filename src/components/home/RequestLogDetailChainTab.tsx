@@ -8,6 +8,7 @@ import { ProviderChainView } from "../ProviderChainView";
 export type RequestLogDetailChainTabProps = {
   selectedLog: RequestLogDetail;
   attemptLogs: ProviderChainAttemptLog[];
+  liveAttempts: ProviderChainAttemptLog[];
   attemptLogsLoading: boolean;
   isInProgress: boolean;
   finalProviderText: string | null;
@@ -16,6 +17,7 @@ export type RequestLogDetailChainTabProps = {
 export function RequestLogDetailChainTab({
   selectedLog,
   attemptLogs,
+  liveAttempts,
   attemptLogsLoading,
   isInProgress,
   finalProviderText,
@@ -41,6 +43,7 @@ export function RequestLogDetailChainTab({
         </div>
         <ProviderChainView
           attemptLogs={attemptLogs}
+          liveAttempts={liveAttempts}
           attemptLogsLoading={attemptLogsLoading}
           attemptsJson={selectedLog.attempts_json}
         />

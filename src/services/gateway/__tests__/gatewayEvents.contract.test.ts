@@ -28,6 +28,8 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(normalized?.attempts).toHaveLength(1);
     expect(normalized?.attempts[0]?.provider_id).toBe(7);
     expect(normalized?.attempts[0]?.requested_upstream_model).toBeNull();
+    expect(normalized?.attempts[0]?.probe).toBeNull();
+    expect(normalized?.attempts[0]?.probe_result).toBeNull();
     // Nested mapping is camelCase inside an otherwise snake_case payload.
     expect(normalized?.claude_model_mapping?.effectiveModel).toBe("gpt-5.4");
     expect(normalized?.cache_read_input_tokens).toBe(800);
@@ -73,7 +75,52 @@ describe("gateway event payload contract (shared fixtures)", () => {
     expect(normalized?.attempt_index).toBe(1);
     expect(normalized?.outcome).toBe("success");
     expect(normalized?.requested_upstream_model).toBeNull();
+    expect(normalized?.probe).toBeNull();
+    expect(normalized?.probe_result).toBeNull();
     expect(normalized?.claude_model_mapping?.requestedModel).toBe("claude-sonnet-4-5");
+  });
+
+  it("projects structured probe metadata from attempt and final request events", () => {
+    const probeMetadata = {
+      probe: true,
+      probe_trigger: "natural_compaction",
+      probe_result: "success",
+      probe_generation: 9,
+    };
+    const attempt = normalizeGatewayAttemptEvent({ ...attemptFixture, ...probeMetadata });
+    const request = normalizeGatewayRequestEvent({
+      ...requestFixture,
+      attempts: [
+        {
+          ...requestFixture.attempts[0],
+          ...probeMetadata,
+          selection_method: "circuit_probe",
+        },
+      ],
+    });
+
+    expect(attempt).toMatchObject(probeMetadata);
+    expect(request?.attempts[0]).toMatchObject({
+      ...probeMetadata,
+      selection_method: "circuit_probe",
+    });
+  });
+
+  it("accepts legacy attempt payloads without probe keys", () => {
+    const {
+      probe: _probe,
+      probe_trigger: _trigger,
+      probe_result: _result,
+      probe_generation: _generation,
+      ...legacy
+    } = attemptFixture;
+
+    expect(normalizeGatewayAttemptEvent(legacy)).toMatchObject({
+      probe: null,
+      probe_trigger: null,
+      probe_result: null,
+      probe_generation: null,
+    });
   });
 
   it("accepts the gateway:circuit fixture", () => {

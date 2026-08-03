@@ -117,6 +117,9 @@ export function useCliManagerPageDataModel() {
   const [upstreamRequestTimeoutNonStreamingSeconds, setUpstreamRequestTimeoutNonStreamingSeconds] =
     useState<number>(0);
   const [providerCooldownSeconds, setProviderCooldownSeconds] = useState<number>(30);
+  const [providerFailbackStrategy, setProviderFailbackStrategy] =
+    useState<AppSettings["provider_failback_strategy"]>("natural");
+  const [naturalProbeMaxWaitSeconds, setNaturalProbeMaxWaitSeconds] = useState<number>(300);
   const [providerBaseUrlPingCacheTtlSeconds, setProviderBaseUrlPingCacheTtlSeconds] =
     useState<number>(60);
   const [circuitBreakerFailureThreshold, setCircuitBreakerFailureThreshold] = useState<number>(5);
@@ -230,6 +233,8 @@ export function useCliManagerPageDataModel() {
       appSettings.upstream_request_timeout_non_streaming_seconds
     );
     setProviderCooldownSeconds(appSettings.provider_cooldown_seconds);
+    setProviderFailbackStrategy(appSettings.provider_failback_strategy);
+    setNaturalProbeMaxWaitSeconds(appSettings.natural_probe_max_wait_seconds);
     setProviderBaseUrlPingCacheTtlSeconds(appSettings.provider_base_url_ping_cache_ttl_seconds);
     setCircuitBreakerFailureThreshold(appSettings.circuit_breaker_failure_threshold);
     setCircuitBreakerOpenDurationMinutes(appSettings.circuit_breaker_open_duration_minutes);
@@ -404,6 +409,8 @@ export function useCliManagerPageDataModel() {
         updatedSettings.upstream_request_timeout_non_streaming_seconds
       );
       setProviderCooldownSeconds(updatedSettings.provider_cooldown_seconds);
+      setProviderFailbackStrategy(updatedSettings.provider_failback_strategy);
+      setNaturalProbeMaxWaitSeconds(updatedSettings.natural_probe_max_wait_seconds);
       setProviderBaseUrlPingCacheTtlSeconds(
         updatedSettings.provider_base_url_ping_cache_ttl_seconds
       );
@@ -425,6 +432,8 @@ export function useCliManagerPageDataModel() {
         prev.upstream_request_timeout_non_streaming_seconds
       );
       setProviderCooldownSeconds(prev.provider_cooldown_seconds);
+      setProviderFailbackStrategy(prev.provider_failback_strategy);
+      setNaturalProbeMaxWaitSeconds(prev.natural_probe_max_wait_seconds);
       setProviderBaseUrlPingCacheTtlSeconds(prev.provider_base_url_ping_cache_ttl_seconds);
       setCircuitBreakerFailureThreshold(prev.circuit_breaker_failure_threshold);
       setCircuitBreakerOpenDurationMinutes(prev.circuit_breaker_open_duration_minutes);
@@ -686,6 +695,10 @@ export function useCliManagerPageDataModel() {
       setUpstreamRequestTimeoutNonStreamingSeconds,
       providerCooldownSeconds,
       setProviderCooldownSeconds,
+      providerFailbackStrategy,
+      setProviderFailbackStrategy,
+      naturalProbeMaxWaitSeconds,
+      setNaturalProbeMaxWaitSeconds,
       providerBaseUrlPingCacheTtlSeconds,
       setProviderBaseUrlPingCacheTtlSeconds,
       circuitBreakerFailureThreshold,

@@ -1,0 +1,10 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"检查共享 gateway/circuit 修改的 Rust 测试范围与质量门禁。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"核对 probe 没有增加 retry/attempt budget 或扩大 strict/health-neutral 请求范围。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"检查 bindings、settings、events、attempt JSON 和 UI 的跨层一致性。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"核对公共 gate、skipped、Ready cap、route/attempt 计数和稳定 session binding 无回归。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"核对新增字段的并发保存、运行时失败和 owned-field CAS 回滚。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查 eligibility、状态转换、route fingerprint 和解码规则没有复制实现。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查数据库到 circuit、终态、日志投影和界面展示的完整闭环。"}
+{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/current-routing-and-circuit-evidence.md","reason":"对照现有行为锚点审计 session/gate/circuit 回归。"}
+{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/probe-trigger-strategy-comparison.md","reason":"对照已确认 single-flight、策略触发、一次成功和观察期决策。"}
+{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/compaction-signal-evidence.md","reason":"检查压缩识别严格性、generation 消费时机和无信号兜底。"}

@@ -10,9 +10,147 @@ use crate::domain::providers::CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE;
 use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayResponseHookInput};
 use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::{
-    gemini_oauth, is_fake_200_non_stream_body, protocol_bridge, provider_router,
+    gemini_oauth, is_fake_200_non_stream_body, protocol_bridge, provider_router, status_override,
     upstream_client_error_rules, GatewayErrorCode,
 };
+
+struct ProbeTerminalCommit {
+    snapshot: crate::circuit_breaker::CircuitSnapshot,
+    applied: bool,
+}
+
+fn complete_probe_terminal<R: tauri::Runtime>(
+    common: &CommonCtxOwned<'_, R>,
+    provider: &ProviderCtxOwned,
+    success: bool,
+    counted_failure: bool,
+    error_code: Option<&'static str>,
+) -> Option<ProbeTerminalCommit> {
+    let ownership = provider
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe())?;
+    let now_unix = now_unix_seconds() as i64;
+    let result = if success {
+        ownership.complete_probe_success(now_unix)
+    } else {
+        ownership.complete_probe_failure(now_unix, counted_failure, error_code)
+    }?;
+
+    match result {
+        crate::circuit_breaker::ProbeCommitResult::Applied(change) => {
+            if let Some(transition) = change.transition.as_ref() {
+                crate::gateway::events::emit_circuit_transition(
+                    &common.state.app,
+                    common.trace_id.as_str(),
+                    common.cli_key.as_str(),
+                    provider.provider_id,
+                    provider.provider_name_base.as_str(),
+                    provider.provider_base_url_base.as_str(),
+                    transition,
+                    now_unix,
+                    error_code,
+                    (error_code == Some(GatewayErrorCode::UpstreamTimeout.as_str()))
+                        .then_some(common.upstream_first_byte_timeout_secs),
+                );
+            }
+            Some(ProbeTerminalCommit {
+                snapshot: change.after,
+                applied: true,
+            })
+        }
+        crate::circuit_breaker::ProbeCommitResult::Stale(snapshot) => Some(ProbeTerminalCommit {
+            snapshot,
+            applied: false,
+        }),
+    }
+}
+
+fn effective_terminal_failure_status(status: StatusCode, error_code: &'static str) -> StatusCode {
+    status_override::effective_status(Some(status.as_u16()), Some(error_code))
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::INTERNAL_SERVER_ERROR)
+}
+
+fn apply_circuit_snapshot_to_last_attempt(
+    attempts: &mut [FailoverAttempt],
+    snapshot: &crate::circuit_breaker::CircuitSnapshot,
+) {
+    let Some(last) = attempts.last_mut() else {
+        return;
+    };
+    last.circuit_state_after = Some(snapshot.state.as_str());
+    last.circuit_failure_count = Some(snapshot.failure_count);
+    last.circuit_failure_threshold = Some(snapshot.failure_threshold);
+}
+
+fn complete_probe_failure_or_current_snapshot<R: tauri::Runtime>(
+    common: &CommonCtxOwned<'_, R>,
+    provider: &ProviderCtxOwned,
+    counted_failure: bool,
+    error_code: &'static str,
+) -> crate::circuit_breaker::CircuitSnapshot {
+    complete_probe_terminal(common, provider, false, counted_failure, Some(error_code))
+        .map(|commit| commit.snapshot)
+        .unwrap_or_else(|| {
+            common.state.circuit.snapshot(
+                provider.provider_id,
+                crate::gateway::util::now_unix_seconds() as i64,
+            )
+        })
+}
+
+fn mark_last_attempt_terminal_failure(
+    attempts: &mut [FailoverAttempt],
+    status: StatusCode,
+    error_code: &'static str,
+    reason: &'static str,
+    duration_ms: u128,
+) {
+    let Some(last) = attempts.last_mut() else {
+        return;
+    };
+    let category = ErrorCategory::SystemError;
+    last.outcome = format!(
+        "response_error: category={} code={} decision={}",
+        category.as_str(),
+        error_code,
+        FailoverDecision::Abort.as_str(),
+    );
+    last.status = Some(effective_terminal_failure_status(status, error_code).as_u16());
+    last.error_category = Some(category.as_str());
+    last.error_code = Some(error_code);
+    last.decision = Some(FailoverDecision::Abort.as_str());
+    last.reason = Some(reason.to_string());
+    last.reason_code = Some(category.reason_code());
+    last.attempt_duration_ms = Some(duration_ms);
+    if last.probe == Some(true) {
+        last.probe_result = Some("failed");
+    }
+}
+
+fn finish_downstream_response(
+    builder: axum::http::response::Builder,
+    body: Body,
+    trace_id: &str,
+) -> (Response, bool) {
+    match builder.body(body) {
+        Ok(response) => (response, false),
+        Err(_) => {
+            let mut fallback = (
+                StatusCode::INTERNAL_SERVER_ERROR,
+                GatewayErrorCode::ResponseBuildError.as_str(),
+            )
+                .into_response();
+            fallback.headers_mut().insert(
+                "x-trace-id",
+                HeaderValue::from_str(trace_id)
+                    .unwrap_or_else(|_| HeaderValue::from_static("unknown")),
+            );
+            (fallback, true)
+        }
+    }
+}
 
 fn resolve_requested_model_for_log(
     requested_model: Option<String>,
@@ -489,6 +627,15 @@ where
     let provider_id = provider_ctx_owned.provider_id;
     let provider_index = provider_ctx_owned.provider_index;
     let session_reuse = provider_ctx_owned.session_reuse;
+    let probe_ownership = provider_ctx_owned
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe());
+    let probe_active = probe_ownership.is_some();
+    let probe_trigger = probe_ownership
+        .and_then(|ownership| ownership.probe_trigger())
+        .map(|trigger| trigger.as_str());
+    let probe_generation = probe_ownership.and_then(|ownership| ownership.probe_generation());
 
     let AttemptCtx {
         attempt_index: _,
@@ -504,7 +651,11 @@ where
         anthropic_stream_requested,
         ..
     } = attempt_ctx;
-    let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
+    let selection_method = if probe_active {
+        Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+    } else {
+        dc::selection_method(provider_index, retry_index, session_reuse)
+    };
     let reason_code = dc::success_reason_code(provider_index, retry_index);
 
     let LoopState {
@@ -523,6 +674,8 @@ where
         cx2cc_buffered_event_stream,
         active_bridge_type.is_some(),
     ) && common.cli_key != "codex"
+        && !probe_active
+        && !common.is_compact_request
     {
         let should_gunzip = has_gzip_content_encoding(&response_headers);
 
@@ -552,6 +705,10 @@ where
                     circuit_state_after: None,
                     circuit_failure_count: Some(circuit_before.failure_count),
                     circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    probe: probe_active.then_some(true),
+                    probe_trigger,
+                    probe_result: probe_active.then_some("started"),
+                    probe_generation,
                     circuit_recover_at_unix: None,
                     circuit_trigger_error_code: None,
                     timeout_secs: None,
@@ -646,6 +803,10 @@ where
                     circuit_state_after: None,
                     circuit_failure_count: Some(circuit_before.failure_count),
                     circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                    probe: probe_active.then_some(true),
+                    probe_trigger,
+                    probe_result: probe_active.then_some("started"),
+                    probe_generation,
                     circuit_recover_at_unix: None,
                     circuit_trigger_error_code: None,
                     timeout_secs: None,
@@ -963,7 +1124,7 @@ where
             provider_name: provider_ctx_owned.provider_name_base.clone(),
             base_url: provider_ctx_owned.provider_base_url_base.clone(),
             outcome: outcome.clone(),
-            status: Some(status.as_u16()),
+            status: Some(effective_terminal_failure_status(status, error_code).as_u16()),
             provider_index: Some(provider_index),
             retry_index: Some(retry_index),
             session_reuse,
@@ -984,6 +1145,10 @@ where
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            probe: probe_active.then_some(true),
+            probe_trigger,
+            probe_result: probe_active.then_some("failed"),
+            probe_generation,
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             timeout_secs: None,
@@ -1009,7 +1174,23 @@ where
                     "failed to save OAuth exhausted quota snapshot: {err}"
                 );
             }
-        } else {
+        }
+
+        let probe_commit = complete_probe_terminal(
+            &common,
+            &provider_ctx_owned,
+            false,
+            !oauth_quota_exhausted && !common.provider_health_neutral,
+            Some(error_code),
+        );
+        if let Some(probe_commit) = probe_commit {
+            if let Some(last) = attempts.last_mut() {
+                last.circuit_state_after = Some(probe_commit.snapshot.state.as_str());
+                last.circuit_failure_count = Some(probe_commit.snapshot.failure_count);
+                last.circuit_failure_threshold = Some(probe_commit.snapshot.failure_threshold);
+            }
+            *circuit_snapshot = probe_commit.snapshot;
+        } else if !oauth_quota_exhausted {
             let change = provider_router::record_failure_and_emit_transition(
                 provider_router::RecordCircuitArgs::from_state(
                     state,
@@ -1033,9 +1214,8 @@ where
             }
             *circuit_snapshot = change.after.clone();
         }
-
         if quota_exhausted {
-            if !oauth_quota_exhausted && common.provider_cooldown_secs > 0 {
+            if !probe_active && !oauth_quota_exhausted && common.provider_cooldown_secs > 0 {
                 let snap = provider_router::trigger_cooldown(
                     state.circuit.as_ref(),
                     provider_id,
@@ -1045,6 +1225,7 @@ where
                 );
                 *circuit_snapshot = snap;
             }
+            apply_circuit_snapshot_to_last_attempt(attempts, circuit_snapshot);
             failed_provider_ids.insert(provider_id);
             *last_outcome = Some(AttemptOutcome::new(
                 ErrorCategory::ProviderError.as_str(),
@@ -1052,6 +1233,7 @@ where
             ));
             return LoopControl::BreakRetry;
         }
+        apply_circuit_snapshot_to_last_attempt(attempts, circuit_snapshot);
 
         let requested_model_for_log =
             crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
@@ -1201,11 +1383,24 @@ where
                 circuit_state_after: None,
                 circuit_failure_count: Some(circuit_before.failure_count),
                 circuit_failure_threshold: Some(circuit_before.failure_threshold),
+                probe: probe_active.then_some(true),
+                probe_trigger,
+                probe_result: probe_active.then_some("failed"),
+                probe_generation,
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
                 requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
             });
+
+            let terminal_snapshot = complete_probe_failure_or_current_snapshot(
+                &common,
+                &provider_ctx_owned,
+                false,
+                GatewayErrorCode::BridgeUnsupportedFeature.as_str(),
+            );
+            apply_circuit_snapshot_to_last_attempt(attempts, &terminal_snapshot);
+            *circuit_snapshot = terminal_snapshot;
 
             let verbose_provider_error = ctx.verbose_provider_error;
             let resp = finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
@@ -1276,6 +1471,10 @@ where
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        probe: probe_active.then_some(true),
+        probe_trigger,
+        probe_result: probe_active.then_some("started"),
+        probe_generation,
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
@@ -1321,6 +1520,21 @@ where
                     reason = %blocked.reason,
                     "plugin blocked gateway response after upstream success"
                 );
+                mark_last_attempt_terminal_failure(
+                    attempts,
+                    StatusCode::BAD_GATEWAY,
+                    GatewayErrorCode::InternalError.as_str(),
+                    "gateway response hook blocked response",
+                    attempt_started.elapsed().as_millis(),
+                );
+                let terminal_snapshot = complete_probe_failure_or_current_snapshot(
+                    &common,
+                    &provider_ctx_owned,
+                    false,
+                    GatewayErrorCode::InternalError.as_str(),
+                );
+                apply_circuit_snapshot_to_last_attempt(attempts, &terminal_snapshot);
+                *circuit_snapshot = terminal_snapshot;
                 emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
                 abort_guard.disarm();
                 return LoopControl::Return(error_response(
@@ -1347,6 +1561,21 @@ where
                 "plugin response.after hook failed: {}",
                 err
             );
+            mark_last_attempt_terminal_failure(
+                attempts,
+                StatusCode::BAD_GATEWAY,
+                GatewayErrorCode::InternalError.as_str(),
+                "gateway response hook failed",
+                attempt_started.elapsed().as_millis(),
+            );
+            let terminal_snapshot = complete_probe_failure_or_current_snapshot(
+                &common,
+                &provider_ctx_owned,
+                false,
+                GatewayErrorCode::InternalError.as_str(),
+            );
+            apply_circuit_snapshot_to_last_attempt(attempts, &terminal_snapshot);
+            *circuit_snapshot = terminal_snapshot;
             emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
             abort_guard.disarm();
             return LoopControl::Return(error_response(
@@ -1383,43 +1612,49 @@ where
     }
     builder = builder.header("x-trace-id", common.trace_id.as_str());
 
-    let out = match builder.body(body) {
-        Ok(r) => r,
-        Err(_) => {
-            let mut fallback = (
-                StatusCode::INTERNAL_SERVER_ERROR,
-                GatewayErrorCode::ResponseBuildError.as_str(),
-            )
-                .into_response();
-            fallback.headers_mut().insert(
-                "x-trace-id",
-                HeaderValue::from_str(common.trace_id.as_str())
-                    .unwrap_or(HeaderValue::from_static("unknown")),
-            );
-            fallback
-        }
-    };
-
-    if out.status() == status {
+    let (out, response_build_failed) =
+        finish_downstream_response(builder, body, common.trace_id.as_str());
+    if !response_build_failed {
         let now_unix = now_unix_seconds() as i64;
-        let change = provider_router::record_success_and_emit_transition(
-            provider_router::RecordCircuitArgs::from_state(
-                state,
-                common.trace_id.as_str(),
-                common.cli_key.as_str(),
-                provider_id,
-                provider_ctx_owned.provider_name_base.as_str(),
-                provider_ctx_owned.provider_base_url_base.as_str(),
-                now_unix,
-            )
-            .with_provider_health_neutral(common.provider_health_neutral),
-        );
-        if let Some(last) = attempts.last_mut() {
-            last.circuit_state_after = Some(change.after.state.as_str());
-            last.circuit_failure_count = Some(change.after.failure_count);
-            last.circuit_failure_threshold = Some(change.after.failure_threshold);
+        let probe_commit = complete_probe_terminal(&common, &provider_ctx_owned, true, false, None);
+        let bind_probe_success = probe_commit
+            .as_ref()
+            .is_some_and(|probe_commit| probe_commit.applied);
+        if let Some(probe_commit) = probe_commit {
+            if let Some(last) = attempts.last_mut() {
+                last.probe_result = Some(if probe_commit.applied {
+                    "success"
+                } else {
+                    "failed"
+                });
+                last.circuit_state_after = Some(probe_commit.snapshot.state.as_str());
+                last.circuit_failure_count = Some(probe_commit.snapshot.failure_count);
+                last.circuit_failure_threshold = Some(probe_commit.snapshot.failure_threshold);
+            }
+            *circuit_snapshot = probe_commit.snapshot;
+        } else {
+            let change = provider_router::record_success_and_emit_transition(
+                provider_router::RecordCircuitArgs::from_state(
+                    state,
+                    common.trace_id.as_str(),
+                    common.cli_key.as_str(),
+                    provider_id,
+                    provider_ctx_owned.provider_name_base.as_str(),
+                    provider_ctx_owned.provider_base_url_base.as_str(),
+                    now_unix,
+                )
+                .with_provider_health_neutral(common.provider_health_neutral),
+            );
+            if let Some(last) = attempts.last_mut() {
+                last.circuit_state_after = Some(change.after.state.as_str());
+                last.circuit_failure_count = Some(change.after.failure_count);
+                last.circuit_failure_threshold = Some(change.after.failure_threshold);
+            }
         }
-        if (200..300).contains(&status.as_u16()) && common.managed_model_route.is_none() {
+        if (200..300).contains(&status.as_u16())
+            && common.managed_model_route.is_none()
+            && (!probe_active || bind_probe_success)
+        {
             if let Some(session_id) = common.session_id.as_deref() {
                 state.session.bind_success(
                     &common.cli_key,
@@ -1430,9 +1665,51 @@ where
                 );
             }
         }
+        if common.is_compact_request {
+            if let Some(session_id) = common.session_id.as_deref() {
+                let _ =
+                    state
+                        .session
+                        .mark_compaction_completed(&common.cli_key, session_id, now_unix);
+            }
+        }
+    } else {
+        mark_last_attempt_terminal_failure(
+            attempts,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            GatewayErrorCode::ResponseBuildError.as_str(),
+            "failed to build downstream response",
+            attempt_started.elapsed().as_millis(),
+        );
+        let terminal_snapshot = complete_probe_failure_or_current_snapshot(
+            &common,
+            &provider_ctx_owned,
+            false,
+            GatewayErrorCode::ResponseBuildError.as_str(),
+        );
+        apply_circuit_snapshot_to_last_attempt(attempts, &terminal_snapshot);
+        *circuit_snapshot = terminal_snapshot;
     }
 
     let duration_ms = started.elapsed().as_millis();
+    let completion = if response_build_failed {
+        RequestCompletion::failure_with_visible_ttfb(
+            StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
+            Some(ErrorCategory::SystemError.as_str()),
+            GatewayErrorCode::ResponseBuildError.as_str(),
+            provider_ttfb_ms,
+            Some(duration_ms),
+        )
+    } else {
+        RequestCompletion::success_with_visible_ttfb(
+            status.as_u16(),
+            provider_ttfb_ms,
+            Some(duration_ms),
+            usage_metrics,
+            None,
+            usage,
+        )
+    };
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {
             deps: RequestEndDeps::new(
@@ -1457,14 +1734,7 @@ where
             created_at_ms,
             created_at,
         })
-        .with_completion(RequestCompletion::success_with_visible_ttfb(
-            status.as_u16(),
-            provider_ttfb_ms,
-            Some(duration_ms),
-            usage_metrics,
-            None,
-            usage,
-        )),
+        .with_completion(completion),
     )
     .await;
     abort_guard.disarm();
@@ -1474,18 +1744,170 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        buffer_cx2cc_event_stream_as_json, cache_bridge_non_stream_response,
-        classify_cx2cc_success_payload, read_non_stream_body_with_limit,
+        apply_circuit_snapshot_to_last_attempt, buffer_cx2cc_event_stream_as_json,
+        cache_bridge_non_stream_response, classify_cx2cc_success_payload,
+        effective_terminal_failure_status, finish_downstream_response,
+        mark_last_attempt_terminal_failure, read_non_stream_body_with_limit,
         resolve_requested_model_for_log, should_passthrough_non_stream_success,
         translate_bridge_non_stream_body, Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
     };
+    use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitSnapshot};
     use crate::domain::usage;
-    use axum::body::Bytes;
-    use axum::http::{header, HeaderMap, HeaderValue};
+    use crate::gateway::events::FailoverAttempt;
+    use crate::gateway::proxy::GatewayErrorCode;
+    use axum::body::{Body, Bytes};
+    use axum::http::{header, HeaderMap, HeaderValue, StatusCode};
+    use axum::response::Response;
     use serde_json::json;
+    use std::collections::HashMap;
     use std::time::{Duration, Instant};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tokio::net::TcpListener;
+
+    fn started_probe_attempt() -> FailoverAttempt {
+        FailoverAttempt {
+            provider_id: 1,
+            provider_name: "test-provider".to_string(),
+            base_url: "https://upstream.example".to_string(),
+            outcome: "success".to_string(),
+            status: Some(200),
+            provider_index: Some(1),
+            retry_index: Some(1),
+            session_reuse: Some(false),
+            error_category: None,
+            error_code: None,
+            decision: Some("success"),
+            reason: None,
+            selection_method: Some("circuit_probe"),
+            reason_code: Some("request_success"),
+            attempt_started_ms: Some(0),
+            attempt_duration_ms: Some(1),
+            circuit_state_before: Some("OPEN"),
+            circuit_state_after: None,
+            circuit_failure_count: Some(1),
+            circuit_failure_threshold: Some(1),
+            probe: Some(true),
+            probe_trigger: Some("aggressive_turn"),
+            probe_result: Some("started"),
+            probe_generation: Some(1),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            provider_bridged: Some(false),
+            timeout_secs: None,
+            requested_upstream_model: Some("gpt-5".to_string()),
+        }
+    }
+
+    fn open_circuit_snapshot() -> CircuitSnapshot {
+        let circuit = CircuitBreaker::new(
+            CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        );
+        circuit
+            .record_failure(1, 1_700_000_000, Some("TEST_TERMINAL_FAILURE"))
+            .after
+    }
+
+    #[test]
+    fn response_hook_failure_overwrites_success_attempt_semantics() {
+        let mut attempts = vec![started_probe_attempt()];
+
+        mark_last_attempt_terminal_failure(
+            &mut attempts,
+            StatusCode::BAD_GATEWAY,
+            GatewayErrorCode::InternalError.as_str(),
+            "gateway response hook failed",
+            37,
+        );
+        apply_circuit_snapshot_to_last_attempt(&mut attempts, &open_circuit_snapshot());
+
+        let attempt = &attempts[0];
+        assert_eq!(
+            attempt.outcome,
+            "response_error: category=SYSTEM_ERROR code=GW_INTERNAL_ERROR decision=abort"
+        );
+        assert_eq!(attempt.status, Some(502));
+        assert_eq!(attempt.error_category, Some("SYSTEM_ERROR"));
+        assert_eq!(attempt.error_code, Some("GW_INTERNAL_ERROR"));
+        assert_eq!(attempt.decision, Some("abort"));
+        assert_eq!(
+            attempt.reason.as_deref(),
+            Some("gateway response hook failed")
+        );
+        assert_eq!(attempt.reason_code, Some("system_error"));
+        assert_eq!(attempt.attempt_duration_ms, Some(37));
+        assert_eq!(attempt.probe_result, Some("failed"));
+        assert_eq!(attempt.circuit_state_after, Some("OPEN"));
+    }
+
+    #[test]
+    fn response_build_failure_overwrites_success_attempt_semantics() {
+        let mut attempts = vec![started_probe_attempt()];
+
+        mark_last_attempt_terminal_failure(
+            &mut attempts,
+            StatusCode::INTERNAL_SERVER_ERROR,
+            GatewayErrorCode::ResponseBuildError.as_str(),
+            "failed to build downstream response",
+            41,
+        );
+        apply_circuit_snapshot_to_last_attempt(&mut attempts, &open_circuit_snapshot());
+
+        let attempt = &attempts[0];
+        assert_ne!(attempt.outcome, "success");
+        assert_eq!(attempt.status, Some(500));
+        assert_eq!(attempt.error_category, Some("SYSTEM_ERROR"));
+        assert_eq!(
+            attempt.error_code,
+            Some(GatewayErrorCode::ResponseBuildError.as_str())
+        );
+        assert_eq!(attempt.decision, Some("abort"));
+        assert_eq!(
+            attempt.reason.as_deref(),
+            Some("failed to build downstream response")
+        );
+        assert_eq!(attempt.reason_code, Some("system_error"));
+        assert_eq!(attempt.attempt_duration_ms, Some(41));
+        assert_eq!(attempt.probe_result, Some("failed"));
+        assert_eq!(attempt.circuit_state_after, Some("OPEN"));
+    }
+
+    #[test]
+    fn downstream_response_build_reports_failure_and_success_control() {
+        let (success, success_failed) = finish_downstream_response(
+            Response::builder().status(StatusCode::OK),
+            Body::empty(),
+            "trace-success",
+        );
+        assert!(!success_failed);
+        assert_eq!(success.status(), StatusCode::OK);
+
+        let invalid_builder =
+            Response::builder().header("invalid\nheader", HeaderValue::from_static("value"));
+        let (failure, build_failed) =
+            finish_downstream_response(invalid_builder, Body::empty(), "trace-build-failure");
+        assert!(build_failed);
+        assert_eq!(failure.status(), StatusCode::INTERNAL_SERVER_ERROR);
+        assert_eq!(
+            failure
+                .headers()
+                .get("x-trace-id")
+                .and_then(|value| value.to_str().ok()),
+            Some("trace-build-failure")
+        );
+    }
+
+    #[test]
+    fn fake_200_terminal_status_cannot_remain_successful() {
+        assert_eq!(
+            effective_terminal_failure_status(StatusCode::OK, GatewayErrorCode::Fake200.as_str()),
+            StatusCode::BAD_GATEWAY
+        );
+    }
 
     async fn known_length_response(
         declared_content_length: usize,

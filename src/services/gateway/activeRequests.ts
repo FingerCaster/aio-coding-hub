@@ -1,7 +1,13 @@
-import { commands, type ActiveRequestSnapshotItem } from "../../generated/bindings";
+import {
+  commands,
+  type ActiveRequestSnapshotItem as GeneratedActiveRequestSnapshotItem,
+} from "../../generated/bindings";
 import { invokeGeneratedIpc, mapGeneratedCommandResponse } from "../generatedIpc";
+import type { GatewayAttemptEvent } from "./gatewayEvents";
 
-export type ActiveRequest = ActiveRequestSnapshotItem;
+export type ActiveRequest = Omit<GeneratedActiveRequestSnapshotItem, "current_attempt"> & {
+  current_attempt: GatewayAttemptEvent | null;
+};
 
 export async function activeRequestLogsSnapshot() {
   return invokeGeneratedIpc<ActiveRequest[]>({

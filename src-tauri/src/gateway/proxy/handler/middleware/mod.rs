@@ -91,6 +91,8 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
 
     // -- request kind classification --
     pub(super) is_compact_request: bool,
+    pub(super) is_warmup_request: bool,
+    pub(super) codex_compaction_fingerprint: Option<String>,
 
     // -- runtime settings (populated after settings read) --
     pub(super) runtime_settings: Option<super::runtime_settings::HandlerRuntimeSettings>,
@@ -103,6 +105,8 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) providers: Vec<providers::ProviderForGateway>,
     pub(super) session_bound_provider_id: Option<i64>,
+    pub(super) dispatch_intent: Option<Arc<crate::gateway::proxy::dispatch::RequestDispatchIntent>>,
+    pub(super) probe_observations: Vec<crate::gateway::events::FailoverAttempt>,
     pub(super) forced_provider_id: Option<i64>,
 
     // -- request fingerprinting --
@@ -143,6 +147,9 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             effective_sort_mode_id: self.effective_sort_mode_id,
             providers: self.providers,
             session_bound_provider_id: self.session_bound_provider_id,
+            dispatch_intent: self.dispatch_intent,
+            probe_observations: self.probe_observations,
+            is_compact_request: self.is_compact_request,
             headers: self.headers,
             body_bytes: self.body_bytes,
             request_body_state,

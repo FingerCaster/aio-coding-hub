@@ -21,6 +21,10 @@
   "circuit_state_after": "CLOSED",
   "circuit_failure_count": 0,
   "circuit_failure_threshold": 5,
+  "probe": null,
+  "probe_trigger": null,
+  "probe_result": null,
+  "probe_generation": null,
   "claude_model_mapping": {
     "requestedModel": "claude-sonnet-4-5",
     "effectiveModel": "gpt-5.4",

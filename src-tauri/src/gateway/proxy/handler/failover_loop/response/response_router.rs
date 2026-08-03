@@ -84,6 +84,7 @@ where
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
         upstream_retry_policy: &prepared.upstream_retry_policy,
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
+        dispatch_ownership: prepared.dispatch_ownership.as_ref(),
     };
     emit_gateway_debug_log_lazy(&ctx.state.app, || {
         format!(
@@ -193,6 +194,7 @@ where
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
         upstream_retry_policy: &prepared.upstream_retry_policy,
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
+        dispatch_ownership: prepared.dispatch_ownership.as_ref(),
     };
 
     // --- Non-success upstream error handling ---

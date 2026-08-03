@@ -113,10 +113,17 @@ pub(crate) fn try_app_gateway_update_circuit_config<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     failure_threshold: u32,
     open_duration_secs: i64,
+    provider_cooldown_secs: i64,
+    natural_probe_max_wait_secs: i64,
 ) -> bool {
     super::gateway_state::try_with_app_running_gateway(app, |running| {
         if let Some(runtime) = running {
-            runtime.update_circuit_config(failure_threshold, open_duration_secs);
+            runtime.update_circuit_config(
+                failure_threshold,
+                open_duration_secs,
+                provider_cooldown_secs,
+                natural_probe_max_wait_secs,
+            );
         }
     })
     .is_some()

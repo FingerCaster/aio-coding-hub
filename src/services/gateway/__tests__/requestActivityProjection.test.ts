@@ -201,7 +201,13 @@ describe("services/gateway/requestActivityProjection", () => {
 
   it("replays the current attempt for a registry-only active trace", () => {
     const nowMs = 1_700_000_900_000;
-    const currentAttempt = attempt("active-background", 1, "78code");
+    const currentAttempt = {
+      ...attempt("active-background", 1, "78code"),
+      probe: true,
+      probe_trigger: "aggressive_turn",
+      probe_result: "started",
+      probe_generation: 3,
+    };
     const projection = buildRequestActivityProjection({
       requestLogs: [],
       activeRequests: [

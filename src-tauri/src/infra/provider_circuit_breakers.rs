@@ -3,7 +3,7 @@
 use crate::shared::error::db_err;
 use crate::shared::time::now_unix_seconds;
 use crate::{circuit_breaker, db};
-use rusqlite::{params, params_from_iter, ErrorCode, TransactionBehavior};
+use rusqlite::{params, ErrorCode, TransactionBehavior};
 use std::collections::HashMap;
 use std::time::Duration;
 use tokio::sync::mpsc;
@@ -78,10 +78,15 @@ fn serialize_failure_timestamps(timestamps: &[u64]) -> String {
 
 fn is_inert_closed_state(item: &circuit_breaker::CircuitPersistedState) -> bool {
     item.provider_id > 0
+        && item.state_revision == 0
         && item.state == circuit_breaker::CircuitState::Closed
         && item.failure_timestamps.is_empty()
         && item.half_open_success_count == 0
         && item.open_until.is_none()
+        && item.probe_reference_at.is_none()
+        && item.next_probe_at.is_none()
+        && item.natural_probe_due_at.is_none()
+        && item.recovery_guard_until.is_none()
 }
 
 fn deserialize_failure_timestamps(raw: &str) -> Vec<u64> {
@@ -113,6 +118,20 @@ pub fn start_buffered_writer(
         writer_loop(db, rx);
     });
     (tx, task)
+}
+
+pub fn upsert_durable(
+    db: &db::Db,
+    item: &circuit_breaker::CircuitPersistedState,
+) -> Result<(), String> {
+    upsert_many_durable(db, std::slice::from_ref(item))
+}
+
+pub fn upsert_many_durable(
+    db: &db::Db,
+    items: &[circuit_breaker::CircuitPersistedState],
+) -> Result<(), String> {
+    insert_batch_with_retries(db, items).map_err(|err| err.message)
 }
 
 fn writer_loop(db: db::Db, mut rx: mpsc::Receiver<circuit_breaker::CircuitPersistedState>) {
@@ -180,7 +199,15 @@ fn insert_batch_once(
     let mut latest_by_provider: HashMap<i64, circuit_breaker::CircuitPersistedState> =
         HashMap::with_capacity(items.len().min(WRITE_BATCH_MAX));
     for item in items {
-        latest_by_provider.insert(item.provider_id, item.clone());
+        let replace = latest_by_provider
+            .get(&item.provider_id)
+            .is_none_or(|current| {
+                (item.state_revision, item.updated_at)
+                    >= (current.state_revision, current.updated_at)
+            });
+        if replace {
+            latest_by_provider.insert(item.provider_id, item.clone());
+        }
     }
 
     let mut conn = db
@@ -189,23 +216,6 @@ fn insert_batch_once(
     let tx = conn
         .transaction_with_behavior(TransactionBehavior::Immediate)
         .map_err(|e| DbWriteError::from_rusqlite("failed to start transaction", e))?;
-
-    {
-        let mut stmt = tx
-            .prepare_cached("DELETE FROM provider_circuit_breakers WHERE provider_id = ?1")
-            .map_err(|e| {
-                DbWriteError::from_rusqlite("failed to prepare circuit breaker delete", e)
-            })?;
-
-        for item in latest_by_provider.values() {
-            if !is_inert_closed_state(item) {
-                continue;
-            }
-            stmt.execute(params![item.provider_id]).map_err(|e| {
-                DbWriteError::from_rusqlite("failed to delete inert provider_circuit_breaker", e)
-            })?;
-        }
-    }
 
     {
         let mut stmt = tx
@@ -218,15 +228,30 @@ INSERT INTO provider_circuit_breakers (
   failure_timestamps_json,
   half_open_success_count,
   open_until,
+  probe_reference_at,
+  next_probe_at,
+  natural_probe_due_at,
+  recovery_guard_until,
+  state_revision,
   updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)
 ON CONFLICT(provider_id) DO UPDATE SET
   state = excluded.state,
   failure_count = excluded.failure_count,
   failure_timestamps_json = excluded.failure_timestamps_json,
   half_open_success_count = excluded.half_open_success_count,
   open_until = excluded.open_until,
+  probe_reference_at = excluded.probe_reference_at,
+  next_probe_at = excluded.next_probe_at,
+  natural_probe_due_at = excluded.natural_probe_due_at,
+  recovery_guard_until = excluded.recovery_guard_until,
+  state_revision = excluded.state_revision,
   updated_at = excluded.updated_at
+WHERE excluded.state_revision > provider_circuit_breakers.state_revision
+   OR (
+     excluded.state_revision = provider_circuit_breakers.state_revision
+     AND excluded.updated_at >= provider_circuit_breakers.updated_at
+   )
 "#,
             )
             .map_err(|e| {
@@ -234,10 +259,6 @@ ON CONFLICT(provider_id) DO UPDATE SET
             })?;
 
         for item in latest_by_provider.values() {
-            if is_inert_closed_state(item) {
-                continue;
-            }
-
             let updated_at = if item.updated_at > 0 {
                 item.updated_at
             } else {
@@ -255,6 +276,11 @@ ON CONFLICT(provider_id) DO UPDATE SET
                 timestamps_json,
                 item.half_open_success_count as i64,
                 item.open_until,
+                item.probe_reference_at,
+                item.next_probe_at,
+                item.natural_probe_due_at,
+                item.recovery_guard_until,
+                item.state_revision.min(i64::MAX as u64) as i64,
                 updated_at
             ])
             .map_err(|e| {
@@ -282,6 +308,11 @@ pub fn load_all(
       failure_timestamps_json,
       half_open_success_count,
       open_until,
+      probe_reference_at,
+      next_probe_at,
+      natural_probe_due_at,
+      recovery_guard_until,
+      state_revision,
       updated_at
     FROM provider_circuit_breakers
     "#,
@@ -303,6 +334,11 @@ pub fn load_all(
                 failure_timestamps: deserialize_failure_timestamps(&timestamps_json),
                 half_open_success_count: half_open_success_count.max(0).min(u32::MAX as i64) as u32,
                 open_until,
+                probe_reference_at: row.get("probe_reference_at").ok().flatten(),
+                next_probe_at: row.get("next_probe_at").ok().flatten(),
+                natural_probe_due_at: row.get("natural_probe_due_at").ok().flatten(),
+                recovery_guard_until: row.get("recovery_guard_until").ok().flatten(),
+                state_revision: row.get::<_, i64>("state_revision").unwrap_or(0).max(0) as u64,
                 updated_at: row.get("updated_at")?,
             })
         })
@@ -318,40 +354,6 @@ pub fn load_all(
     }
 
     Ok(items)
-}
-
-pub fn delete_by_provider_id(
-    db: &db::Db,
-    provider_id: i64,
-) -> crate::shared::error::AppResult<usize> {
-    if provider_id <= 0 {
-        return Ok(0);
-    }
-    let conn = db.open_connection()?;
-    conn.execute(
-        "DELETE FROM provider_circuit_breakers WHERE provider_id = ?1",
-        params![provider_id],
-    )
-    .map_err(|e| db_err!("failed to delete circuit breaker state: {e}"))
-}
-
-pub fn delete_by_provider_ids(
-    db: &db::Db,
-    provider_ids: &[i64],
-) -> crate::shared::error::AppResult<usize> {
-    let ids: Vec<i64> = provider_ids.iter().copied().filter(|id| *id > 0).collect();
-
-    if ids.is_empty() {
-        return Ok(0);
-    }
-
-    let placeholders = crate::db::sql_placeholders(ids.len());
-    let sql =
-        format!("DELETE FROM provider_circuit_breakers WHERE provider_id IN ({placeholders})");
-
-    let conn = db.open_connection()?;
-    conn.execute(&sql, params_from_iter(ids.iter()))
-        .map_err(|e| db_err!("failed to delete circuit breaker states: {e}"))
 }
 
 #[cfg(test)]
@@ -497,34 +499,47 @@ mod tests {
         assert!(loaded.contains_key(&2));
     }
 
+    fn persisted_state(
+        provider_id: i64,
+        state: circuit_breaker::CircuitState,
+        state_revision: u64,
+        updated_at: i64,
+    ) -> circuit_breaker::CircuitPersistedState {
+        circuit_breaker::CircuitPersistedState {
+            provider_id,
+            state,
+            failure_timestamps: if state == circuit_breaker::CircuitState::Open {
+                vec![10]
+            } else {
+                Vec::new()
+            },
+            half_open_success_count: 0,
+            open_until: (state == circuit_breaker::CircuitState::Open).then_some(100),
+            probe_reference_at: None,
+            next_probe_at: None,
+            natural_probe_due_at: None,
+            recovery_guard_until: None,
+            state_revision,
+            updated_at,
+        }
+    }
+
     #[test]
-    fn insert_batch_deletes_inert_closed_rows() {
+    fn insert_batch_persists_revisioned_closed_tombstone() {
         let (_dir, db) = init_test_db();
         insert_test_provider(&db, 7);
 
-        let open = circuit_breaker::CircuitPersistedState {
-            provider_id: 7,
-            state: circuit_breaker::CircuitState::Open,
-            failure_timestamps: vec![10],
-            half_open_success_count: 0,
-            open_until: Some(100),
-            updated_at: 10,
-        };
-        insert_batch_once(&db, &[open]).expect("insert open state");
+        let open = persisted_state(7, circuit_breaker::CircuitState::Open, 1, 10);
+        upsert_durable(&db, &open).expect("insert open state");
         assert!(load_all(&db).expect("load open state").contains_key(&7));
 
-        let inert_closed = circuit_breaker::CircuitPersistedState {
-            provider_id: 7,
-            state: circuit_breaker::CircuitState::Closed,
-            failure_timestamps: Vec::new(),
-            half_open_success_count: 0,
-            open_until: None,
-            updated_at: 20,
-        };
-        insert_batch_once(&db, &[inert_closed]).expect("delete inert closed state");
+        let tombstone = persisted_state(7, circuit_breaker::CircuitState::Closed, 2, 20);
+        upsert_durable(&db, &tombstone).expect("upsert closed tombstone");
 
-        let loaded = load_all(&db).expect("load after delete");
-        assert!(!loaded.contains_key(&7));
+        let loaded = load_all(&db).expect("load tombstone");
+        let loaded = loaded.get(&7).expect("revisioned tombstone retained");
+        assert_eq!(loaded.state, circuit_breaker::CircuitState::Closed);
+        assert_eq!(loaded.state_revision, 2);
 
         let conn = db.open_connection().expect("open db");
         let count: i64 = conn
@@ -534,6 +549,182 @@ mod tests {
                 |row| row.get(0),
             )
             .expect("count circuit rows");
-        assert_eq!(count, 0);
+        assert_eq!(count, 1);
+    }
+
+    #[test]
+    fn upsert_durable_applies_new_revision_and_ignores_old_revision() {
+        let (_dir, db) = init_test_db();
+        insert_test_provider(&db, 11);
+
+        let open = persisted_state(11, circuit_breaker::CircuitState::Open, 3, 30);
+        upsert_durable(&db, &open).expect("insert open revision");
+
+        let closed = persisted_state(11, circuit_breaker::CircuitState::Closed, 4, 40);
+        upsert_durable(&db, &closed).expect("apply newer closed revision");
+
+        let stale_open = persisted_state(11, circuit_breaker::CircuitState::Open, 3, 999);
+        upsert_durable(&db, &stale_open).expect("older revision is a successful no-op");
+
+        let loaded = load_all(&db).expect("load durable state");
+        let state = loaded.get(&11).expect("provider state");
+        assert_eq!(state.state, circuit_breaker::CircuitState::Closed);
+        assert_eq!(state.state_revision, 4);
+        assert_eq!(state.updated_at, 40);
+    }
+
+    #[test]
+    fn upsert_durable_returns_database_error() {
+        let (_dir, db) = init_test_db();
+        let missing_provider = persisted_state(999, circuit_breaker::CircuitState::Open, 1, 10);
+
+        let err = upsert_durable(&db, &missing_provider)
+            .expect_err("foreign-key failure must be returned to durable caller");
+
+        assert!(err.starts_with("DB_ERROR:"), "unexpected error: {err}");
+    }
+
+    #[test]
+    fn upsert_many_durable_persists_multiple_providers_in_one_batch() {
+        let (_dir, db) = init_test_db();
+        insert_test_provider(&db, 12);
+        insert_test_provider(&db, 13);
+        let states = [
+            persisted_state(12, circuit_breaker::CircuitState::Closed, 4, 40),
+            persisted_state(13, circuit_breaker::CircuitState::Open, 7, 70),
+        ];
+
+        upsert_many_durable(&db, &states).expect("persist provider batch");
+
+        let loaded = load_all(&db).expect("load provider batch");
+        assert_eq!(
+            loaded.get(&12).expect("provider 12").state,
+            circuit_breaker::CircuitState::Closed
+        );
+        assert_eq!(loaded.get(&12).expect("provider 12").state_revision, 4);
+        assert_eq!(
+            loaded.get(&13).expect("provider 13").state,
+            circuit_breaker::CircuitState::Open
+        );
+        assert_eq!(loaded.get(&13).expect("provider 13").state_revision, 7);
+    }
+
+    #[test]
+    fn upsert_many_durable_rolls_back_entire_batch_on_database_error() {
+        let (_dir, db) = init_test_db();
+        insert_test_provider(&db, 14);
+        insert_test_provider(&db, 15);
+        let conn = db.open_connection().expect("open db");
+        conn.execute_batch(
+            r#"
+            CREATE TRIGGER fail_second_circuit_insert
+            BEFORE INSERT ON provider_circuit_breakers
+            WHEN (SELECT COUNT(*) FROM provider_circuit_breakers) >= 1
+            BEGIN
+              SELECT RAISE(ABORT, 'forced second circuit insert failure');
+            END;
+            "#,
+        )
+        .expect("create failure trigger");
+        drop(conn);
+        let states = [
+            persisted_state(14, circuit_breaker::CircuitState::Closed, 2, 20),
+            persisted_state(15, circuit_breaker::CircuitState::Open, 1, 10),
+        ];
+
+        upsert_many_durable(&db, &states)
+            .expect_err("second insert failure must roll back the whole batch");
+
+        let loaded = load_all(&db).expect("load after failed batch");
+        assert!(!loaded.contains_key(&14));
+        assert!(!loaded.contains_key(&15));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn queued_open_then_reset_then_late_open_reloads_closed() {
+        let (_dir, db) = init_test_db();
+        let provider_id = 10;
+        insert_test_provider(&db, provider_id);
+
+        let mut queued_open =
+            persisted_state(provider_id, circuit_breaker::CircuitState::Open, 7, 70);
+        queued_open.probe_reference_at = Some(70);
+        queued_open.next_probe_at = Some(100);
+        queued_open.natural_probe_due_at = Some(370);
+
+        let (tx, writer_task) = start_buffered_writer(db.clone());
+        tx.send(queued_open.clone())
+            .await
+            .expect("queue old open state");
+
+        let circuit = circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig::default(),
+            HashMap::from([(provider_id, queued_open.clone())]),
+            Some(tx.clone()),
+        );
+        let reset = circuit.reset(provider_id, 80);
+        assert_eq!(reset.state, circuit_breaker::CircuitState::Closed);
+        assert!(reset.state_revision > queued_open.state_revision);
+
+        tx.send(queued_open)
+            .await
+            .expect("deliver stale open after reset");
+        drop(circuit);
+        drop(tx);
+        writer_task.await.expect("join circuit writer");
+
+        let loaded = load_all(&db).expect("reload persisted circuit states");
+        let tombstone = loaded.get(&provider_id).expect("closed tombstone retained");
+        assert_eq!(tombstone.state, circuit_breaker::CircuitState::Closed);
+        assert_eq!(tombstone.state_revision, reset.state_revision);
+
+        let reloaded = circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig::default(),
+            loaded,
+            None,
+        );
+        assert_eq!(
+            reloaded.snapshot(provider_id, 81).state,
+            circuit_breaker::CircuitState::Closed
+        );
+    }
+
+    #[test]
+    fn batch_dedup_and_sql_guard_reject_out_of_order_open_resurrection() {
+        let (_dir, db) = init_test_db();
+        insert_test_provider(&db, 8);
+
+        let tombstone = persisted_state(8, circuit_breaker::CircuitState::Closed, 8, 80);
+        let stale_open = persisted_state(8, circuit_breaker::CircuitState::Open, 7, 999);
+        insert_batch_once(&db, &[tombstone.clone(), stale_open.clone()])
+            .expect("same-batch upsert");
+        let loaded = load_all(&db).expect("load same-batch state");
+        assert_eq!(
+            loaded.get(&8).expect("state").state,
+            circuit_breaker::CircuitState::Closed
+        );
+
+        insert_batch_once(&db, &[stale_open]).expect("cross-batch stale upsert");
+        let loaded = load_all(&db).expect("load cross-batch state");
+        let state = loaded.get(&8).expect("state");
+        assert_eq!(state.state, circuit_breaker::CircuitState::Closed);
+        assert_eq!(state.state_revision, 8);
+    }
+
+    #[test]
+    fn equal_revision_uses_updated_at_as_tie_breaker() {
+        let (_dir, db) = init_test_db();
+        insert_test_provider(&db, 9);
+
+        let tombstone = persisted_state(9, circuit_breaker::CircuitState::Closed, 5, 50);
+        let stale_open = persisted_state(9, circuit_breaker::CircuitState::Open, 5, 49);
+        insert_batch_once(&db, &[tombstone]).expect("insert tombstone");
+        insert_batch_once(&db, &[stale_open]).expect("ignore stale equal revision");
+
+        let loaded = load_all(&db).expect("load state");
+        assert_eq!(
+            loaded.get(&9).expect("state").state,
+            circuit_breaker::CircuitState::Closed
+        );
     }
 }

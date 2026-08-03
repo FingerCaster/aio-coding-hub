@@ -8,11 +8,12 @@ pub(super) const FAILURE_WINDOW_SECS: u64 = 300;
 /// Hard cap on stored failure timestamps to prevent unbounded memory growth.
 pub(crate) const MAX_FAILURE_TIMESTAMPS: usize = 256;
 
-/// In HalfOpen state, this many consecutive successes are required to close the circuit.
-pub(super) const HALF_OPEN_SUCCESS_REQUIRED: u32 = 3;
-
 pub(super) const DEFAULT_FAILURE_THRESHOLD: u32 = 5;
 pub(super) const DEFAULT_OPEN_DURATION_SECS: i64 = 30 * 60;
+pub(super) const DEFAULT_PROVIDER_COOLDOWN_SECS: i64 = 30;
+pub(super) const DEFAULT_NATURAL_PROBE_MAX_WAIT_SECS: i64 = 300;
+pub(super) const RECOVERY_GUARD_SECS: i64 = 300;
+pub(super) const PROBE_LEASE_TTL_SECS: i64 = 15 * 60;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum CircuitState {
@@ -43,6 +44,8 @@ impl CircuitState {
 pub struct CircuitBreakerConfig {
     pub failure_threshold: u32,
     pub open_duration_secs: i64,
+    pub provider_cooldown_secs: i64,
+    pub natural_probe_max_wait_secs: i64,
 }
 
 impl Default for CircuitBreakerConfig {
@@ -50,8 +53,41 @@ impl Default for CircuitBreakerConfig {
         Self {
             failure_threshold: DEFAULT_FAILURE_THRESHOLD,
             open_duration_secs: DEFAULT_OPEN_DURATION_SECS,
+            provider_cooldown_secs: DEFAULT_PROVIDER_COOLDOWN_SECS,
+            natural_probe_max_wait_secs: DEFAULT_NATURAL_PROBE_MAX_WAIT_SECS,
         }
     }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ProbeTrigger {
+    NewUnboundSession,
+    RouteChanged,
+    NaturalCompaction,
+    NaturalMaxWait,
+    AggressiveTurn,
+    MaxOpenWait,
+}
+
+impl ProbeTrigger {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::NewUnboundSession => "new_unbound_session",
+            Self::RouteChanged => "route_changed",
+            Self::NaturalCompaction => "natural_compaction",
+            Self::NaturalMaxWait => "natural_max_wait",
+            Self::AggressiveTurn => "aggressive_turn",
+            Self::MaxOpenWait => "max_open_wait",
+        }
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProbeLeaseToken {
+    pub provider_id: i64,
+    pub generation: u64,
+    pub owner_trace_id: String,
+    pub trigger: ProbeTrigger,
 }
 
 #[derive(Debug, Clone)]
@@ -61,6 +97,14 @@ pub struct CircuitSnapshot {
     pub failure_threshold: u32,
     pub open_until: Option<i64>,
     pub cooldown_until: Option<i64>,
+    pub probe_reference_at: Option<i64>,
+    pub next_probe_at: Option<i64>,
+    pub natural_probe_due_at: Option<i64>,
+    pub recovery_guard_until: Option<i64>,
+    /// Explicit lease ownership marker retained for gate diagnostics.
+    #[cfg_attr(not(test), allow(dead_code))]
+    pub probe_in_flight: bool,
+    pub state_revision: u64,
     /// Error code of the most recent attributed failure (in-memory only;
     /// intentionally not persisted, lost across restart).
     pub last_trigger_error_code: Option<&'static str>,
@@ -78,7 +122,7 @@ pub struct CircuitTransition {
 pub struct CircuitChange {
     pub before: CircuitSnapshot,
     pub after: CircuitSnapshot,
-    pub transition: Option<CircuitTransition>,
+    pub transition: Option<Box<CircuitTransition>>,
 }
 
 #[derive(Debug, Clone)]
@@ -89,13 +133,44 @@ pub struct CircuitCheck {
 }
 
 #[derive(Debug, Clone)]
+pub enum ProbeAcquireResult {
+    Acquired {
+        token: ProbeLeaseToken,
+        snapshot: CircuitSnapshot,
+    },
+    NotOpen,
+    Cooldown(CircuitSnapshot),
+    InFlight(CircuitSnapshot),
+}
+
+#[derive(Debug, Clone)]
+pub enum ProbeCommitResult {
+    Applied(CircuitChange),
+    Stale(CircuitSnapshot),
+}
+
+#[derive(Debug, Clone)]
 pub struct CircuitPersistedState {
     pub provider_id: i64,
     pub state: CircuitState,
     pub failure_timestamps: Vec<u64>,
     pub half_open_success_count: u32,
     pub open_until: Option<i64>,
+    pub probe_reference_at: Option<i64>,
+    pub next_probe_at: Option<i64>,
+    pub natural_probe_due_at: Option<i64>,
+    pub recovery_guard_until: Option<i64>,
+    pub state_revision: u64,
     pub updated_at: i64,
+}
+
+#[derive(Debug, Clone)]
+pub(super) struct ProbeLeaseState {
+    pub(super) generation: u64,
+    pub(super) owner_trace_id: String,
+    pub(super) trigger: ProbeTrigger,
+    pub(super) dispatched_at: Option<i64>,
+    pub(super) expires_at: i64,
 }
 
 #[derive(Debug, Clone)]
@@ -105,6 +180,13 @@ pub(super) struct ProviderHealth {
     pub(super) half_open_success_count: u32,
     pub(super) open_until: Option<i64>,
     pub(super) cooldown_until: Option<i64>,
+    pub(super) probe_reference_at: Option<i64>,
+    pub(super) next_probe_at: Option<i64>,
+    pub(super) natural_probe_due_at: Option<i64>,
+    pub(super) recovery_guard_until: Option<i64>,
+    pub(super) state_revision: u64,
+    pub(super) probe_generation: u64,
+    pub(super) probe_lease: Option<ProbeLeaseState>,
     pub(super) updated_at: i64,
     /// Most recent attributed failure error code; cleared when the circuit
     /// returns to Closed. Never persisted.
@@ -121,6 +203,13 @@ impl ProviderHealth {
                 half_open_success_count: 0,
                 open_until: None,
                 cooldown_until: None,
+                probe_reference_at: None,
+                next_probe_at: None,
+                natural_probe_due_at: None,
+                recovery_guard_until: None,
+                state_revision: 0,
+                probe_generation: 0,
+                probe_lease: None,
                 updated_at: now_unix,
                 last_trigger_error_code: None,
             },

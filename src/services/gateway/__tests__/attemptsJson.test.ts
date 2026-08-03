@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { parseAttemptsJson } from "../attemptsJson";
+import {
+  isCircuitProbeAttempt,
+  normalizeAttemptProbeMetadata,
+  parseAttemptsJson,
+} from "../attemptsJson";
 
 describe("services/gateway/attemptsJson", () => {
   it("parses a valid attempts array", () => {
@@ -54,6 +58,45 @@ describe("services/gateway/attemptsJson", () => {
     // Success attempts omit the keys entirely; consumers see undefined -> null.
     expect(attempts?.[1]?.circuit_recover_at_unix).toBeUndefined();
     expect(attempts?.[1]?.circuit_trigger_error_code).toBeUndefined();
+  });
+
+  it("preserves structured probe metadata and circuit_probe selection", () => {
+    const attempts = parseAttemptsJson(
+      JSON.stringify([
+        {
+          provider_id: 1,
+          provider_name: "Provider A",
+          base_url: "https://example.com",
+          outcome: "success",
+          status: 200,
+          selection_method: "circuit_probe",
+          probe: true,
+          probe_trigger: "natural_compaction",
+          probe_result: "success",
+          probe_generation: 17,
+        },
+      ])
+    );
+
+    expect(attempts?.[0]).toMatchObject({
+      selection_method: "circuit_probe",
+      probe: true,
+      probe_trigger: "natural_compaction",
+      probe_result: "success",
+      probe_generation: 17,
+    });
+    expect(isCircuitProbeAttempt(attempts?.[0] ?? {})).toBe(true);
+  });
+
+  it("normalizes missing legacy probe fields to null and rejects invalid metadata only", () => {
+    expect(normalizeAttemptProbeMetadata({ outcome: "success" })).toEqual({
+      probe: null,
+      probe_trigger: null,
+      probe_result: null,
+      probe_generation: null,
+    });
+    expect(normalizeAttemptProbeMetadata({ probe: "yes" })).toBeNull();
+    expect(normalizeAttemptProbeMetadata({ probe_generation: -1 })).toBeNull();
   });
 
   it("returns null for invalid JSON", () => {

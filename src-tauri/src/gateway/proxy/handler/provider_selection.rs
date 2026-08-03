@@ -4,12 +4,16 @@ use crate::gateway::runtime::GatewayAppState;
 use crate::providers;
 use crate::{circuit_breaker, session_manager};
 
+pub(super) mod probe_planner;
+
 pub(super) struct ProviderSelection {
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) providers: Vec<providers::ProviderForGateway>,
     pub(super) bound_provider_order: Option<Vec<i64>>,
     pub(super) active_sort_mode_id: Option<i64>,
     pub(super) session_bound_sort_mode_id: Option<Option<i64>>,
+    pub(super) latest_provider_order: Vec<i64>,
+    pub(super) route_changed: bool,
 }
 
 pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
@@ -18,48 +22,33 @@ pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
     session_id: Option<&str>,
     created_at: i64,
 ) -> crate::shared::error::AppResult<ProviderSelection> {
-    let bound_sort_mode_id = session_id.and_then(|sid| {
-        state
-            .session
-            .get_bound_sort_mode_id(cli_key, sid, created_at)
+    let session_snapshot =
+        session_id.and_then(|sid| state.session.routing_snapshot(cli_key, sid, created_at));
+    let selection = providers::list_enabled_for_gateway_using_active_mode(&state.db, cli_key)?;
+    let active_sort_mode_id = selection.sort_mode_id;
+    let effective_sort_mode_id = selection.sort_mode_id;
+    let providers = selection.providers;
+    let latest_provider_order: Vec<i64> = providers.iter().map(|provider| provider.id).collect();
+    let bound_sort_mode_id = session_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.route.sort_mode_id);
+    let bound_provider_order = session_snapshot
+        .as_ref()
+        .map(|snapshot| snapshot.route.provider_order.clone());
+    let route_changed = session_snapshot.as_ref().is_some_and(|snapshot| {
+        snapshot.route.sort_mode_id != effective_sort_mode_id
+            || snapshot.route.provider_order != latest_provider_order
     });
 
-    let (active_sort_mode_id, effective_sort_mode_id, mut providers) = match bound_sort_mode_id {
-        Some(sort_mode_id) => {
-            let active_sort_mode_id =
-                providers::active_sort_mode_id_for_gateway(&state.db, cli_key)?;
-            let providers =
-                providers::list_enabled_for_gateway_in_mode(&state.db, cli_key, sort_mode_id)?;
-            (active_sort_mode_id, sort_mode_id, providers)
-        }
-        None => {
-            let selection =
-                providers::list_enabled_for_gateway_using_active_mode(&state.db, cli_key)?;
-            (
-                selection.sort_mode_id,
-                selection.sort_mode_id,
-                selection.providers,
-            )
-        }
-    };
-
-    let mut bound_provider_order: Option<Vec<i64>> = None;
     if let Some(sid) = session_id {
-        let provider_order: Vec<i64> = providers.iter().map(|p| p.id).collect();
-        state.session.bind_sort_mode(
-            cli_key,
-            sid,
-            effective_sort_mode_id,
-            Some(provider_order),
-            created_at,
-        );
-
-        bound_provider_order = state
-            .session
-            .get_bound_provider_order(cli_key, sid, created_at);
-
-        if let Some(order) = bound_provider_order.as_deref() {
-            provider_order::reorder_providers_by_bound_order(&mut providers, order);
+        if session_snapshot.is_none() {
+            state.session.bind_sort_mode(
+                cli_key,
+                sid,
+                effective_sort_mode_id,
+                Some(latest_provider_order.clone()),
+                created_at,
+            );
         }
     }
 
@@ -69,6 +58,8 @@ pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
         bound_provider_order,
         active_sort_mode_id,
         session_bound_sort_mode_id: bound_sort_mode_id,
+        latest_provider_order,
+        route_changed,
     })
 }
 

@@ -25,6 +25,8 @@ describe("services/settings/settings", () => {
       trayEnabled: true,
       logRetentionDays: 30,
       providerCooldownSeconds: 30,
+      providerFailbackStrategy: "natural",
+      naturalProbeMaxWaitSeconds: 300,
       providerBaseUrlPingCacheTtlSeconds: 60,
       upstreamFirstByteTimeoutSeconds: 0,
       upstreamStreamIdleTimeoutSeconds: 0,
@@ -59,6 +61,8 @@ describe("services/settings/settings", () => {
       trayEnabled: true,
       logRetentionDays: 30,
       providerCooldownSeconds: 30,
+      providerFailbackStrategy: "aggressive",
+      naturalProbeMaxWaitSeconds: 600,
       providerBaseUrlPingCacheTtlSeconds: 60,
       upstreamFirstByteTimeoutSeconds: 0,
       upstreamStreamIdleTimeoutSeconds: 0,
@@ -82,6 +86,8 @@ describe("services/settings/settings", () => {
           gatewayListenMode: "custom",
           gatewayCustomListenAddress: "0.0.0.0:37123",
           enableCacheAnomalyMonitor: true,
+          providerFailbackStrategy: "aggressive",
+          naturalProbeMaxWaitSeconds: 600,
           cliPriorityOrder: ["gemini", "claude", "codex"],
           updateReleasesUrl: "https://example.invalid/releases.json",
           wslAutoConfig: true,
@@ -105,6 +111,8 @@ describe("services/settings/settings", () => {
       gatewayListenMode: "localhost",
       wslTargetCli: { claude: true, codex: true, gemini: true },
       codexOauthCompatibleProxyMode: true,
+      providerFailbackStrategy: "natural",
+      naturalProbeMaxWaitSeconds: 300,
       cx2CcFallbackModelMain: "gpt-5.4",
       upstreamProxyPassword: { mode: "clear" },
     });
@@ -205,6 +213,20 @@ describe("services/settings/settings", () => {
         circuitBreakerOpenDurationMinutes: 1441,
       } as any)
     ).rejects.toThrow("熔断打开时长必须 <= 1440");
+
+    await expect(
+      settingsSet({
+        ...required,
+        providerFailbackStrategy: "future",
+      } as any)
+    ).rejects.toThrow("回切策略仅支持 natural 或 aggressive");
+
+    await expect(
+      settingsSet({
+        ...required,
+        naturalProbeMaxWaitSeconds: 86401,
+      } as any)
+    ).rejects.toThrow("自然模式最长试探等待必须 <= 86400");
 
     expect(tauriInvoke).not.toHaveBeenCalled();
   });

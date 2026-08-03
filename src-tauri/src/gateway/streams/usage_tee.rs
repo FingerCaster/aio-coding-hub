@@ -6,6 +6,7 @@ use axum::body::{Body, Bytes};
 use futures_core::Stream;
 use std::future::Future;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex};
 use std::task::{Context, Poll};
 use std::time::Duration;
@@ -20,7 +21,10 @@ use super::super::util::{
 };
 use super::plugin_chunk::PLUGIN_STREAM_ERROR_MARKER;
 use super::request_end::{emit_request_event_and_spawn_request_log, StreamRequestCompletion};
-use super::{RelayBodyStream, StreamFinalizeCtx};
+use super::types::{StreamTerminalEvidence, StreamTerminalOrigin};
+#[cfg(test)]
+use super::RelayBodyStream;
+use super::StreamFinalizeCtx;
 
 pub(in crate::gateway) struct UpstreamModelObserverStream<S, B>
 where
@@ -158,15 +162,17 @@ fn is_codex_client_abort_successish(
     saw_stream_output: bool,
     completion_seen: bool,
     usage_seen: bool,
-    _terminal_error_seen: bool,
-    _upstream_ended_normally: bool,
+    terminal_error_seen: bool,
+    completion_delivered: bool,
+    require_completion_delivered: bool,
 ) -> bool {
     is_codex_responses_path(cli_key, path)
         && (200..300).contains(&status)
         && saw_stream_output
-        // For codex, downstream disconnect can race with trailing markers.
-        // Completion/usage is required before treating the request as successful.
-        && (usage_seen || completion_seen)
+        && completion_seen
+        && usage_seen
+        && (!require_completion_delivered || completion_delivered)
+        && !terminal_error_seen
 }
 
 fn is_codex_drop_successish(
@@ -330,6 +336,7 @@ where
         &mut self,
         cx: &mut Context<'_>,
         enforce_idle_timeout: bool,
+        finalize_terminal: bool,
     ) -> Poll<Option<Result<B, reqwest::Error>>> {
         if self.stop_after_terminal_error {
             return Poll::Ready(None);
@@ -344,7 +351,16 @@ where
                 if enforce_idle_timeout {
                     if let Some(sleep) = self.idle_sleep.as_mut() {
                         if sleep.as_mut().poll(cx).is_ready() {
-                            self.finalize(Some(GatewayErrorCode::StreamIdleTimeout.as_str()));
+                            self.finalize(
+                                Some(GatewayErrorCode::StreamIdleTimeout.as_str()),
+                                StreamTerminalEvidence::new(
+                                    StreamTerminalOrigin::IdleTimeout,
+                                    self.tracker.completion_seen(),
+                                    false,
+                                    false,
+                                    self.tracker.terminal_error_seen(),
+                                ),
+                            );
                             return Poll::Ready(None);
                         }
                     }
@@ -355,8 +371,19 @@ where
                 // When defer_terminal_error is set and the tracker saw a terminal
                 // error, skip finalization here — the relay task will decide the
                 // final error_code with Codex-specific tolerance logic.
-                if !(self.defer_terminal_error && self.tracker.terminal_error_seen()) {
-                    self.finalize(self.ctx.error_code);
+                if finalize_terminal
+                    && !(self.defer_terminal_error && self.tracker.terminal_error_seen())
+                {
+                    self.finalize(
+                        self.ctx.error_code,
+                        StreamTerminalEvidence::new(
+                            StreamTerminalOrigin::NormalEof,
+                            self.tracker.completion_seen(),
+                            true,
+                            false,
+                            self.tracker.terminal_error_seen(),
+                        ),
+                    );
                 }
                 Poll::Ready(None)
             }
@@ -410,7 +437,16 @@ where
                         } else {
                             GatewayErrorCode::StreamError.as_str()
                         };
-                        self.finalize(Some(code));
+                        self.finalize(
+                            Some(code),
+                            StreamTerminalEvidence::new(
+                                StreamTerminalOrigin::TerminalFrame,
+                                self.tracker.completion_seen(),
+                                false,
+                                false,
+                                true,
+                            ),
+                        );
                         if is_plugin_stream_error_chunk(chunk.as_ref()) {
                             self.stop_after_terminal_error = true;
                             return Poll::Ready(Some(Ok(chunk)));
@@ -438,23 +474,52 @@ where
                             self.ctx.trace_id, self.ctx.cli_key, self.ctx.path, err
                         ),
                     );
-                    self.finalize(None);
+                    if finalize_terminal {
+                        self.finalize(
+                            None,
+                            StreamTerminalEvidence::new(
+                                StreamTerminalOrigin::UpstreamReadError,
+                                completion_seen,
+                                false,
+                                completion_seen,
+                                self.tracker.terminal_error_seen(),
+                            ),
+                        );
+                    }
                     Poll::Ready(None)
                 } else {
-                    self.finalize(Some(GatewayErrorCode::StreamError.as_str()));
+                    if finalize_terminal {
+                        self.finalize(
+                            Some(GatewayErrorCode::StreamError.as_str()),
+                            StreamTerminalEvidence::new(
+                                StreamTerminalOrigin::UpstreamReadError,
+                                completion_seen,
+                                false,
+                                false,
+                                self.tracker.terminal_error_seen(),
+                            ),
+                        );
+                    }
                     Poll::Ready(Some(Err(err)))
                 }
             }
         }
     }
 
-    fn finalize(&mut self, error_code: Option<&'static str>) {
+    fn finalize(
+        &mut self,
+        error_code: Option<&'static str>,
+        mut terminal_evidence: StreamTerminalEvidence,
+    ) {
         if self.finalized {
             return;
         }
         self.finalized = true;
 
         let usage = self.tracker.finalize();
+        terminal_evidence.completion_seen |= self.tracker.completion_seen();
+        terminal_evidence.usage_seen |= usage.is_some();
+        terminal_evidence.terminal_error_seen |= self.tracker.terminal_error_seen();
         let terminal_signal = if error_code.is_some() {
             Some("error")
         } else if self.tracker.completion_seen() {
@@ -523,7 +588,8 @@ where
                 usage_metrics,
                 usage,
             )
-            .with_terminal_signal(terminal_signal),
+            .with_terminal_signal(terminal_signal)
+            .with_terminal_evidence(terminal_evidence),
         );
     }
 }
@@ -539,7 +605,7 @@ where
 
     fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
         let this = self.as_mut().get_mut();
-        this.poll_next_inner(cx, true)
+        this.poll_next_inner(cx, true, true)
     }
 }
 
@@ -560,7 +626,7 @@ where
     type Output = Option<Result<B, reqwest::Error>>;
 
     fn poll(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Self::Output> {
-        self.0.poll_next_inner(cx, false)
+        self.0.poll_next_inner(cx, false, false)
     }
 }
 
@@ -602,15 +668,72 @@ where
             );
 
             if codex_successish {
-                self.finalize(None);
+                self.finalize(
+                    None,
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::DirectDrop,
+                        completion_seen,
+                        false,
+                        usage_seen,
+                        terminal_error_seen,
+                    ),
+                );
             } else {
-                self.finalize(Some(GatewayErrorCode::StreamAborted.as_str()));
+                self.finalize(
+                    Some(GatewayErrorCode::StreamAborted.as_str()),
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::DirectDrop,
+                        completion_seen,
+                        false,
+                        usage_seen,
+                        terminal_error_seen,
+                    ),
+                );
             }
         }
     }
 }
 
 const SSE_RELAY_BUFFER_CAPACITY: usize = 32;
+
+struct DownstreamRelayItem {
+    item: Result<Bytes, reqwest::Error>,
+    completion_seen: bool,
+}
+
+struct DownstreamRelayBodyStream {
+    rx: tokio::sync::mpsc::Receiver<DownstreamRelayItem>,
+    completion_delivered: Arc<AtomicBool>,
+}
+
+impl DownstreamRelayBodyStream {
+    fn new(
+        rx: tokio::sync::mpsc::Receiver<DownstreamRelayItem>,
+        completion_delivered: Arc<AtomicBool>,
+    ) -> Self {
+        Self {
+            rx,
+            completion_delivered,
+        }
+    }
+}
+
+impl Stream for DownstreamRelayBodyStream {
+    type Item = Result<Bytes, reqwest::Error>;
+
+    fn poll_next(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<Option<Self::Item>> {
+        match Pin::new(&mut self.rx).poll_recv(cx) {
+            Poll::Ready(Some(item)) => {
+                if item.completion_seen && item.item.is_ok() {
+                    self.completion_delivered.store(true, Ordering::Release);
+                }
+                Poll::Ready(Some(item.item))
+            }
+            Poll::Ready(None) => Poll::Ready(None),
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}
 
 pub(in crate::gateway) fn spawn_usage_sse_relay_body<S, R>(
     upstream: S,
@@ -623,8 +746,9 @@ where
     R: tauri::Runtime + 'static,
     R::Handle: Unpin,
 {
-    let (tx, rx) =
-        tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(SSE_RELAY_BUFFER_CAPACITY);
+    let (tx, rx) = tokio::sync::mpsc::channel::<DownstreamRelayItem>(SSE_RELAY_BUFFER_CAPACITY);
+    let completion_delivered = Arc::new(AtomicBool::new(false));
+    let body_completion_delivered = Arc::clone(&completion_delivered);
 
     let mut tee = UsageSseTeeStream::new(upstream, ctx, idle_timeout, initial_first_byte_ms)
         .with_defer_terminal_error();
@@ -637,6 +761,7 @@ where
         let mut client_abort_detected_by: Option<&'static str> = None;
         let mut downstream_closed = false;
         let mut upstream_ended_normally = false;
+        let mut relay_drain_timed_out = false;
 
         let is_codex_responses = is_codex_responses_path(&tee.ctx.cli_key, &tee.ctx.path);
         let mut drain_deadline: Option<tokio::time::Instant> = None;
@@ -679,6 +804,7 @@ where
                 };
                 let now = tokio::time::Instant::now();
                 if now >= deadline {
+                    relay_drain_timed_out = true;
                     break;
                 }
 
@@ -697,6 +823,7 @@ where
                         break;
                     }
                     Err(_) => {
+                        relay_drain_timed_out = true;
                         break;
                     }
                 }
@@ -727,7 +854,15 @@ where
                         Ok(chunk) => {
                             let chunk_len = chunk.len().min(i64::MAX as usize) as i64;
 
-                            if tx.send(Ok(chunk)).await.is_err() {
+                            let completion_seen = tee.tracker.completion_seen();
+                            if tx
+                                .send(DownstreamRelayItem {
+                                    item: Ok(chunk),
+                                    completion_seen,
+                                })
+                                .await
+                                .is_err()
+                            {
                                 client_abort_detected_by = Some("send_failed");
                                 downstream_closed = true;
                                 if is_codex_responses {
@@ -742,7 +877,12 @@ where
                         }
                         Err(err) => {
                             // 尽力把流错误透传给客户端
-                            let _ = tx.send(Err(err)).await;
+                            let _ = tx
+                                .send(DownstreamRelayItem {
+                                    item: Err(err),
+                                    completion_seen: false,
+                                })
+                                .await;
                             break;
                         }
                     }
@@ -775,14 +915,40 @@ where
             );
 
             if codex_successish {
-                tee.finalize(None);
+                tee.finalize(
+                    None,
+                    StreamTerminalEvidence::new(
+                        if upstream_ended_normally {
+                            StreamTerminalOrigin::NormalEof
+                        } else {
+                            StreamTerminalOrigin::TerminalFrame
+                        },
+                        completion_seen,
+                        upstream_ended_normally,
+                        completion_seen,
+                        true,
+                    ),
+                );
             } else {
                 let code = if tee.tracker.fake_200_detected() {
                     GatewayErrorCode::Fake200.as_str()
                 } else {
                     GatewayErrorCode::StreamError.as_str()
                 };
-                tee.finalize(Some(code));
+                tee.finalize(
+                    Some(code),
+                    StreamTerminalEvidence::new(
+                        if upstream_ended_normally {
+                            StreamTerminalOrigin::NormalEof
+                        } else {
+                            StreamTerminalOrigin::TerminalFrame
+                        },
+                        completion_seen,
+                        upstream_ended_normally,
+                        completion_seen,
+                        true,
+                    ),
+                );
             }
         }
 
@@ -799,36 +965,18 @@ where
             let usage_seen = usage.is_some();
             let completion_seen = tee.tracker.completion_seen();
             let terminal_error_seen = tee.tracker.terminal_error_seen();
+            let completion_delivered = completion_delivered.load(Ordering::Acquire);
+            let require_completion_delivered = tee
+                .ctx
+                .dispatch_ownership
+                .as_ref()
+                .is_some_and(|ownership| ownership.is_probe());
             let saw_stream_output = tee.first_byte_ms.is_some()
                 || forwarded_chunks > 0
                 || forwarded_bytes > 0
                 || drained_chunks > 0
                 || drained_bytes > 0;
 
-            response_fixer::push_special_setting(
-                &tee.ctx.special_settings,
-                serde_json::json!({
-                    "type": "client_abort",
-                    "scope": "stream",
-                    "reason": "client_disconnected",
-                    "detected_by": detected_by,
-                    "duration_ms": duration_ms,
-                    "ttfb_ms": ttfb_ms,
-                    "forwarded_chunks": forwarded_chunks,
-                    "forwarded_bytes": forwarded_bytes,
-                    "drained_chunks": drained_chunks,
-                    "drained_bytes": drained_bytes,
-                    "upstream_ended_normally": upstream_ended_normally,
-                    "completion_seen": completion_seen,
-                    "terminal_error_seen": terminal_error_seen,
-                    "saw_stream_output": saw_stream_output,
-                    "ts": now_unix_seconds() as i64,
-                }),
-            );
-
-            // Codex SSE: 2xx + saw output + no terminal error => treat client disconnect as success.
-            // Do NOT require completion_seen: ChatGPT backend's response.completed may arrive
-            // after the client disconnects and the drain window may not capture it.
             let codex_successish = is_codex_client_abort_successish(
                 &tee.ctx.cli_key,
                 &tee.ctx.path,
@@ -837,17 +985,64 @@ where
                 completion_seen,
                 usage_seen,
                 terminal_error_seen,
-                upstream_ended_normally,
+                completion_delivered,
+                require_completion_delivered,
             );
             if codex_successish {
-                tee.finalize(None);
+                tee.finalize(
+                    None,
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::CompletionDelivered,
+                        completion_seen,
+                        upstream_ended_normally,
+                        usage_seen,
+                        terminal_error_seen,
+                    ),
+                );
             } else {
-                tee.finalize(Some(GatewayErrorCode::StreamAborted.as_str()));
+                response_fixer::push_special_setting(
+                    &tee.ctx.special_settings,
+                    serde_json::json!({
+                        "type": "client_abort",
+                        "scope": "stream",
+                        "reason": "client_disconnected",
+                        "detected_by": detected_by,
+                        "duration_ms": duration_ms,
+                        "ttfb_ms": ttfb_ms,
+                        "forwarded_chunks": forwarded_chunks,
+                        "forwarded_bytes": forwarded_bytes,
+                        "drained_chunks": drained_chunks,
+                        "drained_bytes": drained_bytes,
+                        "upstream_ended_normally": upstream_ended_normally,
+                        "completion_seen": completion_seen,
+                        "completion_delivered": completion_delivered,
+                        "terminal_error_seen": terminal_error_seen,
+                        "saw_stream_output": saw_stream_output,
+                        "ts": now_unix_seconds() as i64,
+                    }),
+                );
+                tee.finalize(
+                    Some(GatewayErrorCode::StreamAborted.as_str()),
+                    StreamTerminalEvidence::new(
+                        if relay_drain_timed_out {
+                            StreamTerminalOrigin::RelayDrainTimeout
+                        } else {
+                            StreamTerminalOrigin::ClientAbort
+                        },
+                        completion_seen,
+                        upstream_ended_normally,
+                        usage_seen,
+                        terminal_error_seen,
+                    ),
+                );
             }
         }
     });
 
-    Body::from_stream(RelayBodyStream::new(rx))
+    Body::from_stream(DownstreamRelayBodyStream::new(
+        rx,
+        body_completion_delivered,
+    ))
 }
 
 pub(in crate::gateway) struct UsageBodyBufferTeeStream<S, B, R = tauri::Wry>
@@ -895,7 +1090,11 @@ where
         }
     }
 
-    fn finalize(&mut self, error_code: Option<&'static str>) {
+    fn finalize(
+        &mut self,
+        error_code: Option<&'static str>,
+        mut terminal_evidence: StreamTerminalEvidence,
+    ) {
         if self.finalized {
             return;
         }
@@ -921,6 +1120,7 @@ where
         } else {
             usage::parse_usage_from_json_or_sse_bytes(&self.ctx.cli_key, &self.buffer)
         };
+        terminal_evidence.usage_seen |= usage.is_some();
         let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
         let route_evidence = if self.truncated || self.buffer.is_empty() {
             usage::ModelRouteEvidence::default()
@@ -964,7 +1164,8 @@ where
                 requested_model,
                 usage_metrics,
                 usage,
-            ),
+            )
+            .with_terminal_evidence(terminal_evidence),
         );
     }
 }
@@ -982,7 +1183,16 @@ where
         let this = self.as_mut().get_mut();
         if let Some(total) = this.total_timeout {
             if this.ctx.started.elapsed() >= total {
-                this.finalize(Some(GatewayErrorCode::UpstreamTimeout.as_str()));
+                this.finalize(
+                    Some(GatewayErrorCode::UpstreamTimeout.as_str()),
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::TotalTimeout,
+                        false,
+                        false,
+                        false,
+                        false,
+                    ),
+                );
                 return Poll::Ready(None);
             }
         }
@@ -993,14 +1203,32 @@ where
             Poll::Pending => {
                 if let Some(timer) = this.total_sleep.as_mut() {
                     if timer.as_mut().poll(cx).is_ready() {
-                        this.finalize(Some(GatewayErrorCode::UpstreamTimeout.as_str()));
+                        this.finalize(
+                            Some(GatewayErrorCode::UpstreamTimeout.as_str()),
+                            StreamTerminalEvidence::new(
+                                StreamTerminalOrigin::TotalTimeout,
+                                false,
+                                false,
+                                false,
+                                false,
+                            ),
+                        );
                         return Poll::Ready(None);
                     }
                 }
                 Poll::Pending
             }
             Poll::Ready(None) => {
-                this.finalize(this.ctx.error_code);
+                this.finalize(
+                    this.ctx.error_code,
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::BufferedBodyEof,
+                        false,
+                        true,
+                        false,
+                        false,
+                    ),
+                );
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Ok(chunk))) => {
@@ -1019,7 +1247,16 @@ where
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(err))) => {
-                this.finalize(Some(GatewayErrorCode::StreamError.as_str()));
+                this.finalize(
+                    Some(GatewayErrorCode::StreamError.as_str()),
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::UpstreamReadError,
+                        false,
+                        false,
+                        false,
+                        false,
+                    ),
+                );
                 Poll::Ready(Some(Err(err)))
             }
         }
@@ -1049,9 +1286,27 @@ where
             );
 
             if codex_successish {
-                self.finalize(None);
+                self.finalize(
+                    None,
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::DirectDrop,
+                        false,
+                        false,
+                        usage_seen,
+                        false,
+                    ),
+                );
             } else {
-                self.finalize(Some(GatewayErrorCode::StreamAborted.as_str()));
+                self.finalize(
+                    Some(GatewayErrorCode::StreamAborted.as_str()),
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::DirectDrop,
+                        false,
+                        false,
+                        usage_seen,
+                        false,
+                    ),
+                );
             }
         }
     }
@@ -1067,6 +1322,8 @@ mod tests {
         UpstreamModelObserverStream, UsageSseTeeStream,
     };
     use crate::gateway::active_requests::{ActiveRequestRegistry, ActiveRequestStart};
+    use crate::gateway::events::FailoverAttempt;
+    use crate::gateway::proxy::dispatch::RequestDispatchIntent;
     use crate::gateway::proxy::GatewayErrorCode;
     use crate::gateway::streams::StreamActivityTracker;
     use crate::{circuit_breaker, db, request_logs, session_manager, usage};
@@ -1092,9 +1349,11 @@ mod tests {
                 HashMap::new(),
                 None,
             )),
+            dispatch_ownership: None,
             session: Arc::new(session_manager::SessionManager::new()),
             session_id: Some("sess-usage-tee-drain".to_string()),
             sort_mode_id: None,
+            is_compact_request: false,
             trace_id: "trace-usage-tee-drain".to_string(),
             cli_key: "codex".to_string(),
             method: "POST".to_string(),
@@ -1148,6 +1407,78 @@ mod tests {
             requested_model: Some("gpt-5".to_string()),
             created_at_ms: 1_700_000_000_000,
         }
+    }
+
+    fn started_probe_attempt() -> FailoverAttempt {
+        FailoverAttempt {
+            provider_id: 1,
+            provider_name: "test-provider".to_string(),
+            base_url: "https://upstream.example".to_string(),
+            outcome: "success".to_string(),
+            status: Some(200),
+            provider_index: Some(1),
+            retry_index: Some(1),
+            session_reuse: Some(false),
+            error_category: None,
+            error_code: None,
+            decision: Some("success"),
+            reason: None,
+            selection_method: Some("circuit_probe"),
+            reason_code: Some("request_success"),
+            attempt_started_ms: Some(0),
+            attempt_duration_ms: Some(1),
+            circuit_state_before: Some("OPEN"),
+            circuit_state_after: None,
+            circuit_failure_count: Some(1),
+            circuit_failure_threshold: Some(1),
+            probe: Some(true),
+            probe_trigger: Some("aggressive_turn"),
+            probe_result: Some("started"),
+            probe_generation: Some(1),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            provider_bridged: Some(false),
+            timeout_secs: None,
+            requested_upstream_model: Some("gpt-5".to_string()),
+        }
+    }
+
+    fn arm_probe(ctx: &mut StreamFinalizeCtx<tauri::test::MockRuntime>, now_unix: i64) {
+        ctx.circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                provider_cooldown_secs: 0,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        ctx.circuit
+            .record_failure(ctx.provider_id, now_unix, Some("TEST_PROBE_OPEN"));
+        let token = match ctx.circuit.try_acquire_probe(
+            ctx.provider_id,
+            ctx.trace_id.as_str(),
+            circuit_breaker::ProbeTrigger::AggressiveTurn,
+            now_unix,
+        ) {
+            circuit_breaker::ProbeAcquireResult::Acquired { token, .. } => token,
+            other => panic!("expected probe lease, got {other:?}"),
+        };
+        let ownership = RequestDispatchIntent::new(
+            ctx.provider_id,
+            Some(circuit_breaker::ProbeTrigger::AggressiveTurn),
+            None,
+        )
+        .claim_for_provider(
+            ctx.provider_id,
+            Some(circuit_breaker::ProbeLeaseGuard::new(
+                Arc::clone(&ctx.circuit),
+                token,
+            )),
+        )
+        .expect("claim probe ownership");
+        assert!(ownership.commit_at_transport_boundary(now_unix));
+        ctx.dispatch_ownership = Some(ownership);
     }
 
     #[test]
@@ -1431,81 +1762,95 @@ mod tests {
     }
 
     #[test]
-    fn codex_client_abort_successish_rejects_terminal_marker_without_completion_or_usage() {
+    fn codex_client_abort_successish_rejects_untrusted_terminal_states() {
+        assert!(!is_codex_client_abort_successish(
+            "codex",
+            "/v1/responses",
+            200,
+            true,
+            true,
+            true,
+            true,
+            true,
+            true
+        ));
         assert!(!is_codex_client_abort_successish(
             "codex",
             "/v1/responses",
             200,
             true,
             false,
+            true,
             false,
             true,
-            false
+            true
+        ));
+        assert!(!is_codex_client_abort_successish(
+            "codex",
+            "/v1/responses",
+            200,
+            true,
+            true,
+            false,
+            false,
+            true,
+            true
+        ));
+        assert!(!is_codex_client_abort_successish(
+            "codex",
+            "/v1/responses",
+            200,
+            true,
+            true,
+            true,
+            false,
+            false,
+            true
         ));
     }
 
     #[test]
-    fn codex_client_abort_successish_requires_completion_or_usage() {
-        assert!(!is_codex_client_abort_successish(
+    fn codex_client_abort_successish_requires_forwarded_completion_for_probe() {
+        assert!(is_codex_client_abort_successish(
             "codex",
             "/v1/responses",
             200,
             true,
+            true,
+            true,
             false,
+            true,
+            true
+        ));
+        assert!(is_codex_client_abort_successish(
+            "codex",
+            "/v1/responses",
+            200,
+            true,
+            true,
+            true,
             false,
             false,
             false
         ));
-        assert!(is_codex_client_abort_successish(
-            "codex",
+        assert!(!is_codex_client_abort_successish(
+            "claude",
             "/v1/responses",
             200,
             true,
             true,
-            false,
-            false,
-            false
-        ));
-    }
-
-    #[test]
-    fn codex_client_abort_successish_allows_completion_or_usage_when_upstream_ended() {
-        assert!(is_codex_client_abort_successish(
-            "codex",
-            "/v1/responses",
-            200,
-            true,
             true,
             false,
-            true,
-            true
-        ));
-        assert!(is_codex_client_abort_successish(
-            "codex",
-            "/v1/responses",
-            200,
-            true,
-            false,
-            true,
             true,
             true
         ));
         assert!(!is_codex_client_abort_successish(
             "codex",
-            "/v1/responses",
+            "/v1/chat/completions",
             200,
             true,
-            false,
-            false,
-            false,
-            true
-        ));
-        assert!(!is_codex_client_abort_successish(
-            "codex",
-            "/v1/responses",
-            200,
             true,
-            false,
+            true,
             false,
             true,
             true
@@ -1690,7 +2035,7 @@ mod tests {
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_disconnect_drain_ignores_stream_idle_timeout_until_completion() {
+    async fn codex_disconnect_drain_preserves_usage_for_non_probe() {
         let app = tauri::test::mock_app();
         let app_handle = app.handle().clone();
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -1748,10 +2093,282 @@ mod tests {
         assert_eq!(log.input_tokens, Some(1));
         assert_eq!(log.output_tokens, Some(2));
         assert_eq!(log.total_tokens, Some(3));
-        assert!(log
+        assert!(!log
             .special_settings_json
             .as_deref()
             .is_some_and(|value| value.contains("\"client_abort\"")));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_rx_closed_after_forwarded_completion_is_success_without_upstream_eof() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-probe-delivered.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::clone(&active_requests),
+        );
+        let now_unix = crate::gateway::util::now_unix_seconds() as i64;
+        ctx.session.bind_success(
+            ctx.cli_key.as_str(),
+            ctx.session_id.as_deref().expect("session"),
+            2,
+            None,
+            now_unix,
+        );
+        arm_probe(&mut ctx, now_unix);
+        ctx.attempts = vec![started_probe_attempt()];
+        ctx.attempts_json = serde_json::to_string(&ctx.attempts).expect("attempts json");
+        let circuit = Arc::clone(&ctx.circuit);
+        let session = Arc::clone(&ctx.session);
+        let cli_key = ctx.cli_key.clone();
+        let session_id = ctx.session_id.clone().expect("session");
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+
+        let body = spawn_usage_sse_relay_body(
+            RelayBodyStream::new(upstream_rx),
+            ctx,
+            Some(Duration::from_millis(500)),
+            None,
+        );
+        let mut body_stream = body.into_data_stream();
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            )))
+            .await
+            .expect("send output");
+        tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("output should arrive")
+            .expect("body should yield output")
+            .expect("output should be ok");
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+            )))
+            .await
+            .expect("send completion");
+        let completion = tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("completion should arrive")
+            .expect("body should yield completion")
+            .expect("completion should be ok");
+        assert!(completion
+            .as_ref()
+            .windows(b"response.completed".len())
+            .any(|window| window == b"response.completed"));
+
+        // The downstream closes only after consuming the trusted completion.
+        // Keep upstream_tx alive to prove this path does not depend on transport EOF.
+        drop(body_stream);
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(log.status, Some(200));
+        assert!(log.error_code.is_none());
+        assert_eq!(log.output_tokens, Some(2));
+        assert!(!log
+            .special_settings_json
+            .as_deref()
+            .is_some_and(|value| value.contains("\"client_abort\"")));
+        let attempts: serde_json::Value =
+            serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(attempts.as_array().map(Vec::len), Some(1));
+        assert_eq!(attempts[0]["outcome"], "success");
+        assert_eq!(attempts[0]["status"], 200);
+        assert_eq!(attempts[0]["decision"], "success");
+        assert_eq!(attempts[0]["reason_code"], "request_success");
+        assert_eq!(attempts[0]["probe_result"], "success");
+        assert_eq!(attempts[0]["circuit_state_after"], "CLOSED");
+        assert_eq!(
+            circuit.snapshot(1, now_unix).state,
+            circuit_breaker::CircuitState::Closed
+        );
+        assert_eq!(
+            session.get_bound_provider(&cli_key, &session_id, now_unix),
+            Some(1)
+        );
+        assert!(active_requests.snapshot().is_empty());
+        drop(upstream_tx);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_disconnect_then_completion_without_eof_stays_open() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-probe-abort.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::clone(&active_requests),
+        );
+        let now_unix = crate::gateway::util::now_unix_seconds() as i64;
+        ctx.session.bind_success(
+            ctx.cli_key.as_str(),
+            ctx.session_id.as_deref().expect("session"),
+            2,
+            None,
+            now_unix,
+        );
+        arm_probe(&mut ctx, now_unix);
+        ctx.attempts = vec![started_probe_attempt()];
+        ctx.attempts_json = serde_json::to_string(&ctx.attempts).expect("attempts json");
+        let circuit = Arc::clone(&ctx.circuit);
+        let session = Arc::clone(&ctx.session);
+        let cli_key = ctx.cli_key.clone();
+        let session_id = ctx.session_id.clone().expect("session");
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(4);
+
+        let body = spawn_usage_sse_relay_body(
+            RelayBodyStream::new(upstream_rx),
+            ctx,
+            Some(Duration::from_millis(500)),
+            None,
+        );
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            )))
+            .await
+            .expect("send first output chunk");
+
+        let mut body_stream = body.into_data_stream();
+        tokio::time::timeout(Duration::from_secs(1), next_item(&mut body_stream))
+            .await
+            .expect("first output chunk should arrive")
+            .expect("body should yield first output")
+            .expect("first output should be ok");
+        drop(body_stream);
+
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+            )))
+            .await
+            .expect("send completion after disconnect");
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(
+            log.error_code.as_deref(),
+            Some(GatewayErrorCode::StreamAborted.as_str())
+        );
+        let attempts: serde_json::Value =
+            serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(attempts.as_array().map(Vec::len), Some(1));
+        assert_ne!(attempts[0]["outcome"], "success");
+        assert_eq!(attempts[0]["status"], 499);
+        assert_eq!(attempts[0]["decision"], "abort");
+        assert_eq!(attempts[0]["reason_code"], "aborted");
+        assert_eq!(attempts[0]["probe_result"], "failed");
+        assert_eq!(attempts[0]["circuit_state_after"], "OPEN");
+        assert_eq!(
+            circuit.snapshot(1, now_unix).state,
+            circuit_breaker::CircuitState::Open
+        );
+        assert_eq!(
+            session.get_bound_provider(&cli_key, &session_id, now_unix),
+            Some(2)
+        );
+        assert!(active_requests.snapshot().is_empty());
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn probe_direct_drop_after_completion_rewrites_final_attempt_as_failure() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("usage-tee-probe-direct-drop.sqlite"))
+            .expect("init test db");
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let active_requests = Arc::new(ActiveRequestRegistry::default());
+        active_requests.register(active_request_start("trace-usage-tee-drain"));
+        let mut ctx = test_stream_finalize_ctx(
+            app.handle().clone(),
+            db,
+            log_tx,
+            Arc::clone(&active_requests),
+        );
+        let now_unix = crate::gateway::util::now_unix_seconds() as i64;
+        ctx.session.bind_success(
+            ctx.cli_key.as_str(),
+            ctx.session_id.as_deref().expect("session"),
+            2,
+            None,
+            now_unix,
+        );
+        arm_probe(&mut ctx, now_unix);
+        ctx.attempts = vec![started_probe_attempt()];
+        ctx.attempts_json = serde_json::to_string(&ctx.attempts).expect("attempts json");
+        let circuit = Arc::clone(&ctx.circuit);
+        let session = Arc::clone(&ctx.session);
+        let cli_key = ctx.cli_key.clone();
+        let session_id = ctx.session_id.clone().expect("session");
+        let (upstream_tx, upstream_rx) =
+            tokio::sync::mpsc::channel::<Result<Bytes, reqwest::Error>>(2);
+        upstream_tx
+            .send(Ok(Bytes::from_static(
+                b"event: response.completed\n\
+                  data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"model\":\"gpt-5\",\"usage\":{\"input_tokens\":1,\"output_tokens\":2,\"total_tokens\":3}}}\n\n",
+            )))
+            .await
+            .expect("send completion");
+
+        let mut stream = UsageSseTeeStream::new(RelayBodyStream::new(upstream_rx), ctx, None, None);
+        next_item(&mut stream)
+            .await
+            .expect("completion chunk")
+            .expect("completion chunk should succeed");
+        drop(stream);
+        drop(upstream_tx);
+
+        let log = tokio::time::timeout(Duration::from_secs(2), log_rx.recv())
+            .await
+            .expect("request log should be enqueued")
+            .expect("request log channel should stay open");
+        assert_eq!(
+            log.error_code.as_deref(),
+            Some(GatewayErrorCode::StreamAborted.as_str())
+        );
+        let attempts: serde_json::Value =
+            serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(attempts.as_array().map(Vec::len), Some(1));
+        assert_ne!(attempts[0]["outcome"], "success");
+        assert_eq!(attempts[0]["status"], 499);
+        assert_eq!(attempts[0]["decision"], "abort");
+        assert_eq!(attempts[0]["reason_code"], "aborted");
+        assert_eq!(attempts[0]["probe_result"], "failed");
+        assert_eq!(attempts[0]["circuit_state_after"], "OPEN");
+        assert_eq!(
+            circuit.snapshot(1, now_unix).state,
+            circuit_breaker::CircuitState::Open
+        );
+        assert_eq!(
+            session.get_bound_provider(&cli_key, &session_id, now_unix),
+            Some(2)
+        );
+        assert!(active_requests.snapshot().is_empty());
     }
 
     #[tokio::test(flavor = "current_thread")]

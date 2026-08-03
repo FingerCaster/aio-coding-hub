@@ -212,6 +212,7 @@ describe("cross-layer contracts", () => {
       "MAX_LOG_RETENTION_DAYS",
       "MAX_REQUEST_LOG_RETENTION_DAYS",
       "MAX_PROVIDER_COOLDOWN_SECONDS",
+      "MAX_NATURAL_PROBE_MAX_WAIT_SECONDS",
       "MAX_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS",
       "MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS",
       "MIN_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS",
@@ -243,6 +244,7 @@ describe("cross-layer contracts", () => {
     // MIN_*=1 limits anchor the validate_bounds error message text so that
     // relaxing/removing the Rust check turns this test red.
     const minOnePairs = [
+      [limits.MIN_NATURAL_PROBE_MAX_WAIT_SECONDS, "natural_probe_max_wait_seconds must be >= 1"],
       [
         limits.MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS,
         "provider_base_url_ping_cache_ttl_seconds must be >= 1",

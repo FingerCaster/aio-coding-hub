@@ -389,6 +389,15 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         )
         .into());
     }
+    if settings.natural_probe_max_wait_seconds == 0 {
+        return Err("SEC_INVALID_INPUT: natural_probe_max_wait_seconds must be >= 1".into());
+    }
+    if settings.natural_probe_max_wait_seconds > MAX_NATURAL_PROBE_MAX_WAIT_SECONDS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: natural_probe_max_wait_seconds must be <= {MAX_NATURAL_PROBE_MAX_WAIT_SECONDS}"
+        )
+        .into());
+    }
     if settings.provider_base_url_ping_cache_ttl_seconds == 0 {
         return Err(
             "SEC_INVALID_INPUT: provider_base_url_ping_cache_ttl_seconds must be >= 1".into(),

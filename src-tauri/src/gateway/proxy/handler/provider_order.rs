@@ -1,7 +1,8 @@
-use crate::gateway::proxy::failover::select_next_provider_id_from_order;
 use crate::providers;
-use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::collections::HashMap;
 
+#[cfg(test)]
 pub(super) fn reorder_providers_by_bound_order(
     providers: &mut Vec<providers::ProviderForGateway>,
     order: &[i64],
@@ -36,7 +37,7 @@ pub(super) fn reorder_providers_by_bound_order(
 pub(super) fn apply_session_provider_preference(
     providers: &mut [providers::ProviderForGateway],
     bound_provider_id: i64,
-    bound_provider_order: Option<&[i64]>,
+    _bound_provider_order: Option<&[i64]>,
 ) -> Option<i64> {
     if providers.is_empty() {
         return None;
@@ -44,24 +45,9 @@ pub(super) fn apply_session_provider_preference(
 
     if let Some(idx) = providers.iter().position(|p| p.id == bound_provider_id) {
         if idx > 0 {
-            providers.rotate_left(idx);
+            providers[..=idx].rotate_right(1);
         }
         return Some(bound_provider_id);
-    }
-
-    let order = bound_provider_order?;
-    if order.is_empty() || providers.len() <= 1 {
-        return None;
-    }
-
-    let current_provider_ids: HashSet<i64> = providers.iter().map(|p| p.id).collect();
-    let next_provider_id =
-        select_next_provider_id_from_order(bound_provider_id, order, &current_provider_ids)?;
-
-    if let Some(idx) = providers.iter().position(|p| p.id == next_provider_id) {
-        if idx > 0 {
-            providers.rotate_left(idx);
-        }
     }
 
     None
@@ -114,7 +100,7 @@ mod tests {
         let mut providers = vec![provider(11), provider(22), provider(33)];
         let selected = apply_session_provider_preference(&mut providers, 22, Some(&[11, 22, 33]));
         assert_eq!(selected, Some(22));
-        assert_eq!(ids(&providers), vec![22, 33, 11]);
+        assert_eq!(ids(&providers), vec![22, 11, 33]);
     }
 
     #[test]
@@ -122,7 +108,7 @@ mod tests {
         let mut providers = vec![provider(10), provider(20), provider(30)];
         let selected = apply_session_provider_preference(&mut providers, 99, Some(&[99, 30, 20]));
         assert_eq!(selected, None);
-        assert_eq!(ids(&providers), vec![30, 10, 20]);
+        assert_eq!(ids(&providers), vec![10, 20, 30]);
     }
 
     #[test]

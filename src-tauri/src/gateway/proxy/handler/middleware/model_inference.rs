@@ -18,6 +18,8 @@ use crate::gateway::proxy::CLAUDE_LOGGED_MESSAGES_PATH;
 use crate::gateway::response_fixer;
 use crate::gateway::util::{infer_requested_model_info, LARGE_REQUEST_BODY_BYTES};
 use axum::http::Method;
+use sha2::{Digest, Sha256};
+use std::io::Write;
 
 /// Claude Code `/compact` replaces the whole system prompt with this marker
 /// (verified verbatim against claude-cli 2.1.198). Detection is best-effort:
@@ -27,6 +29,19 @@ const COMPACT_SYSTEM_PROMPT_PREFIX: &str =
     "You are a helpful AI assistant tasked with summarizing conversations.";
 
 pub(in crate::gateway::proxy::handler) struct ModelInferenceMiddleware;
+
+struct Sha256Writer<'a>(&'a mut Sha256);
+
+impl Write for Sha256Writer<'_> {
+    fn write(&mut self, buf: &[u8]) -> std::io::Result<usize> {
+        self.0.update(buf);
+        Ok(buf.len())
+    }
+
+    fn flush(&mut self) -> std::io::Result<()> {
+        Ok(())
+    }
+}
 
 impl ModelInferenceMiddleware {
     pub(in crate::gateway::proxy::handler) fn run<R: tauri::Runtime>(
@@ -61,6 +76,12 @@ impl ModelInferenceMiddleware {
             &ctx.forwarded_path,
             ctx.introspection_json.as_ref(),
         );
+        ctx.codex_compaction_fingerprint = codex_compaction_fingerprint(
+            &ctx.cli_key,
+            &ctx.req_method,
+            &ctx.forwarded_path,
+            ctx.introspection_json.as_ref(),
+        );
         if ctx.is_compact_request {
             push_special_setting(
                 &ctx.special_settings,
@@ -89,7 +110,7 @@ impl ModelInferenceMiddleware {
     }
 }
 
-/// Detects a Claude Code `/compact` request.
+/// Detects a compact-producing request with a strict CLI/method/path contract.
 ///
 /// Only inspects the parsed `system` field (array form, first block's `text`).
 /// Never searches the raw body: conversation content may legitimately contain
@@ -100,6 +121,9 @@ pub(in crate::gateway::proxy::handler) fn is_compact_request(
     forwarded_path: &str,
     introspection_json: Option<&serde_json::Value>,
 ) -> bool {
+    if cli_key == "codex" && *method == Method::POST && is_codex_compact_path(forwarded_path) {
+        return true;
+    }
     if cli_key != "claude"
         || *method != Method::POST
         || forwarded_path != CLAUDE_LOGGED_MESSAGES_PATH
@@ -114,6 +138,43 @@ pub(in crate::gateway::proxy::handler) fn is_compact_request(
         .and_then(|block| block.get("text"))
         .and_then(|text| text.as_str())
         .is_some_and(|text| text.starts_with(COMPACT_SYSTEM_PROMPT_PREFIX))
+}
+
+/// A Responses input compaction item means this request is already on the
+/// post-compaction turn. Hash only the structured compaction item; ordinary
+/// text containing the word "compaction" is deliberately ignored.
+pub(in crate::gateway::proxy::handler) fn codex_compaction_fingerprint(
+    cli_key: &str,
+    method: &Method,
+    forwarded_path: &str,
+    introspection_json: Option<&serde_json::Value>,
+) -> Option<String> {
+    if cli_key != "codex" || *method != Method::POST || !is_codex_responses_path(forwarded_path) {
+        return None;
+    }
+    let item = introspection_json?
+        .get("input")?
+        .as_array()?
+        .iter()
+        .find(|item| item.get("type").and_then(|value| value.as_str()) == Some("compaction"))?;
+    let mut hasher = Sha256::new();
+    hasher.update(b"codex-compaction:v2:");
+    serde_json::to_writer(Sha256Writer(&mut hasher), item).ok()?;
+    Some(format!("{:x}", hasher.finalize()))
+}
+
+fn is_codex_responses_path(forwarded_path: &str) -> bool {
+    matches!(
+        forwarded_path.trim_end_matches('/'),
+        "/responses" | "/v1/responses" | "/v1/codex/responses"
+    )
+}
+
+fn is_codex_compact_path(forwarded_path: &str) -> bool {
+    matches!(
+        forwarded_path.trim_end_matches('/'),
+        "/responses/compact" | "/v1/responses/compact" | "/v1/codex/responses/compact"
+    )
 }
 
 pub(in crate::gateway::proxy::handler) fn is_large_body_missing_model(
@@ -343,6 +404,90 @@ mod tests {
             "/v1/messages",
             Some(&compact_body()),
         ));
+    }
+
+    #[test]
+    fn codex_compact_paths_cover_all_gateway_aliases_strictly() {
+        for path in [
+            "/responses/compact",
+            "/v1/responses/compact",
+            "/v1/codex/responses/compact",
+        ] {
+            assert!(is_compact_request("codex", &Method::POST, path, None));
+            assert!(is_compact_request(
+                "codex",
+                &Method::POST,
+                &format!("{path}/"),
+                None,
+            ));
+        }
+        assert!(!is_compact_request(
+            "codex",
+            &Method::POST,
+            "/v1/other/responses/compact",
+            None,
+        ));
+        assert!(!is_compact_request(
+            "codex",
+            &Method::GET,
+            "/responses/compact",
+            None,
+        ));
+    }
+
+    #[test]
+    fn codex_compaction_fingerprint_paths_cover_all_gateway_aliases_strictly() {
+        let body = serde_json::json!({
+            "input": [
+                { "type": "message", "content": "before" },
+                { "type": "compaction", "encrypted_content": "opaque" }
+            ]
+        });
+        let expected =
+            codex_compaction_fingerprint("codex", &Method::POST, "/v1/responses", Some(&body))
+                .expect("fingerprint");
+
+        for path in ["/responses", "/v1/responses", "/v1/codex/responses"] {
+            assert_eq!(
+                codex_compaction_fingerprint("codex", &Method::POST, path, Some(&body)),
+                Some(expected.clone()),
+            );
+        }
+        assert_eq!(
+            codex_compaction_fingerprint(
+                "codex",
+                &Method::POST,
+                "/v1/other/responses",
+                Some(&body),
+            ),
+            None,
+        );
+    }
+
+    #[test]
+    fn codex_compaction_fingerprint_hashes_content_beyond_64_kib() {
+        let shared_prefix = "x".repeat(70 * 1024);
+        let first = serde_json::json!({
+            "input": [{
+                "type": "compaction",
+                "encrypted_content": format!("{shared_prefix}a")
+            }]
+        });
+        let second = serde_json::json!({
+            "input": [{
+                "type": "compaction",
+                "encrypted_content": format!("{shared_prefix}b")
+            }]
+        });
+
+        let first =
+            codex_compaction_fingerprint("codex", &Method::POST, "/v1/responses", Some(&first))
+                .expect("first fingerprint");
+        let second =
+            codex_compaction_fingerprint("codex", &Method::POST, "/v1/responses", Some(&second))
+                .expect("second fingerprint");
+
+        assert_ne!(first, second);
     }
 
     #[test]

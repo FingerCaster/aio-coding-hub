@@ -4,11 +4,17 @@ import { cn } from "../utils/cn";
 import { Globe, AlertTriangle, Zap, ChevronDown, ArrowRight } from "lucide-react";
 import { getGatewayErrorShortLabel } from "../constants/gatewayErrorCodes";
 import { DisclosureSection } from "./home/DisclosureSection";
-import { parseAttemptsJson, type AttemptJsonEntry } from "../services/gateway/attemptsJson";
+import {
+  isCircuitProbeAttempt,
+  normalizeAttemptProbeMetadata,
+  parseAttemptsJson,
+  type AttemptJsonEntry,
+  type AttemptProbeMetadata,
+} from "../services/gateway/attemptsJson";
 import { normalizeCircuitState } from "../services/gateway/circuitState";
 import { formatCircuitRecovery } from "../utils/formatters";
 
-export type ProviderChainAttemptLog = {
+export type ProviderChainAttemptLog = AttemptProbeMetadata & {
   attempt_index: number;
   provider_id: number;
   provider_name: string;
@@ -17,6 +23,12 @@ export type ProviderChainAttemptLog = {
   status: number | null;
   attempt_started_ms?: number | null;
   attempt_duration_ms?: number | null;
+  session_reuse?: boolean | null;
+  selection_method?: string | null;
+  circuit_state_before?: string | null;
+  circuit_state_after?: string | null;
+  circuit_failure_count?: number | null;
+  circuit_failure_threshold?: number | null;
 };
 
 type ProviderChainAttempt = {
@@ -43,7 +55,79 @@ type ProviderChainAttempt = {
   circuit_failure_threshold: number | null;
   circuit_recover_at_unix: number | null;
   circuit_trigger_error_code: string | null;
+  probe: boolean | null;
+  probe_trigger: string | null;
+  probe_result: string | null;
+  probe_generation: number | null;
 };
+
+function normalizeAttemptFromSources({
+  attemptIndex,
+  log,
+  live,
+  json,
+}: {
+  attemptIndex: number;
+  log?: ProviderChainAttemptLog;
+  live?: ProviderChainAttemptLog;
+  json?: AttemptJsonEntry;
+}): ProviderChainAttempt {
+  const liveProbe = live ? normalizeAttemptProbeMetadata(live) : null;
+  const logProbe = log ? normalizeAttemptProbeMetadata(log) : null;
+  const jsonProbe = json ? normalizeAttemptProbeMetadata(json) : null;
+
+  return {
+    attempt_index: attemptIndex,
+    provider_id: live?.provider_id ?? log?.provider_id ?? json?.provider_id ?? 0,
+    provider_name: live?.provider_name || log?.provider_name || json?.provider_name || "未知",
+    base_url: live?.base_url || log?.base_url || json?.base_url || "",
+    outcome: live?.outcome || log?.outcome || json?.outcome || "",
+    status: live?.status ?? log?.status ?? json?.status ?? null,
+    attempt_started_ms:
+      live?.attempt_started_ms ?? log?.attempt_started_ms ?? json?.attempt_started_ms ?? null,
+    attempt_duration_ms:
+      live?.attempt_duration_ms ?? log?.attempt_duration_ms ?? json?.attempt_duration_ms ?? null,
+    provider_index: json?.provider_index ?? null,
+    retry_index: json?.retry_index ?? null,
+    session_reuse: live?.session_reuse ?? log?.session_reuse ?? json?.session_reuse ?? null,
+    error_category: json?.error_category ?? null,
+    error_code: json?.error_code ?? null,
+    decision: json?.decision ?? null,
+    reason: json?.reason ?? null,
+    selection_method:
+      live?.selection_method ??
+      log?.selection_method ??
+      json?.selection_method ??
+      (liveProbe?.probe === true || logProbe?.probe === true ? "circuit_probe" : null),
+    reason_code: json?.reason_code ?? null,
+    circuit_state_before:
+      live?.circuit_state_before ?? log?.circuit_state_before ?? json?.circuit_state_before ?? null,
+    circuit_state_after:
+      live?.circuit_state_after ?? log?.circuit_state_after ?? json?.circuit_state_after ?? null,
+    circuit_failure_count:
+      live?.circuit_failure_count ??
+      log?.circuit_failure_count ??
+      json?.circuit_failure_count ??
+      null,
+    circuit_failure_threshold:
+      live?.circuit_failure_threshold ??
+      log?.circuit_failure_threshold ??
+      json?.circuit_failure_threshold ??
+      null,
+    circuit_recover_at_unix: json?.circuit_recover_at_unix ?? null,
+    circuit_trigger_error_code: json?.circuit_trigger_error_code ?? null,
+    probe: liveProbe?.probe ?? logProbe?.probe ?? jsonProbe?.probe ?? null,
+    probe_trigger:
+      liveProbe?.probe_trigger ?? logProbe?.probe_trigger ?? jsonProbe?.probe_trigger ?? null,
+    probe_result:
+      liveProbe?.probe_result ?? logProbe?.probe_result ?? jsonProbe?.probe_result ?? null,
+    probe_generation:
+      liveProbe?.probe_generation ??
+      logProbe?.probe_generation ??
+      jsonProbe?.probe_generation ??
+      null,
+  };
+}
 
 function formatProviderIdentity(providerName: unknown, providerId: unknown): string {
   const normalizedName = typeof providerName === "string" ? providerName.trim() : "";
@@ -59,10 +143,12 @@ function formatProviderIdentity(providerName: unknown, providerId: unknown): str
 
 export function ProviderChainView({
   attemptLogs,
+  liveAttempts = [],
   attemptLogsLoading,
   attemptsJson,
 }: {
   attemptLogs: ProviderChainAttemptLog[];
+  liveAttempts?: ProviderChainAttemptLog[];
   attemptLogsLoading?: boolean;
   attemptsJson: string | null | undefined;
 }) {
@@ -75,82 +161,41 @@ export function ProviderChainView({
 
   const attempts = useMemo((): ProviderChainAttempt[] | null => {
     const logs = attemptLogs ?? [];
+    const live = liveAttempts ?? [];
     const jsonAttempts = parsedAttemptsJson.ok ? parsedAttemptsJson.attempts : null;
 
-    if (logs.length === 0 && !jsonAttempts) return null;
+    if (logs.length === 0 && live.length === 0 && !jsonAttempts) return null;
 
-    if (logs.length === 0 && jsonAttempts) {
-      return jsonAttempts.map((a, index) => ({
-        attempt_index: index + 1,
-        provider_id: a.provider_id,
-        provider_name: a.provider_name,
-        base_url: a.base_url,
-        outcome: a.outcome,
-        status: a.status ?? null,
-        attempt_started_ms: a.attempt_started_ms ?? null,
-        attempt_duration_ms: a.attempt_duration_ms ?? null,
-        provider_index: a.provider_index ?? null,
-        retry_index: a.retry_index ?? null,
-        session_reuse: a.session_reuse ?? null,
-        error_category: a.error_category ?? null,
-        error_code: a.error_code ?? null,
-        decision: a.decision ?? null,
-        reason: a.reason ?? null,
-        selection_method: a.selection_method ?? null,
-        reason_code: a.reason_code ?? null,
-        circuit_state_before: a.circuit_state_before ?? null,
-        circuit_state_after: a.circuit_state_after ?? null,
-        circuit_failure_count: a.circuit_failure_count ?? null,
-        circuit_failure_threshold: a.circuit_failure_threshold ?? null,
-        circuit_recover_at_unix: a.circuit_recover_at_unix ?? null,
-        circuit_trigger_error_code: a.circuit_trigger_error_code ?? null,
-      }));
-    }
+    const logsByAttemptIndex = new Map(logs.map((log) => [log.attempt_index, log]));
+    const liveByAttemptIndex = new Map(live.map((attempt) => [attempt.attempt_index, attempt]));
+    const jsonByAttemptIndex = new Map(
+      (jsonAttempts ?? []).map((attempt, index) => [index + 1, attempt])
+    );
+    const attemptIndexes = new Set([
+      ...logsByAttemptIndex.keys(),
+      ...liveByAttemptIndex.keys(),
+      ...jsonByAttemptIndex.keys(),
+    ]);
 
-    const byAttemptIndex: Record<number, AttemptJsonEntry | undefined> = {};
-    if (jsonAttempts) {
-      for (let i = 0; i < jsonAttempts.length; i += 1) {
-        byAttemptIndex[i + 1] = jsonAttempts[i];
-      }
-    }
-
-    const normalized = logs
-      .slice()
-      .sort((a, b) => a.attempt_index - b.attempt_index)
-      .map((log) => {
-        const json = byAttemptIndex[log.attempt_index];
-        return {
-          attempt_index: log.attempt_index,
-          provider_id: log.provider_id ?? json?.provider_id ?? 0,
-          provider_name: log.provider_name || json?.provider_name || "未知",
-          base_url: log.base_url || json?.base_url || "",
-          outcome: log.outcome || json?.outcome || "",
-          status: log.status ?? json?.status ?? null,
-          attempt_started_ms: log.attempt_started_ms ?? json?.attempt_started_ms ?? null,
-          attempt_duration_ms: log.attempt_duration_ms ?? json?.attempt_duration_ms ?? null,
-          provider_index: json?.provider_index ?? null,
-          retry_index: json?.retry_index ?? null,
-          session_reuse: json?.session_reuse ?? null,
-          error_category: json?.error_category ?? null,
-          error_code: json?.error_code ?? null,
-          decision: json?.decision ?? null,
-          reason: json?.reason ?? null,
-          selection_method: json?.selection_method ?? null,
-          reason_code: json?.reason_code ?? null,
-          circuit_state_before: json?.circuit_state_before ?? null,
-          circuit_state_after: json?.circuit_state_after ?? null,
-          circuit_failure_count: json?.circuit_failure_count ?? null,
-          circuit_failure_threshold: json?.circuit_failure_threshold ?? null,
-          circuit_recover_at_unix: json?.circuit_recover_at_unix ?? null,
-          circuit_trigger_error_code: json?.circuit_trigger_error_code ?? null,
-        };
-      });
-
-    return normalized;
-  }, [attemptLogs, parsedAttemptsJson]);
+    return [...attemptIndexes]
+      .sort((a, b) => a - b)
+      .map((attemptIndex) =>
+        normalizeAttemptFromSources({
+          attemptIndex,
+          log: logsByAttemptIndex.get(attemptIndex),
+          live: liveByAttemptIndex.get(attemptIndex),
+          json: jsonByAttemptIndex.get(attemptIndex),
+        })
+      );
+  }, [attemptLogs, liveAttempts, parsedAttemptsJson]);
 
   const dataSourceLabel = useMemo(() => {
     if (attemptLogsLoading) return "加载中…";
+    if (liveAttempts.length > 0) {
+      return parsedAttemptsJson.ok
+        ? "数据源：实时网关事件 + request_logs.attempts_json"
+        : "数据源：实时网关事件";
+    }
     if (attemptLogs.length > 0) {
       return parsedAttemptsJson.ok
         ? "数据源：request_logs.attempts_json（结构化）"
@@ -158,7 +203,7 @@ export function ProviderChainView({
     }
     if (parsedAttemptsJson.ok) return "数据源：request_logs.attempts_json";
     return "数据源：尝试 JSON（原始）";
-  }, [attemptLogs.length, attemptLogsLoading, parsedAttemptsJson.ok]);
+  }, [attemptLogs.length, attemptLogsLoading, liveAttempts.length, parsedAttemptsJson.ok]);
 
   if (attemptLogsLoading) {
     return (
@@ -213,7 +258,7 @@ export function ProviderChainView({
           </span>
         ) : null}
         <span className="text-muted-foreground">{dataSourceLabel}</span>
-        {attemptLogs.length === 0 && parsedAttemptsJson.ok ? (
+        {attemptLogs.length === 0 && liveAttempts.length === 0 && parsedAttemptsJson.ok ? (
           <span className="rounded-full bg-secondary px-2.5 py-1 font-medium text-secondary-foreground">
             当前显示的是摘要链路，未拿到逐次尝试日志
           </span>
@@ -307,6 +352,7 @@ function AttemptCard({
             <span className="min-w-0 break-words text-sm font-medium text-foreground">
               {providerIdentity}
             </span>
+            <ProbeTags attempt={attempt} />
             {attempt.attempt_duration_ms != null ? (
               <span className="text-xs text-muted-foreground">
                 +{attempt.attempt_duration_ms}ms
@@ -432,7 +478,7 @@ function AttemptCard({
                     <div className="flex items-baseline gap-2">
                       <span className="shrink-0 text-muted-foreground">选择方式:</span>
                       <span className="font-mono text-secondary-foreground">
-                        {attempt.selection_method}
+                        {formatSelectionMethod(attempt.selection_method, true)}
                       </span>
                     </div>
                   ) : null}
@@ -473,13 +519,99 @@ const DECISION_BADGE_TONES: Record<string, string> = {
   abort: "bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
 };
 
+const PROBE_RESULT_PRESENTATION: Record<string, { label: string; tone: string }> = {
+  started: {
+    label: "试探中",
+    tone: "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
+  },
+  success: {
+    label: "试探成功",
+    tone: "bg-emerald-50 text-emerald-700 dark:bg-emerald-900/30 dark:text-emerald-300",
+  },
+  failed: {
+    label: "试探失败",
+    tone: "bg-rose-50 text-rose-700 dark:bg-rose-900/30 dark:text-rose-300",
+  },
+  cooldown: {
+    label: "试探冷却中",
+    tone: "bg-amber-50 text-amber-700 dark:bg-amber-900/30 dark:text-amber-300",
+  },
+  in_flight: {
+    label: "已有试探进行中",
+    tone: "bg-cyan-50 text-cyan-700 dark:bg-cyan-900/30 dark:text-cyan-300",
+  },
+  not_triggered: {
+    label: "试探未触发",
+    tone: "bg-secondary text-muted-foreground dark:bg-secondary dark:text-secondary-foreground",
+  },
+};
+
+const PROBE_TRIGGER_LABELS: Record<string, string> = {
+  new_unbound_session: "新会话",
+  route_changed: "路由变化",
+  natural_compaction: "上下文压缩",
+  natural_max_wait: "自然等待到期",
+  aggressive_turn: "积极回切",
+  max_open_wait: "最长熔断等待到期",
+};
+
+function formatSelectionMethod(value: string, includeCode = false) {
+  if (value !== "circuit_probe") return value;
+  return includeCode ? "熔断试探 (circuit_probe)" : "熔断试探";
+}
+
+function ProbeTags({ attempt }: { attempt: ProviderChainAttempt }) {
+  if (!isCircuitProbeAttempt(attempt)) return null;
+
+  const result = attempt.probe_result;
+  const presentation = result
+    ? (PROBE_RESULT_PRESENTATION[result] ?? {
+        label: `试探：${result}`,
+        tone: "bg-secondary text-secondary-foreground",
+      })
+    : {
+        label: "熔断试探",
+        tone: "bg-sky-50 text-sky-700 dark:bg-sky-900/30 dark:text-sky-300",
+      };
+  const trigger = attempt.probe_trigger
+    ? (PROBE_TRIGGER_LABELS[attempt.probe_trigger] ?? attempt.probe_trigger)
+    : null;
+
+  return (
+    <>
+      <span
+        className={cn("rounded-full px-2 py-0.5 text-xs font-medium", presentation.tone)}
+        title={result ? `probe_result=${result}` : "selection_method=circuit_probe"}
+      >
+        {presentation.label}
+      </span>
+      {trigger ? (
+        <span
+          className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-secondary-foreground"
+          title={`probe_trigger=${attempt.probe_trigger}`}
+        >
+          触发：{trigger}
+        </span>
+      ) : null}
+      {attempt.probe_generation != null ? (
+        <span
+          className="rounded-full bg-secondary px-2 py-0.5 text-xs font-medium text-muted-foreground"
+          title={`probe_generation=${attempt.probe_generation}`}
+        >
+          代次 {attempt.probe_generation}
+        </span>
+      ) : null}
+    </>
+  );
+}
+
 function DecisionTags({ attempt }: { attempt: ProviderChainAttempt }) {
   const tags: Array<{ label: string; value: string; tone: string }> = [];
 
   if (attempt.selection_method) {
     tags.push({
       label: "选择",
-      value: attempt.selection_method,
+      value: formatSelectionMethod(attempt.selection_method),
       tone: "bg-blue-50 text-blue-700 dark:bg-blue-900/30 dark:text-blue-300",
     });
   }
@@ -557,6 +689,9 @@ function hasStructuredDetails(attempt: ProviderChainAttempt): boolean {
     attempt.error_category != null ||
     attempt.decision != null ||
     attempt.selection_method != null ||
+    attempt.probe_result != null ||
+    attempt.probe_trigger != null ||
+    attempt.probe_generation != null ||
     attempt.circuit_state_before != null ||
     attempt.circuit_state_after != null
   );

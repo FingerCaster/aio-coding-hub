@@ -30,6 +30,8 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     log_retention_days: 7,
     request_log_retention_days: 0,
     provider_cooldown_seconds: 30,
+    provider_failback_strategy: "natural",
+    natural_probe_max_wait_seconds: 300,
     provider_base_url_ping_cache_ttl_seconds: 60,
     upstream_first_byte_timeout_seconds: 0,
     upstream_stream_idle_timeout_seconds: 0,

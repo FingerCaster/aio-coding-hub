@@ -6,6 +6,7 @@ mod abort_guard;
 mod caches;
 mod cli_proxy_guard;
 pub(super) mod cx2cc;
+pub(in crate::gateway) mod dispatch;
 mod error_code;
 mod errors;
 mod failover;

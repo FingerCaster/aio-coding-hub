@@ -15,6 +15,86 @@ use crate::gateway::proxy::status_override;
 use crate::gateway::proxy::upstream_client_error_rules;
 use std::time::Duration;
 
+struct ProbeTerminalCommit {
+    snapshot: crate::circuit_breaker::CircuitSnapshot,
+}
+
+fn effective_terminal_failure_status(status: StatusCode, error_code: &'static str) -> StatusCode {
+    status_override::effective_status(Some(status.as_u16()), Some(error_code))
+        .and_then(|status| StatusCode::from_u16(status).ok())
+        .unwrap_or(StatusCode::BAD_GATEWAY)
+}
+
+#[allow(clippy::too_many_arguments)]
+fn mark_last_stream_attempt_terminal_failure(
+    attempts: &mut [FailoverAttempt],
+    status: StatusCode,
+    error_code: &'static str,
+    reason: String,
+    duration_ms: u128,
+    circuit_after: &crate::circuit_breaker::CircuitSnapshot,
+) {
+    let Some(last) = attempts.last_mut() else {
+        return;
+    };
+    let category = ErrorCategory::ProviderError;
+    let decision = FailoverDecision::Abort;
+
+    last.outcome = format!("stream_error: code={error_code}");
+    last.status = Some(status.as_u16());
+    last.error_category = Some(category.as_str());
+    last.error_code = Some(error_code);
+    last.decision = Some(decision.as_str());
+    last.reason = Some(reason);
+    last.reason_code = Some(category.reason_code());
+    last.attempt_duration_ms = Some(duration_ms);
+    last.circuit_state_after = Some(circuit_after.state.as_str());
+    last.circuit_failure_count = Some(circuit_after.failure_count);
+    last.circuit_failure_threshold = Some(circuit_after.failure_threshold);
+    if last.probe == Some(true) {
+        last.probe_result = Some("failed");
+    }
+}
+
+fn complete_probe_failure<R: tauri::Runtime>(
+    common: &CommonCtxOwned<'_, R>,
+    provider: &ProviderCtxOwned,
+    counted_failure: bool,
+    error_code: Option<&'static str>,
+) -> Option<ProbeTerminalCommit> {
+    let ownership = provider
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe())?;
+    let now_unix = now_unix_seconds() as i64;
+    let result = ownership.complete_probe_failure(now_unix, counted_failure, error_code)?;
+    match result {
+        crate::circuit_breaker::ProbeCommitResult::Applied(change) => {
+            if let Some(transition) = change.transition.as_ref() {
+                crate::gateway::events::emit_circuit_transition(
+                    &common.state.app,
+                    common.trace_id.as_str(),
+                    common.cli_key.as_str(),
+                    provider.provider_id,
+                    provider.provider_name_base.as_str(),
+                    provider.provider_base_url_base.as_str(),
+                    transition,
+                    now_unix,
+                    error_code,
+                    (error_code == Some(GatewayErrorCode::UpstreamTimeout.as_str()))
+                        .then_some(common.upstream_first_byte_timeout_secs),
+                );
+            }
+            Some(ProbeTerminalCommit {
+                snapshot: change.after,
+            })
+        }
+        crate::circuit_breaker::ProbeCommitResult::Stale(snapshot) => {
+            Some(ProbeTerminalCommit { snapshot })
+        }
+    }
+}
+
 fn resolve_requested_model_for_log(
     requested_model: Option<String>,
     fallback_model: Option<&str>,
@@ -221,6 +301,13 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
     raw: &[u8],
     error_code: &'static str,
 ) -> LoopControl {
+    let dispatch_ownership = provider_ctx.dispatch_ownership;
+    let probe_ownership = dispatch_ownership.filter(|ownership| ownership.is_probe());
+    let probe_active = probe_ownership.is_some();
+    let probe_trigger = probe_ownership
+        .and_then(|ownership| ownership.probe_trigger())
+        .map(|trigger| trigger.as_str());
+    let probe_generation = probe_ownership.and_then(|ownership| ownership.probe_generation());
     crate::gateway::model_route_mapping::observe_model_route_from_bytes(
         crate::gateway::model_route_mapping::ModelRouteBytesInput {
             cli_key: ctx.cli_key.as_str(),
@@ -287,7 +374,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         )
     };
 
-    let change = if oauth_quota_exhausted {
+    if oauth_quota_exhausted {
         if let Err(err) =
             provider_oauth_limits::save_exhausted_snapshot(&state.db, provider_id, None)
         {
@@ -296,6 +383,24 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
                 "failed to save OAuth exhausted quota snapshot: {err}"
             );
         }
+    }
+    let change = if let Some(ownership) = probe_ownership {
+        match ownership.record_probe_attempt_failure(
+            now_unix,
+            !oauth_quota_exhausted && !provider_health_neutral,
+            Some(error_code),
+        ) {
+            Some(crate::circuit_breaker::ProbeCommitResult::Applied(change)) => Some(change),
+            Some(crate::circuit_breaker::ProbeCommitResult::Stale(snapshot)) => {
+                Some(crate::circuit_breaker::CircuitChange {
+                    before: snapshot.clone(),
+                    after: snapshot,
+                    transition: None,
+                })
+            }
+            None => None,
+        }
+    } else if oauth_quota_exhausted {
         None
     } else {
         Some(provider_router::record_failure_and_emit_transition(
@@ -316,7 +421,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         *circuit_snapshot = change.after.clone();
     }
 
-    if !oauth_quota_exhausted && provider_cooldown_secs > 0 {
+    if !probe_active && !oauth_quota_exhausted && provider_cooldown_secs > 0 {
         *circuit_snapshot = provider_router::trigger_cooldown(
             state.circuit.as_ref(),
             provider_id,
@@ -355,7 +460,11 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
             error_code,
             quota_exhausted,
         )),
-        selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
+        selection_method: if probe_active {
+            Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+        } else {
+            dc::selection_method(provider_index, retry_index, session_reuse)
+        },
         reason_code: Some(category.reason_code()),
         attempt_started_ms: Some(attempt_started_ms),
         attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
@@ -363,6 +472,10 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        probe: probe_active.then_some(true),
+        probe_trigger,
+        probe_result: probe_active.then_some("failed"),
+        probe_generation,
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
@@ -420,6 +533,15 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
     let provider_id = provider_ctx_owned.provider_id;
     let provider_index = provider_ctx_owned.provider_index;
     let session_reuse = provider_ctx_owned.session_reuse;
+    let probe_ownership = provider_ctx_owned
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe());
+    let probe_active = probe_ownership.is_some();
+    let probe_trigger = probe_ownership
+        .and_then(|ownership| ownership.probe_trigger())
+        .map(|trigger| trigger.as_str());
+    let probe_generation = probe_ownership.and_then(|ownership| ownership.probe_generation());
     let outcome = "success".to_string();
 
     attempts.push(FailoverAttempt {
@@ -435,7 +557,11 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         error_code: None,
         decision: Some("success"),
         reason: None,
-        selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
+        selection_method: if probe_active {
+            Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+        } else {
+            dc::selection_method(provider_index, retry_index, session_reuse)
+        },
         reason_code: Some(dc::success_reason_code(provider_index, retry_index)),
         attempt_started_ms: Some(attempt_started_ms),
         attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
@@ -443,6 +569,10 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        probe: probe_active.then_some(true),
+        probe_trigger,
+        probe_result: probe_active.then_some("started"),
+        probe_generation,
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         provider_bridged: Some(provider_ctx_owned.provider_bridged),
@@ -494,25 +624,36 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         },
     );
 
-    let now_unix = now_unix_seconds() as i64;
-    let change = provider_router::record_failure_and_emit_transition(
-        provider_router::RecordCircuitArgs::from_state(
-            common.state,
-            common.trace_id.as_str(),
-            common.cli_key.as_str(),
-            provider_id,
-            provider_ctx_owned.provider_name_base.as_str(),
-            provider_ctx_owned.provider_base_url_base.as_str(),
-            now_unix,
-        )
-        .with_trigger(
-            Some(error_code),
-            Some(common.upstream_first_byte_timeout_secs),
-        )
-        .with_provider_health_neutral(common.provider_health_neutral),
+    let probe_commit = complete_probe_failure(
+        &common,
+        &provider_ctx_owned,
+        !common.provider_health_neutral,
+        Some(error_code),
     );
-    *circuit_snapshot = change.after.clone();
-    if common.provider_cooldown_secs > 0 {
+    if let Some(probe_commit) = probe_commit {
+        *circuit_snapshot = probe_commit.snapshot;
+    } else {
+        let now_unix = now_unix_seconds() as i64;
+        let change = provider_router::record_failure_and_emit_transition(
+            provider_router::RecordCircuitArgs::from_state(
+                common.state,
+                common.trace_id.as_str(),
+                common.cli_key.as_str(),
+                provider_id,
+                provider_ctx_owned.provider_name_base.as_str(),
+                provider_ctx_owned.provider_base_url_base.as_str(),
+                now_unix,
+            )
+            .with_trigger(
+                Some(error_code),
+                Some(common.upstream_first_byte_timeout_secs),
+            )
+            .with_provider_health_neutral(common.provider_health_neutral),
+        );
+        *circuit_snapshot = change.after;
+    }
+    if !probe_active && common.provider_cooldown_secs > 0 {
+        let now_unix = now_unix_seconds() as i64;
         *circuit_snapshot = provider_router::trigger_cooldown(
             common.state.circuit.as_ref(),
             provider_id,
@@ -521,15 +662,15 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
             common.provider_health_neutral,
         );
     }
-    if let Some(last) = attempts.last_mut() {
-        last.outcome = format!("stream_error: code={error_code}");
-        last.error_category = Some(ErrorCategory::ProviderError.as_str());
-        last.error_code = Some(error_code);
-        last.attempt_duration_ms = Some(attempt_started.elapsed().as_millis());
-        last.circuit_state_after = Some(circuit_snapshot.state.as_str());
-        last.circuit_failure_count = Some(circuit_snapshot.failure_count);
-        last.circuit_failure_threshold = Some(circuit_snapshot.failure_threshold);
-    }
+    let effective_status = effective_terminal_failure_status(status, error_code);
+    mark_last_stream_attempt_terminal_failure(
+        attempts,
+        effective_status,
+        error_code,
+        buffered_provider_failure_reason(error_code, false),
+        attempt_started.elapsed().as_millis(),
+        circuit_snapshot,
+    );
 
     *last_outcome = Some(AttemptOutcome::new(
         ErrorCategory::ProviderError.as_str(),
@@ -561,7 +702,7 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
             created_at: common.created_at,
         })
         .with_completion(RequestCompletion::failure_with_visible_ttfb(
-            status.as_u16(),
+            effective_status.as_u16(),
             Some(ErrorCategory::ProviderError.as_str()),
             error_code,
             initial_first_byte_ms,
@@ -643,6 +784,15 @@ where
     let provider_id = provider_ctx_owned.provider_id;
     let provider_index = provider_ctx_owned.provider_index;
     let session_reuse = provider_ctx_owned.session_reuse;
+    let probe_ownership = provider_ctx_owned
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe());
+    let probe_active = probe_ownership.is_some();
+    let probe_trigger = probe_ownership
+        .and_then(|ownership| ownership.probe_trigger())
+        .map(|trigger| trigger.as_str());
+    let probe_generation = probe_ownership.and_then(|ownership| ownership.probe_generation());
 
     let AttemptCtx {
         retry_index,
@@ -657,7 +807,11 @@ where
         anthropic_stream_requested: _,
         ..
     } = attempt_ctx;
-    let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
+    let selection_method = if probe_active {
+        Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+    } else {
+        dc::selection_method(provider_index, retry_index, session_reuse)
+    };
     let reason_code = dc::success_reason_code(provider_index, retry_index);
 
     let LoopState {
@@ -1123,6 +1277,10 @@ where
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            probe: probe_active.then_some(true),
+            probe_trigger,
+            probe_result: probe_active.then_some("started"),
+            probe_generation,
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx_owned.provider_bridged),
@@ -1404,8 +1562,98 @@ where
 
 #[cfg(test)]
 mod tests {
-    use super::{resolve_effective_stream_idle_timeout, resolve_requested_model_for_log};
+    use super::{
+        effective_terminal_failure_status, mark_last_stream_attempt_terminal_failure,
+        resolve_effective_stream_idle_timeout, resolve_requested_model_for_log,
+    };
+    use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
+    use crate::gateway::events::FailoverAttempt;
+    use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
+    use axum::http::StatusCode;
+    use std::collections::HashMap;
+    use std::sync::Arc;
     use std::time::Duration;
+
+    fn started_probe_attempt() -> FailoverAttempt {
+        FailoverAttempt {
+            provider_id: 1,
+            provider_name: "test-provider".to_string(),
+            base_url: "https://upstream.example".to_string(),
+            outcome: "success".to_string(),
+            status: Some(200),
+            provider_index: Some(1),
+            retry_index: Some(1),
+            session_reuse: Some(false),
+            error_category: None,
+            error_code: None,
+            decision: Some("success"),
+            reason: None,
+            selection_method: Some("circuit_probe"),
+            reason_code: Some("request_success"),
+            attempt_started_ms: Some(0),
+            attempt_duration_ms: Some(1),
+            circuit_state_before: Some("OPEN"),
+            circuit_state_after: None,
+            circuit_failure_count: Some(1),
+            circuit_failure_threshold: Some(1),
+            probe: Some(true),
+            probe_trigger: Some("aggressive_turn"),
+            probe_result: Some("started"),
+            probe_generation: Some(1),
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            provider_bridged: Some(false),
+            timeout_secs: None,
+            requested_upstream_model: Some("gpt-5".to_string()),
+        }
+    }
+
+    #[test]
+    fn buffered_terminal_failure_rewrites_all_started_attempt_fields() {
+        let circuit = Arc::new(CircuitBreaker::new(
+            CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let snapshot = circuit
+            .record_failure(1, 1_700_000_000, Some(GatewayErrorCode::Fake200.as_str()))
+            .after;
+        let mut attempts = vec![started_probe_attempt()];
+        let status =
+            effective_terminal_failure_status(StatusCode::OK, GatewayErrorCode::Fake200.as_str());
+
+        mark_last_stream_attempt_terminal_failure(
+            &mut attempts,
+            status,
+            GatewayErrorCode::Fake200.as_str(),
+            "successful HTTP status with SSE error event".to_string(),
+            37,
+            &snapshot,
+        );
+
+        let attempt = &attempts[0];
+        assert_ne!(attempt.outcome, "success");
+        assert_eq!(attempt.status, Some(502));
+        assert_eq!(attempt.error_category, Some("PROVIDER_ERROR"));
+        assert_eq!(attempt.error_code, Some(GatewayErrorCode::Fake200.as_str()));
+        assert_eq!(attempt.decision, Some("abort"));
+        assert_eq!(
+            attempt.reason.as_deref(),
+            Some("successful HTTP status with SSE error event")
+        );
+        assert_eq!(
+            attempt.reason_code,
+            Some(ErrorCategory::ProviderError.reason_code())
+        );
+        assert_eq!(attempt.attempt_duration_ms, Some(37));
+        assert_eq!(attempt.probe_result, Some("failed"));
+        assert_eq!(attempt.circuit_state_after, Some("OPEN"));
+        assert_eq!(attempt.circuit_failure_count, Some(1));
+        assert_eq!(attempt.circuit_failure_threshold, Some(1));
+    }
 
     #[test]
     fn resolve_requested_model_for_log_prefers_fallback_model() {

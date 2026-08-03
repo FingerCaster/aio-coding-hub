@@ -3014,6 +3014,10 @@ export type FailoverAttempt = {
   circuit_state_after: string | null;
   circuit_failure_count: number | null;
   circuit_failure_threshold: number | null;
+  probe: boolean | null;
+  probe_trigger: string | null;
+  probe_result: string | null;
+  probe_generation: number | null;
   circuit_recover_at_unix?: number | null;
   circuit_trigger_error_code?: string | null;
   provider_bridged: boolean | null;
@@ -3064,6 +3068,10 @@ export type GatewayAttemptEvent = {
   circuit_state_after: string | null;
   circuit_failure_count: number | null;
   circuit_failure_threshold: number | null;
+  probe: boolean | null;
+  probe_trigger: string | null;
+  probe_result: string | null;
+  probe_generation: number | null;
   claude_model_mapping: ClaudeModelMapping | null;
 };
 export type GatewayCircuitEvent = {
@@ -3904,6 +3912,7 @@ export type ProviderExtensionValuesInput = {
   namespace: string;
   values: JsonValue;
 };
+export type ProviderFailbackStrategy = "aggressive" | "natural";
 export type ProviderLimitUsageRow = {
   cli_key: string;
   provider_id: number;
@@ -4262,6 +4271,8 @@ export type SettingsUpdate = {
   logRetentionDays: number;
   requestLogRetentionDays: number | null;
   providerCooldownSeconds: number | null;
+  providerFailbackStrategy: ProviderFailbackStrategy | null;
+  naturalProbeMaxWaitSeconds: number | null;
   providerBaseUrlPingCacheTtlSeconds: number | null;
   upstreamFirstByteTimeoutSeconds: number | null;
   upstreamStreamIdleTimeoutSeconds: number | null;
@@ -4325,6 +4336,8 @@ export type SettingsView = {
   log_retention_days: number;
   request_log_retention_days: number;
   provider_cooldown_seconds: number;
+  provider_failback_strategy: ProviderFailbackStrategy;
+  natural_probe_max_wait_seconds: number;
   provider_base_url_ping_cache_ttl_seconds: number;
   upstream_first_byte_timeout_seconds: number;
   upstream_stream_idle_timeout_seconds: number;

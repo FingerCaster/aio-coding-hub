@@ -10,7 +10,11 @@ import type { CliKey } from "../../services/providers/providers";
 import type { ProjectedRealtimeCard } from "../../services/gateway/requestActivityProjection";
 import { REALTIME_TRACE_EXIT_START_MS } from "../../services/gateway/requestActivityProjection";
 import { requestLogActiveActivityState } from "../../services/gateway/requestLogState";
-import { hasFailoverFromSegments } from "../../services/gateway/traceRoute";
+import {
+  countTraceProviderAttempts,
+  hasFailoverFromSegments,
+  isNotTriggeredProbeObservation,
+} from "../../services/gateway/traceRoute";
 import { cn } from "../../utils/cn";
 import {
   computeOutputTokensPerSecond,
@@ -99,9 +103,12 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
 
         const summaryStatus = summary?.status ?? null;
         const summaryErrorCode = summary?.error_code ?? null;
+        const providerAttempts = (trace.attempts ?? []).filter(
+          (attempt) => !isNotTriggeredProbeObservation(attempt)
+        );
 
         const attemptRoute = (() => {
-          const sortedAttempts = (trace.attempts ?? [])
+          const sortedAttempts = providerAttempts
             .slice()
             .sort((a, b) => a.attempt_index - b.attempt_index);
 
@@ -159,14 +166,11 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
           summaryStatus === 499 ||
           summaryErrorCode === GatewayErrorCodes.REQUEST_ABORTED ||
           summaryErrorCode === GatewayErrorCodes.STREAM_ABORTED;
-        const hasSessionReuse = (trace.attempts ?? []).some(
-          (attempt) => attempt.session_reuse === true
-        );
+        const hasSessionReuse = providerAttempts.some((attempt) => attempt.session_reuse === true);
         let latestAttempt: NonNullable<typeof trace.attempts>[number] | undefined;
         let successfulAttempt: NonNullable<typeof trace.attempts>[number] | undefined;
-        let attemptCount = trace.attempts?.length ?? 0;
-        for (const attempt of trace.attempts ?? []) {
-          attemptCount = Math.max(attemptCount, attempt.attempt_index);
+        const attemptCount = countTraceProviderAttempts(trace.attempts ?? []);
+        for (const attempt of providerAttempts) {
           if (!latestAttempt || attempt.attempt_index > latestAttempt.attempt_index) {
             latestAttempt = attempt;
           }

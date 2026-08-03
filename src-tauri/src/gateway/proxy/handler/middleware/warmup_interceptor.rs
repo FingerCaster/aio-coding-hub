@@ -19,7 +19,7 @@ impl WarmupInterceptorMiddleware {
     ///
     /// Requires `ctx.runtime_settings` to be populated (by `RuntimeSettingsMiddleware`).
     pub(in crate::gateway::proxy::handler) fn run<R: tauri::Runtime>(
-        ctx: ProxyContext<R>,
+        mut ctx: ProxyContext<R>,
     ) -> MiddlewareAction<R> {
         let intercept_warmup = ctx
             .runtime_settings
@@ -27,14 +27,13 @@ impl WarmupInterceptorMiddleware {
             .map(|rs| rs.intercept_warmup)
             .unwrap_or(false);
 
-        let is_warmup = should_intercept_warmup_request(
+        ctx.is_warmup_request = classify_warmup_request(
             &ctx.cli_key,
-            intercept_warmup,
             &ctx.forwarded_path,
             ctx.introspection_json.as_ref(),
         );
 
-        if !is_warmup {
+        if !intercept_warmup || !ctx.is_warmup_request {
             return MiddlewareAction::Continue(Box::new(ctx));
         }
 
@@ -44,16 +43,22 @@ impl WarmupInterceptorMiddleware {
     }
 }
 
+#[cfg(test)]
 pub(in crate::gateway::proxy::handler) fn should_intercept_warmup_request(
     cli_key: &str,
     intercept_warmup: bool,
     forwarded_path: &str,
     introspection_json: Option<&serde_json::Value>,
 ) -> bool {
-    if cli_key != "claude" || !intercept_warmup {
-        return false;
-    }
-    warmup::is_anthropic_warmup_request(forwarded_path, introspection_json)
+    intercept_warmup && classify_warmup_request(cli_key, forwarded_path, introspection_json)
+}
+
+pub(in crate::gateway::proxy::handler) fn classify_warmup_request(
+    cli_key: &str,
+    forwarded_path: &str,
+    introspection_json: Option<&serde_json::Value>,
+) -> bool {
+    cli_key == "claude" && warmup::is_anthropic_warmup_request(forwarded_path, introspection_json)
 }
 
 fn respond_warmup_intercept<R: tauri::Runtime>(
@@ -100,6 +105,10 @@ fn respond_warmup_intercept<R: tauri::Runtime>(
         circuit_state_after: None,
         circuit_failure_count: None,
         circuit_failure_threshold: None,
+        probe: None,
+        probe_trigger: None,
+        probe_result: None,
+        probe_generation: None,
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         provider_bridged: None,
@@ -254,6 +263,17 @@ mod tests {
             true,
             "/v1/messages",
             Some(&body)
+        ));
+        assert!(classify_warmup_request(
+            "claude",
+            "/v1/messages",
+            Some(&body),
+        ));
+        assert!(!should_intercept_warmup_request(
+            "claude",
+            false,
+            "/v1/messages",
+            Some(&body),
         ));
     }
 }

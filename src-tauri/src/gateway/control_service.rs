@@ -157,8 +157,8 @@ impl GatewayControlService {
             return Ok(Vec::new());
         }
 
-        let now_unix = now_unix_seconds() as i64;
         if let Some(runtime) = running {
+            let now_unix = now_unix_seconds() as i64;
             return Ok(runtime.circuit_status(&provider_ids, now_unix));
         }
 
@@ -166,44 +166,11 @@ impl GatewayControlService {
         let cfg = settings::read(app)?;
         let failure_threshold = cfg.circuit_breaker_failure_threshold.max(1);
 
-        Ok(provider_ids
-            .into_iter()
-            .map(|provider_id| {
-                if let Some(item) = persisted.get(&provider_id) {
-                    let failure_count = item.failure_timestamps.len().min(u32::MAX as usize) as u32;
-                    let expired = item.state == circuit_breaker::CircuitState::Open
-                        && item.open_until.map(|ts| now_unix >= ts).unwrap_or(true);
-                    if expired {
-                        return GatewayProviderCircuitStatus {
-                            provider_id,
-                            state: circuit_breaker::CircuitState::HalfOpen.as_str().to_string(),
-                            failure_count,
-                            failure_threshold,
-                            open_until: None,
-                            cooldown_until: None,
-                        };
-                    }
-
-                    GatewayProviderCircuitStatus {
-                        provider_id,
-                        state: item.state.as_str().to_string(),
-                        failure_count,
-                        failure_threshold,
-                        open_until: item.open_until,
-                        cooldown_until: None,
-                    }
-                } else {
-                    GatewayProviderCircuitStatus {
-                        provider_id,
-                        state: circuit_breaker::CircuitState::Closed.as_str().to_string(),
-                        failure_count: 0,
-                        failure_threshold,
-                        open_until: None,
-                        cooldown_until: None,
-                    }
-                }
-            })
-            .collect())
+        Ok(stopped_circuit_statuses(
+            provider_ids,
+            &persisted,
+            failure_threshold,
+        ))
     }
 
     pub(crate) fn refresh_plugins(running: Option<&GatewayRuntime>, db: &db::Db) {
@@ -236,11 +203,16 @@ impl GatewayControlService {
                 .into());
         }
 
+        let now_unix = now_unix_seconds() as i64;
         if let Some(runtime) = running {
-            runtime.circuit_reset_provider(provider_id, now_unix_seconds() as i64);
+            let tombstones = runtime
+                .circuit_reset_provider(provider_id, now_unix)
+                .into_iter()
+                .collect::<Vec<_>>();
+            persist_reset_tombstones(db, &tombstones)?;
+        } else {
+            persist_closed_tombstones(db, &[provider_id], now_unix)?;
         }
-
-        let _ = provider_circuit_breakers::delete_by_provider_id(db, provider_id)?;
         Ok(())
     }
 
@@ -254,11 +226,13 @@ impl GatewayControlService {
             return Ok(0);
         }
 
+        let now_unix = now_unix_seconds() as i64;
         if let Some(runtime) = running {
-            runtime.circuit_reset_cli(&provider_ids, now_unix_seconds() as i64);
+            let tombstones = runtime.circuit_reset_cli(&provider_ids, now_unix);
+            persist_reset_tombstones(db, &tombstones)?;
+        } else {
+            persist_closed_tombstones(db, &provider_ids, now_unix)?;
         }
-
-        let _ = provider_circuit_breakers::delete_by_provider_ids(db, &provider_ids)?;
         Ok(provider_ids.len())
     }
 }
@@ -317,6 +291,80 @@ fn provider_ids_for_cli(db: &db::Db, cli_key: &str) -> crate::shared::error::App
         .into_iter()
         .map(|provider| provider.id)
         .collect())
+}
+
+fn stopped_circuit_statuses(
+    provider_ids: Vec<i64>,
+    persisted: &std::collections::HashMap<i64, circuit_breaker::CircuitPersistedState>,
+    failure_threshold: u32,
+) -> Vec<GatewayProviderCircuitStatus> {
+    provider_ids
+        .into_iter()
+        .map(|provider_id| {
+            let Some(item) = persisted.get(&provider_id) else {
+                return GatewayProviderCircuitStatus {
+                    provider_id,
+                    state: circuit_breaker::CircuitState::Closed.as_str().to_string(),
+                    failure_count: 0,
+                    failure_threshold,
+                    open_until: None,
+                    cooldown_until: None,
+                };
+            };
+
+            let state = match item.state {
+                circuit_breaker::CircuitState::HalfOpen => circuit_breaker::CircuitState::Open,
+                state => state,
+            };
+            GatewayProviderCircuitStatus {
+                provider_id,
+                state: state.as_str().to_string(),
+                failure_count: item.failure_timestamps.len().min(u32::MAX as usize) as u32,
+                failure_threshold,
+                open_until: item.open_until,
+                cooldown_until: None,
+            }
+        })
+        .collect()
+}
+
+fn persist_closed_tombstones(
+    db: &db::Db,
+    provider_ids: &[i64],
+    now_unix: i64,
+) -> crate::shared::error::AppResult<()> {
+    let persisted = provider_circuit_breakers::load_all(db)?;
+    let tombstones = provider_ids
+        .iter()
+        .copied()
+        .filter(|provider_id| *provider_id > 0)
+        .filter_map(|provider_id| {
+            let current = persisted.get(&provider_id)?;
+            Some(circuit_breaker::CircuitPersistedState {
+                provider_id,
+                state: circuit_breaker::CircuitState::Closed,
+                failure_timestamps: Vec::new(),
+                half_open_success_count: 0,
+                open_until: None,
+                probe_reference_at: None,
+                next_probe_at: None,
+                natural_probe_due_at: None,
+                recovery_guard_until: None,
+                state_revision: current.state_revision.saturating_add(1).max(1),
+                updated_at: now_unix,
+            })
+        })
+        .collect::<Vec<_>>();
+    persist_reset_tombstones(db, &tombstones)?;
+    Ok(())
+}
+
+fn persist_reset_tombstones(
+    db: &db::Db,
+    tombstones: &[circuit_breaker::CircuitPersistedState],
+) -> crate::shared::error::AppResult<()> {
+    provider_circuit_breakers::upsert_many_durable(db, tombstones)?;
+    Ok(())
 }
 
 fn emit_port_fallback_log(
@@ -379,6 +427,8 @@ fn build_circuit_breaker(
     let circuit_config = circuit_breaker::CircuitBreakerConfig {
         failure_threshold: cfg.circuit_breaker_failure_threshold.max(1),
         open_duration_secs: (cfg.circuit_breaker_open_duration_minutes as i64).saturating_mul(60),
+        provider_cooldown_secs: cfg.provider_cooldown_seconds as i64,
+        natural_probe_max_wait_secs: cfg.natural_probe_max_wait_seconds as i64,
     };
     Arc::new(circuit_breaker::CircuitBreaker::new(
         circuit_config,
@@ -398,7 +448,52 @@ mod tests {
     use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Method};
+    use rusqlite::params;
     use std::collections::BTreeMap;
+
+    fn insert_circuit_test_provider(db: &db::Db, provider_id: i64) {
+        let conn = db.open_connection().expect("open db");
+        conn.execute(
+            r#"
+            INSERT INTO providers(
+              id, provider_uuid, cli_key, name, base_url, api_key_plaintext,
+              created_at, updated_at
+            ) VALUES (?1, ?2, 'test-cli', ?3, 'https://example.test', '', 1, 1)
+            "#,
+            params![
+                provider_id,
+                format!("00000000-0000-4000-8000-{provider_id:012x}"),
+                format!("provider-{provider_id}")
+            ],
+        )
+        .expect("insert provider");
+    }
+
+    fn circuit_test_state(
+        provider_id: i64,
+        state: circuit_breaker::CircuitState,
+        state_revision: u64,
+        updated_at: i64,
+    ) -> circuit_breaker::CircuitPersistedState {
+        circuit_breaker::CircuitPersistedState {
+            provider_id,
+            state,
+            failure_timestamps: if state == circuit_breaker::CircuitState::Open {
+                vec![updated_at.max(0) as u64]
+            } else {
+                Vec::new()
+            },
+            half_open_success_count: 0,
+            open_until: (state == circuit_breaker::CircuitState::Open)
+                .then_some(updated_at.saturating_add(300)),
+            probe_reference_at: None,
+            next_probe_at: None,
+            natural_probe_due_at: None,
+            recovery_guard_until: None,
+            state_revision,
+            updated_at,
+        }
+    }
 
     #[test]
     fn configure_http_client_rejects_runtime_self_loop_proxy() {
@@ -414,6 +509,152 @@ mod tests {
 
         assert!(err.contains(GatewayErrorCode::HttpClientInit.as_str()));
         assert!(err.contains("self-loop"));
+    }
+
+    #[test]
+    fn stopped_status_keeps_expired_open_and_normalizes_persisted_half_open() {
+        let persisted = std::collections::HashMap::from([
+            (
+                1,
+                circuit_breaker::CircuitPersistedState {
+                    provider_id: 1,
+                    state: circuit_breaker::CircuitState::Open,
+                    failure_timestamps: vec![1, 2],
+                    half_open_success_count: 0,
+                    open_until: Some(10),
+                    probe_reference_at: Some(1),
+                    next_probe_at: Some(2),
+                    natural_probe_due_at: Some(3),
+                    recovery_guard_until: None,
+                    state_revision: 4,
+                    updated_at: 1,
+                },
+            ),
+            (
+                2,
+                circuit_breaker::CircuitPersistedState {
+                    provider_id: 2,
+                    state: circuit_breaker::CircuitState::HalfOpen,
+                    failure_timestamps: vec![3],
+                    half_open_success_count: 0,
+                    open_until: None,
+                    probe_reference_at: None,
+                    next_probe_at: None,
+                    natural_probe_due_at: None,
+                    recovery_guard_until: None,
+                    state_revision: 2,
+                    updated_at: 2,
+                },
+            ),
+        ]);
+
+        let statuses = stopped_circuit_statuses(vec![1, 2, 3], &persisted, 5);
+
+        assert_eq!(
+            statuses[0].state,
+            circuit_breaker::CircuitState::Open.as_str()
+        );
+        assert_eq!(statuses[0].open_until, Some(10));
+        assert_eq!(statuses[0].failure_count, 2);
+        assert_eq!(
+            statuses[1].state,
+            circuit_breaker::CircuitState::Open.as_str()
+        );
+        assert_eq!(
+            statuses[2].state,
+            circuit_breaker::CircuitState::Closed.as_str()
+        );
+    }
+
+    #[test]
+    fn cold_start_uses_non_default_natural_probe_max_wait() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("gateway-circuit-config.db"))
+            .expect("init db");
+        let (persist_tx, _persist_rx) = tokio::sync::mpsc::channel(4);
+        let cfg = settings::AppSettings {
+            circuit_breaker_failure_threshold: 1,
+            circuit_breaker_open_duration_minutes: 2,
+            provider_cooldown_seconds: 17,
+            natural_probe_max_wait_seconds: 47,
+            ..settings::AppSettings::default()
+        };
+
+        let circuit = build_circuit_breaker(&db, &cfg, persist_tx);
+        let opened = circuit.record_failure(99, 1_000, None).after;
+
+        assert_eq!(opened.state, circuit_breaker::CircuitState::Open);
+        assert_eq!(opened.next_probe_at, Some(1_017));
+        assert_eq!(opened.natural_probe_due_at, Some(1_047));
+        assert_eq!(opened.open_until, Some(1_120));
+    }
+
+    #[test]
+    fn running_reset_tombstone_is_durable_before_late_open_and_reload() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("gateway-running-reset.db"))
+            .expect("init db");
+        let provider_id = 21;
+        insert_circuit_test_provider(&db, provider_id);
+
+        let stale_open =
+            circuit_test_state(provider_id, circuit_breaker::CircuitState::Open, 7, 70);
+        provider_circuit_breakers::upsert_durable(&db, &stale_open).expect("persist queued open");
+
+        let tombstone =
+            circuit_test_state(provider_id, circuit_breaker::CircuitState::Closed, 8, 80);
+        persist_reset_tombstones(&db, std::slice::from_ref(&tombstone))
+            .expect("durably persist running reset");
+        provider_circuit_breakers::upsert_durable(&db, &stale_open)
+            .expect("late stale open is a successful no-op");
+
+        let loaded = provider_circuit_breakers::load_all(&db).expect("immediate reload");
+        let reloaded = circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig::default(),
+            loaded,
+            None,
+        );
+        let snapshot = reloaded.snapshot(provider_id, 81);
+        assert_eq!(snapshot.state, circuit_breaker::CircuitState::Closed);
+        assert_eq!(snapshot.state_revision, 8);
+    }
+
+    #[test]
+    fn running_reset_durable_failure_is_returned() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("gateway-running-reset-error.db"))
+            .expect("init db");
+        let missing_provider =
+            circuit_test_state(999, circuit_breaker::CircuitState::Closed, 1, 10);
+
+        let err = persist_reset_tombstones(&db, &[missing_provider])
+            .expect_err("durable reset failure must reach the caller");
+
+        assert_eq!(err.code(), "DB_ERROR");
+    }
+
+    #[test]
+    fn healthy_no_state_resets_succeed_without_durable_work() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let db = crate::db::init_for_tests(&temp.path().join("gateway-empty-reset.db"))
+            .expect("init db");
+        let provider_id = 31;
+        insert_circuit_test_provider(&db, provider_id);
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let runtime = GatewayRuntime::for_tests(
+            &rt,
+            Arc::new(session_manager::SessionManager::new()),
+            Arc::new(Mutex::new(RecentErrorCache::default())),
+        );
+
+        GatewayControlService::circuit_reset_provider(Some(&runtime), &db, provider_id)
+            .expect("running healthy reset");
+        GatewayControlService::circuit_reset_provider(None, &db, provider_id)
+            .expect("stopped healthy reset");
+
+        assert!(provider_circuit_breakers::load_all(&db)
+            .expect("load empty reset state")
+            .is_empty());
     }
 
     #[tokio::test]

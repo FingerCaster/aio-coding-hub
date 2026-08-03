@@ -350,6 +350,18 @@ pub(super) fn sanitize_provider_cooldown_seconds(settings: &mut AppSettings) -> 
     false
 }
 
+pub(super) fn sanitize_natural_probe_max_wait_seconds(settings: &mut AppSettings) -> bool {
+    if settings.natural_probe_max_wait_seconds == 0 {
+        settings.natural_probe_max_wait_seconds = DEFAULT_NATURAL_PROBE_MAX_WAIT_SECONDS;
+        return true;
+    }
+    if settings.natural_probe_max_wait_seconds > MAX_NATURAL_PROBE_MAX_WAIT_SECONDS {
+        settings.natural_probe_max_wait_seconds = MAX_NATURAL_PROBE_MAX_WAIT_SECONDS;
+        return true;
+    }
+    false
+}
+
 pub(super) fn sanitize_provider_base_url_ping_cache_ttl_seconds(
     settings: &mut AppSettings,
 ) -> bool {
@@ -936,6 +948,14 @@ fn migrate_add_upstream_http_retry_rules(
     )
 }
 
+fn migrate_add_provider_failback(settings: &mut AppSettings, schema_version_present: bool) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_PROVIDER_FAILBACK,
+    )
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -974,6 +994,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_image_gen_storage_dir,
     migrate_add_image_gen_storage_roots,
     migrate_add_upstream_http_retry_rules,
+    migrate_add_provider_failback,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -996,6 +1017,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
     repaired |= sanitize_circuit_breaker_settings(settings);
     repaired |= sanitize_provider_cooldown_seconds(settings);
+    repaired |= sanitize_natural_probe_max_wait_seconds(settings);
     repaired |= sanitize_provider_base_url_ping_cache_ttl_seconds(settings);
     repaired |= sanitize_upstream_timeouts(settings);
     repaired |= sanitize_response_fixer_limits(settings);

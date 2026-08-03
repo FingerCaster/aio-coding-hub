@@ -56,6 +56,8 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         record_circuit_failure,
         timeout_secs,
     } = args;
+    let dispatch_ownership = provider_ctx.dispatch_ownership;
+    let probe_active = dispatch_ownership.is_some_and(|ownership| ownership.is_probe());
     let ProviderCtx {
         provider_id,
         provider_name_base,
@@ -96,30 +98,49 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
     let circuit_failure_threshold = Some(circuit_before.failure_threshold);
 
     if !is_count_tokens && record_circuit_failure {
-        let change = provider_router::record_failure_and_emit_transition(
-            provider_router::RecordCircuitArgs::from_state(
-                ctx.state,
-                ctx.trace_id.as_str(),
-                ctx.cli_key.as_str(),
-                provider_id,
-                provider_name_base.as_str(),
-                provider_base_url_base.as_str(),
-                now_unix,
+        let change = if let Some(ownership) = dispatch_ownership.filter(|value| value.is_probe()) {
+            match ownership.record_probe_attempt_failure(now_unix, true, Some(error_code)) {
+                Some(circuit_breaker::ProbeCommitResult::Applied(change)) => change,
+                Some(circuit_breaker::ProbeCommitResult::Stale(snapshot)) => {
+                    circuit_breaker::CircuitChange {
+                        before: snapshot.clone(),
+                        after: snapshot,
+                        transition: None,
+                    }
+                }
+                None => circuit_breaker::CircuitChange {
+                    before: circuit_before.clone(),
+                    after: circuit_before.clone(),
+                    transition: None,
+                },
+            }
+        } else {
+            provider_router::record_failure_and_emit_transition(
+                provider_router::RecordCircuitArgs::from_state(
+                    ctx.state,
+                    ctx.trace_id.as_str(),
+                    ctx.cli_key.as_str(),
+                    provider_id,
+                    provider_name_base.as_str(),
+                    provider_base_url_base.as_str(),
+                    now_unix,
+                )
+                .with_provider_health_neutral(ctx.provider_health_neutral)
+                .with_trigger(Some(error_code), Some(ctx.upstream_first_byte_timeout_secs)),
             )
-            .with_provider_health_neutral(ctx.provider_health_neutral)
-            // Attribute the circuit-open notice to this failure (D3): always
-            // pass the effective first-byte timeout; the notice builder only
-            // uses it when the trigger code is GW_UPSTREAM_TIMEOUT.
-            .with_trigger(Some(error_code), Some(ctx.upstream_first_byte_timeout_secs)),
-        );
+        };
         *circuit_snapshot = change.after.clone();
         circuit_state_before = Some(change.before.state.as_str());
         circuit_state_after = Some(change.after.state.as_str());
         circuit_failure_count = Some(change.after.failure_count);
 
         let recorded_decision = decision;
-        decision =
-            system_failure_decision_after_circuit_record(decision, false, Some(change.after.state));
+        decision = system_failure_decision_after_circuit_record(
+            decision,
+            false,
+            Some(change.after.state),
+            probe_active,
+        );
         outcome =
             system_failure_outcome_after_decision_override(outcome, recorded_decision, decision);
     }
@@ -137,7 +158,11 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         error_code: Some(error_code),
         decision: Some(decision.as_str()),
         reason: Some(reason),
-        selection_method: dc::selection_method(provider_index, retry_index, session_reuse),
+        selection_method: if probe_active {
+            Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+        } else {
+            dc::selection_method(provider_index, retry_index, session_reuse)
+        },
         reason_code: Some(category.reason_code()),
         attempt_started_ms: Some(attempt_started_ms),
         attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
@@ -145,6 +170,15 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        probe: probe_active.then_some(true),
+        probe_trigger: dispatch_ownership
+            .filter(|ownership| ownership.is_probe())
+            .and_then(|ownership| ownership.probe_trigger())
+            .map(|trigger| trigger.as_str()),
+        probe_result: probe_active.then_some("failed"),
+        probe_generation: dispatch_ownership
+            .filter(|ownership| ownership.is_probe())
+            .and_then(|ownership| ownership.probe_generation()),
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         provider_bridged: Some(provider_ctx.provider_bridged),
@@ -164,6 +198,7 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
     *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
 
     let should_apply_cooldown = matches!(cooldown_policy, CooldownPolicy::Apply)
+        && !probe_active
         && !is_claude_count_tokens_request(ctx.cli_key.as_str(), ctx.forwarded_path.as_str());
 
     if should_apply_cooldown {
@@ -200,8 +235,10 @@ fn system_failure_decision_after_circuit_record(
     decision: FailoverDecision,
     is_count_tokens: bool,
     circuit_state_after: Option<circuit_breaker::CircuitState>,
+    probe_active: bool,
 ) -> FailoverDecision {
-    if !is_count_tokens
+    if !probe_active
+        && !is_count_tokens
         && matches!(decision, FailoverDecision::RetrySameProvider)
         && matches!(
             circuit_state_after,
@@ -241,6 +278,7 @@ mod tests {
             FailoverDecision::RetrySameProvider,
             false,
             Some(circuit_breaker::CircuitState::Open),
+            false,
         );
 
         assert!(matches!(decision, FailoverDecision::SwitchProvider));
@@ -252,6 +290,7 @@ mod tests {
             FailoverDecision::RetrySameProvider,
             false,
             Some(circuit_breaker::CircuitState::Closed),
+            false,
         );
 
         assert!(matches!(decision, FailoverDecision::RetrySameProvider));
@@ -263,9 +302,22 @@ mod tests {
             FailoverDecision::Abort,
             true,
             Some(circuit_breaker::CircuitState::Open),
+            false,
         );
 
         assert!(matches!(decision, FailoverDecision::Abort));
+    }
+
+    #[test]
+    fn probe_system_failure_preserves_same_provider_retry_when_circuit_stays_open() {
+        let decision = system_failure_decision_after_circuit_record(
+            FailoverDecision::RetrySameProvider,
+            false,
+            Some(circuit_breaker::CircuitState::Open),
+            true,
+        );
+
+        assert!(matches!(decision, FailoverDecision::RetrySameProvider));
     }
 
     #[test]

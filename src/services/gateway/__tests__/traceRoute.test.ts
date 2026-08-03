@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
-import { hasFailoverFromSegments } from "../traceRoute";
+import {
+  countTraceProviderAttempts,
+  hasFailoverFromSegments,
+  isNotTriggeredProbeObservation,
+} from "../traceRoute";
 
 describe("services/gateway/traceRoute hasFailoverFromSegments", () => {
   it("multi-provider switch counts as failover", () => {
@@ -34,6 +38,34 @@ describe("services/gateway/traceRoute hasFailoverFromSegments", () => {
     ).toBe(true);
     // 单 provider 的 skipped 仍只是一个 hop，不算 failover。
     expect(hasFailoverFromSegments([{ provider: "A", status: "skipped" }])).toBe(false);
+    expect(countTraceProviderAttempts([{ attempt_index: 0 }, { attempt_index: 1 }])).toBe(2);
+  });
+
+  it("excludes not-triggered probe observations from route and attempt projections", () => {
+    const segments = [
+      {
+        provider: "P1",
+        status: "skipped",
+        probe_result: "not_triggered",
+      },
+      { provider: "P2", status: "success" },
+    ];
+
+    expect(segments.filter((segment) => !isNotTriggeredProbeObservation(segment))).toEqual([
+      { provider: "P2", status: "success" },
+    ]);
+    expect(hasFailoverFromSegments(segments)).toBe(false);
+    expect(
+      countTraceProviderAttempts([
+        { attempt_index: 0, probe_result: "not_triggered" },
+        { attempt_index: 1 },
+      ])
+    ).toBe(1);
+  });
+
+  it("keeps legacy attempts without probe_result compatible", () => {
+    expect(isNotTriggeredProbeObservation({})).toBe(false);
+    expect(countTraceProviderAttempts([{ attempt_index: 0 }, { attempt_index: 1 }])).toBe(2);
   });
 
   it("empty segments are not failover and do not throw", () => {

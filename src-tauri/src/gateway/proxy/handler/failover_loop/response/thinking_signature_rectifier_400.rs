@@ -71,6 +71,7 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         session_reuse,
         provider_max_attempts,
         upstream_retry_policy,
+        dispatch_ownership,
         ..
     } = ProviderCtxOwned::from(provider_ctx);
 
@@ -102,6 +103,18 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             {
                 Ok(read) => read,
                 Err(err) => {
+                    finalize_probe_failure_and_emit(
+                        &state.app,
+                        trace_id.as_str(),
+                        cli_key.as_str(),
+                        upstream_first_byte_timeout_secs,
+                        dispatch_ownership.as_ref(),
+                        provider_id,
+                        provider_name_base.as_str(),
+                        provider_base_url_base.as_str(),
+                        circuit_snapshot,
+                        Some(GatewayErrorCode::UpstreamBodyReadError.as_str()),
+                    );
                     let duration_ms = started.elapsed().as_millis();
                     let client_attempts = if ctx.verbose_provider_error {
                         attempts.clone()
@@ -377,30 +390,54 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
 
         if should_record_circuit_failure && !rectified_applied {
             let now_unix = now_unix_seconds() as i64;
-            let change = provider_router::record_failure_and_emit_transition(
-                provider_router::RecordCircuitArgs::from_state(
-                    state,
-                    trace_id.as_str(),
-                    cli_key.as_str(),
-                    provider_id,
-                    provider_name_base.as_str(),
-                    provider_base_url_base.as_str(),
-                    now_unix,
+            let probe_active = dispatch_ownership
+                .as_ref()
+                .is_some_and(|ownership| ownership.is_probe());
+            let change = if let Some(ownership) =
+                dispatch_ownership.as_ref().filter(|value| value.is_probe())
+            {
+                match ownership.record_probe_attempt_failure(now_unix, true, Some(error_code)) {
+                    Some(crate::circuit_breaker::ProbeCommitResult::Applied(change)) => change,
+                    Some(crate::circuit_breaker::ProbeCommitResult::Stale(snapshot)) => {
+                        crate::circuit_breaker::CircuitChange {
+                            before: snapshot.clone(),
+                            after: snapshot,
+                            transition: None,
+                        }
+                    }
+                    None => crate::circuit_breaker::CircuitChange {
+                        before: circuit_before.clone(),
+                        after: circuit_before.clone(),
+                        transition: None,
+                    },
+                }
+            } else {
+                provider_router::record_failure_and_emit_transition(
+                    provider_router::RecordCircuitArgs::from_state(
+                        state,
+                        trace_id.as_str(),
+                        cli_key.as_str(),
+                        provider_id,
+                        provider_name_base.as_str(),
+                        provider_base_url_base.as_str(),
+                        now_unix,
+                    )
+                    .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs))
+                    .with_provider_health_neutral(provider_health_neutral),
                 )
-                .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs))
-                .with_provider_health_neutral(provider_health_neutral),
-            );
+            };
 
             *circuit_snapshot = change.after.clone();
             circuit_state_before = Some(change.before.state.as_str());
             circuit_state_after = Some(change.after.state.as_str());
             circuit_failure_count = Some(change.after.failure_count);
 
-            if change.after.state == crate::circuit_breaker::CircuitState::Open {
+            if !probe_active && change.after.state == crate::circuit_breaker::CircuitState::Open {
                 decision = FailoverDecision::SwitchProvider;
             }
 
-            if provider_cooldown_secs > 0
+            if !probe_active
+                && provider_cooldown_secs > 0
                 && matches!(
                     decision,
                     FailoverDecision::SwitchProvider | FailoverDecision::Abort
@@ -452,7 +489,14 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             error_code,
             decision.as_str()
         );
-        let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
+        let probe_active = dispatch_ownership
+            .as_ref()
+            .is_some_and(|ownership| ownership.is_probe());
+        let selection_method = if probe_active {
+            Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+        } else {
+            dc::selection_method(provider_index, retry_index, session_reuse)
+        };
         let reason_code = category.reason_code();
 
         attempts.push(FailoverAttempt {
@@ -476,6 +520,17 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
             circuit_state_after,
             circuit_failure_count,
             circuit_failure_threshold,
+            probe: probe_active.then_some(true),
+            probe_trigger: dispatch_ownership
+                .as_ref()
+                .filter(|ownership| ownership.is_probe())
+                .and_then(|ownership| ownership.probe_trigger())
+                .map(|trigger| trigger.as_str()),
+            probe_result: probe_active.then_some("failed"),
+            probe_generation: dispatch_ownership
+                .as_ref()
+                .filter(|ownership| ownership.is_probe())
+                .and_then(|ownership| ownership.probe_generation()),
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx.provider_bridged),
@@ -520,6 +575,18 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                 return LoopControl::BreakRetry;
             }
             FailoverDecision::Abort => {
+                finalize_probe_failure_and_emit(
+                    &state.app,
+                    trace_id.as_str(),
+                    cli_key.as_str(),
+                    upstream_first_byte_timeout_secs,
+                    dispatch_ownership.as_ref(),
+                    provider_id,
+                    provider_name_base.as_str(),
+                    provider_base_url_base.as_str(),
+                    circuit_snapshot,
+                    Some(error_code),
+                );
                 strip_hop_headers(&mut response_headers);
                 let mut body_to_return = buffered_body.bytes;
 

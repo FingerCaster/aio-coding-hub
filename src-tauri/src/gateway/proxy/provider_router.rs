@@ -20,6 +20,15 @@ pub(super) struct GateProviderArgs<'a, R: tauri::Runtime = tauri::Wry> {
     /// Filled with the circuit snapshot when the gate denies, so callers can
     /// attach circuit attribution to the skipped attempt.
     pub(super) deny_snapshot: &'a mut Option<circuit_breaker::CircuitSnapshot>,
+    pub(super) probe_trigger: Option<circuit_breaker::ProbeTrigger>,
+    pub(super) probe_token: &'a mut Option<circuit_breaker::ProbeLeaseToken>,
+    pub(super) probe_skip: &'a mut Option<ProbeGateSkip>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum ProbeGateSkip {
+    Cooldown,
+    InFlight,
 }
 
 pub(super) fn gate_provider<R: tauri::Runtime>(
@@ -38,7 +47,61 @@ pub(super) fn gate_provider<R: tauri::Runtime>(
         skipped_open,
         skipped_cooldown,
         deny_snapshot,
+        probe_trigger,
+        probe_token,
+        probe_skip,
     } = args;
+
+    if let Some(trigger) = probe_trigger {
+        match circuit.try_acquire_probe(provider_id, trace_id, trigger, now_unix) {
+            circuit_breaker::ProbeAcquireResult::Acquired { token, snapshot } => {
+                *probe_token = Some(token);
+                return Some(snapshot);
+            }
+            circuit_breaker::ProbeAcquireResult::Cooldown(snapshot) => {
+                *deny_snapshot = Some(snapshot.clone());
+                *probe_skip = Some(ProbeGateSkip::Cooldown);
+                *skipped_cooldown = skipped_cooldown.saturating_add(1);
+                if let Some(until) = snapshot.next_probe_at {
+                    if until > now_unix {
+                        *earliest_available_unix = Some(
+                            earliest_available_unix.map_or(until, |current| current.min(until)),
+                        );
+                    }
+                }
+                emit_probe_skip(
+                    app,
+                    trace_id,
+                    cli_key,
+                    provider_id,
+                    provider_name,
+                    provider_base_url_display,
+                    &snapshot,
+                    "PROBE_COOLDOWN",
+                    now_unix,
+                );
+                return None;
+            }
+            circuit_breaker::ProbeAcquireResult::InFlight(snapshot) => {
+                *deny_snapshot = Some(snapshot.clone());
+                *probe_skip = Some(ProbeGateSkip::InFlight);
+                *skipped_open = skipped_open.saturating_add(1);
+                emit_probe_skip(
+                    app,
+                    trace_id,
+                    cli_key,
+                    provider_id,
+                    provider_name,
+                    provider_base_url_display,
+                    &snapshot,
+                    "PROBE_IN_FLIGHT",
+                    now_unix,
+                );
+                return None;
+            }
+            circuit_breaker::ProbeAcquireResult::NotOpen => {}
+        }
+    }
 
     let allow = circuit.should_allow(provider_id, now_unix);
     if let (Some(app), Some(t)) = (app, allow.transition.as_ref()) {
@@ -108,6 +171,42 @@ pub(super) fn gate_provider<R: tauri::Runtime>(
     }
 
     None
+}
+
+#[allow(clippy::too_many_arguments)]
+fn emit_probe_skip<R: tauri::Runtime>(
+    app: Option<&tauri::AppHandle<R>>,
+    trace_id: &str,
+    cli_key: &str,
+    provider_id: i64,
+    provider_name: &str,
+    base_url: &str,
+    snapshot: &circuit_breaker::CircuitSnapshot,
+    reason: &'static str,
+    now_unix: i64,
+) {
+    if let Some(app) = app {
+        emit_circuit_event(
+            app,
+            GatewayCircuitEvent {
+                trace_id: trace_id.to_string(),
+                cli_key: cli_key.to_string(),
+                provider_id,
+                provider_name: provider_name.to_string(),
+                base_url: base_url.to_string(),
+                prev_state: snapshot.state.as_str(),
+                next_state: snapshot.state.as_str(),
+                failure_count: snapshot.failure_count,
+                failure_threshold: snapshot.failure_threshold,
+                open_until: snapshot.open_until,
+                cooldown_until: snapshot.cooldown_until,
+                reason,
+                ts: now_unix,
+                trigger_error_code: None,
+                first_byte_timeout_secs: None,
+            },
+        );
+    }
 }
 
 pub(in crate::gateway) struct RecordCircuitArgs<'a, R: tauri::Runtime = tauri::Wry> {
@@ -342,6 +441,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 5,
             open_duration_secs: 60,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;
@@ -350,6 +450,8 @@ mod tests {
         let mut skipped_open = 0usize;
         let mut skipped_cooldown = 0usize;
         let mut deny_snapshot = None;
+        let mut probe_token = None;
+        let mut probe_skip = None;
 
         let snap = gate_provider(TestGateProviderArgs {
             app: None,
@@ -364,6 +466,9 @@ mod tests {
             skipped_open: &mut skipped_open,
             skipped_cooldown: &mut skipped_cooldown,
             deny_snapshot: &mut deny_snapshot,
+            probe_trigger: None,
+            probe_token: &mut probe_token,
+            probe_skip: &mut probe_skip,
         })
         .expect("should allow");
 
@@ -378,6 +483,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 1,
             open_duration_secs: 60,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;
@@ -391,6 +497,8 @@ mod tests {
         let mut skipped_open = 0usize;
         let mut skipped_cooldown = 0usize;
         let mut deny_snapshot = None;
+        let mut probe_token = None;
+        let mut probe_skip = None;
 
         let allowed = gate_provider(TestGateProviderArgs {
             app: None,
@@ -405,6 +513,9 @@ mod tests {
             skipped_open: &mut skipped_open,
             skipped_cooldown: &mut skipped_cooldown,
             deny_snapshot: &mut deny_snapshot,
+            probe_trigger: None,
+            probe_token: &mut probe_token,
+            probe_skip: &mut probe_skip,
         });
 
         assert!(allowed.is_none());
@@ -418,6 +529,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 5,
             open_duration_secs: 60,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;
@@ -430,6 +542,8 @@ mod tests {
         let mut skipped_open = 0usize;
         let mut skipped_cooldown = 0usize;
         let mut deny_snapshot = None;
+        let mut probe_token = None;
+        let mut probe_skip = None;
 
         let allowed = gate_provider(TestGateProviderArgs {
             app: None,
@@ -444,6 +558,9 @@ mod tests {
             skipped_open: &mut skipped_open,
             skipped_cooldown: &mut skipped_cooldown,
             deny_snapshot: &mut deny_snapshot,
+            probe_trigger: None,
+            probe_token: &mut probe_token,
+            probe_skip: &mut probe_skip,
         });
 
         assert!(allowed.is_none());
@@ -453,10 +570,11 @@ mod tests {
     }
 
     #[test]
-    fn gate_provider_allows_when_open_expires() {
+    fn gate_provider_keeps_expired_open_closed_to_public_traffic() {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 1,
             open_duration_secs: 10,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;
@@ -467,8 +585,10 @@ mod tests {
         let mut skipped_open = 0usize;
         let mut skipped_cooldown = 0usize;
         let mut deny_snapshot = None;
+        let mut probe_token = None;
+        let mut probe_skip = None;
 
-        let snap = gate_provider(TestGateProviderArgs {
+        let allowed = gate_provider(TestGateProviderArgs {
             app: None,
             circuit: &cb,
             trace_id: "t",
@@ -481,13 +601,18 @@ mod tests {
             skipped_open: &mut skipped_open,
             skipped_cooldown: &mut skipped_cooldown,
             deny_snapshot: &mut deny_snapshot,
-        })
-        .expect("should allow after expiry");
+            probe_trigger: None,
+            probe_token: &mut probe_token,
+            probe_skip: &mut probe_skip,
+        });
 
-        // After open expires, circuit transitions to HalfOpen (probe state)
-        assert_eq!(snap.state, circuit_breaker::CircuitState::HalfOpen);
+        assert!(allowed.is_none());
+        assert_eq!(
+            deny_snapshot.expect("denied snapshot").state,
+            circuit_breaker::CircuitState::Open
+        );
         assert_eq!(earliest, None);
-        assert_eq!(skipped_open, 0);
+        assert_eq!(skipped_open, 1);
         assert_eq!(skipped_cooldown, 0);
     }
 
@@ -496,6 +621,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 1,
             open_duration_secs: 60,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;
@@ -520,6 +646,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 5,
             open_duration_secs: 60,
+            ..Default::default()
         });
 
         let args = TestRecordCircuitArgs::new(
@@ -553,6 +680,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 5,
             open_duration_secs: 60,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;
@@ -578,6 +706,7 @@ mod tests {
         let cb = breaker(circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 2,
             open_duration_secs: 60,
+            ..Default::default()
         });
         let pid = 1;
         let now = 1_000;

@@ -86,11 +86,12 @@ use codex_chatgpt::{
 };
 use event_helpers::{
     emit_attempt_event_and_log, emit_attempt_event_and_log_with_circuit_before,
-    AttemptCircuitFields,
+    finalize_probe_failure_and_emit, AttemptCircuitFields,
 };
 use loop_helpers::{
-    apply_cx2cc_request_settings, finalize_owned_from_input, push_skipped_provider_attempt,
-    should_finalize_as_all_providers_unavailable, SkippedProviderAttempt,
+    apply_cx2cc_request_settings, counted_provider_attempts, finalize_owned_from_input,
+    push_skipped_provider_attempt, should_finalize_as_all_providers_unavailable,
+    SkippedProviderAttempt,
 };
 use oauth::{
     refresh_oauth_credential_after_401, resolve_effective_credential,
@@ -283,6 +284,7 @@ where
         session_id: &input.session_id,
         requested_model: &input.requested_model,
         managed_model_route: input.managed_model_route.as_ref(),
+        is_compact_request: input.is_compact_request,
         cx2cc_settings: &input.cx2cc_settings,
         effective_sort_mode_id: input.effective_sort_mode_id,
         special_settings: &input.special_settings,
@@ -300,6 +302,7 @@ where
     });
 
     let mut run_state = FailoverRunState::new();
+    run_state.attempts = std::mem::take(&mut input.probe_observations);
     run_state.active_requested_model = input.requested_model.clone();
 
     let max_providers_to_try = (input.max_providers_to_try as usize).max(1);

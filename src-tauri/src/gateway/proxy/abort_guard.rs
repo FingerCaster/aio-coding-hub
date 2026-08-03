@@ -29,6 +29,7 @@ pub(super) struct RequestAbortGuard<R: tauri::Runtime = tauri::Wry> {
     requested_model: Option<String>,
     special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
     in_flight_attempt: Option<FailoverAttempt>,
+    dispatch_ownership: Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
     created_at_ms: i64,
     created_at: i64,
     started: Instant,
@@ -72,6 +73,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             requested_model,
             special_settings,
             in_flight_attempt: None,
+            dispatch_ownership: None,
             created_at_ms,
             created_at,
             started,
@@ -107,6 +109,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             requested_model: self.requested_model.take(),
             special_settings: Arc::clone(&self.special_settings),
             in_flight_attempt: self.in_flight_attempt.take(),
+            dispatch_ownership: self.dispatch_ownership.take(),
             created_at_ms: self.created_at_ms,
             created_at: self.created_at,
             started: self.started,
@@ -119,6 +122,13 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
     pub(super) fn capture_in_flight_attempt(&mut self, attempt: &FailoverAttempt) {
         self.in_flight_attempt = Some(attempt.clone());
     }
+
+    pub(super) fn replace_dispatch_ownership(
+        &mut self,
+        ownership: Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
+    ) {
+        self.dispatch_ownership = ownership;
+    }
 }
 
 impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
@@ -126,12 +136,29 @@ impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
         if !self.armed {
             return;
         }
+        let probe_ownership = self
+            .dispatch_ownership
+            .as_ref()
+            .filter(|ownership| ownership.is_probe());
+        if let Some(ownership) = probe_ownership {
+            let _ = ownership.complete_probe_failure(
+                crate::gateway::util::now_unix_seconds() as i64,
+                false,
+                None,
+            );
+        }
         if !self.observe {
             return;
         }
 
         let duration_ms = self.started.elapsed().as_millis();
-        let abort_attempts: Vec<FailoverAttempt> = self.in_flight_attempt.iter().cloned().collect();
+        let mut abort_attempts: Vec<FailoverAttempt> =
+            self.in_flight_attempt.iter().cloned().collect();
+        if probe_ownership.is_some() {
+            if let Some(attempt) = abort_attempts.last_mut() {
+                attempt.probe_result = Some("failed");
+            }
+        }
         emit_request_event_and_spawn_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
                 deps: RequestEndDeps::new(
@@ -166,6 +193,11 @@ impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::circuit_breaker::{
+        CircuitBreaker, CircuitBreakerConfig, ProbeAcquireResult, ProbeLeaseGuard, ProbeTrigger,
+    };
+    use crate::gateway::proxy::dispatch::RequestDispatchIntent;
+    use std::collections::HashMap;
 
     #[test]
     fn cloned_abort_attempt_keeps_provider_context() {
@@ -190,6 +222,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: Some(0),
             circuit_failure_threshold: Some(5),
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             provider_bridged: Some(true),
@@ -202,5 +238,60 @@ mod tests {
         assert_eq!(logged_attempts[0].provider_id, 12);
         assert_eq!(logged_attempts[0].provider_name, "Claude Bridge");
         assert_eq!(logged_attempts[0].outcome, "started");
+    }
+
+    #[test]
+    fn replacing_probe_ownership_with_none_prevents_next_provider_abort_misattribution() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db =
+            crate::db::init_for_tests(&db_dir.path().join("abort-ownership.db")).expect("init db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(1);
+        let circuit = Arc::new(CircuitBreaker::new(
+            CircuitBreakerConfig {
+                failure_threshold: 1,
+                provider_cooldown_secs: 0,
+                ..CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        circuit.record_failure(1, 1_000, None);
+        let token =
+            match circuit.try_acquire_probe(1, "p1-probe", ProbeTrigger::AggressiveTurn, 1_000) {
+                ProbeAcquireResult::Acquired { token, .. } => token,
+                other => panic!("expected P1 probe lease, got {other:?}"),
+            };
+        let ownership = RequestDispatchIntent::new(1, Some(ProbeTrigger::AggressiveTurn), None)
+            .claim_for_provider(1, Some(ProbeLeaseGuard::new(Arc::clone(&circuit), token)))
+            .expect("P1 ownership");
+        assert!(ownership.commit_at_transport_boundary(1_000));
+
+        let mut guard = RequestAbortGuard::new(
+            app.handle().clone(),
+            db,
+            log_tx,
+            GatewayPluginPipeline::empty_shared(),
+            Arc::new(ActiveRequestRegistry::default()),
+            "trace-p1-p2".to_string(),
+            "claude".to_string(),
+            "POST".to_string(),
+            "/v1/messages".to_string(),
+            false,
+            None,
+            None,
+            None,
+            Arc::new(Mutex::new(Vec::new())),
+            1_000_000,
+            1_000,
+            Instant::now(),
+        );
+        guard.replace_dispatch_ownership(Some(Arc::clone(&ownership)));
+        // P2 has no probe ownership. Dropping the request during P2 must not
+        // complete or attribute P1's probe token.
+        guard.replace_dispatch_ownership(None);
+        drop(guard);
+
+        assert!(circuit.snapshot(1, 1_001).probe_in_flight);
     }
 }

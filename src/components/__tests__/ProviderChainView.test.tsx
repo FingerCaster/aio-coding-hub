@@ -318,6 +318,88 @@ describe("components/ProviderChainView", () => {
     expect(screen.queryByText("熔断器:")).not.toBeInTheDocument();
   });
 
+  it.each([
+    ["started", "started", "试探中"],
+    ["success", "success", "试探成功"],
+    ["failed", "failed", "试探失败"],
+    ["cooldown", "skipped", "试探冷却中"],
+    ["in_flight", "skipped", "已有试探进行中"],
+  ])("renders the %s probe result with trigger and generation", (probeResult, outcome, label) => {
+    render(
+      <ProviderChainView
+        attemptLogs={[]}
+        attemptLogsLoading={false}
+        attemptsJson={JSON.stringify([
+          {
+            provider_id: 7,
+            provider_name: "Provider A",
+            base_url: "https://provider-a.example",
+            outcome,
+            status: outcome === "success" ? 200 : null,
+            selection_method: "circuit_probe",
+            probe: true,
+            probe_trigger: "natural_compaction",
+            probe_result: probeResult,
+            probe_generation: 4,
+          },
+        ])}
+      />
+    );
+
+    expect(screen.getByText(label)).toBeInTheDocument();
+    expect(screen.getByText("触发：上下文压缩")).toBeInTheDocument();
+    expect(screen.getByText("代次 4")).toBeInTheDocument();
+    expect(screen.getByText("熔断试探")).toBeInTheDocument();
+  });
+
+  it("keeps probe retries as attempts while preserving provider identity across fallback", () => {
+    render(
+      <ProviderChainView
+        attemptLogs={[]}
+        attemptLogsLoading={false}
+        attemptsJson={JSON.stringify([
+          {
+            provider_id: 7,
+            provider_name: "Provider A",
+            base_url: "https://provider-a.example",
+            outcome: "failed",
+            status: 502,
+            selection_method: "circuit_probe",
+            probe: true,
+            probe_trigger: "aggressive_turn",
+            probe_result: "failed",
+            probe_generation: 12,
+          },
+          {
+            provider_id: 7,
+            provider_name: "Provider A",
+            base_url: "https://provider-a.example",
+            outcome: "failed",
+            status: 502,
+            selection_method: "circuit_probe",
+            probe: true,
+            probe_trigger: "aggressive_turn",
+            probe_result: "failed",
+            probe_generation: 12,
+          },
+          {
+            provider_id: 8,
+            provider_name: "Provider B",
+            base_url: "https://provider-b.example",
+            outcome: "success",
+            status: 200,
+            selection_method: "ordered",
+          },
+        ])}
+      />
+    );
+
+    expect(screen.getByText("共尝试 3 次")).toBeInTheDocument();
+    expect(screen.getAllByText("Provider A (#7)").length).toBeGreaterThan(1);
+    expect(screen.getAllByText("Provider B (#8)").length).toBeGreaterThan(1);
+    expect(screen.getByText("最终成功")).toBeInTheDocument();
+  });
+
   it("colors circuit badges by normalized uppercase backend states", () => {
     render(
       <ProviderChainView

@@ -5239,6 +5239,467 @@ INSERT INTO codex_managed_profiles(
         success_task.abort();
     }
 
+    fn all_open_probe_request(session_id: &str, model: &str) -> Request<Body> {
+        Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
+            .body(Body::from(
+                serde_json::json!({
+                    "model": model,
+                    "stream": false,
+                    "input": [
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "before"}]
+                        },
+                        {
+                            "type": "message",
+                            "role": "user",
+                            "content": [{"type": "input_text", "text": "now"}]
+                        }
+                    ]
+                })
+                .to_string(),
+            ))
+            .expect("request")
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_open_persisted_first_binding_probes_first_provider_as_new_unbound_session() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-route-all-open-probe.sqlite"))
+            .expect("init test db");
+        let success_body = r#"{"id":"probe-ok","object":"response","status":"completed","model":"gpt-all-open-probe","output":[]}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Open", first_url, 0);
+        let second_id = insert_codex_provider_with_priority(&db, "Second Open", second_url, 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let eligible_opened_at = now.saturating_sub(31);
+        circuit.record_failure(first_id, eligible_opened_at, None);
+        circuit.record_failure(second_id, eligible_opened_at, None);
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000101";
+        session.bind_sort_mode(
+            "codex",
+            session_id,
+            None,
+            Some(vec![first_id, second_id]),
+            now,
+        );
+        session.bind_success("codex", session_id, first_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(session_id, "gpt-all-open-probe"))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(first_id)
+        );
+        assert_eq!(
+            attempts[0].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[0].get("probe_trigger").and_then(Value::as_str),
+            Some("new_unbound_session")
+        );
+        assert_eq!(
+            attempts[0].get("probe_result").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            circuit.snapshot(first_id, now).state,
+            circuit_breaker::CircuitState::Closed
+        );
+        assert_eq!(
+            circuit.snapshot(second_id, now).state,
+            circuit_breaker::CircuitState::Open
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(first_id)
+        );
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_open_failed_probe_advances_to_second_open_provider() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-all-open-probe-failure.sqlite"),
+        )
+        .expect("init test db");
+        let failed_body = r#"{"error":{"message":"probe failed"}}"#;
+        let success_body = r#"{"id":"second-probe-ok","object":"response","status":"completed","model":"gpt-all-open-probe-failure","output":[]}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failed_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Open", first_url, 0);
+        let second_id = insert_codex_provider_with_priority(&db, "Second Open", second_url, 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let eligible_opened_at = now.saturating_sub(31);
+        circuit.record_failure(first_id, eligible_opened_at, None);
+        circuit.record_failure(second_id, eligible_opened_at, None);
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000104";
+        session.bind_sort_mode(
+            "codex",
+            session_id,
+            None,
+            Some(vec![first_id, second_id]),
+            now,
+        );
+        session.bind_success("codex", session_id, first_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(
+                session_id,
+                "gpt-all-open-probe-failure",
+            ))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(first_id)
+        );
+        assert_eq!(
+            attempts[0].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[0].get("probe_trigger").and_then(Value::as_str),
+            Some("new_unbound_session")
+        );
+        assert_eq!(
+            attempts[0].get("probe_result").and_then(Value::as_str),
+            Some("failed")
+        );
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(second_id)
+        );
+        assert_eq!(
+            attempts[1].get("probe").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            attempts[1].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[1].get("probe_trigger").and_then(Value::as_str),
+            Some("new_unbound_session")
+        );
+        assert_eq!(
+            attempts[1].get("probe_result").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(second_id)
+        );
+        assert_eq!(
+            circuit.snapshot(first_id, now).state,
+            circuit_breaker::CircuitState::Open
+        );
+        assert_eq!(
+            circuit.snapshot(second_id, now).state,
+            circuit_breaker::CircuitState::Closed
+        );
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[derive(Clone, Copy)]
+    enum AllOpenProbeGateBlock {
+        FirstCooldown,
+        FirstInFlight,
+        AllCooldown,
+    }
+
+    async fn assert_all_open_probe_gate_behavior(block: AllOpenProbeGateBlock) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let (label, expected_first_probe_result, expect_recovery) = match block {
+            AllOpenProbeGateBlock::FirstCooldown => ("first-cooldown", "cooldown", true),
+            AllOpenProbeGateBlock::FirstInFlight => ("first-in-flight", "in_flight", true),
+            AllOpenProbeGateBlock::AllCooldown => ("all-cooldown", "cooldown", false),
+        };
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join(format!("gateway-route-all-open-probe-{label}.sqlite")),
+        )
+        .expect("init test db");
+        let unused_body = r#"{"id":"must-not-run","object":"response","output":[]}"#;
+        let success_body = r#"{"id":"second-probe-ok","object":"response","status":"completed","model":"gpt-all-open-gate","output":[]}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_id = insert_codex_provider_with_priority(&db, "First Open", first_url, 0);
+        let second_id = insert_codex_provider_with_priority(&db, "Second Open", second_url, 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let first_opened_at = match block {
+            AllOpenProbeGateBlock::FirstCooldown | AllOpenProbeGateBlock::AllCooldown => now,
+            AllOpenProbeGateBlock::FirstInFlight => now.saturating_sub(31),
+        };
+        let second_opened_at = match block {
+            AllOpenProbeGateBlock::AllCooldown => now,
+            AllOpenProbeGateBlock::FirstCooldown | AllOpenProbeGateBlock::FirstInFlight => {
+                now.saturating_sub(31)
+            }
+        };
+        circuit.record_failure(first_id, first_opened_at, None);
+        circuit.record_failure(second_id, second_opened_at, None);
+        let _existing_probe = match block {
+            AllOpenProbeGateBlock::FirstCooldown | AllOpenProbeGateBlock::AllCooldown => None,
+            AllOpenProbeGateBlock::FirstInFlight => {
+                let token = match circuit.try_acquire_probe(
+                    first_id,
+                    "existing-probe",
+                    circuit_breaker::ProbeTrigger::NewUnboundSession,
+                    now,
+                ) {
+                    circuit_breaker::ProbeAcquireResult::Acquired { token, .. } => token,
+                    other => panic!("expected existing probe lease, got {other:?}"),
+                };
+                Some(circuit_breaker::ProbeLeaseGuard::new(
+                    circuit.clone(),
+                    token,
+                ))
+            }
+        };
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = match block {
+            AllOpenProbeGateBlock::FirstCooldown => "0190c0de-0000-7000-8000-000000000102",
+            AllOpenProbeGateBlock::FirstInFlight => "0190c0de-0000-7000-8000-000000000103",
+            AllOpenProbeGateBlock::AllCooldown => "0190c0de-0000-7000-8000-000000000105",
+        };
+        session.bind_sort_mode(
+            "codex",
+            session_id,
+            None,
+            Some(vec![first_id, second_id]),
+            now,
+        );
+        session.bind_success("codex", session_id, first_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(
+                session_id,
+                &format!("gpt-all-open-{label}"),
+            ))
+            .await
+            .expect("route response");
+        if expect_recovery {
+            assert_eq!(response.status(), StatusCode::OK);
+        } else {
+            assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+            let body = to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body");
+            let payload: Value = serde_json::from_slice(&body).expect("json body");
+            assert_eq!(
+                payload.get("error_code").and_then(Value::as_str),
+                Some(crate::gateway::proxy::GatewayErrorCode::AllProvidersUnavailable.as_str())
+            );
+        }
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0].get("provider_id").and_then(Value::as_i64),
+            Some(first_id)
+        );
+        assert_eq!(
+            attempts[0].get("probe_trigger").and_then(Value::as_str),
+            Some("new_unbound_session")
+        );
+        assert_eq!(
+            attempts[0].get("probe_result").and_then(Value::as_str),
+            Some(expected_first_probe_result)
+        );
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(second_id)
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        if expect_recovery {
+            assert_eq!(
+                attempts[1].get("probe_trigger").and_then(Value::as_str),
+                Some("new_unbound_session")
+            );
+            assert_eq!(
+                attempts[1].get("probe_result").and_then(Value::as_str),
+                Some("success")
+            );
+            assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+            assert_eq!(
+                circuit.snapshot(second_id, now).state,
+                circuit_breaker::CircuitState::Closed
+            );
+            assert_eq!(
+                session.get_bound_provider("codex", session_id, now),
+                Some(second_id)
+            );
+        } else {
+            assert_eq!(
+                attempts[1].get("probe_result").and_then(Value::as_str),
+                Some("cooldown")
+            );
+            assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+            assert_eq!(
+                circuit.snapshot(second_id, now).state,
+                circuit_breaker::CircuitState::Open
+            );
+        }
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_open_first_probe_cooldown_advances_to_second_provider() {
+        assert_all_open_probe_gate_behavior(AllOpenProbeGateBlock::FirstCooldown).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_open_first_probe_in_flight_advances_to_second_provider() {
+        assert_all_open_probe_gate_behavior(AllOpenProbeGateBlock::FirstInFlight).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_open_all_probe_cooldowns_return_unavailable_without_network() {
+        assert_all_open_probe_gate_behavior(AllOpenProbeGateBlock::AllCooldown).await;
+    }
+
     #[tokio::test(flavor = "current_thread")]
     async fn decision_a_records_all_session_bound_gate_skips_and_final_503_diagnostics() {
         let _env_lock = crate::test_support::test_env_lock();
@@ -5276,6 +5737,7 @@ INSERT INTO codex_managed_profiles(
             circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 1,
                 open_duration_secs: 3_600,
+                ..Default::default()
             },
             HashMap::new(),
             None,
@@ -5391,6 +5853,7 @@ INSERT INTO codex_managed_profiles(
             circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 1,
                 open_duration_secs: 3_600,
+                ..Default::default()
             },
             HashMap::new(),
             None,
@@ -5503,6 +5966,7 @@ INSERT INTO codex_managed_profiles(
             circuit_breaker::CircuitBreakerConfig {
                 failure_threshold: 1,
                 open_duration_secs: 3_600,
+                ..Default::default()
             },
             HashMap::new(),
             None,

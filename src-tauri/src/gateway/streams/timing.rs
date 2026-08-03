@@ -8,6 +8,7 @@ use std::time::Duration;
 
 use super::super::proxy::GatewayErrorCode;
 use super::request_end::{emit_request_event_and_spawn_request_log, StreamRequestCompletion};
+use super::types::{StreamTerminalEvidence, StreamTerminalOrigin};
 use super::StreamFinalizeCtx;
 
 pub(in crate::gateway) struct TimingOnlyTeeStream<S, B, R = tauri::Wry>
@@ -48,7 +49,11 @@ where
         }
     }
 
-    fn finalize(&mut self, error_code: Option<&'static str>) {
+    fn finalize(
+        &mut self,
+        error_code: Option<&'static str>,
+        terminal_evidence: StreamTerminalEvidence,
+    ) {
         if self.finalized {
             return;
         }
@@ -63,7 +68,8 @@ where
                 self.ctx.requested_model.clone(),
                 None,
                 None,
-            ),
+            )
+            .with_terminal_evidence(terminal_evidence),
         );
     }
 }
@@ -81,7 +87,16 @@ where
         let this = self.as_mut().get_mut();
         if let Some(total) = this.total_timeout {
             if this.ctx.started.elapsed() >= total {
-                this.finalize(Some(GatewayErrorCode::UpstreamTimeout.as_str()));
+                this.finalize(
+                    Some(GatewayErrorCode::UpstreamTimeout.as_str()),
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::TotalTimeout,
+                        false,
+                        false,
+                        false,
+                        false,
+                    ),
+                );
                 return Poll::Ready(None);
             }
         }
@@ -92,14 +107,32 @@ where
             Poll::Pending => {
                 if let Some(timer) = this.total_sleep.as_mut() {
                     if timer.as_mut().poll(cx).is_ready() {
-                        this.finalize(Some(GatewayErrorCode::UpstreamTimeout.as_str()));
+                        this.finalize(
+                            Some(GatewayErrorCode::UpstreamTimeout.as_str()),
+                            StreamTerminalEvidence::new(
+                                StreamTerminalOrigin::TotalTimeout,
+                                false,
+                                false,
+                                false,
+                                false,
+                            ),
+                        );
                         return Poll::Ready(None);
                     }
                 }
                 Poll::Pending
             }
             Poll::Ready(None) => {
-                this.finalize(this.ctx.error_code);
+                this.finalize(
+                    this.ctx.error_code,
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::BufferedBodyEof,
+                        false,
+                        true,
+                        false,
+                        false,
+                    ),
+                );
                 Poll::Ready(None)
             }
             Poll::Ready(Some(Ok(chunk))) => {
@@ -109,7 +142,16 @@ where
                 Poll::Ready(Some(Ok(chunk)))
             }
             Poll::Ready(Some(Err(err))) => {
-                this.finalize(Some(GatewayErrorCode::StreamError.as_str()));
+                this.finalize(
+                    Some(GatewayErrorCode::StreamError.as_str()),
+                    StreamTerminalEvidence::new(
+                        StreamTerminalOrigin::UpstreamReadError,
+                        false,
+                        false,
+                        false,
+                        false,
+                    ),
+                );
                 Poll::Ready(Some(Err(err)))
             }
         }
@@ -125,7 +167,16 @@ where
 {
     fn drop(&mut self) {
         if !self.finalized {
-            self.finalize(Some(GatewayErrorCode::StreamAborted.as_str()));
+            self.finalize(
+                Some(GatewayErrorCode::StreamAborted.as_str()),
+                StreamTerminalEvidence::new(
+                    StreamTerminalOrigin::DirectDrop,
+                    false,
+                    false,
+                    false,
+                    false,
+                ),
+            );
         }
     }
 }

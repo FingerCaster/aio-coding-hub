@@ -9,6 +9,11 @@ import { ingestTraceAttempt, ingestTraceRequest, ingestTraceStart } from "./trac
 import { ingestCacheAnomalyRequest, ingestCacheAnomalyRequestStart } from "./cacheAnomalyMonitor";
 import type { ClaudeModelMapping } from "./claudeModelMapping";
 import { MAX_ATTEMPTS_PER_TRACE } from "./traceLimits";
+import {
+  isCircuitProbeAttempt,
+  normalizeAttemptProbeMetadata,
+  type AttemptProbeMetadata,
+} from "./attemptsJson";
 import type {
   FailoverAttempt,
   GatewayAttemptEvent as GeneratedGatewayAttemptEvent,
@@ -29,7 +34,10 @@ export type { GatewayCircuitEvent, GatewayLogEvent } from "../../generated/bindi
 export type GatewayAttempt = Pick<
   FailoverAttempt,
   "provider_id" | "provider_name" | "base_url" | "outcome" | "status" | "requested_upstream_model"
->;
+> &
+  AttemptProbeMetadata & {
+    selection_method?: string | null;
+  };
 
 export type GatewayRequestEvent = Omit<GeneratedGatewayRequestEvent, "attempts"> & {
   attempts: GatewayAttempt[];
@@ -43,9 +51,10 @@ export type GatewayRequestStartEvent = GeneratedGatewayRequestStartEvent & {
   special_settings_json?: string | null;
 };
 
-export type GatewayAttemptEvent = GeneratedGatewayAttemptEvent & {
-  special_settings_json?: string | null;
-};
+export type GatewayAttemptEvent = Omit<GeneratedGatewayAttemptEvent, keyof AttemptProbeMetadata> &
+  AttemptProbeMetadata & {
+    special_settings_json?: string | null;
+  };
 
 // phase 在 Rust 侧是 &'static str（生成为 string），由运行时 normalizer 收窄为字面量联合。
 export type GatewayRequestSignalEvent = Omit<GeneratedGatewayRequestSignalEvent, "phase"> & {
@@ -93,7 +102,8 @@ function attemptTitle(event: GatewayAttemptEvent) {
   const statusLabel = event.status == null ? "—" : String(event.status);
   const phase =
     event.outcome === "success" ? "成功" : event.outcome === "started" ? "开始" : "失败";
-  return `故障切换尝试${phase}（#${event.attempt_index}）：${method} ${path} · ${provider} · ${statusLabel}`;
+  const attemptKind = isCircuitProbeAttempt(event) ? "熔断试探" : "故障切换尝试";
+  return `${attemptKind}${phase}（#${event.attempt_index}）：${method} ${path} · ${provider} · ${statusLabel}`;
 }
 
 function computeOutputTokensPerSecond(payload: GatewayRequestEvent) {
@@ -232,12 +242,15 @@ function isGatewayAttempt(payload: unknown): payload is GatewayAttempt {
     isString(payload.base_url) &&
     isString(payload.outcome) &&
     isNullableNumber(payload.status) &&
-    isNullableString(payload.requested_upstream_model)
+    isNullableString(payload.requested_upstream_model) &&
+    isNullableString(payload.selection_method)
   );
 }
 
 function normalizeGatewayAttempt(payload: unknown): GatewayAttempt | null {
   if (!isGatewayAttempt(payload)) return null;
+  const probeMetadata = normalizeAttemptProbeMetadata(payload);
+  if (!probeMetadata) return null;
   return {
     provider_id: payload.provider_id,
     provider_name: truncateString(payload.provider_name, EVENT_SHORT_TEXT_MAX_LENGTH),
@@ -246,6 +259,9 @@ function normalizeGatewayAttempt(payload: unknown): GatewayAttempt | null {
     status: payload.status ?? null,
     requested_upstream_model:
       truncateNullableString(payload.requested_upstream_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
+    selection_method:
+      truncateNullableString(payload.selection_method, EVENT_STATE_MAX_LENGTH) ?? null,
+    ...probeMetadata,
   };
 }
 
@@ -320,6 +336,8 @@ export function normalizeGatewayRequestSignalEvent(
 
 export function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEvent | null {
   if (!isRecord(payload)) return null;
+  const probeMetadata = normalizeAttemptProbeMetadata(payload);
+  if (!probeMetadata) return null;
   if (
     !isStringWithin(payload.trace_id, EVENT_ID_MAX_LENGTH) ||
     !isStringWithin(payload.cli_key, EVENT_ID_MAX_LENGTH) ||
@@ -376,6 +394,7 @@ export function normalizeGatewayAttemptEvent(payload: unknown): GatewayAttemptEv
       truncateNullableString(payload.circuit_state_after, EVENT_STATE_MAX_LENGTH) ?? null,
     circuit_failure_count: payload.circuit_failure_count ?? null,
     circuit_failure_threshold: payload.circuit_failure_threshold ?? null,
+    ...probeMetadata,
     claude_model_mapping: payload.claude_model_mapping ?? null,
   };
 }
@@ -580,6 +599,10 @@ export async function listenGatewayEvents(): Promise<() => void> {
         circuit_state_after: circuitStateText(payload.circuit_state_after),
         circuit_failure_count: payload.circuit_failure_count ?? null,
         circuit_failure_threshold: payload.circuit_failure_threshold ?? null,
+        probe: payload.probe ?? null,
+        probe_trigger: payload.probe_trigger ?? null,
+        probe_result: payload.probe_result ?? null,
+        probe_generation: payload.probe_generation ?? null,
       },
       gatewayEventNames.attempt
     );

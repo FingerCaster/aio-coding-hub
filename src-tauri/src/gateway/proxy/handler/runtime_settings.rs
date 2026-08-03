@@ -24,6 +24,7 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) max_providers_to_try: u32,
     pub(super) upstream_retry_policy: settings::UpstreamRetryPolicy,
     pub(super) provider_cooldown_secs: i64,
+    pub(super) provider_failback_strategy: settings::ProviderFailbackStrategy,
     pub(super) upstream_first_byte_timeout_secs: u32,
     pub(super) upstream_stream_idle_timeout_secs: u32,
     pub(super) upstream_request_timeout_non_streaming_secs: u32,
@@ -129,6 +130,9 @@ pub(super) fn handler_runtime_settings(
         provider_cooldown_secs: settings_cfg
             .map(|cfg| cfg.provider_cooldown_seconds as i64)
             .unwrap_or(settings::DEFAULT_PROVIDER_COOLDOWN_SECONDS as i64),
+        provider_failback_strategy: settings_cfg
+            .map(|cfg| cfg.provider_failback_strategy)
+            .unwrap_or_default(),
         upstream_first_byte_timeout_secs: settings_cfg
             .map(|cfg| cfg.upstream_first_byte_timeout_seconds)
             .unwrap_or(settings::DEFAULT_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS),

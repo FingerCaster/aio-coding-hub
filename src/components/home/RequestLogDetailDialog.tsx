@@ -29,7 +29,6 @@ import { useContributionsForSlot } from "../../plugins/contributions/useActiveCo
 import { HostRenderedContribution } from "../../plugins/contributions/HostRenderedContribution";
 import type { ContributionCommandHandler } from "../../plugins/contributions/types";
 import { logToConsole } from "../../services/consoleLog";
-import type { RequestAttemptLog } from "../../services/gateway/requestLogs";
 
 export type RequestLogDetailDialogProps = {
   selectedLogId: number | null;
@@ -48,7 +47,7 @@ function pluginDetailTabKey(pluginId: string, contributionId: string) {
   return `plugin:${pluginId}:${contributionId}`;
 }
 
-function hasProviderFailover(attemptLogs: RequestAttemptLog[]) {
+function hasProviderFailover(attemptLogs: ReadonlyArray<{ provider_id?: number | null }>) {
   const providerIds = new Set<number>();
   for (const attempt of attemptLogs) {
     if (typeof attempt.provider_id !== "number" || attempt.provider_id <= 0) continue;
@@ -99,6 +98,12 @@ export function RequestLogDetailDialog({
   const liveTrace = isInProgress ? matchingTrace : null;
   const nowMs = useNowMs(isInProgress && liveTrace != null, 250);
   const liveProvider = resolveLiveTraceProvider(liveTrace);
+  const liveDetailAttempts = liveTrace?.summary
+    ? liveTrace.summary.attempts.map((attempt, index) => ({
+        ...attempt,
+        attempt_index: index + 1,
+      }))
+    : (liveTrace?.attempts ?? []);
   const providerName = isInProgress
     ? (liveProvider?.providerName ?? selectedLog?.final_provider_name)
     : selectedLog?.final_provider_name;
@@ -125,7 +130,7 @@ export function RequestLogDetailDialog({
         status: selectedLog.status,
         errorCode: selectedLog.error_code,
         inProgress: isInProgress,
-        hasFailover: hasProviderFailover(attemptLogs),
+        hasFailover: hasProviderFailover([...attemptLogs, ...liveDetailAttempts]),
       })
     : null;
 
@@ -213,6 +218,7 @@ export function RequestLogDetailDialog({
             <RequestLogDetailChainTab
               selectedLog={selectedLog}
               attemptLogs={attemptLogs}
+              liveAttempts={liveDetailAttempts}
               attemptLogsLoading={attemptLogsLoading}
               isInProgress={isInProgress}
               finalProviderText={finalProviderText}

@@ -101,6 +101,10 @@ function createDefaultTabProps(overrides: DefaultPropsOverrides = {}) {
     setUpstreamRequestTimeoutNonStreamingSeconds: vi.fn(),
     providerCooldownSeconds: 30,
     setProviderCooldownSeconds: vi.fn(),
+    providerFailbackStrategy: "natural" as const,
+    setProviderFailbackStrategy: vi.fn(),
+    naturalProbeMaxWaitSeconds: 300,
+    setNaturalProbeMaxWaitSeconds: vi.fn(),
     providerBaseUrlPingCacheTtlSeconds: 60,
     setProviderBaseUrlPingCacheTtlSeconds: vi.fn(),
     circuitBreakerFailureThreshold: 5,
@@ -149,6 +153,10 @@ describe("cli-manager/GeneralTab", () => {
         setUpstreamRequestTimeoutNonStreamingSeconds={vi.fn()}
         providerCooldownSeconds={30}
         setProviderCooldownSeconds={vi.fn()}
+        providerFailbackStrategy="natural"
+        setProviderFailbackStrategy={vi.fn()}
+        naturalProbeMaxWaitSeconds={300}
+        setNaturalProbeMaxWaitSeconds={vi.fn()}
         providerBaseUrlPingCacheTtlSeconds={60}
         setProviderBaseUrlPingCacheTtlSeconds={vi.fn()}
         circuitBreakerFailureThreshold={5}
@@ -182,6 +190,8 @@ describe("cli-manager/GeneralTab", () => {
     const setUpstreamStreamIdleTimeoutSeconds = vi.fn();
     const setUpstreamRequestTimeoutNonStreamingSeconds = vi.fn();
     const setProviderCooldownSeconds = vi.fn();
+    const setProviderFailbackStrategy = vi.fn();
+    const setNaturalProbeMaxWaitSeconds = vi.fn();
     const setProviderBaseUrlPingCacheTtlSeconds = vi.fn();
     const setCircuitBreakerFailureThreshold = vi.fn();
     const setCircuitBreakerOpenDurationMinutes = vi.fn();
@@ -223,6 +233,10 @@ describe("cli-manager/GeneralTab", () => {
         setUpstreamRequestTimeoutNonStreamingSeconds={setUpstreamRequestTimeoutNonStreamingSeconds}
         providerCooldownSeconds={30}
         setProviderCooldownSeconds={setProviderCooldownSeconds}
+        providerFailbackStrategy="natural"
+        setProviderFailbackStrategy={setProviderFailbackStrategy}
+        naturalProbeMaxWaitSeconds={300}
+        setNaturalProbeMaxWaitSeconds={setNaturalProbeMaxWaitSeconds}
         providerBaseUrlPingCacheTtlSeconds={60}
         setProviderBaseUrlPingCacheTtlSeconds={setProviderBaseUrlPingCacheTtlSeconds}
         circuitBreakerFailureThreshold={5}
@@ -256,8 +270,10 @@ describe("cli-manager/GeneralTab", () => {
 
     // Inputs: change + blur should validate and persist (or toast on invalid)
     fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    expect(screen.getByText("最长熔断等待（可提前试探）")).toBeInTheDocument();
+    expect(screen.getByText(/策略触发不会绕过它/)).toBeInTheDocument();
     const inputs = screen.getAllByRole("spinbutton");
-    expect(inputs.length).toBeGreaterThan(6);
+    expect(inputs.length).toBeGreaterThan(7);
 
     fireEvent.keyDown(inputs[0], { key: "Enter" });
     expect(blurOnEnter).toHaveBeenCalled();
@@ -281,22 +297,71 @@ describe("cli-manager/GeneralTab", () => {
       upstream_request_timeout_non_streaming_seconds: 10,
     });
 
-    fireEvent.change(inputs[3], { target: { value: "12" } });
-    fireEvent.blur(inputs[3], { target: { value: "12" } });
+    const naturalMaxWaitInput = screen.getByRole("spinbutton", {
+      name: "自然模式最长试探等待",
+    });
+    fireEvent.change(naturalMaxWaitInput, { target: { value: "301" } });
+    fireEvent.blur(naturalMaxWaitInput, { target: { value: "301" } });
+    expect(setNaturalProbeMaxWaitSeconds).toHaveBeenCalled();
+    expect(onPersistCommonSettings).toHaveBeenCalledWith({
+      natural_probe_max_wait_seconds: 301,
+    });
+
+    fireEvent.change(inputs[4], { target: { value: "12" } });
+    fireEvent.blur(inputs[4], { target: { value: "12" } });
     expect(setProviderCooldownSeconds).toHaveBeenCalled();
     expect(onPersistCommonSettings).toHaveBeenCalledWith({ provider_cooldown_seconds: 12 });
 
-    fireEvent.change(inputs[4], { target: { value: "120" } });
-    fireEvent.blur(inputs[4], { target: { value: "120" } });
+    fireEvent.change(inputs[5], { target: { value: "120" } });
+    fireEvent.blur(inputs[5], { target: { value: "120" } });
     expect(setProviderBaseUrlPingCacheTtlSeconds).toHaveBeenCalled();
 
-    fireEvent.change(inputs[5], { target: { value: "6" } });
-    fireEvent.blur(inputs[5], { target: { value: "6" } });
+    fireEvent.change(inputs[6], { target: { value: "6" } });
+    fireEvent.blur(inputs[6], { target: { value: "6" } });
     expect(setCircuitBreakerFailureThreshold).toHaveBeenCalled();
 
-    fireEvent.change(inputs[6], { target: { value: "31" } });
-    fireEvent.blur(inputs[6], { target: { value: "31" } });
+    fireEvent.change(inputs[7], { target: { value: "31" } });
+    fireEvent.blur(inputs[7], { target: { value: "31" } });
     expect(setCircuitBreakerOpenDurationMinutes).toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("radio", { name: "积极回切" }));
+    expect(setProviderFailbackStrategy).toHaveBeenCalledWith("aggressive");
+    expect(onPersistCommonSettings).toHaveBeenCalledWith({
+      provider_failback_strategy: "aggressive",
+    });
+  });
+
+  it("rejects an invalid natural probe max wait before persisting", () => {
+    const onPersistCommonSettings = vi.fn();
+    const setNaturalProbeMaxWaitSeconds = vi.fn();
+
+    renderTab(
+      <CliManagerGeneralTab
+        {...createDefaultTabProps({ onPersistCommonSettings })}
+        setNaturalProbeMaxWaitSeconds={setNaturalProbeMaxWaitSeconds}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    const input = screen.getByRole("spinbutton", { name: "自然模式最长试探等待" });
+    fireEvent.change(input, { target: { value: "0" } });
+    fireEvent.blur(input, { target: { value: "0" } });
+
+    expect(toast).toHaveBeenCalledWith("自然模式最长试探等待必须为 1-86400 秒");
+    expect(setNaturalProbeMaxWaitSeconds).toHaveBeenLastCalledWith(300);
+    expect(onPersistCommonSettings).not.toHaveBeenCalled();
+  });
+
+  it("hides the natural-only max wait input in aggressive mode", () => {
+    renderTab(
+      <CliManagerGeneralTab {...createDefaultTabProps()} providerFailbackStrategy="aggressive" />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    expect(
+      screen.queryByRole("spinbutton", { name: "自然模式最长试探等待" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("radio", { name: "积极回切" })).toBeChecked();
   });
 
   it("keeps retry policy details collapsed until opened and persists the global policy", async () => {
@@ -371,6 +436,10 @@ describe("cli-manager/GeneralTab", () => {
         setUpstreamRequestTimeoutNonStreamingSeconds={vi.fn()}
         providerCooldownSeconds={30}
         setProviderCooldownSeconds={vi.fn()}
+        providerFailbackStrategy="natural"
+        setProviderFailbackStrategy={vi.fn()}
+        naturalProbeMaxWaitSeconds={300}
+        setNaturalProbeMaxWaitSeconds={vi.fn()}
         providerBaseUrlPingCacheTtlSeconds={60}
         setProviderBaseUrlPingCacheTtlSeconds={vi.fn()}
         circuitBreakerFailureThreshold={5}

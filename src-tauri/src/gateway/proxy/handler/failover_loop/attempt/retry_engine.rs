@@ -39,7 +39,7 @@ where
             break;
         }
         retry_state.allow_next_retry_beyond_max_attempts = false;
-        let attempt_index = loop_state.attempts.len().saturating_add(1) as u32;
+        let attempt_index = counted_provider_attempts(loop_state.attempts).saturating_add(1) as u32;
         let send_outcome = attempt_executor::execute_attempt(
             ctx,
             input,
@@ -71,11 +71,44 @@ where
                 continue;
             }
             LoopControl::BreakRetry => break,
-            LoopControl::Return(resp) => return Some(resp),
+            LoopControl::Return(resp) => {
+                finalize_current_probe(ctx, input, prepared, &mut loop_state);
+                return Some(resp);
+            }
         }
     }
 
+    finalize_current_probe(ctx, input, prepared, &mut loop_state);
     None
+}
+
+fn finalize_current_probe<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    input: &RequestContext<R>,
+    prepared: &PreparedProvider,
+    loop_state: &mut LoopState<'_, R>,
+) {
+    if prepared
+        .dispatch_ownership
+        .as_ref()
+        .is_some_and(|ownership| ownership.is_probe_terminal_deferred())
+    {
+        return;
+    }
+
+    let trigger_error_code = loop_state.last_outcome.map(|outcome| outcome.error_code);
+    finalize_probe_failure_and_emit(
+        &ctx.state.app,
+        input.trace_id.as_str(),
+        input.cli_key.as_str(),
+        ctx.upstream_first_byte_timeout_secs,
+        prepared.dispatch_ownership.as_ref(),
+        prepared.provider_id,
+        prepared.provider_name_base.as_str(),
+        prepared.provider_base_url_base.as_str(),
+        loop_state.circuit_snapshot,
+        trigger_error_code,
+    );
 }
 
 /// Dispatch one attempt outcome to the appropriate handler and return
@@ -96,6 +129,7 @@ where
     match send_outcome {
         AttemptSendOutcome::UrlBuildFailed(ctrl) => ctrl,
         AttemptSendOutcome::OAuthInjectFailed => LoopControl::BreakRetry,
+        AttemptSendOutcome::DispatchRejected => LoopControl::BreakRetry,
         AttemptSendOutcome::PluginBlocked(reason) => LoopControl::Return(error_response(
             StatusCode::FORBIDDEN,
             input.trace_id.clone(),
@@ -133,6 +167,10 @@ where
                 circuit_state_after: None,
                 circuit_failure_count: Some(prepared.circuit_snapshot.failure_count),
                 circuit_failure_threshold: Some(prepared.circuit_snapshot.failure_threshold),
+                probe: None,
+                probe_trigger: None,
+                probe_result: None,
+                probe_generation: None,
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
@@ -255,6 +293,7 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
         upstream_retry_policy: &prepared.upstream_retry_policy,
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
+        dispatch_ownership: prepared.dispatch_ownership.as_ref(),
     };
     (attempt_ctx, provider_ctx)
 }

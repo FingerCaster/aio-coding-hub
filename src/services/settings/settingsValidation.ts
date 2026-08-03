@@ -1,5 +1,6 @@
 import type {
   GatewayListenMode,
+  ProviderFailbackStrategy,
   SensitiveStringUpdate,
   UpstreamRetryPolicy,
   WslHostAddressMode,
@@ -29,6 +30,8 @@ export const MAX_LOG_RETENTION_DAYS = 3650;
 export const MIN_REQUEST_LOG_RETENTION_DAYS = 0;
 export const MAX_REQUEST_LOG_RETENTION_DAYS = 3650;
 export const MAX_PROVIDER_COOLDOWN_SECONDS = 60 * 60;
+export const MIN_NATURAL_PROBE_MAX_WAIT_SECONDS = 1;
+export const MAX_NATURAL_PROBE_MAX_WAIT_SECONDS = 24 * 60 * 60;
 export const MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 1;
 export const MAX_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 60 * 60;
 export const MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS = 60 * 60;
@@ -65,6 +68,8 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MIN_REQUEST_LOG_RETENTION_DAYS,
   MAX_REQUEST_LOG_RETENTION_DAYS,
   MAX_PROVIDER_COOLDOWN_SECONDS,
+  MIN_NATURAL_PROBE_MAX_WAIT_SECONDS,
+  MAX_NATURAL_PROBE_MAX_WAIT_SECONDS,
   MIN_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS,
   MAX_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS,
   MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS,
@@ -368,6 +373,8 @@ export type SettingsSetValidationInput = {
   logRetentionDays?: number | null;
   requestLogRetentionDays?: number | null;
   providerCooldownSeconds?: number | null;
+  providerFailbackStrategy?: ProviderFailbackStrategy | null;
+  naturalProbeMaxWaitSeconds?: number | null;
   providerBaseUrlPingCacheTtlSeconds?: number | null;
   upstreamFirstByteTimeoutSeconds?: number | null;
   upstreamStreamIdleTimeoutSeconds?: number | null;
@@ -406,6 +413,12 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       MAX_REQUEST_LOG_RETENTION_DAYS,
     ],
     ["Provider 冷却时间", input.providerCooldownSeconds, 0, MAX_PROVIDER_COOLDOWN_SECONDS],
+    [
+      "自然模式最长试探等待",
+      input.naturalProbeMaxWaitSeconds,
+      MIN_NATURAL_PROBE_MAX_WAIT_SECONDS,
+      MAX_NATURAL_PROBE_MAX_WAIT_SECONDS,
+    ],
     [
       "Provider Base URL 探测缓存 TTL",
       input.providerBaseUrlPingCacheTtlSeconds,
@@ -451,6 +464,14 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
   ] as const) {
     const message = validateIntegerRange(fieldLabel, value, min, max);
     if (message) return message;
+  }
+
+  if (
+    input.providerFailbackStrategy != null &&
+    input.providerFailbackStrategy !== "natural" &&
+    input.providerFailbackStrategy !== "aggressive"
+  ) {
+    return "回切策略仅支持 natural 或 aggressive";
   }
 
   const streamIdleMessage = validateUpstreamStreamIdleTimeout(

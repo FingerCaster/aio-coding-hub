@@ -14,7 +14,7 @@ use super::upstream_retry_policy::{
     retry_policy_backoff_delay, retry_rule_reason, should_record_circuit_failure,
     should_retry_same_provider, transient_failure_decision, RetryPolicyMatch,
 };
-use super::{emit_attempt_event_and_log, AttemptCircuitFields};
+use super::{emit_attempt_event_and_log, finalize_probe_failure_and_emit, AttemptCircuitFields};
 use super::{
     emit_gateway_log, emit_request_event_and_enqueue_request_log, RequestCompletion,
     RequestEndArgs, RequestEndContextArgs, RequestEndDeps,
@@ -383,6 +383,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     let state = ctx.state;
     let provider_cooldown_secs = ctx.provider_cooldown_secs;
 
+    let dispatch_ownership = provider_ctx.dispatch_ownership;
+    let probe_active = dispatch_ownership.is_some_and(|ownership| ownership.is_probe());
     let ProviderCtx {
         provider_id,
         provider_name_base,
@@ -656,30 +658,49 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         && !oauth_quota_exhausted
         && should_record_http_circuit_failure(category, upstream_retry_policy, configured_retry)
     {
-        let change = provider_router::record_failure_and_emit_transition(
-            provider_router::RecordCircuitArgs::from_state(
-                state,
-                ctx.trace_id.as_str(),
-                ctx.cli_key.as_str(),
-                provider_id,
-                provider_name_base.as_str(),
-                provider_base_url_base.as_str(),
-                now_unix,
+        let change = if let Some(ownership) = dispatch_ownership.filter(|value| value.is_probe()) {
+            match ownership.record_probe_attempt_failure(now_unix, true, Some(error_code)) {
+                Some(circuit_breaker::ProbeCommitResult::Applied(change)) => change,
+                Some(circuit_breaker::ProbeCommitResult::Stale(snapshot)) => {
+                    circuit_breaker::CircuitChange {
+                        before: snapshot.clone(),
+                        after: snapshot,
+                        transition: None,
+                    }
+                }
+                None => circuit_breaker::CircuitChange {
+                    before: circuit_before.clone(),
+                    after: circuit_before.clone(),
+                    transition: None,
+                },
+            }
+        } else {
+            provider_router::record_failure_and_emit_transition(
+                provider_router::RecordCircuitArgs::from_state(
+                    state,
+                    ctx.trace_id.as_str(),
+                    ctx.cli_key.as_str(),
+                    provider_id,
+                    provider_name_base.as_str(),
+                    provider_base_url_base.as_str(),
+                    now_unix,
+                )
+                .with_trigger(Some(error_code), Some(ctx.upstream_first_byte_timeout_secs))
+                .with_provider_health_neutral(ctx.provider_health_neutral),
             )
-            .with_trigger(Some(error_code), Some(ctx.upstream_first_byte_timeout_secs))
-            .with_provider_health_neutral(ctx.provider_health_neutral),
-        );
+        };
         *circuit_snapshot = change.after.clone();
         circuit_state_before = Some(change.before.state.as_str());
         circuit_state_after = Some(change.after.state.as_str());
         circuit_failure_count = Some(change.after.failure_count);
 
-        if change.after.state == circuit_breaker::CircuitState::Open {
+        if !probe_active && change.after.state == circuit_breaker::CircuitState::Open {
             decision = FailoverDecision::SwitchProvider;
         }
     }
 
     if !is_count_tokens
+        && !probe_active
         && provider_cooldown_secs > 0
         && matches!(category, ErrorCategory::ProviderError)
         && !oauth_quota_exhausted
@@ -723,7 +744,11 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         error_code,
         decision.as_str()
     );
-    let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
+    let selection_method = if probe_active {
+        Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+    } else {
+        dc::selection_method(provider_index, retry_index, session_reuse)
+    };
     let reason_code = category.reason_code();
 
     attempts.push(FailoverAttempt {
@@ -748,6 +773,15 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         circuit_state_after,
         circuit_failure_count,
         circuit_failure_threshold,
+        probe: probe_active.then_some(true),
+        probe_trigger: dispatch_ownership
+            .filter(|ownership| ownership.is_probe())
+            .and_then(|ownership| ownership.probe_trigger())
+            .map(|trigger| trigger.as_str()),
+        probe_result: probe_active.then_some("failed"),
+        probe_generation: dispatch_ownership
+            .filter(|ownership| ownership.is_probe())
+            .and_then(|ownership| ownership.probe_generation()),
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
@@ -786,6 +820,19 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         }
         FailoverDecision::Abort => {
             // On abort, we intentionally do NOT use stream tee finalizers, to avoid triggering
+
+            finalize_probe_failure_and_emit(
+                &state.app,
+                ctx.trace_id.as_str(),
+                ctx.cli_key.as_str(),
+                ctx.upstream_first_byte_timeout_secs,
+                dispatch_ownership,
+                provider_id,
+                provider_name_base.as_str(),
+                provider_base_url_base.as_str(),
+                circuit_snapshot,
+                Some(error_code),
+            );
 
             let CommonCtxOwned {
                 cli_key,

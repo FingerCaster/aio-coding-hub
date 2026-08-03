@@ -201,6 +201,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: Some(0),
             circuit_failure_threshold: Some(3),
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
             claude_model_mapping: None,
         }
     }

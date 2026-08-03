@@ -69,6 +69,9 @@ pub(super) enum AttemptSendOutcome {
     PluginBlocked(String),
     /// A request plugin changed a server-managed model binding before send.
     ManagedModelInvalid(String),
+    /// Dispatch ownership became stale at the transport boundary; no network
+    /// call was made and the outer loop may continue with the stable provider.
+    DispatchRejected,
 }
 
 /// URL build failure from the shared prepared-send primitive.
@@ -88,6 +91,7 @@ pub(super) enum PreparedSendOutcome {
     OAuthInjectFailed(Box<FailoverAttempt>),
     PluginBlocked(String),
     ManagedModelInvalid(String),
+    DispatchRejected,
 }
 
 /// Build request headers, inject auth, clean body, send upstream, and return
@@ -155,6 +159,7 @@ where
         PreparedSendOutcome::ManagedModelInvalid(reason) => {
             AttemptSendOutcome::ManagedModelInvalid(reason)
         }
+        PreparedSendOutcome::DispatchRejected => AttemptSendOutcome::DispatchRejected,
     }
 }
 
@@ -176,6 +181,11 @@ where
     R: tauri::Runtime,
     R::Handle: Unpin,
 {
+    if let Some(abort_guard) = abort_guard.as_deref_mut() {
+        // Every attempt owns this slot, including attempts without a probe.
+        // Clear the previous provider before any local preparation can fail or await.
+        abort_guard.replace_dispatch_ownership(None);
+    }
     let attempt_started_ms = input.started.elapsed().as_millis();
     let circuit_before = prepared.circuit_snapshot.clone();
 
@@ -190,20 +200,6 @@ where
             });
         }
     };
-
-    if input.managed_model_route.is_none() {
-        if let Some(abort_guard) = abort_guard.as_deref_mut() {
-            emit_started_event(
-                input,
-                prepared,
-                attempt_index,
-                retry_index,
-                attempt_started_ms,
-                &circuit_before,
-                abort_guard,
-            );
-        }
-    }
 
     // --- Build headers + inject auth ---
     let mut headers = input.base_headers.clone();
@@ -314,19 +310,6 @@ where
             route.remote_model_id.as_str(),
         );
     }
-    if input.managed_model_route.is_some() {
-        if let Some(abort_guard) = abort_guard {
-            emit_started_event(
-                input,
-                prepared,
-                attempt_index,
-                retry_index,
-                attempt_started_ms,
-                &circuit_before,
-                abort_guard,
-            );
-        }
-    }
     let upstream_body = body_state_for_attempt
         .finalize_for_upstream(&mut headers, crate::gateway::util::max_request_body_bytes());
 
@@ -345,6 +328,7 @@ where
         attempt_started: Instant::now(),
     };
 
+    let dispatch_ownership = prepared.dispatch_ownership.clone();
     let send_result = send::send_upstream_with_first_byte_timeout(
         ctx,
         input.req_method.clone(),
@@ -352,6 +336,26 @@ where
         headers,
         upstream_body,
         first_byte_timeout,
+        || {
+            if let Some(ownership) = dispatch_ownership.as_ref() {
+                if !ownership.commit_at_transport_boundary(now_unix_seconds() as i64) {
+                    return false;
+                }
+            }
+            if let Some(abort_guard) = abort_guard {
+                abort_guard.replace_dispatch_ownership(dispatch_ownership.clone());
+                emit_started_event(
+                    input,
+                    prepared,
+                    attempt_index,
+                    retry_index,
+                    attempt_started_ms,
+                    &circuit_before,
+                    abort_guard,
+                );
+            }
+            true
+        },
     )
     .await;
 
@@ -359,6 +363,7 @@ where
         send::SendResult::Ok(resp) => PreparedSendOutcome::Response(resp, timing),
         send::SendResult::Timeout => PreparedSendOutcome::Timeout(timing),
         send::SendResult::Err(err) => PreparedSendOutcome::ReqwestError(err, timing),
+        send::SendResult::DispatchRejected => PreparedSendOutcome::DispatchRejected,
     }
 }
 
@@ -568,6 +573,7 @@ fn build_provider_ctx(prepared: &PreparedProvider) -> ProviderCtx<'_> {
         stream_idle_timeout_seconds: prepared.stream_idle_timeout_seconds,
         upstream_retry_policy: &prepared.upstream_retry_policy,
         claude_model_mapping: prepared.claude_model_mapping.as_ref(),
+        dispatch_ownership: prepared.dispatch_ownership.as_ref(),
     }
 }
 
@@ -580,6 +586,10 @@ fn emit_started_event<R: tauri::Runtime>(
     circuit_before: &crate::circuit_breaker::CircuitSnapshot,
     abort_guard: &mut RequestAbortGuard<R>,
 ) {
+    let probe_ownership = prepared
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe());
     let started_attempt = FailoverAttempt {
         provider_id: prepared.provider_id,
         provider_name: prepared.provider_name_base.clone(),
@@ -593,11 +603,11 @@ fn emit_started_event<R: tauri::Runtime>(
         error_code: None,
         decision: None,
         reason: None,
-        selection_method: dc::selection_method(
-            prepared.provider_index,
-            retry_index,
-            prepared.session_reuse,
-        ),
+        selection_method: if probe_ownership.is_some() {
+            Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+        } else {
+            dc::selection_method(prepared.provider_index, retry_index, prepared.session_reuse)
+        },
         reason_code: None,
         attempt_started_ms: Some(attempt_started_ms),
         attempt_duration_ms: Some(0),
@@ -605,6 +615,12 @@ fn emit_started_event<R: tauri::Runtime>(
         circuit_state_after: None,
         circuit_failure_count: Some(circuit_before.failure_count),
         circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        probe: probe_ownership.map(|_| true),
+        probe_trigger: probe_ownership
+            .and_then(|ownership| ownership.probe_trigger())
+            .map(|trigger| trigger.as_str()),
+        probe_result: probe_ownership.map(|_| "started"),
+        probe_generation: probe_ownership.and_then(|ownership| ownership.probe_generation()),
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         provider_bridged: Some(prepared.provider_bridged),
@@ -644,6 +660,12 @@ fn emit_started_event<R: tauri::Runtime>(
             circuit_state_after: None,
             circuit_failure_count: Some(circuit_before.failure_count),
             circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            probe: probe_ownership.map(|_| true),
+            probe_trigger: probe_ownership
+                .and_then(|ownership| ownership.probe_trigger())
+                .map(|trigger| trigger.as_str()),
+            probe_result: probe_ownership.map(|_| "started"),
+            probe_generation: probe_ownership.and_then(|ownership| ownership.probe_generation()),
             claude_model_mapping: prepared.claude_model_mapping.clone(),
         })
     });

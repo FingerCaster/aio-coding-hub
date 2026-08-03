@@ -2,6 +2,7 @@
 
 use crate::providers;
 use crate::shared::mutex_ext::MutexExt;
+#[cfg(test)]
 use std::collections::HashSet;
 use std::future::Future;
 use std::time::Duration;
@@ -81,6 +82,7 @@ pub(super) fn should_reuse_provider(body_json: Option<&serde_json::Value>) -> bo
     len > 1
 }
 
+#[cfg(test)]
 pub(super) fn select_next_provider_id_from_order(
     bound_provider_id: i64,
     provider_order: &[i64],

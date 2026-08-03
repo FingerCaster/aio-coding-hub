@@ -8,16 +8,28 @@ pub(super) enum SendResult {
     Ok(reqwest::Response),
     Err(reqwest::Error),
     Timeout,
+    DispatchRejected,
 }
 
-pub(super) async fn send_upstream_with_first_byte_timeout<R: tauri::Runtime>(
+pub(super) async fn send_upstream_with_first_byte_timeout<R, F>(
     ctx: CommonCtx<'_, R>,
     method: Method,
     url: reqwest::Url,
     headers: HeaderMap,
     body: Bytes,
     first_byte_timeout: Option<std::time::Duration>,
-) -> SendResult {
+    on_first_poll: F,
+) -> SendResult
+where
+    R: tauri::Runtime,
+    F: FnOnce() -> bool,
+{
+    // The async body does not execute until its future is first polled. Keep
+    // this callback as the first operation so reservation/probe commit is the
+    // exact transport boundary, after every local preparation has succeeded.
+    if !on_first_poll() {
+        return SendResult::DispatchRejected;
+    }
     let client = ctx.state.client();
     let send = client
         .request(method, url)

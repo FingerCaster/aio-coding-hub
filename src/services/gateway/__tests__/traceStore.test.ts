@@ -270,6 +270,41 @@ describe("services/gateway/traceStore", () => {
     vi.useRealTimers();
   });
 
+  it("keeps probe identity across realtime attempt updates and applies the final result", async () => {
+    const { ingestTraceAttempt, useTraceStore } = await importFreshTraceStore();
+    const { result } = renderHook(() => useTraceStore());
+
+    act(() => {
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "probe-trace",
+          probe: true,
+          probe_trigger: "natural_compaction",
+          probe_result: "started",
+          probe_generation: 7,
+        })
+      );
+      ingestTraceAttempt(
+        makeAttemptEvent({
+          trace_id: "probe-trace",
+          outcome: "failed",
+          status: 502,
+          probe: true,
+          probe_result: "failed",
+          probe_generation: 7,
+        })
+      );
+    });
+
+    expect(result.current.traces[0]?.attempts[0]).toMatchObject({
+      outcome: "failed",
+      probe: true,
+      probe_trigger: "natural_compaction",
+      probe_result: "failed",
+      probe_generation: 7,
+    });
+  });
+
   it("ingestTraceAttempt backfills requested_model when request_start is missing", async () => {
     vi.useFakeTimers();
     vi.setSystemTime(0);

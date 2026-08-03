@@ -1,0 +1,10 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"共享 Rust gateway 与 circuit 变更的入口规范和全量回归要求。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"保持 provider retry、Ready-provider budget、strict/health-neutral 与跨请求 circuit 计数契约。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"覆盖 Rust、generated bindings、settings、attempt JSON 与 React UI 的跨层检查入口。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"保持公共 gate 权威、skipped attempt、route hop 和 session binding 所有权。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"新增策略设置必须遵循字段所有权、durable commit、运行时同步和 CAS 回滚。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"集中拥有 probe eligibility、route fingerprint、状态枚举和 attempts JSON 解码，避免多路径漂移。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪持久状态、网关终态、IPC 设置与日志 UI 的端到端数据流。"}
+{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/current-routing-and-circuit-evidence.md","reason":"现有 circuit、session routing、公共 gate、日志和手动可用性测试的代码证据。"}
+{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/probe-trigger-strategy-comparison.md","reason":"真实业务单飞 probe 的方案取舍及最终自然/积极策略决定。"}
+{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/compaction-signal-evidence.md","reason":"Claude/Codex 严格压缩信号、Grok/Gemini 兜底和 generation reservation 语义。"}

@@ -42,6 +42,8 @@ pub(super) struct PreparedProvider {
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
     pub(super) circuit_snapshot: crate::circuit_breaker::CircuitSnapshot,
+    pub(super) dispatch_ownership:
+        Option<std::sync::Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
     pub(super) anthropic_stream_requested: bool,
     pub(super) stream_idle_timeout_seconds: Option<u32>,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
@@ -342,6 +344,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     }
 
     let circuit_snapshot = gate_allow.circuit_after;
+    let dispatch_ownership = gate_allow.dispatch_ownership;
     if counters.providers_tried >= counters.ready_limit {
         return PreparationOutcome::ReadyLimitReached;
     }
@@ -369,6 +372,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         stream_idle_timeout_seconds: provider.stream_idle_timeout_seconds,
         upstream_retry_policy: &upstream_retry_policy,
         claude_model_mapping: None,
+        dispatch_ownership: dispatch_ownership.as_ref(),
     };
 
     let mut claude_model_mapping = None;
@@ -443,6 +447,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         cx2cc_source,
         cx2cc_codex_session_id,
         circuit_snapshot,
+        dispatch_ownership,
         anthropic_stream_requested,
         stream_idle_timeout_seconds: provider.stream_idle_timeout_seconds,
         upstream_retry_policy,

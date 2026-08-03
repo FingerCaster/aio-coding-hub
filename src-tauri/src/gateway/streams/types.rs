@@ -10,6 +10,75 @@ use super::super::events::FailoverAttempt;
 
 const ACTIVITY_FLUSH_INTERVAL_MS: i64 = 30_000;
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::gateway) enum StreamTerminalOrigin {
+    Unclassified,
+    NormalEof,
+    CompletionDelivered,
+    UpstreamReadError,
+    IdleTimeout,
+    TotalTimeout,
+    TerminalFrame,
+    ClientAbort,
+    DirectDrop,
+    RelayDrainTimeout,
+    BufferedBodyEof,
+}
+
+impl StreamTerminalOrigin {
+    pub(in crate::gateway) fn as_str(self) -> &'static str {
+        match self {
+            Self::Unclassified => "unclassified",
+            Self::NormalEof => "normal_eof",
+            Self::CompletionDelivered => "completion_delivered",
+            Self::UpstreamReadError => "upstream_read_error",
+            Self::IdleTimeout => "idle_timeout",
+            Self::TotalTimeout => "total_timeout",
+            Self::TerminalFrame => "terminal_frame",
+            Self::ClientAbort => "client_abort",
+            Self::DirectDrop => "direct_drop",
+            Self::RelayDrainTimeout => "relay_drain_timeout",
+            Self::BufferedBodyEof => "buffered_body_eof",
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::gateway) struct StreamTerminalEvidence {
+    pub(in crate::gateway) completion_seen: bool,
+    pub(in crate::gateway) normal_eof: bool,
+    pub(in crate::gateway) usage_seen: bool,
+    pub(in crate::gateway) terminal_error_seen: bool,
+    pub(in crate::gateway) origin: StreamTerminalOrigin,
+}
+
+impl StreamTerminalEvidence {
+    pub(in crate::gateway) fn new(
+        origin: StreamTerminalOrigin,
+        completion_seen: bool,
+        normal_eof: bool,
+        usage_seen: bool,
+        terminal_error_seen: bool,
+    ) -> Self {
+        Self {
+            completion_seen,
+            normal_eof,
+            usage_seen,
+            terminal_error_seen,
+            origin,
+        }
+    }
+
+    pub(in crate::gateway) fn trusted_probe_success(self) -> bool {
+        let trusted_terminal = match self.origin {
+            StreamTerminalOrigin::NormalEof => self.normal_eof && self.completion_seen,
+            StreamTerminalOrigin::CompletionDelivered => self.completion_seen && self.usage_seen,
+            _ => false,
+        };
+        trusted_terminal && !self.terminal_error_seen
+    }
+}
+
 pub(in crate::gateway) struct StreamActivityTracker {
     trace_id: String,
     cli_key: String,
@@ -59,6 +128,26 @@ impl StreamActivityTracker {
         }))
         .ok()
     }
+
+    pub(in crate::gateway) fn terminal_details_json(
+        &self,
+        terminal_signal: Option<&str>,
+        evidence: StreamTerminalEvidence,
+    ) -> Option<String> {
+        serde_json::to_string(&serde_json::json!({
+            "trace_id": self.trace_id,
+            "cli_key": self.cli_key,
+            "chunk_count": self.chunk_count,
+            "last_activity_ms": self.last_activity_ms,
+            "terminal_signal": terminal_signal,
+            "terminal_origin": evidence.origin.as_str(),
+            "completion_seen": evidence.completion_seen,
+            "normal_eof": evidence.normal_eof,
+            "usage_seen": evidence.usage_seen,
+            "terminal_error_seen": evidence.terminal_error_seen,
+        }))
+        .ok()
+    }
 }
 
 pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> {
@@ -67,9 +156,12 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) log_tx: tokio::sync::mpsc::Sender<request_logs::RequestLogInsert>,
     pub(in crate::gateway) plugin_pipeline: Arc<GatewayPluginPipeline>,
     pub(in crate::gateway) circuit: Arc<circuit_breaker::CircuitBreaker>,
+    pub(in crate::gateway) dispatch_ownership:
+        Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
     pub(in crate::gateway) session: Arc<session_manager::SessionManager>,
     pub(in crate::gateway) session_id: Option<String>,
     pub(in crate::gateway) sort_mode_id: Option<i64>,
+    pub(in crate::gateway) is_compact_request: bool,
     pub(in crate::gateway) trace_id: String,
     pub(in crate::gateway) cli_key: String,
     pub(in crate::gateway) method: String,
@@ -105,4 +197,96 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
     pub(in crate::gateway) fake_200_quota_exhausted: bool,
     pub(in crate::gateway) activity: Arc<Mutex<StreamActivityTracker>>,
     pub(in crate::gateway) active_requests: Arc<ActiveRequestRegistry>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{StreamTerminalEvidence, StreamTerminalOrigin};
+
+    #[test]
+    fn probe_terminal_success_requires_completion_and_normal_eof() {
+        assert!(StreamTerminalEvidence::new(
+            StreamTerminalOrigin::NormalEof,
+            true,
+            true,
+            false,
+            false,
+        )
+        .trusted_probe_success());
+
+        assert!(!StreamTerminalEvidence::new(
+            StreamTerminalOrigin::NormalEof,
+            false,
+            true,
+            true,
+            false,
+        )
+        .trusted_probe_success());
+    }
+
+    #[test]
+    fn completion_before_client_abort_is_not_probe_success() {
+        assert!(!StreamTerminalEvidence::new(
+            StreamTerminalOrigin::ClientAbort,
+            true,
+            true,
+            true,
+            false,
+        )
+        .trusted_probe_success());
+    }
+
+    #[test]
+    fn delivered_completion_is_trusted_only_with_usage_and_no_terminal_error() {
+        assert!(StreamTerminalEvidence::new(
+            StreamTerminalOrigin::CompletionDelivered,
+            true,
+            false,
+            true,
+            false,
+        )
+        .trusted_probe_success());
+        assert!(!StreamTerminalEvidence::new(
+            StreamTerminalOrigin::CompletionDelivered,
+            true,
+            false,
+            false,
+            false,
+        )
+        .trusted_probe_success());
+        assert!(!StreamTerminalEvidence::new(
+            StreamTerminalOrigin::CompletionDelivered,
+            true,
+            false,
+            true,
+            true,
+        )
+        .trusted_probe_success());
+    }
+
+    #[test]
+    fn direct_drop_and_late_read_error_are_not_probe_success() {
+        for origin in [
+            StreamTerminalOrigin::DirectDrop,
+            StreamTerminalOrigin::UpstreamReadError,
+            StreamTerminalOrigin::RelayDrainTimeout,
+        ] {
+            assert!(
+                !StreamTerminalEvidence::new(origin, true, false, true, false)
+                    .trusted_probe_success()
+            );
+        }
+    }
+
+    #[test]
+    fn terminal_error_rejects_otherwise_complete_normal_eof() {
+        assert!(!StreamTerminalEvidence::new(
+            StreamTerminalOrigin::NormalEof,
+            true,
+            true,
+            true,
+            true,
+        )
+        .trusted_probe_success());
+    }
 }

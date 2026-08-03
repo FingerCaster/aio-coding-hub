@@ -12,6 +12,8 @@ describe("services/settings/settingsValidation", () => {
         preferredPort: 1024,
         logRetentionDays: 3650,
         providerCooldownSeconds: 0,
+        providerFailbackStrategy: "aggressive",
+        naturalProbeMaxWaitSeconds: 86400,
         providerBaseUrlPingCacheTtlSeconds: 1,
         upstreamFirstByteTimeoutSeconds: 3600,
         upstreamStreamIdleTimeoutSeconds: 0,
@@ -33,6 +35,15 @@ describe("services/settings/settingsValidation", () => {
     );
     expect(validateSettingsSetInput({ providerCooldownSeconds: 3601 })).toContain(
       "Provider 冷却时间必须 <= 3600"
+    );
+    expect(validateSettingsSetInput({ naturalProbeMaxWaitSeconds: 0 })).toContain(
+      "自然模式最长试探等待必须 >= 1"
+    );
+    expect(validateSettingsSetInput({ naturalProbeMaxWaitSeconds: 86401 })).toContain(
+      "自然模式最长试探等待必须 <= 86400"
+    );
+    expect(validateSettingsSetInput({ providerFailbackStrategy: "future" as any })).toContain(
+      "回切策略仅支持 natural 或 aggressive"
     );
     expect(validateSettingsSetInput({ providerBaseUrlPingCacheTtlSeconds: 0 })).toContain(
       "Provider Base URL 探测缓存 TTL必须 >= 1"

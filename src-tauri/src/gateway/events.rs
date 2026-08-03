@@ -25,6 +25,7 @@ pub(in crate::gateway) mod decision_chain {
     pub(in crate::gateway) const SELECTION_METHOD_SESSION_REUSE: &str = "session_reuse";
     pub(in crate::gateway) const SELECTION_METHOD_ORDERED: &str = "ordered";
     pub(in crate::gateway) const SELECTION_METHOD_FILTERED: &str = "filtered";
+    pub(in crate::gateway) const SELECTION_METHOD_CIRCUIT_PROBE: &str = "circuit_probe";
 
     pub(in crate::gateway) const REASON_REQUEST_SUCCESS: &str = "request_success";
     pub(in crate::gateway) const REASON_RETRY_SUCCESS: &str = "retry_success";
@@ -91,6 +92,10 @@ pub(super) struct FailoverAttempt {
     pub(super) circuit_state_after: Option<&'static str>,
     pub(super) circuit_failure_count: Option<u32>,
     pub(super) circuit_failure_threshold: Option<u32>,
+    pub(super) probe: Option<bool>,
+    pub(super) probe_trigger: Option<&'static str>,
+    pub(super) probe_result: Option<&'static str>,
+    pub(super) probe_generation: Option<u64>,
     // Circuit attribution for circuit-gate skip attempts (recovery point and
     // the error code that triggered the breaker). Serialized only when set so
     // success attempts and non-circuit paths gain zero bytes in attempts_json.
@@ -199,6 +204,10 @@ pub(crate) struct GatewayAttemptEvent {
     pub(super) circuit_state_after: Option<&'static str>,
     pub(super) circuit_failure_count: Option<u32>,
     pub(super) circuit_failure_threshold: Option<u32>,
+    pub(super) probe: Option<bool>,
+    pub(super) probe_trigger: Option<&'static str>,
+    pub(super) probe_result: Option<&'static str>,
+    pub(super) probe_generation: Option<u64>,
     pub(super) claude_model_mapping: Option<ClaudeModelMapping>,
 }
 
@@ -758,6 +767,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: None,
             circuit_failure_threshold: None,
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
@@ -882,6 +895,10 @@ mod tests {
                 circuit_state_after: Some("CLOSED"),
                 circuit_failure_count: Some(0),
                 circuit_failure_threshold: Some(5),
+                probe: None,
+                probe_trigger: None,
+                probe_result: None,
+                probe_generation: None,
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
@@ -971,6 +988,10 @@ mod tests {
             circuit_state_after: Some("CLOSED"),
             circuit_failure_count: Some(0),
             circuit_failure_threshold: Some(5),
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
             claude_model_mapping: Some(fixture_mapping()),
         };
 
@@ -1182,6 +1203,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: None,
             circuit_failure_threshold: None,
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
             claude_model_mapping: Some(ClaudeModelMapping {
                 requested_model: repeated_ascii(EVENT_SHORT_TEXT_MAX_CHARS + 1),
                 effective_model: repeated_ascii(EVENT_SHORT_TEXT_MAX_CHARS + 1),
@@ -1262,6 +1287,10 @@ mod tests {
             circuit_state_after: None,
             circuit_failure_count: None,
             circuit_failure_threshold: None,
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
             claude_model_mapping: Some(sample_mapping()),
         };
 

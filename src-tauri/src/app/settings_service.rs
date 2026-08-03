@@ -45,6 +45,8 @@ pub(crate) struct SettingsUpdate {
     // Option keeps older frontend payloads valid (0 = keep forever).
     pub request_log_retention_days: Option<u32>,
     pub provider_cooldown_seconds: Option<u32>,
+    pub provider_failback_strategy: Option<settings::ProviderFailbackStrategy>,
+    pub natural_probe_max_wait_seconds: Option<u32>,
     pub provider_base_url_ping_cache_ttl_seconds: Option<u32>,
     pub upstream_first_byte_timeout_seconds: Option<u32>,
     pub upstream_stream_idle_timeout_seconds: Option<u32>,
@@ -122,6 +124,8 @@ struct SettingsServiceOwnedToken {
     log_retention_days: u32,
     request_log_retention_days: u32,
     provider_cooldown_seconds: u32,
+    provider_failback_strategy: settings::ProviderFailbackStrategy,
+    natural_probe_max_wait_seconds: u32,
     provider_base_url_ping_cache_ttl_seconds: u32,
     upstream_first_byte_timeout_seconds: u32,
     upstream_stream_idle_timeout_seconds: u32,
@@ -177,6 +181,8 @@ impl SettingsServiceOwnedToken {
             log_retention_days: settings.log_retention_days,
             request_log_retention_days: settings.request_log_retention_days,
             provider_cooldown_seconds: settings.provider_cooldown_seconds,
+            provider_failback_strategy: settings.provider_failback_strategy,
+            natural_probe_max_wait_seconds: settings.natural_probe_max_wait_seconds,
             provider_base_url_ping_cache_ttl_seconds: settings
                 .provider_base_url_ping_cache_ttl_seconds,
             upstream_first_byte_timeout_seconds: settings.upstream_first_byte_timeout_seconds,
@@ -240,6 +246,8 @@ impl SettingsServiceOwnedToken {
         settings.log_retention_days = self.log_retention_days;
         settings.request_log_retention_days = self.request_log_retention_days;
         settings.provider_cooldown_seconds = self.provider_cooldown_seconds;
+        settings.provider_failback_strategy = self.provider_failback_strategy;
+        settings.natural_probe_max_wait_seconds = self.natural_probe_max_wait_seconds;
         settings.provider_base_url_ping_cache_ttl_seconds =
             self.provider_base_url_ping_cache_ttl_seconds;
         settings.upstream_first_byte_timeout_seconds = self.upstream_first_byte_timeout_seconds;
@@ -316,6 +324,8 @@ pub(crate) struct SettingsView {
     pub log_retention_days: u32,
     pub request_log_retention_days: u32,
     pub provider_cooldown_seconds: u32,
+    pub provider_failback_strategy: settings::ProviderFailbackStrategy,
+    pub natural_probe_max_wait_seconds: u32,
     pub provider_base_url_ping_cache_ttl_seconds: u32,
     pub upstream_first_byte_timeout_seconds: u32,
     pub upstream_stream_idle_timeout_seconds: u32,
@@ -438,6 +448,8 @@ impl From<&settings::AppSettings> for SettingsView {
             log_retention_days: value.log_retention_days,
             request_log_retention_days: value.request_log_retention_days,
             provider_cooldown_seconds: value.provider_cooldown_seconds,
+            provider_failback_strategy: value.provider_failback_strategy,
+            natural_probe_max_wait_seconds: value.natural_probe_max_wait_seconds,
             provider_base_url_ping_cache_ttl_seconds: value
                 .provider_base_url_ping_cache_ttl_seconds,
             upstream_first_byte_timeout_seconds: value.upstream_first_byte_timeout_seconds,
@@ -544,6 +556,8 @@ fn sync_runtime_side_effects<R: tauri::Runtime>(
         app,
         next_settings.circuit_breaker_failure_threshold.max(1),
         (next_settings.circuit_breaker_open_duration_minutes as i64).saturating_mul(60),
+        next_settings.provider_cooldown_seconds as i64,
+        next_settings.natural_probe_max_wait_seconds as i64,
     );
     if !circuit_runtime_updated {
         tracing::debug!("circuit runtime is not active; settings commit remains canonical");
@@ -706,6 +720,12 @@ fn apply_settings_update_owned_patch(
     let provider_cooldown_seconds = update
         .provider_cooldown_seconds
         .unwrap_or(previous_token.provider_cooldown_seconds);
+    let provider_failback_strategy = update
+        .provider_failback_strategy
+        .unwrap_or(previous_token.provider_failback_strategy);
+    let natural_probe_max_wait_seconds = update
+        .natural_probe_max_wait_seconds
+        .unwrap_or(previous_token.natural_probe_max_wait_seconds);
     let gateway_listen_mode = update
         .gateway_listen_mode
         .unwrap_or(previous_token.gateway_listen_mode);
@@ -895,6 +915,8 @@ fn apply_settings_update_owned_patch(
         log_retention_days: update.log_retention_days,
         request_log_retention_days,
         provider_cooldown_seconds,
+        provider_failback_strategy,
+        natural_probe_max_wait_seconds,
         provider_base_url_ping_cache_ttl_seconds,
         upstream_first_byte_timeout_seconds,
         upstream_stream_idle_timeout_seconds,
@@ -2322,6 +2344,8 @@ mod tests {
             circuit_breaker_open_duration_minutes: Some(
                 settings.circuit_breaker_open_duration_minutes,
             ),
+            provider_failback_strategy: Some(settings.provider_failback_strategy),
+            natural_probe_max_wait_seconds: Some(settings.natural_probe_max_wait_seconds),
             update_releases_url: Some(settings.update_releases_url.clone()),
             wsl_auto_config: Some(settings.wsl_auto_config),
             wsl_target_cli: Some(settings.wsl_target_cli),

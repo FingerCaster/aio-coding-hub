@@ -604,7 +604,7 @@ describe("home/RequestLogDetailDialog", () => {
     expect(screen.getByText(/Provider 内部错误/)).toBeInTheDocument();
   });
 
-  it("uses live trace provider and elapsed duration for in-progress logs", () => {
+  it("uses live trace probe metadata, provider, and elapsed duration for in-progress logs", () => {
     vi.useFakeTimers();
     vi.setSystemTime(new Date("2026-03-29T12:00:00.000Z"));
 
@@ -653,6 +653,10 @@ describe("home/RequestLogDetailDialog", () => {
               circuit_state_after: null,
               circuit_failure_count: null,
               circuit_failure_threshold: null,
+              probe: true,
+              probe_trigger: "aggressive_turn",
+              probe_result: "started",
+              probe_generation: 3,
               claude_model_mapping: null,
             },
           ],
@@ -660,7 +664,7 @@ describe("home/RequestLogDetailDialog", () => {
       ],
     });
 
-    render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+    const view = render(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
 
     // Live duration is on the summary tab
     expectMetricValue("总耗时", "6.50s");
@@ -673,6 +677,65 @@ describe("home/RequestLogDetailDialog", () => {
     // Switch to chain tab to see live provider
     switchToTab("决策链");
     expect(screen.getByText("当前供应商：Provider Live")).toBeInTheDocument();
+    expect(
+      screen.getByText("数据源：实时网关事件 + request_logs.attempts_json")
+    ).toBeInTheDocument();
+    expect(screen.getByText("试探中")).toBeInTheDocument();
+    expect(screen.getByText("触发：积极回切")).toBeInTheDocument();
+    expect(screen.getByText("代次 3")).toBeInTheDocument();
+    expect(screen.getByText("共尝试 1 次")).toBeInTheDocument();
+
+    setTraceStoreState({
+      traces: [
+        {
+          ...traceStoreState.traces[0],
+          summary: {
+            trace_id: "trace-1",
+            cli_key: "claude",
+            session_id: null,
+            method: "POST",
+            path: "/v1/messages",
+            query: null,
+            requested_model: "claude-3",
+            special_settings_json: null,
+            status: 200,
+            error_category: null,
+            error_code: null,
+            duration_ms: 7_500,
+            ttfb_ms: 100,
+            visible_ttfb_ms: 100,
+            attempts: [
+              {
+                provider_id: 42,
+                provider_name: "Provider Live",
+                base_url: "https://provider-live.example.com",
+                outcome: "success",
+                status: 200,
+                requested_upstream_model: null,
+                selection_method: "circuit_probe",
+                probe: true,
+                probe_trigger: "aggressive_turn",
+                probe_result: "success",
+                probe_generation: 3,
+              },
+            ],
+            input_tokens: null,
+            output_tokens: null,
+            total_tokens: null,
+            cache_read_input_tokens: null,
+            cache_creation_input_tokens: null,
+            cache_creation_5m_input_tokens: null,
+            cache_creation_1h_input_tokens: null,
+            effective_input_tokens: null,
+            claude_model_mapping: null,
+          },
+        },
+      ],
+    });
+    view.rerender(<RequestLogDetailDialog selectedLogId={1} onSelectLogId={vi.fn()} />);
+
+    expect(screen.queryByText("试探中")).not.toBeInTheDocument();
+    expect(screen.getByText("试探成功")).toBeInTheDocument();
   });
 
   it.each([

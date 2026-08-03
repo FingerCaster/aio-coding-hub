@@ -25,8 +25,45 @@ pub(super) fn apply_ensure_patches(conn: &mut Connection) -> crate::shared::erro
     ensure_provider_stream_idle_timeout(conn)?;
     ensure_provider_availability_test_model(conn)?;
     ensure_provider_upstream_retry_policy(conn)?;
+    ensure_provider_circuit_probe_columns(conn)?;
     ensure_skills_update_columns(conn)?;
     ensure_plugin_tables(conn)?;
+    Ok(())
+}
+
+fn ensure_provider_circuit_probe_columns(conn: &Connection) -> crate::shared::error::AppResult<()> {
+    let has_table: bool = conn
+        .query_row(
+            "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'provider_circuit_breakers' LIMIT 1",
+            [],
+            |_| Ok(true),
+        )
+        .optional()
+        .map_err(|error| format!("failed to inspect provider_circuit_breakers: {error}"))?
+        .unwrap_or(false);
+    if !has_table {
+        return Ok(());
+    }
+
+    for (column, definition) in [
+        ("probe_reference_at", "INTEGER"),
+        ("next_probe_at", "INTEGER"),
+        ("natural_probe_due_at", "INTEGER"),
+        ("recovery_guard_until", "INTEGER"),
+        (
+            "state_revision",
+            "INTEGER NOT NULL DEFAULT 0 CHECK(state_revision >= 0)",
+        ),
+    ] {
+        if !column_exists(conn, "provider_circuit_breakers", column)? {
+            conn.execute_batch(&format!(
+                "ALTER TABLE provider_circuit_breakers ADD COLUMN {column} {definition};"
+            ))
+            .map_err(|error| {
+                format!("failed to ensure provider_circuit_breakers.{column}: {error}")
+            })?;
+        }
+    }
     Ok(())
 }
 

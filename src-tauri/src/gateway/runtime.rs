@@ -78,6 +78,55 @@ mod tests {
 
         assert!(active_requests.snapshot().is_empty());
     }
+
+    #[test]
+    fn circuit_reset_provider_returns_revisioned_closed_tombstone() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let runtime = GatewayRuntime::for_tests(
+            &rt,
+            Arc::new(session_manager::SessionManager::new()),
+            Arc::new(Mutex::new(RecentErrorCache::default())),
+        );
+        runtime.update_circuit_config(1, 60, 30, 300);
+        let opened = runtime.circuit.record_failure(7, 1_000, None).after;
+
+        let tombstone = runtime
+            .circuit_reset_provider(7, 1_001)
+            .expect("reset tombstone");
+
+        assert_eq!(tombstone.provider_id, 7);
+        assert_eq!(tombstone.state, circuit_breaker::CircuitState::Closed);
+        assert!(tombstone.state_revision > opened.state_revision);
+        assert_eq!(tombstone.open_until, None);
+        assert_eq!(tombstone.next_probe_at, None);
+    }
+
+    #[test]
+    fn circuit_reset_cli_returns_each_revisioned_closed_tombstone() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let runtime = GatewayRuntime::for_tests(
+            &rt,
+            Arc::new(session_manager::SessionManager::new()),
+            Arc::new(Mutex::new(RecentErrorCache::default())),
+        );
+        runtime.update_circuit_config(1, 60, 30, 300);
+        runtime.circuit.record_failure(8, 1_000, None);
+        runtime.circuit.record_failure(9, 1_000, None);
+
+        let tombstones = runtime.circuit_reset_cli(&[8, 9], 1_001);
+
+        assert_eq!(tombstones.len(), 2);
+        assert_eq!(
+            tombstones
+                .iter()
+                .map(|item| item.provider_id)
+                .collect::<Vec<_>>(),
+            vec![8, 9]
+        );
+        assert!(tombstones
+            .iter()
+            .all(|item| item.state == circuit_breaker::CircuitState::Closed));
+    }
 }
 
 impl<R: tauri::Runtime> GatewayAppState<R> {
@@ -222,23 +271,45 @@ impl GatewayRuntime {
             .collect()
     }
 
-    pub(crate) fn circuit_reset_provider(&self, provider_id: i64, now_unix: i64) {
+    pub(crate) fn circuit_reset_provider(
+        &self,
+        provider_id: i64,
+        now_unix: i64,
+    ) -> Option<circuit_breaker::CircuitPersistedState> {
         self.circuit.reset(provider_id, now_unix);
         self.clear_recent_errors();
+        self.circuit.persisted_state(provider_id)
     }
 
-    pub(crate) fn circuit_reset_cli(&self, provider_ids: &[i64], now_unix: i64) {
+    pub(crate) fn circuit_reset_cli(
+        &self,
+        provider_ids: &[i64],
+        now_unix: i64,
+    ) -> Vec<circuit_breaker::CircuitPersistedState> {
+        let mut tombstones = Vec::with_capacity(provider_ids.len());
         for provider_id in provider_ids {
             self.circuit.reset(*provider_id, now_unix);
+            if let Some(tombstone) = self.circuit.persisted_state(*provider_id) {
+                tombstones.push(tombstone);
+            }
         }
         self.clear_recent_errors();
+        tombstones
     }
 
-    pub(crate) fn update_circuit_config(&self, failure_threshold: u32, open_duration_secs: i64) {
+    pub(crate) fn update_circuit_config(
+        &self,
+        failure_threshold: u32,
+        open_duration_secs: i64,
+        provider_cooldown_secs: i64,
+        natural_probe_max_wait_secs: i64,
+    ) {
         self.circuit
             .update_config(circuit_breaker::CircuitBreakerConfig {
                 failure_threshold,
                 open_duration_secs,
+                provider_cooldown_secs,
+                natural_probe_max_wait_secs,
             });
     }
 

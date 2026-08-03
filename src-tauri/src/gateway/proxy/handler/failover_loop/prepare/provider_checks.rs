@@ -5,7 +5,9 @@
 
 use super::provider_iterator::{IterationCounters, SkipReason};
 use super::*;
-use crate::gateway::proxy::gemini_oauth::GeminiOAuthResponseMode;
+use crate::gateway::proxy::{
+    gemini_oauth::GeminiOAuthResponseMode, provider_router::ProbeGateSkip,
+};
 
 pub(super) fn skip_with_reason(
     attempts: &mut Vec<FailoverAttempt>,
@@ -27,6 +29,8 @@ pub(super) fn skip_with_reason(
             reason_code: None,
             attempt_started_ms,
             circuit: None,
+            probe_trigger: None,
+            probe_result: None,
         },
     );
 }
@@ -49,6 +53,7 @@ pub(super) fn run_gates<R: tauri::Runtime>(
     let skipped_open_before = counters.skipped_open;
     let skipped_cooldown_before = counters.skipped_cooldown;
     let mut deny_snapshot = None;
+    let mut probe_skip = None;
     let gate_allow = provider_gate::gate_provider(provider_gate::ProviderGateInput {
         ctx,
         provider_id: identity.provider_id,
@@ -58,14 +63,31 @@ pub(super) fn run_gates<R: tauri::Runtime>(
         skipped_open: &mut counters.skipped_open,
         skipped_cooldown: &mut counters.skipped_cooldown,
         deny_snapshot: &mut deny_snapshot,
+        probe_skip: &mut probe_skip,
+        dispatch_intent: input.dispatch_intent.as_ref(),
     });
     if gate_allow.is_none() {
-        let (reason_code, reason_label) = if counters.skipped_open > skipped_open_before {
-            (Some(dc::REASON_CIRCUIT_OPEN), "open")
-        } else if counters.skipped_cooldown > skipped_cooldown_before {
-            (Some(dc::REASON_CIRCUIT_COOLDOWN), "cooldown")
-        } else {
-            (None, "unknown")
+        let probe_trigger = input
+            .dispatch_intent
+            .as_ref()
+            .filter(|intent| intent.targets_provider(identity.provider_id))
+            .and_then(|intent| intent.probe_trigger())
+            .map(|trigger| trigger.as_str());
+        let probe_result = match probe_skip {
+            Some(ProbeGateSkip::Cooldown) => Some("cooldown"),
+            Some(ProbeGateSkip::InFlight) => Some("in_flight"),
+            None => None,
+        };
+        let (reason_code, reason_label) = match probe_skip {
+            Some(ProbeGateSkip::Cooldown) => (Some(dc::REASON_CIRCUIT_COOLDOWN), "cooldown"),
+            Some(ProbeGateSkip::InFlight) => (Some(dc::REASON_CIRCUIT_OPEN), "in_flight"),
+            None if counters.skipped_open > skipped_open_before => {
+                (Some(dc::REASON_CIRCUIT_OPEN), "open")
+            }
+            None if counters.skipped_cooldown > skipped_cooldown_before => {
+                (Some(dc::REASON_CIRCUIT_COOLDOWN), "cooldown")
+            }
+            None => (None, "unknown"),
         };
         push_skipped_provider_attempt(
             attempts,
@@ -79,6 +101,8 @@ pub(super) fn run_gates<R: tauri::Runtime>(
                 reason_code,
                 attempt_started_ms: input.started.elapsed().as_millis(),
                 circuit: deny_snapshot,
+                probe_trigger,
+                probe_result,
             },
         );
         return None;
@@ -102,6 +126,8 @@ pub(super) fn run_gates<R: tauri::Runtime>(
                 reason_code: Some(dc::REASON_RATE_LIMITED),
                 attempt_started_ms: input.started.elapsed().as_millis(),
                 circuit: None,
+                probe_trigger: None,
+                probe_result: None,
             },
         );
         return None;

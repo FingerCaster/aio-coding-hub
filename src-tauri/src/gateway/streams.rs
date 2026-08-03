@@ -7,7 +7,9 @@ mod finalize;
 mod request_end;
 
 mod relay;
-pub(super) use relay::{FirstChunkStream, RelayBodyStream};
+pub(super) use relay::FirstChunkStream;
+#[cfg(test)]
+pub(super) use relay::RelayBodyStream;
 
 mod gunzip;
 pub(super) use gunzip::GunzipStream;

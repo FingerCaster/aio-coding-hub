@@ -90,6 +90,7 @@ fn open_circuit_for_provider(provider_id: i64, now: i64) -> circuit_breaker::Cir
         circuit_breaker::CircuitBreakerConfig {
             failure_threshold: 1,
             open_duration_secs: 3600,
+            ..Default::default()
         },
         HashMap::new(),
         None,

@@ -289,6 +289,93 @@ describe("components/home/RealtimeTraceCards", () => {
     expect(screen.getByText("Provider C")).toBeInTheDocument();
   });
 
+  it("excludes not-triggered probe observations from the live route and attempt count", () => {
+    const baseTime = 1_700_000_000_000;
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-not-triggered-probe",
+            attempts: [
+              {
+                attempt_index: 0,
+                provider_id: 1,
+                provider_name: "P1",
+                outcome: "skipped",
+                probe_result: "not_triggered",
+              },
+              {
+                attempt_index: 1,
+                provider_id: 2,
+                provider_name: "P2",
+                outcome: "success",
+                status: 200,
+              },
+            ],
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    const attemptMetric = screen.getByText("尝试次数").parentElement;
+    expect(attemptMetric).not.toBeNull();
+    expect(within(attemptMetric as HTMLElement).getByText("1")).toBeInTheDocument();
+
+    const routeMetric = screen.getByText("当前链路").parentElement;
+    expect(routeMetric).not.toBeNull();
+    const routeValue = within(routeMetric as HTMLElement).getByText("P2");
+    expect(routeValue).toBeInTheDocument();
+    expect(routeValue).toHaveAttribute("title", "P2");
+    expect(screen.getByText("等待结果")).toBeInTheDocument();
+    expect(screen.queryByText("切换处理中")).not.toBeInTheDocument();
+  });
+
+  it("keeps legacy skipped attempts in the live route and attempt count", () => {
+    const baseTime = 1_700_000_000_000;
+    render(
+      <RealtimeTraceCards
+        folderLookupBySessionKey={new Map()}
+        cards={cards([
+          traceBase({
+            trace_id: "t-legacy-skip",
+            attempts: [
+              {
+                attempt_index: 0,
+                provider_id: 1,
+                provider_name: "P1",
+                outcome: "skipped",
+              },
+              {
+                attempt_index: 1,
+                provider_id: 2,
+                provider_name: "P2",
+                outcome: "started",
+              },
+            ],
+          }),
+        ])}
+        nowMs={baseTime}
+        formatUnixSeconds={(ts) => String(ts)}
+        showCustomTooltip={false}
+      />
+    );
+
+    const attemptMetric = screen.getByText("尝试次数").parentElement;
+    expect(attemptMetric).not.toBeNull();
+    expect(within(attemptMetric as HTMLElement).getByText("2")).toBeInTheDocument();
+
+    const routeMetric = screen.getByText("当前链路").parentElement;
+    expect(routeMetric).not.toBeNull();
+    const routeValue = within(routeMetric as HTMLElement).getByText("P1 → P2");
+    expect(routeValue).toBeInTheDocument();
+    expect(routeValue).toHaveAttribute("title", "P1 → P2");
+    expect(screen.getByText("切换处理中")).toBeInTheDocument();
+  });
+
   it("renders in-progress and completed traces, including route and cache hints", () => {
     vi.useFakeTimers();
     const baseTime = 1_700_000_000_000;

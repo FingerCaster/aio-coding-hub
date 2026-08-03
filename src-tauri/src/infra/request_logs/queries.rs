@@ -97,6 +97,13 @@ pub(super) struct AttemptRow {
     decision: Option<String>,
     reason: Option<String>,
     session_reuse: Option<bool>,
+    probe_result: Option<String>,
+}
+
+impl AttemptRow {
+    fn is_not_triggered_probe_observation(&self) -> bool {
+        self.probe_result.as_deref() == Some("not_triggered")
+    }
 }
 
 pub(super) fn parse_attempts(attempts_json: &str) -> Vec<AttemptRow> {
@@ -142,7 +149,7 @@ pub(super) fn route_from_attempts(attempts: &[AttemptRow]) -> Vec<RequestLogRout
     let mut last_provider_id: i64 = 0;
     let mut last_hop_attempt_count: i64 = 0;
     for attempt in attempts {
-        if attempt.provider_id <= 0 {
+        if attempt.provider_id <= 0 || attempt.is_not_triggered_probe_observation() {
             continue;
         }
         if attempt.provider_id == last_provider_id {
@@ -328,13 +335,16 @@ fn attach_source_provider_info(
 fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<RequestLogSummary, rusqlite::Error> {
     let attempts_json: String = row.get("attempts_json")?;
     let attempts = parse_attempts(&attempts_json);
-    let attempt_count = attempts.len() as i64;
+    let attempt_count = attempts
+        .iter()
+        .filter(|attempt| !attempt.is_not_triggered_probe_observation())
+        .count() as i64;
     let (start_provider_id, start_provider_name) = start_provider_from_attempts(&attempts);
     let (final_provider_id, final_provider_name) = final_provider_from_attempts(&attempts);
     let route = route_from_attempts(&attempts);
-    // has_failover: 切换过 provider（route 中有多个 hop）。注意 provider_id>0 的
-    // skipped attempt 也计入 hop（见 route_includes_skipped_attempts 测试）；前端
-    // src/services/gateway/traceRoute.ts 复刻此语义，两侧需保持同步。
+    // has_failover: 切换过 provider（route 中有多个 hop）。注意普通 provider_id>0
+    // 的 skipped attempt 也计入 hop；probe_result=not_triggered 只是规划观测，不计入
+    // provider hop/attempt。前端 traceRoute.ts 复刻此语义，两侧需保持同步。
     let has_failover = route.len() > 1;
     let session_reuse = attempts
         .iter()
@@ -741,6 +751,65 @@ INSERT INTO request_logs (
         assert!(!route[1].skipped);
         assert!(route[1].ok);
         assert_eq!(route[1].attempts, 1);
+    }
+
+    #[test]
+    fn summaries_exclude_not_triggered_probe_observations_but_keep_legacy_skips() {
+        let dir = tempdir().unwrap();
+        let db_path = dir.path().join("request-log-probe-observation.db");
+        let db = db::init_for_tests(&db_path).unwrap();
+        let conn = db.open_connection().unwrap();
+
+        seed_request_log(&conn, 1, "trace-not-triggered", "codex", "/v1/responses");
+        seed_request_log(&conn, 2, "trace-legacy-skip", "codex", "/v1/responses");
+        conn.execute(
+            "UPDATE request_logs SET attempts_json = ?1 WHERE id = 1",
+            rusqlite::params![
+                r#"[
+                    {"provider_id":1,"provider_name":"P1","outcome":"skipped","status":null,"provider_index":null,"retry_index":null,"probe_result":"not_triggered"},
+                    {"provider_id":2,"provider_name":"P2","outcome":"success","status":200}
+                ]"#
+            ],
+        )
+        .unwrap();
+        conn.execute(
+            "UPDATE request_logs SET attempts_json = ?1 WHERE id = 2",
+            rusqlite::params![
+                r#"[
+                    {"provider_id":1,"provider_name":"P1","outcome":"skipped","status":null},
+                    {"provider_id":2,"provider_name":"P2","outcome":"success","status":200}
+                ]"#
+            ],
+        )
+        .unwrap();
+        drop(conn);
+
+        let summaries = list_recent_all(&db, 10).unwrap();
+        let probe_observation = summaries
+            .iter()
+            .find(|summary| summary.id == 1)
+            .expect("not-triggered summary");
+        assert_eq!(probe_observation.attempt_count, 1);
+        assert!(!probe_observation.has_failover);
+        assert_eq!(probe_observation.route.len(), 1);
+        assert_eq!(probe_observation.route[0].provider_id, 2);
+        assert_eq!(probe_observation.route[0].provider_name, "P2");
+
+        let legacy_skip = summaries
+            .iter()
+            .find(|summary| summary.id == 2)
+            .expect("legacy skipped summary");
+        assert_eq!(legacy_skip.attempt_count, 2);
+        assert!(legacy_skip.has_failover);
+        assert_eq!(
+            legacy_skip
+                .route
+                .iter()
+                .map(|hop| hop.provider_id)
+                .collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(legacy_skip.route[0].skipped);
     }
 
     #[test]

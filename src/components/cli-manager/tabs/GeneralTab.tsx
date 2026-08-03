@@ -15,6 +15,7 @@ import { Button } from "../../../ui/Button";
 import { Card } from "../../../ui/Card";
 import { Input } from "../../../ui/Input";
 import { SettingsRow } from "../../../ui/SettingsRow";
+import { RadioGroup } from "../../../ui/RadioGroup";
 import { Switch } from "../../../ui/Switch";
 import { NetworkSettingsCard } from "../NetworkSettingsCard";
 import { WslSettingsCard } from "../WslSettingsCard";
@@ -72,6 +73,10 @@ export type CliManagerGeneralTabProps = {
 
   providerCooldownSeconds: number;
   setProviderCooldownSeconds: (value: number) => void;
+  providerFailbackStrategy: AppSettings["provider_failback_strategy"];
+  setProviderFailbackStrategy: (value: AppSettings["provider_failback_strategy"]) => void;
+  naturalProbeMaxWaitSeconds: number;
+  setNaturalProbeMaxWaitSeconds: (value: number) => void;
   providerBaseUrlPingCacheTtlSeconds: number;
   setProviderBaseUrlPingCacheTtlSeconds: (value: number) => void;
   circuitBreakerFailureThreshold: number;
@@ -118,6 +123,10 @@ export function CliManagerGeneralTab({
   setUpstreamRequestTimeoutNonStreamingSeconds,
   providerCooldownSeconds,
   setProviderCooldownSeconds,
+  providerFailbackStrategy,
+  setProviderFailbackStrategy,
+  naturalProbeMaxWaitSeconds,
+  setNaturalProbeMaxWaitSeconds,
   providerBaseUrlPingCacheTtlSeconds,
   setProviderBaseUrlPingCacheTtlSeconds,
   circuitBreakerFailureThreshold,
@@ -547,7 +556,80 @@ export function CliManagerGeneralTab({
               iconClassName="bg-orange-500"
             >
               <div className="divide-y divide-border">
-                <SettingsRow label="Provider 冷却" subtitle="单个 Provider 失败后的短暂冷却时间。">
+                <SettingsRow
+                  label="回切策略"
+                  subtitle="自然回切在当前会话完成压缩后的下一轮优先检查；积极回切在同一会话的每一轮都检查更高优先级 Provider。"
+                >
+                  <RadioGroup
+                    name="provider-failback-strategy"
+                    ariaLabel="回切策略"
+                    value={providerFailbackStrategy}
+                    onChange={(value) => {
+                      const next = value === "aggressive" ? "aggressive" : "natural";
+                      setProviderFailbackStrategy(next);
+                      void onPersistCommonSettings({ provider_failback_strategy: next });
+                    }}
+                    options={[
+                      {
+                        value: "natural",
+                        label: "自然回切",
+                        description:
+                          "压缩完成后的下一轮优先检查；无可靠压缩信号时使用全局最大等待兜底。",
+                      },
+                      {
+                        value: "aggressive",
+                        label: "积极回切",
+                        description:
+                          "当前会话每一轮都检查更高优先级 Provider；仍受试探最短间隔和单飞限制。",
+                      },
+                    ]}
+                    disabled={commonSettingsDisabled}
+                  />
+                </SettingsRow>
+
+                {providerFailbackStrategy === "natural" ? (
+                  <SettingsRow
+                    label="自然模式最长试探等待"
+                    subtitle="没有可靠压缩信号时，最多等待多久后由下一条合格的真实请求申请试探；这是 Provider 全局兜底，不按会话重复计时。"
+                  >
+                    <div className="flex items-center gap-2">
+                      <Input
+                        aria-label="自然模式最长试探等待"
+                        type="number"
+                        value={naturalProbeMaxWaitSeconds}
+                        onChange={(e) => {
+                          const next = e.currentTarget.valueAsNumber;
+                          if (Number.isFinite(next)) setNaturalProbeMaxWaitSeconds(next);
+                        }}
+                        onBlur={(e) => {
+                          if (!appSettings) return;
+                          const next = e.currentTarget.valueAsNumber;
+                          if (!Number.isFinite(next) || next < 1 || next > 86400) {
+                            toast("自然模式最长试探等待必须为 1-86400 秒");
+                            setNaturalProbeMaxWaitSeconds(
+                              appSettings.natural_probe_max_wait_seconds
+                            );
+                            return;
+                          }
+                          void onPersistCommonSettings({
+                            natural_probe_max_wait_seconds: next,
+                          });
+                        }}
+                        onKeyDown={blurOnEnter}
+                        style={{ width: "6rem" }}
+                        min={1}
+                        max={86400}
+                        disabled={commonSettingsDisabled}
+                      />
+                      <span className="w-8 text-sm text-muted-foreground">秒</span>
+                    </div>
+                  </SettingsRow>
+                ) : null}
+
+                <SettingsRow
+                  label="Provider 冷却 / 试探最短间隔"
+                  subtitle="失败 Provider 的短暂冷却，也是自动试探的最短实际调用间隔；策略触发不会绕过它。0 表示串行下一轮可立即试探。"
+                >
                   <div className="flex items-center gap-2">
                     <Input
                       type="number"
@@ -643,7 +725,10 @@ export function CliManagerGeneralTab({
                   </div>
                 </SettingsRow>
 
-                <SettingsRow label="熔断时长" subtitle="触发熔断后暂停该 Provider 的持续时间。">
+                <SettingsRow
+                  label="最长熔断等待（可提前试探）"
+                  subtitle="达到此时间只允许下一条合格请求申请单飞试探，不会自动解除熔断；满足策略触发和最短间隔时可以提前试探。"
+                >
                   <div className="flex items-center gap-2">
                     <Input
                       type="number"
@@ -656,7 +741,7 @@ export function CliManagerGeneralTab({
                         if (!appSettings) return;
                         const next = e.currentTarget.valueAsNumber;
                         if (!Number.isFinite(next) || next < 1 || next > 1440) {
-                          toast("熔断时长必须为 1-1440 分钟");
+                          toast("最长熔断等待必须为 1-1440 分钟");
                           setCircuitBreakerOpenDurationMinutes(
                             appSettings.circuit_breaker_open_duration_minutes
                           );

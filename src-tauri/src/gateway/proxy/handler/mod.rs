@@ -193,12 +193,16 @@ where
         requested_model_location: None,
         managed_model_route: None,
         is_compact_request: false,
+        is_warmup_request: false,
+        codex_compaction_fingerprint: None,
         runtime_settings: None,
         session_id: None,
         allow_session_reuse: false,
         effective_sort_mode_id: None,
         providers: vec![],
         session_bound_provider_id: None,
+        dispatch_intent: None,
+        probe_observations: Vec::new(),
         forced_provider_id,
         fingerprint_key: 0,
         fingerprint_debug: String::new(),
@@ -477,12 +481,16 @@ mod tests {
             requested_model_location: None,
             managed_model_route: None,
             is_compact_request: false,
+            is_warmup_request: false,
+            codex_compaction_fingerprint: None,
             runtime_settings: None,
             session_id: Some("session-start".to_string()),
             allow_session_reuse: false,
             effective_sort_mode_id: None,
             providers: vec![],
             session_bound_provider_id: None,
+            dispatch_intent: None,
+            probe_observations: Vec::new(),
             forced_provider_id: None,
             fingerprint_key: 0,
             fingerprint_debug: String::new(),
@@ -541,12 +549,16 @@ mod tests {
             requested_model_location: None,
             managed_model_route: None,
             is_compact_request: false,
+            is_warmup_request: false,
+            codex_compaction_fingerprint: None,
             runtime_settings: None,
             session_id: None,
             allow_session_reuse: false,
             effective_sort_mode_id: None,
             providers: vec![],
             session_bound_provider_id: None,
+            dispatch_intent: None,
+            probe_observations: Vec::new(),
             forced_provider_id: None,
             fingerprint_key: 0,
             fingerprint_debug: String::new(),
@@ -596,12 +608,16 @@ mod tests {
             requested_model_location: None,
             managed_model_route: None,
             is_compact_request: false,
+            is_warmup_request: false,
+            codex_compaction_fingerprint: None,
             runtime_settings: None,
             session_id: Some("session-guard".to_string()),
             allow_session_reuse: false,
             effective_sort_mode_id: None,
             providers: vec![],
             session_bound_provider_id: None,
+            dispatch_intent: None,
+            probe_observations: Vec::new(),
             forced_provider_id: None,
             fingerprint_key: 0,
             fingerprint_debug: String::new(),
@@ -976,7 +992,7 @@ mod tests {
     }
 
     #[test]
-    fn apply_session_reuse_binding_rotates_from_bound_provider_when_allowed() {
+    fn apply_session_reuse_binding_moves_bound_first_and_preserves_latest_fallback_order() {
         let mut providers = vec![provider(11), provider(22), provider(33)];
 
         let selected = super::provider_selection::apply_session_reuse_provider_binding(
@@ -987,11 +1003,11 @@ mod tests {
         );
 
         assert_eq!(selected, Some(22));
-        assert_eq!(provider_ids(&providers), vec![22, 33, 11]);
+        assert_eq!(provider_ids(&providers), vec![22, 11, 33]);
     }
 
     #[test]
-    fn apply_session_reuse_binding_rotates_to_next_when_bound_missing() {
+    fn apply_session_reuse_binding_keeps_latest_order_when_bound_is_missing() {
         let mut providers = vec![provider(10), provider(20), provider(30)];
 
         let selected = super::provider_selection::apply_session_reuse_provider_binding(
@@ -1002,7 +1018,7 @@ mod tests {
         );
 
         assert_eq!(selected, None);
-        assert_eq!(provider_ids(&providers), vec![30, 10, 20]);
+        assert_eq!(provider_ids(&providers), vec![10, 20, 30]);
     }
 
     #[test]

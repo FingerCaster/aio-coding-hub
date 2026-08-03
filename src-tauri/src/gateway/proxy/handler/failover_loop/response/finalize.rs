@@ -1,6 +1,7 @@
 //! Usage: Finalize responses for failover loop terminal states.
 
 use super::context::AttemptOutcome;
+use super::loop_helpers::counted_provider_attempts;
 use super::{
     emit_request_event_and_enqueue_request_log, RequestEndArgs, RequestEndContextArgs,
     RequestEndDeps,
@@ -238,7 +239,7 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
         trace_id = %trace_id,
         error_code = final_error_code,
         cli_key = %cli_key,
-        attempt_count = attempts.len(),
+        attempt_count = counted_provider_attempts(&attempts),
         duration_ms = %started.elapsed().as_millis(),
         "all providers failed"
     );

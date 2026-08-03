@@ -30,6 +30,7 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) requested_model: &'a Option<String>,
     pub(super) managed_model_route:
         Option<&'a crate::gateway::managed_model_route::ManagedModelRoute>,
+    pub(super) is_compact_request: bool,
     pub(super) cx2cc_settings: &'a Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: &'a Arc<Mutex<Vec<serde_json::Value>>>,
@@ -61,6 +62,7 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) requested_model: &'a Option<String>,
     pub(super) managed_model_route:
         Option<&'a crate::gateway::managed_model_route::ManagedModelRoute>,
+    pub(super) is_compact_request: bool,
     pub(super) cx2cc_settings: &'a Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: &'a Arc<Mutex<Vec<serde_json::Value>>>,
@@ -101,6 +103,7 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             session_id: args.session_id,
             requested_model: args.requested_model,
             managed_model_route: args.managed_model_route,
+            is_compact_request: args.is_compact_request,
             cx2cc_settings: args.cx2cc_settings,
             effective_sort_mode_id: args.effective_sort_mode_id,
             special_settings: args.special_settings,
@@ -139,6 +142,7 @@ pub(super) struct CommonCtxOwned<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) session_id: Option<String>,
     pub(super) requested_model: Option<String>,
     pub(super) managed_model_route: Option<crate::gateway::managed_model_route::ManagedModelRoute>,
+    pub(super) is_compact_request: bool,
     pub(super) cx2cc_settings: Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
@@ -170,6 +174,7 @@ impl<'a, R: tauri::Runtime> From<CommonCtx<'a, R>> for CommonCtxOwned<'a, R> {
             session_id: ctx.session_id.clone(),
             requested_model: ctx.requested_model.clone(),
             managed_model_route: ctx.managed_model_route.cloned(),
+            is_compact_request: ctx.is_compact_request,
             cx2cc_settings: ctx.cx2cc_settings.clone(),
             effective_sort_mode_id: ctx.effective_sort_mode_id,
             special_settings: Arc::clone(ctx.special_settings),
@@ -201,6 +206,8 @@ pub(super) struct ProviderCtx<'a> {
     pub(super) stream_idle_timeout_seconds: Option<u32>,
     pub(super) upstream_retry_policy: &'a crate::settings::UpstreamRetryPolicy,
     pub(super) claude_model_mapping: Option<&'a ClaudeModelMapping>,
+    pub(super) dispatch_ownership:
+        Option<&'a std::sync::Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
 }
 
 pub(super) struct ProviderCtxOwned {
@@ -215,6 +222,8 @@ pub(super) struct ProviderCtxOwned {
     pub(super) provider_max_attempts: u32,
     pub(super) stream_idle_timeout_seconds: Option<u32>,
     pub(super) upstream_retry_policy: crate::settings::UpstreamRetryPolicy,
+    pub(super) dispatch_ownership:
+        Option<std::sync::Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
 }
 
 impl<'a> From<ProviderCtx<'a>> for ProviderCtxOwned {
@@ -231,6 +240,7 @@ impl<'a> From<ProviderCtx<'a>> for ProviderCtxOwned {
             provider_max_attempts: ctx.provider_max_attempts,
             stream_idle_timeout_seconds: ctx.stream_idle_timeout_seconds,
             upstream_retry_policy: ctx.upstream_retry_policy.clone(),
+            dispatch_ownership: ctx.dispatch_ownership.cloned(),
         }
     }
 }
@@ -245,6 +255,10 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
     attempt_started: Instant,
 ) -> StreamFinalizeCtx<R> {
     let attempts_json = serde_json::to_string(attempts).unwrap_or_else(|_| "[]".to_string());
+    let dispatch_ownership = provider_ctx.dispatch_ownership.clone();
+    if let Some(ownership) = dispatch_ownership.as_ref() {
+        ownership.defer_probe_terminal_to_stream();
+    }
 
     StreamFinalizeCtx {
         app: ctx.state.app.clone(),
@@ -252,9 +266,11 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         log_tx: ctx.state.log_tx.clone(),
         plugin_pipeline: ctx.state.plugin_pipeline.clone(),
         circuit: ctx.state.circuit.clone(),
+        dispatch_ownership,
         session: ctx.state.session.clone(),
         session_id: ctx.session_id.clone(),
         sort_mode_id: ctx.effective_sort_mode_id,
+        is_compact_request: ctx.is_compact_request,
         trace_id: ctx.trace_id.clone(),
         cli_key: ctx.cli_key.clone(),
         method: ctx.method_hint.clone(),

@@ -2,8 +2,25 @@
 // - Shared parser for `request_logs.attempts_json` (serialized gateway FailoverAttempt list).
 // - Single contract for the provider chain view and the error-card failure summary.
 // - `timeout_secs` is the structured first-byte timeout; never parse it out of `outcome`.
+// - Probe state is structured metadata; consumers must not infer it from `reason`.
 
-export type AttemptJsonEntry = {
+const PROBE_METADATA_TEXT_MAX_LENGTH = 64;
+
+export type AttemptProbeMetadata = {
+  probe?: boolean | null;
+  probe_trigger?: string | null;
+  probe_result?: string | null;
+  probe_generation?: number | null;
+};
+
+export type NormalizedAttemptProbeMetadata = {
+  probe: boolean | null;
+  probe_trigger: string | null;
+  probe_result: string | null;
+  probe_generation: number | null;
+};
+
+export type AttemptJsonEntry = AttemptProbeMetadata & {
   provider_id: number;
   provider_name: string;
   base_url: string;
@@ -31,6 +48,62 @@ export type AttemptJsonEntry = {
   circuit_trigger_error_code?: string | null;
   timeout_secs?: number | null;
 };
+
+function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === "object" && value !== null && !Array.isArray(value);
+}
+
+function normalizeProbeText(value: unknown): string | null | undefined {
+  if (value == null) return null;
+  if (typeof value !== "string") return undefined;
+  return value.slice(0, PROBE_METADATA_TEXT_MAX_LENGTH);
+}
+
+/**
+ * Normalizes both current payloads (explicit nulls) and legacy payloads
+ * (missing keys). `null` means the attempt has no value for that probe field;
+ * an invalid field type rejects only the metadata projection.
+ */
+export function normalizeAttemptProbeMetadata(
+  value: unknown
+): NormalizedAttemptProbeMetadata | null {
+  if (!isRecord(value)) return null;
+
+  const probe = value.probe;
+  const probeTrigger = normalizeProbeText(value.probe_trigger);
+  const probeResult = normalizeProbeText(value.probe_result);
+  const probeGeneration = value.probe_generation;
+
+  if (probe != null && typeof probe !== "boolean") return null;
+  if (probeTrigger === undefined || probeResult === undefined) return null;
+  if (
+    probeGeneration != null &&
+    (typeof probeGeneration !== "number" ||
+      !Number.isSafeInteger(probeGeneration) ||
+      probeGeneration < 0)
+  ) {
+    return null;
+  }
+
+  return {
+    probe: probe ?? null,
+    probe_trigger: probeTrigger,
+    probe_result: probeResult,
+    probe_generation: probeGeneration ?? null,
+  };
+}
+
+export function isCircuitProbeAttempt(
+  value: AttemptProbeMetadata & { selection_method?: string | null }
+): boolean {
+  return (
+    value.probe === true ||
+    value.selection_method === "circuit_probe" ||
+    value.probe_trigger != null ||
+    value.probe_result != null ||
+    value.probe_generation != null
+  );
+}
 
 export function parseAttemptsJson(raw: string | null | undefined): AttemptJsonEntry[] | null {
   if (!raw) return null;

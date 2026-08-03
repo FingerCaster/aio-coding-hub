@@ -25,6 +25,7 @@ pub use persistence::{
     set_settings_finalize_restore_failpoint_for_tests, update, write,
 };
 pub use types::{
-    AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, UpstreamHttpRetryRule,
-    UpstreamRetryPolicy, UpstreamTransportRetryKind, WslHostAddressMode, WslTargetCli,
+    AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, ProviderFailbackStrategy,
+    UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind, WslHostAddressMode,
+    WslTargetCli,
 };

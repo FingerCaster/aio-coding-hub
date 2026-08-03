@@ -44,6 +44,15 @@ pub enum HomeUsagePeriod {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
+pub enum ProviderFailbackStrategy {
+    Aggressive,
+    #[default]
+    #[serde(other)]
+    Natural,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
 pub enum CodexHomeMode {
     #[default]
     UserHomeDefault,
@@ -135,16 +144,12 @@ struct UpstreamRetryPolicyWire {
     counts_toward_circuit_breaker: bool,
 }
 
+#[derive(Default)]
 enum WireField<T> {
+    #[default]
     Missing,
     Null,
     Value(T),
-}
-
-impl<T> Default for WireField<T> {
-    fn default() -> Self {
-        Self::Missing
-    }
 }
 
 impl<'de, T> Deserialize<'de> for WireField<T>
@@ -275,6 +280,8 @@ pub struct AppSettings {
     // Request-log DB retention in days; 0 = keep forever.
     pub request_log_retention_days: u32,
     pub provider_cooldown_seconds: u32,
+    pub provider_failback_strategy: ProviderFailbackStrategy,
+    pub natural_probe_max_wait_seconds: u32,
     pub provider_base_url_ping_cache_ttl_seconds: u32,
     pub upstream_first_byte_timeout_seconds: u32,
     pub upstream_stream_idle_timeout_seconds: u32,
@@ -362,6 +369,8 @@ impl Default for AppSettings {
             log_retention_days: DEFAULT_LOG_RETENTION_DAYS,
             request_log_retention_days: DEFAULT_REQUEST_LOG_RETENTION_DAYS,
             provider_cooldown_seconds: DEFAULT_PROVIDER_COOLDOWN_SECONDS,
+            provider_failback_strategy: ProviderFailbackStrategy::default(),
+            natural_probe_max_wait_seconds: DEFAULT_NATURAL_PROBE_MAX_WAIT_SECONDS,
             provider_base_url_ping_cache_ttl_seconds:
                 DEFAULT_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS,
             upstream_first_byte_timeout_seconds: DEFAULT_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS,

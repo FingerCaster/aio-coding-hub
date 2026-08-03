@@ -6,6 +6,27 @@ fn breaker() -> CircuitBreaker {
     CircuitBreaker::new(CircuitBreakerConfig::default(), HashMap::new(), None)
 }
 
+fn open_provider(cb: &CircuitBreaker, provider_id: i64, now_unix: i64) -> i64 {
+    for offset in 0..DEFAULT_FAILURE_THRESHOLD {
+        cb.record_failure(provider_id, now_unix + i64::from(offset), None);
+    }
+    cb.snapshot(provider_id, now_unix + i64::from(DEFAULT_FAILURE_THRESHOLD))
+        .next_probe_at
+        .expect("next probe deadline")
+}
+
+fn acquire_probe(
+    cb: &CircuitBreaker,
+    provider_id: i64,
+    owner: &str,
+    now_unix: i64,
+) -> ProbeLeaseToken {
+    match cb.try_acquire_probe(provider_id, owner, ProbeTrigger::NaturalMaxWait, now_unix) {
+        ProbeAcquireResult::Acquired { token, .. } => token,
+        other => panic!("expected acquired probe, got {other:?}"),
+    }
+}
+
 #[test]
 fn closed_to_open_after_threshold() {
     let cb = breaker();
@@ -24,142 +45,235 @@ fn closed_to_open_after_threshold() {
 }
 
 #[test]
-fn open_expires_to_half_open() {
+fn open_expiry_remains_protected_without_an_explicit_probe_lease() {
     let cb = breaker();
     let pid = 1;
     let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
-
-    let snap = cb.snapshot(pid, now + 10);
-    assert_eq!(snap.state, CircuitState::Open);
-    let open_until = snap.open_until.expect("open_until");
+    open_provider(&cb, pid, now);
+    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
 
     let check = cb.should_allow(pid, open_until);
-    assert!(check.allow);
-    assert_eq!(check.after.state, CircuitState::HalfOpen);
-    assert!(check.transition.is_some());
-    let t = check.transition.unwrap();
-    assert_eq!(t.prev_state, CircuitState::Open);
-    assert_eq!(t.next_state, CircuitState::HalfOpen);
-    assert_eq!(t.reason, "OPEN_EXPIRED");
+    assert!(!check.allow);
+    assert_eq!(check.after.state, CircuitState::Open);
+    assert!(check.transition.is_none());
 }
 
 #[test]
-fn half_open_one_success_stays_half_open() {
+fn probe_lease_is_provider_scoped_single_flight() {
     let cb = breaker();
     let pid = 1;
     let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
+    let due = open_provider(&cb, pid, now);
+    let first = acquire_probe(&cb, pid, "trace-a", due);
 
-    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
-    cb.should_allow(pid, open_until); // transitions to HalfOpen
-
-    let change = cb.record_success(pid, open_until + 1);
-    assert_eq!(change.after.state, CircuitState::HalfOpen);
-    assert!(change.transition.is_none());
+    assert!(matches!(
+        cb.try_acquire_probe(pid, "trace-b", ProbeTrigger::AggressiveTurn, due),
+        ProbeAcquireResult::InFlight(_)
+    ));
+    assert_eq!(first.provider_id, pid);
+    assert_eq!(cb.snapshot(pid, due).state, CircuitState::HalfOpen);
 }
 
 #[test]
-fn half_open_two_successes_stays_half_open() {
-    let cb = breaker();
-    let pid = 1;
-    let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
+fn expired_open_deadline_remains_immediately_probe_eligible_after_normal_reload() {
+    let config = CircuitBreakerConfig {
+        failure_threshold: 1,
+        provider_cooldown_secs: 10,
+        ..CircuitBreakerConfig::default()
+    };
+    let provider_id = 1;
+    let opened_at = 1_000;
+    let original = CircuitBreaker::new(config.clone(), HashMap::new(), None);
+    original.record_failure(provider_id, opened_at, None);
+    let persisted = original.persisted_state(provider_id).expect("OPEN row");
+    let due_at = persisted.next_probe_at.expect("probe deadline");
+    let reloaded = CircuitBreaker::new(config, HashMap::from([(provider_id, persisted)]), None);
 
-    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
-    cb.should_allow(pid, open_until); // transitions to HalfOpen
-
-    cb.record_success(pid, open_until + 1);
-    let change = cb.record_success(pid, open_until + 2);
-    assert_eq!(change.after.state, CircuitState::HalfOpen);
-    assert!(change.transition.is_none());
+    assert!(matches!(
+        reloaded.try_acquire_probe(
+            provider_id,
+            "normal-reload",
+            ProbeTrigger::NaturalMaxWait,
+            due_at,
+        ),
+        ProbeAcquireResult::Acquired { .. }
+    ));
 }
 
 #[test]
-fn half_open_three_successes_transitions_to_closed() {
+fn one_complete_probe_success_closes_and_starts_recovery_guard() {
     let cb = breaker();
     let pid = 1;
     let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
+    let due = open_provider(&cb, pid, now);
+    let token = acquire_probe(&cb, pid, "trace-a", due);
+    assert!(matches!(
+        cb.mark_probe_dispatched(&token, due),
+        ProbeCommitResult::Applied(_)
+    ));
 
-    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
-    cb.should_allow(pid, open_until); // transitions to HalfOpen
-
-    cb.record_success(pid, open_until + 1);
-    cb.record_success(pid, open_until + 2);
-    let change = cb.record_success(pid, open_until + 3);
+    let result = cb.complete_probe_success(&token, due + 1);
+    let ProbeCommitResult::Applied(change) = result else {
+        panic!("probe success should apply");
+    };
     assert_eq!(change.after.state, CircuitState::Closed);
     assert_eq!(change.after.failure_count, 0);
-    assert!(change.transition.is_some());
-    let t = change.transition.unwrap();
-    assert_eq!(t.prev_state, CircuitState::HalfOpen);
-    assert_eq!(t.next_state, CircuitState::Closed);
-    assert_eq!(t.reason, "HALF_OPEN_SUCCESS");
+    assert_eq!(change.after.recovery_guard_until, Some(due + 301));
+    assert_eq!(
+        change.transition.expect("transition").reason,
+        "PROBE_SUCCESS"
+    );
 }
 
 #[test]
-fn half_open_two_successes_then_failure_resets_to_open() {
+fn ordinary_success_cannot_close_an_open_probe_or_clear_recovery_guard() {
     let cb = breaker();
     let pid = 1;
     let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
+    let due = open_provider(&cb, pid, now);
+    let token = acquire_probe(&cb, pid, "trace-a", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
 
-    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
-    cb.should_allow(pid, open_until); // transitions to HalfOpen
-
-    cb.record_success(pid, open_until + 1);
-    cb.record_success(pid, open_until + 2);
-    let change = cb.record_failure(pid, open_until + 3, None);
-    assert_eq!(change.after.state, CircuitState::Open);
-    assert!(change.after.open_until.is_some());
-    assert!(change.transition.is_some());
-    let t = change.transition.unwrap();
-    assert_eq!(t.prev_state, CircuitState::HalfOpen);
-    assert_eq!(t.next_state, CircuitState::Open);
-    assert_eq!(t.reason, "HALF_OPEN_FAILURE");
-
-    // After re-opening and expiring, half_open_success_count should be reset
-    let new_open_until = cb
-        .snapshot(pid, open_until + 4)
-        .open_until
-        .expect("open_until");
-    cb.should_allow(pid, new_open_until); // transitions to HalfOpen again
-
-    // Need 3 fresh successes, not 1
-    let change = cb.record_success(pid, new_open_until + 1);
-    assert_eq!(change.after.state, CircuitState::HalfOpen);
+    let late = cb.record_success(pid, due + 1);
+    assert_eq!(late.after.state, CircuitState::HalfOpen);
+    let ProbeCommitResult::Applied(recovered) = cb.complete_probe_success(&token, due + 2) else {
+        panic!("probe success should apply");
+    };
+    let guard_until = recovered.after.recovery_guard_until;
+    let ordinary = cb.record_success(pid, due + 3);
+    assert_eq!(ordinary.after.recovery_guard_until, guard_until);
 }
 
 #[test]
-fn half_open_failure_transitions_back_to_open() {
+fn probe_failure_resets_deadlines_and_late_generation_is_stale() {
     let cb = breaker();
     let pid = 1;
     let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
+    let due = open_provider(&cb, pid, now);
+    let old_token = acquire_probe(&cb, pid, "trace-a", due);
+    let _ = cb.mark_probe_dispatched(&old_token, due);
+    let ProbeCommitResult::Applied(failed) =
+        cb.complete_probe_failure(&old_token, due + 2, true, Some("GW_UPSTREAM_5XX"))
+    else {
+        panic!("probe failure should apply");
+    };
+    assert_eq!(failed.after.state, CircuitState::Open);
+    assert_eq!(
+        failed.after.next_probe_at,
+        Some(due + 2 + DEFAULT_PROVIDER_COOLDOWN_SECS)
+    );
 
-    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
-    cb.should_allow(pid, open_until); // transitions to HalfOpen
+    let next_due = failed.after.next_probe_at.expect("next due");
+    let new_token = acquire_probe(&cb, pid, "trace-b", next_due);
+    let _ = cb.mark_probe_dispatched(&new_token, next_due);
+    assert!(matches!(
+        cb.complete_probe_success(&old_token, next_due + 1),
+        ProbeCommitResult::Stale(_)
+    ));
+    assert_eq!(cb.snapshot(pid, next_due + 1).state, CircuitState::HalfOpen);
+}
 
-    let change = cb.record_failure(pid, open_until + 1, None);
-    assert_eq!(change.after.state, CircuitState::Open);
-    assert!(change.after.open_until.is_some());
-    assert!(change.transition.is_some());
-    let t = change.transition.unwrap();
-    assert_eq!(t.prev_state, CircuitState::HalfOpen);
-    assert_eq!(t.next_state, CircuitState::Open);
-    assert_eq!(t.reason, "HALF_OPEN_FAILURE");
+#[test]
+fn undispatched_probe_completion_abandons_without_resetting_deadlines() {
+    let cb = breaker();
+    let pid = 1;
+    let now = 1_000;
+    let due = open_provider(&cb, pid, now);
+    let before = cb.snapshot(pid, due);
+    let token = acquire_probe(&cb, pid, "trace-undispatched", due);
+
+    let ProbeCommitResult::Applied(abandoned) =
+        cb.complete_probe_failure(&token, due + 1, true, Some("GW_UPSTREAM_5XX"))
+    else {
+        panic!("undispatched probe abandon should apply");
+    };
+
+    assert_eq!(abandoned.after.state, CircuitState::Open);
+    assert_eq!(abandoned.after.failure_count, before.failure_count);
+    assert_eq!(abandoned.after.open_until, before.open_until);
+    assert_eq!(abandoned.after.next_probe_at, before.next_probe_at);
+    assert_eq!(
+        abandoned.after.natural_probe_due_at,
+        before.natural_probe_due_at
+    );
+    assert!(!abandoned.after.probe_in_flight);
+    assert!(abandoned.transition.is_none());
+}
+
+#[test]
+fn dispatched_probe_is_not_reclaimed_by_wall_clock_but_undispatched_lease_is() {
+    let cb = breaker();
+    let pid = 1;
+    let now = 1_000;
+    let due = open_provider(&cb, pid, now);
+    let token = acquire_probe(&cb, pid, "trace-a", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
+    let much_later = due + PROBE_LEASE_TTL_SECS + 1;
+    assert!(cb.snapshot(pid, much_later).probe_in_flight);
+    assert!(matches!(
+        cb.try_acquire_probe(pid, "trace-b", ProbeTrigger::NaturalMaxWait, much_later),
+        ProbeAcquireResult::InFlight(_)
+    ));
+
+    let cb = breaker();
+    let due = open_provider(&cb, pid, now);
+    let _undispatched = acquire_probe(&cb, pid, "trace-a", due);
+    let much_later = due + PROBE_LEASE_TTL_SECS + 1;
+    assert!(!cb.snapshot(pid, much_later).probe_in_flight);
+    assert!(matches!(
+        cb.try_acquire_probe(pid, "trace-b", ProbeTrigger::NaturalMaxWait, much_later),
+        ProbeAcquireResult::Acquired { .. }
+    ));
+}
+
+#[test]
+fn recovery_guard_survives_ordinary_success_and_reopens_on_first_failure() {
+    let cb = breaker();
+    let pid = 1;
+    let now = 1_000;
+    let due = open_provider(&cb, pid, now);
+    let token = acquire_probe(&cb, pid, "trace-a", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
+    let ProbeCommitResult::Applied(recovered) = cb.complete_probe_success(&token, due + 1) else {
+        panic!("probe success should apply");
+    };
+    let guard_until = recovered.after.recovery_guard_until.expect("guard");
+
+    let ordinary = cb.record_success(pid, due + 2);
+    assert_eq!(ordinary.after.recovery_guard_until, Some(guard_until));
+    let failed = cb.record_failure(pid, due + 3, Some("GW_UPSTREAM_5XX"));
+    assert_eq!(failed.after.state, CircuitState::Open);
+    assert_eq!(
+        failed.transition.expect("transition").reason,
+        "RECOVERY_GUARD_FAILURE"
+    );
+}
+
+#[test]
+fn expired_recovery_guard_returns_to_normal_failure_threshold() {
+    let cb = CircuitBreaker::new(
+        CircuitBreakerConfig {
+            failure_threshold: 3,
+            provider_cooldown_secs: 0,
+            ..CircuitBreakerConfig::default()
+        },
+        HashMap::new(),
+        None,
+    );
+    let pid = 1;
+    let now = 1_000;
+    let due = open_provider(&cb, pid, now);
+    let token = acquire_probe(&cb, pid, "trace-a", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
+    let ProbeCommitResult::Applied(recovered) = cb.complete_probe_success(&token, due + 1) else {
+        panic!("probe success should apply");
+    };
+    let guard_until = recovered.after.recovery_guard_until.expect("guard");
+
+    assert!(cb.snapshot(pid, guard_until).recovery_guard_until.is_none());
+    let first = cb.record_failure(pid, guard_until, None);
+    assert_eq!(first.after.state, CircuitState::Closed);
+    assert_eq!(first.after.failure_count, 1);
 }
 
 #[test]
@@ -183,6 +297,7 @@ fn failures_within_window_counted_correctly() {
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         None,
@@ -209,6 +324,7 @@ fn failures_older_than_window_not_counted() {
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         None,
@@ -243,12 +359,13 @@ fn failures_older_than_window_not_counted() {
 }
 
 #[test]
-fn should_allow_prunes_expired_closed_failures_and_removes_inert_entry() {
+fn should_allow_prunes_expired_closed_failures_and_keeps_revision_tombstone() {
     let (tx, mut rx) = tokio::sync::mpsc::channel(4);
     let cb = CircuitBreaker::new(
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         Some(tx),
@@ -266,7 +383,10 @@ fn should_allow_prunes_expired_closed_failures_and_removes_inert_entry() {
     assert!(check.allow);
     assert_eq!(check.after.state, CircuitState::Closed);
     assert_eq!(check.after.failure_count, 0);
-    assert_eq!(cb.health.lock().expect("health lock").len(), 0);
+    let guard = cb.health.lock().expect("health lock");
+    assert_eq!(guard.len(), 1);
+    assert!(guard.get(&provider_id).expect("tombstone").state_revision > 0);
+    drop(guard);
 
     let persisted = rx.try_recv().expect("pruned state persisted");
     assert_eq!(persisted.provider_id, provider_id);
@@ -281,6 +401,7 @@ fn persist_queue_full_keeps_latest_state_in_bounded_backlog_and_flushes_later() 
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         Some(tx),
@@ -315,6 +436,7 @@ async fn persist_backlog_flushes_in_background_without_future_state_changes() {
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         Some(tx),
@@ -349,6 +471,7 @@ async fn persist_backlog_background_flush_sends_latest_state_after_waiting_for_c
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         Some(tx),
@@ -381,6 +504,11 @@ fn persisted_state(provider_id: i64, updated_at: i64) -> CircuitPersistedState {
         failure_timestamps: vec![updated_at as u64],
         half_open_success_count: 0,
         open_until: None,
+        probe_reference_at: None,
+        next_probe_at: None,
+        natural_probe_due_at: None,
+        recovery_guard_until: None,
+        state_revision: updated_at.max(0) as u64,
         updated_at,
     }
 }
@@ -392,6 +520,7 @@ fn persist_backlog_flushes_oldest_updated_state_first() {
         CircuitBreakerConfig {
             failure_threshold: 3,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         Some(tx),
@@ -442,6 +571,28 @@ fn persist_backlog_evicts_oldest_updated_state_at_capacity() {
 }
 
 #[test]
+fn persist_backlog_never_replaces_newer_closed_tombstone_with_old_open_state() {
+    let cb = breaker();
+    let mut old_open = persisted_state(7, 2_000);
+    old_open.state = CircuitState::Open;
+    old_open.open_until = Some(9_000);
+    old_open.state_revision = 10;
+    let mut tombstone = persisted_state(7, 1_500);
+    tombstone.failure_timestamps.clear();
+    tombstone.state_revision = 11;
+
+    cb.enqueue_persist_backlog(old_open.clone());
+    cb.enqueue_persist_backlog(tombstone.clone());
+    old_open.updated_at = 9_999;
+    cb.enqueue_persist_backlog(old_open);
+
+    let backlog = cb.persist_backlog.lock().expect("backlog lock");
+    let retained = backlog.get(&7).expect("provider state");
+    assert_eq!(retained.state, CircuitState::Closed);
+    assert_eq!(retained.state_revision, 11);
+}
+
+#[test]
 fn reset_clears_open_and_cooldown() {
     let cb = breaker();
     let pid = 1;
@@ -464,21 +615,16 @@ fn reset_clears_open_and_cooldown() {
 }
 
 #[test]
-fn reset_clears_half_open() {
+fn reset_clears_in_flight_probe() {
     let cb = breaker();
     let pid = 1;
     let now = 1_000;
-    for i in 1..=DEFAULT_FAILURE_THRESHOLD {
-        cb.record_failure(pid, now + i as i64, None);
-    }
-
-    let open_until = cb.snapshot(pid, now + 10).open_until.expect("open_until");
-    cb.should_allow(pid, open_until); // transitions to HalfOpen
-
-    let snap = cb.snapshot(pid, open_until);
+    let due = open_provider(&cb, pid, now);
+    let _token = acquire_probe(&cb, pid, "trace-a", due);
+    let snap = cb.snapshot(pid, due);
     assert_eq!(snap.state, CircuitState::HalfOpen);
 
-    let reset = cb.reset(pid, open_until + 1);
+    let reset = cb.reset(pid, due + 1);
     assert_eq!(reset.state, CircuitState::Closed);
     assert_eq!(reset.failure_count, 0);
 }
@@ -507,6 +653,7 @@ fn update_config_recalculates_open_until() {
     cb.update_config(CircuitBreakerConfig {
         failure_threshold: DEFAULT_FAILURE_THRESHOLD,
         open_duration_secs: 60,
+        ..CircuitBreakerConfig::default()
     });
 
     let snap_after = cb.snapshot(pid, now + 10);
@@ -519,10 +666,16 @@ fn update_config_recalculates_open_until() {
     );
     assert!(new_open_until < original_open_until);
 
-    // Verify circuit expires at the new time
+    // The longest-open deadline creates an eligible probe opportunity but
+    // never opens the public gate to concurrent requests.
     let check = cb.should_allow(pid, new_open_until);
-    assert!(check.allow);
-    assert_eq!(check.after.state, CircuitState::HalfOpen);
+    assert!(!check.allow);
+    let token = acquire_probe(&cb, pid, "trace-a", new_open_until);
+    assert_eq!(token.provider_id, pid);
+    assert_eq!(
+        cb.snapshot(pid, new_open_until).state,
+        CircuitState::HalfOpen
+    );
 }
 
 #[test]
@@ -531,6 +684,7 @@ fn failure_timestamps_capped_at_max() {
         CircuitBreakerConfig {
             failure_threshold: (MAX_FAILURE_TIMESTAMPS as u32) + 100,
             open_duration_secs: 60,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         None,
@@ -579,7 +733,7 @@ fn healthy_read_success_and_missing_reset_do_not_create_closed_entries() {
 }
 
 #[test]
-fn reset_removes_runtime_health_entry_after_failure() {
+fn reset_keeps_revision_tombstone_after_failure() {
     let cb = breaker();
     let provider_id = 1;
     let now = 1_000;
@@ -590,7 +744,11 @@ fn reset_removes_runtime_health_entry_after_failure() {
     let reset = cb.reset(provider_id, now + 1);
     assert_eq!(reset.state, CircuitState::Closed);
     assert_eq!(reset.failure_count, 0);
-    assert_eq!(cb.health.lock().expect("health lock").len(), 0);
+    let guard = cb.health.lock().expect("health lock");
+    assert_eq!(guard.len(), 1);
+    let tombstone = guard.get(&provider_id).expect("tombstone");
+    assert!(tombstone.state_revision > 0);
+    assert!(CircuitBreaker::is_inert_closed_health(tombstone));
 }
 
 #[test]
@@ -604,6 +762,11 @@ fn initial_inert_closed_state_is_not_loaded_into_runtime_health() {
             failure_timestamps: Vec::new(),
             half_open_success_count: 0,
             open_until: None,
+            probe_reference_at: None,
+            next_probe_at: None,
+            natural_probe_due_at: None,
+            recovery_guard_until: None,
+            state_revision: 0,
             updated_at: 1_000,
         },
     );
@@ -615,6 +778,11 @@ fn initial_inert_closed_state_is_not_loaded_into_runtime_health() {
             failure_timestamps: vec![1_000],
             half_open_success_count: 0,
             open_until: None,
+            probe_reference_at: None,
+            next_probe_at: None,
+            natural_probe_due_at: None,
+            recovery_guard_until: None,
+            state_revision: 0,
             updated_at: 1_000,
         },
     );
@@ -632,6 +800,7 @@ fn update_config_new_failures_use_new_duration() {
         CircuitBreakerConfig {
             failure_threshold: 2,
             open_duration_secs: 600,
+            ..CircuitBreakerConfig::default()
         },
         HashMap::new(),
         None,
@@ -643,6 +812,7 @@ fn update_config_new_failures_use_new_duration() {
     cb.update_config(CircuitBreakerConfig {
         failure_threshold: 2,
         open_duration_secs: 30,
+        ..CircuitBreakerConfig::default()
     });
 
     // Trip the circuit
@@ -670,19 +840,17 @@ fn record_failure_remembers_trigger_error_code_until_closed() {
     assert_eq!(snap.state, CircuitState::Open);
     assert_eq!(snap.last_trigger_error_code, Some("GW_UPSTREAM_TIMEOUT"));
 
-    // Recover: Open -> HalfOpen keeps the trigger for attribution.
-    let open_until = snap.open_until.expect("open_until");
-    let check = cb.should_allow(pid, open_until);
-    assert_eq!(check.after.state, CircuitState::HalfOpen);
-    assert_eq!(
-        check.after.last_trigger_error_code,
-        Some("GW_UPSTREAM_TIMEOUT")
-    );
+    // Acquiring the provider-scoped lease keeps the trigger for attribution.
+    let due = snap.next_probe_at.expect("next probe");
+    let token = acquire_probe(&cb, pid, "trace-a", due);
+    let check = cb.snapshot(pid, due);
+    assert_eq!(check.state, CircuitState::HalfOpen);
+    assert_eq!(check.last_trigger_error_code, Some("GW_UPSTREAM_TIMEOUT"));
 
-    // HalfOpen -> Closed clears the trigger (no longer meaningful).
-    cb.record_success(pid, open_until + 1);
-    cb.record_success(pid, open_until + 2);
-    let change = cb.record_success(pid, open_until + 3);
+    let _ = cb.mark_probe_dispatched(&token, due);
+    let ProbeCommitResult::Applied(change) = cb.complete_probe_success(&token, due + 1) else {
+        panic!("probe success should apply");
+    };
     assert_eq!(change.after.state, CircuitState::Closed);
     assert_eq!(change.after.last_trigger_error_code, None);
 }
