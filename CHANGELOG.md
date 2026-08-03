@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.34](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.33...aio-coding-hub-v0.60.34) (2026-08-03)
+
+
+### Features
+
+* **gateway:** add circuit probe failback strategies ([74132d5](https://github.com/FingerCaster/aio-coding-hub/commit/74132d595ff7deba5182d3a21d118c04f86bab36))
+
 ## [0.60.33](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.32...aio-coding-hub-v0.60.33) (2026-07-31)
 
 
