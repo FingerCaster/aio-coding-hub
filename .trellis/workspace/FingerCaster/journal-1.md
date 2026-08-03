@@ -825,3 +825,37 @@ Fixed OAuth-compatible proxy projection, provider collision handling, bounded re
 ### Next Steps
 
 - None - task complete
+
+
+## Session 24: 完成熔断试探与供应商回切策略
+
+**Date**: 2026-08-04
+**Task**: 完成熔断试探与供应商回切策略
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/circuit-probe-impl`
+
+### Summary
+
+实现自然回切与积极回切、provider 级单飞试探、全熔断按路由串行恢复、可靠流式终态、持久化与可观察性；完整自动化检查及 CPA/AIO 真实上游验证通过。
+
+### Main Changes
+
+- Detailed change bullets were not supplied; see the summary above.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `74132d59` | (see git log) |
+
+### Testing
+
+- Validation was not recorded for this session.
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- None - task complete

@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 23
-- **Last Active**: 2026-07-31
+- **Total Sessions**: 24
+- **Last Active**: 2026-08-04
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~827 | Active |
+| `journal-1.md` | ~861 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 24 | 2026-08-04 | 完成熔断试探与供应商回切策略 | `74132d59` | `FingerCaster/circuit-probe-impl` |
 | 23 | 2026-07-31 | 修复供应商删除残留与决策链身份展示 | `45691b89`, `b30b8a72` | `FingerCaster/fix-provider-delete-log-display` |
 | 22 | 2026-07-30 | Stabilize Codex OAuth proxy and remote compaction | `6cf0aa21`, `d7ba5735`, `cae82c5e` | `FingerCaster/fix-codex-oauth-proxy-remote-compaction` |
 | 21 | 2026-07-29 | Publish aio-coding-hub v0.60.31 | `07e5455be3490053b172bd0277a7a03ca416ed07` | `main` |
