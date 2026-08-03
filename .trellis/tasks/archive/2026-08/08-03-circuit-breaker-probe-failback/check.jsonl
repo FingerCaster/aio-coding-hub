@@ -5,6 +5,6 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"核对新增字段的并发保存、运行时失败和 owned-field CAS 回滚。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查 eligibility、状态转换、route fingerprint 和解码规则没有复制实现。"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查数据库到 circuit、终态、日志投影和界面展示的完整闭环。"}
-{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/current-routing-and-circuit-evidence.md","reason":"对照现有行为锚点审计 session/gate/circuit 回归。"}
-{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/probe-trigger-strategy-comparison.md","reason":"对照已确认 single-flight、策略触发、一次成功和观察期决策。"}
-{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/compaction-signal-evidence.md","reason":"检查压缩识别严格性、generation 消费时机和无信号兜底。"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/research/current-routing-and-circuit-evidence.md", "reason": "对照现有行为锚点审计 session/gate/circuit 回归。"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/research/probe-trigger-strategy-comparison.md", "reason": "对照已确认 single-flight、策略触发、一次成功和观察期决策。"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/research/compaction-signal-evidence.md", "reason": "检查压缩识别严格性、generation 消费时机和无信号兜底。"}

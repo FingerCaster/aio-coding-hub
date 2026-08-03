@@ -5,6 +5,6 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"新增策略设置必须遵循字段所有权、durable commit、运行时同步和 CAS 回滚。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"集中拥有 probe eligibility、route fingerprint、状态枚举和 attempts JSON 解码，避免多路径漂移。"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"追踪持久状态、网关终态、IPC 设置与日志 UI 的端到端数据流。"}
-{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/current-routing-and-circuit-evidence.md","reason":"现有 circuit、session routing、公共 gate、日志和手动可用性测试的代码证据。"}
-{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/probe-trigger-strategy-comparison.md","reason":"真实业务单飞 probe 的方案取舍及最终自然/积极策略决定。"}
-{"file":".trellis/tasks/08-03-circuit-breaker-probe-failback/research/compaction-signal-evidence.md","reason":"Claude/Codex 严格压缩信号、Grok/Gemini 兜底和 generation reservation 语义。"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/research/current-routing-and-circuit-evidence.md", "reason": "现有 circuit、session routing、公共 gate、日志和手动可用性测试的代码证据。"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/research/probe-trigger-strategy-comparison.md", "reason": "真实业务单飞 probe 的方案取舍及最终自然/积极策略决定。"}
+{"file": ".trellis/tasks/archive/2026-08/08-03-circuit-breaker-probe-failback/research/compaction-signal-evidence.md", "reason": "Claude/Codex 严格压缩信号、Grok/Gemini 兜底和 generation reservation 语义。"}
