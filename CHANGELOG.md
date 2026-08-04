@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.36](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.35...aio-coding-hub-v0.60.36) (2026-08-04)
+
+
+### Bug Fixes
+
+* **gateway:** converge sessions after ordered failback ([64d2da9](https://github.com/FingerCaster/aio-coding-hub/commit/64d2da995c68bf78403f7716ae21eaff8430848f))
+
 ## [0.60.35](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.34...aio-coding-hub-v0.60.35) (2026-08-04)
 
 
