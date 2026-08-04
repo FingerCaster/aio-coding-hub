@@ -69,10 +69,12 @@ pub(in crate::gateway::proxy::handler) fn plan_probe(
         if explicit_trigger.is_some() || input.strategy == ProviderFailbackStrategy::Aggressive {
             higher.first()
         } else {
-            // Natural deadline triggers may only inspect the highest-priority open
-            // candidate. A not-yet-due P1 must not be bypassed to probe a due P2.
+            // A Closed provider only participates when a counted failure armed
+            // a natural failback deadline. Healthy providers without that
+            // signal retain natural session affinity.
             higher.iter().find(|(_, snapshot)| {
                 matches!(snapshot.state, CircuitState::Open | CircuitState::HalfOpen)
+                    || snapshot.natural_probe_due_at.is_some()
             })
         };
 
@@ -285,6 +287,54 @@ mod tests {
             ProbePlannerDecision::Stay {
                 confirm_route: false,
                 not_triggered_provider_id: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_waits_for_closed_candidate_pending_deadline() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, Some(120))),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(2),
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Stay {
+                confirm_route: false,
+                not_triggered_provider_id: Some(1),
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_directly_fails_back_to_closed_candidate_when_deadline_is_due() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, Some(90))),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(2),
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::DirectClosed {
+                provider_id: 1,
+                trigger: ProbeTrigger::NaturalMaxWait,
             }
         );
     }

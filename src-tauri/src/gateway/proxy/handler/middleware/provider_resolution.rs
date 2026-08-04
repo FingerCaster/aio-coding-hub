@@ -632,6 +632,21 @@ mod tests {
         assert_eq!(value.get("probe"), Some(&serde_json::json!(false)));
         assert_eq!(value.get("provider_index"), Some(&serde_json::Value::Null));
         assert_eq!(value.get("retry_index"), Some(&serde_json::Value::Null));
+
+        let mut closed_pending = open_snapshot();
+        closed_pending.state = crate::circuit_breaker::CircuitState::Closed;
+        closed_pending.failure_count = 1;
+        closed_pending.open_until = None;
+        closed_pending.next_probe_at = None;
+        let closed_attempt = not_triggered_probe_observation(
+            11,
+            "preferred",
+            "https://preferred.example",
+            &closed_pending,
+            9,
+        );
+        assert_eq!(closed_attempt.circuit_state_before, Some("CLOSED"));
+        assert_eq!(closed_attempt.circuit_recover_at_unix, Some(400));
     }
 
     #[test]

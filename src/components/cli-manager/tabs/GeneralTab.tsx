@@ -589,12 +589,12 @@ export function CliManagerGeneralTab({
 
                 {providerFailbackStrategy === "natural" ? (
                   <SettingsRow
-                    label="自然模式最长试探等待"
-                    subtitle="没有可靠压缩信号时，最多等待多久后由下一条合格的真实请求申请试探；这是 Provider 全局兜底，不按会话重复计时。"
+                    label="自然模式最长回切等待"
+                    subtitle="高优先级 Provider 出现会计入熔断的失败后，即使仍显示 CLOSED，超过此时间也会由下一条合格真实请求直接尝试回切；OPEN/HALF_OPEN 则申请单飞探测。Provider 全局计时，不按会话重复。"
                   >
                     <div className="flex items-center gap-2">
                       <Input
-                        aria-label="自然模式最长试探等待"
+                        aria-label="自然模式最长回切等待"
                         type="number"
                         value={naturalProbeMaxWaitSeconds}
                         onChange={(e) => {
@@ -605,7 +605,7 @@ export function CliManagerGeneralTab({
                           if (!appSettings) return;
                           const next = e.currentTarget.valueAsNumber;
                           if (!Number.isFinite(next) || next < 1 || next > 86400) {
-                            toast("自然模式最长试探等待必须为 1-86400 秒");
+                            toast("自然模式最长回切等待必须为 1-86400 秒");
                             setNaturalProbeMaxWaitSeconds(
                               appSettings.natural_probe_max_wait_seconds
                             );

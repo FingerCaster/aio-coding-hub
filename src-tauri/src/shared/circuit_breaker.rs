@@ -93,6 +93,13 @@ impl CircuitBreaker {
         let mut map = HashMap::with_capacity(initial.len());
         let mut normalized = Vec::new();
         for (provider_id, item) in initial {
+            let has_recorded_failures = !item.failure_timestamps.is_empty();
+            let latest_recorded_failure_at = item
+                .failure_timestamps
+                .iter()
+                .copied()
+                .max()
+                .map(|timestamp| timestamp.min(i64::MAX as u64) as i64);
             let mut state = item.state;
             let mut half_open_success_count = item.half_open_success_count;
             let mut probe_reference_at = item.probe_reference_at;
@@ -126,6 +133,21 @@ impl CircuitBreaker {
                 }
                 if open_until.is_none() {
                     open_until = Some(reference.saturating_add(config.open_duration_secs));
+                    changed = true;
+                }
+            } else if state == CircuitState::Closed
+                && (has_recorded_failures || probe_reference_at.is_some())
+            {
+                let reference = probe_reference_at
+                    .or(latest_recorded_failure_at)
+                    .unwrap_or(item.updated_at);
+                if probe_reference_at.is_none() {
+                    probe_reference_at = Some(reference);
+                    changed = true;
+                }
+                if natural_probe_due_at.is_none() {
+                    natural_probe_due_at =
+                        Some(reference.saturating_add(config.natural_probe_max_wait_secs));
                     changed = true;
                 }
             }
@@ -217,10 +239,11 @@ impl CircuitBreaker {
             *cfg_guard = new_config.clone();
         }
 
-        if old_config.open_duration_secs != new_config.open_duration_secs
-            || old_config.provider_cooldown_secs != new_config.provider_cooldown_secs
-            || old_config.natural_probe_max_wait_secs != new_config.natural_probe_max_wait_secs
-        {
+        let open_timing_changed = old_config.open_duration_secs != new_config.open_duration_secs
+            || old_config.provider_cooldown_secs != new_config.provider_cooldown_secs;
+        let natural_timing_changed =
+            old_config.natural_probe_max_wait_secs != new_config.natural_probe_max_wait_secs;
+        if open_timing_changed || natural_timing_changed {
             let mut guard = self.health.lock_or_recover();
             for (&provider_id, entry) in guard.iter_mut() {
                 if entry.state == CircuitState::Open {
@@ -234,6 +257,13 @@ impl CircuitBreaker {
                         Some(reference.saturating_add(new_config.natural_probe_max_wait_secs));
                     Self::bump_revision(entry);
                     upserts.push(Self::persisted_from_health(provider_id, entry));
+                } else if natural_timing_changed && entry.state == CircuitState::Closed {
+                    if let Some(reference) = entry.probe_reference_at {
+                        entry.natural_probe_due_at =
+                            Some(reference.saturating_add(new_config.natural_probe_max_wait_secs));
+                        Self::bump_revision(entry);
+                        upserts.push(Self::persisted_from_health(provider_id, entry));
+                    }
                 }
             }
         }
@@ -371,9 +401,14 @@ impl CircuitBreaker {
 
             match entry.state {
                 CircuitState::Closed => {
+                    let persisted_changed = !entry.failure_timestamps.is_empty()
+                        || entry.probe_reference_at.is_some()
+                        || entry.natural_probe_due_at.is_some();
                     entry.cooldown_until = None;
                     entry.last_trigger_error_code = None;
-                    if !entry.failure_timestamps.is_empty() {
+                    entry.probe_reference_at = None;
+                    entry.natural_probe_due_at = None;
+                    if persisted_changed {
                         entry.failure_timestamps.clear();
                         entry.updated_at = now_unix;
                         Self::bump_revision(entry);
@@ -442,6 +477,7 @@ impl CircuitBreaker {
                 CircuitState::Closed => {
                     entry.failure_timestamps.push(now_u64);
                     entry.prune_old_failures(now_u64);
+                    Self::set_natural_failback_deadline(&cfg, entry, now_unix);
                     entry.updated_at = now_unix;
 
                     let effective = entry.effective_failure_count(now_u64);
@@ -889,13 +925,21 @@ impl CircuitBreaker {
         })
     }
 
+    fn set_natural_failback_deadline(
+        cfg: &CircuitBreakerConfig,
+        entry: &mut ProviderHealth,
+        now_unix: i64,
+    ) {
+        entry.probe_reference_at = Some(now_unix);
+        entry.natural_probe_due_at =
+            Some(now_unix.saturating_add(cfg.natural_probe_max_wait_secs.max(1)));
+    }
+
     fn set_open_deadlines(cfg: &CircuitBreakerConfig, entry: &mut ProviderHealth, now_unix: i64) {
         entry.state = CircuitState::Open;
         entry.half_open_success_count = 0;
-        entry.probe_reference_at = Some(now_unix);
+        Self::set_natural_failback_deadline(cfg, entry, now_unix);
         entry.next_probe_at = Some(now_unix.saturating_add(cfg.provider_cooldown_secs.max(0)));
-        entry.natural_probe_due_at =
-            Some(now_unix.saturating_add(cfg.natural_probe_max_wait_secs.max(1)));
         entry.open_until = Some(now_unix.saturating_add(cfg.open_duration_secs.max(1)));
         entry.recovery_guard_until = None;
         entry.updated_at = now_unix;

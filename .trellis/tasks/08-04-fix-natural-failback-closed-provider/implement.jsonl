@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"共享 gateway circuit 变更的后端检查入口"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"确保自然回切不扩大单请求 attempt budget"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"跨层 gateway selection 质量检查入口"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"公共 gate、session binding、probe 与 attempt 可观察性契约"}
+{"file":".trellis/tasks/08-04-fix-natural-failback-closed-provider/research/root-cause.md","reason":"已确认的 CLOSED 候选永久黏性根因"}

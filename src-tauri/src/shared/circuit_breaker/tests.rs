@@ -284,11 +284,82 @@ fn success_clears_failure_timestamps() {
     cb.record_failure(pid, now, None);
     let before = cb.snapshot(pid, now + 1);
     assert_eq!(before.failure_count, 1);
+    assert_eq!(before.probe_reference_at, Some(now));
+    assert_eq!(
+        before.natural_probe_due_at,
+        Some(now + DEFAULT_NATURAL_PROBE_MAX_WAIT_SECS)
+    );
 
     cb.record_success(pid, now + 2);
     let after = cb.snapshot(pid, now + 3);
     assert_eq!(after.failure_count, 0);
     assert_eq!(after.state, CircuitState::Closed);
+    assert!(after.probe_reference_at.is_none());
+    assert!(after.natural_probe_due_at.is_none());
+}
+
+#[test]
+fn closed_failure_rearms_natural_deadline_from_latest_failure() {
+    let cb = CircuitBreaker::new(
+        CircuitBreakerConfig {
+            failure_threshold: 5,
+            natural_probe_max_wait_secs: 60,
+            ..CircuitBreakerConfig::default()
+        },
+        HashMap::new(),
+        None,
+    );
+    let pid = 1;
+    let now = 1_000;
+
+    let first = cb.record_failure(pid, now, None);
+    assert_eq!(first.after.state, CircuitState::Closed);
+    assert_eq!(first.after.probe_reference_at, Some(now));
+    assert_eq!(first.after.natural_probe_due_at, Some(now + 60));
+
+    let second = cb.record_failure(pid, now + 20, None);
+    assert_eq!(second.after.state, CircuitState::Closed);
+    assert_eq!(second.after.probe_reference_at, Some(now + 20));
+    assert_eq!(second.after.natural_probe_due_at, Some(now + 80));
+}
+
+#[test]
+fn closed_pending_natural_deadline_survives_reload() {
+    let config = CircuitBreakerConfig {
+        failure_threshold: 5,
+        natural_probe_max_wait_secs: 60,
+        ..CircuitBreakerConfig::default()
+    };
+    let pid = 1;
+    let now = 1_000;
+    let original = CircuitBreaker::new(config.clone(), HashMap::new(), None);
+    original.record_failure(pid, now, None);
+    let persisted = original.persisted_state(pid).expect("CLOSED pending row");
+
+    let reloaded = CircuitBreaker::new(config, HashMap::from([(pid, persisted)]), None);
+    let snapshot = reloaded.snapshot(pid, now + 1);
+    assert_eq!(snapshot.state, CircuitState::Closed);
+    assert_eq!(snapshot.probe_reference_at, Some(now));
+    assert_eq!(snapshot.natural_probe_due_at, Some(now + 60));
+}
+
+#[test]
+fn legacy_closed_failure_reload_arms_deadline_from_latest_failure() {
+    let config = CircuitBreakerConfig {
+        failure_threshold: 5,
+        natural_probe_max_wait_secs: 60,
+        ..CircuitBreakerConfig::default()
+    };
+    let pid = 1;
+    let now = 1_000;
+    let mut persisted = persisted_state(pid, now + 30);
+    persisted.failure_timestamps = vec![now as u64, (now + 20) as u64];
+
+    let reloaded = CircuitBreaker::new(config, HashMap::from([(pid, persisted)]), None);
+    let snapshot = reloaded.snapshot(pid, now + 31);
+    assert_eq!(snapshot.state, CircuitState::Closed);
+    assert_eq!(snapshot.probe_reference_at, Some(now + 20));
+    assert_eq!(snapshot.natural_probe_due_at, Some(now + 80));
 }
 
 #[test]
@@ -676,6 +747,33 @@ fn update_config_recalculates_open_until() {
         cb.snapshot(pid, new_open_until).state,
         CircuitState::HalfOpen
     );
+}
+
+#[test]
+fn update_config_recalculates_closed_natural_deadline() {
+    let cb = CircuitBreaker::new(
+        CircuitBreakerConfig {
+            failure_threshold: 5,
+            natural_probe_max_wait_secs: 300,
+            ..CircuitBreakerConfig::default()
+        },
+        HashMap::new(),
+        None,
+    );
+    let pid = 1;
+    let now = 1_000;
+    cb.record_failure(pid, now, None);
+
+    cb.update_config(CircuitBreakerConfig {
+        failure_threshold: 5,
+        natural_probe_max_wait_secs: 60,
+        ..CircuitBreakerConfig::default()
+    });
+
+    let snapshot = cb.snapshot(pid, now + 1);
+    assert_eq!(snapshot.state, CircuitState::Closed);
+    assert_eq!(snapshot.probe_reference_at, Some(now));
+    assert_eq!(snapshot.natural_probe_due_at, Some(now + 60));
 }
 
 #[test]

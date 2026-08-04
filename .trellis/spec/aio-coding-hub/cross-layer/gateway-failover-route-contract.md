@@ -105,6 +105,21 @@ FailoverAttempt {
   is `OPEN`/`HALF_OPEN` at planning time. If any `CLOSED` fallback exists,
   ordinary failback still targets at most one `OPEN` provider and then uses the
   `CLOSED` fallback.
+- In natural failback mode, a counted failure arms or rearms the provider-level
+  `natural_probe_due_at` deadline even while the circuit remains `CLOSED`.
+  Rearm from the latest counted failure, clear the deadline on complete
+  success, preserve it across persisted-state reload, and recompute it from
+  `probe_reference_at` when `natural_probe_max_wait_secs` changes. When loading
+  a legacy `CLOSED` row with failures but no reference, recover the reference
+  from its latest persisted failure timestamp rather than a later unrelated
+  `updated_at` value.
+- A higher-priority `CLOSED` provider participates in natural deadline planning
+  only while that pending deadline exists. Before it is due, retain the current
+  session binding. Once due, the next eligible real request directly targets
+  that provider with `ProbeTrigger::NaturalMaxWait`; `OPEN`/`HALF_OPEN`
+  candidates continue through the existing single-flight probe gate. A healthy
+  `CLOSED` provider with no pending deadline must not turn natural mode into
+  aggressive failback.
 - Every eligible candidate reaches
   `failover_loop/prepare/provider_checks::run_gates`. A circuit, cooldown, or
   provider-limit denial creates one `outcome="skipped"` attempt with its stable
@@ -163,6 +178,9 @@ FailoverAttempt {
 | Another request owns P1 probe but P2 is due | Record P1 `probe_result="in_flight"` with zero P1 calls from this request, then probe P2 under P2's own single-flight lease |
 | Every all-open candidate is in cooldown/in-flight | HTTP 503 with structured skips and zero calls to denied candidates |
 | Route has any `CLOSED` fallback | Do not create multi-target recovery; retain ordinary one-probe failback behavior |
+| Higher-priority P1 is `CLOSED` after a counted failure and its natural deadline is not due | Keep the current P2 binding and make zero P1 calls |
+| Higher-priority P1 is `CLOSED` with an expired natural deadline | Directly call P1 on the next eligible request; on complete success clear the deadline and bind P1 |
+| Expired direct P1 failback fails while P2 is `CLOSED` | Rearm P1 from that failure, continue to P2, and retain/bind P2 when it succeeds |
 | Candidate is gate-skipped | Zero upstream calls and no Ready-provider budget consumed |
 | All candidates are gate-skipped | HTTP 503 with every candidate in attempts and route |
 | Ready-provider cap is reached | Stop before the next Ready provider |
@@ -197,6 +215,15 @@ FailoverAttempt {
   failures starve a recovered P2 forever.
 - Bad: enabling multi-target probing when a `CLOSED` fallback exists; this adds
   avoidable latency and changes ordinary failback behavior.
+- Good: P1 has one counted failure but remains `CLOSED`; after the natural
+  deadline expires, the next eligible P2-bound request tries P1 directly and a
+  complete success clears the deadline and rebinds the session to P1.
+- Base: a healthy `CLOSED` P1 has no pending natural deadline, so a P2-bound
+  natural session remains on P2 until a real recovery signal or failure-armed
+  deadline applies.
+- Bad: requiring P1 to become `OPEN` before arming the natural deadline; a P1
+  that failed below the circuit threshold remains `CLOSED` and can otherwise
+  leave the session stuck on P2 forever.
 - Good: an ineligible P1 probe opportunity persists a structured
   `not_triggered` observation, while the real P2 success remains the only route
   hop and the only counted provider attempt.
@@ -229,6 +256,13 @@ FailoverAttempt {
   zero calls.
 - Assert the Ready-provider cap still stops the sequence and that a mixed route
   containing a `CLOSED` fallback does not create a multi-target intent.
+- Circuit-test that a counted `CLOSED` failure arms the natural deadline, a
+  later failure rearms it from the newer timestamp, complete success clears it,
+  reload preserves it, and a max-wait configuration update recomputes it.
+- Route-test an expired pending deadline on a higher-priority `CLOSED` P1:
+  assert one direct P1 call, zero P2 calls, complete success, cleared deadline,
+  and session binding to P1. Pair it with a failed direct P1 call that continues
+  to successful P2 and rearms P1's deadline from the new failure.
 - Route-test that skipped candidates do not consume the Ready-provider cap,
   plus a boundary where the cap stops before the next Ready provider.
 - Route-test the reverse boundary `Ready, Ready, circuit-open/cooldown` at cap

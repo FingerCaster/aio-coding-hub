@@ -298,8 +298,11 @@ describe("cli-manager/GeneralTab", () => {
     });
 
     const naturalMaxWaitInput = screen.getByRole("spinbutton", {
-      name: "自然模式最长试探等待",
+      name: "自然模式最长回切等待",
     });
+    expect(
+      screen.getByText(/即使仍显示 CLOSED.*OPEN\/HALF_OPEN 则申请单飞探测/)
+    ).toBeInTheDocument();
     fireEvent.change(naturalMaxWaitInput, { target: { value: "301" } });
     fireEvent.blur(naturalMaxWaitInput, { target: { value: "301" } });
     expect(setNaturalProbeMaxWaitSeconds).toHaveBeenCalled();
@@ -343,11 +346,11 @@ describe("cli-manager/GeneralTab", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
-    const input = screen.getByRole("spinbutton", { name: "自然模式最长试探等待" });
+    const input = screen.getByRole("spinbutton", { name: "自然模式最长回切等待" });
     fireEvent.change(input, { target: { value: "0" } });
     fireEvent.blur(input, { target: { value: "0" } });
 
-    expect(toast).toHaveBeenCalledWith("自然模式最长试探等待必须为 1-86400 秒");
+    expect(toast).toHaveBeenCalledWith("自然模式最长回切等待必须为 1-86400 秒");
     expect(setNaturalProbeMaxWaitSeconds).toHaveBeenLastCalledWith(300);
     expect(onPersistCommonSettings).not.toHaveBeenCalled();
   });
@@ -359,7 +362,7 @@ describe("cli-manager/GeneralTab", () => {
 
     fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
     expect(
-      screen.queryByRole("spinbutton", { name: "自然模式最长试探等待" })
+      screen.queryByRole("spinbutton", { name: "自然模式最长回切等待" })
     ).not.toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "积极回切" })).toBeChecked();
   });

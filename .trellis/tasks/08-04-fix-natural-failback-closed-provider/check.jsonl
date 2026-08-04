@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"验证 shared circuit 变更和完整 Rust suite 要求"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"验证 attempt budget 未被 circuit deadline 耦合"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"验证跨层 selection、日志和 UI 文案"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"验证公共 gate、skip observation 和 route 语义"}
+{"file":".trellis/tasks/08-04-fix-natural-failback-closed-provider/research/root-cause.md","reason":"对照原始缺口和修复边界检查回归"}
