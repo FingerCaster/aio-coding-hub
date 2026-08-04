@@ -81,3 +81,40 @@
 ### Next Steps
 
 - 配置 `HOMEBREW_TAP_TOKEN` 后可同步 Homebrew tap；本次应用 Release 已完成。
+
+
+## Session 2: 有序自然回切与 aio-coding-hub v0.60.36 发布
+
+**Date**: 2026-08-04
+**Task**: 有序自然回切与 aio-coding-hub v0.60.36 发布
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+完成任意数量 Provider 按路由顺序自然回切，并使多会话在 single-flight 探测成功后的下一次合格请求直接收敛；完成回归和全量质量门禁，发布 aio-coding-hub v0.60.36。
+
+### Main Changes
+
+- 支持 P1、P2、P3、P4 等任意长度路由按优先级顺序逐个自然回切。
+- single-flight winner 成功后发布恢复 epoch，其他会话下一次合格请求直接回切，无需等待下一轮 60 秒。
+- 更新 Trellis 到 0.6.12，归档父任务及 6 个子任务。
+- 合并 release PR #26，并发布 aio-coding-hub v0.60.36。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `026f392653f072325daa878b0c52a845650b44ba` | (see git log) |
+| `64d2da995c68bf78403f7716ae21eaff8430848f` | (see git log) |
+
+### Testing
+
+- [OK] cargo test --lib route_ordered_failback：12 passed。
+- [OK] cargo test --lib：2505 passed，4 ignored，0 failed。
+- [OK] pnpm check:precommit:full：13 项通过；Rust fmt、Clippy -D warnings、typecheck、lint 和 generated bindings 全通过。
+- [OK] Release workflow 30923529742 全部成功；tag 指向 a9858e69，Release 含 24 个资产和 9 个签名文件。
+
+### Status
+
+[OK] **Completed**
