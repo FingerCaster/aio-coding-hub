@@ -100,6 +100,7 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     // -- session routing --
     pub(super) session_id: Option<String>,
     pub(super) allow_session_reuse: bool,
+    pub(super) session_binding_request: Option<crate::session_manager::SessionBindingRequest>,
 
     // -- provider resolution --
     pub(super) effective_sort_mode_id: Option<i64>,
@@ -141,6 +142,7 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             created_at_ms: self.created_at_ms,
             created_at: self.created_at,
             session_id: self.session_id,
+            session_binding_request: self.session_binding_request,
             requested_model: self.requested_model,
             requested_model_location: self.requested_model_location,
             managed_model_route: self.managed_model_route,

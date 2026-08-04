@@ -126,6 +126,301 @@ fn sliding_ttl_bind_success_refreshes_existing_binding() {
 }
 
 #[test]
+fn live_binding_preserves_its_recovery_epoch_baseline_across_refreshes() {
+    let manager = SessionManager::new();
+    let t0 = 1_000;
+
+    let initial_request = manager.begin_binding_request().expect("initial request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "claude",
+        "s1",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 7, initial_request),
+        t0,
+    ));
+    manager.bind_success("claude", "s1", 2, None, t0 + 100);
+    assert_eq!(
+        manager.get_bound_provider("claude", "s1", t0 + 200),
+        Some(2)
+    );
+
+    let refresh_request = manager.begin_binding_request().expect("refresh request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "claude",
+        "s1",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 99, refresh_request),
+        t0 + 400,
+    ));
+    assert!(manager.confirm_route(
+        "claude",
+        "s1",
+        &SessionRouteFingerprint::new(None, vec![1, 2]),
+        t0 + 500,
+    ));
+
+    let snapshot = manager
+        .routing_snapshot("claude", "s1", t0 + 501)
+        .expect("live binding");
+    assert_eq!(snapshot.recovery_epoch_baseline, 7);
+}
+
+#[test]
+fn later_started_request_wins_binding_regardless_of_completion_order() {
+    let manager = SessionManager::new();
+    let now = 1_000;
+    manager.bind_sort_mode("codex", "s1", None, Some(vec![1, 2]), now);
+    manager.bind_success("codex", "s1", 2, None, now);
+
+    let older = manager.begin_binding_request().expect("older request");
+    let newer = manager.begin_binding_request().expect("newer request");
+    assert!(manager.bind_success_for_request("codex", "s1", 1, None, newer, now + 1));
+    assert!(!manager.bind_success_for_request("codex", "s1", 2, None, older, now + 2));
+    assert_eq!(manager.get_bound_provider("codex", "s1", now + 3), Some(1));
+
+    let older = manager.begin_binding_request().expect("next older request");
+    let newer = manager.begin_binding_request().expect("next newer request");
+    assert!(manager.bind_success_for_request("codex", "s1", 2, None, older, now + 4));
+    assert!(manager.bind_success_for_request("codex", "s1", 1, None, newer, now + 5));
+    assert_eq!(manager.get_bound_provider("codex", "s1", now + 6), Some(1));
+}
+
+#[test]
+fn first_request_creates_and_commits_a_binding() {
+    let manager = SessionManager::new();
+    let now = 1_000;
+    let request = manager.begin_binding_request().expect("binding request");
+
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "codex",
+        "new-session",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 7, request),
+        now,
+    ));
+    assert!(manager.bind_success_for_request("codex", "new-session", 1, None, request, now + 1,));
+    assert_eq!(
+        manager.get_bound_provider("codex", "new-session", now + 2),
+        Some(1)
+    );
+}
+
+#[test]
+fn clear_rejects_the_old_incarnation_and_allows_a_new_request() {
+    let manager = SessionManager::new();
+    let now = 1_000;
+    let old_request = manager.begin_binding_request().expect("old request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "codex",
+        "cleared-session",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, old_request),
+        now,
+    ));
+    assert!(manager.bind_success_for_request(
+        "codex",
+        "cleared-session",
+        2,
+        None,
+        old_request,
+        now + 1,
+    ));
+
+    assert_eq!(manager.clear_cli_bindings("codex"), 1);
+    assert!(!manager.bind_success_for_request(
+        "codex",
+        "cleared-session",
+        2,
+        None,
+        old_request,
+        now + 2,
+    ));
+
+    let new_request = manager.begin_binding_request().expect("new request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "codex",
+        "cleared-session",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, new_request),
+        now + 3,
+    ));
+    assert!(!manager.bind_success_for_request(
+        "codex",
+        "cleared-session",
+        2,
+        None,
+        old_request,
+        now + 4,
+    ));
+    assert!(manager.bind_success_for_request(
+        "codex",
+        "cleared-session",
+        1,
+        None,
+        new_request,
+        now + 5,
+    ));
+    assert_eq!(
+        manager.get_bound_provider("codex", "cleared-session", now + 6),
+        Some(1)
+    );
+}
+
+#[test]
+fn ttl_recreation_rejects_a_request_from_the_expired_incarnation() {
+    let manager = SessionManager::new();
+    let now = 1_000;
+    let old_request = manager.begin_binding_request().expect("old request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "codex",
+        "expired-session",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, old_request),
+        now,
+    ));
+    assert!(manager.bind_success_for_request(
+        "codex",
+        "expired-session",
+        2,
+        None,
+        old_request,
+        now,
+    ));
+
+    let new_request = manager.begin_binding_request().expect("new request");
+    let recreated_at = now + DEFAULT_SESSION_TTL_SECS;
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "codex",
+        "expired-session",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, new_request),
+        recreated_at,
+    ));
+    assert!(!manager.bind_success_for_request(
+        "codex",
+        "expired-session",
+        2,
+        None,
+        old_request,
+        recreated_at + 1,
+    ));
+    assert!(manager.bind_success_for_request(
+        "codex",
+        "expired-session",
+        1,
+        None,
+        new_request,
+        recreated_at + 2,
+    ));
+    assert_eq!(
+        manager.get_bound_provider("codex", "expired-session", recreated_at + 3),
+        Some(1)
+    );
+}
+
+#[test]
+fn equal_request_token_is_idempotent_only_for_the_same_provider() {
+    let manager = SessionManager::new();
+    let now = 1_000;
+    let request = manager.begin_binding_request().expect("binding request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "codex",
+        "idempotent-session",
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, request),
+        now,
+    ));
+
+    assert!(manager.bind_success_for_request(
+        "codex",
+        "idempotent-session",
+        1,
+        None,
+        request,
+        now + 1,
+    ));
+    assert!(manager.bind_success_for_request(
+        "codex",
+        "idempotent-session",
+        1,
+        None,
+        request,
+        now + 2,
+    ));
+    assert!(!manager.bind_success_for_request(
+        "codex",
+        "idempotent-session",
+        2,
+        None,
+        request,
+        now + 3,
+    ));
+    assert_eq!(
+        manager.get_bound_provider("codex", "idempotent-session", now + 4),
+        Some(1)
+    );
+}
+
+#[test]
+fn binding_request_overflow_never_falls_back_to_an_unversioned_write() {
+    let manager = SessionManager::new();
+    manager
+        .next_binding_request
+        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+
+    assert!(manager.begin_binding_request().is_none());
+    manager.bind_sort_mode("codex", "overflow-session", None, Some(vec![1]), 1_000);
+    manager.bind_success("codex", "overflow-session", 1, None, 1_001);
+    assert_eq!(
+        manager.get_bound_provider("codex", "overflow-session", 1_002),
+        None
+    );
+}
+
+#[test]
+fn recreated_binding_captures_the_then_current_recovery_epoch() {
+    let manager = SessionManager::new();
+    let t0 = 1_000;
+
+    let initial_request = manager.begin_binding_request().expect("initial request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "claude",
+        "expired",
+        SessionBindingCreation::new(None, None, 3, initial_request),
+        t0,
+    ));
+    assert!(manager
+        .routing_snapshot("claude", "expired", t0 + DEFAULT_SESSION_TTL_SECS + 1)
+        .is_none());
+    let expired_request = manager
+        .begin_binding_request()
+        .expect("expired recreation request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "claude",
+        "expired",
+        SessionBindingCreation::new(None, None, 8, expired_request),
+        t0 + DEFAULT_SESSION_TTL_SECS + 2,
+    ));
+    assert_eq!(
+        manager
+            .routing_snapshot("claude", "expired", t0 + DEFAULT_SESSION_TTL_SECS + 3)
+            .expect("recreated expired binding")
+            .recovery_epoch_baseline,
+        8
+    );
+
+    assert!(manager.clear_bound_provider("claude", "expired", t0 + 400));
+    let cleared_request = manager
+        .begin_binding_request()
+        .expect("cleared recreation request");
+    assert!(manager.bind_sort_mode_with_recovery_epoch(
+        "claude",
+        "expired",
+        SessionBindingCreation::new(None, None, 13, cleared_request),
+        t0 + 401,
+    ));
+    assert_eq!(
+        manager
+            .routing_snapshot("claude", "expired", t0 + 402)
+            .expect("recreated cleared binding")
+            .recovery_epoch_baseline,
+        13
+    );
+}
+
+#[test]
 fn sliding_ttl_lru_eviction_works_with_refreshed_bindings() {
     let manager = SessionManager::new();
     let t0 = 1000;

@@ -20,43 +20,72 @@ impl std::fmt::Debug for DurableCircuitPersistence {
 
 #[derive(Debug)]
 pub(in crate::gateway) struct RequestDispatchIntent {
-    provider_id: i64,
-    additional_probe_provider_ids: Vec<i64>,
-    probe_trigger: Option<ProbeTrigger>,
-    reservation: Mutex<Option<SessionTriggerReservation>>,
+    targets: Vec<RequestDispatchTarget>,
+    reservation: Arc<Mutex<RequestReservationState>>,
     claimed_provider_ids: Mutex<HashSet<i64>>,
     durable_persistence: Option<DurableCircuitPersistence>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(in crate::gateway) struct RequestDispatchTarget {
+    pub(in crate::gateway) provider_id: i64,
+    pub(in crate::gateway) probe_trigger: Option<ProbeTrigger>,
+}
+
+impl RequestDispatchTarget {
+    pub(in crate::gateway) const fn new(
+        provider_id: i64,
+        probe_trigger: Option<ProbeTrigger>,
+    ) -> Self {
+        Self {
+            provider_id,
+            probe_trigger,
+        }
+    }
+}
+
 impl RequestDispatchIntent {
+    #[cfg(test)]
     pub(in crate::gateway) fn new(
         provider_id: i64,
         probe_trigger: Option<ProbeTrigger>,
         reservation: Option<SessionTriggerReservation>,
     ) -> Self {
+        Self::new_targets(
+            vec![RequestDispatchTarget::new(provider_id, probe_trigger)],
+            reservation,
+        )
+    }
+
+    pub(in crate::gateway) fn new_targets(
+        mut targets: Vec<RequestDispatchTarget>,
+        reservation: Option<SessionTriggerReservation>,
+    ) -> Self {
+        let mut seen_provider_ids = HashSet::new();
+        targets.retain(|target| seen_provider_ids.insert(target.provider_id));
+
         Self {
-            provider_id,
-            additional_probe_provider_ids: Vec::new(),
-            probe_trigger,
-            reservation: Mutex::new(reservation),
+            targets,
+            reservation: Arc::new(Mutex::new(match reservation {
+                Some(reservation) => RequestReservationState::Pending(reservation),
+                None => RequestReservationState::NotRequired,
+            })),
             claimed_provider_ids: Mutex::new(HashSet::new()),
             durable_persistence: None,
         }
     }
 
+    #[cfg(test)]
     pub(in crate::gateway) fn new_all_open_recovery(
         provider_id: i64,
         additional_probe_provider_ids: Vec<i64>,
         probe_trigger: ProbeTrigger,
     ) -> Self {
-        Self {
-            provider_id,
-            additional_probe_provider_ids,
-            probe_trigger: Some(probe_trigger),
-            reservation: Mutex::new(None),
-            claimed_provider_ids: Mutex::new(HashSet::new()),
-            durable_persistence: None,
-        }
+        let targets = std::iter::once(provider_id)
+            .chain(additional_probe_provider_ids)
+            .map(|provider_id| RequestDispatchTarget::new(provider_id, Some(probe_trigger)))
+            .collect();
+        Self::new_targets(targets, None)
     }
 
     pub(in crate::gateway) fn with_durable_persistence(mut self, db: crate::db::Db) -> Self {
@@ -83,11 +112,16 @@ impl RequestDispatchIntent {
     }
 
     pub(in crate::gateway) fn targets_provider(&self, provider_id: i64) -> bool {
-        self.provider_id == provider_id || self.additional_probe_provider_ids.contains(&provider_id)
+        self.targets
+            .iter()
+            .any(|target| target.provider_id == provider_id)
     }
 
-    pub(in crate::gateway) fn probe_trigger(&self) -> Option<ProbeTrigger> {
-        self.probe_trigger
+    pub(in crate::gateway) fn probe_trigger_for(&self, provider_id: i64) -> Option<ProbeTrigger> {
+        self.targets
+            .iter()
+            .find(|target| target.provider_id == provider_id)
+            .and_then(|target| target.probe_trigger)
     }
 
     pub(in crate::gateway) fn claim_for_provider(
@@ -104,14 +138,10 @@ impl RequestDispatchIntent {
         }
         Some(Arc::new(ProviderDispatchOwnership {
             probe_guard,
-            reservation: Mutex::new(self.reservation.lock_or_recover().take()),
+            reservation: Arc::clone(&self.reservation),
             state: Mutex::new(DispatchOwnershipState::Pending),
             durable_persistence: self.durable_persistence.clone(),
         }))
-    }
-
-    pub(in crate::gateway) fn release_unclaimed_reservation(&self) {
-        self.reservation.lock_or_recover().take();
     }
 }
 
@@ -127,9 +157,17 @@ enum DispatchOwnershipState {
 }
 
 #[derive(Debug)]
+enum RequestReservationState {
+    NotRequired,
+    Pending(SessionTriggerReservation),
+    Consumed,
+    Rejected,
+}
+
+#[derive(Debug)]
 pub(in crate::gateway) struct ProviderDispatchOwnership {
     probe_guard: Option<ProbeLeaseGuard>,
-    reservation: Mutex<Option<SessionTriggerReservation>>,
+    reservation: Arc<Mutex<RequestReservationState>>,
     state: Mutex<DispatchOwnershipState>,
     durable_persistence: Option<DurableCircuitPersistence>,
 }
@@ -150,17 +188,27 @@ impl ProviderDispatchOwnership {
             DispatchOwnershipState::Pending => {}
         }
 
-        let reservation = self.reservation.lock_or_recover().take();
-        let trigger_commit = match reservation {
-            Some(reservation) => match reservation.commit(now_unix) {
-                Some(commit) => Some(commit),
-                None => {
+        // Keep the request fail-closed until both the session trigger and any
+        // provider probe dispatch state have committed durably.
+        let mut reservation_state = self.reservation.lock_or_recover();
+        let (trigger_commit, reservation_after_success) =
+            match std::mem::replace(&mut *reservation_state, RequestReservationState::Rejected) {
+                RequestReservationState::Pending(reservation) => match reservation.commit(now_unix)
+                {
+                    Some(commit) => (Some(commit), RequestReservationState::Consumed),
+                    None => {
+                        *state = DispatchOwnershipState::Rejected;
+                        return false;
+                    }
+                },
+                allowed_state @ (RequestReservationState::NotRequired
+                | RequestReservationState::Consumed) => (None, allowed_state),
+                RequestReservationState::Rejected => {
                     *state = DispatchOwnershipState::Rejected;
                     return false;
                 }
-            },
-            None => None,
-        };
+            };
+        drop(reservation_state);
         if let Some(probe_guard) = &self.probe_guard {
             let before_dispatch = match probe_guard.mark_dispatched(now_unix) {
                 ProbeCommitResult::Applied(change) => change.before,
@@ -233,6 +281,7 @@ impl ProviderDispatchOwnership {
             }
         }
 
+        *self.reservation.lock_or_recover() = reservation_after_success;
         *state = DispatchOwnershipState::Dispatched;
         true
     }
@@ -479,7 +528,125 @@ mod tests {
     }
 
     #[test]
-    fn stale_probe_commit_rolls_back_session_trigger_and_rejects_dispatch() {
+    fn ordered_targets_keep_provider_specific_triggers_and_deduplicate_claims() {
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, None),
+                RequestDispatchTarget::new(2, Some(ProbeTrigger::RouteChanged)),
+                RequestDispatchTarget::new(3, Some(ProbeTrigger::NaturalMaxWait)),
+                RequestDispatchTarget::new(4, None),
+                RequestDispatchTarget::new(5, Some(ProbeTrigger::AggressiveTurn)),
+                RequestDispatchTarget::new(2, Some(ProbeTrigger::MaxOpenWait)),
+            ],
+            None,
+        );
+
+        assert!(intent.targets_provider(1));
+        assert_eq!(intent.probe_trigger_for(1), None);
+        assert_eq!(
+            intent.probe_trigger_for(2),
+            Some(ProbeTrigger::RouteChanged)
+        );
+        assert_eq!(
+            intent.probe_trigger_for(3),
+            Some(ProbeTrigger::NaturalMaxWait)
+        );
+        assert_eq!(intent.probe_trigger_for(4), None);
+        assert_eq!(
+            intent.probe_trigger_for(5),
+            Some(ProbeTrigger::AggressiveTurn)
+        );
+        assert!(!intent.targets_provider(6));
+
+        assert!(intent.claim_for_provider(2, None).is_some());
+        assert!(intent.claim_for_provider(2, None).is_none());
+    }
+
+    #[test]
+    fn pre_send_skip_keeps_reservation_for_the_next_target() {
+        let now = 1_000;
+        let manager = Arc::new(SessionManager::new());
+        let reservation = compaction_reservation(&manager, now);
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, None),
+                RequestDispatchTarget::new(2, None),
+            ],
+            Some(reservation),
+        );
+
+        let skipped = intent
+            .claim_for_provider(1, None)
+            .expect("first target ownership");
+        drop(skipped);
+
+        let later = intent
+            .claim_for_provider(2, None)
+            .expect("later target ownership");
+        assert!(later.commit_at_transport_boundary(now + 1));
+        assert_eq!(
+            manager
+                .routing_snapshot("claude", "s1", now + 1)
+                .expect("session snapshot")
+                .consumed_compaction_generation,
+            1
+        );
+    }
+
+    #[test]
+    fn multiple_ownerships_consume_request_reservation_only_on_first_send() {
+        let now = 1_000;
+        let manager = Arc::new(SessionManager::new());
+        let reservation = compaction_reservation(&manager, now);
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, None),
+                RequestDispatchTarget::new(2, None),
+            ],
+            Some(reservation),
+        );
+        let first = intent
+            .claim_for_provider(1, None)
+            .expect("first target ownership");
+        let second = intent
+            .claim_for_provider(2, None)
+            .expect("second target ownership");
+
+        assert!(first.commit_at_transport_boundary(now + 1));
+        assert!(second.commit_at_transport_boundary(now + 2));
+        assert_eq!(
+            manager
+                .routing_snapshot("claude", "s1", now + 2)
+                .expect("session snapshot")
+                .consumed_compaction_generation,
+            1
+        );
+    }
+
+    #[test]
+    fn dropping_zero_send_intent_releases_reservation_for_a_later_request() {
+        let now = 1_000;
+        let manager = Arc::new(SessionManager::new());
+        let reservation = compaction_reservation(&manager, now);
+        {
+            let _intent = RequestDispatchIntent::new_targets(
+                vec![RequestDispatchTarget::new(1, None)],
+                Some(reservation),
+            );
+        }
+
+        assert!(manager
+            .try_reserve_probe_trigger(
+                "claude",
+                "s1",
+                SessionProbeTrigger::CompactionGeneration(1),
+                now + 1,
+            )
+            .is_some());
+    }
+
+    #[test]
+    fn stale_probe_commit_rolls_back_trigger_and_rejects_later_targets() {
         let now = 1_000;
         let manager = Arc::new(SessionManager::new());
         let reservation = compaction_reservation(&manager, now);
@@ -489,18 +656,56 @@ mod tests {
                 ProbeAcquireResult::Acquired { token, .. } => token,
                 other => panic!("expected probe lease, got {other:?}"),
             };
-        let intent =
-            RequestDispatchIntent::new(1, Some(ProbeTrigger::NaturalCompaction), Some(reservation));
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, Some(ProbeTrigger::NaturalCompaction)),
+                RequestDispatchTarget::new(2, None),
+            ],
+            Some(reservation),
+        );
         let ownership = intent
             .claim_for_provider(1, Some(ProbeLeaseGuard::new(Arc::clone(&circuit), token)))
             .expect("ownership");
+        let later_ownership = intent.claim_for_provider(2, None).expect("later ownership");
 
         circuit.reset(1, now + 1);
         assert!(!ownership.commit_at_transport_boundary(now + 2));
+        assert!(!later_ownership.commit_at_transport_boundary(now + 2));
         let snapshot = manager
             .routing_snapshot("claude", "s1", now + 2)
             .expect("session snapshot");
         assert_eq!(snapshot.consumed_compaction_generation, 0);
+    }
+
+    #[test]
+    fn stale_probe_without_reservation_rejects_every_later_target() {
+        let now = 1_000;
+        let circuit = open_circuit(now);
+        let token =
+            match circuit.try_acquire_probe(1, "trace-stale", ProbeTrigger::AggressiveTurn, now) {
+                ProbeAcquireResult::Acquired { token, .. } => token,
+                other => panic!("expected probe lease, got {other:?}"),
+            };
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, Some(ProbeTrigger::AggressiveTurn)),
+                RequestDispatchTarget::new(2, None),
+            ],
+            None,
+        );
+        let ownership = intent
+            .claim_for_provider(1, Some(ProbeLeaseGuard::new(Arc::clone(&circuit), token)))
+            .expect("ownership");
+        let later_ownership = intent.claim_for_provider(2, None).expect("later ownership");
+
+        circuit.reset(1, now + 1);
+        let network_count = AtomicUsize::new(0);
+        for ownership in [&ownership, &later_ownership] {
+            if ownership.commit_at_transport_boundary(now + 2) {
+                network_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(network_count.load(Ordering::Relaxed), 0);
     }
 
     #[test]
@@ -531,7 +736,7 @@ mod tests {
     }
 
     #[test]
-    fn expired_reservation_rejection_abandons_probe_without_resetting_deadlines() {
+    fn expired_reservation_rejection_blocks_later_targets_and_abandons_probe() {
         let now = 1_000;
         let manager = Arc::new(SessionManager::new());
         let reservation = compaction_reservation(&manager, now);
@@ -546,13 +751,25 @@ mod tests {
             ProbeAcquireResult::Acquired { token, .. } => token,
             other => panic!("expected probe lease, got {other:?}"),
         };
-        let intent =
-            RequestDispatchIntent::new(1, Some(ProbeTrigger::NaturalCompaction), Some(reservation));
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, Some(ProbeTrigger::NaturalCompaction)),
+                RequestDispatchTarget::new(2, None),
+            ],
+            Some(reservation),
+        );
         let ownership = intent
             .claim_for_provider(1, Some(ProbeLeaseGuard::new(Arc::clone(&circuit), token)))
             .expect("ownership");
+        let later_ownership = intent.claim_for_provider(2, None).expect("later ownership");
 
-        assert!(!ownership.commit_at_transport_boundary(now + 61));
+        let network_count = AtomicUsize::new(0);
+        for ownership in [&ownership, &later_ownership] {
+            if ownership.commit_at_transport_boundary(now + 61) {
+                network_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(network_count.load(Ordering::Relaxed), 0);
         let commit = ownership
             .complete_probe_failure(now + 62, true, Some("GW_UPSTREAM_5XX"))
             .expect("probe abandon result");
@@ -683,6 +900,42 @@ mod tests {
             ),
             ProbeAcquireResult::Acquired { .. }
         ));
+    }
+
+    #[test]
+    fn durable_failure_without_reservation_rejects_every_later_target() {
+        let now = 1_000;
+        let circuit = open_circuit(now);
+        let token = match circuit.try_acquire_probe(
+            1,
+            "trace-durable-error-no-reservation",
+            ProbeTrigger::AggressiveTurn,
+            now,
+        ) {
+            ProbeAcquireResult::Acquired { token, .. } => token,
+            other => panic!("expected probe lease, got {other:?}"),
+        };
+        let intent = RequestDispatchIntent::new_targets(
+            vec![
+                RequestDispatchTarget::new(1, Some(ProbeTrigger::AggressiveTurn)),
+                RequestDispatchTarget::new(2, None),
+            ],
+            None,
+        )
+        .with_test_durable_persistence(|_| Err("injected durable failure".to_string()));
+        let ownership = intent
+            .claim_for_provider(1, Some(ProbeLeaseGuard::new(Arc::clone(&circuit), token)))
+            .expect("ownership");
+        let later_ownership = intent.claim_for_provider(2, None).expect("later ownership");
+
+        let network_count = AtomicUsize::new(0);
+        for ownership in [&ownership, &later_ownership] {
+            if ownership.commit_at_transport_boundary(now + 1) {
+                network_count.fetch_add(1, Ordering::Relaxed);
+            }
+        }
+        assert_eq!(network_count.load(Ordering::Relaxed), 0);
+        assert!(!circuit.snapshot(1, now + 1).probe_in_flight);
     }
 
     #[test]

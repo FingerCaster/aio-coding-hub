@@ -274,6 +274,102 @@ mod tests {
         (format!("http://{addr}"), call_count, task)
     }
 
+    struct GatedCountingStatusUpstream {
+        base_url: String,
+        call_count: Arc<std::sync::atomic::AtomicUsize>,
+        first_request_accepted: Option<tokio::sync::oneshot::Receiver<()>>,
+        release_first_response: Option<tokio::sync::oneshot::Sender<()>>,
+        task: tokio::task::JoinHandle<()>,
+    }
+
+    impl GatedCountingStatusUpstream {
+        async fn wait_for_first_request(&mut self) {
+            let accepted = self
+                .first_request_accepted
+                .take()
+                .expect("first request acceptance receiver");
+            tokio::time::timeout(Duration::from_secs(3), accepted)
+                .await
+                .expect("first gated upstream request timeout")
+                .expect("first gated upstream request signal");
+        }
+
+        fn release_first_response(&mut self) {
+            self.release_first_response
+                .take()
+                .expect("first response release sender")
+                .send(())
+                .expect("release first gated upstream response");
+        }
+
+        fn calls(&self) -> usize {
+            self.call_count.load(std::sync::atomic::Ordering::SeqCst)
+        }
+    }
+
+    impl Drop for GatedCountingStatusUpstream {
+        fn drop(&mut self) {
+            self.task.abort();
+        }
+    }
+
+    async fn spawn_gated_counting_status_upstream(
+        status: StatusCode,
+        body: &'static str,
+    ) -> GatedCountingStatusUpstream {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind gated counting status upstream stub");
+        let addr = listener
+            .local_addr()
+            .expect("gated counting status upstream addr");
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_call_count = Arc::clone(&call_count);
+        let (first_request_tx, first_request_rx) = tokio::sync::oneshot::channel();
+        let (release_first_tx, release_first_rx) = tokio::sync::oneshot::channel();
+        let task = tokio::spawn(async move {
+            let mut first_request_tx = Some(first_request_tx);
+            let mut release_first_rx = Some(release_first_rx);
+            while let Ok((mut socket, _)) = listener.accept().await {
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                let call_number =
+                    task_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst) + 1;
+                if call_number == 1 {
+                    let _ = first_request_tx
+                        .take()
+                        .expect("first request acceptance sender")
+                        .send(());
+                    if release_first_rx
+                        .take()
+                        .expect("first response release receiver")
+                        .await
+                        .is_err()
+                    {
+                        return;
+                    }
+                }
+                let response = format!(
+                    "HTTP/1.1 {} {}\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                    status.as_u16(),
+                    status.canonical_reason().unwrap_or("Unknown"),
+                    body.len(),
+                    body
+                );
+                let _ = socket.write_all(response.as_bytes()).await;
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        GatedCountingStatusUpstream {
+            base_url: format!("http://{addr}"),
+            call_count,
+            first_request_accepted: Some(first_request_rx),
+            release_first_response: Some(release_first_tx),
+            task,
+        }
+    }
+
     async fn spawn_retry_rule_upstream(
         status_line: &'static str,
         error_body: Vec<u8>,
@@ -5265,6 +5361,1686 @@ INSERT INTO codex_managed_profiles(
                 .to_string(),
             ))
             .expect("request")
+    }
+
+    fn request_log_attempts(log: &request_logs::RequestLogInsert) -> Vec<Value> {
+        serde_json::from_str::<Value>(&log.attempts_json)
+            .expect("attempts json")
+            .as_array()
+            .expect("attempt array")
+            .clone()
+    }
+
+    fn request_log_provider_chain(log: &request_logs::RequestLogInsert) -> Vec<Value> {
+        serde_json::from_str::<Value>(log.provider_chain_json.as_deref().expect("provider chain"))
+            .expect("provider chain json")
+            .as_array()
+            .expect("provider chain array")
+            .clone()
+    }
+
+    fn assert_logged_provider_order(rows: &[Value], expected_provider_ids: &[i64]) {
+        let actual_provider_ids: Vec<_> = rows
+            .iter()
+            .map(|row| {
+                row.get("provider_id")
+                    .and_then(Value::as_i64)
+                    .expect("logged provider id")
+            })
+            .collect();
+        assert_eq!(actual_provider_ids, expected_provider_ids);
+    }
+
+    async fn route_ordered_failback_json_response(
+        router: axum::Router,
+        session_id: &str,
+        model: &str,
+    ) -> (StatusCode, Value) {
+        let response = tokio::time::timeout(
+            Duration::from_secs(3),
+            router.oneshot(all_open_probe_request(session_id, model)),
+        )
+        .await
+        .expect("route ordered failback response timeout")
+        .expect("route response");
+        let status = response.status();
+        let body = tokio::time::timeout(
+            Duration::from_secs(3),
+            to_bytes(response.into_body(), usize::MAX),
+        )
+        .await
+        .expect("route ordered failback body timeout")
+        .expect("route response body");
+        let payload = serde_json::from_slice(&body).expect("route response JSON");
+        (status, payload)
+    }
+
+    async fn recv_terminal_request_logs_by_session(
+        log_rx: &mut tokio::sync::mpsc::Receiver<request_logs::RequestLogInsert>,
+        expected_count: usize,
+    ) -> HashMap<String, request_logs::RequestLogInsert> {
+        let mut logs = HashMap::with_capacity(expected_count);
+        for _ in 0..expected_count {
+            let log = recv_terminal_request_log(log_rx).await;
+            let session_id = log.session_id.clone().expect("request log session id");
+            assert!(
+                logs.insert(session_id.clone(), log).is_none(),
+                "duplicate terminal request log for session {session_id}"
+            );
+        }
+        logs
+    }
+
+    fn assert_direct_attempt_without_probe_metadata(attempt: &Value) {
+        assert_ne!(attempt.get("probe").and_then(Value::as_bool), Some(true));
+        assert_ne!(
+            attempt.get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(attempt.get("probe_trigger").and_then(Value::as_str), None);
+        assert_eq!(attempt.get("probe_result").and_then(Value::as_str), None);
+        assert_eq!(
+            attempt.get("probe_generation").and_then(Value::as_u64),
+            None
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_closed_p1_failure_then_open_p2_success_precedes_current_p3(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 3;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-p1-p2-p3.sqlite"),
+        )
+        .expect("init test db");
+        let failed_body = r#"{"error":{"message":"p1 failed"}}"#;
+        let p2_body = r#"{"id":"ordered-p2-ok","object":"response","status":"completed","model":"gpt-ordered-p1-p2-p3","output":[]}"#;
+        let p3_body = r#"{"id":"current-p3-must-not-run","object":"response","status":"completed","model":"gpt-ordered-p1-p2-p3","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failed_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::OK, p2_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, p3_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Ordered P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Ordered P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Current P3", p3_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                provider_cooldown_secs: 30,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(p2_id, now.saturating_sub(31), None);
+        assert_eq!(
+            circuit.snapshot(p2_id, now).state,
+            circuit_breaker::CircuitState::Open
+        );
+
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000201";
+        session.bind_sort_mode("codex", session_id, None, Some(vec![p1_id, p3_id]), now);
+        session.bind_success("codex", session_id, p3_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let response = tokio::time::timeout(
+            Duration::from_secs(5),
+            router.oneshot(all_open_probe_request(session_id, "gpt-ordered-p1-p2-p3")),
+        )
+        .await
+        .expect("route response timeout")
+        .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("ordered-p2-ok")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.session_id.as_deref(), Some(session_id));
+        let attempts = request_log_attempts(&log);
+        assert_logged_provider_order(&attempts, &[p1_id, p2_id]);
+        assert_eq!(attempts[0].get("status").and_then(Value::as_i64), Some(500));
+        assert_ne!(
+            attempts[0].get("probe").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_ne!(
+            attempts[0].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[0].get("probe_trigger").and_then(Value::as_str),
+            None
+        );
+        assert_eq!(
+            attempts[0].get("probe_result").and_then(Value::as_str),
+            None
+        );
+        assert_eq!(
+            attempts[1].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[1].get("probe_trigger").and_then(Value::as_str),
+            Some("route_changed")
+        );
+        assert_eq!(
+            attempts[1].get("probe_result").and_then(Value::as_str),
+            Some("success")
+        );
+        assert!(attempts[1]
+            .get("probe_generation")
+            .and_then(Value::as_u64)
+            .is_some());
+        assert_logged_provider_order(&request_log_provider_chain(&log), &[p1_id, p2_id]);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p2_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(vec![p1_id, p2_id, p3_id])
+        );
+        assert_eq!(
+            circuit.snapshot(p2_id, now).state,
+            circuit_breaker::CircuitState::Closed
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_five_provider_prefix_reaches_p4_before_current_p5()
+    {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 5;
+        app_settings.circuit_breaker_failure_threshold = 5;
+        app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-five-provider.sqlite"),
+        )
+        .expect("init test db");
+        let failure_body = r#"{"error":{"message":"ordered target failed"}}"#;
+        let success_body = r#"{"id":"ordered-p4-ok","object":"response","status":"completed","model":"gpt-ordered-five","output":[]}"#;
+        let unused_body = r#"{"id":"current-p5-must-not-run","object":"response","status":"completed","model":"gpt-ordered-five","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p4_url, p4_calls, p4_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let (p5_url, p5_calls, p5_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Dynamic P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Dynamic P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Dynamic P3", p3_url, 2);
+        let p4_id = insert_codex_provider_with_priority(&db, "Dynamic P4", p4_url, 3);
+        let p5_id = insert_codex_provider_with_priority(&db, "Current P5", p5_url, 4);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 5,
+                provider_cooldown_secs: 0,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000202";
+        session.bind_sort_mode("codex", session_id, None, Some(vec![p1_id, p5_id]), now);
+        session.bind_success("codex", session_id, p5_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(session_id, "gpt-ordered-five"))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("ordered-p4-ok")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        let expected_order = [p1_id, p2_id, p3_id, p4_id];
+        assert_logged_provider_order(&attempts, &expected_order);
+        for attempt in &attempts[..3] {
+            assert_eq!(attempt.get("status").and_then(Value::as_i64), Some(500));
+        }
+        assert_eq!(
+            attempts[3].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_logged_provider_order(&request_log_provider_chain(&log), &expected_order);
+        for call_count in [&p1_calls, &p2_calls, &p3_calls, &p4_calls] {
+            assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        }
+        assert_eq!(p5_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p4_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(vec![p1_id, p2_id, p3_id, p4_id, p5_id])
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+        p4_task.abort();
+        p5_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_intermediate_success_short_circuits_later_targets_and_current(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 5;
+        app_settings.circuit_breaker_failure_threshold = 5;
+        app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-short-circuit.sqlite"),
+        )
+        .expect("init test db");
+        let failure_body = r#"{"error":{"message":"p1 failed"}}"#;
+        let success_body = r#"{"id":"short-circuit-p2-ok","object":"response","status":"completed","model":"gpt-ordered-short-circuit","output":[]}"#;
+        let unused_body = r#"{"id":"must-not-run","object":"response","status":"completed","model":"gpt-ordered-short-circuit","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (p4_url, p4_calls, p4_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (p5_url, p5_calls, p5_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Short P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Short P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Short P3", p3_url, 2);
+        let p4_id = insert_codex_provider_with_priority(&db, "Short P4", p4_url, 3);
+        let p5_id = insert_codex_provider_with_priority(&db, "Current P5", p5_url, 4);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 5,
+                provider_cooldown_secs: 0,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000203";
+        session.bind_sort_mode("codex", session_id, None, Some(vec![p1_id, p5_id]), now);
+        session.bind_success("codex", session_id, p5_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(
+                session_id,
+                "gpt-ordered-short-circuit",
+            ))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("short-circuit-p2-ok")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_logged_provider_order(&attempts, &[p1_id, p2_id]);
+        assert_logged_provider_order(&request_log_provider_chain(&log), &[p1_id, p2_id]);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        for call_count in [&p3_calls, &p4_calls, &p5_calls] {
+            assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 0);
+        }
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p2_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(vec![p1_id, p2_id, p3_id, p4_id, p5_id])
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+        p4_task.abort();
+        p5_task.abort();
+    }
+
+    #[derive(Clone, Copy)]
+    enum OrderedFailbackGateBlock {
+        Cooldown,
+        InFlight,
+    }
+
+    async fn assert_ordered_failback_gate_skip_continues(block: OrderedFailbackGateBlock) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let (label, expected_probe_result, session_id) = match block {
+            OrderedFailbackGateBlock::Cooldown => (
+                "cooldown",
+                "cooldown",
+                "0190c0de-0000-7000-8000-000000000204",
+            ),
+            OrderedFailbackGateBlock::InFlight => (
+                "in-flight",
+                "in_flight",
+                "0190c0de-0000-7000-8000-000000000205",
+            ),
+        };
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join(format!(
+            "gateway-route-ordered-failback-{label}-skip.sqlite"
+        )))
+        .expect("init test db");
+        let unused_body =
+            r#"{"id":"p1-must-not-run","object":"response","status":"completed","output":[]}"#;
+        let success_body = r#"{"id":"skip-then-p2-ok","object":"response","status":"completed","model":"gpt-ordered-skip","output":[]}"#;
+        let current_body =
+            r#"{"id":"p3-must-not-run","object":"response","status":"completed","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, current_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Skipped P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Ready P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Current P3", p3_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                provider_cooldown_secs: 30,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let opened_at = match block {
+            OrderedFailbackGateBlock::Cooldown => now,
+            OrderedFailbackGateBlock::InFlight => now.saturating_sub(31),
+        };
+        circuit.record_failure(p1_id, opened_at, None);
+        let _existing_probe = match block {
+            OrderedFailbackGateBlock::Cooldown => None,
+            OrderedFailbackGateBlock::InFlight => {
+                let token = match circuit.try_acquire_probe(
+                    p1_id,
+                    "existing-ordered-probe",
+                    circuit_breaker::ProbeTrigger::RouteChanged,
+                    now,
+                ) {
+                    circuit_breaker::ProbeAcquireResult::Acquired { token, .. } => token,
+                    other => panic!("expected existing probe lease, got {other:?}"),
+                };
+                Some(circuit_breaker::ProbeLeaseGuard::new(
+                    circuit.clone(),
+                    token,
+                ))
+            }
+        };
+
+        let session = Arc::new(session_manager::SessionManager::new());
+        session.bind_sort_mode("codex", session_id, None, Some(vec![p1_id, p3_id]), now);
+        session.bind_success("codex", session_id, p3_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(session_id, "gpt-ordered-skip"))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("skip-then-p2-ok")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_logged_provider_order(&attempts, &[p1_id, p2_id]);
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(
+            attempts[0].get("probe_trigger").and_then(Value::as_str),
+            Some("route_changed")
+        );
+        assert_eq!(
+            attempts[0].get("probe_result").and_then(Value::as_str),
+            Some(expected_probe_result)
+        );
+        assert_eq!(
+            attempts[1].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_ne!(
+            attempts[1].get("probe").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            attempts[1].get("probe_trigger").and_then(Value::as_str),
+            None
+        );
+        assert_logged_provider_order(&request_log_provider_chain(&log), &[p1_id, p2_id]);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p2_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(vec![p1_id, p2_id, p3_id])
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_cooldown_skip_continues_without_consuming_ready_cap_or_reservation(
+    ) {
+        assert_ordered_failback_gate_skip_continues(OrderedFailbackGateBlock::Cooldown).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_in_flight_skip_continues_without_consuming_ready_cap_or_reservation(
+    ) {
+        assert_ordered_failback_gate_skip_continues(OrderedFailbackGateBlock::InFlight).await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_natural_not_triggered_p1_does_not_block_due_p2_probe() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-not-triggered.sqlite"),
+        )
+        .expect("init test db");
+        let unused_body =
+            r#"{"id":"p1-must-not-run","object":"response","status":"completed","output":[]}"#;
+        let success_body = r#"{"id":"natural-p2-ok","object":"response","status":"completed","model":"gpt-natural-ordered","output":[]}"#;
+        let current_body =
+            r#"{"id":"p3-must-not-run","object":"response","status":"completed","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, current_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Healthy P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Due P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Current P3", p3_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 30,
+                provider_cooldown_secs: 30,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(p2_id, now.saturating_sub(31), None);
+        let p2_before = circuit.snapshot(p2_id, now);
+        assert_eq!(p2_before.state, circuit_breaker::CircuitState::Open);
+        assert!(p2_before.open_until.is_some_and(|until| until <= now));
+
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000206";
+        let latest_route = vec![p1_id, p2_id, p3_id];
+        session.bind_sort_mode("codex", session_id, None, Some(latest_route.clone()), now);
+        session.bind_success("codex", session_id, p3_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(session_id, "gpt-natural-ordered"))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_logged_provider_order(&attempts, &[p1_id, p2_id]);
+        assert_eq!(
+            attempts[0].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(attempts[0].get("provider_index"), Some(&Value::Null));
+        assert_eq!(attempts[0].get("retry_index"), Some(&Value::Null));
+        assert_eq!(
+            attempts[0].get("probe_result").and_then(Value::as_str),
+            Some("not_triggered")
+        );
+        assert_eq!(
+            attempts[1].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[1].get("probe_trigger").and_then(Value::as_str),
+            Some("max_open_wait")
+        );
+        assert_eq!(
+            attempts[1].get("probe_result").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_logged_provider_order(&request_log_provider_chain(&log), &[p2_id]);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            circuit.snapshot(p2_id, now).state,
+            circuit_breaker::CircuitState::Closed
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p2_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(latest_route)
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+    }
+
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    enum NaturalFailbackWinnerOutcome {
+        Success,
+        Failure,
+    }
+
+    async fn assert_route_ordered_failback_natural_multi_session_convergence(
+        winner_outcome: NaturalFailbackWinnerOutcome,
+    ) {
+        const MODEL: &str = "gpt-natural-session-convergence";
+        const FOLLOWER_COUNT: usize = 4;
+
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        app_settings.natural_probe_max_wait_seconds = 60;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let (label, p1_status, p1_body) = match winner_outcome {
+            NaturalFailbackWinnerOutcome::Success => (
+                "success",
+                StatusCode::OK,
+                r#"{"id":"recovered-p1-ok","object":"response","status":"completed","model":"gpt-natural-session-convergence","output":[]}"#,
+            ),
+            NaturalFailbackWinnerOutcome::Failure => (
+                "failure",
+                StatusCode::INTERNAL_SERVER_ERROR,
+                r#"{"error":{"message":"natural probe failed"}}"#,
+            ),
+        };
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join(format!(
+            "gateway-route-ordered-failback-session-convergence-{label}.sqlite"
+        )))
+        .expect("init test db");
+        let mut p1_upstream = spawn_gated_counting_status_upstream(p1_status, p1_body).await;
+        let current_body = r#"{"id":"current-p2-ok","object":"response","status":"completed","model":"gpt-natural-session-convergence","output":[]}"#;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::OK, current_body).await;
+        let p1_id = insert_codex_provider_with_priority(
+            &db,
+            "Recovering P1",
+            p1_upstream.base_url.clone(),
+            0,
+        );
+        let p2_id = insert_codex_provider_with_priority(&db, "Current P2", p2_url, 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                provider_cooldown_secs: 30,
+                natural_probe_max_wait_secs: 60,
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(p1_id, now.saturating_sub(61), None);
+        let due_snapshot = circuit.snapshot(p1_id, now);
+        assert_eq!(due_snapshot.state, circuit_breaker::CircuitState::Open);
+        assert!(
+            due_snapshot
+                .natural_probe_due_at
+                .is_some_and(|due| due <= now),
+            "P1 natural 60-second deadline must already be due"
+        );
+        assert!(
+            due_snapshot.open_until.is_some_and(|until| until > now),
+            "natural max-wait, not OPEN expiry, must trigger the winner"
+        );
+        assert!(
+            due_snapshot.cooldown_until.is_none_or(|until| until <= now),
+            "P1 provider cooldown must already be over"
+        );
+
+        let winner_session_id = "0190c0de-0000-7000-8000-000000000300".to_string();
+        let follower_session_ids: Vec<String> = (0..FOLLOWER_COUNT)
+            .map(|index| format!("0190c0de-0000-7000-8000-{:012x}", 0x301_u64 + index as u64))
+            .collect();
+        assert!(follower_session_ids.len() >= 3);
+        let initial_recovery_epoch = circuit.recovery_epoch();
+        let latest_route = vec![p1_id, p2_id];
+        let session = Arc::new(session_manager::SessionManager::new());
+        for session_id in std::iter::once(&winner_session_id).chain(&follower_session_ids) {
+            let binding_request = session
+                .begin_binding_request()
+                .expect("initial session binding request");
+            assert!(session.bind_sort_mode_with_recovery_epoch(
+                "codex",
+                session_id,
+                session_manager::SessionBindingCreation::new(
+                    None,
+                    Some(latest_route.clone()),
+                    initial_recovery_epoch,
+                    binding_request,
+                ),
+                now,
+            ));
+            session.bind_success("codex", session_id, p2_id, None, now);
+        }
+
+        let expected_log_count = 1 + follower_session_ids.len() * 2;
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(expected_log_count + 2);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+
+        let winner_task = {
+            let router = router.clone();
+            let session_id = winner_session_id.clone();
+            tokio::spawn(async move {
+                let response =
+                    route_ordered_failback_json_response(router, &session_id, MODEL).await;
+                (session_id, response)
+            })
+        };
+        p1_upstream.wait_for_first_request().await;
+        assert_eq!(p1_upstream.calls(), 1);
+
+        let first_wave_tasks: Vec<_> = follower_session_ids
+            .iter()
+            .map(|session_id| {
+                let session_id = session_id.clone();
+                let router = router.clone();
+                tokio::spawn(async move {
+                    let response =
+                        route_ordered_failback_json_response(router, &session_id, MODEL).await;
+                    (session_id, response)
+                })
+            })
+            .collect();
+        for task in first_wave_tasks {
+            let (session_id, (status, payload)) = task.await.expect("first-wave follower task");
+            assert_eq!(status, StatusCode::OK, "first-wave follower {session_id}");
+            assert_eq!(
+                payload.get("id").and_then(Value::as_str),
+                Some("current-p2-ok"),
+                "first-wave follower {session_id} must continue on current P2"
+            );
+        }
+        assert_eq!(
+            p1_upstream.calls(),
+            1,
+            "the winner must be the only first-wave P1 network call"
+        );
+        assert_eq!(
+            p2_calls.load(std::sync::atomic::Ordering::SeqCst),
+            follower_session_ids.len(),
+            "every first-wave follower must continue on current P2"
+        );
+
+        let first_wave_logs =
+            recv_terminal_request_logs_by_session(&mut log_rx, follower_session_ids.len()).await;
+        for session_id in &follower_session_ids {
+            let log = first_wave_logs
+                .get(session_id)
+                .expect("first-wave follower log");
+            assert_eq!(log.status, Some(200));
+            let attempts = request_log_attempts(log);
+            assert_logged_provider_order(&attempts, &[p1_id, p2_id]);
+            assert_eq!(
+                attempts[0].get("outcome").and_then(Value::as_str),
+                Some("skipped")
+            );
+            assert_eq!(
+                attempts[0].get("probe_result").and_then(Value::as_str),
+                Some("in_flight")
+            );
+            assert_eq!(
+                attempts[1].get("outcome").and_then(Value::as_str),
+                Some("success")
+            );
+            assert_direct_attempt_without_probe_metadata(&attempts[1]);
+            assert_logged_provider_order(&request_log_provider_chain(log), &[p1_id, p2_id]);
+            assert_eq!(
+                session.get_bound_provider("codex", session_id, now),
+                Some(p2_id)
+            );
+        }
+
+        p1_upstream.release_first_response();
+        let (completed_winner_session_id, (winner_status, winner_payload)) =
+            winner_task.await.expect("winner task");
+        assert_eq!(completed_winner_session_id, winner_session_id);
+        assert_eq!(winner_status, StatusCode::OK);
+        let winner_log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(
+            winner_log.session_id.as_deref(),
+            Some(winner_session_id.as_str())
+        );
+        let winner_attempts = request_log_attempts(&winner_log);
+
+        match winner_outcome {
+            NaturalFailbackWinnerOutcome::Success => {
+                assert_eq!(
+                    winner_payload.get("id").and_then(Value::as_str),
+                    Some("recovered-p1-ok")
+                );
+                assert_logged_provider_order(&winner_attempts, &[p1_id]);
+                assert_eq!(
+                    winner_attempts[0]
+                        .get("selection_method")
+                        .and_then(Value::as_str),
+                    Some("circuit_probe")
+                );
+                assert_eq!(
+                    winner_attempts[0]
+                        .get("probe_trigger")
+                        .and_then(Value::as_str),
+                    Some("natural_max_wait")
+                );
+                assert_eq!(
+                    winner_attempts[0]
+                        .get("probe_result")
+                        .and_then(Value::as_str),
+                    Some("success")
+                );
+                assert!(winner_attempts[0]
+                    .get("probe_generation")
+                    .and_then(Value::as_u64)
+                    .is_some());
+                assert_logged_provider_order(&request_log_provider_chain(&winner_log), &[p1_id]);
+                assert_eq!(
+                    session.get_bound_provider("codex", &winner_session_id, now),
+                    Some(p1_id)
+                );
+                let recovered_snapshot = circuit.snapshot(p1_id, now);
+                assert_eq!(
+                    recovered_snapshot.state,
+                    circuit_breaker::CircuitState::Closed
+                );
+                assert!(recovered_snapshot.natural_probe_due_at.is_none());
+                assert!(recovered_snapshot.recovery_epoch > initial_recovery_epoch);
+                assert_eq!(circuit.recovery_epoch(), recovered_snapshot.recovery_epoch);
+            }
+            NaturalFailbackWinnerOutcome::Failure => {
+                assert_eq!(
+                    winner_payload.get("id").and_then(Value::as_str),
+                    Some("current-p2-ok")
+                );
+                assert_logged_provider_order(&winner_attempts, &[p1_id, p2_id]);
+                assert_eq!(
+                    winner_attempts[0]
+                        .get("selection_method")
+                        .and_then(Value::as_str),
+                    Some("circuit_probe")
+                );
+                assert_eq!(
+                    winner_attempts[0]
+                        .get("probe_trigger")
+                        .and_then(Value::as_str),
+                    Some("natural_max_wait")
+                );
+                assert_eq!(
+                    winner_attempts[0]
+                        .get("probe_result")
+                        .and_then(Value::as_str),
+                    Some("failed")
+                );
+                assert_eq!(
+                    winner_attempts[1].get("outcome").and_then(Value::as_str),
+                    Some("success")
+                );
+                assert_direct_attempt_without_probe_metadata(&winner_attempts[1]);
+                assert_logged_provider_order(
+                    &request_log_provider_chain(&winner_log),
+                    &[p1_id, p2_id],
+                );
+                assert_eq!(
+                    session.get_bound_provider("codex", &winner_session_id, now),
+                    Some(p2_id)
+                );
+                let failed_at = crate::gateway::util::now_unix_seconds() as i64;
+                let failed_snapshot = circuit.snapshot(p1_id, failed_at);
+                assert_eq!(failed_snapshot.state, circuit_breaker::CircuitState::Open);
+                assert_eq!(failed_snapshot.recovery_epoch, initial_recovery_epoch);
+                assert_eq!(circuit.recovery_epoch(), initial_recovery_epoch);
+                assert!(
+                    failed_snapshot
+                        .natural_probe_due_at
+                        .is_some_and(|due| due > failed_at),
+                    "failed winner must rearm, not publish, the recovery deadline"
+                );
+            }
+        }
+
+        let second_wave_tasks: Vec<_> = follower_session_ids
+            .iter()
+            .map(|session_id| {
+                let session_id = session_id.clone();
+                let router = router.clone();
+                tokio::spawn(async move {
+                    let response =
+                        route_ordered_failback_json_response(router, &session_id, MODEL).await;
+                    (session_id, response)
+                })
+            })
+            .collect();
+        for task in second_wave_tasks {
+            let (session_id, (status, payload)) = task.await.expect("second-wave follower task");
+            assert_eq!(status, StatusCode::OK, "second-wave follower {session_id}");
+            let expected_id = match winner_outcome {
+                NaturalFailbackWinnerOutcome::Success => "recovered-p1-ok",
+                NaturalFailbackWinnerOutcome::Failure => "current-p2-ok",
+            };
+            assert_eq!(
+                payload.get("id").and_then(Value::as_str),
+                Some(expected_id),
+                "second-wave follower {session_id} chose the wrong Provider"
+            );
+        }
+
+        let second_wave_logs =
+            recv_terminal_request_logs_by_session(&mut log_rx, follower_session_ids.len()).await;
+        match winner_outcome {
+            NaturalFailbackWinnerOutcome::Success => {
+                assert_eq!(p1_upstream.calls(), 1 + follower_session_ids.len());
+                assert_eq!(
+                    p2_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    follower_session_ids.len(),
+                    "direct follower convergence must not grow current P2 calls"
+                );
+                for session_id in &follower_session_ids {
+                    let log = second_wave_logs
+                        .get(session_id)
+                        .expect("second-wave follower log");
+                    let attempts = request_log_attempts(log);
+                    assert_logged_provider_order(&attempts, &[p1_id]);
+                    assert_eq!(
+                        attempts[0].get("outcome").and_then(Value::as_str),
+                        Some("success")
+                    );
+                    assert_direct_attempt_without_probe_metadata(&attempts[0]);
+                    assert_logged_provider_order(&request_log_provider_chain(log), &[p1_id]);
+                    assert_eq!(
+                        session.get_bound_provider("codex", session_id, now),
+                        Some(p1_id)
+                    );
+                }
+            }
+            NaturalFailbackWinnerOutcome::Failure => {
+                assert_eq!(
+                    p1_upstream.calls(),
+                    1,
+                    "failed winner must not create a direct recovery fact"
+                );
+                assert_eq!(
+                    p2_calls.load(std::sync::atomic::Ordering::SeqCst),
+                    1 + follower_session_ids.len() * 2
+                );
+                for session_id in &follower_session_ids {
+                    let log = second_wave_logs
+                        .get(session_id)
+                        .expect("second-wave follower log");
+                    let attempts = request_log_attempts(log);
+                    assert_logged_provider_order(&attempts, &[p1_id, p2_id]);
+                    assert_eq!(
+                        attempts[0].get("outcome").and_then(Value::as_str),
+                        Some("skipped")
+                    );
+                    assert_eq!(attempts[0].get("provider_index"), Some(&Value::Null));
+                    assert_eq!(attempts[0].get("retry_index"), Some(&Value::Null));
+                    assert_eq!(
+                        attempts[0].get("probe_result").and_then(Value::as_str),
+                        Some("not_triggered")
+                    );
+                    assert_eq!(
+                        attempts[1].get("outcome").and_then(Value::as_str),
+                        Some("success")
+                    );
+                    assert_direct_attempt_without_probe_metadata(&attempts[1]);
+                    assert_logged_provider_order(&request_log_provider_chain(log), &[p2_id]);
+                    assert_eq!(
+                        session.get_bound_provider("codex", session_id, now),
+                        Some(p2_id)
+                    );
+                }
+            }
+        }
+
+        p2_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_natural_single_flight_success_converges_dynamic_follower_sessions_directly(
+    ) {
+        assert_route_ordered_failback_natural_multi_session_convergence(
+            NaturalFailbackWinnerOutcome::Success,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_natural_failed_winner_does_not_publish_follower_recovery() {
+        assert_route_ordered_failback_natural_multi_session_convergence(
+            NaturalFailbackWinnerOutcome::Failure,
+        )
+        .await;
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_late_old_session_success_cannot_reverse_newer_convergence() {
+        const MODEL: &str = "gpt-session-binding-order";
+        const WINNER_SESSION: &str = "0190c0de-0000-7000-8000-000000000401";
+        const TARGET_SESSION: &str = "0190c0de-0000-7000-8000-000000000402";
+
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        app_settings.natural_probe_max_wait_seconds = 60;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-session-binding-order.sqlite"))
+            .expect("init test db");
+        let recovered_body = r#"{"id":"recovered-p1-ok","object":"response","status":"completed","model":"gpt-session-binding-order","output":[]}"#;
+        let old_body = r#"{"id":"old-p2-ok","object":"response","status":"completed","model":"gpt-session-binding-order","output":[]}"#;
+        let mut p1_upstream =
+            spawn_gated_counting_status_upstream(StatusCode::OK, recovered_body).await;
+        let mut p2_upstream = spawn_gated_counting_status_upstream(StatusCode::OK, old_body).await;
+        let p1_id = insert_codex_provider_with_priority(
+            &db,
+            "Recovering P1",
+            p1_upstream.base_url.clone(),
+            0,
+        );
+        let p2_id =
+            insert_codex_provider_with_priority(&db, "Current P2", p2_upstream.base_url.clone(), 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                provider_cooldown_secs: 30,
+                natural_probe_max_wait_secs: 60,
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(p1_id, now.saturating_sub(61), None);
+        let initial_recovery_epoch = circuit.recovery_epoch();
+        let latest_route = vec![p1_id, p2_id];
+        let session = Arc::new(session_manager::SessionManager::new());
+        for session_id in [WINNER_SESSION, TARGET_SESSION] {
+            let binding_request = session
+                .begin_binding_request()
+                .expect("initial session binding request");
+            assert!(session.bind_sort_mode_with_recovery_epoch(
+                "codex",
+                session_id,
+                session_manager::SessionBindingCreation::new(
+                    None,
+                    Some(latest_route.clone()),
+                    initial_recovery_epoch,
+                    binding_request,
+                ),
+                now,
+            ));
+            session.bind_success("codex", session_id, p2_id, None, now);
+        }
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+
+        let winner_task = {
+            let router = router.clone();
+            tokio::spawn(async move {
+                route_ordered_failback_json_response(router, WINNER_SESSION, MODEL).await
+            })
+        };
+        p1_upstream.wait_for_first_request().await;
+
+        let older_target_task = {
+            let router = router.clone();
+            tokio::spawn(async move {
+                route_ordered_failback_json_response(router, TARGET_SESSION, MODEL).await
+            })
+        };
+        p2_upstream.wait_for_first_request().await;
+        assert_eq!(p1_upstream.calls(), 1);
+        assert_eq!(p2_upstream.calls(), 1);
+
+        p1_upstream.release_first_response();
+        let (winner_status, winner_payload) = winner_task.await.expect("winner request task");
+        assert_eq!(winner_status, StatusCode::OK);
+        assert_eq!(
+            winner_payload.get("id").and_then(Value::as_str),
+            Some("recovered-p1-ok")
+        );
+        assert!(circuit.snapshot(p1_id, now).recovery_epoch > initial_recovery_epoch);
+
+        let (newer_status, newer_payload) =
+            route_ordered_failback_json_response(router.clone(), TARGET_SESSION, MODEL).await;
+        assert_eq!(newer_status, StatusCode::OK);
+        assert_eq!(
+            newer_payload.get("id").and_then(Value::as_str),
+            Some("recovered-p1-ok")
+        );
+        assert_eq!(p1_upstream.calls(), 2);
+        assert_eq!(
+            session.get_bound_provider("codex", TARGET_SESSION, now),
+            Some(p1_id)
+        );
+
+        p2_upstream.release_first_response();
+        let (older_status, older_payload) =
+            older_target_task.await.expect("older target request task");
+        assert_eq!(older_status, StatusCode::OK);
+        assert_eq!(
+            older_payload.get("id").and_then(Value::as_str),
+            Some("old-p2-ok")
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", TARGET_SESSION, now),
+            Some(p1_id),
+            "the older P2 completion must not overwrite the newer P1 binding"
+        );
+
+        let mut saw_old_p2 = false;
+        let mut saw_new_direct_p1 = false;
+        for _ in 0..3 {
+            let log = recv_terminal_request_log(&mut log_rx).await;
+            if log.session_id.as_deref() != Some(TARGET_SESSION) {
+                continue;
+            }
+            let attempts = request_log_attempts(&log);
+            let provider_ids: Vec<_> = attempts
+                .iter()
+                .filter_map(|attempt| attempt.get("provider_id").and_then(Value::as_i64))
+                .collect();
+            if provider_ids == [p1_id] {
+                assert_direct_attempt_without_probe_metadata(&attempts[0]);
+                saw_new_direct_p1 = true;
+            } else if provider_ids == [p1_id, p2_id] {
+                assert_eq!(
+                    attempts[0].get("probe_result").and_then(Value::as_str),
+                    Some("in_flight")
+                );
+                assert_direct_attempt_without_probe_metadata(&attempts[1]);
+                saw_old_p2 = true;
+            }
+        }
+        assert!(saw_old_p2, "missing the older in-flight -> P2 request log");
+        assert!(
+            saw_new_direct_p1,
+            "missing the newer direct P1 convergence request log"
+        );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_exhausts_all_higher_targets_before_returning_to_current_provider(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 3;
+        app_settings.circuit_breaker_failure_threshold = 5;
+        app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-current-fallback.sqlite"),
+        )
+        .expect("init test db");
+        let failure_body = r#"{"error":{"message":"higher target failed"}}"#;
+        let current_body = r#"{"id":"current-p3-ok","object":"response","status":"completed","model":"gpt-ordered-current","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, current_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Failed P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Failed P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Current P3", p3_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 5,
+                provider_cooldown_secs: 0,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000207";
+        session.bind_sort_mode("codex", session_id, None, Some(vec![p1_id, p3_id]), now);
+        session.bind_success("codex", session_id, p3_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(session_id, "gpt-ordered-current"))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let payload: Value = serde_json::from_slice(&body).expect("json body");
+        assert_eq!(
+            payload.get("id").and_then(Value::as_str),
+            Some("current-p3-ok")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let expected_order = [p1_id, p2_id, p3_id];
+        assert_logged_provider_order(&request_log_attempts(&log), &expected_order);
+        assert_logged_provider_order(&request_log_provider_chain(&log), &expected_order);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p3_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(vec![p1_id, p2_id, p3_id])
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_ready_cap_keeps_later_probe_skip_visible_and_stops_before_current(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-ready-cap.sqlite"),
+        )
+        .expect("init test db");
+        let failure_body = r#"{"error":{"message":"ready target failed"}}"#;
+        let unused_body =
+            r#"{"id":"must-not-run","object":"response","status":"completed","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (p4_url, p4_calls, p4_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Ready P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Ready P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Cooling P3", p3_url, 2);
+        let p4_id = insert_codex_provider_with_priority(&db, "Current P4", p4_url, 3);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                provider_cooldown_secs: 30,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(p3_id, now, None);
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000208";
+        session.bind_sort_mode("codex", session_id, None, Some(vec![p1_id, p4_id]), now);
+        session.bind_success("codex", session_id, p4_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit,
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(session_id, "gpt-ordered-ready-cap"))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_logged_provider_order(&attempts, &[p1_id, p2_id, p3_id]);
+        assert_eq!(
+            attempts[2].get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(
+            attempts[2].get("probe_trigger").and_then(Value::as_str),
+            Some("route_changed")
+        );
+        assert_eq!(
+            attempts[2].get("probe_result").and_then(Value::as_str),
+            Some("cooldown")
+        );
+        assert_logged_provider_order(&request_log_provider_chain(&log), &[p1_id, p2_id, p3_id]);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(p4_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p4_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(vec![p1_id, p2_id, p3_id, p4_id])
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
+        p4_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn route_ordered_failback_route_change_zero_target_sends_release_reservation_for_next_request(
+    ) {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 30;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-ordered-failback-reservation-release.sqlite"),
+        )
+        .expect("init test db");
+        let p1_body = r#"{"id":"second-request-p1-ok","object":"response","status":"completed","model":"gpt-reservation-release","output":[]}"#;
+        let unused_body =
+            r#"{"id":"p2-must-not-run","object":"response","status":"completed","output":[]}"#;
+        let current_body = r#"{"id":"first-request-current-ok","object":"response","status":"completed","model":"gpt-reservation-release","output":[]}"#;
+        let (p1_url, p1_calls, p1_task) =
+            spawn_counting_status_upstream(StatusCode::OK, p1_body).await;
+        let (p2_url, p2_calls, p2_task) =
+            spawn_counting_status_upstream(StatusCode::OK, unused_body).await;
+        let (p3_url, p3_calls, p3_task) =
+            spawn_counting_status_upstream(StatusCode::OK, current_body).await;
+        let p1_id = insert_codex_provider_with_priority(&db, "Retry P1", p1_url, 0);
+        let p2_id = insert_codex_provider_with_priority(&db, "Cooling P2", p2_url, 1);
+        let p3_id = insert_codex_provider_with_priority(&db, "Current P3", p3_url, 2);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                provider_cooldown_secs: 30,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        circuit.record_failure(p1_id, now, None);
+        circuit.record_failure(p2_id, now, None);
+        let old_route = vec![p1_id, p3_id];
+        let latest_route = vec![p1_id, p2_id, p3_id];
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000209";
+        session.bind_sort_mode("codex", session_id, None, Some(old_route.clone()), now);
+        session.bind_success("codex", session_id, p3_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let first_response = router
+            .clone()
+            .oneshot(all_open_probe_request(
+                session_id,
+                "gpt-reservation-release",
+            ))
+            .await
+            .expect("first route response");
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first_body = to_bytes(first_response.into_body(), usize::MAX)
+            .await
+            .expect("first response body");
+        let first_payload: Value = serde_json::from_slice(&first_body).expect("first json body");
+        assert_eq!(
+            first_payload.get("id").and_then(Value::as_str),
+            Some("first-request-current-ok")
+        );
+        let first_log = recv_terminal_request_log(&mut log_rx).await;
+        let first_attempts = request_log_attempts(&first_log);
+        assert_logged_provider_order(&first_attempts, &[p1_id, p2_id, p3_id]);
+        assert_eq!(
+            first_attempts[0]
+                .get("probe_result")
+                .and_then(Value::as_str),
+            Some("cooldown")
+        );
+        assert_eq!(
+            first_attempts[1]
+                .get("probe_result")
+                .and_then(Value::as_str),
+            Some("cooldown")
+        );
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(old_route)
+        );
+
+        circuit.reset(p1_id, now);
+        let second_response = router
+            .oneshot(all_open_probe_request(
+                session_id,
+                "gpt-reservation-release",
+            ))
+            .await
+            .expect("second route response");
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let second_body = to_bytes(second_response.into_body(), usize::MAX)
+            .await
+            .expect("second response body");
+        let second_payload: Value = serde_json::from_slice(&second_body).expect("second json body");
+        assert_eq!(
+            second_payload.get("id").and_then(Value::as_str),
+            Some("second-request-p1-ok")
+        );
+        let second_log = recv_terminal_request_log(&mut log_rx).await;
+        assert_logged_provider_order(&request_log_attempts(&second_log), &[p1_id]);
+        assert_logged_provider_order(&request_log_provider_chain(&second_log), &[p1_id]);
+        assert_eq!(p1_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(p2_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(p3_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(p1_id)
+        );
+        assert_eq!(
+            session.get_bound_provider_order("codex", session_id, now),
+            Some(latest_route)
+        );
+
+        p1_task.abort();
+        p2_task.abort();
+        p3_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]

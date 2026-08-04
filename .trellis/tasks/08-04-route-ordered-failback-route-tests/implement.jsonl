@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/08-04-route-ordered-failback-probes/prd.md","reason":"Parent end-to-end route acceptance criteria."}
+{"file":".trellis/tasks/08-04-route-ordered-failback-probes/design.md","reason":"Expected planner-to-transport data flow and compatibility boundaries."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Route tests must preserve retries and Ready-provider budgets."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Authoritative attempt, route, skip, circuit, and session-binding assertions."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse existing route harnesses instead of duplicating setup."}

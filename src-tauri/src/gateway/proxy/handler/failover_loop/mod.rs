@@ -282,6 +282,7 @@ where
         created_at_ms,
         created_at,
         session_id: &input.session_id,
+        session_binding_request: input.session_binding_request,
         requested_model: &input.requested_model,
         managed_model_route: input.managed_model_route.as_ref(),
         is_compact_request: input.is_compact_request,

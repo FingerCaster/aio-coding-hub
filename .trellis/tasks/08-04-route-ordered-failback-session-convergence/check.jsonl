@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/08-04-route-ordered-failback-probes/prd.md","reason":"Verify all parent concurrency acceptance criteria are implemented."}
+{"file":".trellis/tasks/08-04-route-ordered-failback-session-convergence/design.md","reason":"Review state ownership, epoch invariants, and restart compatibility."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Verify no hidden retries or budget expansion."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Review common gate, route order, and follower observability."}

@@ -359,7 +359,15 @@ fn build_provider_chain_json(attempts: &[FailoverAttempt]) -> Option<String> {
     if attempts.is_empty() {
         return None;
     }
-    let attempts = bounded_log_attempts(attempts);
+    let provider_attempts = attempts
+        .iter()
+        .filter(|attempt| attempt.probe_result != Some("not_triggered"))
+        .cloned()
+        .collect::<Vec<_>>();
+    if provider_attempts.is_empty() {
+        return None;
+    }
+    let attempts = bounded_log_attempts(&provider_attempts);
     let chain: Vec<serde_json::Value> = attempts
         .into_iter()
         .map(|a| {
@@ -1544,6 +1552,33 @@ mod tests {
             json_field_char_count(last_attempt, "reason"),
             Some(REQUEST_END_LOG_REASON_MAX_CHARS)
         );
+    }
+
+    #[test]
+    fn build_provider_chain_json_excludes_not_triggered_probe_observations() {
+        let mut observation = sample_attempt();
+        observation.provider_id = 1;
+        observation.provider_name = "not-triggered".to_string();
+        observation.outcome = "skipped".to_string();
+        observation.status = None;
+        observation.provider_index = None;
+        observation.retry_index = None;
+        observation.probe_result = Some("not_triggered");
+
+        let mut success = sample_attempt();
+        success.provider_id = 2;
+        success.provider_name = "success".to_string();
+        let attempts = vec![observation, success];
+
+        let attempt_details: Vec<serde_json::Value> =
+            serde_json::from_str(&serialize_attempts(&attempts)).expect("attempt details parse");
+        assert_eq!(attempt_details.len(), 2);
+
+        let encoded = build_provider_chain_json(&attempts).expect("provider chain json");
+        let chain: Vec<serde_json::Value> =
+            serde_json::from_str(&encoded).expect("provider chain json parses");
+        assert_eq!(chain.len(), 1);
+        assert_eq!(chain[0].get("provider_id"), Some(&json!(2)));
     }
 
     #[test]

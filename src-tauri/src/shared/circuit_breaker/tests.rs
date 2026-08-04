@@ -119,10 +119,90 @@ fn one_complete_probe_success_closes_and_starts_recovery_guard() {
     assert_eq!(change.after.state, CircuitState::Closed);
     assert_eq!(change.after.failure_count, 0);
     assert_eq!(change.after.recovery_guard_until, Some(due + 301));
+    assert_eq!(change.after.recovery_epoch, 1);
+    assert_eq!(cb.recovery_epoch(), 1);
     assert_eq!(
         change.transition.expect("transition").reason,
         "PROBE_SUCCESS"
     );
+}
+
+#[test]
+fn recovery_epoch_advances_only_for_applied_dispatched_probe_successes() {
+    let cb = breaker();
+    let now = 1_000;
+
+    cb.record_success(1, now);
+    assert_eq!(cb.recovery_epoch(), 0);
+
+    let first_due = open_provider(&cb, 1, now);
+    let failed_token = acquire_probe(&cb, 1, "failed", first_due);
+    let _ = cb.mark_probe_dispatched(&failed_token, first_due);
+    let ProbeCommitResult::Applied(failed) =
+        cb.complete_probe_failure(&failed_token, first_due + 1, true, None)
+    else {
+        panic!("probe failure should apply");
+    };
+    assert_eq!(failed.after.recovery_epoch, 0);
+    assert_eq!(cb.recovery_epoch(), 0);
+
+    assert!(matches!(
+        cb.complete_probe_success(&failed_token, first_due + 2),
+        ProbeCommitResult::Stale(_)
+    ));
+    assert_eq!(cb.recovery_epoch(), 0);
+
+    let abandoned_due = failed.after.next_probe_at.expect("next probe");
+    let abandoned_token = acquire_probe(&cb, 1, "abandoned", abandoned_due);
+    let ProbeCommitResult::Applied(abandoned) =
+        cb.abandon_probe(&abandoned_token, abandoned_due + 1)
+    else {
+        panic!("probe abandon should apply");
+    };
+    assert_eq!(abandoned.after.recovery_epoch, 0);
+    assert_eq!(cb.recovery_epoch(), 0);
+
+    let second_due = open_provider(&cb, 2, 3_000);
+    for (provider_id, owner, due) in [(1, "first", abandoned_due + 1), (2, "second", second_due)] {
+        let token = acquire_probe(&cb, provider_id, owner, due);
+        let _ = cb.mark_probe_dispatched(&token, due);
+        let ProbeCommitResult::Applied(recovered) = cb.complete_probe_success(&token, due + 1)
+        else {
+            panic!("probe success should apply");
+        };
+        assert_eq!(recovered.after.recovery_epoch, provider_id as u64);
+        assert_eq!(cb.recovery_epoch(), provider_id as u64);
+    }
+
+    cb.record_success(2, 4_000);
+    assert_eq!(cb.recovery_epoch(), 2);
+    assert_eq!(cb.snapshot(2, 4_000).recovery_epoch, 2);
+}
+
+#[test]
+fn global_recovery_publication_never_leads_provider_epoch() {
+    let cb = Arc::new(breaker());
+    let provider_id = 1;
+    let due = open_provider(&cb, provider_id, 1_000);
+    let token = acquire_probe(&cb, provider_id, "publisher", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
+
+    std::thread::scope(|scope| {
+        let publisher = Arc::clone(&cb);
+        scope.spawn(move || {
+            assert!(matches!(
+                publisher.complete_probe_success(&token, due + 1),
+                ProbeCommitResult::Applied(_)
+            ));
+        });
+
+        while cb.recovery_epoch() == 0 {
+            std::thread::yield_now();
+        }
+        let published = cb.recovery_epoch();
+        assert_eq!(published, 1);
+        assert_eq!(cb.snapshot(provider_id, due + 1).recovery_epoch, published);
+    });
 }
 
 #[test]
@@ -243,6 +323,7 @@ fn recovery_guard_survives_ordinary_success_and_reopens_on_first_failure() {
     assert_eq!(ordinary.after.recovery_guard_until, Some(guard_until));
     let failed = cb.record_failure(pid, due + 3, Some("GW_UPSTREAM_5XX"));
     assert_eq!(failed.after.state, CircuitState::Open);
+    assert_eq!(failed.after.recovery_epoch, 0);
     assert_eq!(
         failed.transition.expect("transition").reason,
         "RECOVERY_GUARD_FAILURE"
@@ -269,11 +350,20 @@ fn expired_recovery_guard_returns_to_normal_failure_threshold() {
         panic!("probe success should apply");
     };
     let guard_until = recovered.after.recovery_guard_until.expect("guard");
+    assert_eq!(recovered.after.recovery_epoch, 1);
 
-    assert!(cb.snapshot(pid, guard_until).recovery_guard_until.is_none());
+    let expired = cb.snapshot(pid, guard_until);
+    assert!(expired.recovery_guard_until.is_none());
+    assert_eq!(expired.recovery_epoch, 1);
     let first = cb.record_failure(pid, guard_until, None);
     assert_eq!(first.after.state, CircuitState::Closed);
     assert_eq!(first.after.failure_count, 1);
+    assert_eq!(first.after.recovery_epoch, 0);
+    assert_eq!(cb.recovery_epoch(), 1);
+
+    let late_success = cb.record_success(pid, guard_until + 1);
+    assert_eq!(late_success.after.state, CircuitState::Closed);
+    assert_eq!(late_success.after.recovery_epoch, 0);
 }
 
 #[test]
@@ -698,6 +788,46 @@ fn reset_clears_in_flight_probe() {
     let reset = cb.reset(pid, due + 1);
     assert_eq!(reset.state, CircuitState::Closed);
     assert_eq!(reset.failure_count, 0);
+}
+
+#[test]
+fn reset_invalidates_provider_recovery_epoch_without_rewinding_global_epoch() {
+    let cb = breaker();
+    let provider_id = 1;
+    let due = open_provider(&cb, provider_id, 1_000);
+    let token = acquire_probe(&cb, provider_id, "recovered", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
+    let ProbeCommitResult::Applied(recovered) = cb.complete_probe_success(&token, due + 1) else {
+        panic!("probe success should apply");
+    };
+    assert_eq!(recovered.after.recovery_epoch, 1);
+
+    let reset = cb.reset(provider_id, due + 2);
+    assert_eq!(reset.state, CircuitState::Closed);
+    assert_eq!(reset.recovery_epoch, 0);
+    assert_eq!(cb.recovery_epoch(), 1);
+    assert_eq!(cb.snapshot(provider_id, due + 3).recovery_epoch, 0);
+}
+
+#[test]
+fn recovery_epoch_overflow_fails_closed_without_reusing_marker() {
+    let cb = breaker();
+    cb.global_recovery_epoch
+        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+    let provider_id = 1;
+    let due = open_provider(&cb, provider_id, 1_000);
+    let token = acquire_probe(&cb, provider_id, "overflow", due);
+    let _ = cb.mark_probe_dispatched(&token, due);
+
+    assert!(matches!(
+        cb.complete_probe_success(&token, due + 1),
+        ProbeCommitResult::Stale(_)
+    ));
+    let snapshot = cb.snapshot(provider_id, due + 1);
+    assert_eq!(snapshot.state, CircuitState::Open);
+    assert_eq!(snapshot.recovery_epoch, 0);
+    assert!(!snapshot.probe_in_flight);
+    assert_eq!(cb.recovery_epoch(), u64::MAX);
 }
 
 #[test]

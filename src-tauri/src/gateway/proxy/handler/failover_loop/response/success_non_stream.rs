@@ -1655,12 +1655,15 @@ where
             && common.managed_model_route.is_none()
             && (!probe_active || bind_probe_success)
         {
-            if let Some(session_id) = common.session_id.as_deref() {
-                state.session.bind_success(
+            if let (Some(session_id), Some(binding_request)) =
+                (common.session_id.as_deref(), common.session_binding_request)
+            {
+                state.session.bind_success_for_request(
                     &common.cli_key,
                     session_id,
                     provider_id,
                     common.effective_sort_mode_id,
+                    binding_request,
                     now_unix,
                 );
             }

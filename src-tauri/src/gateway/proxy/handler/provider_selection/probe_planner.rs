@@ -2,24 +2,34 @@ use crate::circuit_breaker::{CircuitSnapshot, CircuitState, ProbeTrigger};
 use crate::settings::ProviderFailbackStrategy;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::gateway::proxy::handler) enum PlannedDispatch {
+    Direct,
+    Probe(ProbeTrigger),
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(in crate::gateway::proxy::handler) struct PlannedFailbackTarget {
+    pub provider_id: i64,
+    pub dispatch: PlannedDispatch,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub(in crate::gateway::proxy::handler) enum ProbePlannerDecision {
     Stay {
         confirm_route: bool,
-        not_triggered_provider_id: Option<i64>,
+        not_triggered_provider_ids: Vec<i64>,
     },
-    DirectClosed {
-        provider_id: i64,
-        trigger: ProbeTrigger,
-    },
-    Probe {
-        provider_id: i64,
-        trigger: ProbeTrigger,
+    Dispatch {
+        targets: Vec<PlannedFailbackTarget>,
+        reservation_trigger: ProbeTrigger,
+        not_triggered_provider_ids: Vec<i64>,
     },
 }
 
 pub(in crate::gateway::proxy::handler) struct ProbePlannerInput<'a> {
     pub ordered_candidates: &'a [(i64, CircuitSnapshot)],
     pub bound_provider_id: Option<i64>,
+    pub session_recovery_epoch_baseline: u64,
     pub route_changed: bool,
     pub strategy: ProviderFailbackStrategy,
     pub compaction_generation_pending: bool,
@@ -45,79 +55,133 @@ pub(in crate::gateway::proxy::handler) fn plan_probe(
     if higher.is_empty() {
         return ProbePlannerDecision::Stay {
             confirm_route: input.route_changed,
-            not_triggered_provider_id: None,
+            not_triggered_provider_ids: Vec::new(),
         };
     }
     if !input.request_eligible {
         return ProbePlannerDecision::Stay {
             confirm_route: false,
-            not_triggered_provider_id: None,
+            not_triggered_provider_ids: Vec::new(),
         };
     }
 
-    let explicit_trigger = if input.bound_provider_id.is_none() {
-        Some(ProbeTrigger::NewUnboundSession)
-    } else if input.route_changed {
+    if input.bound_provider_id.is_none() {
+        let all_open = higher.iter().all(|(_, snapshot)| {
+            matches!(snapshot.state, CircuitState::Open | CircuitState::HalfOpen)
+        });
+        let targets = higher
+            .iter()
+            .take(if all_open { higher.len() } else { 1 })
+            .map(|(provider_id, snapshot)| {
+                planned_target(*provider_id, snapshot, ProbeTrigger::NewUnboundSession)
+            })
+            .collect();
+        return ProbePlannerDecision::Dispatch {
+            targets,
+            reservation_trigger: ProbeTrigger::NewUnboundSession,
+            not_triggered_provider_ids: Vec::new(),
+        };
+    }
+
+    let explicit_trigger = if input.route_changed {
         Some(ProbeTrigger::RouteChanged)
     } else if input.codex_compaction_pending || input.compaction_generation_pending {
         Some(ProbeTrigger::NaturalCompaction)
+    } else if input.strategy == ProviderFailbackStrategy::Aggressive {
+        Some(ProbeTrigger::AggressiveTurn)
     } else {
         None
     };
 
-    let candidate =
-        if explicit_trigger.is_some() || input.strategy == ProviderFailbackStrategy::Aggressive {
-            higher.first()
-        } else {
-            // A Closed provider only participates when a counted failure armed
-            // a natural failback deadline. Healthy providers without that
-            // signal retain natural session affinity.
-            higher.iter().find(|(_, snapshot)| {
-                matches!(snapshot.state, CircuitState::Open | CircuitState::HalfOpen)
-                    || snapshot.natural_probe_due_at.is_some()
-            })
+    if let Some(trigger) = explicit_trigger {
+        return ProbePlannerDecision::Dispatch {
+            targets: higher
+                .iter()
+                .map(|(provider_id, snapshot)| planned_target(*provider_id, snapshot, trigger))
+                .collect(),
+            reservation_trigger: trigger,
+            not_triggered_provider_ids: Vec::new(),
         };
+    }
 
-    let Some((provider_id, snapshot)) = candidate else {
-        return ProbePlannerDecision::Stay {
-            confirm_route: false,
-            not_triggered_provider_id: higher.first().map(|(provider_id, _)| *provider_id),
-        };
-    };
-    let trigger = explicit_trigger.or_else(|| {
-        if snapshot
+    let mut targets = Vec::new();
+    let mut not_triggered_provider_ids = Vec::new();
+    let mut reservation_trigger = None;
+    for (provider_id, snapshot) in higher {
+        // Dispatch resets the Provider deadline while the lease is active.
+        // Keep concurrent followers on the authoritative common gate so they
+        // observe `in_flight` instead of a misleading `not_triggered` result.
+        if snapshot.probe_in_flight {
+            reservation_trigger.get_or_insert(ProbeTrigger::NaturalMaxWait);
+            targets.push(planned_target(
+                *provider_id,
+                snapshot,
+                ProbeTrigger::NaturalMaxWait,
+            ));
+            continue;
+        }
+
+        if snapshot.state == CircuitState::Closed
+            && snapshot.recovery_epoch > input.session_recovery_epoch_baseline
+        {
+            targets.push(PlannedFailbackTarget {
+                provider_id: *provider_id,
+                dispatch: PlannedDispatch::Direct,
+            });
+            continue;
+        }
+
+        let trigger = if snapshot
             .natural_probe_due_at
             .is_some_and(|deadline| input.now_unix >= deadline)
         {
             Some(ProbeTrigger::NaturalMaxWait)
-        } else if input.strategy == ProviderFailbackStrategy::Aggressive {
-            Some(ProbeTrigger::AggressiveTurn)
-        } else if snapshot
-            .open_until
-            .is_some_and(|deadline| input.now_unix >= deadline)
+        } else if matches!(snapshot.state, CircuitState::Open | CircuitState::HalfOpen)
+            && snapshot
+                .open_until
+                .is_some_and(|deadline| input.now_unix >= deadline)
         {
             Some(ProbeTrigger::MaxOpenWait)
         } else {
             None
-        }
-    });
-
-    if let Some(trigger) = trigger {
-        return match snapshot.state {
-            CircuitState::Closed => ProbePlannerDecision::DirectClosed {
-                provider_id: *provider_id,
-                trigger,
-            },
-            CircuitState::Open | CircuitState::HalfOpen => ProbePlannerDecision::Probe {
-                provider_id: *provider_id,
-                trigger,
-            },
         };
+
+        if let Some(trigger) = trigger {
+            reservation_trigger.get_or_insert(trigger);
+            targets.push(planned_target(*provider_id, snapshot, trigger));
+        } else {
+            not_triggered_provider_ids.push(*provider_id);
+        }
     }
 
-    ProbePlannerDecision::Stay {
-        confirm_route: false,
-        not_triggered_provider_id: Some(*provider_id),
+    if targets.is_empty() {
+        ProbePlannerDecision::Stay {
+            confirm_route: false,
+            not_triggered_provider_ids,
+        }
+    } else {
+        ProbePlannerDecision::Dispatch {
+            targets,
+            // Recovery followers are direct targets and need no probe trigger.
+            // This decision-level value only selects optional session
+            // reservation behavior, for which natural failback reserves none.
+            reservation_trigger: reservation_trigger.unwrap_or(ProbeTrigger::NaturalMaxWait),
+            not_triggered_provider_ids,
+        }
+    }
+}
+
+fn planned_target(
+    provider_id: i64,
+    snapshot: &CircuitSnapshot,
+    trigger: ProbeTrigger,
+) -> PlannedFailbackTarget {
+    PlannedFailbackTarget {
+        provider_id,
+        dispatch: match snapshot.state {
+            CircuitState::Closed => PlannedDispatch::Direct,
+            CircuitState::Open | CircuitState::HalfOpen => PlannedDispatch::Probe(trigger),
+        },
     }
 }
 
@@ -136,9 +200,30 @@ mod tests {
             next_probe_at: None,
             natural_probe_due_at: natural_due,
             recovery_guard_until: None,
+            recovery_epoch: 0,
             probe_in_flight: state == CircuitState::HalfOpen,
             state_revision: 1,
             last_trigger_error_code: None,
+        }
+    }
+
+    fn recovered_snapshot(recovery_epoch: u64) -> CircuitSnapshot {
+        let mut snapshot = snapshot(CircuitState::Closed, None);
+        snapshot.recovery_epoch = recovery_epoch;
+        snapshot
+    }
+
+    fn direct(provider_id: i64) -> PlannedFailbackTarget {
+        PlannedFailbackTarget {
+            provider_id,
+            dispatch: PlannedDispatch::Direct,
+        }
+    }
+
+    fn probe(provider_id: i64, trigger: ProbeTrigger) -> PlannedFailbackTarget {
+        PlannedFailbackTarget {
+            provider_id,
+            dispatch: PlannedDispatch::Probe(trigger),
         }
     }
 
@@ -152,6 +237,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(2),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -161,13 +247,104 @@ mod tests {
             }),
             ProbePlannerDecision::Stay {
                 confirm_route: false,
-                not_triggered_provider_id: Some(1),
+                not_triggered_provider_ids: vec![1],
             }
         );
     }
 
     #[test]
-    fn natural_session_does_not_bypass_highest_open_candidate_for_due_lower_open() {
+    fn natural_session_directs_only_to_recovery_newer_than_its_baseline() {
+        let candidates = vec![
+            (1, recovered_snapshot(5)),
+            (2, recovered_snapshot(4)),
+            (3, snapshot(CircuitState::Closed, None)),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(3),
+                session_recovery_epoch_baseline: 4,
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![direct(1)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: vec![2],
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_mixes_recovered_direct_and_due_probes_in_route_order() {
+        let mut max_open_due = snapshot(CircuitState::Open, None);
+        max_open_due.open_until = Some(90);
+        let candidates = vec![
+            (1, recovered_snapshot(8)),
+            (2, snapshot(CircuitState::Open, Some(90))),
+            (3, recovered_snapshot(7)),
+            (4, max_open_due),
+            (5, snapshot(CircuitState::Closed, None)),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(5),
+                session_recovery_epoch_baseline: 7,
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    direct(1),
+                    probe(2, ProbeTrigger::NaturalMaxWait),
+                    probe(4, ProbeTrigger::MaxOpenWait),
+                ],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: vec![3],
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_routes_in_flight_probe_to_the_single_flight_gate() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::HalfOpen, Some(400))),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(2),
+                session_recovery_epoch_baseline: 0,
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![probe(1, ProbeTrigger::NaturalMaxWait)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_observes_not_due_candidate_and_plans_later_due_candidate() {
         let candidates = vec![
             (1, snapshot(CircuitState::Open, Some(400))),
             (2, snapshot(CircuitState::Open, Some(90))),
@@ -178,6 +355,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(3),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -185,15 +363,16 @@ mod tests {
                 request_eligible: true,
                 now_unix: 100,
             }),
-            ProbePlannerDecision::Stay {
-                confirm_route: false,
-                not_triggered_provider_id: Some(1),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![probe(2, ProbeTrigger::NaturalMaxWait)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: vec![1],
             }
         );
     }
 
     #[test]
-    fn natural_session_probes_highest_open_candidate_when_it_is_due() {
+    fn natural_session_plans_every_due_candidate_in_route_order() {
         let candidates = vec![
             (1, snapshot(CircuitState::Open, Some(90))),
             (2, snapshot(CircuitState::Open, Some(80))),
@@ -204,6 +383,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(3),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -211,15 +391,19 @@ mod tests {
                 request_eligible: true,
                 now_unix: 100,
             }),
-            ProbePlannerDecision::Probe {
-                provider_id: 1,
-                trigger: ProbeTrigger::NaturalMaxWait,
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    probe(1, ProbeTrigger::NaturalMaxWait),
+                    probe(2, ProbeTrigger::NaturalMaxWait),
+                ],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: Vec::new(),
             }
         );
     }
 
     #[test]
-    fn invalid_stable_session_probes_first_open_as_new_unbound() {
+    fn invalid_stable_session_plans_complete_all_open_recovery() {
         let candidates = vec![
             (1, snapshot(CircuitState::Open, Some(400))),
             (2, snapshot(CircuitState::Open, Some(400))),
@@ -229,6 +413,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: None,
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -236,23 +421,58 @@ mod tests {
                 request_eligible: true,
                 now_unix: 100,
             }),
-            ProbePlannerDecision::Probe {
-                provider_id: 1,
-                trigger: ProbeTrigger::NewUnboundSession,
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    probe(1, ProbeTrigger::NewUnboundSession),
+                    probe(2, ProbeTrigger::NewUnboundSession),
+                ],
+                reservation_trigger: ProbeTrigger::NewUnboundSession,
+                not_triggered_provider_ids: Vec::new(),
             }
         );
     }
 
     #[test]
-    fn aggressive_session_probes_first_open_candidate() {
+    fn invalid_stable_session_keeps_mixed_route_recovery_single_target() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Open, Some(400))),
+            (2, snapshot(CircuitState::Closed, None)),
+            (3, snapshot(CircuitState::Open, Some(400))),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: None,
+                session_recovery_epoch_baseline: 0,
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![probe(1, ProbeTrigger::NewUnboundSession)],
+                reservation_trigger: ProbeTrigger::NewUnboundSession,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn aggressive_session_plans_complete_mixed_prefix() {
         let candidates = vec![
             (1, snapshot(CircuitState::Open, None)),
             (2, snapshot(CircuitState::Closed, None)),
+            (3, snapshot(CircuitState::HalfOpen, None)),
+            (4, snapshot(CircuitState::Closed, None)),
         ];
         assert_eq!(
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
-                bound_provider_id: Some(2),
+                bound_provider_id: Some(4),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Aggressive,
                 compaction_generation_pending: false,
@@ -260,9 +480,14 @@ mod tests {
                 request_eligible: true,
                 now_unix: 100,
             }),
-            ProbePlannerDecision::Probe {
-                provider_id: 1,
-                trigger: ProbeTrigger::AggressiveTurn,
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    probe(1, ProbeTrigger::AggressiveTurn),
+                    direct(2),
+                    probe(3, ProbeTrigger::AggressiveTurn),
+                ],
+                reservation_trigger: ProbeTrigger::AggressiveTurn,
+                not_triggered_provider_ids: Vec::new(),
             }
         );
     }
@@ -277,6 +502,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(2),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -286,7 +512,7 @@ mod tests {
             }),
             ProbePlannerDecision::Stay {
                 confirm_route: false,
-                not_triggered_provider_id: Some(1),
+                not_triggered_provider_ids: vec![1],
             }
         );
     }
@@ -301,6 +527,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(2),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -310,7 +537,7 @@ mod tests {
             }),
             ProbePlannerDecision::Stay {
                 confirm_route: false,
-                not_triggered_provider_id: Some(1),
+                not_triggered_provider_ids: vec![1],
             }
         );
     }
@@ -325,6 +552,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(2),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -332,23 +560,26 @@ mod tests {
                 request_eligible: true,
                 now_unix: 100,
             }),
-            ProbePlannerDecision::DirectClosed {
-                provider_id: 1,
-                trigger: ProbeTrigger::NaturalMaxWait,
+            ProbePlannerDecision::Dispatch {
+                targets: vec![direct(1)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: Vec::new(),
             }
         );
     }
 
     #[test]
-    fn natural_compaction_directly_targets_closed_candidate_and_carries_trigger() {
+    fn natural_compaction_plans_complete_mixed_prefix() {
         let candidates = vec![
             (1, snapshot(CircuitState::Closed, None)),
-            (2, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Open, None)),
+            (3, snapshot(CircuitState::Closed, None)),
         ];
         assert_eq!(
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
-                bound_provider_id: Some(2),
+                bound_provider_id: Some(3),
+                session_recovery_epoch_baseline: 0,
                 route_changed: false,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: true,
@@ -356,9 +587,75 @@ mod tests {
                 request_eligible: true,
                 now_unix: 100,
             }),
-            ProbePlannerDecision::DirectClosed {
-                provider_id: 1,
-                trigger: ProbeTrigger::NaturalCompaction,
+            ProbePlannerDecision::Dispatch {
+                targets: vec![direct(1), probe(2, ProbeTrigger::NaturalCompaction)],
+                reservation_trigger: ProbeTrigger::NaturalCompaction,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn route_change_plans_dynamic_five_provider_prefix() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Open, None)),
+            (3, snapshot(CircuitState::HalfOpen, None)),
+            (4, snapshot(CircuitState::Closed, None)),
+            (5, snapshot(CircuitState::Closed, None)),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(5),
+                session_recovery_epoch_baseline: 0,
+                route_changed: true,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![
+                    direct(1),
+                    probe(2, ProbeTrigger::RouteChanged),
+                    probe(3, ProbeTrigger::RouteChanged),
+                    direct(4),
+                ],
+                reservation_trigger: ProbeTrigger::RouteChanged,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_keeps_per_candidate_dispatch_trigger() {
+        let mut max_open_due = snapshot(CircuitState::Open, Some(400));
+        max_open_due.open_until = Some(90);
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, Some(90))),
+            (2, max_open_due),
+            (3, snapshot(CircuitState::Closed, None)),
+        ];
+
+        assert_eq!(
+            plan_probe(ProbePlannerInput {
+                ordered_candidates: &candidates,
+                bound_provider_id: Some(3),
+                session_recovery_epoch_baseline: 0,
+                route_changed: false,
+                strategy: ProviderFailbackStrategy::Natural,
+                compaction_generation_pending: false,
+                codex_compaction_pending: false,
+                request_eligible: true,
+                now_unix: 100,
+            }),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![direct(1), probe(2, ProbeTrigger::MaxOpenWait)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: Vec::new(),
             }
         );
     }
@@ -373,6 +670,7 @@ mod tests {
             plan_probe(ProbePlannerInput {
                 ordered_candidates: &candidates,
                 bound_provider_id: Some(2),
+                session_recovery_epoch_baseline: 0,
                 route_changed: true,
                 strategy: ProviderFailbackStrategy::Natural,
                 compaction_generation_pending: false,
@@ -382,7 +680,7 @@ mod tests {
             }),
             ProbePlannerDecision::Stay {
                 confirm_route: true,
-                not_triggered_provider_id: None,
+                not_triggered_provider_ids: Vec::new(),
             }
         );
     }

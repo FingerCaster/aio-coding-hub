@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Gateway circuit/failover backend checklist and full Rust validation requirements."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve Ready-provider limits, per-provider retries, and total attempt budget."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"Gateway selection changes require route, skipped-attempt, generated-binding, and UI count regression checks."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Authoritative common-gate, probe, route ordering, observability, and failback contract to update."}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace planner intent through gate, dispatch ownership, attempts, route projection, and session binding."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse the existing serial failover loop and all-open multi-target intent instead of adding a second executor."}

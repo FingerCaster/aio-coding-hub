@@ -59,16 +59,11 @@ pub(super) fn gate_provider<R: tauri::Runtime>(
         skipped_open,
         skipped_cooldown,
         deny_snapshot,
-        probe_trigger: targeted_intent.and_then(|intent| intent.probe_trigger()),
+        probe_trigger: targeted_intent.and_then(|intent| intent.probe_trigger_for(provider_id)),
         probe_token: &mut probe_token,
         probe_skip,
     });
-    let Some(circuit_after) = circuit_after else {
-        if let Some(intent) = targeted_intent {
-            intent.release_unclaimed_reservation();
-        }
-        return None;
-    };
+    let circuit_after = circuit_after?;
 
     let dispatch_ownership = targeted_intent.and_then(|intent| {
         let probe_guard = probe_token

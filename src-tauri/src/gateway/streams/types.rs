@@ -160,6 +160,7 @@ pub(in crate::gateway) struct StreamFinalizeCtx<R: tauri::Runtime = tauri::Wry> 
         Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
     pub(in crate::gateway) session: Arc<session_manager::SessionManager>,
     pub(in crate::gateway) session_id: Option<String>,
+    pub(in crate::gateway) session_binding_request: Option<session_manager::SessionBindingRequest>,
     pub(in crate::gateway) sort_mode_id: Option<i64>,
     pub(in crate::gateway) is_compact_request: bool,
     pub(in crate::gateway) trace_id: String,

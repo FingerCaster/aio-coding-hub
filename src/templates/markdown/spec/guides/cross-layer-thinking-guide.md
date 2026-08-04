@@ -50,6 +50,35 @@ For each boundary:
 
 ---
 
+## Long-Lived Binding Concurrency Checklist
+
+Use this when a request selects a route in one layer, crosses async transport or
+streaming boundaries, and commits session or routing state later.
+
+- [ ] Allocate one checked, monotonic request token at the earliest synchronous
+      request entry, before any `await`; carry that exact token through fallback,
+      non-stream completion, and stream finalization.
+- [ ] Map the full binding lifecycle: create, refresh, clear, TTL expiry,
+      eviction, and recreate. A last-success token alone does not prevent ABA;
+      each recreated binding needs a creation floor or equivalent incarnation.
+- [ ] Make late success fail closed when its token is absent or overflowed, the
+      binding is missing or expired, or the token predates the current binding.
+- [ ] Define equal-token behavior explicitly: only the same Provider may commit
+      idempotently; a different Provider with the same token is stale.
+- [ ] Test both completion orders plus clear/recreate and TTL/recreate, covering
+      non-stream, stream-finalizer, and real route paths.
+- [ ] For Provider single-flight recovery, keep the active lease observable at
+      the common gate even if transport dispatch moved its deadline. Followers
+      should record `in_flight`, then use the winner's success on their next
+      eligible request without waiting for another failback interval.
+- [ ] Name every failure, reset, and reopen transition that invalidates a shared
+      recovery marker.
+
+For Gateway-specific executable rules, read
+`../cross-layer/gateway-failover-route-contract.md`.
+
+---
+
 ## Tauri IPC Contract Checklist
 
 Use this checklist whenever a Tauri command is added or changed.

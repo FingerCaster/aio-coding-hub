@@ -165,6 +165,7 @@ where
     };
 
     let forced_provider_id = extract_forced_provider_id(&headers);
+    let session_binding_request = state.session.begin_binding_request();
 
     // Build the initial context.
     let ctx = ProxyContext {
@@ -198,6 +199,7 @@ where
         runtime_settings: None,
         session_id: None,
         allow_session_reuse: false,
+        session_binding_request,
         effective_sort_mode_id: None,
         providers: vec![],
         session_bound_provider_id: None,
@@ -486,6 +488,7 @@ mod tests {
             runtime_settings: None,
             session_id: Some("session-start".to_string()),
             allow_session_reuse: false,
+            session_binding_request: None,
             effective_sort_mode_id: None,
             providers: vec![],
             session_bound_provider_id: None,
@@ -554,6 +557,7 @@ mod tests {
             runtime_settings: None,
             session_id: None,
             allow_session_reuse: false,
+            session_binding_request: None,
             effective_sort_mode_id: None,
             providers: vec![],
             session_bound_provider_id: None,
@@ -613,6 +617,7 @@ mod tests {
             runtime_settings: None,
             session_id: Some("session-guard".to_string()),
             allow_session_reuse: false,
+            session_binding_request: None,
             effective_sort_mode_id: None,
             providers: vec![],
             session_bound_provider_id: None,

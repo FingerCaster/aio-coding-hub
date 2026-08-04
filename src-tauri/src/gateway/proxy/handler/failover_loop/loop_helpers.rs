@@ -212,6 +212,7 @@ mod tests {
             next_probe_at: Some(1_030),
             natural_probe_due_at: Some(1_300),
             recovery_guard_until: None,
+            recovery_epoch: 0,
             probe_in_flight: false,
             state_revision: 1,
             last_trigger_error_code: None,

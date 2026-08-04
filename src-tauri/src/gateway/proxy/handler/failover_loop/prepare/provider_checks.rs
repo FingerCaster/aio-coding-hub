@@ -71,7 +71,7 @@ pub(super) fn run_gates<R: tauri::Runtime>(
             .dispatch_intent
             .as_ref()
             .filter(|intent| intent.targets_provider(identity.provider_id))
-            .and_then(|intent| intent.probe_trigger())
+            .and_then(|intent| intent.probe_trigger_for(identity.provider_id))
             .map(|trigger| trigger.as_str());
         let probe_result = match probe_skip {
             Some(ProbeGateSkip::Cooldown) => Some("cooldown"),

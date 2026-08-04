@@ -20,6 +20,7 @@ pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
     state: &GatewayAppState<R>,
     cli_key: &str,
     session_id: Option<&str>,
+    binding_request: Option<session_manager::SessionBindingRequest>,
     created_at: i64,
 ) -> crate::shared::error::AppResult<ProviderSelection> {
     let session_snapshot =
@@ -40,13 +41,17 @@ pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
             || snapshot.route.provider_order != latest_provider_order
     });
 
-    if let Some(sid) = session_id {
+    if let (Some(sid), Some(binding_request)) = (session_id, binding_request) {
         if session_snapshot.is_none() {
-            state.session.bind_sort_mode(
+            let _ = state.session.bind_sort_mode_with_recovery_epoch(
                 cli_key,
                 sid,
-                effective_sort_mode_id,
-                Some(latest_provider_order.clone()),
+                session_manager::SessionBindingCreation::new(
+                    effective_sort_mode_id,
+                    Some(latest_provider_order.clone()),
+                    state.circuit.recovery_epoch(),
+                    binding_request,
+                ),
                 created_at,
             );
         }

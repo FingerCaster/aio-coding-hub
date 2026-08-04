@@ -101,6 +101,8 @@ pub struct CircuitSnapshot {
     pub next_probe_at: Option<i64>,
     pub natural_probe_due_at: Option<i64>,
     pub recovery_guard_until: Option<i64>,
+    /// Process-local epoch of this Provider's latest applied probe success.
+    pub recovery_epoch: u64,
     /// Explicit lease ownership marker retained for gate diagnostics.
     #[cfg_attr(not(test), allow(dead_code))]
     pub probe_in_flight: bool,
@@ -184,6 +186,7 @@ pub(super) struct ProviderHealth {
     pub(super) next_probe_at: Option<i64>,
     pub(super) natural_probe_due_at: Option<i64>,
     pub(super) recovery_guard_until: Option<i64>,
+    pub(super) recovery_epoch: u64,
     pub(super) state_revision: u64,
     pub(super) probe_generation: u64,
     pub(super) probe_lease: Option<ProbeLeaseState>,
@@ -207,6 +210,7 @@ impl ProviderHealth {
                 next_probe_at: None,
                 natural_probe_due_at: None,
                 recovery_guard_until: None,
+                recovery_epoch: 0,
                 state_revision: 0,
                 probe_generation: 0,
                 probe_lease: None,
@@ -240,12 +244,16 @@ impl ProviderHealth {
 }
 
 use std::collections::HashMap;
-use std::sync::{atomic::AtomicBool, Arc, Mutex};
+use std::sync::{
+    atomic::{AtomicBool, AtomicU64},
+    Arc, Mutex,
+};
 
 #[derive(Debug)]
 pub struct CircuitBreaker {
     pub(super) config: Mutex<CircuitBreakerConfig>,
     pub(super) health: Mutex<HashMap<i64, ProviderHealth>>,
+    pub(super) global_recovery_epoch: AtomicU64,
     pub(super) persist_tx: Option<mpsc::Sender<CircuitPersistedState>>,
     pub(super) persist_backlog: Arc<Mutex<HashMap<i64, CircuitPersistedState>>>,
     pub(super) persist_backlog_flush_scheduled: Arc<AtomicBool>,

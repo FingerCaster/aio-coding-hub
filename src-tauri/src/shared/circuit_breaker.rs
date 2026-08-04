@@ -15,7 +15,7 @@ pub use types::CircuitBreaker;
 use super::mutex_ext::MutexExt;
 use std::collections::HashMap;
 use std::sync::{
-    atomic::{AtomicBool, Ordering},
+    atomic::{AtomicBool, AtomicU64, Ordering},
     Arc, Mutex,
 };
 use tokio::sync::mpsc::error::TrySendError;
@@ -165,6 +165,7 @@ impl CircuitBreaker {
                 next_probe_at,
                 natural_probe_due_at,
                 recovery_guard_until: item.recovery_guard_until,
+                recovery_epoch: 0,
                 state_revision,
                 probe_generation: state_revision,
                 probe_lease: None,
@@ -184,6 +185,7 @@ impl CircuitBreaker {
         let breaker = Self {
             config: std::sync::Mutex::new(config),
             health: std::sync::Mutex::new(map),
+            global_recovery_epoch: AtomicU64::new(0),
             persist_tx,
             persist_backlog: Arc::new(Mutex::new(HashMap::new())),
             persist_backlog_flush_scheduled: Arc::new(AtomicBool::new(false)),
@@ -198,6 +200,10 @@ impl CircuitBreaker {
         self.config.lock_or_recover().clone()
     }
 
+    pub fn recovery_epoch(&self) -> u64 {
+        self.global_recovery_epoch.load(Ordering::Acquire)
+    }
+
     fn closed_snapshot(cfg: &CircuitBreakerConfig) -> CircuitSnapshot {
         CircuitSnapshot {
             state: CircuitState::Closed,
@@ -209,6 +215,7 @@ impl CircuitBreaker {
             next_probe_at: None,
             natural_probe_due_at: None,
             recovery_guard_until: None,
+            recovery_epoch: 0,
             probe_in_flight: false,
             state_revision: 0,
             last_trigger_error_code: None,
@@ -225,6 +232,7 @@ impl CircuitBreaker {
             && health.next_probe_at.is_none()
             && health.natural_probe_due_at.is_none()
             && health.recovery_guard_until.is_none()
+            && health.recovery_epoch == 0
             && health.probe_lease.is_none()
     }
 
@@ -472,6 +480,7 @@ impl CircuitBreaker {
             if trigger_error_code.is_some() && entry.state != CircuitState::Open {
                 entry.last_trigger_error_code = trigger_error_code;
             }
+            entry.recovery_epoch = 0;
 
             match entry.state {
                 CircuitState::Closed => {
@@ -711,6 +720,7 @@ impl CircuitBreaker {
                 let before = Self::snapshot_from_health(&cfg, entry, now_unix as u64);
                 entry.probe_lease = None;
                 entry.state = CircuitState::Open;
+                entry.recovery_epoch = 0;
                 entry.open_until = before_dispatch.open_until;
                 entry.probe_reference_at = before_dispatch.probe_reference_at;
                 entry.next_probe_at = before_dispatch.next_probe_at;
@@ -762,6 +772,7 @@ impl CircuitBreaker {
                 if counted_failure {
                     entry.failure_timestamps.push(now_unix as u64);
                     entry.prune_old_failures(now_unix as u64);
+                    entry.recovery_epoch = 0;
                 }
                 if trigger_error_code.is_some() {
                     entry.last_trigger_error_code = trigger_error_code;
@@ -808,7 +819,11 @@ impl CircuitBreaker {
                 || !dispatched
             {
                 ProbeCommitResult::Stale(Self::snapshot_from_health(&cfg, entry, now_unix as u64))
-            } else {
+            } else if let Some(recovery_epoch) = self
+                .global_recovery_epoch
+                .load(Ordering::Acquire)
+                .checked_add(1)
+            {
                 let before = Self::snapshot_from_health(&cfg, entry, now_unix as u64);
                 entry.probe_lease = None;
                 entry.state = CircuitState::Closed;
@@ -823,6 +838,7 @@ impl CircuitBreaker {
                 entry.updated_at = now_unix;
                 entry.last_trigger_error_code = None;
                 Self::bump_revision(entry);
+                entry.recovery_epoch = recovery_epoch;
                 let after = Self::snapshot_from_health(&cfg, entry, now_unix as u64);
                 let transition = Some(CircuitTransition {
                     prev_state: before.state,
@@ -830,12 +846,23 @@ impl CircuitBreaker {
                     reason: "PROBE_SUCCESS",
                     snapshot: after.clone(),
                 });
+                // Publish only after the Provider snapshot carries the epoch.
+                // A session that observes this Release store can therefore
+                // never capture the global epoch ahead of Provider state.
+                self.global_recovery_epoch
+                    .store(recovery_epoch, Ordering::Release);
                 upsert = Some(Self::persisted_from_health(token.provider_id, entry));
                 ProbeCommitResult::Applied(CircuitChange {
                     before,
                     after,
                     transition: transition.map(Box::new),
                 })
+            } else {
+                entry.probe_lease = None;
+                Self::set_open_deadlines(&cfg, entry, now_unix);
+                Self::bump_revision(entry);
+                upsert = Some(Self::persisted_from_health(token.provider_id, entry));
+                ProbeCommitResult::Stale(Self::snapshot_from_health(&cfg, entry, now_unix as u64))
             }
         };
         if let Some(item) = upsert {
@@ -937,6 +964,7 @@ impl CircuitBreaker {
 
     fn set_open_deadlines(cfg: &CircuitBreakerConfig, entry: &mut ProviderHealth, now_unix: i64) {
         entry.state = CircuitState::Open;
+        entry.recovery_epoch = 0;
         entry.half_open_success_count = 0;
         Self::set_natural_failback_deadline(cfg, entry, now_unix);
         entry.next_probe_at = Some(now_unix.saturating_add(cfg.provider_cooldown_secs.max(0)));
@@ -1006,6 +1034,7 @@ impl CircuitBreaker {
             next_probe_at: health.next_probe_at,
             natural_probe_due_at: health.natural_probe_due_at,
             recovery_guard_until: health.recovery_guard_until,
+            recovery_epoch: health.recovery_epoch,
             probe_in_flight,
             state_revision: health.state_revision,
             last_trigger_error_code: health.last_trigger_error_code,
@@ -1077,6 +1106,7 @@ impl CircuitBreaker {
             entry.next_probe_at = None;
             entry.natural_probe_due_at = None;
             entry.recovery_guard_until = None;
+            entry.recovery_epoch = 0;
             entry.probe_lease = None;
             entry.updated_at = now_unix;
             Self::bump_revision(&mut entry);

@@ -1,0 +1,5 @@
+{"file":".trellis/tasks/08-04-route-ordered-failback-probes/prd.md","reason":"Parent requirements and acceptance criteria for arbitrary-length ordered failback."}
+{"file":".trellis/tasks/08-04-route-ordered-failback-probes/design.md","reason":"Parent planner model, stable ordering, intent, and compatibility design."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve request and Ready-provider budgets while changing selection."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Existing authoritative selection, gate, route, and observation contract."}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"Reuse the existing serial failover executor and ordering patterns."}

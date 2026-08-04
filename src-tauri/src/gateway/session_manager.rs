@@ -32,6 +32,7 @@ pub struct SessionManager {
     ttl_secs: i64,
     bindings: Mutex<HashMap<SessionKey, SessionBinding>>,
     next_trigger_owner: AtomicU64,
+    next_binding_request: AtomicU64,
 }
 
 #[derive(Debug, Clone)]
@@ -39,6 +40,9 @@ struct SessionBinding {
     provider_id: i64,
     sort_mode_id: Option<i64>,
     provider_order: Option<Vec<i64>>,
+    recovery_epoch_baseline: u64,
+    creation_request: SessionBindingRequest,
+    last_binding_request: Option<SessionBindingRequest>,
     expires_at: i64,
     ttl_secs: i64,
     completed_compaction_generation: u64,
@@ -83,9 +87,37 @@ struct TriggerReservationState {
 #[derive(Debug, Clone)]
 pub struct SessionRoutingSnapshot {
     pub route: SessionRouteFingerprint,
+    pub recovery_epoch_baseline: u64,
     pub completed_compaction_generation: u64,
     pub consumed_compaction_generation: u64,
     pub last_codex_compaction_fingerprint: Option<String>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct SessionBindingRequest(u64);
+
+#[derive(Debug)]
+pub struct SessionBindingCreation {
+    sort_mode_id: Option<i64>,
+    provider_order: Option<Vec<i64>>,
+    recovery_epoch_baseline: u64,
+    request: SessionBindingRequest,
+}
+
+impl SessionBindingCreation {
+    pub fn new(
+        sort_mode_id: Option<i64>,
+        provider_order: Option<Vec<i64>>,
+        recovery_epoch_baseline: u64,
+        request: SessionBindingRequest,
+    ) -> Self {
+        Self {
+            sort_mode_id,
+            provider_order,
+            recovery_epoch_baseline,
+            request,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -134,7 +166,17 @@ impl SessionManager {
             ttl_secs: DEFAULT_SESSION_TTL_SECS,
             bindings: Mutex::new(HashMap::new()),
             next_trigger_owner: AtomicU64::new(1),
+            next_binding_request: AtomicU64::new(1),
         }
+    }
+
+    pub fn begin_binding_request(&self) -> Option<SessionBindingRequest> {
+        self.next_binding_request
+            .fetch_update(Ordering::Relaxed, Ordering::Relaxed, |next| {
+                next.checked_add(1)
+            })
+            .ok()
+            .map(SessionBindingRequest)
     }
 
     pub fn clear_cli_bindings(&self, cli_key: &str) -> usize {
@@ -287,6 +329,7 @@ impl SessionManager {
 
     // Bind (or refresh) the session's sort_mode for stickiness across retries.
     // If a binding already exists, its sort_mode_id is preserved and only TTL is refreshed.
+    #[cfg(test)]
     pub fn bind_sort_mode(
         &self,
         cli_key: &str,
@@ -295,9 +338,33 @@ impl SessionManager {
         provider_order: Option<Vec<i64>>,
         now_unix: i64,
     ) {
-        if cli_key.trim().is_empty() || session_id.trim().is_empty() {
+        let Some(request) = self.begin_binding_request() else {
             return;
+        };
+        let _ = self.bind_sort_mode_with_recovery_epoch(
+            cli_key,
+            session_id,
+            SessionBindingCreation::new(sort_mode_id, provider_order, 0, request),
+            now_unix,
+        );
+    }
+
+    pub fn bind_sort_mode_with_recovery_epoch(
+        &self,
+        cli_key: &str,
+        session_id: &str,
+        creation: SessionBindingCreation,
+        now_unix: i64,
+    ) -> bool {
+        if cli_key.trim().is_empty() || session_id.trim().is_empty() {
+            return false;
         }
+        let SessionBindingCreation {
+            sort_mode_id,
+            provider_order,
+            recovery_epoch_baseline,
+            request,
+        } = creation;
 
         let key = SessionKey {
             cli_key: cli_key.to_string(),
@@ -314,11 +381,14 @@ impl SessionManager {
 
         if let Some(existing) = guard.get_mut(&key) {
             if existing.expires_at > now_unix {
+                if request < existing.creation_request {
+                    return false;
+                }
                 existing.expires_at = now_unix.saturating_add(self.ttl_secs.max(1));
                 if existing.provider_order.is_none() {
                     existing.provider_order = provider_order;
                 }
-                return;
+                return true;
             }
             guard.remove(&key);
         }
@@ -329,6 +399,9 @@ impl SessionManager {
                 provider_id: 0,
                 sort_mode_id,
                 provider_order,
+                recovery_epoch_baseline,
+                creation_request: request,
+                last_binding_request: None,
                 expires_at: now_unix.saturating_add(self.ttl_secs.max(1)),
                 ttl_secs: self.ttl_secs,
                 completed_compaction_generation: 0,
@@ -338,6 +411,7 @@ impl SessionManager {
                 trigger_revision: 0,
             },
         );
+        true
     }
 
     #[cfg(test)]
@@ -366,6 +440,7 @@ impl SessionManager {
         }
     }
 
+    #[cfg(test)]
     pub fn bind_success(
         &self,
         cli_key: &str,
@@ -374,8 +449,57 @@ impl SessionManager {
         sort_mode_id: Option<i64>,
         now_unix: i64,
     ) {
-        if cli_key.trim().is_empty() || session_id.trim().is_empty() || provider_id <= 0 {
+        let Some(request) = self.begin_binding_request() else {
             return;
+        };
+        if !self.bind_sort_mode_with_recovery_epoch(
+            cli_key,
+            session_id,
+            SessionBindingCreation::new(sort_mode_id, None, 0, request),
+            now_unix,
+        ) {
+            return;
+        }
+        let _ = self.bind_success_inner(
+            cli_key,
+            session_id,
+            provider_id,
+            sort_mode_id,
+            request,
+            now_unix,
+        );
+    }
+
+    pub fn bind_success_for_request(
+        &self,
+        cli_key: &str,
+        session_id: &str,
+        provider_id: i64,
+        sort_mode_id: Option<i64>,
+        request: SessionBindingRequest,
+        now_unix: i64,
+    ) -> bool {
+        self.bind_success_inner(
+            cli_key,
+            session_id,
+            provider_id,
+            sort_mode_id,
+            request,
+            now_unix,
+        )
+    }
+
+    fn bind_success_inner(
+        &self,
+        cli_key: &str,
+        session_id: &str,
+        provider_id: i64,
+        sort_mode_id: Option<i64>,
+        request: SessionBindingRequest,
+        now_unix: i64,
+    ) -> bool {
+        if cli_key.trim().is_empty() || session_id.trim().is_empty() || provider_id <= 0 {
+            return false;
         }
 
         let key = SessionKey {
@@ -384,41 +508,31 @@ impl SessionManager {
         };
 
         let mut guard = self.bindings.lock_or_recover();
-        if guard.len() >= MAX_BINDINGS {
-            drop_expired(&mut guard, now_unix);
-            if guard.len() >= MAX_BINDINGS {
-                evict_oldest_quarter(&mut guard);
-            }
-        }
-
-        let expires_at = now_unix.saturating_add(self.ttl_secs.max(1));
-        if let Some(existing) = guard.get_mut(&key) {
-            if existing.expires_at > now_unix {
-                existing.provider_id = provider_id;
-                existing.expires_at = expires_at;
-                if existing.sort_mode_id.is_none() {
-                    existing.sort_mode_id = sort_mode_id;
-                }
-                return;
-            }
+        if guard
+            .get(&key)
+            .is_some_and(|binding| binding.expires_at <= now_unix)
+        {
             guard.remove(&key);
+            return false;
+        }
+        let Some(existing) = guard.get_mut(&key) else {
+            return false;
+        };
+        if request < existing.creation_request
+            || existing.last_binding_request.is_some_and(|last| {
+                request < last || (request == last && existing.provider_id != provider_id)
+            })
+        {
+            return false;
         }
 
-        guard.insert(
-            key,
-            SessionBinding {
-                provider_id,
-                sort_mode_id,
-                provider_order: None,
-                expires_at,
-                ttl_secs: self.ttl_secs,
-                completed_compaction_generation: 0,
-                consumed_compaction_generation: 0,
-                last_codex_compaction_fingerprint: None,
-                trigger_reservation: None,
-                trigger_revision: 0,
-            },
-        );
+        existing.provider_id = provider_id;
+        existing.last_binding_request = Some(request);
+        existing.expires_at = now_unix.saturating_add(self.ttl_secs.max(1));
+        if existing.sort_mode_id.is_none() {
+            existing.sort_mode_id = sort_mode_id;
+        }
+        true
     }
 
     pub fn routing_snapshot(
@@ -440,6 +554,7 @@ impl SessionManager {
                         binding.sort_mode_id,
                         binding.provider_order.clone().unwrap_or_default(),
                     ),
+                    recovery_epoch_baseline: binding.recovery_epoch_baseline,
                     completed_compaction_generation: binding.completed_compaction_generation,
                     consumed_compaction_generation: binding.consumed_compaction_generation,
                     last_codex_compaction_fingerprint: binding

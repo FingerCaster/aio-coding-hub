@@ -195,12 +195,15 @@ pub(super) fn finalize_circuit_and_session<R: tauri::Runtime>(
         };
 
         if trusted_success && applied && !ctx.managed_model_route {
-            if let Some(session_id) = ctx.session_id.as_deref() {
-                ctx.session.bind_success(
+            if let (Some(session_id), Some(binding_request)) =
+                (ctx.session_id.as_deref(), ctx.session_binding_request)
+            {
+                ctx.session.bind_success_for_request(
                     &ctx.cli_key,
                     session_id,
                     ctx.provider_id,
                     ctx.sort_mode_id,
+                    binding_request,
                     now_unix,
                 );
             }
@@ -227,12 +230,15 @@ pub(super) fn finalize_circuit_and_session<R: tauri::Runtime>(
         let can_bind_session =
             ctx.dispatch_ownership.is_none() || trusted_failback_binding_success(terminal_evidence);
         if can_bind_session && !ctx.managed_model_route {
-            if let Some(session_id) = ctx.session_id.as_deref() {
-                ctx.session.bind_success(
+            if let (Some(session_id), Some(binding_request)) =
+                (ctx.session_id.as_deref(), ctx.session_binding_request)
+            {
+                ctx.session.bind_success_for_request(
                     &ctx.cli_key,
                     session_id,
                     ctx.provider_id,
                     ctx.sort_mode_id,
+                    binding_request,
                     now_unix,
                 );
             }
@@ -287,6 +293,8 @@ mod tests {
         db: db::Db,
         log_tx: tokio::sync::mpsc::Sender<request_logs::RequestLogInsert>,
     ) -> StreamFinalizeCtx<tauri::test::MockRuntime> {
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_binding_request = session.begin_binding_request();
         StreamFinalizeCtx {
             app,
             db,
@@ -304,8 +312,9 @@ mod tests {
                 None,
             )),
             dispatch_ownership: None,
-            session: Arc::new(session_manager::SessionManager::new()),
+            session,
             session_id: Some("sess-stream-finalize".to_string()),
+            session_binding_request,
             sort_mode_id: None,
             is_compact_request: false,
             trace_id: "trace-stream-finalize".to_string(),
@@ -396,6 +405,7 @@ mod tests {
             None,
             now_unix,
         );
+        ctx.session_binding_request = ctx.session.begin_binding_request();
         arm_probe(&mut ctx, now_unix);
 
         let result = finalize_circuit_and_session(&ctx, None, evidence);
@@ -545,6 +555,7 @@ mod tests {
             None,
             now_unix,
         );
+        ctx.session_binding_request = ctx.session.begin_binding_request();
         arm_probe(&mut ctx, now_unix);
 
         let result = finalize_circuit_and_session(
@@ -658,6 +669,7 @@ mod tests {
             None,
             now_unix,
         );
+        ctx.session_binding_request = ctx.session.begin_binding_request();
         let ownership = RequestDispatchIntent::new(ctx.provider_id, None, None)
             .claim_for_provider(ctx.provider_id, None)
             .expect("direct failback ownership");
@@ -694,6 +706,62 @@ mod tests {
     }
 
     #[test]
+    fn later_started_stream_completion_prevents_an_older_binding_overwrite() {
+        let app = tauri::test::mock_app();
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("stream-binding-order.sqlite"))
+            .expect("init test db");
+        let (log_tx, _log_rx) = tokio::sync::mpsc::channel(4);
+        let mut older = test_stream_finalize_ctx(app.handle().clone(), db.clone(), log_tx.clone());
+        let mut newer = test_stream_finalize_ctx(app.handle().clone(), db, log_tx);
+        newer.session = older.session.clone();
+        older.provider_id = 2;
+        newer.provider_id = 1;
+        let now_unix = crate::gateway::util::now_unix_seconds() as i64;
+        let older_request = older
+            .session_binding_request
+            .expect("older binding request");
+        assert!(older.session.bind_sort_mode_with_recovery_epoch(
+            older.cli_key.as_str(),
+            older.session_id.as_deref().expect("session"),
+            session_manager::SessionBindingCreation::new(None, None, 0, older_request),
+            now_unix,
+        ));
+        assert!(older.session.bind_success_for_request(
+            older.cli_key.as_str(),
+            older.session_id.as_deref().expect("session"),
+            older.provider_id,
+            None,
+            older_request,
+            now_unix,
+        ));
+        newer.session_binding_request = newer.session.begin_binding_request();
+
+        let trusted_completion =
+            StreamTerminalEvidence::new(StreamTerminalOrigin::NormalEof, true, true, true, false);
+        finalize_circuit_and_session(&newer, None, trusted_completion);
+        assert_eq!(
+            newer.session.get_bound_provider(
+                newer.cli_key.as_str(),
+                newer.session_id.as_deref().expect("session"),
+                now_unix,
+            ),
+            Some(newer.provider_id)
+        );
+
+        finalize_circuit_and_session(&older, None, trusted_completion);
+        assert_eq!(
+            older.session.get_bound_provider(
+                older.cli_key.as_str(),
+                older.session_id.as_deref().expect("session"),
+                now_unix,
+            ),
+            Some(newer.provider_id),
+            "the older stream must not overwrite the newer request's binding"
+        );
+    }
+
+    #[test]
     fn direct_failback_non_stream_body_eof_can_bind_session() {
         let app = tauri::test::mock_app();
         let db_dir = tempfile::tempdir().expect("db dir");
@@ -709,6 +777,7 @@ mod tests {
             None,
             now_unix,
         );
+        ctx.session_binding_request = ctx.session.begin_binding_request();
         let ownership = RequestDispatchIntent::new(ctx.provider_id, None, None)
             .claim_for_provider(ctx.provider_id, None)
             .expect("direct failback ownership");
@@ -753,6 +822,7 @@ mod tests {
             None,
             now_unix,
         );
+        ctx.session_binding_request = ctx.session.begin_binding_request();
 
         finalize_circuit_and_session(
             &ctx,

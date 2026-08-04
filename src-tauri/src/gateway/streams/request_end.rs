@@ -366,6 +366,8 @@ mod tests {
         log_tx: tokio::sync::mpsc::Sender<request_logs::RequestLogInsert>,
         active_requests: Arc<ActiveRequestRegistry>,
     ) -> StreamFinalizeCtx<tauri::test::MockRuntime> {
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_binding_request = session.begin_binding_request();
         StreamFinalizeCtx {
             app,
             db,
@@ -378,8 +380,9 @@ mod tests {
                 None,
             )),
             dispatch_ownership: None,
-            session: Arc::new(session_manager::SessionManager::new()),
+            session,
             session_id: Some("sess-stream-end".to_string()),
+            session_binding_request,
             sort_mode_id: None,
             is_compact_request: false,
             trace_id: "trace-stream-end".to_string(),
@@ -755,6 +758,7 @@ mod tests {
                 None,
                 now_unix,
             );
+            ctx.session_binding_request = ctx.session.begin_binding_request();
             arm_probe(&mut ctx, now_unix);
             ctx.attempts = vec![probe_attempt()];
             ctx.attempts_json = serde_json::to_string(&ctx.attempts).expect("attempts json");

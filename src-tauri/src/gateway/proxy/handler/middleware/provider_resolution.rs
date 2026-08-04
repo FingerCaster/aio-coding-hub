@@ -2,13 +2,14 @@
 
 use super::{MiddlewareAction, ProxyContext};
 use crate::gateway::events::{decision_chain as dc, FailoverAttempt};
+use crate::gateway::proxy::dispatch::{RequestDispatchIntent, RequestDispatchTarget};
 use crate::gateway::proxy::handler::early_error::{
     build_early_error_log_ctx, early_error_contract, force_provider_if_requested,
     push_special_setting, respond_early_error_with_enqueue, respond_invalid_cli_key_with_spawn,
     respond_provider_selection_failed_with_spawn, EarlyErrorKind,
 };
 use crate::gateway::proxy::handler::provider_selection::probe_planner::{
-    plan_probe, ProbePlannerDecision, ProbePlannerInput,
+    plan_probe, PlannedDispatch, PlannedFailbackTarget, ProbePlannerDecision, ProbePlannerInput,
 };
 use crate::gateway::proxy::handler::provider_selection::{
     resolve_session_bound_provider_id, resolve_session_routing_decision,
@@ -34,6 +35,9 @@ impl ProviderResolutionMiddleware {
         );
         ctx.session_id = decision.session_id;
         ctx.allow_session_reuse = decision.allow_session_reuse && ctx.managed_model_route.is_none();
+        if ctx.session_id.is_none() {
+            ctx.session_binding_request = None;
+        }
 
         // --- provider selection ---
         // Runs rusqlite queries; keep them off the async worker via the bounded
@@ -42,6 +46,7 @@ impl ProviderResolutionMiddleware {
             let state = ctx.state.clone();
             let cli_key = ctx.cli_key.clone();
             let session_id = ctx.session_id.clone();
+            let session_binding_request = ctx.session_binding_request;
             let created_at = ctx.created_at;
             let managed_provider_identity = ctx
                 .managed_model_route
@@ -71,6 +76,7 @@ impl ProviderResolutionMiddleware {
                         &state,
                         &cli_key,
                         session_id.as_deref(),
+                        session_binding_request,
                         created_at,
                     )
                 }
@@ -237,11 +243,12 @@ fn plan_request_failback<R: tauri::Runtime>(
             )
         })
         .collect();
-    let all_open_recovery_provider_ids =
-        all_open_recovery_provider_ids(request_eligible, bound_provider_id, &ordered_candidates);
     let decision = plan_probe(ProbePlannerInput {
         ordered_candidates: &ordered_candidates,
         bound_provider_id,
+        session_recovery_epoch_baseline: session_snapshot
+            .as_ref()
+            .map_or(0, |snapshot| snapshot.recovery_epoch_baseline),
         route_changed,
         strategy: runtime_settings.provider_failback_strategy,
         compaction_generation_pending: compaction_generation.is_some(),
@@ -253,24 +260,9 @@ fn plan_request_failback<R: tauri::Runtime>(
     match decision {
         ProbePlannerDecision::Stay {
             confirm_route,
-            not_triggered_provider_id,
+            not_triggered_provider_ids,
         } => {
-            if let Some(provider_id) = not_triggered_provider_id {
-                if let Some(provider) = ctx
-                    .providers
-                    .iter()
-                    .find(|provider| provider.id == provider_id)
-                {
-                    let snapshot = ctx.state.circuit.snapshot(provider_id, ctx.created_at);
-                    ctx.probe_observations.push(not_triggered_probe_observation(
-                        provider.id,
-                        &provider.name,
-                        provider.base_urls.first().map(String::as_str).unwrap_or(""),
-                        &snapshot,
-                        ctx.started.elapsed().as_millis(),
-                    ));
-                }
-            }
+            push_not_triggered_observations(ctx, not_triggered_provider_ids);
             if confirm_route {
                 if let Some(session_id) = ctx.session_id.as_deref() {
                     ctx.state.session.confirm_route(
@@ -282,83 +274,69 @@ fn plan_request_failback<R: tauri::Runtime>(
                 }
             }
         }
-        ProbePlannerDecision::DirectClosed {
-            provider_id,
-            trigger,
+        ProbePlannerDecision::Dispatch {
+            targets,
+            reservation_trigger,
+            not_triggered_provider_ids,
         } => {
-            let reservation =
-                reserve_planner_trigger(ctx, trigger, latest_route, compaction_generation);
+            push_not_triggered_observations(ctx, not_triggered_provider_ids);
+            let reservation = reserve_planner_trigger(
+                ctx,
+                reservation_trigger,
+                latest_route,
+                compaction_generation,
+            );
             let Some(reservation) = reservation else {
                 return;
             };
-            move_provider_to_front(&mut ctx.providers, provider_id);
-            ctx.dispatch_intent = Some(Arc::new(
-                crate::gateway::proxy::dispatch::RequestDispatchIntent::new(
-                    provider_id,
-                    None,
-                    reservation,
-                )
-                .with_durable_persistence(ctx.state.db.clone()),
-            ));
-        }
-        ProbePlannerDecision::Probe {
-            provider_id,
-            trigger,
-        } => {
-            let reservation =
-                reserve_planner_trigger(ctx, trigger, latest_route, compaction_generation);
-            let Some(reservation) = reservation else {
-                return;
-            };
-            move_provider_to_front(&mut ctx.providers, provider_id);
-            let intent = if trigger == crate::circuit_breaker::ProbeTrigger::NewUnboundSession {
-                all_open_recovery_provider_ids
-                    .filter(|provider_ids| provider_ids.first() == Some(&provider_id))
-                    .map(|provider_ids| {
-                        crate::gateway::proxy::dispatch::RequestDispatchIntent::new_all_open_recovery(
-                            provider_id,
-                            provider_ids.into_iter().skip(1).collect(),
-                            trigger,
-                        )
-                    })
-            } else {
-                None
-            }
-            .unwrap_or_else(|| {
-                crate::gateway::proxy::dispatch::RequestDispatchIntent::new(
-                    provider_id,
-                    Some(trigger),
-                    reservation,
-                )
+            let planned_provider_ids: Vec<_> =
+                targets.iter().map(|target| target.provider_id).collect();
+            reorder_targets_first(&mut ctx.providers, &planned_provider_ids, |provider| {
+                provider.id
             });
+            let dispatch_targets = request_dispatch_targets(targets);
             ctx.dispatch_intent = Some(Arc::new(
-                intent.with_durable_persistence(ctx.state.db.clone()),
+                RequestDispatchIntent::new_targets(dispatch_targets, reservation)
+                    .with_durable_persistence(ctx.state.db.clone()),
             ));
         }
     }
 }
 
-fn all_open_recovery_provider_ids(
-    request_eligible: bool,
-    bound_provider_id: Option<i64>,
-    ordered_candidates: &[(i64, crate::circuit_breaker::CircuitSnapshot)],
-) -> Option<Vec<i64>> {
-    (request_eligible
-        && bound_provider_id.is_none()
-        && ordered_candidates.len() > 1
-        && ordered_candidates.iter().all(|(_, snapshot)| {
-            matches!(
-                snapshot.state,
-                crate::circuit_breaker::CircuitState::Open
-                    | crate::circuit_breaker::CircuitState::HalfOpen
-            )
-        }))
-    .then(|| {
-        ordered_candidates
+fn request_dispatch_targets(targets: Vec<PlannedFailbackTarget>) -> Vec<RequestDispatchTarget> {
+    targets
+        .into_iter()
+        .map(|target| {
+            let probe_trigger = match target.dispatch {
+                PlannedDispatch::Direct => None,
+                PlannedDispatch::Probe(trigger) => Some(trigger),
+            };
+            RequestDispatchTarget::new(target.provider_id, probe_trigger)
+        })
+        .collect()
+}
+
+fn push_not_triggered_observations<R: tauri::Runtime>(
+    ctx: &mut ProxyContext<R>,
+    provider_ids: Vec<i64>,
+) {
+    for provider_id in provider_ids {
+        let Some(provider) = ctx
+            .providers
             .iter()
-            .map(|(provider_id, _)| *provider_id)
-            .collect()
-    })
+            .find(|provider| provider.id == provider_id)
+        else {
+            continue;
+        };
+        let snapshot = ctx.state.circuit.snapshot(provider_id, ctx.created_at);
+        ctx.probe_observations.push(not_triggered_probe_observation(
+            provider.id,
+            &provider.name,
+            provider.base_urls.first().map(String::as_str).unwrap_or(""),
+            &snapshot,
+            ctx.started.elapsed().as_millis(),
+        ));
+    }
 }
 
 fn not_triggered_probe_observation(
@@ -478,15 +456,21 @@ fn reserve_trigger<R: tauri::Runtime>(
         .map(Some)
 }
 
-fn move_provider_to_front(
-    providers: &mut [crate::providers::ProviderForGateway],
-    provider_id: i64,
-) {
-    if let Some(index) = providers
-        .iter()
-        .position(|provider| provider.id == provider_id)
-    {
-        providers[..=index].rotate_right(1);
+fn reorder_targets_first<T>(items: &mut [T], target_ids: &[i64], id_of: impl Fn(&T) -> i64) {
+    let mut target_count = 0;
+    for (target_index, target_id) in target_ids.iter().enumerate() {
+        if target_ids[..target_index].contains(target_id) {
+            continue;
+        }
+        let Some(offset) = items[target_count..]
+            .iter()
+            .position(|item| id_of(item) == *target_id)
+        else {
+            continue;
+        };
+        let item_index = target_count + offset;
+        items[target_count..=item_index].rotate_right(1);
+        target_count += 1;
     }
 }
 
@@ -576,6 +560,7 @@ mod tests {
             next_probe_at: Some(120),
             natural_probe_due_at: Some(400),
             recovery_guard_until: None,
+            recovery_epoch: 0,
             probe_in_flight: false,
             state_revision: 7,
             last_trigger_error_code: Some("GW_UPSTREAM_5XX"),
@@ -583,26 +568,56 @@ mod tests {
     }
 
     #[test]
-    fn all_open_recovery_requires_an_unbound_eligible_route_with_no_closed_fallback() {
-        let first = open_snapshot();
-        let second = open_snapshot();
-        let all_open = vec![(11, first.clone()), (22, second.clone())];
+    fn planned_targets_run_before_the_session_rotated_provider() {
+        let mut provider_ids = vec![3, 1, 2];
+
+        reorder_targets_first(&mut provider_ids, &[1, 2], |provider_id| *provider_id);
+
+        assert_eq!(provider_ids, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn planned_target_order_supports_a_dynamic_five_provider_prefix() {
+        let mut provider_ids = vec![5, 1, 2, 3, 4];
+
+        reorder_targets_first(&mut provider_ids, &[1, 2, 3, 4], |provider_id| *provider_id);
+
+        assert_eq!(provider_ids, vec![1, 2, 3, 4, 5]);
+    }
+
+    #[test]
+    fn planned_target_order_ignores_missing_and_duplicate_ids_stably() {
+        let mut provider_ids = vec![3, 1, 2, 4];
+
+        reorder_targets_first(&mut provider_ids, &[2, 99, 2, 1], |provider_id| {
+            *provider_id
+        });
+
+        assert_eq!(provider_ids, vec![2, 1, 3, 4]);
+    }
+
+    #[test]
+    fn planned_dispatch_modes_are_preserved_per_target() {
+        let targets = request_dispatch_targets(vec![
+            PlannedFailbackTarget {
+                provider_id: 1,
+                dispatch: PlannedDispatch::Direct,
+            },
+            PlannedFailbackTarget {
+                provider_id: 2,
+                dispatch: PlannedDispatch::Probe(crate::circuit_breaker::ProbeTrigger::MaxOpenWait),
+            },
+        ]);
 
         assert_eq!(
-            all_open_recovery_provider_ids(true, None, &all_open),
-            Some(vec![11, 22])
-        );
-        assert_eq!(
-            all_open_recovery_provider_ids(true, Some(22), &all_open),
-            None
-        );
-        assert_eq!(all_open_recovery_provider_ids(false, None, &all_open), None);
-
-        let mut closed = second;
-        closed.state = crate::circuit_breaker::CircuitState::Closed;
-        assert_eq!(
-            all_open_recovery_provider_ids(true, None, &[(11, first), (22, closed)]),
-            None
+            targets,
+            vec![
+                RequestDispatchTarget::new(1, None),
+                RequestDispatchTarget::new(
+                    2,
+                    Some(crate::circuit_breaker::ProbeTrigger::MaxOpenWait),
+                ),
+            ]
         );
     }
 
