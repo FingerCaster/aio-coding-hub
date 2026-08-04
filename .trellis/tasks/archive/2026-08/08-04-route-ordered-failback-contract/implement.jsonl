@@ -1,5 +1,5 @@
-{"file":".trellis/tasks/08-04-route-ordered-failback-probes/prd.md","reason":"Complete behavior and acceptance criteria to codify."}
-{"file":".trellis/tasks/08-04-route-ordered-failback-probes/design.md","reason":"Ordered planner, dispatch intent, reservation, and compatibility design."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/prd.md","reason":"Complete behavior and acceptance criteria to codify."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/design.md","reason":"Ordered planner, dispatch intent, reservation, and compatibility design."}
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Keep attempt and retry guarantees aligned."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"The existing contract to revise in place."}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Ensure planner-to-route boundaries remain explicit."}

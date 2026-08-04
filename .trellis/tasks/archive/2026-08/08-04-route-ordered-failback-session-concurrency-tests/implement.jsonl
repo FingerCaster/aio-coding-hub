@@ -1,0 +1,4 @@
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/prd.md","reason":"Parent winner/follower acceptance criteria and arbitrary session count requirement."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/design.md","reason":"Recovery epoch data flow and expected first/second wave semantics."}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Keep follower skips outside Ready and attempt budgets."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Assert route, attempt, probe, and binding observability together."}

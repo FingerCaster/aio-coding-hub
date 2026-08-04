@@ -1,5 +1,5 @@
-{"file":".trellis/tasks/08-04-route-ordered-failback-probes/prd.md","reason":"Parent multi-session convergence requirements and arbitrary-length route constraints."}
-{"file":".trellis/tasks/08-04-route-ordered-failback-probes/design.md","reason":"Parent recovery epoch ownership, planner data flow, and compatibility design."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/prd.md","reason":"Parent multi-session convergence requirements and arbitrary-length route constraints."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/design.md","reason":"Parent recovery epoch ownership, planner data flow, and compatibility design."}
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve request-scoped Ready and attempt budgets."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Authoritative gate, probe, route, session, and observability contract."}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace recovery fact through circuit, session, planner, gate, and binding."}

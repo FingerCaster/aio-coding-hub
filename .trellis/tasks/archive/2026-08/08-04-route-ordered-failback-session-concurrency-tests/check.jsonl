@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-session-concurrency-tests/prd.md", "reason": "Verify deterministic multi-session first/second wave coverage."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/design.md","reason":"Check tests prove the intended recovery epoch semantics rather than timing luck."}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Review route/probe metadata and binding assertions."}

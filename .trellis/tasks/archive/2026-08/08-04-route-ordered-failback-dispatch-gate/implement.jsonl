@@ -1,5 +1,5 @@
-{"file":".trellis/tasks/08-04-route-ordered-failback-probes/prd.md","reason":"Parent reservation, gate, budget, and arbitrary-target requirements."}
-{"file":".trellis/tasks/08-04-route-ordered-failback-probes/design.md","reason":"Parent dispatch intent and transport-boundary ownership design."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/prd.md","reason":"Parent reservation, gate, budget, and arbitrary-target requirements."}
+{"file":".trellis/tasks/archive/2026-08/08-04-route-ordered-failback-probes/design.md","reason":"Parent dispatch intent and transport-boundary ownership design."}
 {"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"Preserve provider retry and request attempt budgets."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"Existing common gate, Provider lease, skip, and route contract."}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"Trace reservation ownership across planner, gate, preparation, and transport."}
