@@ -1,5 +1,12 @@
 # Changelog
 
+## [0.60.35](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.34...aio-coding-hub-v0.60.35) (2026-08-04)
+
+
+### Bug Fixes
+
+* **gateway:** restore natural failback for closed providers ([f671183](https://github.com/FingerCaster/aio-coding-hub/commit/f671183b00b0c35988dec34b4f34fff7d054235f))
+
 ## [0.60.34](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.33...aio-coding-hub-v0.60.34) (2026-08-03)
 
 
