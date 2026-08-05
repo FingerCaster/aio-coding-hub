@@ -36,6 +36,9 @@ TypeScript bindings, frontend adapters, and React UI.
   history paths, DB-reference validation, and asset-scope authority.
 - [Settings ownership and rollback contract](./settings-ownership-rollback-contract.md):
   lock-internal field-owned RMW, whole-snapshot CAS, and safe rollback.
+- [Reliability boundary contract](./reliability-boundaries-contract.md):
+  route-draft initialization, retryable startup state, bounded diagnostic
+  redaction, backend-confirmed task notifications, and manual upstream review.
 - [Trellis task context archive contract](./trellis-task-context-archive-contract.md):
   exact self-reference rewriting and repository-wide context validation before archive commit.
 - [Usage insights contract](./usage-insights-contract.md): folder identity and
@@ -150,6 +153,14 @@ When changing a production settings writer:
 2. Name the fields owned by the writer and search every production `settings::write` call.
 3. Keep read, mutation, validation and write under the shared settings lock.
 4. Define a committed-field token and CAS rollback for external side effects.
+
+When changing startup recovery, diagnostic reporting, task-complete notification,
+Provider route-draft initialization, or the upstream-sync workflow:
+
+1. Read [Reliability boundary contract](./reliability-boundaries-contract.md).
+2. Preserve generation/token invalidation across asynchronous reads and events.
+3. Keep diagnostic projections bounded and fail closed at both frontend and Rust boundaries.
+4. Confirm upstream synchronization and task notification against their authoritative source before acting.
 
 When changing Trellis task archive or context validation:
 

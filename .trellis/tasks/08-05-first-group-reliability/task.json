@@ -1,0 +1,32 @@
+{
+  "id": "first-group-reliability",
+  "name": "first-group-reliability",
+  "title": "第一组低风险可靠性修复",
+  "description": "",
+  "status": "planning",
+  "dev_type": null,
+  "scope": "aio-coding-hub",
+  "package": "aio-coding-hub",
+  "priority": "P2",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-05",
+  "completedAt": null,
+  "branch": "FingerCaster/first-group-reliability",
+  "base_branch": "main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [
+    "08-05-route-draft-active-mode",
+    "08-05-upstream-sync-manual-review",
+    "08-05-startup-retry",
+    "08-05-diagnostic-redaction",
+    "08-05-task-complete-notification"
+  ],
+  "parent": null,
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {}
+}
