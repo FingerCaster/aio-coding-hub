@@ -29,12 +29,15 @@ use crate::gateway::proxy::errors::{
 };
 use crate::gateway::proxy::failover::{retry_backoff_delay, FailoverDecision};
 use crate::gateway::proxy::http_util::{
-    build_response, gunzip_bytes_prefix, has_gzip_content_encoding,
+    build_response, gunzip_bytes_prefix, gunzip_bytes_with_limit, has_gzip_content_encoding,
     has_non_identity_content_encoding,
 };
 use crate::gateway::proxy::is_claude_count_tokens_request;
 use crate::gateway::proxy::provider_router;
 use crate::gateway::proxy::upstream_client_error_rules;
+use crate::gateway::proxy::upstream_error_response_rules::{
+    match_response_rule, needs_bounded_body_observation, supports_bounded_body_observation,
+};
 use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
 use crate::gateway::response_fixer;
 use crate::gateway::streams::GunzipStream;
@@ -446,10 +449,12 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
 
     let mut abort_body_bytes: Option<Bytes> = None;
     let mut abort_response_headers: Option<axum::http::HeaderMap> = None;
+    let mut response_rule_body: Option<Bytes> = None;
     let mut matched_rule_id: Option<&'static str> = None;
     let mut matched_429_concurrency_limit = false;
     // Body preview for errors where preserving the upstream diagnostic text matters.
     let mut upstream_body_preview: Option<String> = None;
+    let mut cx2cc_upstream_body_preview: Option<String> = None;
     let need_client_error_scan = !is_count_tokens
         && (upstream_client_error_rules::should_attempt_non_retryable_match(
             status,
@@ -472,10 +477,27 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     let need_retry_rule_body_scan = configured_http_retry_available
         && matched_http_retry_rule.is_none()
         && has_content_http_retry_rule(upstream_retry_policy, status.as_u16());
+    let response_rule_body_read_limit = if has_gzip_content_encoding(&response_headers) {
+        MAX_ENCODED_ERROR_BODY_READ_BYTES
+    } else {
+        error_body_scan_limit_bytes()
+    };
+    let need_response_rule_body_scan = needs_bounded_body_observation(
+        ctx.upstream_error_response_rules,
+        ctx.cli_key.as_str(),
+        provider_id,
+        status,
+    ) && supports_bounded_body_observation(&response_headers)
+        && resp
+            .as_ref()
+            .and_then(|response| response.content_length())
+            .map(|length| length <= response_rule_body_read_limit)
+            .unwrap_or(true);
     if need_client_error_scan
         || need_error_body_preview
         || need_codex_previous_response_id_scan
         || need_retry_rule_body_scan
+        || need_response_rule_body_scan
     {
         if let Some(r) = resp.take() {
             let gzip_encoded = has_gzip_content_encoding(&response_headers);
@@ -483,7 +505,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
             if let Ok(read) = read_result {
                 let mut headers_for_scan = response_headers.clone();
                 strip_hop_headers(&mut headers_for_scan);
-                let (body_for_scan, body_for_abort) = if gzip_encoded {
+                let (body_for_scan, body_for_abort, complete_rule_body) = if gzip_encoded {
                     let decoded =
                         gunzip_bytes_prefix(read.bytes.as_ref(), error_body_scan_limit_usize())
                             .filter(|decoded| {
@@ -493,13 +515,26 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                         Some(decoded) => {
                             headers_for_scan.remove(header::CONTENT_ENCODING);
                             headers_for_scan.remove(header::CONTENT_LENGTH);
-                            (decoded.clone(), decoded)
+                            let complete = if read.truncated {
+                                None
+                            } else {
+                                gunzip_bytes_with_limit(
+                                    read.bytes.as_ref(),
+                                    error_body_scan_limit_usize(),
+                                )
+                                .ok()
+                            };
+                            (decoded.clone(), decoded, complete)
                         }
-                        None => (Bytes::new(), read.bytes),
+                        None => (Bytes::new(), read.bytes, None),
                     }
                 } else {
-                    (read.bytes.clone(), read.bytes)
+                    let complete = (!read.truncated).then(|| read.bytes.clone());
+                    (read.bytes.clone(), read.bytes, complete)
                 };
+                response_rule_body = supports_bounded_body_observation(&response_headers)
+                    .then_some(complete_rule_body)
+                    .flatten();
 
                 if need_retry_rule_body_scan {
                     if let Some(matched) = match_content_http_retry_rule(
@@ -526,17 +561,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 if cx2cc_active && retry_index == 1 && persist_error_body_preview {
                     let preview = String::from_utf8_lossy(&body_for_scan);
                     let truncated: String = preview.chars().take(500).collect();
-                    emit_gateway_log(
-                        &state.app,
-                        "warn",
-                        "CX2CC_UPSTREAM_ERROR",
-                        format!(
-                            "[CX2CC] upstream {}: {} (provider={})",
-                            status.as_u16(),
-                            truncated,
-                            provider_name_base,
-                        ),
-                    );
+                    cx2cc_upstream_body_preview = (!truncated.is_empty()).then_some(truncated);
                 }
                 // Extract a bounded body preview for diagnostics on upstream errors.
                 if persist_error_body_preview
@@ -722,6 +747,34 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
 
     configured_retry &= matches!(decision, FailoverDecision::RetrySameProvider);
 
+    let error_response_rewrite = match_response_rule(
+        ctx.upstream_error_response_rules,
+        ctx.cli_key.as_str(),
+        provider_id,
+        provider_name_base.as_str(),
+        status,
+        response_rule_body.as_deref(),
+        &response_headers,
+    );
+    if error_response_rewrite.is_some() {
+        upstream_body_preview = None;
+    }
+    if error_response_rewrite.is_none() {
+        if let Some(preview) = cx2cc_upstream_body_preview.as_deref() {
+            emit_gateway_log(
+                &state.app,
+                "warn",
+                "CX2CC_UPSTREAM_ERROR",
+                format!(
+                    "[CX2CC] upstream {}: {} (provider={})",
+                    status.as_u16(),
+                    preview,
+                    provider_name_base,
+                ),
+            );
+        }
+    }
+
     let configured_rule_reason = configured_retry
         .then(|| matched_http_retry_rule.map(retry_rule_reason))
         .flatten();
@@ -804,7 +857,10 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
     )
     .await;
 
-    *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
+    *last_outcome = Some(
+        AttemptOutcome::new(category.as_str(), error_code)
+            .with_error_response_rewrite(error_response_rewrite.clone()),
+    );
 
     match decision {
         FailoverDecision::RetrySameProvider => {
@@ -858,6 +914,57 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                     requested_model.as_deref(),
                     active_requested_model.as_deref(),
                 );
+
+            if let Some(rewrite) = error_response_rewrite.as_ref() {
+                if let Some(response) = rewrite.build_response(cli_key.as_str(), trace_id.as_str())
+                {
+                    response_fixer::push_special_setting(
+                        &special_settings,
+                        rewrite.special_setting(),
+                    );
+                    let special_settings_json =
+                        response_fixer::special_settings_json(&special_settings);
+                    let duration_ms = started.elapsed().as_millis();
+
+                    emit_request_event_and_enqueue_request_log(
+                        RequestEndArgs::from_context(RequestEndContextArgs {
+                            deps: RequestEndDeps::new(
+                                &state.app,
+                                &state.db,
+                                &state.log_tx,
+                                &state.plugin_pipeline,
+                                &state.active_requests,
+                            ),
+                            trace_id: trace_id.as_str(),
+                            cli_key: cli_key.as_str(),
+                            method: method_hint.as_str(),
+                            path: forwarded_path.as_str(),
+                            observe: ctx.observe,
+                            query: query.as_deref(),
+                            excluded_from_stats: false,
+                            duration_ms,
+                            attempts: attempts.as_slice(),
+                            special_settings_json,
+                            session_id,
+                            requested_model: requested_model_for_log,
+                            created_at_ms,
+                            created_at,
+                        })
+                        .with_completion(
+                            RequestCompletion::failure_with_ttfb(
+                                rewrite.client_status.as_u16(),
+                                Some(category.as_str()),
+                                error_code,
+                                duration_ms,
+                            ),
+                        ),
+                    )
+                    .await;
+
+                    abort_guard.disarm();
+                    return LoopControl::Return(response);
+                }
+            }
 
             if let (Some(mut response_headers), Some(mut body_bytes)) =
                 (abort_response_headers, abort_body_bytes)

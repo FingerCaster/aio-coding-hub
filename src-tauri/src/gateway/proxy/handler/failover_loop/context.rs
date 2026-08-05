@@ -5,6 +5,7 @@ use crate::gateway::events::{ClaudeModelMapping, FailoverAttempt};
 use crate::gateway::proxy::abort_guard::RequestAbortGuard;
 use crate::gateway::proxy::cx2cc::settings::Cx2ccSettings;
 use crate::gateway::proxy::gemini_oauth;
+use crate::gateway::proxy::upstream_error_response_rules::UpstreamErrorResponseRewrite;
 use crate::gateway::response_fixer;
 use crate::gateway::runtime::GatewayAppState;
 use crate::gateway::streams::StreamFinalizeCtx;
@@ -35,6 +36,7 @@ pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) cx2cc_settings: &'a Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: &'a Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(super) upstream_error_response_rules: &'a [crate::settings::UpstreamErrorResponseRule],
     pub(super) provider_health_neutral: bool,
     pub(super) provider_cooldown_secs: i64,
     pub(super) upstream_first_byte_timeout_secs: u32,
@@ -68,6 +70,7 @@ pub(super) struct CommonCtx<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) cx2cc_settings: &'a Cx2ccSettings,
     pub(super) effective_sort_mode_id: Option<i64>,
     pub(super) special_settings: &'a Arc<Mutex<Vec<serde_json::Value>>>,
+    pub(super) upstream_error_response_rules: &'a [crate::settings::UpstreamErrorResponseRule],
     pub(super) provider_health_neutral: bool,
     pub(super) provider_cooldown_secs: i64,
     pub(super) upstream_first_byte_timeout_secs: u32,
@@ -110,6 +113,7 @@ impl<'a, R: tauri::Runtime> CommonCtx<'a, R> {
             cx2cc_settings: args.cx2cc_settings,
             effective_sort_mode_id: args.effective_sort_mode_id,
             special_settings: args.special_settings,
+            upstream_error_response_rules: args.upstream_error_response_rules,
             provider_health_neutral: args.provider_health_neutral,
             provider_cooldown_secs: args.provider_cooldown_secs,
             upstream_first_byte_timeout_secs: args.upstream_first_byte_timeout_secs,
@@ -354,10 +358,11 @@ pub(super) struct LoopState<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) abort_guard: &'a mut RequestAbortGuard<R>,
 }
 
-#[derive(Clone, Copy)]
+#[derive(Clone)]
 pub(super) struct AttemptOutcome {
     pub(super) error_category: &'static str,
     pub(super) error_code: &'static str,
+    pub(super) error_response_rewrite: Option<UpstreamErrorResponseRewrite>,
 }
 
 impl AttemptOutcome {
@@ -365,7 +370,16 @@ impl AttemptOutcome {
         Self {
             error_category,
             error_code,
+            error_response_rewrite: None,
         }
+    }
+
+    pub(super) fn with_error_response_rewrite(
+        mut self,
+        rewrite: Option<UpstreamErrorResponseRewrite>,
+    ) -> Self {
+        self.error_response_rewrite = rewrite;
+        self
     }
 }
 

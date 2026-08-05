@@ -1250,6 +1250,111 @@ INSERT INTO codex_managed_profiles(
         }
     }
 
+    fn has_upstream_error_response_rule_marker(log: &request_logs::RequestLogInsert) -> bool {
+        let Some(raw) = log.special_settings_json.as_deref() else {
+            return false;
+        };
+        let Ok(value) = serde_json::from_str::<Value>(raw) else {
+            return false;
+        };
+        value.as_array().is_some_and(|settings| {
+            settings.iter().any(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("upstream_error_response_rule")
+            })
+        })
+    }
+
+    fn test_upstream_error_response_rule(
+        upstream_status: u16,
+        status_behavior: settings::UpstreamErrorStatusBehavior,
+        message_behavior: settings::UpstreamErrorMessageBehavior,
+    ) -> settings::UpstreamErrorResponseRule {
+        settings::UpstreamErrorResponseRule {
+            id: "8ca12e7b-4f19-45f7-9185-cc6fbd951c51".to_string(),
+            name: "route response rule".to_string(),
+            description: String::new(),
+            enabled: true,
+            priority: 10,
+            status_codes: vec![upstream_status],
+            keywords: Vec::new(),
+            match_mode: settings::UpstreamErrorResponseMatchMode::Any,
+            cli_keys: vec!["codex".to_string()],
+            provider_ids: Vec::new(),
+            status_behavior,
+            message_behavior,
+        }
+    }
+
+    struct CodexErrorResponseRuleObservation {
+        status: StatusCode,
+        response: Value,
+        log: request_logs::RequestLogInsert,
+        provider_id: i64,
+    }
+
+    async fn run_codex_error_response_rule_route(
+        upstream_status: StatusCode,
+        upstream_body: &'static str,
+        rule: settings::UpstreamErrorResponseRule,
+    ) -> CodexErrorResponseRuleObservation {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_error_response_rules = vec![rule];
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-route-error-response-rule.sqlite"),
+        )
+        .expect("init test db");
+        let (upstream_base_url, call_count, upstream_task) =
+            spawn_counting_status_upstream(upstream_status, upstream_body).await;
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Response Rule Stub", upstream_base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-response-rule","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        let status = response.status();
+        let response = serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("response JSON");
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 1);
+        upstream_task.abort();
+
+        CodexErrorResponseRuleObservation {
+            status,
+            response,
+            log,
+            provider_id,
+        }
+    }
+
     fn assert_managed_codex_matched_route_log(
         log: &request_logs::RequestLogInsert,
         canonical_model: &str,
@@ -5010,6 +5115,13 @@ INSERT INTO codex_managed_profiles(
         app_settings.failover_max_attempts_per_provider = 5;
         app_settings.failover_max_providers_to_try = 2;
         app_settings.provider_cooldown_seconds = 30;
+        app_settings.upstream_error_response_rules = vec![test_upstream_error_response_rule(
+            429,
+            settings::UpstreamErrorStatusBehavior::Override { status_code: 503 },
+            settings::UpstreamErrorMessageBehavior::Override {
+                message: "must not leak after success".to_string(),
+            },
+        )];
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -5056,6 +5168,7 @@ INSERT INTO codex_managed_profiles(
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(200));
         assert_eq!(log.error_code, None);
+        assert!(!has_upstream_error_response_rule_marker(&log));
 
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
@@ -5090,6 +5203,92 @@ INSERT INTO codex_managed_profiles(
 
         quota_task.abort();
         success_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upstream_error_response_rule_rewrites_direct_abort_after_original_attempt_audit() {
+        let observation = run_codex_error_response_rule_route(
+            StatusCode::BAD_REQUEST,
+            r#"{"error":{"message":"upstream request detail"}}"#,
+            test_upstream_error_response_rule(
+                400,
+                settings::UpstreamErrorStatusBehavior::Override { status_code: 422 },
+                settings::UpstreamErrorMessageBehavior::Passthrough,
+            ),
+        )
+        .await;
+
+        assert_eq!(observation.status, StatusCode::UNPROCESSABLE_ENTITY);
+        assert_eq!(
+            observation.response["error"]["message"].as_str(),
+            Some("upstream request detail")
+        );
+        assert_eq!(observation.log.status, Some(422));
+        let attempts: Value =
+            serde_json::from_str(&observation.log.attempts_json).expect("attempts json");
+        assert_eq!(attempts[0]["status"].as_u64(), Some(400));
+        assert_eq!(
+            attempts[0]["provider_id"].as_i64(),
+            Some(observation.provider_id)
+        );
+        assert!(attempts[0]["reason"]
+            .as_str()
+            .is_some_and(|reason| !reason.contains("upstream request detail")));
+
+        let marker = parse_special_settings(&observation.log)
+            .into_iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("upstream_error_response_rule")
+            })
+            .expect("response rule marker");
+        assert_eq!(marker["providerId"].as_i64(), Some(observation.provider_id));
+        assert_eq!(marker["upstreamStatus"].as_u64(), Some(400));
+        assert_eq!(marker["clientStatus"].as_u64(), Some(422));
+        assert_eq!(marker["messageMode"].as_str(), Some("passthrough"));
+        let special_settings_json = observation
+            .log
+            .special_settings_json
+            .as_deref()
+            .expect("response rule special settings");
+        assert!(!special_settings_json.contains("upstream request detail"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn upstream_error_response_rule_rewrites_last_all_failed_attempt() {
+        let observation = run_codex_error_response_rule_route(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            r#"{"error":{"message":"raw provider failure"}}"#,
+            test_upstream_error_response_rule(
+                500,
+                settings::UpstreamErrorStatusBehavior::Override { status_code: 503 },
+                settings::UpstreamErrorMessageBehavior::Override {
+                    message: "service temporarily unavailable".to_string(),
+                },
+            ),
+        )
+        .await;
+
+        assert_eq!(observation.status, StatusCode::SERVICE_UNAVAILABLE);
+        assert_eq!(
+            observation.response["error"]["message"].as_str(),
+            Some("service temporarily unavailable")
+        );
+        assert_eq!(observation.log.status, Some(503));
+        let attempts: Value =
+            serde_json::from_str(&observation.log.attempts_json).expect("attempts json");
+        assert_eq!(attempts[0]["status"].as_u64(), Some(500));
+        assert_eq!(
+            attempts[0]["provider_id"].as_i64(),
+            Some(observation.provider_id)
+        );
+        assert!(has_upstream_error_response_rule_marker(&observation.log));
+        let special_settings_json = observation
+            .log
+            .special_settings_json
+            .as_deref()
+            .expect("response rule special settings");
+        assert!(!special_settings_json.contains("service temporarily unavailable"));
+        assert!(!special_settings_json.contains("raw provider failure"));
     }
 
     #[tokio::test(flavor = "current_thread")]
@@ -8426,6 +8625,13 @@ INSERT INTO codex_managed_profiles(
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 2;
         app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_error_response_rules = vec![test_upstream_error_response_rule(
+            500,
+            settings::UpstreamErrorStatusBehavior::Override { status_code: 503 },
+            settings::UpstreamErrorMessageBehavior::Override {
+                message: "must not survive a later different failure".to_string(),
+            },
+        )];
         disable_upstream_retry_policy(&mut app_settings);
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
@@ -8442,7 +8648,7 @@ INSERT INTO codex_managed_profiles(
         let (first_url, first_calls, first_task) =
             spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
         let (second_url, second_calls, second_task) =
-            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, failure_body).await;
+            spawn_counting_status_upstream(StatusCode::BAD_GATEWAY, failure_body).await;
         let success_body = r#"{"id":"must-not-run","object":"chat.completion","choices":[]}"#;
         let (third_url, third_calls, third_task) =
             spawn_counting_status_upstream(StatusCode::OK, success_body).await;
@@ -8464,6 +8670,8 @@ INSERT INTO codex_managed_profiles(
         let response = router.oneshot(request).await.expect("route response");
         assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
         let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert!(!has_upstream_error_response_rule_marker(&log));
         let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
         let attempts = attempts.as_array().expect("attempt array");
         assert_eq!(attempts.len(), 2);

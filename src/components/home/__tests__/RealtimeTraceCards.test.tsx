@@ -1,7 +1,8 @@
 import { render, screen, within } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, it, vi } from "vitest";
 import type { ProjectedRealtimeCard } from "../../../services/gateway/requestActivityProjection";
-import { RealtimeTraceCards } from "../RealtimeTraceCards";
+import { RealtimeTraceCards, UpstreamErrorResponseRuleBadge } from "../RealtimeTraceCards";
 
 function traceBase(overrides: Partial<any> = {}) {
   return {
@@ -42,6 +43,31 @@ function cards(traces: any[]): ProjectedRealtimeCard[] {
 }
 
 describe("components/home/RealtimeTraceCards", () => {
+  it("shows a response-rule badge and hides malformed markers", async () => {
+    const user = userEvent.setup();
+    const { rerender } = render(
+      <UpstreamErrorResponseRuleBadge
+        showCustomTooltip
+        specialSettingsJson={JSON.stringify({
+          type: "upstream_error_response_rule",
+          ruleId: "8ca12e7b-4f19-45f7-9185-cc6fbd951c51",
+          ruleName: "限额响应",
+          providerId: 7,
+          providerName: "中转站",
+          upstreamStatus: 429,
+          clientStatus: 503,
+          statusMode: "override",
+          messageMode: "passthrough",
+        })}
+      />
+    );
+    const badge = screen.getByText("响应规则 · 限额响应");
+    await user.hover(badge);
+    expect(await screen.findByRole("tooltip")).toHaveTextContent("429 → 503");
+
+    rerender(<UpstreamErrorResponseRuleBadge showCustomTooltip specialSettingsJson="bad-json" />);
+    expect(screen.queryByText(/响应规则/u)).not.toBeInTheDocument();
+  });
   it("does not start its own timer when cards list is empty", () => {
     const setIntervalSpy = vi.spyOn(window, "setInterval");
     render(

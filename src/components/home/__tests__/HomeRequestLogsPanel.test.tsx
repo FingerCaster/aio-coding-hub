@@ -113,6 +113,48 @@ describe("components/home/HomeRequestLogsPanel", () => {
     expect(screen.getAllByText("Codex 系统请求")).toHaveLength(1);
   });
 
+  it("renders validated upstream response rule badges", () => {
+    render(
+      <MemoryRouter>
+        <HomeRequestLogsPanel
+          displayOptions={{ customTooltip: false }}
+          compactModeOverride={false}
+          traces={[]}
+          requestLogs={makeRequestLogs([
+            {
+              id: 17,
+              trace_id: "response-rule-hit",
+              cli_key: "claude",
+              requested_model: "claude-rule-marker",
+              special_settings_json: JSON.stringify({
+                type: "upstream_error_response_rule",
+                ruleId: "8ca12e7b-4f19-45f7-9185-cc6fbd951c51",
+                ruleName: "限额响应",
+                providerId: 7,
+                providerName: "中转站",
+                upstreamStatus: 429,
+                clientStatus: 503,
+                statusMode: "override",
+                messageMode: "passthrough",
+              }),
+            },
+          ])}
+          requestLogsLoading={false}
+          requestLogsRefreshing={false}
+          requestLogsAvailable={true}
+          onRefreshRequestLogs={vi.fn()}
+          selectedLogId={null}
+          onSelectLogId={vi.fn()}
+        />
+      </MemoryRouter>
+    );
+
+    expect(screen.getByText("响应规则 · 限额响应").parentElement).toHaveAttribute(
+      "title",
+      expect.stringContaining("状态码：429 → 503")
+    );
+  });
+
   it("renders traces + logs and supports refresh/select", () => {
     useCliSessionsFolderLookupByIdsQueryMock.mockReturnValue({
       data: [

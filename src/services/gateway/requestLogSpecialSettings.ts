@@ -5,6 +5,17 @@ export type ParsedRequestLogSpecialSetting = {
   reason?: string;
 } & Record<string, unknown>;
 
+export type UpstreamErrorResponseRuleMarker = {
+  type: "upstream_error_response_rule";
+  ruleId: string;
+  ruleName: string;
+  providerId: number;
+  providerName: string;
+  upstreamStatus: number;
+  clientStatus: number;
+  statusMode: "passthrough" | "override";
+  messageMode: "passthrough" | "override";
+};
 export type CodexReasoningEffort =
   | "none"
   | "minimal"
@@ -118,6 +129,72 @@ function parsedSettingNullableBoolean(value: unknown): boolean | null {
   return typeof value === "boolean" ? value : null;
 }
 
+function normalizeUpstreamErrorResponseRuleMarker(
+  setting: ParsedRequestLogSpecialSetting
+): UpstreamErrorResponseRuleMarker | null {
+  if (setting.type !== "upstream_error_response_rule") return null;
+  const ruleId = parsedSettingString(setting.ruleId).trim();
+  const ruleName = parsedSettingString(setting.ruleName).trim();
+  const providerId = parsedSettingNumber(setting.providerId);
+  const providerName = parsedSettingString(setting.providerName).trim();
+  const upstreamStatus = parsedSettingNumber(setting.upstreamStatus);
+  const clientStatus = parsedSettingNumber(setting.clientStatus);
+  const statusMode = parsedSettingString(setting.statusMode);
+  const messageMode = parsedSettingString(setting.messageMode);
+
+  if (
+    !ruleId ||
+    !ruleName ||
+    !Number.isSafeInteger(providerId) ||
+    providerId <= 0 ||
+    !providerName ||
+    !Number.isSafeInteger(upstreamStatus) ||
+    upstreamStatus < 400 ||
+    upstreamStatus > 599 ||
+    !Number.isSafeInteger(clientStatus) ||
+    clientStatus < 400 ||
+    clientStatus > 599 ||
+    (statusMode !== "passthrough" && statusMode !== "override") ||
+    (messageMode !== "passthrough" && messageMode !== "override")
+  ) {
+    return null;
+  }
+
+  return {
+    type: "upstream_error_response_rule",
+    ruleId,
+    ruleName,
+    providerId,
+    providerName,
+    upstreamStatus,
+    clientStatus,
+    statusMode,
+    messageMode,
+  };
+}
+
+export function resolveUpstreamErrorResponseRuleMarker(
+  specialSettingsJson: string | null | undefined
+): UpstreamErrorResponseRuleMarker | null {
+  const settings = parseRequestLogSpecialSettings(specialSettingsJson);
+  for (let index = settings.length - 1; index >= 0; index -= 1) {
+    const marker = normalizeUpstreamErrorResponseRuleMarker(settings[index]!);
+    if (marker) return marker;
+  }
+  return null;
+}
+
+export function formatUpstreamErrorResponseRuleTooltip(
+  marker: UpstreamErrorResponseRuleMarker
+): string {
+  return [
+    `响应规则：${marker.ruleName}`,
+    `供应商：${marker.providerName} (#${String(marker.providerId)})`,
+    `状态码：${String(marker.upstreamStatus)} → ${String(marker.clientStatus)}`,
+    `状态行为：${marker.statusMode === "override" ? "自定义" : "透传"}`,
+    `信息行为：${marker.messageMode === "override" ? "自定义" : "提取并透传"}`,
+  ].join("\n");
+}
 function normalizeCodexReasoningEffort(value: unknown): KnownCodexReasoningEffort | null {
   const effort = parsedSettingString(value).trim().toLowerCase();
   return CODEX_REASONING_EFFORTS.has(effort as KnownCodexReasoningEffort)

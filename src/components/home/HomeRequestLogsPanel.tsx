@@ -55,7 +55,7 @@ import {
 } from "./requestLogSpecialSettings";
 import { getErrorCodeLabel } from "./requestLogErrorLabels";
 import { Clock, CheckCircle2, XCircle, Server, RefreshCw, ArrowUpRight } from "lucide-react";
-import { RealtimeTraceCards } from "./RealtimeTraceCards";
+import { RealtimeTraceCards, UpstreamErrorResponseRuleBadge } from "./RealtimeTraceCards";
 import { CliBrandIcon } from "./CliBrandIcon";
 import {
   buildPreviewRequestLogs,
@@ -266,6 +266,10 @@ const RequestLogCard = memo(function RequestLogCard({
                 </span>
               </span>
 
+              <UpstreamErrorResponseRuleBadge
+                specialSettingsJson={log.special_settings_json}
+                showCustomTooltip={showCustomTooltip}
+              />
               {isCodexSystemRequest ? (
                 <span className="shrink-0 whitespace-nowrap rounded-md border border-border/60 bg-muted px-2 py-0.5 text-[11px] font-semibold text-foreground">
                   Codex 系统请求

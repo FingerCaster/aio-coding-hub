@@ -212,6 +212,66 @@ impl<'de> Deserialize<'de> for UpstreamRetryPolicy {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum UpstreamErrorResponseMatchMode {
+    #[default]
+    Any,
+    All,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case", tag = "mode")]
+pub enum UpstreamErrorStatusBehavior {
+    #[default]
+    Passthrough,
+    Override {
+        status_code: u16,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(rename_all = "snake_case", tag = "mode")]
+pub enum UpstreamErrorMessageBehavior {
+    #[default]
+    Passthrough,
+    Override {
+        message: String,
+    },
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+pub struct UpstreamErrorResponseRule {
+    pub id: String,
+    pub name: String,
+    pub description: String,
+    pub enabled: bool,
+    pub priority: u32,
+    pub status_codes: Vec<u16>,
+    pub keywords: Vec<String>,
+    pub match_mode: UpstreamErrorResponseMatchMode,
+    pub cli_keys: Vec<String>,
+    pub provider_ids: Vec<i64>,
+    pub status_behavior: UpstreamErrorStatusBehavior,
+    pub message_behavior: UpstreamErrorMessageBehavior,
+}
+
+fn deserialize_upstream_error_response_rules_lossy<'de, D>(
+    deserializer: D,
+) -> Result<Vec<UpstreamErrorResponseRule>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    let Some(entries) = value.as_array() else {
+        return Ok(Vec::new());
+    };
+
+    Ok(entries
+        .iter()
+        .filter_map(|entry| serde_json::from_value(entry.clone()).ok())
+        .collect())
+}
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, specta::Type, PartialEq, Eq)]
 #[serde(default)]
 pub struct WslTargetCli {
@@ -291,6 +351,11 @@ pub struct AppSettings {
     pub failover_max_providers_to_try: u32,
     #[serde(default)]
     pub upstream_retry_policy: UpstreamRetryPolicy,
+    #[serde(
+        default,
+        deserialize_with = "deserialize_upstream_error_response_rules_lossy"
+    )]
+    pub upstream_error_response_rules: Vec<UpstreamErrorResponseRule>,
     pub circuit_breaker_failure_threshold: u32,
     pub circuit_breaker_open_duration_minutes: u32,
     // Circuit breaker notice toggle (default disabled).
@@ -381,6 +446,7 @@ impl Default for AppSettings {
             failover_max_attempts_per_provider: DEFAULT_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER,
             failover_max_providers_to_try: DEFAULT_FAILOVER_MAX_PROVIDERS_TO_TRY,
             upstream_retry_policy: UpstreamRetryPolicy::default(),
+            upstream_error_response_rules: Vec::new(),
             circuit_breaker_failure_threshold: DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
             circuit_breaker_open_duration_minutes: DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
             enable_circuit_breaker_notice: DEFAULT_ENABLE_CIRCUIT_BREAKER_NOTICE,

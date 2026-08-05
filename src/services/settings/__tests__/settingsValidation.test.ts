@@ -97,4 +97,27 @@ describe("services/settings/settingsValidation", () => {
     policy.http_rules[0].description = "unsafe\nline";
     expect(validateSettingsSetInput({ upstreamRetryPolicy: policy })).toContain("控制字符");
   });
+
+  it("validates upstream error response rules before settings IPC", () => {
+    const rule = {
+      id: "8ca12e7b-4f19-45f7-9185-cc6fbd951c51",
+      name: "限额响应",
+      description: "",
+      enabled: true,
+      priority: 10,
+      status_codes: [429],
+      keywords: ["quota"],
+      match_mode: "all" as const,
+      cli_keys: ["codex"],
+      provider_ids: [7],
+      status_behavior: { mode: "override" as const, status_code: 503 },
+      message_behavior: { mode: "passthrough" as const },
+    };
+    expect(validateSettingsSetInput({ upstreamErrorResponseRules: [rule] })).toBeNull();
+    expect(
+      validateSettingsSetInput({
+        upstreamErrorResponseRules: [{ ...rule, keywords: [], status_codes: [] }],
+      })
+    ).toContain("至少需要");
+  });
 });

@@ -4284,6 +4284,7 @@ export type SettingsUpdate = {
   failoverMaxAttemptsPerProvider: number;
   failoverMaxProvidersToTry: number;
   upstreamRetryPolicy: UpstreamRetryPolicy | null;
+  upstreamErrorResponseRules: UpstreamErrorResponseRule[] | null;
   circuitBreakerFailureThreshold: number | null;
   circuitBreakerOpenDurationMinutes: number | null;
   updateReleasesUrl: string | null;
@@ -4346,6 +4347,7 @@ export type SettingsView = {
   failover_max_attempts_per_provider: number;
   failover_max_providers_to_try: number;
   upstream_retry_policy: UpstreamRetryPolicy;
+  upstream_error_response_rules: UpstreamErrorResponseRule[];
   circuit_breaker_failure_threshold: number;
   circuit_breaker_open_duration_minutes: number;
   enable_circuit_breaker_notice: boolean;
@@ -4422,6 +4424,27 @@ export type UiContribution = {
   schema: HostRenderedSchema;
   when?: string | null;
 };
+export type UpstreamErrorMessageBehavior =
+  | { mode: "passthrough" }
+  | { mode: "override"; message: string };
+export type UpstreamErrorResponseMatchMode = "any" | "all";
+export type UpstreamErrorResponseRule = {
+  id: string;
+  name: string;
+  description: string;
+  enabled: boolean;
+  priority: number;
+  status_codes: number[];
+  keywords: string[];
+  match_mode: UpstreamErrorResponseMatchMode;
+  cli_keys: string[];
+  provider_ids: number[];
+  status_behavior: UpstreamErrorStatusBehavior;
+  message_behavior: UpstreamErrorMessageBehavior;
+};
+export type UpstreamErrorStatusBehavior =
+  | { mode: "passthrough" }
+  | { mode: "override"; status_code: number };
 export type UpstreamHttpRetryRule = {
   enabled: boolean;
   status_code: number;

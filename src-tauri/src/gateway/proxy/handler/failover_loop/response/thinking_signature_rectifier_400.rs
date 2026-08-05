@@ -1,8 +1,12 @@
 //! Usage: Handle Claude thinking rectifiers (signature/budget) 400 path inside `failover_loop::run`.
 
 use super::*;
+use crate::gateway::proxy::http_util::gunzip_bytes_with_limit;
 use crate::gateway::proxy::provider_router;
 use crate::gateway::proxy::upstream_client_error_rules;
+use crate::gateway::proxy::upstream_error_response_rules::{
+    match_response_rule, supports_bounded_body_observation,
+};
 use crate::gateway::thinking_budget_rectifier;
 
 pub(super) struct HandleThinkingRectifiers400Input<'a, R: tauri::Runtime = tauri::Wry> {
@@ -164,19 +168,32 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                 }
             };
 
-        let body_for_scan = if gzip_encoded {
-            gunzip_bytes_prefix(
+        let (body_for_scan, mut response_rule_body) = if gzip_encoded {
+            let decoded = gunzip_bytes_prefix(
                 buffered_body.bytes.as_ref(),
                 super::upstream_error::error_body_scan_limit_usize(),
             )
             .filter(|decoded| {
                 !buffered_body.truncated
                     || decoded.len() == super::upstream_error::error_body_scan_limit_usize()
-            })
-            .unwrap_or_default()
+            });
+            let complete = if buffered_body.truncated {
+                None
+            } else {
+                gunzip_bytes_with_limit(
+                    buffered_body.bytes.as_ref(),
+                    super::upstream_error::error_body_scan_limit_usize(),
+                )
+                .ok()
+            };
+            (decoded.unwrap_or_default(), complete)
         } else {
-            buffered_body.bytes.clone()
+            let complete = (!buffered_body.truncated).then(|| buffered_body.bytes.clone());
+            (buffered_body.bytes.clone(), complete)
         };
+        if !supports_bounded_body_observation(&response_headers) {
+            response_rule_body = None;
+        }
         let upstream_body_text = String::from_utf8_lossy(body_for_scan.as_ref()).to_string();
         let signature_trigger = enable_thinking_signature_rectifier
             .then(|| thinking_signature_rectifier::detect_trigger(&upstream_body_text))
@@ -553,7 +570,19 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
         )
         .await;
 
-        *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
+        let error_response_rewrite = match_response_rule(
+            ctx.upstream_error_response_rules,
+            cli_key.as_str(),
+            provider_id,
+            provider_name_base.as_str(),
+            status,
+            response_rule_body.as_deref(),
+            &response_headers,
+        );
+        *last_outcome = Some(
+            AttemptOutcome::new(category.as_str(), error_code)
+                .with_error_response_rewrite(error_response_rewrite.clone()),
+        );
 
         match decision {
             FailoverDecision::RetrySameProvider => {
@@ -587,6 +616,57 @@ pub(super) async fn handle_thinking_rectifiers_400<R: tauri::Runtime>(
                     circuit_snapshot,
                     Some(error_code),
                 );
+                if let Some(rewrite) = error_response_rewrite.as_ref() {
+                    if let Some(response) =
+                        rewrite.build_response(cli_key.as_str(), trace_id.as_str())
+                    {
+                        response_fixer::push_special_setting(
+                            &special_settings,
+                            rewrite.special_setting(),
+                        );
+                        let special_settings_json =
+                            response_fixer::special_settings_json(&special_settings);
+                        let duration_ms = started.elapsed().as_millis();
+
+                        emit_request_event_and_enqueue_request_log(
+                            RequestEndArgs::from_context(RequestEndContextArgs {
+                                deps: RequestEndDeps::new(
+                                    &state.app,
+                                    &state.db,
+                                    &state.log_tx,
+                                    &state.plugin_pipeline,
+                                    &state.active_requests,
+                                ),
+                                trace_id: trace_id.as_str(),
+                                cli_key: cli_key.as_str(),
+                                method: method_hint.as_str(),
+                                path: forwarded_path.as_str(),
+                                observe: ctx.observe,
+                                query: query.as_deref(),
+                                excluded_from_stats: false,
+                                duration_ms,
+                                attempts: attempts.as_slice(),
+                                special_settings_json,
+                                session_id,
+                                requested_model,
+                                created_at_ms,
+                                created_at,
+                            })
+                            .with_completion(
+                                RequestCompletion::failure_with_ttfb(
+                                    rewrite.client_status.as_u16(),
+                                    Some(category.as_str()),
+                                    error_code,
+                                    duration_ms,
+                                ),
+                            ),
+                        )
+                        .await;
+
+                        abort_guard.disarm();
+                        return LoopControl::Return(response);
+                    }
+                }
                 strip_hop_headers(&mut response_headers);
                 let mut body_to_return = buffered_body.bytes;
 

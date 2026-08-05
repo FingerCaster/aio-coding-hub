@@ -15,6 +15,19 @@ import {
   MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS,
   validateUpstreamRetryPolicy as validateGatewayUpstreamRetryPolicy,
 } from "../gateway/upstreamRetryPolicy";
+import {
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORDS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_MESSAGE_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_NAME_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_PRIORITY,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_PROVIDER_IDS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_STATUS_CODES,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULES,
+  type UpstreamErrorResponseRule,
+  validateUpstreamErrorResponseRules,
+} from "../gateway/upstreamErrorResponseRules";
 
 export const MAX_UPDATE_RELEASES_URL_LEN = 2048;
 export const MAX_UPSTREAM_PROXY_URL_LEN = 2048;
@@ -88,6 +101,15 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS,
   MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES,
   MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULES,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_NAME_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_STATUS_CODES,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORDS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_PROVIDER_IDS,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_PRIORITY,
+  MAX_UPSTREAM_ERROR_RESPONSE_RULE_MESSAGE_CHARS,
   MIN_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   MAX_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
   MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
@@ -382,6 +404,7 @@ export type SettingsSetValidationInput = {
   failoverMaxAttemptsPerProvider?: number | null;
   failoverMaxProvidersToTry?: number | null;
   upstreamRetryPolicy?: UpstreamRetryPolicy | null;
+  upstreamErrorResponseRules?: UpstreamErrorResponseRule[] | null;
   circuitBreakerFailureThreshold?: number | null;
   circuitBreakerOpenDurationMinutes?: number | null;
   gatewayListenMode?: GatewayListenMode | null;
@@ -492,6 +515,10 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
 
   const upstreamRetryPolicyMessage = validateUpstreamRetryPolicy(input.upstreamRetryPolicy);
   if (upstreamRetryPolicyMessage) return upstreamRetryPolicyMessage;
+  const upstreamErrorResponseRulesMessage = validateUpstreamErrorResponseRules(
+    input.upstreamErrorResponseRules
+  );
+  if (upstreamErrorResponseRulesMessage) return upstreamErrorResponseRulesMessage;
 
   if (input.gatewayListenMode === "custom" && input.gatewayCustomListenAddress != null) {
     const message = validateGatewayCustomListenAddress(input.gatewayCustomListenAddress);

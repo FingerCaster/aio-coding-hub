@@ -96,7 +96,10 @@ fn finalize_current_probe<R: tauri::Runtime>(
         return;
     }
 
-    let trigger_error_code = loop_state.last_outcome.map(|outcome| outcome.error_code);
+    let trigger_error_code = loop_state
+        .last_outcome
+        .as_ref()
+        .map(|outcome| outcome.error_code);
     finalize_probe_failure_and_emit(
         &ctx.state.app,
         input.trace_id.as_str(),

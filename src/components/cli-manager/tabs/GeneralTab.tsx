@@ -27,6 +27,7 @@ import {
 } from "../../../services/gateway/upstreamRetryPolicy";
 import { RetryPolicyFields } from "../../gateway/RetryPolicyFields";
 import { cn } from "../../../utils/cn";
+import { UpstreamErrorResponseRulesCard } from "../UpstreamErrorResponseRulesCard";
 
 export type CliManagerAvailability = "checking" | "available" | "unavailable";
 
@@ -796,6 +797,15 @@ export function CliManagerGeneralTab({
                 </div>
               </div>
             </CollapsibleSettingsCard>
+            {appSettings ? (
+              <UpstreamErrorResponseRulesCard
+                rules={appSettings.upstream_error_response_rules}
+                disabled={commonSettingsDisabled}
+                onPersist={(rules) =>
+                  onPersistCommonSettings({ upstream_error_response_rules: rules })
+                }
+              />
+            ) : null}
           </div>
         )}
       </Card>

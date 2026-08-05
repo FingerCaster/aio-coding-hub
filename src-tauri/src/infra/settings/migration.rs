@@ -1,7 +1,10 @@
 //! Usage: Schema migrations and input sanitization for settings upgrades.
 
 use super::defaults::*;
-use super::types::{AppSettings, CodexHomeMode, UpstreamRetryPolicy};
+use super::types::{
+    AppSettings, CodexHomeMode, UpstreamErrorMessageBehavior, UpstreamErrorResponseRule,
+    UpstreamErrorStatusBehavior, UpstreamRetryPolicy,
+};
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
 
@@ -300,7 +303,229 @@ pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool 
 
     *policy != original
 }
+fn is_canonical_uuid_v4(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    if bytes.len() != 36
+        || bytes[8] != b'-'
+        || bytes[13] != b'-'
+        || bytes[18] != b'-'
+        || bytes[23] != b'-'
+        || bytes[14] != b'4'
+        || !matches!(bytes[19], b'8' | b'9' | b'a' | b'b')
+    {
+        return false;
+    }
 
+    bytes.iter().enumerate().all(|(index, byte)| {
+        matches!(index, 8 | 13 | 18 | 23) || byte.is_ascii_digit() || matches!(*byte, b'a'..=b'f')
+    })
+}
+
+fn has_disallowed_control(value: &str, allow_multiline: bool) -> bool {
+    value.chars().any(|character| {
+        character.is_control() && !(allow_multiline && matches!(character, '\n' | '\t'))
+    })
+}
+
+fn normalize_error_response_rule_for_write(
+    rule_index: usize,
+    rule: &mut UpstreamErrorResponseRule,
+) -> AppResult<()> {
+    if !is_canonical_uuid_v4(&rule.id) {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].id must be a canonical UUID v4"
+        )
+        .into());
+    }
+
+    rule.name = rule.name.trim().to_string();
+    if rule.name.is_empty()
+        || rule.name.chars().count() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_NAME_CHARS
+        || has_disallowed_control(&rule.name, false)
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].name must be non-empty, contain no control characters, and be <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_NAME_CHARS} characters"
+        )
+        .into());
+    }
+
+    rule.description = rule.description.trim().to_string();
+    if rule.description.chars().count() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS
+        || has_disallowed_control(&rule.description, false)
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].description must contain no control characters and be <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS} characters"
+        )
+        .into());
+    }
+    if rule.priority > MAX_UPSTREAM_ERROR_RESPONSE_RULE_PRIORITY {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].priority must be <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_PRIORITY}"
+        )
+        .into());
+    }
+
+    if rule.status_codes.len() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_STATUS_CODES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].status_codes must contain <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_STATUS_CODES} entries"
+        )
+        .into());
+    }
+    let mut seen_statuses = HashSet::new();
+    for status in &rule.status_codes {
+        if !(400..=599).contains(status) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].status_codes must be within [400, 599]"
+            )
+            .into());
+        }
+    }
+    rule.status_codes
+        .retain(|status| seen_statuses.insert(*status));
+
+    if rule.keywords.len() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORDS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].keywords must contain <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORDS} entries"
+        )
+        .into());
+    }
+    let mut keywords = Vec::with_capacity(rule.keywords.len());
+    let mut seen_keywords = HashSet::new();
+    for (keyword_index, keyword) in rule.keywords.iter().enumerate() {
+        let trimmed = keyword.trim();
+        if trimmed.is_empty()
+            || trimmed.chars().count() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS
+            || has_disallowed_control(trimmed, false)
+        {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].keywords[{keyword_index}] must be non-empty, contain no control characters, and be <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS} characters"
+            )
+            .into());
+        }
+        let normalized = trimmed.to_lowercase();
+        if normalized.chars().count() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].keywords[{keyword_index}] exceeds {MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS} characters after normalization"
+            )
+            .into());
+        }
+        if seen_keywords.insert(normalized.clone()) {
+            keywords.push(normalized);
+        }
+    }
+    rule.keywords = keywords;
+    if rule.status_codes.is_empty() && rule.keywords.is_empty() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}] must include at least one status code or keyword"
+        )
+        .into());
+    }
+
+    if rule.cli_keys.len() > crate::shared::cli_key::SUPPORTED_CLI_KEYS.len() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].cli_keys contains too many entries"
+        )
+        .into());
+    }
+    let mut seen_cli_keys = HashSet::new();
+    for cli_key in &rule.cli_keys {
+        if !crate::shared::cli_key::is_supported_cli_key(cli_key) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].cli_keys contains an unknown CLI"
+            )
+            .into());
+        }
+    }
+    rule.cli_keys
+        .retain(|cli_key| seen_cli_keys.insert(cli_key.clone()));
+
+    if rule.provider_ids.len() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_PROVIDER_IDS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].provider_ids must contain <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_PROVIDER_IDS} entries"
+        )
+        .into());
+    }
+    if rule
+        .provider_ids
+        .iter()
+        .any(|provider_id| *provider_id <= 0)
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].provider_ids must contain positive IDs"
+        )
+        .into());
+    }
+    let mut seen_provider_ids = HashSet::new();
+    rule.provider_ids
+        .retain(|provider_id| seen_provider_ids.insert(*provider_id));
+
+    if let UpstreamErrorStatusBehavior::Override { status_code } = &rule.status_behavior {
+        if !(400..=599).contains(status_code) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].status_behavior.status_code must be within [400, 599]"
+            )
+            .into());
+        }
+    }
+    if let UpstreamErrorMessageBehavior::Override { message } = &mut rule.message_behavior {
+        *message = message.replace("\r\n", "\n").replace('\r', "\n");
+        *message = message.trim().to_string();
+        if message.is_empty()
+            || message.chars().count() > MAX_UPSTREAM_ERROR_RESPONSE_RULE_MESSAGE_CHARS
+            || has_disallowed_control(message, true)
+        {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].message_behavior.message must be non-empty and <= {MAX_UPSTREAM_ERROR_RESPONSE_RULE_MESSAGE_CHARS} characters"
+            )
+            .into());
+        }
+    }
+
+    Ok(())
+}
+
+pub fn normalize_upstream_error_response_rules_for_write(
+    rules: &mut Vec<UpstreamErrorResponseRule>,
+) -> AppResult<bool> {
+    let original = rules.clone();
+    if rules.len() > MAX_UPSTREAM_ERROR_RESPONSE_RULES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_error_response_rules must contain <= {MAX_UPSTREAM_ERROR_RESPONSE_RULES} entries"
+        )
+        .into());
+    }
+
+    let mut seen_ids = HashSet::new();
+    for (rule_index, rule) in rules.iter_mut().enumerate() {
+        normalize_error_response_rule_for_write(rule_index, rule)?;
+        if !seen_ids.insert(rule.id.clone()) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_error_response_rules[{rule_index}].id must be unique"
+            )
+            .into());
+        }
+    }
+    Ok(*rules != original)
+}
+
+pub fn sanitize_upstream_error_response_rules(rules: &mut Vec<UpstreamErrorResponseRule>) -> bool {
+    let original = rules.clone();
+    let mut sanitized = Vec::new();
+    let mut seen_ids = HashSet::new();
+    for mut rule in std::mem::take(rules)
+        .into_iter()
+        .take(MAX_UPSTREAM_ERROR_RESPONSE_RULES)
+    {
+        let rule_index = sanitized.len();
+        if normalize_error_response_rule_for_write(rule_index, &mut rule).is_ok()
+            && seen_ids.insert(rule.id.clone())
+        {
+            sanitized.push(rule);
+        }
+    }
+    *rules = sanitized;
+    *rules != original
+}
 pub(super) fn sanitize_circuit_breaker_settings(settings: &mut AppSettings) -> bool {
     let mut changed = false;
 
@@ -956,6 +1181,17 @@ fn migrate_add_provider_failback(settings: &mut AppSettings, schema_version_pres
     )
 }
 
+fn migrate_add_upstream_error_response_rules(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_UPSTREAM_ERROR_RESPONSE_RULES,
+    )
+}
+
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -995,6 +1231,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_image_gen_storage_roots,
     migrate_add_upstream_http_retry_rules,
     migrate_add_provider_failback,
+    migrate_add_upstream_error_response_rules,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1015,6 +1252,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_request_log_retention_days(settings);
     repaired |= sanitize_failover_settings(settings);
     repaired |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
+    repaired |= sanitize_upstream_error_response_rules(&mut settings.upstream_error_response_rules);
     repaired |= sanitize_circuit_breaker_settings(settings);
     repaired |= sanitize_provider_cooldown_seconds(settings);
     repaired |= sanitize_natural_probe_max_wait_seconds(settings);
@@ -1033,6 +1271,69 @@ pub(super) fn repair_settings(
 mod tests {
     use super::*;
     use crate::infra::settings::types::default_cli_priority_order;
+
+    fn upstream_error_response_rule() -> UpstreamErrorResponseRule {
+        UpstreamErrorResponseRule {
+            id: "8ca12e7b-4f19-45f7-9185-cc6fbd951c51".to_string(),
+            name: " quota ".to_string(),
+            description: " test ".to_string(),
+            enabled: true,
+            priority: 10,
+            status_codes: vec![429, 429],
+            keywords: vec![" Quota ".to_string(), "quota".to_string()],
+            match_mode: super::super::types::UpstreamErrorResponseMatchMode::All,
+            cli_keys: vec!["codex".to_string(), "codex".to_string()],
+            provider_ids: vec![7, 7],
+            status_behavior: UpstreamErrorStatusBehavior::Override { status_code: 503 },
+            message_behavior: UpstreamErrorMessageBehavior::Override {
+                message: " busy\r\nnow ".to_string(),
+            },
+        }
+    }
+
+    #[test]
+    fn normalize_upstream_error_response_rules_canonicalizes_safe_fields() {
+        let mut rules = vec![upstream_error_response_rule()];
+        assert!(
+            normalize_upstream_error_response_rules_for_write(&mut rules).expect("valid rules")
+        );
+        assert_eq!(rules[0].name, "quota");
+        assert_eq!(rules[0].description, "test");
+        assert_eq!(rules[0].status_codes, vec![429]);
+        assert_eq!(rules[0].keywords, vec!["quota"]);
+        assert_eq!(rules[0].cli_keys, vec!["codex"]);
+        assert_eq!(rules[0].provider_ids, vec![7]);
+        assert_eq!(
+            rules[0].message_behavior,
+            UpstreamErrorMessageBehavior::Override {
+                message: "busy\nnow".to_string()
+            }
+        );
+    }
+
+    #[test]
+    fn lossy_rule_deserialization_drops_malformed_entries() {
+        let valid = serde_json::to_value(upstream_error_response_rule()).expect("serialize rule");
+        let settings: AppSettings = serde_json::from_value(serde_json::json!({
+            "upstream_error_response_rules": [
+                { "id": "broken" },
+                valid,
+                "future-shape"
+            ]
+        }))
+        .expect("settings should deserialize");
+        assert_eq!(settings.upstream_error_response_rules.len(), 1);
+    }
+
+    #[test]
+    fn sanitize_upstream_error_response_rules_drops_invalid_rules() {
+        let mut invalid = upstream_error_response_rule();
+        invalid.id = "not-a-uuid".to_string();
+        let mut rules = vec![invalid, upstream_error_response_rule()];
+        assert!(sanitize_upstream_error_response_rules(&mut rules));
+        assert_eq!(rules.len(), 1);
+        assert_eq!(rules[0].id, "8ca12e7b-4f19-45f7-9185-cc6fbd951c51");
+    }
 
     #[test]
     fn sanitize_failover_resets_zero_attempts_to_default() {

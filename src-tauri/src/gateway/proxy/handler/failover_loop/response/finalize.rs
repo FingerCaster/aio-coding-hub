@@ -230,9 +230,10 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
     } = input;
 
     let final_error_code = last_outcome
+        .as_ref()
         .map(|outcome| outcome.error_code)
         .unwrap_or(GatewayErrorCode::UpstreamAllFailed.as_str());
-    let final_error_category = last_outcome.map(|outcome| outcome.error_category);
+    let final_error_category = last_outcome.as_ref().map(|outcome| outcome.error_category);
 
     // Disk log: all providers tried and failed.
     tracing::error!(
@@ -246,17 +247,29 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
 
     let final_message = format!("all providers failed for cli_key={cli_key}");
 
-    let resp = error_response(
-        StatusCode::BAD_GATEWAY,
-        trace_id.clone(),
-        final_error_code,
-        final_message,
-        if verbose_provider_error {
-            attempts.clone()
-        } else {
-            vec![]
-        },
-    );
+    let mut client_status = StatusCode::BAD_GATEWAY;
+    let resp = last_outcome
+        .as_ref()
+        .and_then(|outcome| outcome.error_response_rewrite.as_ref())
+        .and_then(|rewrite| {
+            let response = rewrite.build_response(cli_key.as_str(), trace_id.as_str())?;
+            client_status = rewrite.client_status;
+            response_fixer::push_special_setting(&special_settings, rewrite.special_setting());
+            Some(response)
+        })
+        .unwrap_or_else(|| {
+            error_response(
+                StatusCode::BAD_GATEWAY,
+                trace_id.clone(),
+                final_error_code,
+                final_message,
+                if verbose_provider_error {
+                    attempts.clone()
+                } else {
+                    vec![]
+                },
+            )
+        });
 
     let duration_ms = started.elapsed().as_millis();
     emit_request_event_and_enqueue_request_log(
@@ -284,7 +297,7 @@ pub(super) async fn all_providers_failed<R: tauri::Runtime>(
             created_at,
         })
         .with_completion(RequestCompletion::failure(
-            StatusCode::BAD_GATEWAY.as_u16(),
+            client_status.as_u16(),
             final_error_category,
             final_error_code,
         )),

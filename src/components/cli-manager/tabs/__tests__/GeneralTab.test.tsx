@@ -13,6 +13,7 @@ const navigateMock = vi.fn();
 
 const mockGatewayUpstreamProxyTest = vi.fn();
 const mockGatewayUpstreamProxyDetectIp = vi.fn();
+const mockProvidersList = vi.fn();
 
 vi.mock("sonner", () => ({ toast: Object.assign(vi.fn(), { error: vi.fn(), success: vi.fn() }) }));
 
@@ -22,6 +23,9 @@ vi.mock("../../../../services/gateway/gateway", () => ({
 }));
 
 vi.mock("../../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
+vi.mock("../../../../services/providers/providers", () => ({
+  providersList: (...args: unknown[]) => mockProvidersList(...args),
+}));
 
 vi.mock("../../NetworkSettingsCard", () => ({
   NetworkSettingsCard: () => <div>network-card</div>,
@@ -37,6 +41,7 @@ beforeEach(() => {
   vi.clearAllMocks();
   mockGatewayUpstreamProxyTest.mockResolvedValue(undefined);
   mockGatewayUpstreamProxyDetectIp.mockResolvedValue("203.0.113.42");
+  mockProvidersList.mockResolvedValue([]);
 });
 
 function renderTab(element: ReactElement) {
@@ -118,6 +123,39 @@ function createDefaultTabProps(overrides: DefaultPropsOverrides = {}) {
 }
 
 describe("cli-manager/GeneralTab", () => {
+  it("creates an upstream error response rule below circuit and retry settings", async () => {
+    const appSettings = createTestAppSettings();
+    const onPersistCommonSettings = vi.fn().mockImplementation(async (patch) =>
+      createTestAppSettings({
+        ...patch,
+        upstream_error_response_rules: patch.upstream_error_response_rules ?? [],
+      })
+    );
+    renderTab(
+      <CliManagerGeneralTab {...createDefaultTabProps({ appSettings, onPersistCommonSettings })} />
+    );
+
+    expect(screen.getByText("上游错误响应规则")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
+    fireEvent.change(screen.getByLabelText("规则名称"), { target: { value: "限额响应" } });
+    fireEvent.change(screen.getByLabelText("匹配上游状态码"), {
+      target: { value: "429" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    await waitFor(() => {
+      expect(onPersistCommonSettings).toHaveBeenCalledWith({
+        upstream_error_response_rules: [
+          expect.objectContaining({
+            name: "限额响应",
+            status_codes: [429],
+            enabled: true,
+          }),
+        ],
+      });
+    });
+  });
+
   it("renders unavailable state", () => {
     renderTab(
       <CliManagerGeneralTab

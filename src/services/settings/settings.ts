@@ -18,6 +18,12 @@ import {
 import { invokeGeneratedIpc, type GeneratedCommandResult } from "../generatedIpc";
 import { type OptionalNullableGeneratedFields } from "../generatedTypeUtils";
 import { validateSettingsSetInput } from "./settingsValidation";
+import type {
+  UpstreamErrorMessageBehavior,
+  UpstreamErrorResponseMatchMode,
+  UpstreamErrorResponseRule,
+  UpstreamErrorStatusBehavior,
+} from "../gateway/upstreamErrorResponseRules";
 
 export type {
   CodexHomeMode,
@@ -31,6 +37,12 @@ export type {
   WslHostAddressMode,
   WslTargetCli,
 };
+export type {
+  UpstreamErrorMessageBehavior,
+  UpstreamErrorResponseMatchMode,
+  UpstreamErrorResponseRule,
+  UpstreamErrorStatusBehavior,
+};
 
 type LegacyGeneratedSettingsViewKey = Extract<
   keyof GeneratedAppSettings,
@@ -41,8 +53,12 @@ type LegacyGeneratedSettingsUpdateKey = Extract<
   `codex${"Reasoning"}${"Guard"}${string}`
 >;
 
-export type AppSettings = Omit<GeneratedAppSettings, LegacyGeneratedSettingsViewKey>;
-type FrontendSettingsUpdate = Omit<GeneratedSettingsUpdate, LegacyGeneratedSettingsUpdateKey>;
+export type AppSettings = Omit<GeneratedAppSettings, LegacyGeneratedSettingsViewKey> & {
+  upstream_error_response_rules: UpstreamErrorResponseRule[];
+};
+type FrontendSettingsUpdate = Omit<GeneratedSettingsUpdate, LegacyGeneratedSettingsUpdateKey> & {
+  upstreamErrorResponseRules: UpstreamErrorResponseRule[] | null;
+};
 export type SettingsMutationRuntime = GeneratedSettingsMutationRuntime;
 
 export type SettingsMutationResult = Omit<GeneratedSettingsMutationResult, "settings"> & {
@@ -89,6 +105,7 @@ const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
   failoverMaxAttemptsPerProvider: "failover_max_attempts_per_provider",
   failoverMaxProvidersToTry: "failover_max_providers_to_try",
   upstreamRetryPolicy: "upstream_retry_policy",
+  upstreamErrorResponseRules: "upstream_error_response_rules",
   circuitBreakerFailureThreshold: "circuit_breaker_failure_threshold",
   circuitBreakerOpenDurationMinutes: "circuit_breaker_open_duration_minutes",
   wslAutoConfig: "wsl_auto_config",
@@ -216,6 +233,7 @@ function toGeneratedSettingsUpdate(input: SettingsSetInput): FrontendSettingsUpd
     failoverMaxAttemptsPerProvider: input.failoverMaxAttemptsPerProvider,
     failoverMaxProvidersToTry: input.failoverMaxProvidersToTry,
     upstreamRetryPolicy: input.upstreamRetryPolicy ?? null,
+    upstreamErrorResponseRules: input.upstreamErrorResponseRules ?? null,
     circuitBreakerFailureThreshold: input.circuitBreakerFailureThreshold ?? null,
     circuitBreakerOpenDurationMinutes: input.circuitBreakerOpenDurationMinutes ?? null,
     updateReleasesUrl: input.updateReleasesUrl ?? null,

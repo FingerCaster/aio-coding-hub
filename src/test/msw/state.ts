@@ -25,7 +25,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 54,
+  schema_version: 55,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -58,6 +58,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   failover_max_attempts_per_provider: 5,
   failover_max_providers_to_try: 5,
   upstream_retry_policy: DEFAULT_UPSTREAM_RETRY_POLICY,
+  upstream_error_response_rules: [],
   circuit_breaker_failure_threshold: 5,
   circuit_breaker_open_duration_minutes: 30,
   enable_circuit_breaker_notice: false,

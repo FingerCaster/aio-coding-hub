@@ -9,6 +9,10 @@ import type { CliSessionsFolderLookupEntry } from "../../services/cli/cliSession
 import type { CliKey } from "../../services/providers/providers";
 import type { ProjectedRealtimeCard } from "../../services/gateway/requestActivityProjection";
 import { REALTIME_TRACE_EXIT_START_MS } from "../../services/gateway/requestActivityProjection";
+import {
+  formatUpstreamErrorResponseRuleTooltip,
+  resolveUpstreamErrorResponseRuleMarker,
+} from "../../services/gateway/requestLogSpecialSettings";
 import { requestLogActiveActivityState } from "../../services/gateway/requestLogState";
 import {
   countTraceProviderAttempts,
@@ -16,6 +20,7 @@ import {
   isNotTriggeredProbeObservation,
 } from "../../services/gateway/traceRoute";
 import { cn } from "../../utils/cn";
+import { Tooltip } from "../../ui/Tooltip";
 import {
   computeOutputTokensPerSecond,
   formatDurationMs,
@@ -43,6 +48,37 @@ export type RealtimeTraceCardsProps = {
   showCustomTooltip: boolean;
 };
 
+export function UpstreamErrorResponseRuleBadge({
+  specialSettingsJson,
+  showCustomTooltip,
+}: {
+  specialSettingsJson: string | null | undefined;
+  showCustomTooltip: boolean;
+}) {
+  const marker = resolveUpstreamErrorResponseRuleMarker(specialSettingsJson);
+  if (!marker) return null;
+
+  const tooltip = formatUpstreamErrorResponseRuleTooltip(marker);
+  const badge = (
+    <span
+      className="inline-flex max-w-44 shrink-0 cursor-help items-center rounded-md border border-amber-500/20 bg-amber-50/80 px-1.5 py-0.5 text-[10px] font-semibold leading-4 text-amber-700 shadow-pill-subtle dark:border-amber-400/20 dark:bg-amber-500/15 dark:text-amber-300"
+      title={showCustomTooltip ? undefined : tooltip}
+    >
+      <span className="truncate">响应规则 · {marker.ruleName}</span>
+    </span>
+  );
+
+  return showCustomTooltip ? (
+    <Tooltip
+      content={tooltip}
+      contentClassName="max-w-[360px] whitespace-pre-line text-left leading-5"
+    >
+      {badge}
+    </Tooltip>
+  ) : (
+    badge
+  );
+}
 function sessionFolderLookupKey(cliKey: string, sessionId: string | null | undefined) {
   const normalized = sessionId?.trim();
   if (!normalized) return null;
@@ -202,10 +238,12 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
         })();
 
         const cliLabel = cliShortLabel(trace.cli_key);
+        const specialSettingsJson =
+          trace.special_settings_json ?? summary?.special_settings_json ?? null;
         const modelDisplayMeta = resolveRequestLogModelDisplayMeta(
           trace.cli_key,
           trace.requested_model,
-          trace.special_settings_json ?? summary?.special_settings_json ?? null,
+          specialSettingsJson,
           trace.claude_model_mapping,
           routeProviderId
         );
@@ -367,6 +405,10 @@ export const RealtimeTraceCards = memo(function RealtimeTraceCards({
                     </span>
                   </span>
 
+                  <UpstreamErrorResponseRuleBadge
+                    specialSettingsJson={specialSettingsJson}
+                    showCustomTooltip={showCustomTooltip}
+                  />
                   {sessionFolder && (
                     <FolderBadge
                       folderName={sessionFolder.folder_name}
