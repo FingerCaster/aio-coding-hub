@@ -22,6 +22,7 @@
     "lint": "eslint src/",
     "lint:fix": "eslint src/ --fix",
     "audit:deps": "node scripts/check-pnpm-audit.selftest.mjs && node scripts/check-pnpm-audit.mjs",
+    "check:sync-upstream-policy": "node scripts/check-sync-upstream-policy.selftest.mjs && node scripts/check-sync-upstream-policy.mjs",
     "check:no-instant-now-sub": "node scripts/check-no-instant-now-sub.mjs",
     "check:release-pr-changelog": "node scripts/check-release-pr-changelog.mjs",
     "check:spec-links": "node scripts/check-spec-links.mjs",

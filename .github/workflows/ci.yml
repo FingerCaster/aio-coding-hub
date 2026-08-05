@@ -58,6 +58,12 @@ jobs:
       - name: Validate Homebrew Cask generator
         run: node scripts/support-matrix.homebrew-cask.selftest.mjs
 
+      - name: Validate upstream sync policy self-test
+        run: node scripts/check-sync-upstream-policy.selftest.mjs
+
+      - name: Enforce upstream sync manual-review policy
+        run: node scripts/check-sync-upstream-policy.mjs
+
   desktop-support-contract:
     needs: support-contract
     strategy:

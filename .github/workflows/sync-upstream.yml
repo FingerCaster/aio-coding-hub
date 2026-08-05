@@ -12,7 +12,7 @@ on:
         default: main
 
 permissions:
-  contents: write
+  contents: read
   pull-requests: write
 
 concurrency:
@@ -53,7 +53,7 @@ jobs:
           git fetch origin "+refs/heads/${TARGET_BRANCH}:refs/remotes/origin/${TARGET_BRANCH}"
           git fetch upstream "+refs/heads/${TARGET_BRANCH}:refs/remotes/upstream/${TARGET_BRANCH}"
 
-      - name: Sync by fast-forward or open PR
+      - name: Open upstream sync PR
         env:
           GH_TOKEN: ${{ secrets.SYNC_UPSTREAM_TOKEN || github.token }}
         run: |
@@ -122,51 +122,38 @@ jobs:
               exit 1
             fi
 
-            local mergeable=""
-            local mergeable_state=""
-            local head_sha=""
-            local merged="false"
+            local merge_state
+            merge_state="$(
+              gh pr view "${pr_number}" \
+                --repo "${GITHUB_REPOSITORY}" \
+                --json mergeStateStatus \
+                --jq '.mergeStateStatus'
+            )"
 
-            for attempt in {1..12}; do
-              IFS=$'\t' read -r mergeable mergeable_state head_sha < <(
-                gh api "repos/${GITHUB_REPOSITORY}/pulls/${pr_number}" \
-                  --jq '[.mergeable, .mergeable_state, .head.sha] | @tsv'
-              )
-
-              echo "PR #${pr_number} mergeability attempt ${attempt}: mergeable=${mergeable}, state=${mergeable_state}"
-
-              if [ "${mergeable}" = "true" ]; then
-                gh pr merge "${pr_number}" \
-                  --repo "${GITHUB_REPOSITORY}" \
-                  --merge \
-                  --match-head-commit "${head_sha}" \
-                  --subject "${title}" \
-                  --body "Auto-merged upstream sync from ${UPSTREAM_REPO}:${TARGET_BRANCH}."
-                merged="true"
-                break
-              fi
-
-              if [ "${mergeable}" = "false" ] && [ "${mergeable_state}" = "dirty" ]; then
-                echo "PR #${pr_number} has merge conflicts. Manual intervention required." >&2
-                exit 1
-              fi
-
-              sleep 5
-            done
-
-            if [ "${merged}" != "true" ]; then
-              echo "PR #${pr_number} was not mergeable after waiting. Manual intervention required." >&2
+            if [ -z "${merge_state}" ] || [ "${merge_state}" = "DIRTY" ] || [ "${merge_state}" = "UNKNOWN" ]; then
+              {
+                echo "## Sync Upstream"
+                echo ""
+                echo "Created or updated cross-repository sync PR for \`${TARGET_BRANCH}\`."
+                echo ""
+                echo "PR: #${pr_number}"
+                echo ""
+                echo "Manual conflict resolution required; merge state: \`${merge_state:-unavailable}\`."
+              } >> "${GITHUB_STEP_SUMMARY}"
+              echo "PR #${pr_number} merge state is ${merge_state:-unavailable}. Manual conflict resolution required." >&2
               exit 1
             fi
 
             {
               echo "## Sync Upstream"
               echo ""
-              echo "Created or updated and auto-merged cross-repository sync PR for \`${TARGET_BRANCH}\`."
+              echo "Created or updated cross-repository sync PR for \`${TARGET_BRANCH}\`."
               echo ""
               echo "Reason: ${reason}"
               echo ""
               echo "PR: #${pr_number}"
+              echo ""
+              echo "Manual review and merge required."
             } >> "${GITHUB_STEP_SUMMARY}"
           }
 
@@ -181,23 +168,8 @@ jobs:
           fi
 
           if git merge-base --is-ancestor "${LOCAL}" "${UPSTREAM}"; then
-            echo "Fast-forward sync is possible."
-
-            if git diff --name-only "${LOCAL}..${UPSTREAM}" -- .github/workflows | grep -q .; then
-              echo "Upstream includes workflow file changes. Creating PR instead of pushing with GITHUB_TOKEN."
-              create_or_update_upstream_pr "upstream changes include \`.github/workflows/*\`, which \`GITHUB_TOKEN\` cannot push directly."
-              exit 0
-            fi
-
-            git checkout -B "${TARGET_BRANCH}" "${LOCAL}"
-            git merge --ff-only "${UPSTREAM}"
-            git push origin "HEAD:${TARGET_BRANCH}"
-
-            {
-              echo "## Sync Upstream"
-              echo ""
-              echo "Fast-forwarded \`${TARGET_BRANCH}\` to \`${UPSTREAM_REPO}:${TARGET_BRANCH}\`."
-            } >> "${GITHUB_STEP_SUMMARY}"
+            echo "Fast-forward sync is possible. Creating a PR for fork semantic review."
+            create_or_update_upstream_pr "target branch can be fast-forwarded but requires fork semantic review."
             exit 0
           fi
 
