@@ -2,7 +2,8 @@
 
 use super::attempt_executor::RetryLoopState;
 use super::upstream_retry_policy::{
-    should_record_circuit_failure, transient_failure_decision, RetryPolicyMatch,
+    configured_retry_backoff_delay, should_record_circuit_failure, transient_failure_decision,
+    RetryPolicyMatch,
 };
 use super::*;
 use crate::domain::provider_oauth_limits;
@@ -956,6 +957,10 @@ where
                     provider_ctx.upstream_retry_policy,
                     configured_retry,
                 ),
+                configured_retry_backoff: configured_retry_backoff_delay(
+                    provider_ctx.upstream_retry_policy,
+                    configured_retry,
+                ),
                 timeout_secs: None,
             })
             .await;
@@ -1007,6 +1012,7 @@ where
                     outcome,
                     reason: format!("cx2cc event-stream aggregation failed: {err}"),
                     record_circuit_failure: true,
+                    configured_retry_backoff: None,
                     timeout_secs: None,
                 })
                 .await;

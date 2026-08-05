@@ -84,6 +84,7 @@ libc = "0.2"
 tempfile = "3"
 tauri = { version = "2", features = ["test"] }
 tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1", features = ["test-util"] }
 
 [patch.crates-io]
 # Patch `mac-notification-sys` so notifications can still present when app is foreground on macOS.

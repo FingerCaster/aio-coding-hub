@@ -1,7 +1,8 @@
 //! Usage: Handle upstream send timeout inside `failover_loop::run`.
 
 use super::upstream_retry_policy::{
-    should_record_circuit_failure, transient_failure_decision, RetryPolicyMatch,
+    configured_retry_backoff_delay, should_record_circuit_failure, transient_failure_decision,
+    RetryPolicyMatch,
 };
 use super::*;
 use crate::gateway::proxy::is_claude_count_tokens_request;
@@ -65,6 +66,7 @@ pub(super) async fn handle_timeout<R: tauri::Runtime>(
             outcome,
             reason: "request timeout".to_string(),
             record_circuit_failure: true,
+            configured_retry_backoff: None,
             timeout_secs: Some(timeout_secs),
         })
         .await;
@@ -81,6 +83,10 @@ pub(super) async fn handle_timeout<R: tauri::Runtime>(
         outcome,
         reason: "request timeout".to_string(),
         record_circuit_failure: should_record_circuit_failure(
+            provider_ctx.upstream_retry_policy,
+            configured_retry,
+        ),
+        configured_retry_backoff: configured_retry_backoff_delay(
             provider_ctx.upstream_retry_policy,
             configured_retry,
         ),

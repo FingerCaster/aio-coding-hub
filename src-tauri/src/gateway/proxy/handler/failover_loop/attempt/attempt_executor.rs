@@ -531,6 +531,7 @@ async fn handle_url_build_failure<R: tauri::Runtime>(
         outcome,
         reason: format!("invalid base_url: {err}"),
         record_circuit_failure: true,
+        configured_retry_backoff: None,
         timeout_secs: None,
     })
     .await

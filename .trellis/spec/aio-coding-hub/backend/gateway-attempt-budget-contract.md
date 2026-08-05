@@ -53,6 +53,12 @@ fn provider_max_attempts_for_request(
   HTTP rule match (status-only or status plus decoded-body content) and an
   enabled transport match share the same `max_retries` reservation, backoff,
   and circuit-accounting settings; rules do not add independent capacity.
+- Apply the configured `backoff_ms` before every configured HTTP or transport
+  retry that remains on the same Provider, including send errors, non-stream
+  body reads, and event-stream reads before the downstream response commits.
+  Circuit accounting must resolve the final decision first: a retry rewritten
+  to switch/abort never waits, and cross-Provider failover adds no implicit
+  delay.
 - `max_retries` counts actual configured HTTP/transport retries for the current
   Provider, not the total attempt index. OAuth refresh, auth fallback,
   `previous_response_id` repair, thinking rectifiers, and generic baseline
@@ -107,6 +113,9 @@ fn provider_max_attempts_for_request(
 - Keep provider inheritance, complete override, and explicit disabled override
   tests. Provider HTTP rules replace the global rule set as part of the whole
   policy; they are never appended to it.
+- Use paused-time tests to prove configured transport retries wait exactly
+  `backoff_ms`, while zero backoff, switch, abort, and circuit-open decision
+  rewrites do not wait.
 - Route-test a baseline of one attempt with a non-matching configured HTTP rule
   and prove the transient reservation does not create a second upstream call.
 - Route-test an internal `previous_response_id` repair followed by a configured

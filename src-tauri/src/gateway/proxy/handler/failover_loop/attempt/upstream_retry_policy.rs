@@ -153,6 +153,15 @@ pub(super) fn retry_policy_backoff_delay(
     (policy.backoff_ms > 0).then(|| Duration::from_millis(policy.backoff_ms as u64))
 }
 
+pub(super) fn configured_retry_backoff_delay(
+    policy: &crate::settings::UpstreamRetryPolicy,
+    configured_retry: bool,
+) -> Option<Duration> {
+    configured_retry
+        .then(|| retry_policy_backoff_delay(policy))
+        .flatten()
+}
+
 pub(super) fn should_record_circuit_failure(
     policy: &crate::settings::UpstreamRetryPolicy,
     configured_retry: bool,
@@ -163,9 +172,10 @@ pub(super) fn should_record_circuit_failure(
 #[cfg(test)]
 mod tests {
     use super::{
-        has_content_http_retry_rule, match_code_only_http_retry_rule,
-        match_content_http_retry_rule, retry_rule_reason, should_record_circuit_failure,
-        transient_failure_decision, FailoverDecision, RetryPolicyMatch,
+        configured_retry_backoff_delay, has_content_http_retry_rule,
+        match_code_only_http_retry_rule, match_content_http_retry_rule, retry_rule_reason,
+        should_record_circuit_failure, transient_failure_decision, FailoverDecision,
+        RetryPolicyMatch,
     };
     use crate::settings::{UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind};
 
@@ -187,6 +197,30 @@ mod tests {
             assert!(matches!(decision, FailoverDecision::RetrySameProvider));
             assert!(configured_retry);
         }
+    }
+
+    #[test]
+    fn configured_retry_backoff_uses_nonzero_policy_delay_only_for_configured_retry() {
+        let policy = UpstreamRetryPolicy {
+            backoff_ms: 2_000,
+            ..Default::default()
+        };
+
+        assert_eq!(
+            configured_retry_backoff_delay(&policy, true),
+            Some(std::time::Duration::from_millis(2_000))
+        );
+        assert_eq!(configured_retry_backoff_delay(&policy, false), None);
+        assert_eq!(
+            configured_retry_backoff_delay(
+                &UpstreamRetryPolicy {
+                    backoff_ms: 0,
+                    ..Default::default()
+                },
+                true,
+            ),
+            None
+        );
     }
 
     #[test]

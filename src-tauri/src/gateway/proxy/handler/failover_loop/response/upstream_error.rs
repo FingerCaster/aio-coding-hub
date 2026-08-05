@@ -10,9 +10,10 @@ use super::context::{
 };
 use super::thinking_signature_rectifier_400;
 use super::upstream_retry_policy::{
-    has_content_http_retry_rule, match_code_only_http_retry_rule, match_content_http_retry_rule,
-    retry_policy_backoff_delay, retry_rule_reason, should_record_circuit_failure,
-    should_retry_same_provider, transient_failure_decision, RetryPolicyMatch,
+    configured_retry_backoff_delay, has_content_http_retry_rule, match_code_only_http_retry_rule,
+    match_content_http_retry_rule, retry_policy_backoff_delay, retry_rule_reason,
+    should_record_circuit_failure, should_retry_same_provider, transient_failure_decision,
+    RetryPolicyMatch,
 };
 use super::{emit_attempt_event_and_log, finalize_probe_failure_and_emit, AttemptCircuitFields};
 use super::{
@@ -1058,6 +1059,7 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
             outcome,
             reason: reason.clone(),
             record_circuit_failure: true,
+            configured_retry_backoff: None,
             timeout_secs: None,
         })
         .await;
@@ -1074,6 +1076,10 @@ pub(super) async fn handle_reqwest_error<R: tauri::Runtime>(
         outcome,
         reason,
         record_circuit_failure: should_record_circuit_failure(
+            provider_ctx.upstream_retry_policy,
+            configured_retry,
+        ),
+        configured_retry_backoff: configured_retry_backoff_delay(
             provider_ctx.upstream_retry_policy,
             configured_retry,
         ),
