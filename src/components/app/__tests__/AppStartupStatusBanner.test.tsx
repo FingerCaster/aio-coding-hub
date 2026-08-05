@@ -1,11 +1,13 @@
-import { fireEvent, render, screen, waitFor } from "@testing-library/react";
+import { act, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import {
+  getAppStartupStatusSnapshot,
   resetAppStartupStatusStore,
   setAppStartupStatusSnapshot,
 } from "../../../app/startupStatusStore";
-import { appStartupRetry } from "../../../services/app/startupStatus";
+import { appStartupRetry, type AppStartupStatus } from "../../../services/app/startupStatus";
 import { logToConsole } from "../../../services/consoleLog";
+import { createDeferred } from "../../../test/utils/deferred";
 import { AppStartupStatusBanner } from "../AppStartupStatusBanner";
 
 const navigate = vi.fn();
@@ -104,6 +106,38 @@ describe("components/app/AppStartupStatusBanner", () => {
 
     await waitFor(() => expect(appStartupRetry).toHaveBeenCalledTimes(1));
     await waitFor(() => expect(screen.queryByRole("alert")).not.toBeInTheDocument());
+  });
+
+  it("does not let an older retry response overwrite a newer status update", async () => {
+    const pendingRetry = createDeferred<AppStartupStatus>();
+    setFailedStatus({ failedStage: "reading_settings" });
+    vi.mocked(appStartupRetry).mockReturnValue(pendingRetry.promise);
+
+    render(<AppStartupStatusBanner />);
+    fireEvent.click(screen.getByRole("button", { name: "重试启动" }));
+
+    const readyStatus: AppStartupStatus = {
+      running: false,
+      currentStage: "ready",
+      failedStage: null,
+      errorMessage: null,
+      canRetry: false,
+    };
+    setAppStartupStatusSnapshot(readyStatus);
+
+    await act(async () => {
+      pendingRetry.resolve({
+        running: false,
+        currentStage: "failed",
+        failedStage: "reading_settings",
+        errorMessage: "stale retry response",
+        canRetry: true,
+      });
+      await pendingRetry.promise;
+    });
+
+    expect(getAppStartupStatusSnapshot()).toEqual(readyStatus);
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
   });
 
   it("logs and restores retry state when retry fails", async () => {

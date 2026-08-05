@@ -1,9 +1,9 @@
 import { useState } from "react";
 import { useNavigate } from "react-router-dom";
 import { toast } from "sonner";
-import { useAppStartupStatus, setAppStartupStatusSnapshot } from "../../app/startupStatusStore";
+import { retryAppStartupStatusSnapshot, useAppStartupStatus } from "../../app/startupStatusStore";
 import { logToConsole } from "../../services/consoleLog";
-import { appStartupRetry, type AppStartupStage } from "../../services/app/startupStatus";
+import type { AppStartupStage } from "../../services/app/startupStatus";
 import { Button } from "../../ui/Button";
 
 function startupStageLabel(stage: AppStartupStage | null): string {
@@ -42,8 +42,7 @@ export function AppStartupStatusBanner() {
 
     setRetrying(true);
     try {
-      const next = await appStartupRetry();
-      setAppStartupStatusSnapshot(next);
+      await retryAppStartupStatusSnapshot();
     } catch (error) {
       logToConsole("error", "重试启动任务失败", {
         error: String(error),
