@@ -139,9 +139,12 @@ describe("cli-manager/GeneralTab", () => {
     );
 
     expect(screen.getByRole("heading", { name: "上游错误处理" })).toBeInTheDocument();
-    fireEvent.click(screen.getByRole("tab", { name: "最终响应改写" }));
-    expect(screen.getByText("最终响应改写规则")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
+    expect(screen.getByText("最终 HTTP 错误改写规则")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
+    expect(screen.getByRole("button", { name: "状态码或关键词" })).toBeInTheDocument();
+    expect(screen.getByText(/同一组内的多个状态码/)).toBeInTheDocument();
     fireEvent.change(screen.getByLabelText("规则名称"), { target: { value: "限额响应" } });
     fireEvent.change(screen.getByLabelText("匹配上游状态码"), {
       target: { value: "429" },
@@ -159,6 +162,54 @@ describe("cli-manager/GeneralTab", () => {
         ],
       });
     });
+  });
+
+  it("filters response-rule providers by CLI and clears incompatible known selections", async () => {
+    mockProvidersList.mockImplementation(async (...args: unknown[]) => {
+      const cliKey = args[0];
+      if (cliKey === "codex") return [{ id: 11, name: "Codex Provider", cli_key: "codex" }];
+      if (cliKey === "claude") return [{ id: 22, name: "Claude Provider", cli_key: "claude" }];
+      return [];
+    });
+    const onPersistCommonSettings = vi
+      .fn()
+      .mockImplementation(async (patch) => createTestAppSettings({ ...patch }));
+    renderTab(<CliManagerGeneralTab {...createDefaultTabProps({ onPersistCommonSettings })} />);
+
+    fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
+    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
+    fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
+    await waitFor(() => {
+      expect(mockProvidersList).toHaveBeenCalledWith("codex");
+      expect(mockProvidersList).toHaveBeenCalledWith("claude");
+      expect(screen.getByText("Codex · Codex Provider")).toBeInTheDocument();
+      expect(screen.getByText("Claude · Claude Provider")).toBeInTheDocument();
+    });
+
+    fireEvent.click(screen.getByLabelText("Codex"));
+    expect(screen.getByText("Codex · Codex Provider")).toBeInTheDocument();
+    expect(screen.queryByText("Claude · Claude Provider")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByLabelText("Codex · Codex Provider"));
+
+    fireEvent.click(screen.getByLabelText("Codex"));
+    fireEvent.click(screen.getByLabelText("Claude"));
+    expect(screen.queryByText("Codex · Codex Provider")).not.toBeInTheDocument();
+    expect(screen.getByText("Claude · Claude Provider")).toBeInTheDocument();
+
+    fireEvent.change(screen.getByLabelText("规则名称"), { target: { value: "Claude 终态" } });
+    fireEvent.change(screen.getByLabelText("匹配上游状态码"), { target: { value: "503" } });
+    fireEvent.click(screen.getByRole("button", { name: "保存规则" }));
+
+    await waitFor(() =>
+      expect(onPersistCommonSettings).toHaveBeenCalledWith({
+        upstream_error_response_rules: [
+          expect.objectContaining({
+            cli_keys: ["claude"],
+            provider_ids: [],
+          }),
+        ],
+      })
+    );
   });
 
   it("renders unavailable state", () => {
@@ -331,17 +382,11 @@ describe("cli-manager/GeneralTab", () => {
       upstream_first_byte_timeout_seconds: 5,
     });
 
+    fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
+    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 200 流内部错误规则" }));
     const guardInput = screen.getByRole("spinbutton", { name: "流内部错误观察窗口" });
     fireEvent.change(guardInput, { target: { value: "750" } });
-    fireEvent.blur(guardInput, { target: { value: "750" } });
     expect(setStreamInternalErrorGuardMs).toHaveBeenCalledWith(750);
-    expect(onPersistCommonSettings).toHaveBeenCalledWith({
-      stream_internal_error_guard_ms: 750,
-    });
-    fireEvent.change(guardInput, { target: { value: "5001" } });
-    fireEvent.blur(guardInput, { target: { value: "5001" } });
-    expect(toast).toHaveBeenCalledWith("流内部错误观察窗口必须为 0-5000 毫秒");
-    expect(setStreamInternalErrorGuardMs).toHaveBeenCalledWith(500);
 
     const streamIdleInput = screen.getByRole("spinbutton", { name: "流式空闲超时" });
     fireEvent.change(streamIdleInput, { target: { value: "-1" } });
@@ -466,27 +511,33 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
+    const upstreamErrorSection = screen.getByRole("button", { name: /上游错误处理/ });
+    expect(upstreamErrorSection).toHaveAttribute("aria-expanded", "false");
+    expect(screen.queryByRole("tab", { name: "重试规则" })).not.toBeInTheDocument();
+    fireEvent.click(upstreamErrorSection);
+    expect(upstreamErrorSection).toHaveAttribute("aria-expanded", "true");
     expect(screen.getByRole("tab", { name: "重试规则" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("HTTP 规则")).toBeInTheDocument();
-    expect(screen.queryByText("最终响应改写规则")).not.toBeInTheDocument();
+    expect(screen.queryByText("最终 HTTP 错误改写规则")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "保存重试策略" }));
 
     await waitFor(() =>
       expect(onPersistCommonSettings).toHaveBeenCalledWith({
         upstream_retry_policy: upstreamRetryPolicy,
+        stream_internal_error_guard_ms: 500,
       })
     );
     expect(setUpstreamRetryPolicy).toHaveBeenCalledWith(upstreamRetryPolicy);
 
     onPersistCommonSettings.mockClear();
-    fireEvent.click(screen.getByRole("tab", { name: "最终响应改写" }));
-    expect(screen.getByRole("tab", { name: "最终响应改写" })).toHaveAttribute(
+    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
+    expect(screen.getByRole("tab", { name: "最终 HTTP 错误改写" })).toHaveAttribute(
       "aria-selected",
       "true"
     );
     expect(screen.queryByText("HTTP 规则")).not.toBeInTheDocument();
-    expect(screen.getByText("最终响应改写规则")).toBeInTheDocument();
+    expect(screen.getByText("最终 HTTP 错误改写规则")).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("switch", { name: "停用规则 容量终态" }));
     await waitFor(() =>
@@ -496,6 +547,22 @@ describe("cli-manager/GeneralTab", () => {
         ],
       })
     );
+  });
+
+  it("rejects an invalid Codex stream observation window when saving retry settings", () => {
+    const onPersistCommonSettings = vi.fn();
+    renderTab(
+      <CliManagerGeneralTab
+        {...createDefaultTabProps({ onPersistCommonSettings })}
+        streamInternalErrorGuardMs={5001}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存重试策略" }));
+
+    expect(toast).toHaveBeenCalledWith("流内部错误观察窗口必须为 0-5000 毫秒");
+    expect(onPersistCommonSettings).not.toHaveBeenCalled();
   });
 
   it("keeps segmented modes and longest rule text bounded for narrow layouts", () => {
@@ -515,14 +582,25 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
+    fireEvent.click(screen.getByRole("button", { name: /上游错误处理/ }));
     const modeTabs = screen.getByRole("tablist", { name: "上游错误处理模式" });
     expect(modeTabs).toHaveClass("w-full");
     for (const tab of screen.getAllByRole("tab")) expect(tab).toHaveClass("min-w-0");
 
-    fireEvent.click(screen.getByRole("tab", { name: "最终响应改写" }));
+    fireEvent.click(screen.getByRole("tab", { name: "最终 HTTP 错误改写" }));
     const ruleName = screen.getByText(longName);
     expect(ruleName).toHaveClass("truncate");
     expect(ruleName.closest(".min-w-0")).not.toBeNull();
+
+    const detailButton = screen.getByRole("button", { name: `查看规则详情 ${longName}` });
+    expect(detailButton).toHaveAttribute("aria-expanded", "false");
+    fireEvent.click(detailButton);
+    expect(screen.getByRole("button", { name: `收起规则详情 ${longName}` })).toHaveAttribute(
+      "aria-expanded",
+      "true"
+    );
+    expect(screen.getByText("匹配条件")).toBeInTheDocument();
+    expect(screen.getByText(/状态码 429、500、502、503、504/)).toBeInTheDocument();
   });
 
   it("shows readonly banner and disables settings controls", () => {

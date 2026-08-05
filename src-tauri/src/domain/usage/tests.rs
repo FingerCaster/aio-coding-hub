@@ -690,6 +690,29 @@ fn codex_stream_internal_error_classifier_accepts_only_exact_terminal_types() {
 }
 
 #[test]
+fn codex_capacity_interception_is_independent_from_retry_policy_enablement() {
+    let data = serde_json::json!({
+        "type": "response.failed",
+        "response": {
+            "status": "failed",
+            "error": {"message": "Selected model is at capacity"}
+        }
+    });
+
+    assert!(is_codex_capacity_stream_internal_error(
+        "response.failed",
+        &data
+    ));
+    assert!(!is_codex_capacity_stream_internal_error(
+        "response.output_text.delta",
+        &serde_json::json!({
+            "type": "response.output_text.delta",
+            "delta": "Selected model is at capacity"
+        })
+    ));
+}
+
+#[test]
 fn codex_stream_internal_error_positive_keyword_wins_and_disabled_policy_is_observable() {
     let data = serde_json::json!({
         "type": "response.failed",

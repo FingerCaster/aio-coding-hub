@@ -123,6 +123,27 @@ fn stream_error_message(data: &Value) -> Option<&str> {
     })
 }
 
+pub fn is_codex_capacity_stream_internal_error(event_name: &str, data: &Value) -> bool {
+    if stream_terminal_type(event_name, data).is_none() {
+        return false;
+    }
+
+    [
+        Some(event_name),
+        data.get("type").and_then(Value::as_str),
+        stream_error_field(data, "type"),
+        stream_error_field(data, "code"),
+        stream_error_message(data),
+    ]
+    .into_iter()
+    .flatten()
+    .any(|value| {
+        value
+            .to_ascii_lowercase()
+            .contains("selected model is at capacity")
+    })
+}
+
 pub fn classify_codex_stream_internal_error(
     event_name: &str,
     data: &Value,

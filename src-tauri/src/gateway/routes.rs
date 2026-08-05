@@ -11335,7 +11335,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_responses_sse_fake_200_keeps_fake_200_error_code() {
+    async fn codex_capacity_error_is_intercepted_when_stream_retries_are_disabled() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -11345,7 +11345,11 @@ INSERT INTO codex_managed_profiles(
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
-        app_settings.upstream_retry_policy.max_retries = 0;
+        app_settings.upstream_retry_policy.enabled = false;
+        app_settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .enabled = false;
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
@@ -11395,6 +11399,7 @@ INSERT INTO codex_managed_profiles(
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
+        assert!(!String::from_utf8_lossy(&body).contains("Selected model is at capacity"));
         let payload: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(
             payload.get("error_code").and_then(Value::as_str),
@@ -11422,6 +11427,14 @@ INSERT INTO codex_managed_profiles(
         assert_eq!(
             attempts[0].get("decision").and_then(Value::as_str),
             Some("switch")
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"],
+            "disabled"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["disposition"],
+            "switch_provider"
         );
         assert_eq!(circuit.snapshot(provider_id, 0).failure_count, 1);
         assert_eq!(session.get_bound_provider("codex", session_id, 0), None);

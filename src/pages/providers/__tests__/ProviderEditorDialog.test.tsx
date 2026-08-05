@@ -702,17 +702,17 @@ describe("pages/providers/ProviderEditorDialog", () => {
     fireEvent.change(dialog.getByLabelText("规则 5 · 错误码"), {
       target: { value: "429" },
     });
-    fireEvent.change(dialog.getAllByLabelText("描述")[4], {
+    fireEvent.change(dialog.getByLabelText("HTTP 规则 5 描述"), {
       target: { value: providerRule.description },
     });
-    fireEvent.change(dialog.getAllByLabelText("匹配内容（每行一项）")[4], {
+    fireEvent.change(dialog.getByLabelText("HTTP 规则 5 匹配内容"), {
       target: { value: providerRule.body_contains[0] },
     });
 
-    fireEvent.change(dialog.getByLabelText("同供应商重试次数"), {
+    fireEvent.change(dialog.getByLabelText("每个供应商最多重试次数"), {
       target: { value: "2" },
     });
-    fireEvent.change(dialog.getByLabelText("重试间隔（毫秒）"), {
+    fireEvent.change(dialog.getByLabelText("固定重试间隔（毫秒）"), {
       target: { value: "250" },
     });
 

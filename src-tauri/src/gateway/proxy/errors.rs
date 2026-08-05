@@ -27,6 +27,45 @@ struct GatewayErrorResponse {
     retry_after_seconds: Option<u64>,
 }
 
+fn sanitize_attempts_for_client(mut attempts: Vec<FailoverAttempt>) -> Vec<FailoverAttempt> {
+    let contains_capacity_message = |value: &str| {
+        value
+            .to_ascii_lowercase()
+            .contains("selected model is at capacity")
+    };
+
+    for attempt in &mut attempts {
+        if attempt
+            .reason
+            .as_deref()
+            .is_some_and(contains_capacity_message)
+        {
+            attempt.reason = Some("upstream capacity failure".to_string());
+        }
+        if attempt
+            .stream_internal_error
+            .as_ref()
+            .is_some_and(|evidence| {
+                evidence
+                    .message
+                    .as_deref()
+                    .is_some_and(contains_capacity_message)
+                    || evidence
+                        .matched_keyword
+                        .as_deref()
+                        .is_some_and(contains_capacity_message)
+            })
+        {
+            // The full bounded evidence remains in gateway events and request
+            // logs. Client-facing verbose diagnostics keep the attempt but not
+            // the upstream capacity text that makes Codex stop immediately.
+            attempt.stream_internal_error = None;
+        }
+    }
+
+    attempts
+}
+
 pub(super) fn classify_reqwest_error(err: &reqwest::Error) -> (ErrorCategory, &'static str) {
     if err.is_timeout() {
         return (
@@ -118,7 +157,7 @@ pub(super) fn error_response_with_retry_after(
         trace_id: trace_id.clone(),
         error_code,
         message,
-        attempts,
+        attempts: sanitize_attempts_for_client(attempts),
         retry_after_seconds,
     };
 

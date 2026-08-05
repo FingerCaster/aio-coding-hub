@@ -344,7 +344,12 @@ fn inspect_buffered_event_stream_prefix(
                     .non_retry_keywords,
                 "buffered_before_commit",
             ) {
-                if evidence.is_retryable() {
+                // Capacity failures must never be committed to Codex. Disabling
+                // configured retries changes the decision to provider switch,
+                // but does not opt back into forwarding the upstream SSE error.
+                if evidence.is_retryable()
+                    || usage::is_codex_capacity_stream_internal_error(&event_name, &data)
+                {
                     return BufferedStreamPrefixDecision::ProviderFailure {
                         error_code: GatewayErrorCode::Fake200.as_str(),
                         evidence: Some(evidence),
@@ -1964,20 +1969,36 @@ mod tests {
                 }
             ));
         }
+    }
 
-        let mut disabled_policy = crate::settings::UpstreamRetryPolicy::default();
-        disabled_policy.stream_internal_errors.enabled = false;
-        let mut disabled_state = BufferedStreamPrefixState::default();
-        assert!(matches!(
-            inspect_buffered_event_stream_prefix(
-                &native_prefix_config(&disabled_policy, Duration::from_millis(500)),
-                &mut disabled_state,
-                b"event: response.failed\ndata: {\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
-            ),
-            BufferedStreamPrefixDecision::StartStreaming {
-                guard_cap_reached: false
+    #[test]
+    fn buffered_native_stream_intercepts_capacity_when_retries_are_disabled() {
+        let disabled_policy = crate::settings::UpstreamRetryPolicy {
+            enabled: false,
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let mut state = BufferedStreamPrefixState::default();
+        let decision = inspect_buffered_event_stream_prefix(
+            &native_prefix_config(&disabled_policy, Duration::from_millis(500)),
+            &mut state,
+            b"event: response.failed\ndata: {\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
+        );
+
+        match decision {
+            BufferedStreamPrefixDecision::ProviderFailure {
+                error_code,
+                evidence: Some(evidence),
+            } => {
+                assert_eq!(error_code, "GW_FAKE_200");
+                assert_eq!(evidence.classification, "disabled");
+                assert_eq!(evidence.disposition, "buffered_before_commit");
             }
-        ));
+            _ => panic!("capacity terminal event must not reach Codex when retries are disabled"),
+        }
     }
 
     #[test]

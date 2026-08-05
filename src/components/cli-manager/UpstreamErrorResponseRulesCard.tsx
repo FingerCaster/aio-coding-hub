@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { Pencil, Plus, Trash2 } from "lucide-react";
+import { ChevronDown, Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { CLI_REGISTRY } from "../../constants/clis";
 import {
@@ -75,15 +75,30 @@ function ruleMatchSummary(rule: UpstreamErrorResponseRule): string {
   const parts: string[] = [];
   if (rule.status_codes.length > 0) parts.push(rule.status_codes.join("/"));
   if (rule.keywords.length > 0) parts.push(`${rule.keywords.length} 个关键词`);
-  return parts.join(rule.match_mode === "all" ? " 且 " : " 或 ");
+  return parts.join(rule.match_mode === "all" ? " 且 " : " 或 ") || "未设置匹配条件";
 }
 
-function ruleScopeSummary(rule: UpstreamErrorResponseRule, providers: ProviderSummary[]): string {
+function providerScopeLabel(
+  id: number,
+  providerNames: Map<number, string>,
+  providerLoadState: ProviderLoadState
+): string {
+  return (
+    providerNames.get(id) ??
+    (providerLoadState === "ready" ? `已删除供应商 #${String(id)}` : `供应商 #${String(id)}`)
+  );
+}
+
+function ruleScopeSummary(
+  rule: UpstreamErrorResponseRule,
+  providers: ProviderSummary[],
+  providerLoadState: ProviderLoadState
+): string {
   const cliScope = rule.cli_keys.length === 0 ? "全部 CLI" : rule.cli_keys.map(cliLabel).join("/");
   if (rule.provider_ids.length === 0) return `${cliScope} · 全部供应商`;
   const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
-  const names = rule.provider_ids.map(
-    (id) => providerNames.get(id) ?? `已删除供应商 #${String(id)}`
+  const names = rule.provider_ids.map((id) =>
+    providerScopeLabel(id, providerNames, providerLoadState)
   );
   return `${cliScope} · ${names.length <= 2 ? names.join("/") : `${names.length} 个供应商`}`;
 }
@@ -97,12 +112,36 @@ function ruleActionSummary(rule: UpstreamErrorResponseRule): string {
   return `${status} · ${message}`;
 }
 
+function ruleMatchDetails(rule: UpstreamErrorResponseRule): string {
+  const parts: string[] = [];
+  if (rule.status_codes.length > 0) parts.push(`状态码 ${rule.status_codes.join("、")}`);
+  if (rule.keywords.length > 0) parts.push(`关键词 ${rule.keywords.join("、")}`);
+  const mode = rule.match_mode === "all" ? "状态码且关键词" : "状态码或关键词";
+  return parts.length > 0 ? `${mode} · ${parts.join(" · ")}` : `${mode} · 未设置条件`;
+}
+
+function ruleScopeDetails(
+  rule: UpstreamErrorResponseRule,
+  providers: ProviderSummary[],
+  providerLoadState: ProviderLoadState
+): string {
+  const cliScope = rule.cli_keys.length === 0 ? "全部 CLI" : rule.cli_keys.map(cliLabel).join("、");
+  if (rule.provider_ids.length === 0) return `${cliScope} · 全部供应商`;
+  const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+  const names = rule.provider_ids.map((id) =>
+    providerScopeLabel(id, providerNames, providerLoadState)
+  );
+  return `${cliScope} · ${names.join("、")}`;
+}
+
 export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: Props) {
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<UpstreamErrorResponseRule | null>(null);
+  const [expandedRuleId, setExpandedRuleId] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
   const [providers, setProviders] = useState<ProviderSummary[]>([]);
   const [providerLoadState, setProviderLoadState] = useState<ProviderLoadState>("idle");
+  const [providerLoadGeneration, setProviderLoadGeneration] = useState(0);
   const stableRules = useMemo(() => cloneUpstreamErrorResponseRules(rules), [rules]);
   const sortedRules = useMemo(
     () =>
@@ -117,7 +156,6 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
   const busy = disabled || saving;
 
   useEffect(() => {
-    if (!editor || providerLoadState !== "idle") return;
     let active = true;
     setProviderLoadState("loading");
     void Promise.all(CLI_REGISTRY.map((cli) => providersList(cli.key)))
@@ -132,16 +170,16 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
     return () => {
       active = false;
     };
-  }, [editor, providerLoadState]);
+  }, [providerLoadGeneration]);
 
   function openCreateEditor() {
     if (busy || stableRules.length >= MAX_UPSTREAM_ERROR_RESPONSE_RULES) return;
-    if (providerLoadState === "error") setProviderLoadState("idle");
+    if (providerLoadState === "error") setProviderLoadGeneration((current) => current + 1);
     setEditor(createEditorState(createUpstreamErrorResponseRule(stableRules)));
   }
 
   function openEditEditor(rule: UpstreamErrorResponseRule) {
-    if (providerLoadState === "error") setProviderLoadState("idle");
+    if (providerLoadState === "error") setProviderLoadGeneration((current) => current + 1);
     setEditor(createEditorState(rule));
   }
 
@@ -204,7 +242,10 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
   async function deleteRule() {
     if (!deleteTarget || busy) return;
     const nextRules = stableRules.filter((rule) => rule.id !== deleteTarget.id);
-    if (await persistRules(nextRules, "规则已删除")) setDeleteTarget(null);
+    if (await persistRules(nextRules, "规则已删除")) {
+      setExpandedRuleId((current) => (current === deleteTarget.id ? null : current));
+      setDeleteTarget(null);
+    }
   }
 
   return (
@@ -213,13 +254,13 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
         <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
           <div className="min-w-0">
             <div className="flex flex-wrap items-center gap-2">
-              <h4 className="text-sm font-medium text-foreground">最终响应改写规则</h4>
+              <h4 className="text-sm font-medium text-foreground">最终 HTTP 错误改写规则</h4>
               <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
                 {stableRules.length}
               </span>
             </div>
             <p className="mt-1 text-xs text-muted-foreground">
-              仅在重试与 Provider 切换结束后，对最终上游 HTTP 4xx/5xx 生效。
+              仅处理重试与供应商切换结束后的最终 HTTP 4xx/5xx；不处理网络失败或 HTTP 200 SSE 错误。
             </p>
           </div>
           <Tooltip content="新建规则">
@@ -242,58 +283,119 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
           </div>
         ) : (
           <div className="divide-y divide-border border-y border-border">
-            {sortedRules.map(({ rule }) => (
-              <div key={rule.id} className="flex items-center gap-3 py-3">
-                <Switch
-                  checked={rule.enabled}
-                  disabled={busy}
-                  aria-label={`${rule.enabled ? "停用" : "启用"}规则 ${rule.name}`}
-                  onCheckedChange={(checked) => void toggleRule(rule, checked)}
-                />
-                <div className="min-w-0 flex-1">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <span className="truncate text-sm font-medium text-foreground">
-                      {rule.name}
-                    </span>
-                    <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                      P{rule.priority}
-                    </span>
-                    {!rule.enabled ? (
-                      <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                        已停用
+            {sortedRules.map(({ rule }) => {
+              const expanded = expandedRuleId === rule.id;
+              const detailsId = `upstream-response-rule-details-${rule.id}`;
+              const summary = [
+                ruleMatchSummary(rule),
+                ruleScopeSummary(rule, providers, providerLoadState),
+                ruleActionSummary(rule),
+              ].join(" · ");
+
+              return (
+                <div key={rule.id}>
+                  <div className="flex min-h-12 items-center gap-2 py-1.5">
+                    <Switch
+                      className="shrink-0"
+                      checked={rule.enabled}
+                      disabled={busy}
+                      aria-label={`${rule.enabled ? "停用" : "启用"}规则 ${rule.name}`}
+                      onCheckedChange={(checked) => void toggleRule(rule, checked)}
+                    />
+                    <button
+                      type="button"
+                      className="group flex min-w-0 flex-1 items-center gap-2 rounded px-1.5 py-2 text-left transition-colors hover:bg-secondary/60 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                      aria-expanded={expanded}
+                      aria-label={`${expanded ? "收起" : "查看"}规则详情 ${rule.name}`}
+                      onClick={() =>
+                        setExpandedRuleId((current) => (current === rule.id ? null : rule.id))
+                      }
+                    >
+                      <span className="min-w-0 max-w-52 truncate text-sm font-medium text-foreground sm:max-w-64">
+                        {rule.name}
                       </span>
-                    ) : null}
+                      <span className="shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                        P{rule.priority}
+                      </span>
+                      {!rule.enabled ? (
+                        <span className="hidden shrink-0 rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground sm:inline">
+                          已停用
+                        </span>
+                      ) : null}
+                      <span className="hidden min-w-0 flex-1 truncate text-xs text-muted-foreground md:block">
+                        {summary}
+                      </span>
+                      <ChevronDown
+                        className={cn(
+                          "h-4 w-4 shrink-0 text-muted-foreground transition-transform",
+                          expanded && "rotate-180"
+                        )}
+                      />
+                    </button>
+                    <Tooltip content="编辑规则">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={`编辑规则 ${rule.name}`}
+                        disabled={busy}
+                        onClick={() => openEditEditor(rule)}
+                      >
+                        <Pencil className="h-4 w-4" />
+                      </Button>
+                    </Tooltip>
+                    <Tooltip content="删除规则">
+                      <Button
+                        size="icon"
+                        variant="ghost"
+                        aria-label={`删除规则 ${rule.name}`}
+                        disabled={busy}
+                        onClick={() => setDeleteTarget(rule)}
+                      >
+                        <Trash2 className="h-4 w-4 text-destructive" />
+                      </Button>
+                    </Tooltip>
                   </div>
-                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                    <span>{ruleMatchSummary(rule)}</span>
-                    <span>{ruleScopeSummary(rule, providers)}</span>
-                    <span>{ruleActionSummary(rule)}</span>
-                  </div>
+
+                  {expanded ? (
+                    <div
+                      id={detailsId}
+                      className="border-t border-border/70 bg-secondary/20 px-3 py-3 sm:pl-14"
+                    >
+                      <dl className="grid gap-x-4 gap-y-2 text-xs sm:grid-cols-[5rem_minmax(0,1fr)]">
+                        {rule.description ? (
+                          <>
+                            <dt className="font-medium text-muted-foreground">说明</dt>
+                            <dd className="min-w-0 break-words text-foreground">
+                              {rule.description}
+                            </dd>
+                          </>
+                        ) : null}
+                        <dt className="font-medium text-muted-foreground">匹配条件</dt>
+                        <dd className="min-w-0 break-words text-foreground">
+                          {ruleMatchDetails(rule)}
+                        </dd>
+                        <dt className="font-medium text-muted-foreground">生效范围</dt>
+                        <dd className="min-w-0 break-words text-foreground">
+                          {ruleScopeDetails(rule, providers, providerLoadState)}
+                        </dd>
+                        <dt className="font-medium text-muted-foreground">响应行为</dt>
+                        <dd className="min-w-0 break-words text-foreground">
+                          {ruleActionSummary(rule)}
+                        </dd>
+                        {rule.message_behavior.mode === "override" ? (
+                          <>
+                            <dt className="font-medium text-muted-foreground">自定义信息</dt>
+                            <dd className="min-w-0 whitespace-pre-wrap break-words text-foreground">
+                              {rule.message_behavior.message}
+                            </dd>
+                          </>
+                        ) : null}
+                      </dl>
+                    </div>
+                  ) : null}
                 </div>
-                <Tooltip content="编辑规则">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    aria-label={`编辑规则 ${rule.name}`}
-                    disabled={busy}
-                    onClick={() => openEditEditor(rule)}
-                  >
-                    <Pencil className="h-4 w-4" />
-                  </Button>
-                </Tooltip>
-                <Tooltip content="删除规则">
-                  <Button
-                    size="icon"
-                    variant="ghost"
-                    aria-label={`删除规则 ${rule.name}`}
-                    disabled={busy}
-                    onClick={() => setDeleteTarget(rule)}
-                  >
-                    <Trash2 className="h-4 w-4 text-destructive" />
-                  </Button>
-                </Tooltip>
-              </div>
-            ))}
+              );
+            })}
           </div>
         )}
       </div>
@@ -342,6 +444,15 @@ function RuleEditorDialog({
   if (!editor) return null;
   const { rule } = editor;
   const knownProviderIds = new Set(providers.map((provider) => provider.id));
+  const providerNames = new Map(providers.map((provider) => [provider.id, provider.name]));
+  const visibleProviders =
+    rule.cli_keys.length === 0
+      ? providers
+      : providers.filter((provider) => rule.cli_keys.includes(provider.cli_key));
+  const visibleProviderIds = new Set(visibleProviders.map((provider) => provider.id));
+  const incompatibleProviderIds = rule.provider_ids.filter(
+    (id) => knownProviderIds.has(id) && !visibleProviderIds.has(id)
+  );
   const deletedProviderIds =
     providerLoadState === "ready"
       ? rule.provider_ids.filter((id) => !knownProviderIds.has(id))
@@ -373,7 +484,7 @@ function RuleEditorDialog({
               onChange={(event) => setRule({ name: event.currentTarget.value })}
             />
           </Field>
-          <Field label="优先级">
+          <Field label="优先级" hint="数字越小越先匹配；命中后停止">
             <Input
               aria-label="规则优先级"
               type="number"
@@ -415,11 +526,14 @@ function RuleEditorDialog({
                   )}
                   onClick={() => setRule({ match_mode: mode })}
                 >
-                  {mode === "any" ? "任一匹配" : "全部匹配"}
+                  {mode === "any" ? "状态码或关键词" : "状态码且关键词"}
                 </button>
               ))}
             </div>
           </div>
+          <p className="mb-3 text-xs text-muted-foreground">
+            同一组内的多个状态码、多个关键词均按“或”匹配。
+          </p>
           <div className="grid gap-4 sm:grid-cols-2">
             <Field label="上游状态码" hint="400-599，以逗号分隔">
               <Input
@@ -458,17 +572,27 @@ function RuleEditorDialog({
                     checked={rule.cli_keys.includes(cli.key)}
                     disabled={saving}
                     label={cli.name}
-                    onChange={() => setRule({ cli_keys: toggleValue(rule.cli_keys, cli.key) })}
+                    onChange={() => {
+                      const cliKeys = toggleValue(rule.cli_keys, cli.key);
+                      const providerIds =
+                        cliKeys.length === 0
+                          ? rule.provider_ids
+                          : rule.provider_ids.filter((id) => {
+                              const provider = providers.find((item) => item.id === id);
+                              return !provider || cliKeys.includes(provider.cli_key);
+                            });
+                      setRule({ cli_keys: cliKeys, provider_ids: providerIds });
+                    }}
                   />
                 ))}
               </div>
             </Field>
-            <Field label="供应商" hint="不选即全部">
+            <Field label="供应商" hint="不选即所选 CLI 下全部供应商">
               <div className="max-h-40 space-y-2 overflow-y-auto rounded-md border border-border p-2">
                 {providerLoadState === "loading" ? (
                   <div className="px-1 py-2 text-xs text-muted-foreground">正在读取…</div>
                 ) : null}
-                {providers.map((provider) => (
+                {visibleProviders.map((provider) => (
                   <ScopeCheckbox
                     key={provider.id}
                     checked={rule.provider_ids.includes(provider.id)}
@@ -476,6 +600,17 @@ function RuleEditorDialog({
                     label={`${cliLabel(provider.cli_key)} · ${provider.name}`}
                     onChange={() =>
                       setRule({ provider_ids: toggleValue(rule.provider_ids, provider.id) })
+                    }
+                  />
+                ))}
+                {incompatibleProviderIds.map((id) => (
+                  <ScopeCheckbox
+                    key={`incompatible-${String(id)}`}
+                    checked={true}
+                    disabled={saving}
+                    label={`${providerScopeLabel(id, providerNames, providerLoadState)}（与所选 CLI 不匹配）`}
+                    onChange={() =>
+                      setRule({ provider_ids: rule.provider_ids.filter((value) => value !== id) })
                     }
                   />
                 ))}
@@ -504,8 +639,10 @@ function RuleEditorDialog({
                 {providerLoadState === "error" && providers.length === 0 ? (
                   <div className="px-1 py-2 text-xs text-muted-foreground">供应商数据不可用</div>
                 ) : null}
-                {providerLoadState === "ready" && providers.length === 0 ? (
-                  <div className="px-1 py-2 text-xs text-muted-foreground">暂无供应商</div>
+                {providerLoadState === "ready" && visibleProviders.length === 0 ? (
+                  <div className="px-1 py-2 text-xs text-muted-foreground">
+                    {rule.cli_keys.length === 0 ? "暂无供应商" : "所选 CLI 暂无供应商"}
+                  </div>
                 ) : null}
               </div>
             </Field>
@@ -601,6 +738,7 @@ function RuleEditorDialog({
             <Switch
               checked={rule.enabled}
               disabled={saving}
+              aria-label="启用规则"
               onCheckedChange={(enabled) => setRule({ enabled })}
             />
             启用规则

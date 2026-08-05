@@ -23,7 +23,7 @@ import { Switch } from "../../../ui/Switch";
 import { TabList } from "../../../ui/TabList";
 import { NetworkSettingsCard } from "../NetworkSettingsCard";
 import { WslSettingsCard } from "../WslSettingsCard";
-import { Bell, ChevronDown, Shield, TrendingDown, Globe } from "lucide-react";
+import { Bell, ChevronDown, Shield, ShieldAlert, TrendingDown, Globe } from "lucide-react";
 import type { UpstreamRetryPolicy } from "../../../services/settings/settings";
 import {
   cloneUpstreamRetryPolicy,
@@ -781,27 +781,18 @@ export function CliManagerGeneralTab({
             </CollapsibleSettingsCard>
 
             {appSettings ? (
-              <section
-                aria-labelledby="upstream-error-handling-title"
-                className="rounded-lg border border-border bg-white p-5 dark:bg-secondary"
+              <CollapsibleSettingsCard
+                icon={<ShieldAlert className="h-5 w-5 text-white" />}
+                title="上游错误处理"
+                subtitle="先处理可恢复失败；只有重试与供应商切换结束后的 HTTP 错误才进入改写。"
+                iconClassName="bg-rose-500"
               >
-                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
-                  <div>
-                    <h3
-                      id="upstream-error-handling-title"
-                      className="text-sm font-semibold text-foreground"
-                    >
-                      上游错误处理
-                    </h3>
-                    <p className="mt-1 text-xs text-muted-foreground">
-                      瞬时错误先恢复；只有最终 HTTP 失败才进入响应改写。
-                    </p>
-                  </div>
+                <div className="flex justify-end">
                   <TabList
                     ariaLabel="上游错误处理模式"
                     items={[
                       { key: "retry", label: "重试规则" },
-                      { key: "rewrite", label: "最终响应改写" },
+                      { key: "rewrite", label: "最终 HTTP 错误改写" },
                     ]}
                     value={upstreamErrorMode}
                     onChange={setUpstreamErrorMode}
@@ -823,51 +814,10 @@ export function CliManagerGeneralTab({
                       onChange={(next) => {
                         setUpstreamRetryPolicy(next);
                       }}
+                      streamInternalErrorGuardMs={streamInternalErrorGuardMs}
+                      maxStreamInternalErrorGuardMs={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
+                      onStreamInternalErrorGuardMsChange={setStreamInternalErrorGuardMs}
                     />
-                    <div className="mt-4 border-t border-border pt-2">
-                      <SettingsRow
-                        label="Codex 流内错误观察窗口"
-                        subtitle="首个有效输出后暂存响应，在提交客户端前识别可重试错误。0 表示不额外等待。"
-                      >
-                        <div className="flex items-center gap-2">
-                          <Input
-                            aria-label="流内部错误观察窗口"
-                            type="number"
-                            value={streamInternalErrorGuardMs}
-                            onChange={(event) => {
-                              const next = event.currentTarget.valueAsNumber;
-                              if (Number.isFinite(next)) setStreamInternalErrorGuardMs(next);
-                            }}
-                            onBlur={(event) => {
-                              if (!appSettings) return;
-                              const next = event.currentTarget.valueAsNumber;
-                              if (
-                                !Number.isFinite(next) ||
-                                next < 0 ||
-                                next > MAX_STREAM_INTERNAL_ERROR_GUARD_MS
-                              ) {
-                                toast(
-                                  `流内部错误观察窗口必须为 0-${MAX_STREAM_INTERNAL_ERROR_GUARD_MS} 毫秒`
-                                );
-                                setStreamInternalErrorGuardMs(
-                                  appSettings.stream_internal_error_guard_ms
-                                );
-                                return;
-                              }
-                              void onPersistCommonSettings({
-                                stream_internal_error_guard_ms: next,
-                              });
-                            }}
-                            onKeyDown={blurOnEnter}
-                            className="w-24"
-                            min={0}
-                            max={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
-                            disabled={commonSettingsDisabled}
-                          />
-                          <span className="w-8 text-sm text-muted-foreground">毫秒</span>
-                        </div>
-                      </SettingsRow>
-                    </div>
                     <div className="mt-3 flex justify-end">
                       <Button
                         variant="secondary"
@@ -881,13 +831,25 @@ export function CliManagerGeneralTab({
                             toast(validationMessage);
                             return;
                           }
+                          if (
+                            !Number.isSafeInteger(streamInternalErrorGuardMs) ||
+                            streamInternalErrorGuardMs < 0 ||
+                            streamInternalErrorGuardMs > MAX_STREAM_INTERNAL_ERROR_GUARD_MS
+                          ) {
+                            toast(
+                              `流内部错误观察窗口必须为 0-${MAX_STREAM_INTERNAL_ERROR_GUARD_MS} 毫秒`
+                            );
+                            return;
+                          }
                           const updated = await onPersistCommonSettings({
                             upstream_retry_policy: upstreamRetryPolicy,
+                            stream_internal_error_guard_ms: streamInternalErrorGuardMs,
                           });
                           if (updated) {
                             setUpstreamRetryPolicy(
                               cloneUpstreamRetryPolicy(updated.upstream_retry_policy)
                             );
+                            setStreamInternalErrorGuardMs(updated.stream_internal_error_guard_ms);
                           }
                         }}
                       >
@@ -898,7 +860,7 @@ export function CliManagerGeneralTab({
                 ) : (
                   <div
                     role="tabpanel"
-                    aria-label="最终响应改写"
+                    aria-label="最终 HTTP 错误改写"
                     className="mt-5 border-t border-border pt-5"
                   >
                     <UpstreamErrorResponseRulesCard
@@ -910,7 +872,7 @@ export function CliManagerGeneralTab({
                     />
                   </div>
                 )}
-              </section>
+              </CollapsibleSettingsCard>
             ) : null}
           </div>
         )}
@@ -952,7 +914,7 @@ function CollapsibleSettingsCard({
             {icon}
           </div>
           <div className="min-w-0">
-            <div className="text-base font-semibold text-foreground">{title}</div>
+            <h3 className="text-base font-semibold text-foreground">{title}</h3>
             <div className="mt-1 text-sm text-muted-foreground">{subtitle}</div>
           </div>
         </div>
