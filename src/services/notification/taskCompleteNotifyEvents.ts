@@ -2,7 +2,7 @@
  * 任务结束提醒模块
  *
  * 监听 gateway:request_signal 事件，使用去抖机制检测 AI CLI 任务完成。
- * 当某个 cli_key 在静默期（QUIET_PERIOD_MS_DEFAULT）内无新请求时，判定任务完成并发送系统通知。
+ * 当某个 cli_key 在对应静默期内无新请求，并经后端确认没有活跃推理请求时，发送系统通知。
  *
  * 参考：https://github.com/ZekerTop/ai-cli-complete-notify
  */
@@ -11,6 +11,7 @@ import { useSyncExternalStore } from "react";
 import { cliShortLabel } from "../../constants/clis";
 import { gatewayEventNames } from "../../constants/gatewayEvents";
 import { logToConsole } from "../consoleLog";
+import { activeRequestLogsSnapshot } from "../gateway/activeRequests";
 import { subscribeGatewayEvent } from "../gateway/gatewayEventBus";
 import { normalizeGatewayRequestSignalEvent } from "../gateway/gatewayEvents";
 import { emitListenerSnapshot } from "../../utils/listeners";
@@ -21,7 +22,7 @@ import type { GatewayRequestSignalEvent } from "../gateway/gatewayEvents";
 // Constants
 // ---------------------------------------------------------------------------
 
-/** 静默期：最后一次请求完成后等待多久判定任务结束（ms） */
+/** 静默期：最后一次请求完成后等待多久判定任务结束（ms）。 */
 const QUIET_PERIOD_MS_DEFAULT = 30_000;
 const IN_FLIGHT_TRACE_TTL_MS = 2 * 60 * 60 * 1000;
 const MAX_IN_FLIGHT_TRACE_IDS = 500;
@@ -93,6 +94,8 @@ type SessionState = {
   pendingTimer: ReturnType<typeof setTimeout> | null;
   /** 本轮是否已发送通知（避免重复通知） */
   notified: boolean;
+  /** 使定时器和异步后端复核在新事件到达后失效。 */
+  generation: number;
 };
 
 const sessions = new Map<string, SessionState>();
@@ -125,7 +128,7 @@ function normalizeBoundedText(value: unknown, maxChars: number): string | null {
 }
 
 function normalizeCliKey(value: unknown): string | null {
-  return normalizeBoundedText(value, MAX_CLI_KEY_CHARS);
+  return normalizeBoundedText(value, MAX_CLI_KEY_CHARS)?.toLowerCase() ?? null;
 }
 
 function normalizeTraceId(value: unknown): string | null {
@@ -145,6 +148,7 @@ function createSession(now: number): SessionState {
     lastRequestedModel: null,
     pendingTimer: null,
     notified: false,
+    generation: 0,
   };
 }
 
@@ -217,6 +221,7 @@ function handleRequestStart(payload: GatewayRequestSignalEvent) {
     pruneStaleInFlightTraceIds(session, now);
   }
   rememberSession(cliKey, session);
+  session.generation += 1;
 
   // 只要有新请求开始，就应该取消“静默结束”定时器，避免长请求/并发请求误触发通知。
   if (session.pendingTimer != null) {
@@ -249,6 +254,7 @@ function handleRequestComplete(payload: GatewayRequestSignalEvent) {
     pruneStaleInFlightTraceIds(session, now);
   }
   rememberSession(cliKey, session);
+  session.generation += 1;
 
   session.lastRequestAt = now;
   session.requestCount += 1;
@@ -262,15 +268,17 @@ function handleRequestComplete(payload: GatewayRequestSignalEvent) {
   }
 
   if (session.inFlightTraceIds.size === 0) {
+    const generation = session.generation;
     session.pendingTimer = setTimeout(() => {
-      void maybeNotify(cliKey);
+      void maybeNotify(cliKey, generation);
     }, QUIET_PERIOD_MS_DEFAULT);
   }
 }
 
-async function maybeNotify(cliKey: string) {
-  const session = sessions.get(cliKey);
+async function maybeNotify(cliKey: string, generation: number) {
+  let session = sessions.get(cliKey);
   if (!session) return;
+  if (session.generation !== generation) return;
   if (session.notified) return;
   if (session.inFlightTraceIds.size > 0) return;
 
@@ -279,6 +287,29 @@ async function maybeNotify(cliKey: string) {
     session.pendingTimer = null;
     return;
   }
+
+  try {
+    const activeRequests = await activeRequestLogsSnapshot();
+    session = sessions.get(cliKey);
+    if (!session || session.generation !== generation || !enabled) return;
+    if (activeRequests.some((request) => normalizeCliKey(request.cli_key) === cliKey)) {
+      session.pendingTimer = null;
+      return;
+    }
+  } catch (error) {
+    session = sessions.get(cliKey);
+    if (session?.generation === generation) {
+      session.pendingTimer = null;
+    }
+    logToConsole("warn", "任务结束提醒跳过：无法确认后端活跃请求", {
+      cliKey,
+      error: String(error),
+    });
+    return;
+  }
+
+  session = sessions.get(cliKey);
+  if (!session || session.generation !== generation || session.inFlightTraceIds.size > 0) return;
 
   session.notified = true;
   session.pendingTimer = null;
