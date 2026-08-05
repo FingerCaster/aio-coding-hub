@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"上游错误与 Rust 质量入口"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"证明改写不改变 retry/circuit 预算"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"保护 Provider route、probe 和 attempt 语义"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"规则字段严格写入与并发所有权"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"settings-runtime-log-UI 数据流"}
+{"file":".trellis/tasks/08-05-upstream-error-response-rewrite/research/reference-diff.md","reason":"选择性移植边界"}
+

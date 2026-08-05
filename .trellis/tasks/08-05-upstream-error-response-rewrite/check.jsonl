@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"重试与改写职责隔离"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"attempt/status/route 事实源检查"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"设置读写和迁移检查"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"generated bindings 与 UI 质量门"}
+{"file":".trellis/tasks/08-05-upstream-error-response-rewrite/research/reference-diff.md","reason":"确认未覆盖 fork 共享逻辑"}
