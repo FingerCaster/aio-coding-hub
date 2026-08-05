@@ -17,14 +17,55 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
+  change-scope:
+    runs-on: ubuntu-latest
+    outputs:
+      scope: ${{ steps.scope.outputs.scope }}
+      full_ci: ${{ steps.scope.outputs.full_ci }}
+      docs_checks: ${{ steps.scope.outputs.docs_checks }}
+      reason: ${{ steps.scope.outputs.reason }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Validate CI change-scope classifier
+        run: node scripts/ci-change-scope.selftest.mjs
+
+      - name: Validate CI workflow contract
+        run: node scripts/ci-workflow-contract.selftest.mjs
+
+      - id: scope
+        name: Classify changed paths
+        shell: bash
+        env:
+          CI_EVENT_NAME: ${{ github.event_name }}
+          CI_BASE_SHA: ${{ github.event.pull_request.base.sha || '' }}
+          CI_HEAD_SHA: ${{ github.event.pull_request.head.sha || github.sha }}
+          CI_BEFORE_SHA: ${{ github.event.before || '' }}
+        run: >-
+          node scripts/ci-change-scope.mjs
+          --event "$CI_EVENT_NAME"
+          --base "$CI_BASE_SHA"
+          --head "$CI_HEAD_SHA"
+          --before "$CI_BEFORE_SHA"
+
   pr-title:
     if: github.event_name == 'pull_request'
     runs-on: ubuntu-latest
     steps:
       - name: Check PR title (Conventional Commits)
         shell: bash
+        env:
+          PR_TITLE: ${{ github.event.pull_request.title }}
         run: |
-          title="${{ github.event.pull_request.title }}"
+          title="$PR_TITLE"
           echo "PR title: $title"
           pattern='^(feat|fix|docs|chore|style|refactor|perf|test|ci|build|chore|revert)(\([^)]+\))?: .+'
           if [[ ! "$title" =~ $pattern ]]; then
@@ -33,7 +74,30 @@ jobs:
             exit 1
           fi
 
+  docs-contract:
+    needs: change-scope
+    if: needs.change-scope.outputs.docs_checks == 'true'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Validate plugin documentation
+        run: node scripts/check-plugin-system-docs.mjs
+
+      - name: Validate plugin API contract
+        run: node scripts/check-plugin-api-contract.mjs
+
+      - name: Validate Trellis spec links
+        run: node scripts/check-spec-links.mjs
+
   support-contract:
+    needs: change-scope
+    if: needs.change-scope.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     outputs:
       desktop_matrix: ${{ steps.matrix.outputs.desktop_matrix }}
@@ -65,7 +129,8 @@ jobs:
         run: node scripts/check-sync-upstream-policy.mjs
 
   desktop-support-contract:
-    needs: support-contract
+    needs: [change-scope, support-contract]
+    if: needs.change-scope.outputs.full_ci == 'true'
     strategy:
       fail-fast: false
       matrix:
@@ -86,7 +151,8 @@ jobs:
         run: pnpm check:support-matrix
 
   frontend:
-    needs: support-contract
+    needs: [change-scope, support-contract]
+    if: needs.change-scope.outputs.full_ci == 'true'
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -158,7 +224,8 @@ jobs:
         run: pnpm build
 
   rust:
-    needs: support-contract
+    needs: [change-scope, support-contract]
+    if: needs.change-scope.outputs.full_ci == 'true'
     runs-on: ubuntu-22.04
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -232,3 +299,41 @@ jobs:
         working-directory: src-tauri
         # quick-xml <0.41 is still pulled by current upstream Tauri/Wayland/notification deps.
         run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195
+
+  ci-gate:
+    name: ci-gate
+    if: always()
+    needs:
+      - change-scope
+      - pr-title
+      - docs-contract
+      - support-contract
+      - desktop-support-contract
+      - frontend
+      - rust
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Require expected CI jobs
+        env:
+          EVENT_NAME: ${{ github.event_name }}
+          CHANGE_SCOPE_RESULT: ${{ needs.change-scope.result }}
+          SCOPE: ${{ needs.change-scope.outputs.scope }}
+          FULL_CI: ${{ needs.change-scope.outputs.full_ci }}
+          DOCS_CHECKS: ${{ needs.change-scope.outputs.docs_checks }}
+          SCOPE_REASON: ${{ needs.change-scope.outputs.reason }}
+          PR_TITLE_RESULT: ${{ needs.pr-title.result }}
+          DOCS_RESULT: ${{ needs.docs-contract.result }}
+          SUPPORT_RESULT: ${{ needs.support-contract.result }}
+          DESKTOP_RESULT: ${{ needs.desktop-support-contract.result }}
+          FRONTEND_RESULT: ${{ needs.frontend.result }}
+          RUST_RESULT: ${{ needs.rust.result }}
+        run: node scripts/ci-gate.mjs

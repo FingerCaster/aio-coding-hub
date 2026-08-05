@@ -1,0 +1,29 @@
+{
+  "version": 1,
+  "processDocumentation": {
+    "exactPaths": ["AGENTS.md"],
+    "prefixRules": [
+      {
+        "prefix": ".trellis/tasks/",
+        "extensions": [".md", ".json", ".jsonl"]
+      },
+      {
+        "prefix": ".trellis/workspace/",
+        "extensions": [".md"]
+      }
+    ]
+  },
+  "checkedDocumentation": {
+    "exactPaths": ["README.md", "README_EN.md"],
+    "prefixRules": [
+      {
+        "prefix": "docs/",
+        "extensions": [".md"]
+      },
+      {
+        "prefix": ".trellis/spec/",
+        "extensions": [".md"]
+      }
+    ]
+  }
+}

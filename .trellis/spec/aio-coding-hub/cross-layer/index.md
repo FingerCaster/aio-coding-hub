@@ -42,6 +42,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Reliability boundary contract](./reliability-boundaries-contract.md):
   route-draft initialization, retryable startup state, bounded diagnostic
   redaction, backend-confirmed task notifications, and manual upstream review.
+- [CI change-scope contract](./ci-change-scope-contract.md): fail-closed Git
+  range and path classification, documentation tiers, conditional jobs, and
+  the stable always-run CI gate.
 - [Trellis task context archive contract](./trellis-task-context-archive-contract.md):
   exact self-reference rewriting and repository-wide context validation before archive commit.
 - [Usage insights contract](./usage-insights-contract.md): folder identity and
@@ -175,6 +178,16 @@ Provider route-draft initialization, or the upstream-sync workflow:
 3. Keep diagnostic projections bounded and fail closed at both frontend and Rust boundaries.
 4. Confirm upstream synchronization and task notification against their authoritative source before acting.
 
+When changing CI path policy, classification, conditional jobs, or the final gate:
+
+1. Read [CI change-scope contract](./ci-change-scope-contract.md).
+2. Trace event payload SHAs through merge-base/diff parsing, path policy, job
+   outputs, every conditional job, and ci-gate.
+3. Keep control-plane paths hard-coded to full and machine-readable or
+   runtime-parsed files outside documentation-only tiers.
+4. Preserve every existing full-tier check and verify selected jobs succeed
+   while unselected jobs are explicitly skipped.
+
 When changing Trellis task archive or context validation:
 
 1. Read [Trellis task context archive contract](./trellis-task-context-archive-contract.md).
@@ -207,6 +220,10 @@ When changing usage folders, development-time estimates, or provider metrics tre
 - When changing usage insights, verify folder-filter parity, unknown-folder
   retention, development-time gap/hour/day arithmetic, trend metric validity,
   complete normalized query keys, generated bindings, and UI empty/error states.
+- When changing CI scope routing, run the dependency-free classifier and
+  workflow contract self-tests, all three documentation contracts, actionlint
+  when available, and git diff --check; inspect the full job graph for retained
+  checks.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
 - When changing upstream error handling, verify retry/rewrite save isolation,
