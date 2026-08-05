@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"全范围 spec compliance 复核"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"全范围跨边界和 fail-closed 复核"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/current-ci-and-reference.md","reason":"确认完整验证矩阵不漏项"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/ci-change-scope-contract.md","reason":"复核分类、workflow 和最终 gate 合同"}
+{"file":".github/workflows/ci.yml","reason":"复核 job outputs、needs、if 与完整 full-tier 命令"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-implementation/research/inline-trellis-check.md","reason":"复核内联独立检查发现与修复"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-validation/validation.md", "reason": "复核完整可重复验证证据"}

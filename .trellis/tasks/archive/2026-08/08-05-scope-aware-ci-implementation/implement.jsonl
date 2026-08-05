@@ -1,0 +1,6 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"确认 CI 变更范围合同的 cross-layer 所有权与索引格式"}
+{"file":".trellis/spec/guides/index.md","reason":"加载共享指南入口"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"约束事件、Git 输出、策略、workflow outputs 与最终 gate 的边界"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"复用仓库已有 Node 合同脚本模式并避免重复检查逻辑"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/current-ci-and-reference.md","reason":"当前 CI job/检查真相与参考实现差异"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/origin-required-checks.md","reason":"固定 ci-gate 的远端兼容性边界"}

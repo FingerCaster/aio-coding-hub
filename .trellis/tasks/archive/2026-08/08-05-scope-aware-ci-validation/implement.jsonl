@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"加载受影响根应用 cross-layer 规范与 Quality Check"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"验证分类到 gate 的所有边界"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/current-ci-and-reference.md","reason":"逐项比对当前 full CI 和参考差异"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/origin-required-checks.md","reason":"复核远端 required checks 兼容性"}

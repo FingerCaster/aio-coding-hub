@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"复核新增 CI 合同与根应用跨层规范一致"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"复核完整数据流、错误回退与 job 选择"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/current-ci-and-reference.md","reason":"复核未遗漏 fork 当前 full 检查或引入参考仓库不存在功能"}
+{"file":".trellis/tasks/archive/2026-08/08-05-scope-aware-ci-research/research/origin-required-checks.md","reason":"复核 gate 名称、always 语义与 required checks 兼容性"}
