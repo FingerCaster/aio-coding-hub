@@ -4,6 +4,7 @@ import { MemoryRouter } from "react-router-dom";
 import type { ReactElement } from "react";
 import { toast } from "sonner";
 import { CACHE_ANOMALY_MONITOR_GUIDE_COPY } from "../../../../services/gateway/cacheAnomalyMonitorConfig";
+import { createUpstreamErrorResponseRule } from "../../../../services/gateway/upstreamErrorResponseRules";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../../services/gateway/upstreamRetryPolicy";
 import type { GatewayRectifierSettingsPatch } from "../../../../services/settings/settingsGatewayRectifier";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
@@ -125,7 +126,7 @@ function createDefaultTabProps(overrides: DefaultPropsOverrides = {}) {
 }
 
 describe("cli-manager/GeneralTab", () => {
-  it("creates an upstream error response rule below circuit and retry settings", async () => {
+  it("creates a response rule from the unified upstream error handling entry", async () => {
     const appSettings = createTestAppSettings();
     const onPersistCommonSettings = vi.fn().mockImplementation(async (patch) =>
       createTestAppSettings({
@@ -137,7 +138,9 @@ describe("cli-manager/GeneralTab", () => {
       <CliManagerGeneralTab {...createDefaultTabProps({ appSettings, onPersistCommonSettings })} />
     );
 
-    expect(screen.getByText("上游错误响应规则")).toBeInTheDocument();
+    expect(screen.getByRole("heading", { name: "上游错误处理" })).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("tab", { name: "最终响应改写" }));
+    expect(screen.getByText("最终响应改写规则")).toBeInTheDocument();
     fireEvent.click(screen.getByRole("button", { name: "新建上游错误响应规则" }));
     fireEvent.change(screen.getByLabelText("规则名称"), { target: { value: "限额响应" } });
     fireEvent.change(screen.getByLabelText("匹配上游状态码"), {
@@ -314,40 +317,41 @@ describe("cli-manager/GeneralTab", () => {
     expect(screen.getByText(CACHE_ANOMALY_MONITOR_GUIDE_COPY.thresholds)).toBeInTheDocument();
 
     // Inputs: change + blur should validate and persist (or toast on invalid)
-    fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    fireEvent.click(screen.getByRole("button", { name: /熔断与回切/ }));
     expect(screen.getByText("最长熔断等待（可提前试探）")).toBeInTheDocument();
     expect(screen.getByText(/策略触发不会绕过它/)).toBeInTheDocument();
-    const inputs = screen.getAllByRole("spinbutton");
-    expect(inputs.length).toBeGreaterThan(7);
-
-    fireEvent.keyDown(inputs[0], { key: "Enter" });
+    const firstByteInput = screen.getByRole("spinbutton", { name: "首字节超时" });
+    fireEvent.keyDown(firstByteInput, { key: "Enter" });
     expect(blurOnEnter).toHaveBeenCalled();
 
-    fireEvent.change(inputs[0], { target: { value: "5" } });
-    fireEvent.blur(inputs[0], { target: { value: "5" } });
+    fireEvent.change(firstByteInput, { target: { value: "5" } });
+    fireEvent.blur(firstByteInput, { target: { value: "5" } });
     expect(setUpstreamFirstByteTimeoutSeconds).toHaveBeenCalled();
     expect(onPersistCommonSettings).toHaveBeenCalledWith({
       upstream_first_byte_timeout_seconds: 5,
     });
 
-    fireEvent.change(inputs[1], { target: { value: "750" } });
-    fireEvent.blur(inputs[1], { target: { value: "750" } });
+    const guardInput = screen.getByRole("spinbutton", { name: "流内部错误观察窗口" });
+    fireEvent.change(guardInput, { target: { value: "750" } });
+    fireEvent.blur(guardInput, { target: { value: "750" } });
     expect(setStreamInternalErrorGuardMs).toHaveBeenCalledWith(750);
     expect(onPersistCommonSettings).toHaveBeenCalledWith({
       stream_internal_error_guard_ms: 750,
     });
-    fireEvent.change(inputs[1], { target: { value: "5001" } });
-    fireEvent.blur(inputs[1], { target: { value: "5001" } });
+    fireEvent.change(guardInput, { target: { value: "5001" } });
+    fireEvent.blur(guardInput, { target: { value: "5001" } });
     expect(toast).toHaveBeenCalledWith("流内部错误观察窗口必须为 0-5000 毫秒");
     expect(setStreamInternalErrorGuardMs).toHaveBeenCalledWith(500);
 
-    fireEvent.change(inputs[2], { target: { value: "-1" } });
-    fireEvent.blur(inputs[2], { target: { value: "-1" } });
+    const streamIdleInput = screen.getByRole("spinbutton", { name: "流式空闲超时" });
+    fireEvent.change(streamIdleInput, { target: { value: "-1" } });
+    fireEvent.blur(streamIdleInput, { target: { value: "-1" } });
     expect(toast).toHaveBeenCalledWith("上游流式空闲超时必须为 0（禁用）或 60-3600 秒");
     expect(setUpstreamStreamIdleTimeoutSeconds).toHaveBeenCalled();
 
-    fireEvent.change(inputs[3], { target: { value: "10" } });
-    fireEvent.blur(inputs[3], { target: { value: "10" } });
+    const nonStreamingInput = screen.getByRole("spinbutton", { name: "非流式总超时" });
+    fireEvent.change(nonStreamingInput, { target: { value: "10" } });
+    fireEvent.blur(nonStreamingInput, { target: { value: "10" } });
     expect(setUpstreamRequestTimeoutNonStreamingSeconds).toHaveBeenCalled();
     expect(onPersistCommonSettings).toHaveBeenCalledWith({
       upstream_request_timeout_non_streaming_seconds: 10,
@@ -365,21 +369,27 @@ describe("cli-manager/GeneralTab", () => {
     expect(onPersistCommonSettings).toHaveBeenCalledWith({
       natural_probe_max_wait_seconds: 301,
     });
-    fireEvent.change(inputs[5], { target: { value: "12" } });
-    fireEvent.blur(inputs[5], { target: { value: "12" } });
+    const cooldownInput = screen.getByRole("spinbutton", {
+      name: "Provider 冷却 / 试探最短间隔",
+    });
+    fireEvent.change(cooldownInput, { target: { value: "12" } });
+    fireEvent.blur(cooldownInput, { target: { value: "12" } });
     expect(setProviderCooldownSeconds).toHaveBeenCalled();
     expect(onPersistCommonSettings).toHaveBeenCalledWith({ provider_cooldown_seconds: 12 });
 
-    fireEvent.change(inputs[6], { target: { value: "120" } });
-    fireEvent.blur(inputs[6], { target: { value: "120" } });
+    const pingTtlInput = screen.getByRole("spinbutton", { name: "Ping 选择缓存 TTL" });
+    fireEvent.change(pingTtlInput, { target: { value: "120" } });
+    fireEvent.blur(pingTtlInput, { target: { value: "120" } });
     expect(setProviderBaseUrlPingCacheTtlSeconds).toHaveBeenCalled();
 
-    fireEvent.change(inputs[7], { target: { value: "6" } });
-    fireEvent.blur(inputs[7], { target: { value: "6" } });
+    const thresholdInput = screen.getByRole("spinbutton", { name: "熔断阈值" });
+    fireEvent.change(thresholdInput, { target: { value: "6" } });
+    fireEvent.blur(thresholdInput, { target: { value: "6" } });
     expect(setCircuitBreakerFailureThreshold).toHaveBeenCalled();
 
-    fireEvent.change(inputs[8], { target: { value: "31" } });
-    fireEvent.blur(inputs[8], { target: { value: "31" } });
+    const openDurationInput = screen.getByRole("spinbutton", { name: "最长熔断等待" });
+    fireEvent.change(openDurationInput, { target: { value: "31" } });
+    fireEvent.blur(openDurationInput, { target: { value: "31" } });
     expect(setCircuitBreakerOpenDurationMinutes).toHaveBeenCalled();
 
     fireEvent.click(screen.getByRole("radio", { name: "积极回切" }));
@@ -400,7 +410,7 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    fireEvent.click(screen.getByRole("button", { name: /熔断与回切/ }));
     const input = screen.getByRole("spinbutton", { name: "自然模式最长回切等待" });
     fireEvent.change(input, { target: { value: "0" } });
     fireEvent.blur(input, { target: { value: "0" } });
@@ -415,28 +425,40 @@ describe("cli-manager/GeneralTab", () => {
       <CliManagerGeneralTab {...createDefaultTabProps()} providerFailbackStrategy="aggressive" />
     );
 
-    fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    fireEvent.click(screen.getByRole("button", { name: /熔断与回切/ }));
     expect(
       screen.queryByRole("spinbutton", { name: "自然模式最长回切等待" })
     ).not.toBeInTheDocument();
     expect(screen.getByRole("radio", { name: "积极回切" })).toBeChecked();
   });
 
-  it("keeps retry policy details collapsed until opened and persists the global policy", async () => {
+  it("switches modes and keeps retry and rewrite persistence isolated", async () => {
     const upstreamRetryPolicy = {
       ...DEFAULT_UPSTREAM_RETRY_POLICY,
       max_retries: 2,
       backoff_ms: 250,
     };
-    const onPersistCommonSettings = vi
-      .fn()
-      .mockResolvedValue(createTestAppSettings({ upstream_retry_policy: upstreamRetryPolicy }));
+    const responseRule = {
+      ...createUpstreamErrorResponseRule([]),
+      name: "容量终态",
+      status_codes: [429],
+    };
+    const appSettings = createTestAppSettings({
+      upstream_retry_policy: upstreamRetryPolicy,
+      upstream_error_response_rules: [responseRule],
+    });
+    const onPersistCommonSettings = vi.fn().mockImplementation(async (patch) =>
+      createTestAppSettings({
+        ...appSettings,
+        ...patch,
+      })
+    );
     const setUpstreamRetryPolicy = vi.fn();
 
     renderTab(
       <CliManagerGeneralTab
         {...createDefaultTabProps({
-          appSettings: createTestAppSettings({ upstream_retry_policy: upstreamRetryPolicy }),
+          appSettings,
           onPersistCommonSettings,
         })}
         upstreamRetryPolicy={upstreamRetryPolicy}
@@ -444,10 +466,9 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
-    expect(screen.queryByText("HTTP 规则")).not.toBeInTheDocument();
-
-    fireEvent.click(screen.getByRole("button", { name: /熔断与重试/ }));
+    expect(screen.getByRole("tab", { name: "重试规则" })).toHaveAttribute("aria-selected", "true");
     expect(screen.getByText("HTTP 规则")).toBeInTheDocument();
+    expect(screen.queryByText("最终响应改写规则")).not.toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "保存重试策略" }));
 
@@ -457,6 +478,51 @@ describe("cli-manager/GeneralTab", () => {
       })
     );
     expect(setUpstreamRetryPolicy).toHaveBeenCalledWith(upstreamRetryPolicy);
+
+    onPersistCommonSettings.mockClear();
+    fireEvent.click(screen.getByRole("tab", { name: "最终响应改写" }));
+    expect(screen.getByRole("tab", { name: "最终响应改写" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    expect(screen.queryByText("HTTP 规则")).not.toBeInTheDocument();
+    expect(screen.getByText("最终响应改写规则")).toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("switch", { name: "停用规则 容量终态" }));
+    await waitFor(() =>
+      expect(onPersistCommonSettings).toHaveBeenCalledWith({
+        upstream_error_response_rules: [
+          expect.objectContaining({ name: "容量终态", enabled: false }),
+        ],
+      })
+    );
+  });
+
+  it("keeps segmented modes and longest rule text bounded for narrow layouts", () => {
+    const longName = Array.from("超长上游错误响应规则名称".repeat(16)).slice(0, 100).join("");
+    const responseRule = {
+      ...createUpstreamErrorResponseRule([]),
+      name: longName,
+      status_codes: [429, 500, 502, 503, 504],
+    };
+    renderTab(
+      <CliManagerGeneralTab
+        {...createDefaultTabProps({
+          appSettings: createTestAppSettings({
+            upstream_error_response_rules: [responseRule],
+          }),
+        })}
+      />
+    );
+
+    const modeTabs = screen.getByRole("tablist", { name: "上游错误处理模式" });
+    expect(modeTabs).toHaveClass("w-full");
+    for (const tab of screen.getAllByRole("tab")) expect(tab).toHaveClass("min-w-0");
+
+    fireEvent.click(screen.getByRole("tab", { name: "最终响应改写" }));
+    const ruleName = screen.getByText(longName);
+    expect(ruleName).toHaveClass("truncate");
+    expect(ruleName.closest(".min-w-0")).not.toBeNull();
   });
 
   it("shows readonly banner and disables settings controls", () => {
@@ -573,11 +639,7 @@ describe("cli-manager/GeneralTab", () => {
   it("shows error when enabling proxy without URL", async () => {
     renderTab(<CliManagerGeneralTab {...createDefaultTabProps()} />);
 
-    const switches = screen.getAllByRole("switch");
-    const proxySwitch =
-      switches.find((s) => s.closest("[data-testid]")?.textContent?.includes("上游代理")) ??
-      switches[switches.length - 1];
-    fireEvent.click(proxySwitch);
+    fireEvent.click(screen.getByRole("switch", { name: "启用上游代理" }));
 
     await waitFor(() => {
       expect(toast).toHaveBeenCalledWith("请先输入代理地址");
@@ -599,8 +661,7 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
-    const switches = screen.getAllByRole("switch");
-    fireEvent.click(switches[switches.length - 1]);
+    fireEvent.click(screen.getByRole("switch", { name: "启用上游代理" }));
 
     await waitFor(() => {
       expect(toast).toHaveBeenCalledWith("代理地址协议仅支持 http/https/socks5/socks5h");
@@ -797,9 +858,7 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
-    const switches = screen.getAllByRole("switch");
-    const proxySwitch = switches[switches.length - 1];
-    fireEvent.click(proxySwitch);
+    fireEvent.click(screen.getByRole("switch", { name: "启用上游代理" }));
 
     await waitFor(() => {
       expect(onPersistCommonSettings).toHaveBeenCalledWith({
@@ -832,9 +891,7 @@ describe("cli-manager/GeneralTab", () => {
       />
     );
 
-    const switches = screen.getAllByRole("switch");
-    const proxySwitch = switches[switches.length - 1];
-    fireEvent.click(proxySwitch);
+    fireEvent.click(screen.getByRole("switch", { name: "启用上游代理" }));
 
     await waitFor(() => {
       expect(onPersistCommonSettings).toHaveBeenCalledWith({

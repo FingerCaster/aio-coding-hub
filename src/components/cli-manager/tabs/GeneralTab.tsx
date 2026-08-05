@@ -20,6 +20,7 @@ import { Input } from "../../../ui/Input";
 import { SettingsRow } from "../../../ui/SettingsRow";
 import { RadioGroup } from "../../../ui/RadioGroup";
 import { Switch } from "../../../ui/Switch";
+import { TabList } from "../../../ui/TabList";
 import { NetworkSettingsCard } from "../NetworkSettingsCard";
 import { WslSettingsCard } from "../WslSettingsCard";
 import { Bell, ChevronDown, Shield, TrendingDown, Globe } from "lucide-react";
@@ -146,6 +147,7 @@ export function CliManagerGeneralTab({
   blurOnEnter,
 }: CliManagerGeneralTabProps) {
   const navigate = useNavigate();
+  const [upstreamErrorMode, setUpstreamErrorMode] = useState<"retry" | "rewrite">("retry");
   const settingsUnavailable = rectifierAvailable !== "available";
   const rectifierDisabled = rectifierSaving || settingsUnavailable || settingsWriteBlocked;
   const circuitNoticeDisabled =
@@ -452,6 +454,7 @@ export function CliManagerGeneralTab({
                 >
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="首字节超时"
                       type="number"
                       value={upstreamFirstByteTimeoutSeconds}
                       onChange={(e) => {
@@ -481,49 +484,12 @@ export function CliManagerGeneralTab({
                 </SettingsRow>
 
                 <SettingsRow
-                  label="流内部错误观察窗口"
-                  subtitle="从首个有效输出开始暂存响应，以便在提交给客户端前识别并重试流内部错误。0 表示不额外等待。"
-                >
-                  <div className="flex items-center gap-2">
-                    <Input
-                      type="number"
-                      value={streamInternalErrorGuardMs}
-                      onChange={(e) => {
-                        const next = e.currentTarget.valueAsNumber;
-                        if (Number.isFinite(next)) setStreamInternalErrorGuardMs(next);
-                      }}
-                      onBlur={(e) => {
-                        if (!appSettings) return;
-                        const next = e.currentTarget.valueAsNumber;
-                        if (
-                          !Number.isFinite(next) ||
-                          next < 0 ||
-                          next > MAX_STREAM_INTERNAL_ERROR_GUARD_MS
-                        ) {
-                          toast(
-                            `流内部错误观察窗口必须为 0-${MAX_STREAM_INTERNAL_ERROR_GUARD_MS} 毫秒`
-                          );
-                          setStreamInternalErrorGuardMs(appSettings.stream_internal_error_guard_ms);
-                          return;
-                        }
-                        void onPersistCommonSettings({ stream_internal_error_guard_ms: next });
-                      }}
-                      onKeyDown={blurOnEnter}
-                      style={{ width: "6rem" }}
-                      min={0}
-                      max={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
-                      disabled={commonSettingsDisabled}
-                    />
-                    <span className="w-8 text-sm text-muted-foreground">毫秒</span>
-                  </div>
-                </SettingsRow>
-
-                <SettingsRow
                   label="流式空闲超时（0=禁用，启用时最小60秒）"
                   subtitle="流式响应中两次数据之间的最大静默时间。"
                 >
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="流式空闲超时"
                       type="number"
                       value={upstreamStreamIdleTimeoutSeconds}
                       onChange={(e) => {
@@ -562,6 +528,7 @@ export function CliManagerGeneralTab({
                 <SettingsRow label="非流式总超时（0=禁用）" subtitle="非流式请求的总超时时间。">
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="非流式总超时"
                       type="number"
                       value={upstreamRequestTimeoutNonStreamingSeconds}
                       onChange={(e) => {
@@ -597,8 +564,8 @@ export function CliManagerGeneralTab({
 
             <CollapsibleSettingsCard
               icon={<Shield className="h-5 w-5 text-white" />}
-              title="熔断与重试"
-              subtitle="控制 Provider 失败后的冷却、瞬时重试与熔断行为。"
+              title="熔断与回切"
+              subtitle="控制 Provider 失败后的冷却、试探与熔断行为。"
               iconClassName="bg-orange-500"
             >
               <div className="divide-y divide-border">
@@ -678,6 +645,7 @@ export function CliManagerGeneralTab({
                 >
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="Provider 冷却 / 试探最短间隔"
                       type="number"
                       value={providerCooldownSeconds}
                       onChange={(e) => {
@@ -710,6 +678,7 @@ export function CliManagerGeneralTab({
                 >
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="Ping 选择缓存 TTL"
                       type="number"
                       value={providerBaseUrlPingCacheTtlSeconds}
                       onChange={(e) => {
@@ -743,6 +712,7 @@ export function CliManagerGeneralTab({
                 <SettingsRow label="熔断阈值" subtitle="连续失败达到此次数后触发熔断。">
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="熔断阈值"
                       type="number"
                       value={circuitBreakerFailureThreshold}
                       onChange={(e) => {
@@ -777,6 +747,7 @@ export function CliManagerGeneralTab({
                 >
                   <div className="flex items-center gap-2">
                     <Input
+                      aria-label="最长熔断等待"
                       type="number"
                       value={circuitBreakerOpenDurationMinutes}
                       onChange={(e) => {
@@ -807,49 +778,139 @@ export function CliManagerGeneralTab({
                   </div>
                 </SettingsRow>
               </div>
-              <div className="mt-5 border-t border-border pt-5">
-                <RetryPolicyFields
-                  policy={upstreamRetryPolicy}
-                  disabled={commonSettingsDisabled}
-                  onChange={(next) => {
-                    setUpstreamRetryPolicy(next);
-                  }}
-                />
-                <div className="mt-3 flex justify-end">
-                  <Button
-                    variant="secondary"
-                    size="sm"
-                    disabled={commonSettingsDisabled}
-                    onClick={async () => {
-                      if (!appSettings) return;
-                      const validationMessage = validateUpstreamRetryPolicy(upstreamRetryPolicy);
-                      if (validationMessage) {
-                        toast(validationMessage);
-                        return;
-                      }
-                      const updated = await onPersistCommonSettings({
-                        upstream_retry_policy: upstreamRetryPolicy,
-                      });
-                      if (updated) {
-                        setUpstreamRetryPolicy(
-                          cloneUpstreamRetryPolicy(updated.upstream_retry_policy)
-                        );
-                      }
-                    }}
-                  >
-                    保存重试策略
-                  </Button>
-                </div>
-              </div>
             </CollapsibleSettingsCard>
+
             {appSettings ? (
-              <UpstreamErrorResponseRulesCard
-                rules={appSettings.upstream_error_response_rules}
-                disabled={commonSettingsDisabled}
-                onPersist={(rules) =>
-                  onPersistCommonSettings({ upstream_error_response_rules: rules })
-                }
-              />
+              <section
+                aria-labelledby="upstream-error-handling-title"
+                className="rounded-lg border border-border bg-white p-5 dark:bg-secondary"
+              >
+                <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+                  <div>
+                    <h3
+                      id="upstream-error-handling-title"
+                      className="text-sm font-semibold text-foreground"
+                    >
+                      上游错误处理
+                    </h3>
+                    <p className="mt-1 text-xs text-muted-foreground">
+                      瞬时错误先恢复；只有最终 HTTP 失败才进入响应改写。
+                    </p>
+                  </div>
+                  <TabList
+                    ariaLabel="上游错误处理模式"
+                    items={[
+                      { key: "retry", label: "重试规则" },
+                      { key: "rewrite", label: "最终响应改写" },
+                    ]}
+                    value={upstreamErrorMode}
+                    onChange={setUpstreamErrorMode}
+                    variant="compact"
+                    className="w-full sm:w-auto"
+                    buttonClassName="min-w-0 sm:min-w-32"
+                  />
+                </div>
+
+                {upstreamErrorMode === "retry" ? (
+                  <div
+                    role="tabpanel"
+                    aria-label="重试规则"
+                    className="mt-5 border-t border-border pt-5"
+                  >
+                    <RetryPolicyFields
+                      policy={upstreamRetryPolicy}
+                      disabled={commonSettingsDisabled}
+                      onChange={(next) => {
+                        setUpstreamRetryPolicy(next);
+                      }}
+                    />
+                    <div className="mt-4 border-t border-border pt-2">
+                      <SettingsRow
+                        label="Codex 流内错误观察窗口"
+                        subtitle="首个有效输出后暂存响应，在提交客户端前识别可重试错误。0 表示不额外等待。"
+                      >
+                        <div className="flex items-center gap-2">
+                          <Input
+                            aria-label="流内部错误观察窗口"
+                            type="number"
+                            value={streamInternalErrorGuardMs}
+                            onChange={(event) => {
+                              const next = event.currentTarget.valueAsNumber;
+                              if (Number.isFinite(next)) setStreamInternalErrorGuardMs(next);
+                            }}
+                            onBlur={(event) => {
+                              if (!appSettings) return;
+                              const next = event.currentTarget.valueAsNumber;
+                              if (
+                                !Number.isFinite(next) ||
+                                next < 0 ||
+                                next > MAX_STREAM_INTERNAL_ERROR_GUARD_MS
+                              ) {
+                                toast(
+                                  `流内部错误观察窗口必须为 0-${MAX_STREAM_INTERNAL_ERROR_GUARD_MS} 毫秒`
+                                );
+                                setStreamInternalErrorGuardMs(
+                                  appSettings.stream_internal_error_guard_ms
+                                );
+                                return;
+                              }
+                              void onPersistCommonSettings({
+                                stream_internal_error_guard_ms: next,
+                              });
+                            }}
+                            onKeyDown={blurOnEnter}
+                            className="w-24"
+                            min={0}
+                            max={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
+                            disabled={commonSettingsDisabled}
+                          />
+                          <span className="w-8 text-sm text-muted-foreground">毫秒</span>
+                        </div>
+                      </SettingsRow>
+                    </div>
+                    <div className="mt-3 flex justify-end">
+                      <Button
+                        variant="secondary"
+                        size="sm"
+                        disabled={commonSettingsDisabled}
+                        onClick={async () => {
+                          if (!appSettings) return;
+                          const validationMessage =
+                            validateUpstreamRetryPolicy(upstreamRetryPolicy);
+                          if (validationMessage) {
+                            toast(validationMessage);
+                            return;
+                          }
+                          const updated = await onPersistCommonSettings({
+                            upstream_retry_policy: upstreamRetryPolicy,
+                          });
+                          if (updated) {
+                            setUpstreamRetryPolicy(
+                              cloneUpstreamRetryPolicy(updated.upstream_retry_policy)
+                            );
+                          }
+                        }}
+                      >
+                        保存重试策略
+                      </Button>
+                    </div>
+                  </div>
+                ) : (
+                  <div
+                    role="tabpanel"
+                    aria-label="最终响应改写"
+                    className="mt-5 border-t border-border pt-5"
+                  >
+                    <UpstreamErrorResponseRulesCard
+                      rules={appSettings.upstream_error_response_rules}
+                      disabled={commonSettingsDisabled}
+                      onPersist={(rules) =>
+                        onPersistCommonSettings({ upstream_error_response_rules: rules })
+                      }
+                    />
+                  </div>
+                )}
+              </section>
             ) : null}
           </div>
         )}
@@ -1128,6 +1189,7 @@ function UpstreamProxySettingsCard({
       <div className="divide-y divide-border">
         <SettingsRow label="启用上游代理" subtitle="启用后，所有上游请求将通过指定代理发送。">
           <Switch
+            aria-label="启用上游代理"
             checked={settings.upstream_proxy_enabled}
             onCheckedChange={handleProxyEnabledChange}
             disabled={disabled}

@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from "react";
-import { ChevronDown, Pencil, Plus, ShieldAlert, Trash2 } from "lucide-react";
+import { Pencil, Plus, Trash2 } from "lucide-react";
 import { toast } from "sonner";
 import { CLI_REGISTRY } from "../../constants/clis";
 import {
@@ -98,7 +98,6 @@ function ruleActionSummary(rule: UpstreamErrorResponseRule): string {
 }
 
 export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: Props) {
-  const [open, setOpen] = useState(false);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<UpstreamErrorResponseRule | null>(null);
   const [saving, setSaving] = useState(false);
@@ -210,113 +209,93 @@ export function UpstreamErrorResponseRulesCard({ rules, disabled, onPersist }: P
 
   return (
     <>
-      <div className="overflow-hidden rounded-lg border border-border bg-white dark:bg-secondary">
-        <div className="flex items-center gap-3 px-6 py-5">
-          <button
-            type="button"
-            className="flex min-w-0 flex-1 items-center gap-4 text-left"
-            aria-expanded={open}
-            onClick={() => setOpen((value) => !value)}
-          >
-            <div className="flex h-12 w-12 shrink-0 items-center justify-center rounded-full bg-rose-500">
-              <ShieldAlert className="h-5 w-5 text-white" />
+      <div className="space-y-3">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-center sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex flex-wrap items-center gap-2">
+              <h4 className="text-sm font-medium text-foreground">最终响应改写规则</h4>
+              <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                {stableRules.length}
+              </span>
             </div>
-            <div className="min-w-0 flex-1">
-              <div className="flex flex-wrap items-center gap-2">
-                <span className="text-base font-semibold text-foreground">上游错误响应规则</span>
-                <span className="rounded-full bg-secondary px-2 py-0.5 text-xs text-muted-foreground">
-                  {stableRules.length}
-                </span>
-              </div>
-              <div className="mt-1 text-sm text-muted-foreground">
-                匹配最终上游错误，并调整返回客户端的状态码或错误信息。
-              </div>
-            </div>
-          </button>
+            <p className="mt-1 text-xs text-muted-foreground">
+              仅在重试与 Provider 切换结束后，对最终上游 HTTP 4xx/5xx 生效。
+            </p>
+          </div>
           <Tooltip content="新建规则">
             <Button
-              size="icon"
+              size="sm"
               variant="secondary"
               aria-label="新建上游错误响应规则"
               disabled={busy || stableRules.length >= MAX_UPSTREAM_ERROR_RESPONSE_RULES}
               onClick={openCreateEditor}
             >
               <Plus className="h-4 w-4" />
+              新增规则
             </Button>
           </Tooltip>
-          <button
-            type="button"
-            aria-label={open ? "收起上游错误响应规则" : "展开上游错误响应规则"}
-            aria-expanded={open}
-            className="rounded-md p-1 text-muted-foreground hover:bg-secondary/70"
-            onClick={() => setOpen((value) => !value)}
-          >
-            <ChevronDown className={cn("h-5 w-5 transition-transform", open && "rotate-180")} />
-          </button>
         </div>
 
-        {open ? (
-          <div className="border-t border-border px-5 py-4">
-            {sortedRules.length === 0 ? (
-              <div className="py-5 text-center text-sm text-muted-foreground">暂无规则</div>
-            ) : (
-              <div className="divide-y divide-border">
-                {sortedRules.map(({ rule }) => (
-                  <div key={rule.id} className="flex items-center gap-3 py-3 first:pt-0 last:pb-0">
-                    <Switch
-                      checked={rule.enabled}
-                      disabled={busy}
-                      aria-label={`${rule.enabled ? "停用" : "启用"}规则 ${rule.name}`}
-                      onCheckedChange={(checked) => void toggleRule(rule, checked)}
-                    />
-                    <div className="min-w-0 flex-1">
-                      <div className="flex flex-wrap items-center gap-2">
-                        <span className="truncate text-sm font-medium text-foreground">
-                          {rule.name}
-                        </span>
-                        <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                          P{rule.priority}
-                        </span>
-                        {!rule.enabled ? (
-                          <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
-                            已停用
-                          </span>
-                        ) : null}
-                      </div>
-                      <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
-                        <span>{ruleMatchSummary(rule)}</span>
-                        <span>{ruleScopeSummary(rule, providers)}</span>
-                        <span>{ruleActionSummary(rule)}</span>
-                      </div>
-                    </div>
-                    <Tooltip content="编辑规则">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        aria-label={`编辑规则 ${rule.name}`}
-                        disabled={busy}
-                        onClick={() => openEditEditor(rule)}
-                      >
-                        <Pencil className="h-4 w-4" />
-                      </Button>
-                    </Tooltip>
-                    <Tooltip content="删除规则">
-                      <Button
-                        size="icon"
-                        variant="ghost"
-                        aria-label={`删除规则 ${rule.name}`}
-                        disabled={busy}
-                        onClick={() => setDeleteTarget(rule)}
-                      >
-                        <Trash2 className="h-4 w-4 text-destructive" />
-                      </Button>
-                    </Tooltip>
-                  </div>
-                ))}
-              </div>
-            )}
+        {sortedRules.length === 0 ? (
+          <div className="border-y border-border py-6 text-center text-sm text-muted-foreground">
+            暂无规则
           </div>
-        ) : null}
+        ) : (
+          <div className="divide-y divide-border border-y border-border">
+            {sortedRules.map(({ rule }) => (
+              <div key={rule.id} className="flex items-center gap-3 py-3">
+                <Switch
+                  checked={rule.enabled}
+                  disabled={busy}
+                  aria-label={`${rule.enabled ? "停用" : "启用"}规则 ${rule.name}`}
+                  onCheckedChange={(checked) => void toggleRule(rule, checked)}
+                />
+                <div className="min-w-0 flex-1">
+                  <div className="flex flex-wrap items-center gap-2">
+                    <span className="truncate text-sm font-medium text-foreground">
+                      {rule.name}
+                    </span>
+                    <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                      P{rule.priority}
+                    </span>
+                    {!rule.enabled ? (
+                      <span className="rounded bg-secondary px-1.5 py-0.5 text-[11px] text-muted-foreground">
+                        已停用
+                      </span>
+                    ) : null}
+                  </div>
+                  <div className="mt-1 flex flex-wrap gap-x-3 gap-y-1 text-xs text-muted-foreground">
+                    <span>{ruleMatchSummary(rule)}</span>
+                    <span>{ruleScopeSummary(rule, providers)}</span>
+                    <span>{ruleActionSummary(rule)}</span>
+                  </div>
+                </div>
+                <Tooltip content="编辑规则">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`编辑规则 ${rule.name}`}
+                    disabled={busy}
+                    onClick={() => openEditEditor(rule)}
+                  >
+                    <Pencil className="h-4 w-4" />
+                  </Button>
+                </Tooltip>
+                <Tooltip content="删除规则">
+                  <Button
+                    size="icon"
+                    variant="ghost"
+                    aria-label={`删除规则 ${rule.name}`}
+                    disabled={busy}
+                    onClick={() => setDeleteTarget(rule)}
+                  >
+                    <Trash2 className="h-4 w-4 text-destructive" />
+                  </Button>
+                </Tooltip>
+              </div>
+            ))}
+          </div>
+        )}
       </div>
 
       <RuleEditorDialog
