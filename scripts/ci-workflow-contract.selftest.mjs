@@ -17,12 +17,7 @@ const EXPECTED_JOBS = [
   "ci-gate",
 ];
 const FULL_JOBS = ["support-contract", "desktop-support-contract", "frontend", "rust"];
-const GATE_NEEDS = [
-  "change-scope",
-  "pr-title",
-  "docs-contract",
-  ...FULL_JOBS,
-];
+const GATE_NEEDS = ["change-scope", "pr-title", "docs-contract", ...FULL_JOBS];
 
 function indentation(line) {
   return line.match(/^ */)[0].length;
@@ -113,6 +108,35 @@ function requireText(text, expected, label) {
   assert.ok(text.includes(expected), `${label}: missing ${expected}`);
 }
 
+function requireLine(lines, expected, label) {
+  assert.ok(lines.includes(expected), label + ": missing exact line " + expected);
+}
+
+function runLines(job) {
+  const result = [];
+  for (let index = 0; index < job.length; index += 1) {
+    const match = /^        run:\s*(.*?)\s*$/.exec(job[index]);
+    if (!match) continue;
+    if (match[1] !== "|" && match[1] !== ">-" && match[1] !== ">") {
+      result.push(match[1]);
+      continue;
+    }
+    for (let cursor = index + 1; cursor < job.length; cursor += 1) {
+      if (job[cursor].trim() === "") continue;
+      if (indentation(job[cursor]) <= 8) break;
+      const line = job[cursor].trim();
+      if (!line.startsWith("#")) {
+        result.push(line);
+      }
+    }
+  }
+  return result;
+}
+
+function requireRunLine(job, expected, label) {
+  requireLine(runLines(job), expected, label);
+}
+
 export function assertWorkflowContract(source) {
   assert.equal(source.includes("\t"), false, "workflow must not contain tabs");
   requireText(
@@ -140,17 +164,17 @@ export function assertWorkflowContract(source) {
     reason: "${{ steps.scope.outputs.reason }}",
   });
   const changeScopeText = changeScope.join("\n");
-  requireText(
-    changeScopeText,
+  requireRunLine(
+    changeScope,
     "node scripts/ci-change-scope.selftest.mjs",
     "change-scope classifier self-test"
   );
-  requireText(
-    changeScopeText,
+  requireRunLine(
+    changeScope,
     "node scripts/ci-workflow-contract.selftest.mjs",
     "change-scope workflow self-test"
   );
-  requireText(changeScopeText, "node scripts/ci-change-scope.mjs", "change-scope classifier");
+  requireRunLine(changeScope, "node scripts/ci-change-scope.mjs", "change-scope classifier");
   requireText(changeScopeText, "fetch-depth: 0", "change-scope history");
   requireText(changeScopeText, "persist-credentials: false", "change-scope credentials");
 
@@ -166,16 +190,13 @@ export function assertWorkflowContract(source) {
 
   const docsContract = jobs.get("docs-contract");
   assertSetEqual(needs(docsContract), ["change-scope"], "docs-contract needs");
-  assert.equal(
-    property(docsContract, "if"),
-    "needs.change-scope.outputs.docs_checks == 'true'"
-  );
+  assert.equal(property(docsContract, "if"), "needs.change-scope.outputs.docs_checks == 'true'");
   for (const command of [
     "node scripts/check-plugin-system-docs.mjs",
     "node scripts/check-plugin-api-contract.mjs",
     "node scripts/check-spec-links.mjs",
   ]) {
-    requireText(docsContract.join("\n"), command, "docs-contract command");
+    requireRunLine(docsContract, command, "docs-contract command");
   }
   for (const forbidden of ["pnpm ", "cargo ", "check-tui", "candidate-plan"]) {
     assert.equal(
@@ -193,26 +214,42 @@ export function assertWorkflowContract(source) {
     assert.equal(property(job, "if"), "needs.change-scope.outputs.full_ci == 'true'", jobId);
   }
 
-  const supportText = jobs.get("support-contract").join("\n");
+  const supportContract = jobs.get("support-contract");
+  requireRunLine(
+    supportContract,
+    'echo "desktop_matrix=$(node scripts/support-matrix.mjs ci-matrix)" >> "$GITHUB_OUTPUT"',
+    "support-contract matrix command"
+  );
   for (const command of [
-    "node scripts/support-matrix.mjs ci-matrix",
     "node scripts/support-matrix.mjs check",
     "node scripts/support-matrix.homebrew-cask.selftest.mjs",
     "node scripts/check-sync-upstream-policy.selftest.mjs",
     "node scripts/check-sync-upstream-policy.mjs",
   ]) {
-    requireText(supportText, command, "support-contract command");
+    requireRunLine(supportContract, command, "support-contract command");
   }
 
-  const desktopText = jobs.get("desktop-support-contract").join("\n");
+  const desktopContract = jobs.get("desktop-support-contract");
+  const desktopText = desktopContract.join("\n");
   requireText(
     desktopText,
     "include: ${{ fromJson(needs.support-contract.outputs.desktop_matrix) }}",
     "desktop matrix source"
   );
-  requireText(desktopText, "run: pnpm check:support-matrix", "desktop matrix command");
+  requireLine(desktopContract, "      fail-fast: false", "desktop matrix fail-fast");
+  requireRunLine(desktopContract, "pnpm check:support-matrix", "desktop matrix command");
 
-  const frontendText = jobs.get("frontend").join("\n");
+  const frontend = jobs.get("frontend");
+  for (const systemCommand of [
+    "sudo apt-get update",
+    "sudo apt-get install -y libasound2-dev librsvg2-dev patchelf",
+    "if ! sudo apt-get install -y libayatana-appindicator3-dev; then",
+    "sudo apt-get install -y libappindicator3-dev",
+    "if ! sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev; then",
+    "sudo apt-get install -y libwebkit2gtk-4.0-dev libsoup2.4-dev",
+  ]) {
+    requireRunLine(frontend, systemCommand, "frontend system dependency");
+  }
   for (const command of [
     "pnpm install --frozen-lockfile",
     "pnpm check:support-matrix",
@@ -229,20 +266,34 @@ export function assertWorkflowContract(source) {
     "pnpm test:unit:coverage",
     "pnpm build",
   ]) {
-    requireText(frontendText, `run: ${command}`, "frontend command");
+    requireRunLine(frontend, command, "frontend command");
   }
 
-  const rustText = jobs.get("rust").join("\n");
-  for (const command of [
-    "run: cargo fmt -- --check",
-    "run: cargo update --workspace",
-    "git diff --quiet -- src-tauri/Cargo.lock",
-    "run: cargo clippy --all-targets --locked -- -D warnings",
-    "run: cargo test --locked -- --test-threads=1",
-    "run: cargo install cargo-audit --locked",
-    "run: cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195",
+  const rust = jobs.get("rust");
+  assert.equal(property(rust, "runs-on"), "ubuntu-22.04", "rust runner");
+  requireLine(rust, "      - name: Install Rust 1.90.0", "rust toolchain step");
+  requireLine(rust, "          toolchain: 1.90.0", "rust toolchain pin");
+  requireLine(rust, "          components: rustfmt, clippy", "rust toolchain components");
+  for (const systemCommand of [
+    "sudo apt-get update",
+    "sudo apt-get install -y libasound2-dev librsvg2-dev patchelf",
+    "if ! sudo apt-get install -y libayatana-appindicator3-dev; then",
+    "sudo apt-get install -y libappindicator3-dev",
+    "if ! sudo apt-get install -y libwebkit2gtk-4.1-dev libsoup-3.0-dev; then",
+    "sudo apt-get install -y libwebkit2gtk-4.0-dev libsoup2.4-dev",
   ]) {
-    requireText(rustText, command, "rust command");
+    requireRunLine(rust, systemCommand, "rust system dependency");
+  }
+  for (const command of [
+    "cargo fmt -- --check",
+    "cargo update --workspace",
+    "if git diff --quiet -- src-tauri/Cargo.lock; then",
+    "cargo clippy --all-targets --locked -- -D warnings",
+    "cargo test --locked -- --test-threads=1",
+    "cargo install cargo-audit --locked",
+    "cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195",
+  ]) {
+    requireRunLine(rust, command, "rust command");
   }
 
   const gate = jobs.get("ci-gate");
@@ -266,7 +317,7 @@ export function assertWorkflowContract(source) {
   ]) {
     requireText(gateText, binding, "ci-gate environment");
   }
-  requireText(gateText, "node scripts/ci-gate.mjs", "ci-gate command");
+  requireRunLine(gate, "node scripts/ci-gate.mjs", "ci-gate command");
 }
 
 assert.doesNotThrow(() => assertWorkflowContract(workflow));
@@ -303,6 +354,18 @@ for (const [name, from, to] of [
     "fork sync policy",
     "node scripts/check-sync-upstream-policy.selftest.mjs",
     "node scripts/missing-sync-policy-selftest.mjs",
+  ],
+  [
+    "comment-spoofed frontend command",
+    "        run: pnpm lint",
+    "        run: true # run: pnpm lint",
+  ],
+  ["desktop fail-fast", "      fail-fast: false", "      fail-fast: true"],
+  ["rust toolchain pin", "          toolchain: 1.90.0", "          toolchain: nightly"],
+  [
+    "frontend system dependencies",
+    "          sudo apt-get install -y libasound2-dev librsvg2-dev patchelf",
+    "          true # sudo apt-get install -y libasound2-dev librsvg2-dev patchelf",
   ],
 ]) {
   assert.ok(workflow.includes(from), `${name}: fixture source must exist`);

@@ -109,9 +109,23 @@ for (const path of [
   "docs/./guide.md",
   "docs/../README.md",
   "docs/guide\n.md",
+  "docs/bad:name.md",
+  "docs/CON.md",
+  "docs/con.txt",
+  "docs/CONOUT$.md",
+  ".trellis/tasks/t/NUL.json",
+  "docs/trailing-dot.md.",
+  "docs/trailing-space.md ",
 ]) {
   assert.equal(classifyPath(path, policy).reason, "unsafe-path", JSON.stringify(path));
 }
+
+expectScope(["docs/Guide.md", "docs/guide.md"], {
+  scope: "full",
+  fullCi: true,
+  docsChecks: true,
+  reason: "case-collision",
+});
 
 const permissivePolicy = structuredClone(policy);
 permissivePolicy.processDocumentation.exactPaths.push(
@@ -155,15 +169,11 @@ assert.deepEqual(parseNameStatus(nameStatus), [
 assert.equal(classifyNameStatus("D\0.trellis/tasks/old/prd.md\0", policy).scope, "process-docs");
 assert.equal(classifyNameStatus("D\0docs/old.md\0", policy).scope, "checked-docs");
 assert.equal(
-  classifyNameStatus("R100\0.trellis/tasks/old/prd.md\0.trellis/tasks/new/prd.md\0", policy)
-    .scope,
+  classifyNameStatus("R100\0.trellis/tasks/old/prd.md\0.trellis/tasks/new/prd.md\0", policy).scope,
   "process-docs"
 );
 assert.equal(classifyNameStatus("R100\0AGENTS.md\0src/agent.ts\0", policy).scope, "full");
-assert.equal(
-  classifyNameStatus("R100\0AGENTS.md\0docs/agent.md\0", policy).reason,
-  "mixed-tiers"
-);
+assert.equal(classifyNameStatus("R100\0AGENTS.md\0docs/agent.md\0", policy).reason, "mixed-tiers");
 assert.equal(classifyNameStatus("C090\0README.md\0docs/copy.md\0", policy).scope, "checked-docs");
 const copyIntoSource = classifyNameStatus("C100\0README.md\0src/readme.md\0", policy);
 assert.equal(copyIntoSource.scope, "full");
@@ -177,10 +187,7 @@ assert.throws(() => parseNameStatus("C\0README.md\0docs/readme.md\0"), /invalid 
 assert.throws(() => parseNameStatus("Q\0README.md\0"), /invalid Q/);
 assert.throws(() => parseNameStatus("X\0README.md\0"), /invalid X/);
 assert.throws(() => parseNameStatus("B\0README.md\0"), /invalid B/);
-assert.throws(
-  () => parseNameStatus(Buffer.from([0x4d, 0x00, 0xff, 0x00])),
-  /not valid UTF-8/
-);
+assert.throws(() => parseNameStatus(Buffer.from([0x4d, 0x00, 0xff, 0x00])), /not valid UTF-8/);
 
 const baseSha = sha("a");
 const headSha = sha("b");
@@ -188,7 +195,9 @@ const mergeBaseSha = sha("c");
 const pullCalls = [];
 const pull = collectChangedPaths({ eventName: "pull_request", baseSha, headSha }, (args) => {
   pullCalls.push(args);
-  return args[0] === "merge-base" ? Buffer.from(`${mergeBaseSha}\n`) : Buffer.from("M\0README.md\0");
+  return args[0] === "merge-base"
+    ? Buffer.from(`${mergeBaseSha}\n`)
+    : Buffer.from("M\0README.md\0");
 });
 assert.deepEqual(pull.paths, ["README.md"]);
 assert.deepEqual(pullCalls, [
@@ -212,16 +221,7 @@ const push = collectChangedPaths({ eventName: "push", beforeSha: baseSha, headSh
 });
 assert.deepEqual(push.paths, ["AGENTS.md"]);
 assert.deepEqual(pushCalls, [
-  [
-    "diff",
-    "--name-status",
-    "-z",
-    "--find-renames",
-    "--find-copies-harder",
-    baseSha,
-    headSha,
-    "--",
-  ],
+  ["diff", "--name-status", "-z", "--find-renames", "--find-copies-harder", baseSha, headSha, "--"],
 ]);
 
 assert.deepEqual(collectChangedPaths({ eventName: "workflow_dispatch" }), {
@@ -244,7 +244,9 @@ assert.throws(
 );
 assert.throws(
   () =>
-    collectChangedPaths({ eventName: "pull_request", baseSha, headSha }, () => Buffer.from("bad\n")),
+    collectChangedPaths({ eventName: "pull_request", baseSha, headSha }, () =>
+      Buffer.from("bad\n")
+    ),
   /merge base/
 );
 
@@ -276,7 +278,10 @@ for (const [options, runGit] of [
     { eventName: "push", beforeSha: baseSha, headSha, policyPath },
     () => Buffer.from("M\0README.md"),
   ],
-  [{ eventName: "push", beforeSha: baseSha, headSha, policyPath: `${policyPath}.missing` }, undefined],
+  [
+    { eventName: "push", beforeSha: baseSha, headSha, policyPath: `${policyPath}.missing` },
+    undefined,
+  ],
 ]) {
   const result = runClassifier(options, runGit);
   assert.equal(result.scope, "full");

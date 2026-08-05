@@ -9,7 +9,9 @@ const POLICY_KEYS = ["checkedDocumentation", "processDocumentation", "version"];
 const RULE_SET_KEYS = ["exactPaths", "prefixRules"];
 const PREFIX_RULE_KEYS = ["extensions", "prefix"];
 const SHA_PATTERN = /^[0-9a-f]{40,64}$/i;
-const UNSAFE_PATH_PATTERN = /[\\\u0000-\u001f\u007f]/;
+const UNSAFE_PATH_PATTERN = /[<>:"|?*\\\u0000-\u001f\u007f]/;
+const WINDOWS_RESERVED_SEGMENT_PATTERN =
+  /^(?:con|prn|aux|nul|conin\$|conout\$|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const CONTROL_PLANE_EXACT_PATHS = new Set([
   "scripts/ci-change-scope.mjs",
   "scripts/ci-change-scope.selftest.mjs",
@@ -45,7 +47,17 @@ export function isSafeRepositoryPath(path) {
   if (UNSAFE_PATH_PATTERN.test(path)) {
     return false;
   }
-  return path.split("/").every((segment) => segment !== "" && segment !== "." && segment !== "..");
+  return path
+    .split("/")
+    .every(
+      (segment) =>
+        segment !== "" &&
+        segment !== "." &&
+        segment !== ".." &&
+        !segment.endsWith(".") &&
+        !segment.endsWith(" ") &&
+        !WINDOWS_RESERVED_SEGMENT_PATTERN.test(segment)
+    );
 }
 
 function validateRuleSet(ruleSet, label) {
@@ -114,7 +126,8 @@ function matchesRuleSet(path, ruleSet) {
     ruleSet.exactPaths.includes(path) ||
     ruleSet.prefixRules.some(
       (rule) =>
-        path.startsWith(rule.prefix) && rule.extensions.some((extension) => path.endsWith(extension))
+        path.startsWith(rule.prefix) &&
+        rule.extensions.some((extension) => path.endsWith(extension))
     )
   );
 }
@@ -162,6 +175,24 @@ export function classifyPaths(paths, policy) {
   }
 
   const classifications = uniquePaths.map((path) => classifyPath(path, policy));
+  const caseFoldedPaths = new Set();
+  const hasCaseCollision = uniquePaths.some((path) => {
+    const caseFolded = path.toLowerCase();
+    if (caseFoldedPaths.has(caseFolded)) {
+      return true;
+    }
+    caseFoldedPaths.add(caseFolded);
+    return false;
+  });
+  if (hasCaseCollision) {
+    return {
+      scope: "full",
+      fullCi: true,
+      docsChecks: classifications.some(({ tier }) => tier === "checked-docs"),
+      reason: "case-collision",
+      classifications,
+    };
+  }
   const tiers = new Set(classifications.map(({ tier }) => tier));
   const mixedTiers = tiers.size > 1;
   const fullCi = mixedTiers || tiers.has("full");
@@ -174,9 +205,9 @@ export function classifyPaths(paths, policy) {
       ? "mixed-tiers"
       : fullCi
         ? "full-ci-path"
-      : docsChecks
-        ? "checked-documentation"
-        : "process-documentation",
+        : docsChecks
+          ? "checked-documentation"
+          : "process-documentation",
     classifications,
   };
 }

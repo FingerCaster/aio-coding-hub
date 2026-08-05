@@ -44,6 +44,11 @@ dot/dot-dot, backslash, control-character, or absolute-path forms. Git output
 is read as NUL-delimited name-status data with rename detection and harder copy
 detection enabled.
 
+Paths that cannot be checked out safely on every supported desktop platform
+also fail closed. Reject Windows-reserved device segments, Windows-invalid
+filename characters, trailing dots/spaces, and any changed-path set containing
+distinct paths that collide under case-insensitive comparison.
+
 - Ordinary statuses consume one path. A delete is classified by its deleted
   path.
 - Rnnn and Cnnn consume and classify both old and new paths.
