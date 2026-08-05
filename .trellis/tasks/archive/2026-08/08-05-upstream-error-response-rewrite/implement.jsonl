@@ -4,4 +4,3 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"规则字段严格写入与并发所有权"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"settings-runtime-log-UI 数据流"}
 {"file": ".trellis/tasks/archive/2026-08/08-05-upstream-error-response-rewrite/research/reference-diff.md", "reason": "选择性移植边界"}
-

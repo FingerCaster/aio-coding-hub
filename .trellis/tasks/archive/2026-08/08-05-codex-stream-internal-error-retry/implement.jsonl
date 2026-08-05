@@ -5,4 +5,3 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"guard/policy 设置字段所有权"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"SSE/settings/log/UI 合同"}
 {"file": ".trellis/tasks/archive/2026-08/08-05-codex-stream-internal-error-retry/research/reference-diff.md", "reason": "参考提交与 fork 的差异"}
-

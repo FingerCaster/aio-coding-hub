@@ -6,4 +6,3 @@
 - 当前 HTTP retry 内容匹配已经限定解码前缀和隐私边界；response rewrite 必须复用该 body read，不创建第二个 reader。
 - 参考规范要求高优先级正文规则不可评估时整体 fail open，而不是跳过到低优先级规则。
 - 当前主日志与 attempts 已可分离状态，改写只需在最终 response/log projection 点更新 client-visible status。
-

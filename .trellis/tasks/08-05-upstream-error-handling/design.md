@@ -51,4 +51,3 @@ Codex 原生 Responses SSE
 - 子任务分别先跑 focused Rust/TS 测试并提交；父任务跑全量检查。
 - UI 使用本地 dev server 和 in-app browser 做桌面/移动截图与真实交互；失败时修正布局后重新截图。
 - 可通过清空改写规则、关闭 `stream_internal_errors.enabled` 或设置 guard 0 降级；代码回滚时未知字段由既有兼容读取处理。
-

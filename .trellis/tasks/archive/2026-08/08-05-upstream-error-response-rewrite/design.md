@@ -60,4 +60,3 @@ HTTP error body 仍由 `upstream_error.rs` 的单次有界读取路径拥有。�
 - Rust route：中间失败后成功、多 Provider 最终失败、direct abort、retry/circuit 不变、client status 与 attempt status 分离。
 - settings：严格写入、逐条容错读取、迁移幂等、字段所有权并发保护。
 - frontend：规则 helper、表单/Dialog、统一模式、设置 adapter、徽标 parser 与损坏 JSON。
-

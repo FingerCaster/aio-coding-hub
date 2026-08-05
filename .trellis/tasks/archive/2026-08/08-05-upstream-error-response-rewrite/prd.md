@@ -43,4 +43,3 @@
 - 不参与任何重试或 Provider 健康决策。
 - 不匹配 transport error、HTTP 2xx 或 SSE 内嵌错误。
 - 不新增数据库表或“跳过监控”行为。
-

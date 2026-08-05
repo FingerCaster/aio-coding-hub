@@ -50,4 +50,3 @@ FailoverAttempt 增加可选 stream_internal_error：event/type/code/message/cla
 - guard 使用 Tokio paused time，测试 deadline/cap/EOF/completion 和 no-splice。
 - route 测试真实 Provider chain、同 Provider retry、切换、circuit count、health-neutral、continuation/encoding/backoff 回归。
 - settings/migration/share/import/backup 测试缺失字段、完整 override、幂等默认规则与显式禁用。
-
