@@ -4,4 +4,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"设置、日志、绑定与 UI 跨层入口"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"保护 Provider route、probe 与 failback"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"共享锁内字段所有权和严格写入"}
-{"file":".trellis/tasks/08-05-upstream-error-handling/research/integration-evidence.md","reason":"固定参考差异与 fork 保护证据"}
+{"file": ".trellis/tasks/archive/2026-08/08-05-upstream-error-handling/research/integration-evidence.md", "reason": "固定参考差异与 fork 保护证据"}
