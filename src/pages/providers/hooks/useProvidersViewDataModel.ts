@@ -84,6 +84,7 @@ type ProviderUiState = {
   createDialogState: CreateDialogState | null;
   editTarget: ProviderSummary | null;
   deleteTarget: ProviderSummary | null;
+  routeDraftInitialized: boolean;
   routeDraftSelection: RouteDraftSelection;
 };
 
@@ -119,6 +120,7 @@ function createProviderUiState(activeCli: CliKey): ProviderUiState {
     createDialogState: null,
     editTarget: null,
     deleteTarget: null,
+    routeDraftInitialized: false,
     routeDraftSelection: { kind: "default", modeId: null },
   };
 }
@@ -374,6 +376,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     (value) => {
       setProviderUiState((current) => ({
         ...current,
+        routeDraftInitialized: true,
         routeDraftSelection:
           typeof value === "function" ? value(current.routeDraftSelection) : value,
       }));
@@ -544,6 +547,23 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     [sortModeActiveQuery.data]
   );
   const activeModeId = activeModeByCli[activeCli] ?? null;
+  useEffect(() => {
+    if (sortModesQuery.data == null || sortModeActiveQuery.data == null) return;
+
+    setProviderUiState((current) => {
+      if (current.activeCli !== activeCli || current.routeDraftInitialized) return current;
+
+      const activeModeExists =
+        activeModeId != null && sortModes.some((mode) => mode.id === activeModeId);
+      return {
+        ...current,
+        routeDraftInitialized: true,
+        routeDraftSelection: activeModeExists
+          ? { kind: "mode", modeId: activeModeId }
+          : { kind: "default", modeId: null },
+      };
+    });
+  }, [activeCli, activeModeId, sortModeActiveQuery.data, sortModes, sortModesQuery.data]);
   const selectedSortMode = useMemo(
     () =>
       routeDraftSelection.kind === "mode"

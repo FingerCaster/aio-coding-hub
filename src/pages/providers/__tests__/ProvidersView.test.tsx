@@ -1338,6 +1338,209 @@ describe("pages/providers/ProvidersView", () => {
     expect(screen.getByText("共 2 / 2 条")).toBeInTheDocument();
   });
 
+  it("defaults the route draft and members to the persisted active template", async () => {
+    const providers = [
+      {
+        id: 1,
+        cli_key: "claude",
+        name: "Default Provider",
+        enabled: true,
+        base_urls: ["https://default.example.test"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+      },
+      {
+        id: 2,
+        cli_key: "claude",
+        name: "Active Template Provider",
+        enabled: true,
+        base_urls: ["https://active.example.test"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+      },
+    ] as any[];
+    const activeSet = vi.fn();
+
+    vi.mocked(useProvidersListQuery).mockReturnValue({ data: providers, isFetching: false } as any);
+    vi.mocked(useDefaultRouteProvidersQuery).mockReturnValue({
+      data: [{ provider_id: 1 }],
+      isFetching: false,
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useSortModesListQuery).mockReturnValue({
+      data: [{ id: 10, name: "Review Mode", created_at: 1, updated_at: 1 }],
+      isLoading: false,
+    } as any);
+    vi.mocked(useSortModeActiveListQuery).mockReturnValue({
+      data: [{ cli_key: "claude", mode_id: 10 }],
+      isLoading: false,
+    } as any);
+    vi.mocked(useSortModeProvidersListQuery).mockReturnValue({
+      data: [{ provider_id: 2, enabled: true }],
+      isFetching: false,
+    } as any);
+    vi.mocked(useSortModeActiveSetMutation).mockReturnValue({ mutateAsync: activeSet } as any);
+
+    renderWithQuery(<ProvidersView activeCli="claude" setActiveCli={vi.fn()} />);
+
+    const routeSelect = screen.getByRole("combobox", { name: "选择调用顺序" });
+    await waitFor(() => expect(routeSelect).toHaveValue("mode:10"));
+    expect(
+      (screen.getByRole("option", { name: "Review Mode（当前）" }) as HTMLOptionElement).selected
+    ).toBe(true);
+    expect(screen.getByText("Review Mode 按照从上到下依次调用")).toBeInTheDocument();
+    const orderPanel = within(screen.getByRole("complementary", { name: "供应商调用顺序" }));
+    expect(
+      orderPanel.getByRole("switch", { name: "Active Template Provider 在调用顺序中启用" })
+    ).toBeInTheDocument();
+    expect(
+      orderPanel.queryByRole("switch", { name: "Default Provider 在调用顺序中启用" })
+    ).not.toBeInTheDocument();
+    expect(activeSet).not.toHaveBeenCalled();
+  });
+
+  it("initializes each CLI once without overwriting an explicit route draft", async () => {
+    const providers = [
+      {
+        id: 1,
+        cli_key: "claude",
+        name: "P1",
+        enabled: true,
+        base_urls: ["https://one.example.test"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+      },
+      {
+        id: 2,
+        cli_key: "claude",
+        name: "P2",
+        enabled: true,
+        base_urls: ["https://two.example.test"],
+        base_url_mode: "order",
+        cost_multiplier: 1,
+        claude_models: {},
+      },
+    ] as any[];
+    let sortModesResult: any = { data: undefined, isLoading: true };
+    let activeModesResult: any = { data: undefined, isLoading: true };
+    const activeSet = vi.fn();
+
+    vi.mocked(useProvidersListQuery).mockReturnValue({ data: providers, isFetching: false } as any);
+    vi.mocked(useDefaultRouteProvidersQuery).mockReturnValue({
+      data: [{ provider_id: 1 }],
+      isFetching: false,
+    } as any);
+    vi.mocked(useGatewayCircuitStatusQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    vi.mocked(useProviderSetEnabledMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProviderDeleteMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useProvidersReorderMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useGatewayCircuitResetProviderMutation).mockReturnValue({
+      mutateAsync: vi.fn(),
+    } as any);
+    vi.mocked(useGatewayCircuitResetCliMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useSortModesListQuery).mockImplementation(() => sortModesResult);
+    vi.mocked(useSortModeActiveListQuery).mockImplementation(() => activeModesResult);
+    vi.mocked(useSortModeProvidersListQuery).mockImplementation(
+      ({ modeId }) =>
+        ({
+          data:
+            modeId === 10
+              ? [{ provider_id: 2, enabled: true }]
+              : modeId === 20
+                ? [
+                    { provider_id: 1, enabled: true },
+                    { provider_id: 2, enabled: true },
+                  ]
+                : null,
+          isFetching: false,
+        }) as any
+    );
+    vi.mocked(useSortModeActiveSetMutation).mockReturnValue({ mutateAsync: activeSet } as any);
+
+    const { result, rerender } = renderHook(
+      ({ activeCli }: { activeCli: "claude" | "codex" | "gemini" }) =>
+        useProvidersViewDataModel(activeCli),
+      {
+        initialProps: { activeCli: "claude" as "claude" | "codex" | "gemini" },
+        wrapper: queryWrapper(),
+      }
+    );
+
+    expect(result.current.routeDraftSelection).toEqual({ kind: "default", modeId: null });
+
+    sortModesResult = {
+      data: [
+        { id: 10, name: "Review", created_at: 1, updated_at: 1 },
+        { id: 20, name: "Fallback", created_at: 1, updated_at: 1 },
+      ],
+      isLoading: false,
+    };
+    activeModesResult = {
+      data: [
+        { cli_key: "claude", mode_id: 10 },
+        { cli_key: "codex", mode_id: null },
+        { cli_key: "gemini", mode_id: 99 },
+      ],
+      isLoading: false,
+    };
+    rerender({ activeCli: "claude" });
+
+    await waitFor(() =>
+      expect(result.current.routeDraftSelection).toEqual({ kind: "mode", modeId: 10 })
+    );
+    expect(result.current.selectedRouteLabel).toBe("Review");
+    expect(result.current.routeRows).toEqual([{ provider_id: 2, enabled: true }]);
+
+    act(() => result.current.selectRouteDraft("default"));
+    activeModesResult = {
+      ...activeModesResult,
+      data: activeModesResult.data.map((row: any) =>
+        row.cli_key === "claude" ? { ...row, mode_id: 20 } : row
+      ),
+    };
+    rerender({ activeCli: "claude" });
+    expect(result.current.routeDraftSelection).toEqual({ kind: "default", modeId: null });
+
+    rerender({ activeCli: "codex" });
+    await waitFor(() =>
+      expect(result.current.routeDraftSelection).toEqual({ kind: "default", modeId: null })
+    );
+    expect(result.current.routeRows).toEqual([{ provider_id: 1 }]);
+
+    rerender({ activeCli: "gemini" });
+    await waitFor(() =>
+      expect(result.current.routeDraftSelection).toEqual({ kind: "default", modeId: null })
+    );
+
+    rerender({ activeCli: "claude" });
+    await waitFor(() =>
+      expect(result.current.routeDraftSelection).toEqual({ kind: "mode", modeId: 20 })
+    );
+    expect(result.current.routeRows).toEqual([
+      { provider_id: 1, enabled: true },
+      { provider_id: 2, enabled: true },
+    ]);
+    expect(activeSet).not.toHaveBeenCalled();
+  });
+
   it("lets sort mode providers be re-enabled from the route order switch", async () => {
     const providers = [
       {
