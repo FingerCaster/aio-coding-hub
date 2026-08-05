@@ -1,5 +1,28 @@
 # Changelog
 
+## [0.60.37](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.36...aio-coding-hub-v0.60.37) (2026-08-05)
+
+
+### Features
+
+* **gateway:** integrate Codex compressed request compatibility ([a7e7675](https://github.com/FingerCaster/aio-coding-hub/commit/a7e7675c8d8b6b9b003cc5ad2069afb91132464a))
+* **gateway:** retry Codex stream internal errors ([cc753df](https://github.com/FingerCaster/aio-coding-hub/commit/cc753df7ffd611e996aa0bbf25cfab4967acffdd))
+* **gateway:** rewrite final upstream error responses ([701fc8d](https://github.com/FingerCaster/aio-coding-hub/commit/701fc8d34212455f6a79abac62d1e07459403116))
+
+
+### Bug Fixes
+
+* **ci:** fail closed on unknown name-status states ([42ea021](https://github.com/FingerCaster/aio-coding-hub/commit/42ea0218e6964b2995e064bf84e810cdb5c78119))
+* **ci:** harden scope safety contracts ([02bd594](https://github.com/FingerCaster/aio-coding-hub/commit/02bd5945ebecb4ea6723d47c1631e9391e6b2fc6))
+* **ci:** require manual upstream sync review ([8196597](https://github.com/FingerCaster/aio-coding-hub/commit/8196597e259f7ea1e121cd80c42d3f4f2d3a7e5b))
+* **gateway:** harden upstream error handling ([f6d5de1](https://github.com/FingerCaster/aio-coding-hub/commit/f6d5de13287450fb49013a0a1e7e5aa070409809))
+* **gateway:** integrate transport retry backoff ([12e565c](https://github.com/FingerCaster/aio-coding-hub/commit/12e565c0e7fbcb461f0ccb0fccaa5274846f8185))
+* **notification:** confirm backend idle state ([7d5c8d0](https://github.com/FingerCaster/aio-coding-hub/commit/7d5c8d0b0eefc1b66c8cf32f075877d65d79d432))
+* **providers:** default route draft to active mode ([d0f58bd](https://github.com/FingerCaster/aio-coding-hub/commit/d0f58bdaee75b55aea02863e1d06a881fc3f3ca4))
+* **security:** redact diagnostics across boundaries ([e69b452](https://github.com/FingerCaster/aio-coding-hub/commit/e69b45295bec4249903b0af6d35df0ecda25aa26))
+* **startup:** retry initialization failures safely ([53c37de](https://github.com/FingerCaster/aio-coding-hub/commit/53c37de1942e187edd6feef192f898664f422926))
+* **ui:** unify upstream error handling settings ([385b487](https://github.com/FingerCaster/aio-coding-hub/commit/385b4876dbe8e47c6702b2b6c010cb4be4cb7c9d))
+
 ## [0.60.36](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.35...aio-coding-hub-v0.60.36) (2026-08-04)
 
 
