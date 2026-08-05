@@ -713,6 +713,7 @@ where
                     circuit_recover_at_unix: None,
                     circuit_trigger_error_code: None,
                     timeout_secs: None,
+                    stream_internal_error: None,
                     requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
                 });
 
@@ -737,9 +738,8 @@ where
                     &provider_ctx_owned,
                     attempts.as_slice(),
                     status.as_u16(),
-                    None,
-                    None,
                     attempt_started,
+                    false,
                 );
 
                 if should_gunzip {
@@ -811,6 +811,7 @@ where
                     circuit_recover_at_unix: None,
                     circuit_trigger_error_code: None,
                     timeout_secs: None,
+                    stream_internal_error: None,
                     requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
                 });
 
@@ -835,9 +836,8 @@ where
                     &provider_ctx_owned,
                     attempts.as_slice(),
                     status.as_u16(),
-                    None,
-                    None,
                     attempt_started,
+                    false,
                 );
 
                 if should_gunzip {
@@ -1158,6 +1158,7 @@ where
             circuit_recover_at_unix: None,
             circuit_trigger_error_code: None,
             timeout_secs: None,
+            stream_internal_error: None,
             requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
         });
 
@@ -1396,6 +1397,7 @@ where
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
+                stream_internal_error: None,
                 requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
             });
 
@@ -1484,6 +1486,7 @@ where
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
     });
 
@@ -1804,6 +1807,7 @@ mod tests {
             provider_bridged: Some(false),
             timeout_secs: None,
             requested_upstream_model: Some("gpt-5".to_string()),
+            stream_internal_error: None,
         }
     }
 

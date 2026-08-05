@@ -7,6 +7,7 @@ use std::time::Duration;
 pub(super) enum RetryPolicyMatch {
     HttpRule,
     Transport(crate::settings::UpstreamTransportRetryKind),
+    StreamInternalError,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -108,6 +109,7 @@ pub(super) fn policy_matches(
     match matched {
         RetryPolicyMatch::HttpRule => true,
         RetryPolicyMatch::Transport(kind) => policy.transport_errors.contains(&kind),
+        RetryPolicyMatch::StreamInternalError => policy.stream_internal_errors.enabled,
     }
 }
 
@@ -185,6 +187,7 @@ mod tests {
             RetryPolicyMatch::HttpRule,
             RetryPolicyMatch::Transport(UpstreamTransportRetryKind::Read),
             RetryPolicyMatch::Transport(UpstreamTransportRetryKind::Timeout),
+            RetryPolicyMatch::StreamInternalError,
         ] {
             let (decision, configured_retry) = transient_failure_decision(
                 false,

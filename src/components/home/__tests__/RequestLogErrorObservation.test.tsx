@@ -34,6 +34,7 @@ function createObservation(
     retryIndex: null,
     selectionMethod: null,
     source: "summary",
+    streamInternalError: null,
     upstreamBodyPreview: null,
     upstreamStatus: null,
     ...overrides,

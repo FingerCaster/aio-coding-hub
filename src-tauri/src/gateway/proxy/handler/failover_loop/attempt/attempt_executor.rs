@@ -626,6 +626,7 @@ fn emit_started_event<R: tauri::Runtime>(
         circuit_trigger_error_code: None,
         provider_bridged: Some(prepared.provider_bridged),
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: prepared.active_requested_model.clone(),
     };
     let audit_requested_model =

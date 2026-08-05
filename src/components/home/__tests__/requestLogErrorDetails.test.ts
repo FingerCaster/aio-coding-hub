@@ -137,6 +137,88 @@ describe("components/home/requestLogErrorDetails", () => {
     );
   });
 
+  it("projects stream-internal-error evidence for terminal failures", () => {
+    const evidence = {
+      event_type: "response.failed",
+      error_type: "server_error",
+      error_code: "model_at_capacity",
+      message: "Selected model is at capacity",
+      classification: "retryable",
+      matched_keyword: "selected model is at capacity",
+      disposition: "switch_provider",
+      truncated: false,
+    };
+    const observation = resolveRequestLogErrorObservation(
+      createRequestLogDetail({
+        status: 502,
+        error_code: GatewayErrorCodes.FAKE_200,
+        error_details_json: JSON.stringify({ stream_internal_error: evidence }),
+      })
+    );
+
+    expect(observation?.streamInternalError).toEqual(evidence);
+  });
+
+  it("does not turn a final 2xx success into a terminal error card", () => {
+    const attempts = [
+      createAttempt({
+        outcome: "stream_internal_error",
+        error_code: GatewayErrorCodes.FAKE_200,
+        stream_internal_error: {
+          event_type: "response.failed",
+          error_type: null,
+          error_code: null,
+          message: "Selected model is at capacity",
+          classification: "retryable",
+          matched_keyword: "selected model is at capacity",
+          disposition: "retry_same_provider",
+          truncated: false,
+        },
+      }),
+      createAttempt({ provider_id: 2, provider_name: "Provider B", status: 200 }),
+    ];
+
+    expect(
+      resolveRequestLogErrorObservation(
+        createRequestLogDetail({
+          status: 200,
+          error_code: null,
+          attempts_json: JSON.stringify(attempts),
+        })
+      )
+    ).toBeNull();
+  });
+
+  it("does not attribute an earlier stream error to an unrelated terminal failure", () => {
+    const streamEvidence = {
+      event_type: "response.failed",
+      error_type: null,
+      error_code: null,
+      message: "Selected model is at capacity",
+      classification: "retryable",
+      matched_keyword: "selected model is at capacity",
+      disposition: "retry_same_provider",
+      truncated: false,
+    };
+    const attempts = [
+      createAttempt({
+        error_code: GatewayErrorCodes.FAKE_200,
+        stream_internal_error: streamEvidence,
+      }),
+      timeoutAttempt({ provider_id: 2, provider_name: "Provider B" }),
+    ];
+
+    const observation = resolveRequestLogErrorObservation(
+      createRequestLogDetail({
+        status: 502,
+        error_code: GatewayErrorCodes.UPSTREAM_TIMEOUT,
+        attempts_json: JSON.stringify(attempts),
+      })
+    );
+
+    expect(observation?.streamInternalError).toBeNull();
+  });
+
   describe("buildAttemptFailureSummary", () => {
     it("groups timeout attempts with count, deduped providers, and max timeout secs (AC1)", () => {
       const summary = buildAttemptFailureSummary([

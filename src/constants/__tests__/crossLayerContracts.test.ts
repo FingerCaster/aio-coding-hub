@@ -143,11 +143,14 @@ describe("cross-layer contracts", () => {
     // The shared-fixture contract tests compare serde_json values, so a field
     // skipped when None would silently evade both sides while the frontend
     // normalizers never learn about it. Options must serialize as explicit null.
-    // Exemptions: circuit attribution fields are omitted when None by explicit
-    // space-constraint design (attempts_json must gain zero bytes on success
-    // paths); both sides pin the omission with dedicated tests (Rust key-set
-    // assertions in failover_loop/tests.rs, absence handling in attemptsJson).
-    const exemptFields = ["circuit_recover_at_unix", "circuit_trigger_error_code"];
+    // Exemptions: circuit attribution and stream-error evidence are omitted when
+    // absent so ordinary successful attempts gain zero bytes. Dedicated parser
+    // tests pin the optional-field behavior.
+    const exemptFields = [
+      "circuit_recover_at_unix",
+      "circuit_trigger_error_code",
+      "stream_internal_error",
+    ];
     const skippedFields = Array.from(
       gatewayEventsSource.matchAll(
         /#\[serde\(skip_serializing_if[^\]]*\)\]\s*(?:pub(?:\([^)]*\))?\s+)?(\w+):/g
@@ -170,6 +173,9 @@ describe("cross-layer contracts", () => {
         settingsDefaultsSource,
         "DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS"
       )
+    );
+    expect(settings.stream_internal_error_guard_ms).toBe(
+      extractRustNumericConst(settingsDefaultsSource, "DEFAULT_STREAM_INTERNAL_ERROR_GUARD_MS")
     );
     expect(settings.enable_billing_header_rectifier).toBe(
       extractRustBoolConst(settingsDefaultsSource, "DEFAULT_ENABLE_BILLING_HEADER_RECTIFIER")
@@ -217,6 +223,7 @@ describe("cross-layer contracts", () => {
       "MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS",
       "MIN_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS",
       "MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS",
+      "MAX_STREAM_INTERNAL_ERROR_GUARD_MS",
       "MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS",
       "MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER",
       "MAX_FAILOVER_MAX_PROVIDERS_TO_TRY",
@@ -226,6 +233,8 @@ describe("cross-layer contracts", () => {
       "MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS",
       "MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS",
       "MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS",
+      "MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS",
+      "MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS",
       "MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES",
       "MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS",
       "MAX_UPSTREAM_ERROR_RESPONSE_RULES",

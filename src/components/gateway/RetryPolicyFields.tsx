@@ -135,6 +135,49 @@ function RetryRuleEditor({
   );
 }
 
+function KeywordTextarea({
+  label,
+  values,
+  disabled,
+  onChange,
+}: {
+  label: string;
+  values: string[];
+  disabled: boolean;
+  onChange: (values: string[]) => void;
+}) {
+  const id = useId();
+  const [draft, setDraft] = useState(() => bodyContainsToTextarea(values));
+
+  useEffect(() => {
+    const parsedDraft = bodyContainsFromTextarea(draft);
+    const matches =
+      parsedDraft.length === values.length &&
+      parsedDraft.every((value, index) => value === values[index]);
+    if (!matches) setDraft(bodyContainsToTextarea(values));
+  }, [draft, values]);
+
+  return (
+    <div className="space-y-1.5">
+      <label htmlFor={id} className="text-xs font-medium text-muted-foreground">
+        {label}
+      </label>
+      <Textarea
+        id={id}
+        value={draft}
+        disabled={disabled}
+        rows={5}
+        className="min-h-[8.25rem] resize-y"
+        onChange={(event) => {
+          const next = event.currentTarget.value;
+          setDraft(next);
+          onChange(bodyContainsFromTextarea(next));
+        }}
+      />
+    </div>
+  );
+}
+
 export function RetryPolicyFields({
   policy,
   disabled,
@@ -228,6 +271,53 @@ export function RetryPolicyFields({
               {UPSTREAM_RETRY_TRANSPORT_ERROR_LABELS[kind]}
             </label>
           ))}
+        </div>
+      </div>
+
+      <div className="space-y-3 border-y border-border py-4">
+        <div className="flex items-center justify-between gap-3">
+          <div className="text-xs font-medium text-muted-foreground">流内部错误</div>
+          <Switch
+            checked={policy.stream_internal_errors.enabled}
+            aria-label="启用流内部错误重试"
+            disabled={disabled}
+            onCheckedChange={(enabled) =>
+              onChange({
+                ...policy,
+                stream_internal_errors: { ...policy.stream_internal_errors, enabled },
+              })
+            }
+          />
+        </div>
+        <div className="grid gap-4 md:grid-cols-2">
+          <KeywordTextarea
+            label="重试关键词（每行一项）"
+            values={policy.stream_internal_errors.retry_keywords}
+            disabled={disabled || !policy.stream_internal_errors.enabled}
+            onChange={(retryKeywords) =>
+              onChange({
+                ...policy,
+                stream_internal_errors: {
+                  ...policy.stream_internal_errors,
+                  retry_keywords: retryKeywords,
+                },
+              })
+            }
+          />
+          <KeywordTextarea
+            label="不重试关键词（每行一项）"
+            values={policy.stream_internal_errors.non_retry_keywords}
+            disabled={disabled || !policy.stream_internal_errors.enabled}
+            onChange={(nonRetryKeywords) =>
+              onChange({
+                ...policy,
+                stream_internal_errors: {
+                  ...policy.stream_internal_errors,
+                  non_retry_keywords: nonRetryKeywords,
+                },
+              })
+            }
+          />
         </div>
       </div>
 

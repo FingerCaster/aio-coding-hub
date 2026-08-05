@@ -7,16 +7,22 @@ import {
 } from "../upstreamRetryPolicy";
 
 describe("upstreamRetryPolicy", () => {
-  it("provides three independent default status-only rules", () => {
+  it("provides independent default transport-status and capacity rules", () => {
     const cloned = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
-    expect(cloned.http_rules).toEqual(
-      [502, 503, 504].map((status_code) => ({
+    expect(cloned.http_rules).toEqual([
+      ...[502, 503, 504].map((status_code) => ({
         enabled: true,
         status_code,
         body_contains: [],
         description: "",
-      }))
-    );
+      })),
+      {
+        enabled: true,
+        status_code: 400,
+        body_contains: ["selected model is at capacity"],
+        description: "Codex model capacity",
+      },
+    ]);
     cloned.http_rules[0].body_contains.push("changed");
     expect(DEFAULT_UPSTREAM_RETRY_POLICY.http_rules[0].body_contains).toEqual([]);
   });
@@ -43,6 +49,7 @@ describe("upstreamRetryPolicy", () => {
     const inactive = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
     inactive.http_rules = inactive.http_rules.map((rule) => ({ ...rule, enabled: false }));
     inactive.transport_errors = [];
+    inactive.stream_internal_errors.enabled = false;
     expect(validateUpstreamRetryPolicy(inactive)).toContain("至少需要一条已启用 HTTP 规则");
     inactive.enabled = false;
     expect(validateUpstreamRetryPolicy(inactive)).toBeNull();

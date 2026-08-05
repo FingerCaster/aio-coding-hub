@@ -1,7 +1,8 @@
 import { useMemo, useState } from "react";
+import { toast } from "sonner";
 import { Spinner } from "../ui/Spinner";
 import { cn } from "../utils/cn";
-import { Globe, AlertTriangle, Zap, ChevronDown, ArrowRight } from "lucide-react";
+import { Globe, AlertTriangle, Zap, ChevronDown, ArrowRight, Copy } from "lucide-react";
 import { getGatewayErrorShortLabel } from "../constants/gatewayErrorCodes";
 import { DisclosureSection } from "./home/DisclosureSection";
 import {
@@ -10,9 +11,12 @@ import {
   parseAttemptsJson,
   type AttemptJsonEntry,
   type AttemptProbeMetadata,
+  type StreamInternalErrorEvidence,
 } from "../services/gateway/attemptsJson";
 import { normalizeCircuitState } from "../services/gateway/circuitState";
 import { formatCircuitRecovery } from "../utils/formatters";
+import { copyText } from "../services/clipboard";
+import { Tooltip } from "../ui/Tooltip";
 
 export type ProviderChainAttemptLog = AttemptProbeMetadata & {
   attempt_index: number;
@@ -29,6 +33,7 @@ export type ProviderChainAttemptLog = AttemptProbeMetadata & {
   circuit_state_after?: string | null;
   circuit_failure_count?: number | null;
   circuit_failure_threshold?: number | null;
+  stream_internal_error?: StreamInternalErrorEvidence | null;
 };
 
 type ProviderChainAttempt = {
@@ -59,6 +64,7 @@ type ProviderChainAttempt = {
   probe_trigger: string | null;
   probe_result: string | null;
   probe_generation: number | null;
+  stream_internal_error: StreamInternalErrorEvidence | null;
 };
 
 function normalizeAttemptFromSources({
@@ -125,6 +131,11 @@ function normalizeAttemptFromSources({
       liveProbe?.probe_generation ??
       logProbe?.probe_generation ??
       jsonProbe?.probe_generation ??
+      null,
+    stream_internal_error:
+      live?.stream_internal_error ??
+      log?.stream_internal_error ??
+      json?.stream_internal_error ??
       null,
   };
 }
@@ -446,6 +457,10 @@ function AttemptCard({
               </div>
             ) : null}
 
+            {attempt.stream_internal_error ? (
+              <StreamInternalErrorDetails evidence={attempt.stream_internal_error} />
+            ) : null}
+
             {/* Expandable structured error details */}
             {!success && !skipped && hasStructuredDetails(attempt) ? (
               <DisclosureSection label="结构化错误详情">
@@ -506,6 +521,68 @@ function AttemptCard({
             ) : null}
           </div>
         )}
+      </div>
+    </div>
+  );
+}
+
+function StreamInternalErrorDetails({ evidence }: { evidence: StreamInternalErrorEvidence }) {
+  const fields = [
+    ["事件", evidence.event_type],
+    ["错误类型", evidence.error_type],
+    ["错误码", evidence.error_code],
+    ["分类", evidence.classification],
+    ["匹配关键词", evidence.matched_keyword],
+    ["处理", evidence.disposition],
+  ].filter((field): field is [string, string] => Boolean(field[1]));
+
+  const copyMessage = async () => {
+    if (!evidence.message) return;
+    try {
+      await copyText(evidence.message);
+      toast("流内部错误消息已复制");
+    } catch {
+      toast("复制流内部错误消息失败");
+    }
+  };
+
+  return (
+    <div className="border-l-2 border-amber-400 py-1 pl-3 dark:border-amber-500">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="flex items-center gap-1.5">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-amber-600 dark:text-amber-400" />
+          <span className="text-sm font-semibold text-amber-800 dark:text-amber-300">
+            流内部错误
+          </span>
+        </div>
+        {evidence.message ? (
+          <Tooltip content="复制已脱敏错误消息">
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-amber-700 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-300 dark:hover:bg-amber-900/40"
+              aria-label="复制已脱敏错误消息"
+              onClick={() => void copyMessage()}
+            >
+              <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        ) : null}
+      </div>
+      {evidence.message ? (
+        <pre className="mb-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white/70 px-2.5 py-2 text-xs font-mono leading-relaxed text-amber-950 dark:bg-black/15 dark:text-amber-100">
+          {evidence.message}
+        </pre>
+      ) : null}
+      <div className="space-y-1 text-xs">
+        {fields.map(([label, value]) => (
+          <div key={label} className="flex items-baseline gap-2">
+            <span className="shrink-0 text-muted-foreground">{label}:</span>
+            <span className="break-all font-mono text-secondary-foreground">{value}</span>
+          </div>
+        ))}
+        {evidence.truncated ? (
+          <div className="text-muted-foreground">部分字段已按日志上限截断</div>
+        ) : null}
       </div>
     </div>
   );

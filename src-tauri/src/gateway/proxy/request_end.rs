@@ -488,6 +488,7 @@ fn select_error_observation_attempt(attempts: &[FailoverAttempt]) -> Option<&Fai
                 || attempt.reason.as_deref().and_then(non_empty_text).is_some()
                 || attempt.decision.is_some()
                 || attempt.reason_code.is_some()
+                || attempt.stream_internal_error.is_some()
                 || attempt.status.is_some()
         })
         .or_else(|| attempts.last())
@@ -655,6 +656,15 @@ fn build_error_details_json(
         }
     } else if let Some(gateway_error_code) = error_code {
         obj.insert("error_code".into(), serde_json::json!(gateway_error_code));
+    }
+
+    if let Some(stream_internal_error) = attempts
+        .last()
+        .and_then(|attempt| attempt.stream_internal_error.as_ref())
+    {
+        if let Ok(value) = serde_json::to_value(stream_internal_error) {
+            obj.insert("stream_internal_error".into(), value);
+        }
     }
 
     if obj.is_empty() {
@@ -1069,6 +1079,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
             timeout_secs: None,
+            stream_internal_error: None,
             requested_upstream_model: None,
         }
     }
@@ -1107,6 +1118,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
             timeout_secs: Some(1),
+            stream_internal_error: None,
             requested_upstream_model: None,
         }
     }
@@ -1875,6 +1887,49 @@ mod tests {
             Some(&json!(ErrorCategory::SystemError.reason_code()))
         );
         assert_eq!(value.get("decision"), Some(&json!("abort")));
+    }
+
+    #[test]
+    fn build_error_details_json_projects_last_attempt_stream_internal_error() {
+        let mut first = sample_attempt();
+        first.stream_internal_error = Some(crate::usage::StreamInternalErrorEvidence {
+            event_type: "response.failed".to_string(),
+            error_type: None,
+            error_code: None,
+            message: Some("first evidence".to_string()),
+            classification: "retryable".to_string(),
+            matched_keyword: Some("capacity".to_string()),
+            disposition: "retry_same_provider".to_string(),
+            truncated: false,
+        });
+        let mut last = sample_attempt();
+        last.error_code = Some(GatewayErrorCode::Fake200.as_str());
+        last.stream_internal_error = Some(crate::usage::StreamInternalErrorEvidence {
+            event_type: "response.error".to_string(),
+            error_type: Some("server_error".to_string()),
+            error_code: Some("model_at_capacity".to_string()),
+            message: Some("last evidence".to_string()),
+            classification: "retryable".to_string(),
+            matched_keyword: Some("capacity".to_string()),
+            disposition: "switch_provider".to_string(),
+            truncated: false,
+        });
+
+        let encoded = build_error_details_json(
+            Some(GatewayErrorCode::UpstreamAllFailed.as_str()),
+            &[first, last],
+        )
+        .expect("error details json");
+        let value: serde_json::Value = serde_json::from_str(&encoded).expect("valid JSON");
+
+        assert_eq!(
+            value.pointer("/stream_internal_error/message"),
+            Some(&json!("last evidence"))
+        );
+        assert_eq!(
+            value.pointer("/stream_internal_error/disposition"),
+            Some(&json!("switch_provider"))
+        );
     }
 
     #[test]

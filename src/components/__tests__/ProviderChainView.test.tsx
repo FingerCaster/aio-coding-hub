@@ -256,6 +256,48 @@ describe("components/ProviderChainView", () => {
     expect(screen.queryByText("供应商：")).not.toBeInTheDocument();
   });
 
+  it("keeps stream-internal-error evidence visible after a later retry succeeds", () => {
+    render(
+      <ProviderChainView
+        attemptLogs={[]}
+        attemptLogsLoading={false}
+        attemptsJson={JSON.stringify([
+          {
+            provider_id: 1,
+            provider_name: "Capacity Provider",
+            base_url: "https://capacity.example",
+            outcome: "stream_internal_error",
+            status: 200,
+            error_code: "GW_FAKE_200",
+            decision: "retry",
+            stream_internal_error: {
+              event_type: "response.failed",
+              error_type: "server_error",
+              error_code: "model_at_capacity",
+              message: "Selected model is at capacity",
+              classification: "retryable",
+              matched_keyword: "selected model is at capacity",
+              disposition: "retry_same_provider",
+              truncated: false,
+            },
+          },
+          {
+            provider_id: 1,
+            provider_name: "Capacity Provider",
+            base_url: "https://capacity.example",
+            outcome: "success",
+            status: 200,
+          },
+        ])}
+      />
+    );
+
+    expect(screen.getByText("最终成功")).toBeInTheDocument();
+    expect(screen.getByText("流内部错误")).toBeInTheDocument();
+    expect(screen.getByText("Selected model is at capacity")).toBeInTheDocument();
+    expect(screen.getByText("selected model is at capacity")).toBeInTheDocument();
+  });
+
   it("renders reason and circuit attribution for circuit-gate skipped attempts", () => {
     const farFutureUnix = 4_102_444_800; // 2100-01-01, keeps "约 N 分钟后" stable
     render(

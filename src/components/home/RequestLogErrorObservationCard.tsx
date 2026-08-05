@@ -1,4 +1,5 @@
-import { AlertTriangle, Lightbulb } from "lucide-react";
+import { AlertTriangle, Copy, Lightbulb } from "lucide-react";
+import { toast } from "sonner";
 import { Card } from "../../ui/Card";
 import {
   GatewayErrorDescriptions,
@@ -7,6 +8,9 @@ import {
 import type { RequestLogErrorObservation } from "./requestLogErrorDetails";
 import { DisclosureSection } from "./DisclosureSection";
 import { formatCircuitRecovery } from "../../utils/formatters";
+import { copyText } from "../../services/clipboard";
+import type { StreamInternalErrorEvidence } from "../../services/gateway/attemptsJson";
+import { Tooltip } from "../../ui/Tooltip";
 
 export type RequestLogErrorObservationCardProps = {
   observation: RequestLogErrorObservation | null;
@@ -105,6 +109,10 @@ export function RequestLogErrorObservationCard({
           </div>
         ) : null}
 
+        {observation.streamInternalError ? (
+          <StreamInternalErrorBlock evidence={observation.streamInternalError} />
+        ) : null}
+
         {/* Expandable detail fields */}
         {hasDetails ? (
           <DisclosureSection label="详细信息">
@@ -151,6 +159,54 @@ function DetailRow({ label, value }: { label: string; value: string }) {
   );
 }
 
+function StreamInternalErrorBlock({ evidence }: { evidence: StreamInternalErrorEvidence }) {
+  const copyMessage = async () => {
+    if (!evidence.message) return;
+    try {
+      await copyText(evidence.message);
+      toast("流内部错误消息已复制");
+    } catch {
+      toast("复制流内部错误消息失败");
+    }
+  };
+
+  return (
+    <div className="border-l-2 border-amber-400 py-1 pl-3 dark:border-amber-500">
+      <div className="mb-2 flex items-center justify-between gap-2">
+        <div className="text-xs font-semibold text-amber-800 dark:text-amber-300">流内部错误</div>
+        {evidence.message ? (
+          <Tooltip content="复制已脱敏错误消息">
+            <button
+              type="button"
+              className="inline-flex h-7 w-7 items-center justify-center rounded-md text-amber-700 transition-colors hover:bg-amber-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring dark:text-amber-300 dark:hover:bg-amber-900/40"
+              aria-label="复制已脱敏错误消息"
+              onClick={() => void copyMessage()}
+            >
+              <Copy aria-hidden="true" className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        ) : null}
+      </div>
+      {evidence.message ? (
+        <pre className="mb-2 max-h-40 overflow-auto whitespace-pre-wrap break-all rounded-md bg-white/70 px-2.5 py-2 text-xs font-mono leading-relaxed text-amber-950 dark:bg-black/15 dark:text-amber-100">
+          {evidence.message}
+        </pre>
+      ) : null}
+      <div className="grid gap-x-4 gap-y-1 text-xs sm:grid-cols-2">
+        <DetailRow label="事件" value={evidence.event_type} />
+        <DetailRow label="分类" value={evidence.classification} />
+        {evidence.error_type ? <DetailRow label="错误类型" value={evidence.error_type} /> : null}
+        {evidence.error_code ? <DetailRow label="错误码" value={evidence.error_code} /> : null}
+        {evidence.matched_keyword ? (
+          <DetailRow label="匹配关键词" value={evidence.matched_keyword} />
+        ) : null}
+        <DetailRow label="处理" value={evidence.disposition} />
+        {evidence.truncated ? <DetailRow label="截断" value="是" /> : null}
+      </div>
+    </div>
+  );
+}
+
 type DetailField = { label: string; value: string };
 
 function resolveFallbackTitle(obs: RequestLogErrorObservation): string | null {
@@ -159,6 +215,7 @@ function resolveFallbackTitle(obs: RequestLogErrorObservation): string | null {
   }
   if (
     obs.errorCategory ||
+    obs.streamInternalError ||
     obs.decision ||
     obs.selectionMethod ||
     obs.reasonCode ||

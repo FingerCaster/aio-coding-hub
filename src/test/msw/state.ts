@@ -25,7 +25,7 @@ const DEFAULT_CLI_PROXY_STATUS: CliProxyStatus[] = [
 
 // Default settings matching the Rust backend defaults.
 const DEFAULT_SETTINGS: AppSettings = {
-  schema_version: 55,
+  schema_version: 56,
   preferred_port: 37123,
   show_home_heatmap: true,
   show_home_usage: true,
@@ -53,6 +53,7 @@ const DEFAULT_SETTINGS: AppSettings = {
   provider_base_url_ping_cache_ttl_seconds: 60,
   upstream_first_byte_timeout_seconds: 30,
   upstream_stream_idle_timeout_seconds: 300,
+  stream_internal_error_guard_ms: 500,
   upstream_request_timeout_non_streaming_seconds: 0,
   update_releases_url: "https://github.com/FingerCaster/aio-coding-hub/releases",
   failover_max_attempts_per_provider: 5,

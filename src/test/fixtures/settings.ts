@@ -35,6 +35,7 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     provider_base_url_ping_cache_ttl_seconds: 60,
     upstream_first_byte_timeout_seconds: 0,
     upstream_stream_idle_timeout_seconds: 0,
+    stream_internal_error_guard_ms: 500,
     upstream_request_timeout_non_streaming_seconds: 0,
     update_releases_url: "",
     failover_max_attempts_per_provider: 5,

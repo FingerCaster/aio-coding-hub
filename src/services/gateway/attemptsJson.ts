@@ -4,6 +4,10 @@
 // - `timeout_secs` is the structured first-byte timeout; never parse it out of `outcome`.
 // - Probe state is structured metadata; consumers must not infer it from `reason`.
 
+import type { StreamInternalErrorEvidence } from "../../generated/bindings";
+
+export type { StreamInternalErrorEvidence } from "../../generated/bindings";
+
 const PROBE_METADATA_TEXT_MAX_LENGTH = 64;
 
 export type AttemptProbeMetadata = {
@@ -47,6 +51,7 @@ export type AttemptJsonEntry = AttemptProbeMetadata & {
   circuit_recover_at_unix?: number | null;
   circuit_trigger_error_code?: string | null;
   timeout_secs?: number | null;
+  stream_internal_error?: StreamInternalErrorEvidence | null;
 };
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -105,11 +110,51 @@ export function isCircuitProbeAttempt(
   );
 }
 
+function asRequiredString(value: unknown): string | null {
+  return typeof value === "string" && value.length > 0 ? value : null;
+}
+
+function asOptionalString(value: unknown): string | null {
+  if (value == null) return null;
+  return typeof value === "string" ? value : null;
+}
+
+export function parseStreamInternalErrorEvidence(
+  value: unknown
+): StreamInternalErrorEvidence | null {
+  if (!isRecord(value)) return null;
+
+  const eventType = asRequiredString(value.event_type);
+  const classification = asRequiredString(value.classification);
+  const disposition = asRequiredString(value.disposition);
+  if (!eventType || !classification || !disposition || typeof value.truncated !== "boolean") {
+    return null;
+  }
+
+  return {
+    event_type: eventType,
+    error_type: asOptionalString(value.error_type),
+    error_code: asOptionalString(value.error_code),
+    message: asOptionalString(value.message),
+    classification,
+    matched_keyword: asOptionalString(value.matched_keyword),
+    disposition,
+    truncated: value.truncated,
+  };
+}
+
 export function parseAttemptsJson(raw: string | null | undefined): AttemptJsonEntry[] | null {
   if (!raw) return null;
   try {
     const parsed = JSON.parse(raw) as unknown;
-    return Array.isArray(parsed) ? (parsed as AttemptJsonEntry[]) : null;
+    if (!Array.isArray(parsed)) return null;
+    return parsed.map((entry) => {
+      if (!isRecord(entry)) return entry as AttemptJsonEntry;
+      return {
+        ...(entry as AttemptJsonEntry),
+        stream_internal_error: parseStreamInternalErrorEvidence(entry.stream_internal_error),
+      };
+    });
   } catch {
     return null;
   }

@@ -113,6 +113,7 @@ fn respond_warmup_intercept<R: tauri::Runtime>(
         circuit_trigger_error_code: None,
         provider_bridged: None,
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: None,
     }];
 

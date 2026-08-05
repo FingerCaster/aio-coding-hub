@@ -1,8 +1,13 @@
 import { fireEvent, render, screen } from "@testing-library/react";
-import { describe, expect, it } from "vitest";
+import { describe, expect, it, vi } from "vitest";
 import { GatewayErrorCodes, GatewayErrorDescriptions } from "../../../constants/gatewayErrorCodes";
+import { copyText } from "../../../services/clipboard";
 import { RequestLogErrorObservationCard } from "../RequestLogErrorObservationCard";
 import type { RequestLogErrorObservation } from "../requestLogErrorDetails";
+
+vi.mock("../../../services/clipboard", () => ({
+  copyText: vi.fn().mockResolvedValue(undefined),
+}));
 
 const baseObservation: RequestLogErrorObservation = {
   attemptDurationMs: null,
@@ -27,6 +32,7 @@ const baseObservation: RequestLogErrorObservation = {
   retryIndex: null,
   selectionMethod: null,
   source: "summary",
+  streamInternalError: null,
   upstreamBodyPreview: null,
   upstreamStatus: null,
 };
@@ -106,6 +112,35 @@ describe("components/home/RequestLogErrorObservationCard", () => {
     expect(screen.getByText("id=12")).toBeInTheDocument();
     expect(screen.getByText("原始错误信息")).toBeInTheDocument();
     expect(screen.getByText("raw error details")).toBeInTheDocument();
+  });
+
+  it("renders structured stream-internal-error evidence", () => {
+    render(
+      <RequestLogErrorObservationCard
+        observation={{
+          ...baseObservation,
+          displayErrorCode: GatewayErrorCodes.FAKE_200,
+          gatewayErrorCode: GatewayErrorCodes.FAKE_200,
+          streamInternalError: {
+            event_type: "response.failed",
+            error_type: "server_error",
+            error_code: "model_at_capacity",
+            message: "Selected model is at capacity",
+            classification: "retryable",
+            matched_keyword: "selected model is at capacity",
+            disposition: "switch_provider",
+            truncated: false,
+          },
+        }}
+      />
+    );
+
+    expect(screen.getByText("流内部错误")).toBeInTheDocument();
+    expect(screen.getByText("Selected model is at capacity")).toBeInTheDocument();
+    expect(screen.getByText("response.failed")).toBeInTheDocument();
+    expect(screen.getByText("selected model is at capacity")).toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "复制已脱敏错误消息" }));
+    expect(copyText).toHaveBeenCalledWith("Selected model is at capacity");
   });
 
   it("renders the failure attempt summary with timeout secs and dominant-code suggestion (AC1)", () => {

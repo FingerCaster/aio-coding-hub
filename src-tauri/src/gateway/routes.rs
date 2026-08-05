@@ -776,6 +776,111 @@ mod tests {
         (format!("http://{addr}"), task)
     }
 
+    async fn spawn_retrying_sse_upstream(
+        first_body: Vec<u8>,
+        gzip_first: bool,
+        success_body: &'static str,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind retrying sse upstream stub");
+        let addr = listener.local_addr().expect("retrying sse upstream addr");
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_call_count = Arc::clone(&call_count);
+        let task = tokio::spawn(async move {
+            for index in 0..2 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                task_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if index == 0 {
+                    let content_encoding = if gzip_first {
+                        "content-encoding: gzip\r\n"
+                    } else {
+                        ""
+                    };
+                    let headers = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream; charset=utf-8\r\n{content_encoding}content-length: {}\r\nconnection: close\r\n\r\n",
+                        first_body.len()
+                    );
+                    let _ = socket.write_all(headers.as_bytes()).await;
+                    let _ = socket.write_all(&first_body).await;
+                } else {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        success_body.len(),
+                        success_body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{addr}"), call_count, task)
+    }
+
+    async fn spawn_retrying_chunked_sse_upstream(
+        metadata_chunk: &'static str,
+        error_chunk: &'static str,
+        delay: Duration,
+        success_body: &'static str,
+    ) -> (
+        String,
+        Arc<std::sync::atomic::AtomicUsize>,
+        tokio::task::JoinHandle<()>,
+    ) {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0")
+            .await
+            .expect("bind retrying chunked sse upstream stub");
+        let addr = listener
+            .local_addr()
+            .expect("retrying chunked sse upstream addr");
+        let call_count = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let task_call_count = Arc::clone(&call_count);
+        let task = tokio::spawn(async move {
+            for index in 0..2 {
+                let Ok((mut socket, _)) = listener.accept().await else {
+                    return;
+                };
+                let mut buf = [0_u8; 1024];
+                let _ = socket.read(&mut buf).await;
+                task_call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                if index == 0 {
+                    let headers = concat!(
+                        "HTTP/1.1 200 OK\r\n",
+                        "content-type: text/event-stream; charset=utf-8\r\n",
+                        "transfer-encoding: chunked\r\n",
+                        "connection: close\r\n",
+                        "\r\n"
+                    );
+                    let _ = socket.write_all(headers.as_bytes()).await;
+                    let metadata = format!("{:X}\r\n{}\r\n", metadata_chunk.len(), metadata_chunk);
+                    let _ = socket.write_all(metadata.as_bytes()).await;
+                    tokio::time::sleep(delay).await;
+                    let error = format!("{:X}\r\n{}\r\n0\r\n\r\n", error_chunk.len(), error_chunk);
+                    let _ = socket.write_all(error.as_bytes()).await;
+                } else {
+                    let response = format!(
+                        "HTTP/1.1 200 OK\r\ncontent-type: text/event-stream; charset=utf-8\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                        success_body.len(),
+                        success_body
+                    );
+                    let _ = socket.write_all(response.as_bytes()).await;
+                }
+                let _ = socket.shutdown().await;
+            }
+        });
+
+        (format!("http://{addr}"), call_count, task)
+    }
+
     async fn spawn_stalling_sse_upstream(
         first_chunk: &'static str,
     ) -> (String, tokio::task::JoinHandle<()>) {
@@ -4332,7 +4437,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn managed_codex_alias_incomplete_sse_keeps_matched_route_observation() {
+    async fn managed_codex_alias_disabled_incomplete_sse_forwards_and_keeps_route_observation() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -4375,15 +4480,13 @@ INSERT INTO codex_managed_profiles(
             .expect("request");
 
         let response = router.oneshot(request).await.expect("route response");
-        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        assert_eq!(response.status(), StatusCode::OK);
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
-        let payload: Value = serde_json::from_slice(&body).expect("response JSON");
-        assert_eq!(
-            payload.get("error_code").and_then(Value::as_str),
-            Some("GW_FAKE_200")
-        );
+        let body_text = String::from_utf8_lossy(&body);
+        assert!(body_text.contains("response.incomplete"));
+        assert!(body_text.contains("resp-managed-incomplete"));
 
         let log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(log.status, Some(502));
@@ -4398,6 +4501,14 @@ INSERT INTO codex_managed_profiles(
         assert_eq!(
             attempts[0].get("outcome").and_then(Value::as_str),
             Some("stream_error: code=GW_FAKE_200")
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"],
+            "disabled"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["disposition"],
+            "forwarded_after_commit"
         );
         assert_no_additional_terminal_request_log(&mut log_rx).await;
 
@@ -5311,6 +5422,7 @@ INSERT INTO codex_managed_profiles(
                 description: "temporary upstream".to_string(),
             }],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: false,
@@ -5388,6 +5500,7 @@ INSERT INTO codex_managed_profiles(
                 description: String::new(),
             }],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: false,
@@ -5458,6 +5571,7 @@ INSERT INTO codex_managed_profiles(
                 description: "auth retry".to_string(),
             }],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: false,
@@ -5520,6 +5634,7 @@ INSERT INTO codex_managed_profiles(
             enabled: true,
             http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: false,
@@ -5615,6 +5730,7 @@ INSERT INTO codex_managed_profiles(
                 description: String::new(),
             }],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: false,
@@ -5673,6 +5789,7 @@ INSERT INTO codex_managed_profiles(
             enabled: true,
             http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: false,
@@ -5773,6 +5890,7 @@ INSERT INTO codex_managed_profiles(
             enabled: true,
             http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
             transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
             max_retries: 1,
             backoff_ms: 0,
             counts_toward_circuit_breaker: true,
@@ -10646,7 +10764,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_responses_streams_created_event_before_completion() {
+    async fn codex_responses_buffers_created_event_until_completion() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -10691,40 +10809,24 @@ INSERT INTO codex_managed_profiles(
             ))
             .expect("request");
 
-        let response = tokio::time::timeout(Duration::from_secs(2), router.oneshot(request))
+        let mut response_future = Box::pin(router.oneshot(request));
+        assert!(
+            tokio::time::timeout(Duration::from_secs(1), response_future.as_mut())
+                .await
+                .is_err(),
+            "metadata-only prefix must remain buffered before completion"
+        );
+        let response = tokio::time::timeout(Duration::from_secs(5), response_future)
             .await
-            .expect("response returned before delayed completion")
+            .expect("response returned after delayed completion")
             .expect("route response");
         assert_eq!(response.status(), StatusCode::OK);
 
-        let mut body_stream = Box::pin(response.into_body().into_data_stream());
-        let first = tokio::time::timeout(
-            Duration::from_secs(2),
-            std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
-        )
-        .await
-        .expect("first stream chunk before completion timeout")
-        .expect("first stream chunk")
-        .expect("first stream chunk ok");
-        let first_text = String::from_utf8_lossy(&first);
-        assert!(first_text.contains("response.created"));
-        assert!(first_text.contains("resp-disabled-stream"));
-        assert!(!first_text.contains("response.completed"));
-
-        let mut full_body = first_text.to_string();
-        loop {
-            let next = tokio::time::timeout(
-                Duration::from_secs(5),
-                std::future::poll_fn(|cx| body_stream.as_mut().poll_next(cx)),
-            )
+        let body = to_bytes(response.into_body(), usize::MAX)
             .await
-            .expect("stream completion timeout");
-            let Some(chunk) = next else {
-                break;
-            };
-            let chunk = chunk.expect("stream chunk ok");
-            full_body.push_str(&String::from_utf8_lossy(&chunk));
-        }
+            .expect("response body");
+        let full_body = String::from_utf8_lossy(&body);
+        assert!(full_body.contains("response.created"));
         assert!(full_body.contains("response.completed"));
         assert!(full_body.contains("resp-disabled-stream"));
 
@@ -10996,7 +11098,177 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_responses_sse_fake_200_keeps_fake_200_error_code() {
+    async fn codex_responses_split_capacity_error_retries_same_provider_before_commit() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy.backoff_ms = 0;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let metadata = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-capacity-first\",\"status\":\"in_progress\"}}\n\n",
+            "event: response.in_progress\n",
+            "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp-capacity-first\",\"status\":\"in_progress\"}}\n\n"
+        );
+        let capacity_error = concat!(
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-capacity-first\",\"status\":\"failed\",\"error\":{\"type\":\"server_error\",\"code\":\"model_at_capacity\",\"message\":\"Selected model is at capacity\"}}}\n\n"
+        );
+        let success_body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"retry-ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-capacity-retry-ok\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"retry-ok\"}]}],\"usage\":{\"input_tokens\":11,\"output_tokens\":1,\"total_tokens\":12}}}\n\n"
+        );
+        let (base_url, call_count, upstream_task) = spawn_retrying_chunked_sse_upstream(
+            metadata,
+            capacity_error,
+            Duration::from_millis(25),
+            success_body,
+        )
+        .await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("codex-responses-split-capacity-retry.sqlite"),
+        )
+        .expect("init test db");
+        let provider_id =
+            insert_codex_provider_with_priority(&db, "Split Capacity Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-capacity-retry","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("retry-ok"));
+        assert!(!body.contains("Selected model is at capacity"));
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.error_code, None);
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0]["provider_id"].as_i64(), Some(provider_id));
+        assert_eq!(attempts[0]["error_code"].as_str(), Some("GW_FAKE_200"));
+        assert_eq!(attempts[0]["decision"].as_str(), Some("retry"));
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"].as_str(),
+            Some("retryable")
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["matched_keyword"].as_str(),
+            Some("selected model is at capacity")
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["disposition"].as_str(),
+            Some("retry_same_provider")
+        );
+        assert_eq!(attempts[1]["outcome"].as_str(), Some("success"));
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_responses_gzip_capacity_error_is_decoded_before_retry_classification() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy.backoff_ms = 0;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let first_body = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-gzip-capacity\",\"status\":\"in_progress\"}}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"response\":{\"id\":\"resp-gzip-capacity\",\"status\":\"failed\",\"error\":{\"message\":\"Selected model is at capacity\"}}}\n\n"
+        );
+        let success_body = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"gzip-retry-ok\"}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-gzip-retry-ok\",\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"gzip-retry-ok\"}]}],\"usage\":{\"input_tokens\":11,\"output_tokens\":1,\"total_tokens\":12}}}\n\n"
+        );
+        let (base_url, call_count, upstream_task) =
+            spawn_retrying_sse_upstream(gzip_bytes(first_body.as_bytes()), true, success_body)
+                .await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("codex-responses-gzip-capacity-retry.sqlite"),
+        )
+        .expect("init test db");
+        insert_codex_provider_with_priority(&db, "Gzip Capacity Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-gzip-capacity","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("gzip-retry-ok"));
+        assert!(!body.contains("Selected model is at capacity"));
+        assert_eq!(call_count.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"].as_str(),
+            Some("retryable")
+        );
+        assert_eq!(attempts[1]["outcome"].as_str(), Some("success"));
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_responses_unknown_stream_error_is_forwarded_and_logged() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -11010,12 +11282,80 @@ INSERT INTO codex_managed_profiles(
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");
 
+        let unknown_body = concat!(
+            "event: response.error\n",
+            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"quota exhausted\",\"type\":\"insufficient_quota\"}}\n\n"
+        );
+        let (base_url, upstream_task) = spawn_sse_upstream(unknown_body).await;
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("codex-responses-unknown-stream-error.sqlite"),
+        )
+        .expect("init test db");
+        insert_codex_provider_with_priority(&db, "Unknown Stream Error Stub", base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-unknown-stream-error","stream":true,"input":"hello"}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        let body = String::from_utf8_lossy(&body);
+        assert!(body.contains("quota exhausted"));
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some("GW_FAKE_200"));
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["message"],
+            "quota exhausted"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["classification"],
+            "unknown"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["disposition"],
+            "forwarded_after_commit"
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn codex_responses_sse_fake_200_keeps_fake_200_error_code() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.upstream_retry_policy.max_retries = 0;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
         let db_dir = tempfile::tempdir().expect("db dir");
         let db = db::init_for_tests(&db_dir.path().join("codex-responses-sse-fake-200.sqlite"))
             .expect("init test db");
         let fake_200_body = concat!(
             "event: response.error\n",
-            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"quota exhausted\",\"type\":\"insufficient_quota\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"total_tokens\":11}}\n\n"
+            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"Selected model is at capacity\",\"type\":\"server_error\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"total_tokens\":11}}\n\n"
         );
         let (fake_200_base_url, fake_200_task) = spawn_sse_upstream(fake_200_body).await;
         let provider_id = insert_codex_provider_with_priority(
@@ -11100,6 +11440,12 @@ INSERT INTO codex_managed_profiles(
         let mut app_settings = settings::AppSettings::default();
         app_settings.failover_max_attempts_per_provider = 1;
         app_settings.failover_max_providers_to_try = 1;
+        app_settings.upstream_retry_policy.max_retries = 0;
+        app_settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .retry_keywords
+            .push("quota exhausted".to_string());
         settings::write(&app_handle, &app_settings).expect("write settings");
         crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
             .expect("enable codex cli proxy");

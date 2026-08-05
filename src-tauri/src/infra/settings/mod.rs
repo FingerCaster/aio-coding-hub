@@ -7,9 +7,10 @@ mod types;
 
 // Re-export public API (preserves identical surface for all consumers).
 pub use defaults::{
-    DEFAULT_CODEX_PROVIDER_TEST_MODEL, DEFAULT_CX2CC_FALLBACK_MODEL, DEFAULT_GATEWAY_PORT,
+    DEFAULT_CAPACITY_RETRY_KEYWORD, DEFAULT_CODEX_PROVIDER_TEST_MODEL,
+    DEFAULT_CX2CC_FALLBACK_MODEL, DEFAULT_GATEWAY_PORT,
     DEFAULT_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS, DEFAULT_PROVIDER_COOLDOWN_SECONDS,
-    DEFAULT_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS,
+    DEFAULT_STREAM_INTERNAL_ERROR_GUARD_MS, DEFAULT_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS,
     DEFAULT_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS,
     DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS, MAX_GATEWAY_PORT,
     MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS, MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORDS,
@@ -33,5 +34,6 @@ pub use types::{
     AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, ProviderFailbackStrategy,
     UpstreamErrorMessageBehavior, UpstreamErrorResponseMatchMode, UpstreamErrorResponseRule,
     UpstreamErrorStatusBehavior, UpstreamHttpRetryRule, UpstreamRetryPolicy,
-    UpstreamTransportRetryKind, WslHostAddressMode, WslTargetCli,
+    UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind, WslHostAddressMode,
+    WslTargetCli,
 };

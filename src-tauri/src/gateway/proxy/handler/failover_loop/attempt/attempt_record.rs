@@ -187,6 +187,7 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         circuit_trigger_error_code: None,
         provider_bridged: Some(provider_ctx.provider_bridged),
         timeout_secs,
+        stream_internal_error: None,
         requested_upstream_model: provider_ctx.active_requested_model.map(str::to_string),
     });
 
@@ -245,7 +246,10 @@ fn configured_retry_backoff_for_final_decision(
         .flatten()
 }
 
-async fn apply_configured_retry_backoff(decision: FailoverDecision, delay: Option<Duration>) {
+pub(super) async fn apply_configured_retry_backoff(
+    decision: FailoverDecision,
+    delay: Option<Duration>,
+) {
     if let Some(delay) = configured_retry_backoff_for_final_decision(decision, delay) {
         tokio::time::sleep(delay).await;
     }

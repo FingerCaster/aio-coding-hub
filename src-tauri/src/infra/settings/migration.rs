@@ -3,7 +3,7 @@
 use super::defaults::*;
 use super::types::{
     AppSettings, CodexHomeMode, UpstreamErrorMessageBehavior, UpstreamErrorResponseRule,
-    UpstreamErrorStatusBehavior, UpstreamRetryPolicy,
+    UpstreamErrorStatusBehavior, UpstreamHttpRetryRule, UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
@@ -169,6 +169,65 @@ fn normalize_body_contains_for_write(rule_index: usize, values: &mut Vec<String>
     Ok(())
 }
 
+fn normalize_stream_internal_error_keywords_for_write(
+    field: &str,
+    values: &mut Vec<String>,
+) -> AppResult<()> {
+    if values.len() > MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: upstream_retry_policy.stream_internal_errors.{field} must contain <= {MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS} entries"
+        )
+        .into());
+    }
+
+    let mut normalized = Vec::with_capacity(values.len());
+    let mut seen = HashSet::new();
+    for (index, value) in values.iter().enumerate() {
+        let trimmed = value.trim();
+        if trimmed.is_empty()
+            || trimmed.chars().any(char::is_control)
+            || trimmed.chars().count() > MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS
+        {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.stream_internal_errors.{field}[{index}] must be non-empty, contain no control characters, and be <= {MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS} characters"
+            )
+            .into());
+        }
+        let lowercase = trimmed.to_lowercase();
+        if lowercase.chars().count() > MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS {
+            return Err(format!(
+                "SEC_INVALID_INPUT: upstream_retry_policy.stream_internal_errors.{field}[{index}] must be <= {MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS} characters after normalization"
+            )
+            .into());
+        }
+        if seen.insert(lowercase) {
+            normalized.push(trimmed.to_string());
+        }
+    }
+    *values = normalized;
+    Ok(())
+}
+
+fn sanitize_stream_internal_error_keywords(values: &mut Vec<String>) {
+    let mut seen = HashSet::new();
+    *values = values
+        .drain(..)
+        .take(MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS)
+        .filter_map(|value| {
+            let filtered: String = value
+                .chars()
+                .filter(|character| !character.is_control())
+                .collect();
+            let normalized = truncate_chars(
+                filtered.trim(),
+                MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS,
+            );
+            let dedupe_key = normalized.to_lowercase();
+            (!normalized.is_empty() && seen.insert(dedupe_key)).then_some(normalized)
+        })
+        .collect();
+}
+
 pub fn normalize_upstream_retry_policy_for_write(
     policy: &mut UpstreamRetryPolicy,
 ) -> AppResult<bool> {
@@ -214,6 +273,15 @@ pub fn normalize_upstream_retry_policy_for_write(
         .transport_errors
         .retain(|kind| seen_transport_errors.insert(*kind));
 
+    normalize_stream_internal_error_keywords_for_write(
+        "retry_keywords",
+        &mut policy.stream_internal_errors.retry_keywords,
+    )?;
+    normalize_stream_internal_error_keywords_for_write(
+        "non_retry_keywords",
+        &mut policy.stream_internal_errors.non_retry_keywords,
+    )?;
+
     if policy.max_retries > MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES {
         return Err(format!(
             "SEC_INVALID_INPUT: upstream_retry_policy.max_retries must be <= {MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES}"
@@ -229,8 +297,9 @@ pub fn normalize_upstream_retry_policy_for_write(
     if policy.enabled
         && !policy.http_rules.iter().any(|rule| rule.enabled)
         && policy.transport_errors.is_empty()
+        && !policy.stream_internal_errors.enabled
     {
-        return Err("SEC_INVALID_INPUT: upstream_retry_policy must include at least one enabled HTTP rule or transport error when enabled".into());
+        return Err("SEC_INVALID_INPUT: upstream_retry_policy must include at least one enabled HTTP rule, transport error, or stream internal error policy when enabled".into());
     }
 
     Ok(*policy != original)
@@ -289,6 +358,8 @@ pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool 
     policy
         .transport_errors
         .truncate(MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS);
+    sanitize_stream_internal_error_keywords(&mut policy.stream_internal_errors.retry_keywords);
+    sanitize_stream_internal_error_keywords(&mut policy.stream_internal_errors.non_retry_keywords);
     policy.max_retries = policy
         .max_retries
         .min(MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES);
@@ -297,6 +368,7 @@ pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool 
     if policy.enabled
         && !policy.http_rules.iter().any(|rule| rule.enabled)
         && policy.transport_errors.is_empty()
+        && !policy.stream_internal_errors.enabled
     {
         policy.enabled = false;
     }
@@ -635,6 +707,14 @@ pub(super) fn sanitize_upstream_timeouts(settings: &mut AppSettings) -> bool {
     }
 
     changed
+}
+
+pub(super) fn sanitize_stream_internal_error_guard(settings: &mut AppSettings) -> bool {
+    if settings.stream_internal_error_guard_ms > MAX_STREAM_INTERNAL_ERROR_GUARD_MS {
+        settings.stream_internal_error_guard_ms = MAX_STREAM_INTERNAL_ERROR_GUARD_MS;
+        return true;
+    }
+    false
 }
 
 pub(super) fn sanitize_response_fixer_limits(settings: &mut AppSettings) -> bool {
@@ -1192,6 +1272,49 @@ fn migrate_add_upstream_error_response_rules(
     )
 }
 
+fn has_capacity_retry_intent(policy: &UpstreamRetryPolicy) -> bool {
+    policy.http_rules.iter().any(|rule| {
+        rule.status_code == 400
+            && (rule.body_contains.is_empty()
+                || rule.body_contains.iter().any(|value| {
+                    value
+                        .to_lowercase()
+                        .contains(DEFAULT_CAPACITY_RETRY_KEYWORD)
+                }))
+    })
+}
+
+fn migrate_add_stream_internal_error_retry(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    if schema_version_present
+        && settings.schema_version >= SCHEMA_VERSION_ADD_STREAM_INTERNAL_ERROR_RETRY
+    {
+        return false;
+    }
+
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_STREAM_INTERNAL_ERROR_RETRY,
+    );
+    if !has_capacity_retry_intent(&settings.upstream_retry_policy)
+        && settings.upstream_retry_policy.http_rules.len() < MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES
+    {
+        settings
+            .upstream_retry_policy
+            .http_rules
+            .push(UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 400,
+                body_contains: vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()],
+                description: "Codex model capacity".to_string(),
+            });
+        changed = true;
+    }
+    changed
+}
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -1232,6 +1355,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_upstream_http_retry_rules,
     migrate_add_provider_failback,
     migrate_add_upstream_error_response_rules,
+    migrate_add_stream_internal_error_retry,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1258,6 +1382,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_natural_probe_max_wait_seconds(settings);
     repaired |= sanitize_provider_base_url_ping_cache_ttl_seconds(settings);
     repaired |= sanitize_upstream_timeouts(settings);
+    repaired |= sanitize_stream_internal_error_guard(settings);
     repaired |= sanitize_response_fixer_limits(settings);
     repaired |= sanitize_codex_home_override(settings);
     repaired |= sanitize_codex_provider_test_model(settings);
@@ -1940,6 +2065,11 @@ mod tests {
                 },
             ],
             transport_errors: vec![],
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: true,
+                retry_keywords: vec![" LIMIT ".to_string(), "limit".to_string()],
+                non_retry_keywords: vec![" POLICY\n ".to_string()],
+            },
             max_retries: 999,
             backoff_ms: 999_999,
             counts_toward_circuit_breaker: false,
@@ -1952,6 +2082,11 @@ mod tests {
         assert!(!policy.http_rules[1].enabled);
         assert!(policy.enabled);
         assert!(policy.transport_errors.is_empty());
+        assert_eq!(policy.stream_internal_errors.retry_keywords, vec!["LIMIT"]);
+        assert_eq!(
+            policy.stream_internal_errors.non_retry_keywords,
+            vec!["POLICY"]
+        );
         assert_eq!(policy.max_retries, MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES);
         assert_eq!(policy.backoff_ms, MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS);
     }
@@ -2039,11 +2174,24 @@ mod tests {
                 description: " Temporary quota ".to_string(),
             }],
             transport_errors: Vec::new(),
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: true,
+                retry_keywords: vec![" Capacity ".to_string(), "capacity".to_string()],
+                non_retry_keywords: vec![" Policy ".to_string(), "POLICY".to_string()],
+            },
             ..Default::default()
         };
         assert!(normalize_upstream_retry_policy_for_write(&mut policy).unwrap());
         assert_eq!(policy.http_rules[0].body_contains, vec!["quota"]);
         assert_eq!(policy.http_rules[0].description, "Temporary quota");
+        assert_eq!(
+            policy.stream_internal_errors.retry_keywords,
+            vec!["Capacity"]
+        );
+        assert_eq!(
+            policy.stream_internal_errors.non_retry_keywords,
+            vec!["Policy"]
+        );
     }
 
     #[test]
@@ -2119,6 +2267,96 @@ mod tests {
         assert_eq!(
             settings.schema_version,
             SCHEMA_VERSION_ADD_UPSTREAM_HTTP_RETRY_RULES
+        );
+    }
+
+    #[test]
+    fn migrate_stream_internal_error_retry_uses_new_seventeenth_http_rule_slot() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_UPSTREAM_ERROR_RESPONSE_RULES,
+            ..Default::default()
+        };
+        settings.upstream_retry_policy.http_rules = (0..16)
+            .map(|index| UpstreamHttpRetryRule {
+                enabled: index % 2 == 0,
+                status_code: 401,
+                body_contains: vec![format!("legacy-{index}")],
+                description: format!("legacy rule {index}"),
+            })
+            .collect();
+
+        assert!(migrate_add_stream_internal_error_retry(&mut settings, true));
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_STREAM_INTERNAL_ERROR_RETRY
+        );
+        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 17);
+        let capacity = settings
+            .upstream_retry_policy
+            .http_rules
+            .last()
+            .expect("capacity rule");
+        assert_eq!(capacity.status_code, 400);
+        assert_eq!(capacity.body_contains, vec![DEFAULT_CAPACITY_RETRY_KEYWORD]);
+    }
+
+    #[test]
+    fn migrate_stream_internal_error_retry_respects_disabled_and_status_only_intent() {
+        for body_contains in [vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()], Vec::new()] {
+            let mut settings = AppSettings {
+                schema_version: SCHEMA_VERSION_ADD_UPSTREAM_ERROR_RESPONSE_RULES,
+                ..Default::default()
+            };
+            settings.upstream_retry_policy.http_rules = vec![UpstreamHttpRetryRule {
+                enabled: false,
+                status_code: 400,
+                body_contains,
+                description: "user intent".to_string(),
+            }];
+
+            assert!(migrate_add_stream_internal_error_retry(&mut settings, true));
+            assert_eq!(settings.upstream_retry_policy.http_rules.len(), 1);
+        }
+    }
+
+    #[test]
+    fn migrate_stream_internal_error_retry_does_not_overflow_a_full_rule_list() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_UPSTREAM_ERROR_RESPONSE_RULES,
+            ..Default::default()
+        };
+        settings.upstream_retry_policy.http_rules = (0..MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES)
+            .map(|index| UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 401,
+                body_contains: vec![format!("legacy-{index}")],
+                description: "legacy".to_string(),
+            })
+            .collect();
+
+        assert!(migrate_add_stream_internal_error_retry(&mut settings, true));
+        assert_eq!(
+            settings.schema_version,
+            SCHEMA_VERSION_ADD_STREAM_INTERNAL_ERROR_RETRY
+        );
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules.len(),
+            MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES
+        );
+        assert!(!has_capacity_retry_intent(&settings.upstream_retry_policy));
+    }
+
+    #[test]
+    fn sanitize_stream_internal_error_guard_clamps_to_global_limit() {
+        let mut settings = AppSettings {
+            stream_internal_error_guard_ms: MAX_STREAM_INTERNAL_ERROR_GUARD_MS + 1,
+            ..Default::default()
+        };
+
+        assert!(sanitize_stream_internal_error_guard(&mut settings));
+        assert_eq!(
+            settings.stream_internal_error_guard_ms,
+            MAX_STREAM_INTERNAL_ERROR_GUARD_MS
         );
     }
 

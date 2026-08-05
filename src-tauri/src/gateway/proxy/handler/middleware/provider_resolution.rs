@@ -386,6 +386,7 @@ fn not_triggered_probe_observation(
         provider_bridged: None,
         timeout_secs: None,
         requested_upstream_model: None,
+        stream_internal_error: None,
     }
 }
 

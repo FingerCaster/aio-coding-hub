@@ -13,6 +13,8 @@ import {
   MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES,
   MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES,
   MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS,
+  MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS,
+  MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS,
   validateUpstreamRetryPolicy as validateGatewayUpstreamRetryPolicy,
 } from "../gateway/upstreamRetryPolicy";
 import {
@@ -50,6 +52,7 @@ export const MAX_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS = 60 * 60;
 export const MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS = 60 * 60;
 export const MIN_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS = 60;
 export const MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS = 60 * 60;
+export const MAX_STREAM_INTERNAL_ERROR_GUARD_MS = 5_000;
 export const MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS = 24 * 60 * 60;
 export const MIN_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 1;
 export const MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER = 20;
@@ -88,6 +91,7 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MAX_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS,
   MIN_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS,
   MAX_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS,
+  MAX_STREAM_INTERNAL_ERROR_GUARD_MS,
   MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS,
   MIN_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER,
   MAX_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER,
@@ -99,6 +103,8 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS,
   MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS,
   MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS,
+  MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS,
+  MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS,
   MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES,
   MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS,
   MAX_UPSTREAM_ERROR_RESPONSE_RULES,
@@ -400,6 +406,7 @@ export type SettingsSetValidationInput = {
   providerBaseUrlPingCacheTtlSeconds?: number | null;
   upstreamFirstByteTimeoutSeconds?: number | null;
   upstreamStreamIdleTimeoutSeconds?: number | null;
+  streamInternalErrorGuardMs?: number | null;
   upstreamRequestTimeoutNonStreamingSeconds?: number | null;
   failoverMaxAttemptsPerProvider?: number | null;
   failoverMaxProvidersToTry?: number | null;
@@ -460,6 +467,7 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       0,
       MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS,
     ],
+    ["流内部错误保护窗", input.streamInternalErrorGuardMs, 0, MAX_STREAM_INTERNAL_ERROR_GUARD_MS],
     [
       "单 Provider 最大重试次数",
       input.failoverMaxAttemptsPerProvider,

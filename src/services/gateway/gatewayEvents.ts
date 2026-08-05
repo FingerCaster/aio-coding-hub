@@ -12,6 +12,7 @@ import { MAX_ATTEMPTS_PER_TRACE } from "./traceLimits";
 import {
   isCircuitProbeAttempt,
   normalizeAttemptProbeMetadata,
+  parseStreamInternalErrorEvidence,
   type AttemptProbeMetadata,
 } from "./attemptsJson";
 import type {
@@ -37,6 +38,7 @@ export type GatewayAttempt = Pick<
 > &
   AttemptProbeMetadata & {
     selection_method?: string | null;
+    stream_internal_error?: FailoverAttempt["stream_internal_error"];
   };
 
 export type GatewayRequestEvent = Omit<GeneratedGatewayRequestEvent, "attempts"> & {
@@ -257,6 +259,7 @@ function normalizeGatewayAttempt(payload: unknown): GatewayAttempt | null {
     base_url: truncateString(payload.base_url, EVENT_URL_MAX_LENGTH),
     outcome: truncateString(payload.outcome, EVENT_STATE_MAX_LENGTH),
     status: payload.status ?? null,
+    stream_internal_error: parseStreamInternalErrorEvidence(payload.stream_internal_error),
     requested_upstream_model:
       truncateNullableString(payload.requested_upstream_model, EVENT_SHORT_TEXT_MAX_LENGTH) ?? null,
     selection_method:

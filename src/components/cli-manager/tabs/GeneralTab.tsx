@@ -10,7 +10,10 @@ import {
 import { logToConsole } from "../../../services/consoleLog";
 import type { AppSettings, SensitiveStringUpdate } from "../../../services/settings/settings";
 import type { GatewayRectifierSettingsPatch } from "../../../services/settings/settingsGatewayRectifier";
-import { validateUpstreamProxyFields } from "../../../services/settings/settingsValidation";
+import {
+  MAX_STREAM_INTERNAL_ERROR_GUARD_MS,
+  validateUpstreamProxyFields,
+} from "../../../services/settings/settingsValidation";
 import { Button } from "../../../ui/Button";
 import { Card } from "../../../ui/Card";
 import { Input } from "../../../ui/Input";
@@ -69,6 +72,8 @@ export type CliManagerGeneralTabProps = {
   setUpstreamFirstByteTimeoutSeconds: (value: number) => void;
   upstreamStreamIdleTimeoutSeconds: number;
   setUpstreamStreamIdleTimeoutSeconds: (value: number) => void;
+  streamInternalErrorGuardMs: number;
+  setStreamInternalErrorGuardMs: (value: number) => void;
   upstreamRequestTimeoutNonStreamingSeconds: number;
   setUpstreamRequestTimeoutNonStreamingSeconds: (value: number) => void;
 
@@ -120,6 +125,8 @@ export function CliManagerGeneralTab({
   setUpstreamFirstByteTimeoutSeconds,
   upstreamStreamIdleTimeoutSeconds,
   setUpstreamStreamIdleTimeoutSeconds,
+  streamInternalErrorGuardMs,
+  setStreamInternalErrorGuardMs,
   upstreamRequestTimeoutNonStreamingSeconds,
   setUpstreamRequestTimeoutNonStreamingSeconds,
   providerCooldownSeconds,
@@ -470,6 +477,44 @@ export function CliManagerGeneralTab({
                       disabled={commonSettingsDisabled}
                     />
                     <span className="w-8 text-sm text-muted-foreground">秒</span>
+                  </div>
+                </SettingsRow>
+
+                <SettingsRow
+                  label="流内部错误观察窗口"
+                  subtitle="从首个有效输出开始暂存响应，以便在提交给客户端前识别并重试流内部错误。0 表示不额外等待。"
+                >
+                  <div className="flex items-center gap-2">
+                    <Input
+                      type="number"
+                      value={streamInternalErrorGuardMs}
+                      onChange={(e) => {
+                        const next = e.currentTarget.valueAsNumber;
+                        if (Number.isFinite(next)) setStreamInternalErrorGuardMs(next);
+                      }}
+                      onBlur={(e) => {
+                        if (!appSettings) return;
+                        const next = e.currentTarget.valueAsNumber;
+                        if (
+                          !Number.isFinite(next) ||
+                          next < 0 ||
+                          next > MAX_STREAM_INTERNAL_ERROR_GUARD_MS
+                        ) {
+                          toast(
+                            `流内部错误观察窗口必须为 0-${MAX_STREAM_INTERNAL_ERROR_GUARD_MS} 毫秒`
+                          );
+                          setStreamInternalErrorGuardMs(appSettings.stream_internal_error_guard_ms);
+                          return;
+                        }
+                        void onPersistCommonSettings({ stream_internal_error_guard_ms: next });
+                      }}
+                      onKeyDown={blurOnEnter}
+                      style={{ width: "6rem" }}
+                      min={0}
+                      max={MAX_STREAM_INTERNAL_ERROR_GUARD_MS}
+                      disabled={commonSettingsDisabled}
+                    />
+                    <span className="w-8 text-sm text-muted-foreground">毫秒</span>
                   </div>
                 </SettingsRow>
 

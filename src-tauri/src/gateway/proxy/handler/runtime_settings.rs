@@ -28,6 +28,7 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) provider_failback_strategy: settings::ProviderFailbackStrategy,
     pub(super) upstream_first_byte_timeout_secs: u32,
     pub(super) upstream_stream_idle_timeout_secs: u32,
+    pub(super) stream_internal_error_guard_ms: u32,
     pub(super) upstream_request_timeout_non_streaming_secs: u32,
 }
 
@@ -143,6 +144,9 @@ pub(super) fn handler_runtime_settings(
         upstream_stream_idle_timeout_secs: settings_cfg
             .map(|cfg| cfg.upstream_stream_idle_timeout_seconds)
             .unwrap_or(settings::DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS),
+        stream_internal_error_guard_ms: settings_cfg
+            .map(|cfg| cfg.stream_internal_error_guard_ms)
+            .unwrap_or(settings::DEFAULT_STREAM_INTERNAL_ERROR_GUARD_MS),
         upstream_request_timeout_non_streaming_secs: settings_cfg
             .map(|cfg| cfg.upstream_request_timeout_non_streaming_seconds)
             .unwrap_or(settings::DEFAULT_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS),

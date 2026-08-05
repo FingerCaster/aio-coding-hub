@@ -50,6 +50,7 @@ pub(crate) struct SettingsUpdate {
     pub provider_base_url_ping_cache_ttl_seconds: Option<u32>,
     pub upstream_first_byte_timeout_seconds: Option<u32>,
     pub upstream_stream_idle_timeout_seconds: Option<u32>,
+    pub stream_internal_error_guard_ms: Option<u32>,
     pub upstream_request_timeout_non_streaming_seconds: Option<u32>,
     pub enable_cache_anomaly_monitor: Option<bool>,
     pub enable_debug_log: Option<bool>,
@@ -130,6 +131,7 @@ struct SettingsServiceOwnedToken {
     provider_base_url_ping_cache_ttl_seconds: u32,
     upstream_first_byte_timeout_seconds: u32,
     upstream_stream_idle_timeout_seconds: u32,
+    stream_internal_error_guard_ms: u32,
     upstream_request_timeout_non_streaming_seconds: u32,
     enable_cache_anomaly_monitor: bool,
     enable_debug_log: bool,
@@ -189,6 +191,7 @@ impl SettingsServiceOwnedToken {
                 .provider_base_url_ping_cache_ttl_seconds,
             upstream_first_byte_timeout_seconds: settings.upstream_first_byte_timeout_seconds,
             upstream_stream_idle_timeout_seconds: settings.upstream_stream_idle_timeout_seconds,
+            stream_internal_error_guard_ms: settings.stream_internal_error_guard_ms,
             upstream_request_timeout_non_streaming_seconds: settings
                 .upstream_request_timeout_non_streaming_seconds,
             enable_cache_anomaly_monitor: settings.enable_cache_anomaly_monitor,
@@ -255,6 +258,7 @@ impl SettingsServiceOwnedToken {
             self.provider_base_url_ping_cache_ttl_seconds;
         settings.upstream_first_byte_timeout_seconds = self.upstream_first_byte_timeout_seconds;
         settings.upstream_stream_idle_timeout_seconds = self.upstream_stream_idle_timeout_seconds;
+        settings.stream_internal_error_guard_ms = self.stream_internal_error_guard_ms;
         settings.upstream_request_timeout_non_streaming_seconds =
             self.upstream_request_timeout_non_streaming_seconds;
         settings.enable_cache_anomaly_monitor = self.enable_cache_anomaly_monitor;
@@ -333,6 +337,7 @@ pub(crate) struct SettingsView {
     pub provider_base_url_ping_cache_ttl_seconds: u32,
     pub upstream_first_byte_timeout_seconds: u32,
     pub upstream_stream_idle_timeout_seconds: u32,
+    pub stream_internal_error_guard_ms: u32,
     pub upstream_request_timeout_non_streaming_seconds: u32,
     pub update_releases_url: String,
     pub failover_max_attempts_per_provider: u32,
@@ -459,6 +464,7 @@ impl From<&settings::AppSettings> for SettingsView {
                 .provider_base_url_ping_cache_ttl_seconds,
             upstream_first_byte_timeout_seconds: value.upstream_first_byte_timeout_seconds,
             upstream_stream_idle_timeout_seconds: value.upstream_stream_idle_timeout_seconds,
+            stream_internal_error_guard_ms: value.stream_internal_error_guard_ms,
             upstream_request_timeout_non_streaming_seconds: value
                 .upstream_request_timeout_non_streaming_seconds,
             update_releases_url: value.update_releases_url.clone(),
@@ -881,6 +887,9 @@ fn apply_settings_update_owned_patch(
     let upstream_stream_idle_timeout_seconds = update
         .upstream_stream_idle_timeout_seconds
         .unwrap_or(previous_token.upstream_stream_idle_timeout_seconds);
+    let stream_internal_error_guard_ms = update
+        .stream_internal_error_guard_ms
+        .unwrap_or(previous_token.stream_internal_error_guard_ms);
     let upstream_request_timeout_non_streaming_seconds = update
         .upstream_request_timeout_non_streaming_seconds
         .unwrap_or(previous_token.upstream_request_timeout_non_streaming_seconds);
@@ -933,6 +942,7 @@ fn apply_settings_update_owned_patch(
         provider_base_url_ping_cache_ttl_seconds,
         upstream_first_byte_timeout_seconds,
         upstream_stream_idle_timeout_seconds,
+        stream_internal_error_guard_ms,
         upstream_request_timeout_non_streaming_seconds,
         enable_cache_anomaly_monitor,
         enable_debug_log,
@@ -2344,6 +2354,7 @@ mod tests {
             upstream_stream_idle_timeout_seconds: Some(
                 settings.upstream_stream_idle_timeout_seconds,
             ),
+            stream_internal_error_guard_ms: Some(settings.stream_internal_error_guard_ms),
             upstream_request_timeout_non_streaming_seconds: Some(
                 settings.upstream_request_timeout_non_streaming_seconds,
             ),

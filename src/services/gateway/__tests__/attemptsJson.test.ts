@@ -99,6 +99,47 @@ describe("services/gateway/attemptsJson", () => {
     expect(normalizeAttemptProbeMetadata({ probe_generation: -1 })).toBeNull();
   });
 
+  it("parses bounded stream-internal-error evidence and rejects malformed evidence", () => {
+    const attempts = parseAttemptsJson(
+      JSON.stringify([
+        {
+          provider_id: 1,
+          provider_name: "Provider A",
+          base_url: "https://example.com",
+          outcome: "stream_internal_error",
+          status: 200,
+          stream_internal_error: {
+            event_type: "response.failed",
+            error_type: "server_error",
+            error_code: "model_at_capacity",
+            message: "Selected model is at capacity",
+            classification: "retryable",
+            matched_keyword: "selected model is at capacity",
+            disposition: "retry_same_provider",
+            truncated: false,
+          },
+        },
+        {
+          provider_id: 2,
+          provider_name: "Provider B",
+          base_url: "https://example.com",
+          outcome: "failure",
+          status: 200,
+          stream_internal_error: { event_type: "response.failed" },
+        },
+      ])
+    );
+
+    expect(attempts?.[0]?.stream_internal_error).toEqual(
+      expect.objectContaining({
+        event_type: "response.failed",
+        message: "Selected model is at capacity",
+        classification: "retryable",
+      })
+    );
+    expect(attempts?.[1]?.stream_internal_error).toBeNull();
+  });
+
   it("returns null for invalid JSON", () => {
     expect(parseAttemptsJson("not json")).toBeNull();
   });

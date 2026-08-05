@@ -19,6 +19,7 @@ pub(super) struct StreamRequestCompletion {
     pub(super) usage: Option<crate::usage::UsageExtract>,
     pub(super) terminal_signal: Option<&'static str>,
     pub(super) terminal_evidence: StreamTerminalEvidence,
+    pub(super) stream_internal_error: Option<crate::usage::StreamInternalErrorEvidence>,
 }
 
 impl StreamRequestCompletion {
@@ -44,6 +45,7 @@ impl StreamRequestCompletion {
                 false,
                 false,
             ),
+            stream_internal_error: None,
         }
     }
 
@@ -70,6 +72,7 @@ impl StreamRequestCompletion {
                 false,
                 false,
             ),
+            stream_internal_error: None,
         }
     }
 
@@ -110,6 +113,14 @@ impl StreamRequestCompletion {
         terminal_evidence: StreamTerminalEvidence,
     ) -> Self {
         self.terminal_evidence = terminal_evidence;
+        self
+    }
+
+    pub(super) fn with_stream_internal_error(
+        mut self,
+        evidence: Option<crate::usage::StreamInternalErrorEvidence>,
+    ) -> Self {
+        self.stream_internal_error = evidence;
         self
     }
 }
@@ -253,6 +264,9 @@ pub(super) fn emit_request_event_and_spawn_request_log<R: tauri::Runtime>(
         last.circuit_failure_count = Some(finalization.circuit_after.failure_count);
         last.circuit_failure_threshold = Some(finalization.circuit_after.failure_threshold);
         attempts_changed = true;
+        if completion.stream_internal_error.is_some() {
+            last.stream_internal_error = completion.stream_internal_error.clone();
+        }
         if let Some(error_code) = completion.error_code {
             mark_last_stream_attempt_terminal_failure(
                 last,
@@ -408,6 +422,8 @@ mod tests {
             created_at: 1_700_000_000,
             provider_cooldown_secs: 0,
             upstream_first_byte_timeout_secs: 300,
+            upstream_retry_policy: crate::settings::UpstreamRetryPolicy::default(),
+            detect_stream_internal_errors: true,
             provider_id: 1,
             provider_name: "test-provider".to_string(),
             base_url: "https://upstream.example".to_string(),
@@ -460,6 +476,7 @@ mod tests {
             provider_bridged: Some(false),
             timeout_secs: None,
             requested_upstream_model: Some("gpt-5".to_string()),
+            stream_internal_error: None,
         }
     }
 

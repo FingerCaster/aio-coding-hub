@@ -295,6 +295,7 @@ where
         upstream_first_byte_timeout_secs: input.upstream_first_byte_timeout_secs,
         upstream_first_byte_timeout: input.upstream_first_byte_timeout,
         upstream_stream_idle_timeout: input.upstream_stream_idle_timeout,
+        stream_internal_error_guard: input.stream_internal_error_guard,
         upstream_request_timeout_non_streaming: input.upstream_request_timeout_non_streaming,
         verbose_provider_error: input.verbose_provider_error,
         enable_response_fixer: input.enable_response_fixer,

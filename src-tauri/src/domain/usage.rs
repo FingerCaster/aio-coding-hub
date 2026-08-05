@@ -2,7 +2,215 @@
 
 use crate::domain::provider_models::REMOTE_MODEL_ID_MAX_BYTES;
 use crate::shared::cli_key::CliKey;
+use regex::Regex;
 use serde_json::{json, Value};
+use std::sync::LazyLock;
+
+const STREAM_INTERNAL_ERROR_MESSAGE_MAX_CHARS: usize = 2_048;
+const STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS: usize = 512;
+
+static STREAM_ERROR_BEARER_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r#"(?i)(\bbearer\s+)([^\s,;\"']+)"#).expect("valid stream-error bearer regex")
+});
+static STREAM_ERROR_SECRET_ASSIGNMENT_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(
+        r#"(?i)([\"']?(?:access[_-]?token|refresh[_-]?token|client[_-]?secret|api[_-]?key|authorization|token)[\"']?\s*[:=]\s*[\"']?)([^\s,;&\"']+)"#,
+    )
+        .expect("valid stream-error secret assignment regex")
+});
+static STREAM_ERROR_KEYLIKE_RE: LazyLock<Regex> = LazyLock::new(|| {
+    Regex::new(r"(?i)\b(?:sk|sk-proj|ghp|github_pat|xox[baprs])[-_][a-z0-9_-]{12,}\b")
+        .expect("valid stream-error key regex")
+});
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize, specta::Type)]
+pub struct StreamInternalErrorEvidence {
+    pub event_type: String,
+    pub error_type: Option<String>,
+    pub error_code: Option<String>,
+    pub message: Option<String>,
+    pub classification: String,
+    pub matched_keyword: Option<String>,
+    pub disposition: String,
+    pub truncated: bool,
+}
+
+impl StreamInternalErrorEvidence {
+    pub fn is_retryable(&self) -> bool {
+        self.classification == "retryable"
+    }
+
+    pub fn set_disposition(&mut self, disposition: &str) {
+        let (disposition, truncated) =
+            bounded_stream_error_text(disposition, STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS);
+        self.disposition = disposition;
+        self.truncated |= truncated;
+    }
+}
+
+#[derive(Debug, Clone)]
+struct StreamInternalErrorClassifier {
+    enabled: bool,
+    retry_keywords: Vec<String>,
+    non_retry_keywords: Vec<String>,
+}
+
+fn normalize_stream_error_message(value: &str) -> String {
+    value.split_whitespace().collect::<Vec<_>>().join(" ")
+}
+
+fn redact_stream_error_message(value: &str) -> String {
+    let bearer = STREAM_ERROR_BEARER_RE.replace_all(value, "$1[REDACTED]");
+    let assigned = STREAM_ERROR_SECRET_ASSIGNMENT_RE.replace_all(&bearer, "$1[REDACTED]");
+    STREAM_ERROR_KEYLIKE_RE
+        .replace_all(&assigned, "[REDACTED]")
+        .into_owned()
+}
+
+fn bounded_stream_error_text(value: &str, max_chars: usize) -> (String, bool) {
+    let normalized = normalize_stream_error_message(value);
+    let redacted = redact_stream_error_message(&normalized);
+    let truncated = redacted.chars().count() > max_chars;
+    (redacted.chars().take(max_chars).collect(), truncated)
+}
+
+fn is_codex_stream_terminal_type(value: &str) -> bool {
+    matches!(
+        value.trim().to_ascii_lowercase().as_str(),
+        "error" | "response.error" | "response.failed" | "response.incomplete"
+    )
+}
+
+fn stream_terminal_type(event_name: &str, data: &Value) -> Option<String> {
+    if let Some(event_type) = data
+        .get("type")
+        .and_then(Value::as_str)
+        .filter(|value| is_codex_stream_terminal_type(value))
+    {
+        return Some(event_type.trim().to_ascii_lowercase());
+    }
+    is_codex_stream_terminal_type(event_name).then(|| event_name.trim().to_ascii_lowercase())
+}
+
+fn stream_error_field<'a>(data: &'a Value, field: &str) -> Option<&'a str> {
+    data.get("error")
+        .and_then(|error| error.get(field))
+        .and_then(Value::as_str)
+        .or_else(|| {
+            data.get("response")
+                .and_then(|response| response.get("error"))
+                .and_then(|error| error.get(field))
+                .and_then(Value::as_str)
+        })
+        .or_else(|| {
+            data.get(field)
+                .and_then(Value::as_str)
+                .filter(|value| field != "type" || !is_codex_stream_terminal_type(value))
+        })
+}
+
+fn stream_error_message(data: &Value) -> Option<&str> {
+    stream_error_field(data, "message").or_else(|| {
+        data.get("response")
+            .and_then(|response| response.get("incomplete_details"))
+            .and_then(|details| details.get("reason"))
+            .and_then(Value::as_str)
+            .or_else(|| {
+                data.get("incomplete_details")
+                    .and_then(|details| details.get("reason"))
+                    .and_then(Value::as_str)
+            })
+    })
+}
+
+pub fn classify_codex_stream_internal_error(
+    event_name: &str,
+    data: &Value,
+    enabled: bool,
+    retry_keywords: &[String],
+    non_retry_keywords: &[String],
+    disposition: &str,
+) -> Option<StreamInternalErrorEvidence> {
+    let event_type = stream_terminal_type(event_name, data)?;
+    let raw_error_type = stream_error_field(data, "type");
+    let raw_error_code = stream_error_field(data, "code");
+    let raw_message = stream_error_message(data);
+    let raw_data_type = data.get("type").and_then(Value::as_str);
+    let searchable = [
+        Some(event_name),
+        raw_data_type,
+        raw_error_type,
+        raw_error_code,
+        raw_message,
+    ]
+    .into_iter()
+    .flatten()
+    .collect::<Vec<_>>()
+    .join("\n")
+    .to_lowercase();
+
+    let retry_match = retry_keywords
+        .iter()
+        .find(|keyword| !keyword.trim().is_empty() && searchable.contains(&keyword.to_lowercase()));
+    let non_retry_match = non_retry_keywords
+        .iter()
+        .find(|keyword| !keyword.trim().is_empty() && searchable.contains(&keyword.to_lowercase()));
+    let (classification, matched_keyword) = if !enabled {
+        ("disabled", None)
+    } else if let Some(keyword) = retry_match {
+        ("retryable", Some(keyword.as_str()))
+    } else if let Some(keyword) = non_retry_match {
+        ("non_retryable", Some(keyword.as_str()))
+    } else {
+        ("unknown", None)
+    };
+
+    let mut truncated = false;
+    let bounded_optional = |value: Option<&str>, max_chars: usize, truncated: &mut bool| {
+        value.map(|value| {
+            let (value, field_truncated) = bounded_stream_error_text(value, max_chars);
+            *truncated |= field_truncated;
+            value
+        })
+    };
+    let (event_type, event_truncated) =
+        bounded_stream_error_text(&event_type, STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS);
+    truncated |= event_truncated;
+    let error_type = bounded_optional(
+        raw_error_type,
+        STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS,
+        &mut truncated,
+    );
+    let error_code = bounded_optional(
+        raw_error_code,
+        STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS,
+        &mut truncated,
+    );
+    let message = bounded_optional(
+        raw_message,
+        STREAM_INTERNAL_ERROR_MESSAGE_MAX_CHARS,
+        &mut truncated,
+    );
+    let matched_keyword = bounded_optional(
+        matched_keyword,
+        STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS,
+        &mut truncated,
+    );
+    let (disposition, disposition_truncated) =
+        bounded_stream_error_text(disposition, STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS);
+    truncated |= disposition_truncated;
+
+    Some(StreamInternalErrorEvidence {
+        event_type,
+        error_type,
+        error_code,
+        message,
+        classification: classification.to_string(),
+        matched_keyword,
+        disposition,
+        truncated,
+    })
+}
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum UsageSemantics {
@@ -558,6 +766,8 @@ pub struct SseUsageTracker {
     terminal_error_seen: bool,
     fake_200_detected: bool,
     meaningful_output_seen: bool,
+    stream_internal_error_classifier: Option<StreamInternalErrorClassifier>,
+    stream_internal_error_evidence: Option<StreamInternalErrorEvidence>,
     #[cfg(test)]
     event_json_parse_attempts: std::cell::Cell<usize>,
 }
@@ -684,25 +894,35 @@ fn is_meaningful_output_item(value: &Value) -> bool {
     }
 
     if let Some(content) = obj.get("content").and_then(Value::as_array) {
-        return content.iter().any(is_meaningful_output_item);
+        if content.iter().any(is_meaningful_output_item) {
+            return true;
+        }
+    }
+
+    if let Some(summary) = obj.get("summary").and_then(Value::as_array) {
+        return summary.iter().any(is_meaningful_output_item);
     }
 
     false
 }
 
-fn has_codex_meaningful_output(data: &Value) -> bool {
+pub(crate) fn has_codex_meaningful_output(data: &Value) -> bool {
     match data.get("type").and_then(Value::as_str) {
-        Some("response.output_text.delta" | "response.refusal.delta")
-            if non_empty_string(data.get("delta")) =>
-        {
+        Some(
+            "response.output_text.delta"
+            | "response.refusal.delta"
+            | "response.reasoning_summary_text.delta",
+        ) if non_empty_string(data.get("delta")) => {
             return true;
         }
         Some("response.function_call_arguments.delta") if non_empty_string(data.get("delta")) => {
             return true;
         }
-        Some("response.output_text.done" | "response.refusal.done")
-            if non_empty_string(data.get("text")) || non_empty_string(data.get("refusal")) =>
-        {
+        Some(
+            "response.output_text.done"
+            | "response.refusal.done"
+            | "response.reasoning_summary_text.done",
+        ) if non_empty_string(data.get("text")) || non_empty_string(data.get("refusal")) => {
             return true;
         }
         _ => {}
@@ -744,6 +964,8 @@ impl SseUsageTracker {
             terminal_error_seen: false,
             fake_200_detected: false,
             meaningful_output_seen: false,
+            stream_internal_error_classifier: None,
+            stream_internal_error_evidence: None,
             #[cfg(test)]
             event_json_parse_attempts: std::cell::Cell::new(0),
         }
@@ -759,6 +981,24 @@ impl SseUsageTracker {
 
     pub fn fake_200_detected(&self) -> bool {
         self.fake_200_detected
+    }
+
+    pub fn with_stream_internal_error_classifier(
+        mut self,
+        enabled: bool,
+        retry_keywords: &[String],
+        non_retry_keywords: &[String],
+    ) -> Self {
+        self.stream_internal_error_classifier = Some(StreamInternalErrorClassifier {
+            enabled,
+            retry_keywords: retry_keywords.to_vec(),
+            non_retry_keywords: non_retry_keywords.to_vec(),
+        });
+        self
+    }
+
+    pub fn stream_internal_error_evidence(&self) -> Option<&StreamInternalErrorEvidence> {
+        self.stream_internal_error_evidence.as_ref()
     }
 
     #[cfg(test)]
@@ -922,6 +1162,28 @@ impl SseUsageTracker {
     }
 
     fn ingest_event(&mut self, event: &[u8], data: &Value) {
+        if self.stream_internal_error_evidence.is_none() {
+            if let (Some(classifier), Ok(event_name)) = (
+                self.stream_internal_error_classifier.as_ref(),
+                std::str::from_utf8(event),
+            ) {
+                self.stream_internal_error_evidence = classify_codex_stream_internal_error(
+                    event_name,
+                    data,
+                    classifier.enabled,
+                    &classifier.retry_keywords,
+                    &classifier.non_retry_keywords,
+                    "forwarded_after_commit",
+                );
+            }
+        }
+        if self.stream_internal_error_classifier.is_some()
+            && stream_terminal_type(std::str::from_utf8(event).unwrap_or_default(), data).is_some()
+        {
+            self.terminal_error_seen = true;
+            self.fake_200_detected = true;
+        }
+
         if self.semantics == UsageSemantics::OpenAi && has_codex_meaningful_output(data) {
             self.meaningful_output_seen = true;
         }

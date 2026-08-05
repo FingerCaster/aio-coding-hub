@@ -14,7 +14,42 @@ use crate::gateway::proxy::provider_router;
 use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::status_override;
 use crate::gateway::proxy::upstream_client_error_rules;
+use futures_core::Stream;
+use std::pin::Pin;
 use std::time::Duration;
+use tokio::time::Instant;
+
+const MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES: usize = 1024 * 1024;
+
+type DecodedEventStream =
+    Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static>>;
+
+fn decode_event_stream<S>(upstream: S, gzip: bool) -> DecodedEventStream
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Send + Unpin + 'static,
+{
+    if gzip {
+        Box::pin(GunzipStream::new(upstream))
+    } else {
+        Box::pin(upstream)
+    }
+}
+
+fn prepend_and_decode_event_stream(
+    first_chunk: Option<Bytes>,
+    upstream: DecodedEventStream,
+    gzip: bool,
+) -> DecodedEventStream {
+    decode_event_stream(FirstChunkStream::new(first_chunk, upstream), gzip)
+}
+
+async fn next_event_stream_chunk(
+    stream: &mut DecodedEventStream,
+) -> Result<Option<Bytes>, reqwest::Error> {
+    std::future::poll_fn(|cx| stream.as_mut().poll_next(cx))
+        .await
+        .transpose()
+}
 
 struct ProbeTerminalCommit {
     snapshot: crate::circuit_breaker::CircuitSnapshot,
@@ -175,8 +210,11 @@ fn is_native_codex_responses_event_stream_path(
     cli_key: &str,
     path: &str,
     active_bridge_type: Option<&str>,
+    provider_bridged: bool,
 ) -> bool {
-    active_bridge_type.is_none() && is_codex_responses_event_stream_path(cli_key, path)
+    active_bridge_type.is_none()
+        && !provider_bridged
+        && is_codex_responses_event_stream_path(cli_key, path)
 }
 
 fn is_completion_sse_frame(event_name: &str, data: &serde_json::Value) -> bool {
@@ -219,43 +257,111 @@ fn is_terminal_error_sse_frame(event_name: &str, data: &serde_json::Value) -> bo
 
 enum BufferedStreamPrefixDecision {
     NeedMore,
-    StartStreaming,
-    ProviderFailure(&'static str),
+    StartStreaming {
+        guard_cap_reached: bool,
+    },
+    ProviderFailure {
+        error_code: &'static str,
+        evidence: Option<usage::StreamInternalErrorEvidence>,
+    },
     FinalizeAsEmptyBody(&'static str),
 }
 
-fn inspect_buffered_event_stream_prefix(
-    cli_key: &str,
-    path: &str,
+#[derive(Default)]
+struct BufferedStreamPrefixState {
+    cursor: usize,
+    meaningful_output_started_at: Option<Instant>,
+    completion_seen: bool,
+}
+
+impl BufferedStreamPrefixState {
+    fn guard_remaining(&self, guard: Duration) -> Option<Duration> {
+        let started = self.meaningful_output_started_at?;
+        Some(guard.saturating_sub(started.elapsed()))
+    }
+}
+
+struct BufferedStreamPrefixConfig<'a> {
+    cli_key: &'a str,
+    path: &'a str,
     status: u16,
-    active_bridge_type: Option<&str>,
+    active_bridge_type: Option<&'a str>,
+    provider_bridged: bool,
+    retry_policy: &'a crate::settings::UpstreamRetryPolicy,
+    guard: Duration,
+}
+
+fn inspect_buffered_event_stream_prefix(
+    config: &BufferedStreamPrefixConfig<'_>,
+    state: &mut BufferedStreamPrefixState,
     raw: &[u8],
 ) -> BufferedStreamPrefixDecision {
-    if raw.len() > MAX_NON_SSE_BODY_BYTES {
-        return BufferedStreamPrefixDecision::StartStreaming;
+    let inspect_empty_success = is_native_codex_responses_event_stream_path(
+        config.cli_key,
+        config.path,
+        config.active_bridge_type,
+        config.provider_bridged,
+    );
+    let buffer_cap_reached = if inspect_empty_success {
+        raw.len() >= MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES
+    } else {
+        raw.len() > MAX_NON_SSE_BODY_BYTES
+    };
+    if buffer_cap_reached {
+        return BufferedStreamPrefixDecision::StartStreaming {
+            guard_cap_reached: inspect_empty_success,
+        };
     }
 
-    let inspect_empty_success =
-        is_native_codex_responses_event_stream_path(cli_key, path, active_bridge_type);
-    let mut cursor = 0usize;
     let mut saw_non_error_frame = false;
-    let mut saw_completion_frame = false;
 
-    while let Some(relative_end) = crate::gateway::proxy::sse::find_sse_event_end(&raw[cursor..]) {
-        let event_end = cursor + relative_end;
-        let frame = match std::str::from_utf8(&raw[cursor..event_end]) {
+    while let Some(relative_end) =
+        crate::gateway::proxy::sse::find_sse_event_end(&raw[state.cursor..])
+    {
+        let event_end = state.cursor + relative_end;
+        let frame = match std::str::from_utf8(&raw[state.cursor..event_end]) {
             Ok(frame) => frame,
-            Err(_) => return BufferedStreamPrefixDecision::StartStreaming,
+            Err(_) => {
+                return BufferedStreamPrefixDecision::StartStreaming {
+                    guard_cap_reached: false,
+                }
+            }
         };
-        cursor = event_end;
+        state.cursor = event_end;
 
         let Some((event_name, data)) = crate::gateway::proxy::sse::parse_sse_frame(frame) else {
             continue;
         };
-        if is_terminal_error_sse_frame(&event_name, &data) {
-            return if inspect_empty_success {
-                BufferedStreamPrefixDecision::ProviderFailure(GatewayErrorCode::Fake200.as_str())
-            } else {
+        if inspect_empty_success {
+            if let Some(evidence) = usage::classify_codex_stream_internal_error(
+                &event_name,
+                &data,
+                config.retry_policy.enabled && config.retry_policy.stream_internal_errors.enabled,
+                &config.retry_policy.stream_internal_errors.retry_keywords,
+                &config
+                    .retry_policy
+                    .stream_internal_errors
+                    .non_retry_keywords,
+                "buffered_before_commit",
+            ) {
+                if evidence.is_retryable() {
+                    return BufferedStreamPrefixDecision::ProviderFailure {
+                        error_code: GatewayErrorCode::Fake200.as_str(),
+                        evidence: Some(evidence),
+                    };
+                }
+                return BufferedStreamPrefixDecision::StartStreaming {
+                    guard_cap_reached: false,
+                };
+            }
+            if usage::has_codex_meaningful_output(&data)
+                && state.meaningful_output_started_at.is_none()
+            {
+                state.meaningful_output_started_at = Some(Instant::now());
+            }
+            state.completion_seen |= is_completion_sse_frame(&event_name, &data);
+        } else if is_terminal_error_sse_frame(&event_name, &data) {
+            return {
                 BufferedStreamPrefixDecision::FinalizeAsEmptyBody(
                     GatewayErrorCode::Fake200.as_str(),
                 )
@@ -263,30 +369,36 @@ fn inspect_buffered_event_stream_prefix(
         }
 
         saw_non_error_frame = true;
-        if inspect_empty_success {
-            saw_completion_frame |= is_completion_sse_frame(&event_name, &data);
-        }
     }
 
-    if inspect_empty_success && saw_completion_frame {
-        let mut tracker = usage::SseUsageTracker::new(cli_key);
+    if inspect_empty_success && state.completion_seen {
+        let mut tracker = usage::SseUsageTracker::new(config.cli_key);
         tracker.ingest_chunk(raw);
         let usage = tracker.finalize();
-        if tracker.fake_200_detected() || tracker.terminal_error_seen() {
-            return BufferedStreamPrefixDecision::ProviderFailure(
-                GatewayErrorCode::Fake200.as_str(),
-            );
+        if tracker.is_empty_success(config.path, config.status, usage.as_ref()) {
+            return BufferedStreamPrefixDecision::ProviderFailure {
+                error_code: GatewayErrorCode::EmptyResponse.as_str(),
+                evidence: None,
+            };
         }
-        if tracker.is_empty_success(path, status, usage.as_ref()) {
-            return BufferedStreamPrefixDecision::ProviderFailure(
-                GatewayErrorCode::EmptyResponse.as_str(),
-            );
-        }
-        return BufferedStreamPrefixDecision::StartStreaming;
+        return BufferedStreamPrefixDecision::StartStreaming {
+            guard_cap_reached: false,
+        };
     }
 
-    if saw_non_error_frame {
-        return BufferedStreamPrefixDecision::StartStreaming;
+    if inspect_empty_success {
+        if state
+            .meaningful_output_started_at
+            .is_some_and(|started| started.elapsed() >= config.guard)
+        {
+            return BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: false,
+            };
+        }
+    } else if saw_non_error_frame {
+        return BufferedStreamPrefixDecision::StartStreaming {
+            guard_cap_reached: false,
+        };
     }
 
     BufferedStreamPrefixDecision::NeedMore
@@ -301,6 +413,8 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
     status: StatusCode,
     raw: &[u8],
     error_code: &'static str,
+    mut evidence: Option<usage::StreamInternalErrorEvidence>,
+    retry_state: &mut RetryLoopState,
 ) -> LoopControl {
     let dispatch_ownership = provider_ctx.dispatch_ownership;
     let probe_ownership = dispatch_ownership.filter(|ownership| ownership.is_probe());
@@ -322,6 +436,8 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         },
     );
 
+    let retry_policy = provider_ctx.upstream_retry_policy;
+    let provider_max_attempts = provider_ctx.provider_max_attempts;
     let CommonCtx {
         state,
         trace_id,
@@ -346,6 +462,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         retry_index,
         attempt_started_ms,
         attempt_started,
+        circuit_before,
         ..
     } = attempt_ctx;
     let LoopState {
@@ -357,23 +474,33 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
     } = loop_state;
 
     let category = ErrorCategory::ProviderError;
-    let decision = FailoverDecision::SwitchProvider;
+    let (mut decision, configured_retry) = if evidence
+        .as_ref()
+        .is_some_and(usage::StreamInternalErrorEvidence::is_retryable)
+    {
+        transient_failure_decision(
+            false,
+            RetryPolicyMatch::StreamInternalError,
+            retry_policy,
+            retry_state.configured_transient_retries_used,
+            retry_index,
+            provider_max_attempts,
+        )
+    } else {
+        (FailoverDecision::SwitchProvider, false)
+    };
+    if configured_retry {
+        retry_state.configured_transient_retries_used = retry_state
+            .configured_transient_retries_used
+            .saturating_add(1);
+    }
     let effective_status =
         status_override::effective_status(Some(status.as_u16()), Some(error_code));
     let now_unix = now_unix_seconds() as i64;
     let quota_exhausted = error_code == GatewayErrorCode::Fake200.as_str()
         && upstream_client_error_rules::match_quota_exhausted(raw);
     let oauth_quota_exhausted = quota_exhausted && auth_mode == "oauth";
-    let outcome = if error_code == GatewayErrorCode::Fake200.as_str() {
-        format!("stream_error: code={error_code}")
-    } else {
-        format!(
-            "empty_response: category={} code={} decision={}",
-            category.as_str(),
-            error_code,
-            decision.as_str()
-        )
-    };
+    let record_circuit_failure = should_record_circuit_failure(retry_policy, configured_retry);
 
     if oauth_quota_exhausted {
         if let Err(err) =
@@ -403,7 +530,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         }
     } else if oauth_quota_exhausted {
         None
-    } else {
+    } else if record_circuit_failure {
         Some(provider_router::record_failure_and_emit_transition(
             provider_router::RecordCircuitArgs::from_state(
                 state,
@@ -417,12 +544,29 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
             .with_trigger(Some(error_code), Some(upstream_first_byte_timeout_secs))
             .with_provider_health_neutral(provider_health_neutral),
         ))
+    } else {
+        None
     };
     if let Some(change) = &change {
         *circuit_snapshot = change.after.clone();
+        if matches!(decision, FailoverDecision::RetrySameProvider)
+            && matches!(
+                change.after.state,
+                crate::circuit_breaker::CircuitState::Open
+            )
+        {
+            decision = FailoverDecision::SwitchProvider;
+        }
     }
 
-    if !probe_active && !oauth_quota_exhausted && provider_cooldown_secs > 0 {
+    if !probe_active
+        && !oauth_quota_exhausted
+        && provider_cooldown_secs > 0
+        && matches!(
+            decision,
+            FailoverDecision::SwitchProvider | FailoverDecision::Abort
+        )
+    {
         *circuit_snapshot = provider_router::trigger_cooldown(
             state.circuit.as_ref(),
             provider_id,
@@ -439,10 +583,43 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
                 Some(change.after.failure_count),
                 Some(change.after.failure_threshold),
             )
-        } else {
+        } else if oauth_quota_exhausted {
             (None, None, None)
+        } else {
+            (
+                None,
+                Some(circuit_before.failure_count),
+                Some(circuit_before.failure_threshold),
+            )
         };
-    let circuit_state_before = change.as_ref().map(|change| change.before.state.as_str());
+    let circuit_state_before = Some(
+        change
+            .as_ref()
+            .map(|change| change.before.state.as_str())
+            .unwrap_or(circuit_before.state.as_str()),
+    );
+    let outcome = if error_code == GatewayErrorCode::Fake200.as_str() {
+        format!(
+            "stream_internal_error: category={} code={} decision={}",
+            category.as_str(),
+            error_code,
+            decision.as_str()
+        )
+    } else {
+        format!(
+            "empty_response: category={} code={} decision={}",
+            category.as_str(),
+            error_code,
+            decision.as_str()
+        )
+    };
+    if let Some(evidence) = evidence.as_mut() {
+        evidence.set_disposition(match decision {
+            FailoverDecision::RetrySameProvider => "retry_same_provider",
+            FailoverDecision::SwitchProvider => "switch_provider",
+            FailoverDecision::Abort => "retry_exhausted",
+        });
+    }
 
     attempts.push(FailoverAttempt {
         provider_id,
@@ -480,6 +657,7 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
+        stream_internal_error: evidence,
         requested_upstream_model: active_requested_model.map(str::to_string),
     });
 
@@ -498,9 +676,20 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
     )
     .await;
 
-    failed_provider_ids.insert(provider_id);
     *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
-    LoopControl::BreakRetry
+    if matches!(decision, FailoverDecision::RetrySameProvider) {
+        super::attempt_record::apply_configured_retry_backoff(
+            decision,
+            configured_retry_backoff_delay(retry_policy, configured_retry),
+        )
+        .await;
+        LoopControl::ContinueRetry
+    } else {
+        if matches!(decision, FailoverDecision::SwitchProvider) {
+            failed_provider_ids.insert(provider_id);
+        }
+        LoopControl::BreakRetry
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -578,6 +767,7 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         circuit_trigger_error_code: None,
         provider_bridged: Some(provider_ctx_owned.provider_bridged),
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
     });
 
@@ -844,7 +1034,20 @@ where
             );
         }
 
-        let mut resp = resp;
+        let should_gunzip = has_gzip_content_encoding(&response_headers);
+        if should_gunzip {
+            // Decode once: before the native Codex guard, or later for legacy SSE paths.
+            response_headers.remove(header::CONTENT_ENCODING);
+            response_headers.remove(header::CONTENT_LENGTH);
+        }
+        let decode_gzip_before_guard = should_gunzip
+            && is_native_codex_responses_event_stream_path(
+                common.cli_key.as_str(),
+                common.forwarded_path.as_str(),
+                active_bridge_type,
+                provider_ctx_owned.provider_bridged,
+            );
+        let mut upstream = decode_event_stream(resp.bytes_stream(), decode_gzip_before_guard);
 
         enum FirstChunkProbe {
             Skipped,
@@ -860,7 +1063,9 @@ where
                     FirstChunkProbe::Timeout
                 } else {
                     let remaining = total - elapsed;
-                    match tokio::time::timeout(remaining, resp.chunk()).await {
+                    match tokio::time::timeout(remaining, next_event_stream_chunk(&mut upstream))
+                        .await
+                    {
                         Ok(Ok(Some(chunk))) => FirstChunkProbe::Ok(
                             Some(chunk),
                             Some(attempt_started.elapsed().as_millis()),
@@ -1051,15 +1256,26 @@ where
             .take()
             .map(|chunk| chunk.to_vec())
             .unwrap_or_default();
+        let mut prefix_state = BufferedStreamPrefixState::default();
+        let prefix_config = BufferedStreamPrefixConfig {
+            cli_key: common.cli_key.as_str(),
+            path: common.forwarded_path.as_str(),
+            status: status.as_u16(),
+            active_bridge_type,
+            provider_bridged: provider_ctx_owned.provider_bridged,
+            retry_policy: &provider_ctx_owned.upstream_retry_policy,
+            guard: common.stream_internal_error_guard,
+        };
         loop {
             match inspect_buffered_event_stream_prefix(
-                common.cli_key.as_str(),
-                common.forwarded_path.as_str(),
-                status.as_u16(),
-                active_bridge_type,
+                &prefix_config,
+                &mut prefix_state,
                 buffered_prefix.as_slice(),
             ) {
-                BufferedStreamPrefixDecision::ProviderFailure(error_code) => {
+                BufferedStreamPrefixDecision::ProviderFailure {
+                    error_code,
+                    evidence,
+                } => {
                     return record_buffered_provider_failure(
                         ctx,
                         provider_ctx,
@@ -1075,10 +1291,30 @@ where
                         status,
                         buffered_prefix.as_slice(),
                         error_code,
+                        evidence,
+                        retry_state,
                     )
                     .await;
                 }
-                BufferedStreamPrefixDecision::StartStreaming => {
+                BufferedStreamPrefixDecision::StartStreaming { guard_cap_reached } => {
+                    if guard_cap_reached {
+                        tracing::warn!(
+                            trace_id = %common.trace_id,
+                            provider_id,
+                            buffered_bytes = buffered_prefix.len(),
+                            cap_bytes = MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+                            "stream-internal-error guard reached its buffer cap; committing response"
+                        );
+                        response_fixer::push_special_setting(
+                            &common.special_settings,
+                            serde_json::json!({
+                                "type": "stream_internal_error_guard",
+                                "reason": "buffer_cap_reached",
+                                "buffered_bytes": buffered_prefix.len(),
+                                "cap_bytes": MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+                            }),
+                        );
+                    }
                     first_chunk =
                         (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
                     break;
@@ -1107,166 +1343,133 @@ where
                 BufferedStreamPrefixDecision::NeedMore => {}
             }
 
-            let next_chunk = match upstream_stream_idle_timeout {
-                Some(total) => match tokio::time::timeout(total, resp.chunk()).await {
-                    Ok(Ok(chunk)) => chunk,
-                    Ok(Err(err)) => {
-                        let error_code = GatewayErrorCode::StreamError.as_str();
-                        let (decision, configured_retry) = stream_transport_decision(
-                            crate::settings::UpstreamTransportRetryKind::Read,
-                            &provider_ctx_owned.upstream_retry_policy,
-                            retry_state.configured_transient_retries_used,
-                            retry_index,
-                            provider_max_attempts,
-                        );
-                        if configured_retry {
-                            retry_state.configured_transient_retries_used = retry_state
-                                .configured_transient_retries_used
-                                .saturating_add(1);
+            let guard_remaining = prefix_state.guard_remaining(common.stream_internal_error_guard);
+            let wait = match (upstream_stream_idle_timeout, guard_remaining) {
+                (Some(idle), Some(guard)) => Some((idle.min(guard), guard <= idle)),
+                (Some(idle), None) => Some((idle, false)),
+                (None, Some(guard)) => Some((guard, true)),
+                (None, None) => None,
+            };
+            let chunk_result = match wait {
+                Some((wait, guard_timeout)) => {
+                    match tokio::time::timeout(wait, next_event_stream_chunk(&mut upstream)).await {
+                        Ok(result) => result,
+                        Err(_) if guard_timeout => {
+                            first_chunk =
+                                (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
+                            break;
                         }
-                        let outcome = format!(
-                            "stream_prefix_read_error: category={} code={} decision={}",
-                            ErrorCategory::SystemError.as_str(),
-                            error_code,
-                            decision.as_str(),
-                        );
+                        Err(_) => {
+                            let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
+                            let (decision, configured_retry) = stream_transport_decision(
+                                crate::settings::UpstreamTransportRetryKind::Timeout,
+                                &provider_ctx_owned.upstream_retry_policy,
+                                retry_state.configured_transient_retries_used,
+                                retry_index,
+                                provider_max_attempts,
+                            );
+                            if configured_retry {
+                                retry_state.configured_transient_retries_used = retry_state
+                                    .configured_transient_retries_used
+                                    .saturating_add(1);
+                            }
+                            let timeout_secs = upstream_stream_idle_timeout
+                                .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32);
+                            let outcome = format!(
+                                "stream_prefix_idle_timeout: category={} code={} decision={} timeout_secs={}",
+                                ErrorCategory::SystemError.as_str(),
+                                error_code,
+                                decision.as_str(),
+                                timeout_secs.unwrap_or_default(),
+                            );
 
-                        return record_system_failure_and_decide(RecordSystemFailureArgs {
-                            ctx,
-                            provider_ctx,
-                            attempt_ctx,
-                            loop_state: LoopState {
-                                attempts,
-                                failed_provider_ids,
-                                last_outcome,
-                                active_requested_model,
-                                circuit_snapshot,
-                                abort_guard,
-                            },
-                            status: Some(status.as_u16()),
-                            error_code,
-                            decision,
-                            outcome,
-                            reason: format!("failed to inspect event-stream prefix: {err}"),
-                            record_circuit_failure: should_record_circuit_failure(
-                                &provider_ctx_owned.upstream_retry_policy,
-                                configured_retry,
-                            ),
-                            configured_retry_backoff: configured_retry_backoff_delay(
-                                &provider_ctx_owned.upstream_retry_policy,
-                                configured_retry,
-                            ),
-                            timeout_secs: None,
-                        })
-                        .await;
-                    }
-                    Err(_) => {
-                        let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
-                        let (decision, configured_retry) = stream_transport_decision(
-                            crate::settings::UpstreamTransportRetryKind::Timeout,
-                            &provider_ctx_owned.upstream_retry_policy,
-                            retry_state.configured_transient_retries_used,
-                            retry_index,
-                            provider_max_attempts,
-                        );
-                        if configured_retry {
-                            retry_state.configured_transient_retries_used = retry_state
-                                .configured_transient_retries_used
-                                .saturating_add(1);
+                            return record_system_failure_and_decide(RecordSystemFailureArgs {
+                                ctx,
+                                provider_ctx,
+                                attempt_ctx,
+                                loop_state: LoopState {
+                                    attempts,
+                                    failed_provider_ids,
+                                    last_outcome,
+                                    active_requested_model,
+                                    circuit_snapshot,
+                                    abort_guard,
+                                },
+                                status: Some(status.as_u16()),
+                                error_code,
+                                decision,
+                                outcome,
+                                reason: "event-stream idle timeout while inspecting prefix"
+                                    .to_string(),
+                                record_circuit_failure: should_record_circuit_failure(
+                                    &provider_ctx_owned.upstream_retry_policy,
+                                    configured_retry,
+                                ),
+                                configured_retry_backoff: configured_retry_backoff_delay(
+                                    &provider_ctx_owned.upstream_retry_policy,
+                                    configured_retry,
+                                ),
+                                timeout_secs,
+                            })
+                            .await;
                         }
-                        let timeout_secs = upstream_stream_idle_timeout
-                            .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32);
-                        let outcome = format!(
-                            "stream_prefix_idle_timeout: category={} code={} decision={} timeout_secs={}",
-                            ErrorCategory::SystemError.as_str(),
-                            error_code,
-                            decision.as_str(),
-                            timeout_secs.unwrap_or_default(),
-                        );
-
-                        return record_system_failure_and_decide(RecordSystemFailureArgs {
-                            ctx,
-                            provider_ctx,
-                            attempt_ctx,
-                            loop_state: LoopState {
-                                attempts,
-                                failed_provider_ids,
-                                last_outcome,
-                                active_requested_model,
-                                circuit_snapshot,
-                                abort_guard,
-                            },
-                            status: Some(status.as_u16()),
-                            error_code,
-                            decision,
-                            outcome,
-                            reason: "event-stream idle timeout while inspecting prefix".to_string(),
-                            record_circuit_failure: should_record_circuit_failure(
-                                &provider_ctx_owned.upstream_retry_policy,
-                                configured_retry,
-                            ),
-                            configured_retry_backoff: configured_retry_backoff_delay(
-                                &provider_ctx_owned.upstream_retry_policy,
-                                configured_retry,
-                            ),
-                            timeout_secs,
-                        })
-                        .await;
                     }
-                },
-                None => match resp.chunk().await {
-                    Ok(chunk) => chunk,
-                    Err(err) => {
-                        let error_code = GatewayErrorCode::StreamError.as_str();
-                        let (decision, configured_retry) = stream_transport_decision(
-                            crate::settings::UpstreamTransportRetryKind::Read,
+                }
+                None => next_event_stream_chunk(&mut upstream).await,
+            };
+
+            let next_chunk = match chunk_result {
+                Ok(chunk) => chunk,
+                Err(err) => {
+                    let error_code = GatewayErrorCode::StreamError.as_str();
+                    let (decision, configured_retry) = stream_transport_decision(
+                        crate::settings::UpstreamTransportRetryKind::Read,
+                        &provider_ctx_owned.upstream_retry_policy,
+                        retry_state.configured_transient_retries_used,
+                        retry_index,
+                        provider_max_attempts,
+                    );
+                    if configured_retry {
+                        retry_state.configured_transient_retries_used = retry_state
+                            .configured_transient_retries_used
+                            .saturating_add(1);
+                    }
+                    let outcome = format!(
+                        "stream_prefix_read_error: category={} code={} decision={}",
+                        ErrorCategory::SystemError.as_str(),
+                        error_code,
+                        decision.as_str(),
+                    );
+
+                    return record_system_failure_and_decide(RecordSystemFailureArgs {
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        loop_state: LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        status: Some(status.as_u16()),
+                        error_code,
+                        decision,
+                        outcome,
+                        reason: format!("failed to inspect event-stream prefix: {err}"),
+                        record_circuit_failure: should_record_circuit_failure(
                             &provider_ctx_owned.upstream_retry_policy,
-                            retry_state.configured_transient_retries_used,
-                            retry_index,
-                            provider_max_attempts,
-                        );
-                        if configured_retry {
-                            retry_state.configured_transient_retries_used = retry_state
-                                .configured_transient_retries_used
-                                .saturating_add(1);
-                        }
-                        let outcome = format!(
-                            "stream_prefix_read_error: category={} code={} decision={}",
-                            ErrorCategory::SystemError.as_str(),
-                            error_code,
-                            decision.as_str(),
-                        );
-
-                        return record_system_failure_and_decide(RecordSystemFailureArgs {
-                            ctx,
-                            provider_ctx,
-                            attempt_ctx,
-                            loop_state: LoopState {
-                                attempts,
-                                failed_provider_ids,
-                                last_outcome,
-                                active_requested_model,
-                                circuit_snapshot,
-                                abort_guard,
-                            },
-                            status: Some(status.as_u16()),
-                            error_code,
-                            decision,
-                            outcome,
-                            reason: format!("failed to inspect event-stream prefix: {err}"),
-                            record_circuit_failure: should_record_circuit_failure(
-                                &provider_ctx_owned.upstream_retry_policy,
-                                configured_retry,
-                            ),
-                            configured_retry_backoff: configured_retry_backoff_delay(
-                                &provider_ctx_owned.upstream_retry_policy,
-                                configured_retry,
-                            ),
-                            timeout_secs: None,
-                        })
-                        .await;
-                    }
-                },
+                            configured_retry,
+                        ),
+                        configured_retry_backoff: configured_retry_backoff_delay(
+                            &provider_ctx_owned.upstream_retry_policy,
+                            configured_retry,
+                        ),
+                        timeout_secs: None,
+                    })
+                    .await;
+                }
             };
 
             let Some(chunk) = next_chunk else {
@@ -1310,6 +1513,7 @@ where
             circuit_trigger_error_code: None,
             provider_bridged: Some(provider_ctx_owned.provider_bridged),
             timeout_secs: None,
+            stream_internal_error: None,
             requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
         });
 
@@ -1334,17 +1538,14 @@ where
             &provider_ctx_owned,
             attempts.as_slice(),
             status.as_u16(),
-            None,
-            None,
             attempt_started,
+            is_native_codex_responses_event_stream_path(
+                common.cli_key.as_str(),
+                common.forwarded_path.as_str(),
+                active_bridge_type,
+                provider_ctx_owned.provider_bridged,
+            ),
         );
-
-        let should_gunzip = has_gzip_content_encoding(&response_headers);
-        if should_gunzip {
-            // 上游可能无视 accept-encoding: identity 返回 gzip；
-            response_headers.remove(header::CONTENT_ENCODING);
-            response_headers.remove(header::CONTENT_LENGTH);
-        }
 
         let enable_response_fixer_for_this_response =
             enable_response_fixer && !has_non_identity_content_encoding(&response_headers);
@@ -1357,11 +1558,10 @@ where
             );
         }
 
-        let use_sse_relay = common.cli_key == "codex"
-            && matches!(
-                common.forwarded_path.trim_end_matches('/'),
-                "/v1/responses" | "/responses"
-            );
+        let use_sse_relay = is_codex_responses_event_stream_path(
+            common.cli_key.as_str(),
+            common.forwarded_path.as_str(),
+        );
         let plugin_pipeline = common.state.plugin_pipeline.clone();
         let plugin_db = common.state.db.clone();
         let trace_id = common.trace_id.clone();
@@ -1373,187 +1573,96 @@ where
             .active_requested_model
             .clone()
             .or_else(|| common.requested_model.clone());
+        let upstream = prepend_and_decode_event_stream(
+            first_chunk,
+            upstream,
+            should_gunzip && !decode_gzip_before_guard,
+        );
 
-        let body = match (enable_response_fixer_for_this_response, should_gunzip) {
-            (true, true) => {
-                let upstream =
-                    GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
-                let upstream =
-                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = UpstreamModelObserverStream::new(
+        let body = if enable_response_fixer_for_this_response {
+            let upstream =
+                gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+            let upstream = UpstreamModelObserverStream::new(
+                upstream,
+                upstream_route_tracker.clone(),
+                observed_upstream_model.clone(),
+                observed_upstream_conflicting_model.clone(),
+                observed_upstream_reasoning_effort.clone(),
+            );
+            let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
+                upstream,
+                active_bridge_type,
+                active_requested_model_for_bridge.clone(),
+                common.cx2cc_settings.clone(),
+                responses_cache_namespace.map(str::to_string),
+                responses_cache_input.map(|items| items.to_vec()),
+            );
+            let upstream = response_fixer::ResponseFixerStream::new(
+                upstream,
+                response_fixer_stream_config,
+                common.special_settings.clone(),
+            );
+            let upstream = MaybePluginChunkStream::new(
+                upstream,
+                plugin_pipeline.clone(),
+                plugin_db.clone(),
+                trace_id.clone(),
+            );
+            if use_sse_relay {
+                spawn_usage_sse_relay_body(
                     upstream,
-                    upstream_route_tracker.clone(),
-                    observed_upstream_model.clone(),
-                    observed_upstream_conflicting_model.clone(),
-                    observed_upstream_reasoning_effort.clone(),
-                );
-                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
+                    ctx,
+                    upstream_stream_idle_timeout,
+                    initial_first_byte_ms,
+                )
+            } else {
+                let stream = UsageSseTeeStream::new(
                     upstream,
-                    active_bridge_type,
-                    active_requested_model_for_bridge.clone(),
-                    common.cx2cc_settings.clone(),
-                    responses_cache_namespace.map(str::to_string),
-                    responses_cache_input.map(|items| items.to_vec()),
+                    ctx,
+                    upstream_stream_idle_timeout,
+                    initial_first_byte_ms,
                 );
-                let upstream = response_fixer::ResponseFixerStream::new(
-                    upstream,
-                    response_fixer_stream_config,
-                    common.special_settings.clone(),
-                );
-                let upstream = MaybePluginChunkStream::new(
-                    upstream,
-                    plugin_pipeline.clone(),
-                    plugin_db.clone(),
-                    trace_id.clone(),
-                );
-                if use_sse_relay {
-                    spawn_usage_sse_relay_body(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    )
-                } else {
-                    let stream = UsageSseTeeStream::new(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    );
-                    Body::from_stream(stream)
-                }
+                Body::from_stream(stream)
             }
-            (true, false) => {
-                let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
-                let upstream =
-                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = UpstreamModelObserverStream::new(
+        } else {
+            let upstream =
+                gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+            let upstream = UpstreamModelObserverStream::new(
+                upstream,
+                upstream_route_tracker,
+                observed_upstream_model,
+                observed_upstream_conflicting_model,
+                observed_upstream_reasoning_effort,
+            );
+            let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
+                upstream,
+                active_bridge_type,
+                active_requested_model_for_bridge.clone(),
+                common.cx2cc_settings.clone(),
+                responses_cache_namespace.map(str::to_string),
+                responses_cache_input.map(|items| items.to_vec()),
+            );
+            let upstream = MaybePluginChunkStream::new(
+                upstream,
+                plugin_pipeline.clone(),
+                plugin_db.clone(),
+                trace_id.clone(),
+            );
+            if use_sse_relay {
+                spawn_usage_sse_relay_body(
                     upstream,
-                    upstream_route_tracker.clone(),
-                    observed_upstream_model.clone(),
-                    observed_upstream_conflicting_model.clone(),
-                    observed_upstream_reasoning_effort.clone(),
-                );
-                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
+                    ctx,
+                    upstream_stream_idle_timeout,
+                    initial_first_byte_ms,
+                )
+            } else {
+                let stream = UsageSseTeeStream::new(
                     upstream,
-                    active_bridge_type,
-                    active_requested_model_for_bridge.clone(),
-                    common.cx2cc_settings.clone(),
-                    responses_cache_namespace.map(str::to_string),
-                    responses_cache_input.map(|items| items.to_vec()),
+                    ctx,
+                    upstream_stream_idle_timeout,
+                    initial_first_byte_ms,
                 );
-                let upstream = response_fixer::ResponseFixerStream::new(
-                    upstream,
-                    response_fixer_stream_config,
-                    common.special_settings.clone(),
-                );
-                let upstream = MaybePluginChunkStream::new(
-                    upstream,
-                    plugin_pipeline.clone(),
-                    plugin_db.clone(),
-                    trace_id.clone(),
-                );
-                if use_sse_relay {
-                    spawn_usage_sse_relay_body(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    )
-                } else {
-                    let stream = UsageSseTeeStream::new(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    );
-                    Body::from_stream(stream)
-                }
-            }
-            (false, true) => {
-                let upstream =
-                    GunzipStream::new(FirstChunkStream::new(first_chunk, resp.bytes_stream()));
-                let upstream =
-                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = UpstreamModelObserverStream::new(
-                    upstream,
-                    upstream_route_tracker.clone(),
-                    observed_upstream_model.clone(),
-                    observed_upstream_conflicting_model.clone(),
-                    observed_upstream_reasoning_effort.clone(),
-                );
-                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
-                    upstream,
-                    active_bridge_type,
-                    active_requested_model_for_bridge.clone(),
-                    common.cx2cc_settings.clone(),
-                    responses_cache_namespace.map(str::to_string),
-                    responses_cache_input.map(|items| items.to_vec()),
-                );
-                let upstream = MaybePluginChunkStream::new(
-                    upstream,
-                    plugin_pipeline.clone(),
-                    plugin_db.clone(),
-                    trace_id.clone(),
-                );
-                if use_sse_relay {
-                    spawn_usage_sse_relay_body(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    )
-                } else {
-                    let stream = UsageSseTeeStream::new(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    );
-                    Body::from_stream(stream)
-                }
-            }
-            (false, false) => {
-                let upstream = FirstChunkStream::new(first_chunk, resp.bytes_stream());
-                let upstream =
-                    gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
-                let upstream = UpstreamModelObserverStream::new(
-                    upstream,
-                    upstream_route_tracker,
-                    observed_upstream_model,
-                    observed_upstream_conflicting_model,
-                    observed_upstream_reasoning_effort,
-                );
-                let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
-                    upstream,
-                    active_bridge_type,
-                    active_requested_model_for_bridge.clone(),
-                    common.cx2cc_settings.clone(),
-                    responses_cache_namespace.map(str::to_string),
-                    responses_cache_input.map(|items| items.to_vec()),
-                );
-                let upstream = MaybePluginChunkStream::new(
-                    upstream,
-                    plugin_pipeline.clone(),
-                    plugin_db.clone(),
-                    trace_id.clone(),
-                );
-                if use_sse_relay {
-                    spawn_usage_sse_relay_body(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    )
-                } else {
-                    let stream = UsageSseTeeStream::new(
-                        upstream,
-                        ctx,
-                        upstream_stream_idle_timeout,
-                        initial_first_byte_ms,
-                    );
-                    Body::from_stream(stream)
-                }
+                Body::from_stream(stream)
             }
         };
 
@@ -1588,8 +1697,11 @@ where
 #[cfg(test)]
 mod tests {
     use super::{
-        effective_terminal_failure_status, mark_last_stream_attempt_terminal_failure,
+        effective_terminal_failure_status, inspect_buffered_event_stream_prefix,
+        is_native_codex_responses_event_stream_path, mark_last_stream_attempt_terminal_failure,
         resolve_effective_stream_idle_timeout, resolve_requested_model_for_log,
+        BufferedStreamPrefixConfig, BufferedStreamPrefixDecision, BufferedStreamPrefixState,
+        MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
     };
     use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig};
     use crate::gateway::events::FailoverAttempt;
@@ -1598,6 +1710,21 @@ mod tests {
     use std::collections::HashMap;
     use std::sync::Arc;
     use std::time::Duration;
+
+    fn native_prefix_config(
+        retry_policy: &crate::settings::UpstreamRetryPolicy,
+        guard: Duration,
+    ) -> BufferedStreamPrefixConfig<'_> {
+        BufferedStreamPrefixConfig {
+            cli_key: "codex",
+            path: "/v1/responses",
+            status: 200,
+            active_bridge_type: None,
+            provider_bridged: false,
+            retry_policy,
+            guard,
+        }
+    }
 
     fn started_probe_attempt() -> FailoverAttempt {
         FailoverAttempt {
@@ -1630,6 +1757,7 @@ mod tests {
             provider_bridged: Some(false),
             timeout_secs: None,
             requested_upstream_model: Some("gpt-5".to_string()),
+            stream_internal_error: None,
         }
     }
 
@@ -1730,5 +1858,235 @@ mod tests {
         assert_eq!(disabled_global.duration, None);
         assert_eq!(disabled_global.seconds, None);
         assert_eq!(disabled_global.source, "global");
+    }
+
+    #[test]
+    fn stream_internal_error_detection_is_native_codex_responses_only() {
+        assert!(is_native_codex_responses_event_stream_path(
+            "codex",
+            "/v1/responses",
+            None,
+            false,
+        ));
+        assert!(is_native_codex_responses_event_stream_path(
+            "codex",
+            "/responses",
+            None,
+            false,
+        ));
+        assert!(is_native_codex_responses_event_stream_path(
+            "codex",
+            "/v1/codex/responses",
+            None,
+            false,
+        ));
+        assert!(!is_native_codex_responses_event_stream_path(
+            "claude",
+            "/v1/responses",
+            None,
+            false,
+        ));
+        assert!(!is_native_codex_responses_event_stream_path(
+            "codex",
+            "/v1/chat/completions",
+            None,
+            false,
+        ));
+        assert!(!is_native_codex_responses_event_stream_path(
+            "codex",
+            "/v1/responses",
+            Some("cx2cc"),
+            false,
+        ));
+        assert!(!is_native_codex_responses_event_stream_path(
+            "codex",
+            "/v1/responses",
+            None,
+            true,
+        ));
+    }
+
+    #[test]
+    fn buffered_native_stream_retries_capacity_before_commit() {
+        let raw = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.in_progress\n",
+            "data: {\"type\":\"response.in_progress\",\"response\":{\"id\":\"resp_1\"}}\n\n",
+            "event: response.failed\n",
+            "data: {\"type\":\"response.failed\",\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n"
+        )
+        .as_bytes();
+        let mut state = BufferedStreamPrefixState::default();
+        let decision = inspect_buffered_event_stream_prefix(
+            &native_prefix_config(
+                &crate::settings::UpstreamRetryPolicy::default(),
+                Duration::from_millis(500),
+            ),
+            &mut state,
+            raw,
+        );
+
+        match decision {
+            BufferedStreamPrefixDecision::ProviderFailure {
+                error_code,
+                evidence: Some(evidence),
+            } => {
+                assert_eq!(error_code, "GW_FAKE_200");
+                assert_eq!(evidence.classification, "retryable");
+                assert_eq!(
+                    evidence.matched_keyword.as_deref(),
+                    Some("selected model is at capacity")
+                );
+            }
+            _ => panic!("capacity terminal event should be retried before commit"),
+        }
+    }
+
+    #[test]
+    fn buffered_native_stream_forwards_nonretry_and_unknown_terminal_errors() {
+        for message in ["content policy rejected", "unrecognized terminal failure"] {
+            let raw = format!(
+                "event: response.failed\ndata: {{\"error\":{{\"message\":{message:?}}}}}\n\n"
+            );
+            let mut state = BufferedStreamPrefixState::default();
+            assert!(matches!(
+                inspect_buffered_event_stream_prefix(
+                    &native_prefix_config(
+                        &crate::settings::UpstreamRetryPolicy::default(),
+                        Duration::from_millis(500),
+                    ),
+                    &mut state,
+                    raw.as_bytes(),
+                ),
+                BufferedStreamPrefixDecision::StartStreaming {
+                    guard_cap_reached: false
+                }
+            ));
+        }
+
+        let mut disabled_policy = crate::settings::UpstreamRetryPolicy::default();
+        disabled_policy.stream_internal_errors.enabled = false;
+        let mut disabled_state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&disabled_policy, Duration::from_millis(500)),
+                &mut disabled_state,
+                b"event: response.failed\ndata: {\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
+            ),
+            BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: false
+            }
+        ));
+    }
+
+    #[test]
+    fn buffered_native_stream_does_not_promote_legacy_broad_terminal_signals() {
+        let raw = concat!(
+            "event: response.output_text.delta\n",
+            "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
+            "event: response.custom.error\n",
+            "data: {\"type\":\"response.custom.error\",\"status\":\"failed\",\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        let mut state = BufferedStreamPrefixState::default();
+
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(
+                    &crate::settings::UpstreamRetryPolicy::default(),
+                    Duration::from_millis(500),
+                ),
+                &mut state,
+                raw.as_bytes(),
+            ),
+            BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: false
+            }
+        ));
+    }
+
+    #[test]
+    fn buffered_native_stream_commits_completed_output_without_waiting_for_guard() {
+        let raw = concat!(
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"done\"}]}]}}\n\n"
+        );
+        let mut state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(
+                    &crate::settings::UpstreamRetryPolicy::default(),
+                    Duration::from_secs(5),
+                ),
+                &mut state,
+                raw.as_bytes(),
+            ),
+            BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: false
+            }
+        ));
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn buffered_native_stream_waits_through_preamble_then_commits_at_guard_or_cap() {
+        let policy = crate::settings::UpstreamRetryPolicy::default();
+        let mut preamble_state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut preamble_state,
+                b": keepalive\n\n",
+            ),
+            BufferedStreamPrefixDecision::NeedMore
+        ));
+
+        let meaningful = b"event: response.output_text.delta\ndata: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n";
+        let mut guarded_prefix = b": keepalive\n\n".to_vec();
+        guarded_prefix.extend_from_slice(meaningful);
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut preamble_state,
+                &guarded_prefix,
+            ),
+            BufferedStreamPrefixDecision::NeedMore
+        ));
+
+        tokio::time::advance(Duration::from_millis(499)).await;
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut preamble_state,
+                &guarded_prefix,
+            ),
+            BufferedStreamPrefixDecision::NeedMore
+        ));
+
+        tokio::time::advance(Duration::from_millis(1)).await;
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut preamble_state,
+                &guarded_prefix,
+            ),
+            BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: false
+            }
+        ));
+
+        let mut cap_state = BufferedStreamPrefixState::default();
+        let oversized = vec![b' '; MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES + 1];
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut cap_state,
+                &oversized,
+            ),
+            BufferedStreamPrefixDecision::StartStreaming {
+                guard_cap_reached: true
+            }
+        ));
     }
 }

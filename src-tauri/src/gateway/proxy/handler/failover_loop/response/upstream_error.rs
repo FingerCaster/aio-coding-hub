@@ -839,6 +839,7 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         circuit_recover_at_unix: None,
         circuit_trigger_error_code: None,
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: provider_ctx.active_requested_model.map(str::to_string),
     });
 

@@ -37,6 +37,7 @@ fn skipped_attempt(reason_code: Option<&'static str>) -> FailoverAttempt {
         circuit_trigger_error_code: None,
         provider_bridged: None,
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: None,
     }
 }
@@ -71,6 +72,7 @@ fn terminal_bridge_attempt() -> FailoverAttempt {
         circuit_trigger_error_code: None,
         provider_bridged: Some(true),
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: None,
     }
 }
@@ -105,6 +107,7 @@ fn real_attempt() -> FailoverAttempt {
         circuit_trigger_error_code: None,
         provider_bridged: Some(false),
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: None,
     }
 }
@@ -143,6 +146,7 @@ fn timeout_attempt(
         circuit_trigger_error_code: None,
         provider_bridged: Some(false),
         timeout_secs: None,
+        stream_internal_error: None,
         requested_upstream_model: None,
     }
 }

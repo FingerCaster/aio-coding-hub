@@ -113,6 +113,8 @@ pub(super) struct FailoverAttempt {
     // (never parsed out of `outcome`); serializes as explicit null per the
     // gateway event contract.
     pub(super) timeout_secs: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub(super) stream_internal_error: Option<crate::usage::StreamInternalErrorEvidence>,
     pub(super) requested_upstream_model: Option<String>,
 }
 
@@ -775,6 +777,7 @@ mod tests {
             circuit_trigger_error_code: None,
             provider_bridged: Some(false),
             timeout_secs: None,
+            stream_internal_error: None,
             requested_upstream_model: None,
         }
     }
@@ -902,6 +905,7 @@ mod tests {
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
+                stream_internal_error: None,
                 requested_upstream_model: None,
             }],
             input_tokens: Some(1200),

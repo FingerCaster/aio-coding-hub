@@ -629,3 +629,173 @@ fn sse_usage_tracker_drops_oversized_event_data() {
     assert!(tracker.current_data.is_empty());
     assert!(tracker.finalize().is_none());
 }
+
+#[test]
+fn codex_stream_internal_error_classifier_accepts_only_exact_terminal_types() {
+    let retry = vec!["selected model is at capacity".to_string()];
+    let non_retry = vec!["policy".to_string()];
+    for event_type in [
+        "error",
+        "response.error",
+        "response.failed",
+        "response.incomplete",
+    ] {
+        let data = serde_json::json!({
+            "type": event_type,
+            "error": {"message": "Selected model is at capacity"}
+        });
+        let evidence = classify_codex_stream_internal_error(
+            "message",
+            &data,
+            true,
+            &retry,
+            &non_retry,
+            "buffered_before_commit",
+        )
+        .expect("terminal type should classify");
+        assert_eq!(evidence.event_type, event_type);
+        assert_eq!(evidence.error_type, None);
+        assert_eq!(evidence.classification, "retryable");
+    }
+
+    let top_level_error_type = serde_json::json!({
+        "type": "server_error",
+        "message": "Selected model is at capacity"
+    });
+    let evidence = classify_codex_stream_internal_error(
+        "response.failed",
+        &top_level_error_type,
+        true,
+        &retry,
+        &non_retry,
+        "buffered_before_commit",
+    )
+    .expect("terminal event name should classify");
+    assert_eq!(evidence.event_type, "response.failed");
+    assert_eq!(evidence.error_type.as_deref(), Some("server_error"));
+
+    let unrelated = serde_json::json!({
+        "type": "response.done",
+        "error": {"message": "Selected model is at capacity"}
+    });
+    assert!(classify_codex_stream_internal_error(
+        "message",
+        &unrelated,
+        true,
+        &retry,
+        &non_retry,
+        "buffered_before_commit",
+    )
+    .is_none());
+}
+
+#[test]
+fn codex_stream_internal_error_positive_keyword_wins_and_disabled_policy_is_observable() {
+    let data = serde_json::json!({
+        "type": "response.failed",
+        "error": {"message": "Selected model is at capacity due to policy"}
+    });
+    let retry = vec!["selected model is at capacity".to_string()];
+    let non_retry = vec!["policy".to_string()];
+    let retryable = classify_codex_stream_internal_error(
+        "",
+        &data,
+        true,
+        &retry,
+        &non_retry,
+        "buffered_before_commit",
+    )
+    .expect("terminal error");
+    assert_eq!(retryable.classification, "retryable");
+    assert_eq!(
+        retryable.matched_keyword.as_deref(),
+        Some("selected model is at capacity")
+    );
+
+    let disabled = classify_codex_stream_internal_error(
+        "",
+        &data,
+        false,
+        &retry,
+        &non_retry,
+        "forwarded_after_commit",
+    )
+    .expect("disabled terminal error remains observable");
+    assert_eq!(disabled.classification, "disabled");
+    assert!(disabled.matched_keyword.is_none());
+}
+
+#[test]
+fn codex_stream_internal_error_evidence_redacts_secrets_and_bounds_unicode() {
+    const SYNTHETIC_SECRET_JSON: &str = "SYNTHETIC_SECRET_JSON";
+    const SYNTHETIC_SECRET_KEY: &str = "SYNTHETIC_SECRET_KEY";
+    const SYNTHETIC_SECRET_AUTH: &str = "SYNTHETIC_SECRET_AUTH";
+    const SYNTHETIC_SECRET_QUERY: &str = "SYNTHETIC_SECRET_QUERY";
+    const SYNTHETIC_SECRET_QUERY_KEY: &str = "SYNTHETIC_SECRET_QUERY_KEY";
+    const SYNTHETIC_SECRET_HEADER: &str = "SYNTHETIC_SECRET_HEADER";
+    let message = format!(
+        "{{\"access_token\":\"{SYNTHETIC_SECRET_JSON}\",\"api_key\":\"{SYNTHETIC_SECRET_KEY}\",\"authorization\":\"Bearer {SYNTHETIC_SECRET_AUTH}\"}} ?access_token={SYNTHETIC_SECRET_QUERY}&api_key={SYNTHETIC_SECRET_QUERY_KEY} Bearer {SYNTHETIC_SECRET_HEADER} {}",
+        "😀".repeat(2_100)
+    );
+    let data = serde_json::json!({
+        "type": "response.failed",
+        "error": {"message": message}
+    });
+    let evidence = classify_codex_stream_internal_error(
+        "response.failed",
+        &data,
+        true,
+        &[],
+        &[],
+        "forwarded_after_commit",
+    )
+    .expect("terminal error");
+    let redacted = evidence.message.expect("message");
+    for secret in [
+        SYNTHETIC_SECRET_JSON,
+        SYNTHETIC_SECRET_KEY,
+        SYNTHETIC_SECRET_AUTH,
+        SYNTHETIC_SECRET_QUERY,
+        SYNTHETIC_SECRET_QUERY_KEY,
+        SYNTHETIC_SECRET_HEADER,
+    ] {
+        assert!(!redacted.contains(secret), "secret leaked: {secret}");
+    }
+    assert!(redacted.contains("[REDACTED]"));
+    assert_eq!(
+        redacted.chars().count(),
+        STREAM_INTERNAL_ERROR_MESSAGE_MAX_CHARS
+    );
+    assert!(evidence.truncated);
+}
+
+#[test]
+fn codex_reasoning_summary_counts_as_meaningful_output() {
+    assert!(has_codex_meaningful_output(&serde_json::json!({
+        "type": "response.reasoning_summary_text.delta",
+        "delta": "working"
+    })));
+    assert!(has_codex_meaningful_output(&serde_json::json!({
+        "type": "response.output_item.done",
+        "item": {
+            "type": "reasoning",
+            "summary": [{"type": "summary_text", "text": "working"}]
+        }
+    })));
+}
+
+#[test]
+fn sse_usage_tracker_keeps_post_commit_stream_internal_error_evidence() {
+    let retry = vec!["selected model is at capacity".to_string()];
+    let mut tracker =
+        SseUsageTracker::new("codex").with_stream_internal_error_classifier(true, &retry, &[]);
+    tracker.ingest_chunk(
+        b"event: response.failed\ndata: {\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
+    );
+
+    let evidence = tracker
+        .stream_internal_error_evidence()
+        .expect("stream evidence");
+    assert_eq!(evidence.classification, "retryable");
+    assert_eq!(evidence.disposition, "forwarded_after_commit");
+}

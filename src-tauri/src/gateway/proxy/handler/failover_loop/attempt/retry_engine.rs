@@ -177,6 +177,7 @@ where
                 circuit_recover_at_unix: None,
                 circuit_trigger_error_code: None,
                 timeout_secs: None,
+                stream_internal_error: None,
                 requested_upstream_model: prepared.active_requested_model.clone(),
             });
             let requested_model =

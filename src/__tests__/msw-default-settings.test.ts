@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 55,
+      schema_version: 56,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -34,6 +34,7 @@ describe("MSW defaults", () => {
       provider_base_url_ping_cache_ttl_seconds: 60,
       upstream_first_byte_timeout_seconds: 30,
       upstream_stream_idle_timeout_seconds: 300,
+      stream_internal_error_guard_ms: 500,
       upstream_request_timeout_non_streaming_seconds: 0,
       update_releases_url: "https://github.com/FingerCaster/aio-coding-hub/releases",
       failover_max_attempts_per_provider: 5,
@@ -43,13 +44,34 @@ describe("MSW defaults", () => {
         max_retries: 1,
         backoff_ms: 100,
         counts_toward_circuit_breaker: false,
-        http_rules: [502, 503, 504].map((status_code) => ({
-          enabled: true,
-          status_code,
-          body_contains: [],
-          description: "",
-        })),
+        http_rules: [
+          ...[502, 503, 504].map((status_code) => ({
+            enabled: true,
+            status_code,
+            body_contains: [],
+            description: "",
+          })),
+          {
+            enabled: true,
+            status_code: 400,
+            body_contains: ["selected model is at capacity"],
+            description: "Codex model capacity",
+          },
+        ],
         transport_errors: ["connect", "timeout", "read"],
+        stream_internal_errors: {
+          enabled: true,
+          retry_keywords: ["selected model is at capacity"],
+          non_retry_keywords: [
+            "invalid_request",
+            "content_policy",
+            "policy",
+            "safety",
+            "high-risk cyber",
+            "not allowed",
+            "violat",
+          ],
+        },
       },
       upstream_error_response_rules: [],
       circuit_breaker_failure_threshold: 5,

@@ -176,6 +176,7 @@ impl<R: tauri::Runtime> ProxyContext<R> {
                 self.is_compact_request,
             ),
             upstream_stream_idle_timeout_secs: rs.upstream_stream_idle_timeout_secs,
+            stream_internal_error_guard_ms: rs.stream_internal_error_guard_ms,
             upstream_request_timeout_non_streaming_secs: rs
                 .upstream_request_timeout_non_streaming_secs,
             fingerprint_key: self.fingerprint_key,

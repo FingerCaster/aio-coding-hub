@@ -624,6 +624,7 @@ mod tests {
             enabled: true,
             http_rules: vec![UpstreamHttpRetryRule::status_only(429)],
             transport_errors: vec![UpstreamTransportRetryKind::Connect],
+            stream_internal_errors: Default::default(),
             max_retries: 3,
             backoff_ms: 750,
             counts_toward_circuit_breaker: true,

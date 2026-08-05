@@ -4,11 +4,13 @@ import type {
   UpstreamTransportRetryKind,
 } from "../settings/settings";
 
-export const MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES = 16;
+export const MAX_UPSTREAM_RETRY_POLICY_HTTP_RULES = 17;
 export const MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS = 16;
 export const MAX_UPSTREAM_RETRY_POLICY_BODY_CONTAINS_CHARS = 512;
 export const MAX_UPSTREAM_RETRY_POLICY_DESCRIPTION_CHARS = 256;
 export const MAX_UPSTREAM_RETRY_POLICY_TRANSPORT_ERRORS = 8;
+export const MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS = 16;
+export const MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS = 512;
 export const MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES = 10;
 export const MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS = 60_000;
 
@@ -23,8 +25,29 @@ export function createUpstreamHttpRetryRule(statusCode = 500): UpstreamHttpRetry
 
 export const DEFAULT_UPSTREAM_RETRY_POLICY: UpstreamRetryPolicy = {
   enabled: true,
-  http_rules: [502, 503, 504].map(createUpstreamHttpRetryRule),
+  http_rules: [
+    ...[502, 503, 504].map(createUpstreamHttpRetryRule),
+    {
+      enabled: true,
+      status_code: 400,
+      body_contains: ["selected model is at capacity"],
+      description: "Codex model capacity",
+    },
+  ],
   transport_errors: ["connect", "timeout", "read"],
+  stream_internal_errors: {
+    enabled: true,
+    retry_keywords: ["selected model is at capacity"],
+    non_retry_keywords: [
+      "invalid_request",
+      "content_policy",
+      "policy",
+      "safety",
+      "high-risk cyber",
+      "not allowed",
+      "violat",
+    ],
+  },
   max_retries: 1,
   backoff_ms: 100,
   counts_toward_circuit_breaker: false,
@@ -53,6 +76,17 @@ export function cloneUpstreamRetryPolicy(
       body_contains: [...rule.body_contains],
     })),
     transport_errors: [...source.transport_errors],
+    stream_internal_errors: {
+      ...(source.stream_internal_errors ?? DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors),
+      retry_keywords: [
+        ...(source.stream_internal_errors?.retry_keywords ??
+          DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.retry_keywords),
+      ],
+      non_retry_keywords: [
+        ...(source.stream_internal_errors?.non_retry_keywords ??
+          DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.non_retry_keywords),
+      ],
+    },
   };
 }
 
@@ -135,6 +169,34 @@ export function validateUpstreamRetryPolicy(policy: UpstreamRetryPolicy) {
       return "瞬时错误重试传输错误仅支持 connect、timeout、read";
     }
   }
+  const streamPolicy = policy.stream_internal_errors;
+  if (!streamPolicy || typeof streamPolicy.enabled !== "boolean") {
+    return "流内部错误重试配置无效";
+  }
+  for (const [field, label] of [
+    [streamPolicy.retry_keywords, "重试关键词"],
+    [streamPolicy.non_retry_keywords, "不重试关键词"],
+  ] as const) {
+    if (!Array.isArray(field)) return `流内部错误${label}必须是列表`;
+    if (field.length > MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS) {
+      return `流内部错误${label}最多支持 ${MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS} 项`;
+    }
+    for (const keyword of field) {
+      if (typeof keyword !== "string" || !keyword.trim()) {
+        return `流内部错误${label}不能为空`;
+      }
+      if (CONTROL_CHAR_PATTERN.test(keyword)) return `流内部错误${label}不能包含控制字符`;
+      if (characterCount(keyword.trim()) > MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS) {
+        return `流内部错误${label}每项最多 ${MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS} 个字符`;
+      }
+      if (
+        characterCount(keyword.trim().toLowerCase()) >
+        MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS
+      ) {
+        return `流内部错误${label}每项规范化后最多 ${MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS} 个字符`;
+      }
+    }
+  }
   if (
     !Number.isSafeInteger(policy.max_retries) ||
     policy.max_retries < 0 ||
@@ -152,9 +214,10 @@ export function validateUpstreamRetryPolicy(policy: UpstreamRetryPolicy) {
   if (
     policy.enabled &&
     !policy.http_rules.some((rule) => rule.enabled) &&
-    policy.transport_errors.length === 0
+    policy.transport_errors.length === 0 &&
+    !policy.stream_internal_errors.enabled
   ) {
-    return "启用重试时至少需要一条已启用 HTTP 规则或一个传输错误";
+    return "启用重试时至少需要一条已启用 HTTP 规则、一个传输错误或流内部错误策略";
   }
   return null;
 }

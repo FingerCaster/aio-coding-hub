@@ -431,6 +431,12 @@ pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
         )
         .into());
     }
+    if settings.stream_internal_error_guard_ms > MAX_STREAM_INTERNAL_ERROR_GUARD_MS {
+        return Err(format!(
+            "SEC_INVALID_INPUT: stream_internal_error_guard_ms must be <= {MAX_STREAM_INTERNAL_ERROR_GUARD_MS}"
+        )
+        .into());
+    }
     if settings.upstream_request_timeout_non_streaming_seconds
         > MAX_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS
     {
@@ -839,8 +845,16 @@ mod tests {
         assert_eq!(settings.upstream_retry_policy.http_rules[0].status_code, 0);
 
         assert!(repair_settings(&mut settings, schema_present, &raw).expect("repair damaged"));
-        assert!(settings.upstream_retry_policy.http_rules.is_empty());
-        assert!(!settings.upstream_retry_policy.enabled);
+        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 1);
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[0].status_code,
+            400
+        );
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[0].body_contains,
+            vec![DEFAULT_CAPACITY_RETRY_KEYWORD]
+        );
+        assert!(settings.upstream_retry_policy.enabled);
     }
 
     #[test]
@@ -867,12 +881,20 @@ mod tests {
         );
 
         assert!(repair_settings(&mut settings, schema_present, &raw).expect("repair damaged"));
-        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 1);
+        assert_eq!(settings.upstream_retry_policy.http_rules.len(), 2);
         assert!(!settings.upstream_retry_policy.http_rules[0].enabled);
         assert!(settings.upstream_retry_policy.http_rules[0]
             .body_contains
             .is_empty());
-        assert!(!settings.upstream_retry_policy.enabled);
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[1].status_code,
+            400
+        );
+        assert_eq!(
+            settings.upstream_retry_policy.http_rules[1].body_contains,
+            vec![DEFAULT_CAPACITY_RETRY_KEYWORD]
+        );
+        assert!(settings.upstream_retry_policy.enabled);
     }
 
     #[test]

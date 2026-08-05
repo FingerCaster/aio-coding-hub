@@ -1080,7 +1080,7 @@ fn incomplete_retry_rule_override_disables_rule_instead_of_broadening_to_status_
     let policy = loaded
         .upstream_retry_policy_override
         .expect("incomplete override remains explicit");
-    assert!(!policy.enabled);
+    assert!(policy.enabled);
     assert_eq!(policy.http_rules.len(), 1);
     assert!(!policy.http_rules[0].enabled);
     assert!(policy.http_rules[0].body_contains.is_empty());
@@ -1102,6 +1102,7 @@ fn provider_retry_policy_override_writes_canonical_rules_and_rejects_invalid_dis
             description: " Temporary quota ".to_string(),
         }],
         transport_errors: Vec::new(),
+        stream_internal_errors: Default::default(),
         max_retries: 2,
         backoff_ms: 250,
         counts_toward_circuit_breaker: true,

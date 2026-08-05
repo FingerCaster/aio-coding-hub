@@ -3,7 +3,12 @@ import {
   GatewayErrorDescriptions,
   type GatewayErrorDescription,
 } from "../../constants/gatewayErrorCodes";
-import { parseAttemptsJson, type AttemptJsonEntry } from "../../services/gateway/attemptsJson";
+import {
+  parseAttemptsJson,
+  parseStreamInternalErrorEvidence,
+  type AttemptJsonEntry,
+  type StreamInternalErrorEvidence,
+} from "../../services/gateway/attemptsJson";
 import type { RequestLogDetail } from "../../services/gateway/requestLogs";
 
 type ParsedReasonFields = {
@@ -32,6 +37,7 @@ type ParsedErrorDetailsJson = {
   reasonCode: string | null;
   retryIndex: number | null;
   selectionMethod: string | null;
+  streamInternalError: StreamInternalErrorEvidence | null;
   upstreamBodyPreview: string | null;
   upstreamStatus: number | null;
 };
@@ -73,6 +79,7 @@ export type RequestLogErrorObservation = {
   retryIndex: number | null;
   selectionMethod: string | null;
   source: "error_details_json" | "summary";
+  streamInternalError: StreamInternalErrorEvidence | null;
   upstreamBodyPreview: string | null;
   upstreamStatus: number | null;
 };
@@ -195,6 +202,7 @@ function parseErrorDetailsJson(
       reasonCode: null,
       retryIndex: null,
       selectionMethod: null,
+      streamInternalError: null,
       upstreamBodyPreview: null,
       upstreamStatus: null,
     };
@@ -223,6 +231,7 @@ function parseErrorDetailsJson(
         reasonCode: null,
         retryIndex: null,
         selectionMethod: null,
+        streamInternalError: null,
         upstreamBodyPreview: null,
         upstreamStatus: null,
       };
@@ -251,6 +260,7 @@ function parseErrorDetailsJson(
       reasonCode: asOptionalString(obj.reason_code),
       retryIndex: asFiniteNumber(obj.retry_index),
       selectionMethod: asOptionalString(obj.selection_method),
+      streamInternalError: parseStreamInternalErrorEvidence(obj.stream_internal_error),
       upstreamBodyPreview:
         asOptionalString(obj.upstream_body_preview) ?? reasonFields.upstreamBodyPreview,
       upstreamStatus: asFiniteNumber(obj.upstream_status),
@@ -276,6 +286,7 @@ function parseErrorDetailsJson(
       reasonCode: null,
       retryIndex: null,
       selectionMethod: null,
+      streamInternalError: null,
       upstreamBodyPreview: null,
       upstreamStatus: null,
     };
@@ -302,6 +313,7 @@ function hasObservationSignal(input: RequestLogErrorObservation) {
     input.upstreamBodyPreview != null ||
     input.providerId != null ||
     input.providerName != null ||
+    input.streamInternalError != null ||
     input.rawDetailsText != null
   );
 }
@@ -317,12 +329,15 @@ export function resolveRequestLogErrorObservation(
     selectedLog.status < 400;
   if (isCleanSuccess) return null;
 
+  const attempts = parseAttemptsJson(selectedLog.attempts_json);
+  const attemptStreamInternalError = attempts?.[attempts.length - 1]?.stream_internal_error ?? null;
   const parsedJson = parseErrorDetailsJson(selectedLog.error_details_json);
+  const streamInternalError = parsedJson.streamInternalError ?? attemptStreamInternalError;
   const gatewayErrorCode = parsedJson.gatewayErrorCode ?? selectedLog.error_code ?? null;
   const displayErrorCode = parsedJson.errorCode ?? gatewayErrorCode;
   const observation: RequestLogErrorObservation = {
     attemptDurationMs: parsedJson.attemptDurationMs,
-    attemptFailureSummary: buildAttemptFailureSummary(parseAttemptsJson(selectedLog.attempts_json)),
+    attemptFailureSummary: buildAttemptFailureSummary(attempts),
     circuitFailureCount: parsedJson.circuitFailureCount,
     circuitFailureThreshold: parsedJson.circuitFailureThreshold,
     circuitStateAfter: parsedJson.circuitStateAfter,
@@ -343,6 +358,7 @@ export function resolveRequestLogErrorObservation(
     retryIndex: parsedJson.retryIndex,
     selectionMethod: parsedJson.selectionMethod,
     source: selectedLog.error_details_json != null ? "error_details_json" : "summary",
+    streamInternalError,
     upstreamBodyPreview: parsedJson.upstreamBodyPreview,
     upstreamStatus:
       parsedJson.upstreamStatus ??

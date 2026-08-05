@@ -101,12 +101,42 @@ impl Default for UpstreamHttpRetryRule {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
+#[serde(default)]
+pub struct UpstreamStreamInternalErrorPolicy {
+    pub enabled: bool,
+    pub retry_keywords: Vec<String>,
+    pub non_retry_keywords: Vec<String>,
+}
+
+impl Default for UpstreamStreamInternalErrorPolicy {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            retry_keywords: vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()],
+            non_retry_keywords: [
+                "invalid_request",
+                "content_policy",
+                "policy",
+                "safety",
+                "high-risk cyber",
+                "not allowed",
+                "violat",
+            ]
+            .into_iter()
+            .map(str::to_string)
+            .collect(),
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 #[serde(default)]
 pub struct UpstreamRetryPolicy {
     pub enabled: bool,
     pub http_rules: Vec<UpstreamHttpRetryRule>,
     pub transport_errors: Vec<UpstreamTransportRetryKind>,
+    pub stream_internal_errors: UpstreamStreamInternalErrorPolicy,
     pub max_retries: u32,
     pub backoff_ms: u32,
     pub counts_toward_circuit_breaker: bool,
@@ -116,15 +146,23 @@ impl Default for UpstreamRetryPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            http_rules: [502, 503, 504]
-                .into_iter()
-                .map(UpstreamHttpRetryRule::status_only)
-                .collect(),
+            http_rules: vec![
+                UpstreamHttpRetryRule::status_only(502),
+                UpstreamHttpRetryRule::status_only(503),
+                UpstreamHttpRetryRule::status_only(504),
+                UpstreamHttpRetryRule {
+                    enabled: true,
+                    status_code: 400,
+                    body_contains: vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()],
+                    description: "Codex model capacity".to_string(),
+                },
+            ],
             transport_errors: vec![
                 UpstreamTransportRetryKind::Connect,
                 UpstreamTransportRetryKind::Timeout,
                 UpstreamTransportRetryKind::Read,
             ],
+            stream_internal_errors: UpstreamStreamInternalErrorPolicy::default(),
             max_retries: 1,
             backoff_ms: 100,
             counts_toward_circuit_breaker: false,
@@ -139,6 +177,7 @@ struct UpstreamRetryPolicyWire {
     http_rules: WireField<Vec<UpstreamHttpRetryRule>>,
     status_codes: WireField<Vec<u16>>,
     transport_errors: Vec<UpstreamTransportRetryKind>,
+    stream_internal_errors: UpstreamStreamInternalErrorPolicy,
     max_retries: u32,
     backoff_ms: u32,
     counts_toward_circuit_breaker: bool,
@@ -175,6 +214,7 @@ impl Default for UpstreamRetryPolicyWire {
             http_rules: WireField::Missing,
             status_codes: WireField::Missing,
             transport_errors: defaults.transport_errors,
+            stream_internal_errors: defaults.stream_internal_errors,
             max_retries: defaults.max_retries,
             backoff_ms: defaults.backoff_ms,
             counts_toward_circuit_breaker: defaults.counts_toward_circuit_breaker,
@@ -205,6 +245,7 @@ impl<'de> Deserialize<'de> for UpstreamRetryPolicy {
             enabled: wire.enabled,
             http_rules,
             transport_errors: wire.transport_errors,
+            stream_internal_errors: wire.stream_internal_errors,
             max_retries: wire.max_retries,
             backoff_ms: wire.backoff_ms,
             counts_toward_circuit_breaker: wire.counts_toward_circuit_breaker,
@@ -345,6 +386,7 @@ pub struct AppSettings {
     pub provider_base_url_ping_cache_ttl_seconds: u32,
     pub upstream_first_byte_timeout_seconds: u32,
     pub upstream_stream_idle_timeout_seconds: u32,
+    pub stream_internal_error_guard_ms: u32,
     pub upstream_request_timeout_non_streaming_seconds: u32,
     pub update_releases_url: String,
     pub failover_max_attempts_per_provider: u32,
@@ -440,6 +482,7 @@ impl Default for AppSettings {
                 DEFAULT_PROVIDER_BASE_URL_PING_CACHE_TTL_SECONDS,
             upstream_first_byte_timeout_seconds: DEFAULT_UPSTREAM_FIRST_BYTE_TIMEOUT_SECONDS,
             upstream_stream_idle_timeout_seconds: DEFAULT_UPSTREAM_STREAM_IDLE_TIMEOUT_SECONDS,
+            stream_internal_error_guard_ms: DEFAULT_STREAM_INTERNAL_ERROR_GUARD_MS,
             upstream_request_timeout_non_streaming_seconds:
                 DEFAULT_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS,
             update_releases_url: DEFAULT_UPDATE_RELEASES_URL.to_string(),
