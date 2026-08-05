@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 27
-- **Last Active**: 2026-08-05
+- **Total Sessions**: 28
+- **Last Active**: 2026-08-06
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~989 | Active |
+| `journal-1.md` | ~1011 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 28 | 2026-08-06 | Harden upstream error handling | `f6d5de13` | `main` |
 | 27 | 2026-08-05 | 按变更范围分级 CI | `84423019`, `cfdc14af` | `FingerCaster/scope-aware-ci` |
 | 26 | 2026-08-05 | 完成上游错误处理与统一设置入口 | `215b00c6`, `88673001`, `d884f830`, `636fdd04`, `6c515332`, `aee00a24`, `a9dc6d14`, `37170bfe`, `8ed45bcd`, `402edac2` | `FingerCaster/upstream-error-handling` |
 | 25 | 2026-08-05 | 第一组低风险可靠性修复完成 | `d0f58bda`, `8196597e`, `53c37de1`, `e69b4529`, `7d5c8d0b`, `40446f24`, `f1b14bf6` | `main` |

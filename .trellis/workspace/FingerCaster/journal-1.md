@@ -987,3 +987,25 @@ Fixed OAuth-compatible proxy projection, provider collision handling, bounded re
 ### Status
 
 [OK] **Completed**
+
+
+## Session 28: Harden upstream error handling
+
+**Date**: 2026-08-06
+**Task**: Harden upstream error handling
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Intercept early Codex capacity SSE failures before client commit, preserve internal evidence while returning gateway 502, compact retry and rewrite rule UIs, clarify shared retry semantics, and validate the full frontend and Rust suites.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f6d5de13` | (see git log) |
+
+### Status
+
+[OK] **Completed**
