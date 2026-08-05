@@ -951,3 +951,39 @@ Fixed OAuth-compatible proxy projection, provider collision handling, bounded re
 ### Next Steps
 
 - 主会话审查提交序列后按需整合；本 worktree 不 merge、不 push、不发布。
+
+
+## Session 27: 按变更范围分级 CI
+
+**Date**: 2026-08-05
+**Task**: 按变更范围分级 CI
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/scope-aware-ci`
+
+### Summary
+
+实现 fail-closed 三档 CI 分类、固定 ci-gate、无依赖结构合同自测，并完成全量前端/Rust/静态验证与 Trellis 归档。
+
+### Main Changes
+
+- 新增机器可读范围策略、Git range/name-status 分类器与完整自测
+- 改造现有 ci.yml，保留 full 检查并增加 checked-docs 与稳定 gate
+- 补充 cross-layer 合同、验证证据及四级任务归档
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `84423019` | (see git log) |
+| `cfdc14af` | (see git log) |
+
+### Testing
+
+- [OK] pnpm run check:ci-change-scope 与 actionlint 1.7.12 通过
+- [OK] frontend 全量命令与生产构建通过
+- [OK] Rust fmt/lock/clippy、2543 库测试及全部集成测试、cargo audit 通过
+- [OK] origin protection 404 且 rulesets 为空，只读核查完成
+
+### Status
+
+[OK] **Completed**
