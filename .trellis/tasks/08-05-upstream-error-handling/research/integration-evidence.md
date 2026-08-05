@@ -28,3 +28,34 @@
 - stream-internal retry 与 HTTP/transport 共享 `max_retries`、backoff 和 circuit accounting。
 - guard cap 是放行诊断，不计 Provider failure；下游提交后禁止重试拼接。
 
+## 实现提交
+
+- `88673001`：最终 upstream HTTP 错误响应改写。
+- `d884f830`：Codex HTTP 200 SSE 流内错误恢复。
+- `636fdd04`：统一“上游错误处理”入口、分段模式及保存隔离。
+- `6c515332`：backend/cross-layer 长期合同与执行清单。
+
+## 最终自动化证据
+
+- `pnpm test:unit -- --reporter=dot`：303 个测试文件、2714 项测试通过。
+- `pnpm build`、`pnpm typecheck`、`pnpm lint`、`pnpm check:generated-bindings`、
+  `pnpm check:spec-links`：通过。
+- `cargo fmt --all -- --check`、`cargo check --all-targets --locked`、
+  `cargo clippy --all-targets --locked -- -D warnings`：通过。
+- `cargo test --lib --locked`：2580 通过、0 失败、4 ignored。
+- guard/backoff 边界使用 paused time；同 Provider 只等待一次，切换/终止不等待。
+- Trellis 三个任务 context 校验通过；既有 failover 合同超过 32 KiB 注入上限，仅产生
+  截断警告，不影响完整文件读取或验证。
+
+## 有意差异
+
+- 迁移从 fork 当前 SQLite 42/settings 55 顺延到 43/56，不移植参考仓库后续无关迁移。
+- 保留 fork 的 circuit probe/failback、Provider route、Codex continuation、
+  health-neutral 辅助请求、fake200 和压缩请求体正常化路径。
+- 复用 `12e565c0` 的统一 transport backoff helper，不复制参考实现的旧等待位置。
+
+## 待补证据
+
+- 本地 Vite 服务已在 `http://127.0.0.1:5174/` 启动，但当前会话浏览器控制端返回
+  `Browser is not available: iab` 且可用浏览器列表为空。按浏览器技能约束未改用无关
+  自动化后端，因此桌面/移动截图、真实模式切换、弹窗和保存检查仍待浏览器实例可用后完成。
