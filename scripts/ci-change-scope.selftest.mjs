@@ -175,6 +175,8 @@ assert.throws(() => parseNameStatus("R100\0README.md\0"), /invalid R100/);
 assert.throws(() => parseNameStatus("R101\0README.md\0docs/readme.md\0"), /invalid R101/);
 assert.throws(() => parseNameStatus("C\0README.md\0docs/readme.md\0"), /invalid C/);
 assert.throws(() => parseNameStatus("Q\0README.md\0"), /invalid Q/);
+assert.throws(() => parseNameStatus("X\0README.md\0"), /invalid X/);
+assert.throws(() => parseNameStatus("B\0README.md\0"), /invalid B/);
 assert.throws(
   () => parseNameStatus(Buffer.from([0x4d, 0x00, 0xff, 0x00])),
   /not valid UTF-8/

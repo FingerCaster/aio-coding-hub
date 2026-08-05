@@ -221,7 +221,7 @@ export function parseNameStatus(output) {
       records.push({ status, paths: [fields[index++], fields[index++]] });
       continue;
     }
-    if (!/^[ADMTUXB]$/.test(status) || index >= fields.length) {
+    if (!/^[ADMTU]$/.test(status) || index >= fields.length) {
       throw new Error(`invalid ${status || "empty"} name-status record`);
     }
     records.push({ status, paths: [fields[index++]] });
