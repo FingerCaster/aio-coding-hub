@@ -7,8 +7,8 @@
 5. [x] 将 stream-internal match 接入现有 retry engine/attempt budget/backoff/circuit；补齐 paused-time route tests。
 6. [x] 更新 attempt/error-details/request-log projections、ProviderChain、最终错误详情和复制 UI。
 7. [x] 处理 400 + capacity 默认规则的全局/Provider 迁移并添加分享、导入、备份回归。
-8. [ ] 运行 focused Rust/TS、generated bindings、fmt/typecheck/lint/build；执行完整 cross-layer check。
-9. [ ] 修复审查发现并形成一个 feat(gateway) 原子提交；记录未移植参考逻辑和残余风险。
+8. [x] 运行 focused Rust/TS、generated bindings、fmt/typecheck/lint/build；执行完整 cross-layer check。
+9. [x] 修复审查发现并形成一个 feat(gateway) 原子提交 `d884f830`；记录未移植参考逻辑和残余风险。
 
 ## 高风险回滚点
 

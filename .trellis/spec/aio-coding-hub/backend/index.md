@@ -10,6 +10,9 @@ Rules for the root application's Rust backend and local gateway runtime.
 - [Codex request content-encoding contract](./codex-request-content-encoding-contract.md):
   bounded decoding at the gateway boundary, supported HTTP encodings, identity
   forwarding, and local failure classification.
+- [Upstream error handling contract](../cross-layer/upstream-error-handling-contract.md):
+  configured HTTP/transport/stream retries, terminal HTTP rewrites, and bounded
+  request-log evidence.
 - [Codex managed model route contract](../cross-layer/codex-managed-model-route-contract.md):
   readable profile aliases plus legacy UUID lookup, complete picker catalog
   lifecycle, one-provider routing, same-provider retry, and terminal
@@ -39,6 +42,13 @@ When changing Codex request-body encoding:
 3. Bound every decoded layer and preserve non-Codex transport behavior.
 4. Keep decoding failures before provider selection and circuit accounting.
 
+When changing upstream error retry or terminal response behavior:
+
+1. Read [Upstream error handling contract](../cross-layer/upstream-error-handling-contract.md).
+2. Preserve real upstream facts through retry, failover, and circuit accounting.
+3. Keep stream recovery pre-commit and final HTTP rewriting terminal-only.
+4. Reuse the shared configured-retry budget and backoff helper.
+
 ## Quality Check
 
 - Unit-test the attempt-budget calculation at its boundary values.
@@ -49,3 +59,5 @@ When changing Codex request-body encoding:
   provider selection, final wire-model tracking, or response observation.
 - Verify supported Codex encodings arrive upstream as identity JSON, while
   invalid or oversized encoded bodies make zero upstream attempts.
+- Verify Codex stream guard/backoff with paused time and final rewrite across
+  success-after-failure, all-Provider failure, fake-200, and probe paths.

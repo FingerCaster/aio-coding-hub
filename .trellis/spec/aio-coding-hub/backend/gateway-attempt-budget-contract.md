@@ -5,9 +5,10 @@
 ### 1. Scope / Trigger
 
 Use this contract when changing provider attempt limits, OAuth reactive refresh,
-Codex `previous_response_id` repair, transient upstream retries, Codex model
-discovery, or circuit-breaker thresholds. These controls share the failover
-loop, but they do not share one lifecycle.
+Codex `previous_response_id` repair, transient upstream retries, pre-commit
+Codex stream-internal retries, Codex model discovery, or circuit-breaker
+thresholds. These controls share the failover loop, but they do not share one
+lifecycle.
 
 ### 2. Signatures
 
@@ -50,12 +51,14 @@ fn provider_max_attempts_for_request(
   transient retry capacity. A disabled effective policy reserves zero attempts,
   even if its stored `max_retries` is non-zero.
 - Configured transient capacity is policy-scoped, not rule-scoped. An enabled
-  HTTP rule match (status-only or status plus decoded-body content) and an
-  enabled transport match share the same `max_retries` reservation, backoff,
-  and circuit-accounting settings; rules do not add independent capacity.
-- Apply the configured `backoff_ms` before every configured HTTP or transport
-  retry that remains on the same Provider, including send errors, non-stream
-  body reads, and event-stream reads before the downstream response commits.
+  HTTP rule match (status-only or status plus decoded-body content), an enabled
+  transport match, and a retryable native Codex stream-internal match before
+  downstream commit share the same `max_retries` reservation, backoff, and
+  circuit-accounting settings; rules do not add independent capacity.
+- Apply the configured `backoff_ms` before every configured HTTP, transport, or
+  stream-internal retry that remains on the same Provider, including send
+  errors, non-stream body reads, and event-stream reads before the downstream
+  response commits.
   Circuit accounting must resolve the final decision first: a retry rewritten
   to switch/abort never waits, and cross-Provider failover adds no implicit
   delay.

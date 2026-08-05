@@ -5,10 +5,10 @@
 3. [x] 在当前 failover context/upstream error/finalize 中逐块接入 terminal candidate，保持 body 单次读取和 fork 决策顺序。
 4. [x] 添加 route tests：最终命中、中间失败后成功、多 Provider、transport、fake200、header 与日志状态。
 5. [x] 增加 generated type 的前端 adapter、规则 validation/helper 和设置 fixture。
-6. [ ] 在统一入口实现“最终响应改写”列表与 Dialog；接入 Provider 列表和 settings save。
+6. [x] 在统一入口实现“最终响应改写”列表与 Dialog；接入 Provider 列表和 settings save。
 7. [x] 增加 Home/Realtime/Logs 命中 badge 和 fail-open parser 测试。
-8. [ ] 运行 focused Rust/TS 测试、generated bindings、fmt/typecheck/lint/build。
-9. [ ] 执行子任务全范围 Trellis check，修复发现后形成一个 `feat(gateway)` 原子提交。
+8. [x] 运行 focused Rust/TS 测试、generated bindings、fmt/typecheck/lint/build。
+9. [x] 执行子任务全范围 Trellis check，修复发现后形成一个 `feat(gateway)` 原子提交 `88673001`。
 
 ## 回滚点
 

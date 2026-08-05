@@ -14,6 +14,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Gateway failover route contract](./gateway-failover-route-contract.md):
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.
+- [Upstream error handling contract](./upstream-error-handling-contract.md):
+  configured retry budgets, native Codex SSE recovery, terminal HTTP response
+  rewriting, bounded diagnostics, and the shared segmented settings entry.
 - [Provider account-usage query contract](./provider-account-usage-query-contract.md):
   one TanStack Query owner for automatic, timed, and forced manual refreshes,
   bounded NewAPI model-token/account protocols, private credential ownership,
@@ -97,6 +100,16 @@ When changing provider deletion or request-log provider identity:
    test late uncancellable query completion.
 4. Render request-time name plus ID without looking up the current provider or
    treating URL/name as identity.
+
+When changing configured retries, Codex stream-internal recovery, or final
+upstream response rewriting:
+
+1. Read [Upstream error handling contract](./upstream-error-handling-contract.md).
+2. Keep retry and rewrite schemas, save ownership, and execution phases separate.
+3. Trace real upstream facts through retry/failover/circuit accounting before
+   constructing a client-visible terminal response.
+4. Prove buffered stream data and diagnostic evidence remain bounded and
+   credential-safe.
 
 When changing Codex or Grok device authorization:
 
@@ -196,6 +209,9 @@ When changing usage folders, development-time estimates, or provider metrics tre
   complete normalized query keys, generated bindings, and UI empty/error states.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
+- When changing upstream error handling, verify retry/rewrite save isolation,
+  shared retry budget/backoff, pre-commit-only stream recovery, terminal-only
+  HTTP rewrite, client/attempt status separation, and bounded redacted evidence.
 - When changing managed Codex models, verify exact UUID lookup, one bound
   provider, readable-profile plus legacy-UUID lookup, no cross-provider
   failover, canonical/wire/observed separation, stale-mismatch clearing,
