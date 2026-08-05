@@ -12,7 +12,9 @@ use crate::gateway::proxy::handler::early_error::{
     build_early_error_log_ctx, early_error_contract, respond_early_error_with_enqueue,
     EarlyErrorKind,
 };
-use crate::gateway::proxy::request_body::GatewayRequestBody;
+use crate::gateway::proxy::request_body::{
+    normalize_codex_request_body, CodexRequestNormalizationError, GatewayRequestBody,
+};
 use crate::gateway::proxy::{errors::error_response, GatewayErrorCode};
 use crate::gateway::util::max_request_body_bytes;
 use axum::body::to_bytes;
@@ -61,6 +63,42 @@ impl BodyReaderMiddleware {
                 return MiddlewareAction::ShortCircuit(resp);
             }
         }
+
+        match normalize_codex_request_body(
+            &ctx.cli_key,
+            &ctx.req_method,
+            &ctx.forwarded_path,
+            &mut ctx.headers,
+            ctx.body_bytes.clone(),
+            request_body_limit,
+        ) {
+            Ok(body) => ctx.body_bytes = body,
+            Err(err) => {
+                ctx.observe_request = compute_observe_request(
+                    &ctx.cli_key,
+                    &ctx.req_method,
+                    &ctx.forwarded_path,
+                    &ctx.headers,
+                    None,
+                );
+                let (contract, message) = match err {
+                    CodexRequestNormalizationError::InvalidContentEncoding => (
+                        early_error_contract(EarlyErrorKind::InvalidRequestContentEncoding),
+                        invalid_request_content_encoding_message(),
+                    ),
+                    CodexRequestNormalizationError::BodyTooLarge => (
+                        early_error_contract(EarlyErrorKind::BodyTooLarge),
+                        decoded_body_too_large_message(request_body_limit),
+                    ),
+                };
+                let log_ctx = build_early_error_log_ctx(&ctx);
+                let resp =
+                    respond_early_error_with_enqueue(&log_ctx, contract, message, None, None, None)
+                        .await;
+                return MiddlewareAction::ShortCircuit(resp);
+            }
+        }
+
         let mut request_body_state =
             GatewayRequestBody::from_wire(ctx.body_bytes.clone(), &ctx.headers, request_body_limit);
         ctx.body_bytes = request_body_state.decoded_clone();
@@ -149,6 +187,19 @@ pub(in crate::gateway::proxy::handler) fn body_too_large_message(
     )
 }
 
+fn invalid_request_content_encoding_message() -> String {
+    "request Content-Encoding is unsupported, malformed, or exceeds the maximum encoding depth"
+        .to_string()
+}
+
+fn decoded_body_too_large_message(limit_bytes: usize) -> String {
+    let limit_mb = limit_bytes / (1024 * 1024);
+    format!(
+        "decoded request body exceeds the gateway hard cap of {limit_mb} MB; \
+         set AIO_GATEWAY_MAX_REQUEST_BODY_MB if this request is legitimate"
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -159,5 +210,22 @@ mod tests {
         assert!(message.contains("failed to read request body:"));
         assert!(message.contains("stream exceeded limit"));
         assert!(message.contains("64 MB"));
+    }
+
+    #[test]
+    fn invalid_encoding_message_does_not_expose_decoder_details() {
+        let message = invalid_request_content_encoding_message();
+        assert!(message.contains("Content-Encoding"));
+        assert!(!message.contains("gzip"));
+        assert!(!message.contains("zstd"));
+        assert!(!message.contains("brotli"));
+    }
+
+    #[test]
+    fn decoded_body_too_large_message_contains_only_public_limit() {
+        let message = decoded_body_too_large_message(64 * 1024 * 1024);
+        assert!(message.contains("decoded request body"));
+        assert!(message.contains("64 MB"));
+        assert!(!message.contains("decoder"));
     }
 }

@@ -877,6 +877,18 @@ mod tests {
         assert_eq!(body_too_large.error_category, None);
         assert!(!body_too_large.excluded_from_stats);
 
+        let invalid_encoding = early_error_contract(EarlyErrorKind::InvalidRequestContentEncoding);
+        assert_eq!(invalid_encoding.status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            invalid_encoding.error_code,
+            GatewayErrorCode::InvalidRequestContentEncoding.as_str()
+        );
+        assert_eq!(
+            invalid_encoding.error_category,
+            Some(ErrorCategory::NonRetryableClientError.as_str())
+        );
+        assert!(!invalid_encoding.excluded_from_stats);
+
         let large_body_missing_model = early_error_contract(EarlyErrorKind::LargeBodyMissingModel);
         assert_eq!(large_body_missing_model.status, StatusCode::BAD_REQUEST);
         assert_eq!(

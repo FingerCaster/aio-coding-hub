@@ -658,11 +658,17 @@ mod tests {
         encoder.finish().expect("gzip finish")
     }
 
-    fn gunzip_bytes(input: &[u8]) -> Vec<u8> {
-        let mut decoder = flate2::read::GzDecoder::new(input);
-        let mut out = Vec::new();
-        std::io::Read::read_to_end(&mut decoder, &mut out).expect("gzip read");
-        out
+    fn zstd_bytes(input: &[u8]) -> Vec<u8> {
+        zstd::stream::encode_all(input, 3).expect("zstd encode")
+    }
+
+    fn brotli_bytes(input: &[u8]) -> Vec<u8> {
+        let mut output = Vec::new();
+        {
+            let mut encoder = brotli::CompressorWriter::new(&mut output, 4096, 5, 22);
+            encoder.write_all(input).expect("brotli write");
+        }
+        output
     }
 
     async fn spawn_status_upstream(
@@ -1119,6 +1125,118 @@ INSERT INTO codex_managed_profiles(
         })
         .await
         .expect("terminal request log enqueue")
+    }
+
+    async fn run_encoded_codex_route(
+        db_name: &str,
+        forwarded_path: &str,
+        content_encoding: &'static str,
+        encoded_body: Vec<u8>,
+        response_body: &'static str,
+    ) -> (CapturedRawRequest, request_logs::RequestLogInsert) {
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.enable_codex_session_id_completion = false;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join(db_name)).expect("init test db");
+        let (upstream_base_url, captured_rx, upstream_task) =
+            spawn_capturing_raw_upstream(response_body).await;
+        let provider_id = insert_codex_provider(&db, upstream_base_url);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/codex/_aio/provider/{provider_id}{forwarded_path}"
+            ))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, content_encoding)
+            .body(Body::from(encoded_body))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        let status = response.status();
+        let body = to_bytes(response.into_body(), usize::MAX)
+            .await
+            .expect("response body");
+        assert_eq!(
+            status,
+            StatusCode::OK,
+            "response body: {}",
+            String::from_utf8_lossy(&body)
+        );
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("captured upstream request")
+            .expect("captured request");
+        let request_log = recv_terminal_request_log(&mut log_rx).await;
+        upstream_task.abort();
+        (captured, request_log)
+    }
+
+    async fn run_rejected_encoded_codex_route(
+        db_name: &str,
+        content_encoding: &'static str,
+        encoded_body: Vec<u8>,
+        max_request_body_mb: Option<&str>,
+    ) -> (StatusCode, Value, request_logs::RequestLogInsert) {
+        let home = tempfile::tempdir().expect("home dir");
+        let mut env = isolate_app_env(home.path());
+        if let Some(limit) = max_request_body_mb {
+            env.set_var("AIO_GATEWAY_MAX_REQUEST_BODY_MB", limit);
+        }
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join(db_name)).expect("init test db");
+        let (upstream_base_url, captured_rx, upstream_task) =
+            spawn_capturing_raw_upstream(r#"{"id":"must-not-arrive"}"#).await;
+        let provider_id = insert_codex_provider(&db, upstream_base_url);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/codex/_aio/provider/{provider_id}/v1/responses"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, content_encoding)
+            .body(Body::from(encoded_body))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        let status = response.status();
+        let payload = serde_json::from_slice::<Value>(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("gateway error JSON");
+        assert!(
+            tokio::time::timeout(Duration::from_millis(150), captured_rx)
+                .await
+                .is_err(),
+            "invalid encoded request unexpectedly reached upstream"
+        );
+        let request_log = recv_terminal_request_log(&mut log_rx).await;
+        upstream_task.abort();
+        (status, payload, request_log)
     }
 
     fn parse_special_settings(log: &request_logs::RequestLogInsert) -> Vec<Value> {
@@ -2425,7 +2543,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn official_privacy_filter_redacts_gzipped_codex_responses_before_upstream() {
+    async fn official_privacy_filter_redacts_gzipped_codex_responses_as_identity_upstream() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -2537,11 +2655,10 @@ INSERT INTO codex_managed_profiles(
             .expect("captured upstream request")
             .expect("captured request");
 
-        assert!(captured.has_header_line("content-encoding: gzip"));
-        let decoded_body = gunzip_bytes(&captured.body);
-        let decoded_body_text = String::from_utf8_lossy(&decoded_body);
-        assert!(decoded_body_text.contains("[电话]"));
-        assert!(!decoded_body_text.contains("13344441520"));
+        assert!(!captured.has_header_line("content-encoding:"));
+        let body_text = String::from_utf8_lossy(&captured.body);
+        assert!(body_text.contains("[电话]"));
+        assert!(!body_text.contains("13344441520"));
 
         let request_log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(request_log.status, Some(200));
@@ -2889,25 +3006,25 @@ INSERT INTO codex_managed_profiles(
             log_tx,
             plugin_pipeline,
         ));
+        let plain_body = serde_json::json!({
+            "model": "gpt-plugin",
+            "previous_response_id": "resp_old",
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "你知道 13344441520 是哪里的手机号嘛"
+                }]
+            }]
+        })
+        .to_string();
         let request = Request::builder()
             .method(Method::POST)
             .uri(format!("/codex/_aio/provider/{provider_id}/v1/responses"))
             .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                serde_json::json!({
-                    "model": "gpt-plugin",
-                    "previous_response_id": "resp_old",
-                    "input": [{
-                        "type": "message",
-                        "role": "user",
-                        "content": [{
-                            "type": "input_text",
-                            "text": "你知道 13344441520 是哪里的手机号嘛"
-                        }]
-                    }]
-                })
-                .to_string(),
-            ))
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(Body::from(gzip_bytes(plain_body.as_bytes())))
             .expect("request");
 
         let response = router.oneshot(request).await.expect("route response");
@@ -2920,9 +3037,11 @@ INSERT INTO codex_managed_profiles(
             .await
             .expect("second captured request")
             .expect("second request");
+        assert!(!first.has_header_line("content-encoding:"));
         assert!(!String::from_utf8_lossy(&first.body).contains("13344441520"));
         assert!(String::from_utf8_lossy(&first.body).contains("[电话]"));
 
+        assert!(!second.has_header_line("content-encoding:"));
         let second_body = String::from_utf8_lossy(&second.body);
         assert!(
             second_body.contains("[电话]"),
@@ -2942,7 +3061,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn gateway_preserves_gzipped_codex_request_when_plugins_do_not_mutate_body() {
+    async fn gateway_normalizes_gzipped_codex_request_to_identity_upstream() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -2958,7 +3077,7 @@ INSERT INTO codex_managed_profiles(
             .expect("enable codex cli proxy");
 
         let db_dir = tempfile::tempdir().expect("db dir");
-        let db = db::init_for_tests(&db_dir.path().join("gateway-gzip-passthrough-test.sqlite"))
+        let db = db::init_for_tests(&db_dir.path().join("gateway-gzip-normalization-test.sqlite"))
             .expect("init test db");
         let (upstream_base_url, captured_rx, upstream_task) =
             spawn_capturing_raw_upstream(r#"{"id":"stub-ok","object":"response","output":[]}"#)
@@ -2985,7 +3104,7 @@ INSERT INTO codex_managed_profiles(
             .uri(format!("/codex/_aio/provider/{provider_id}/v1/responses"))
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CONTENT_ENCODING, "gzip")
-            .body(Body::from(compressed_body.clone()))
+            .body(Body::from(compressed_body))
             .expect("request");
 
         let response = router.oneshot(request).await.expect("route response");
@@ -2995,14 +3114,303 @@ INSERT INTO codex_managed_profiles(
             .expect("captured upstream request")
             .expect("captured request");
 
-        assert!(captured.has_header_line("content-encoding: gzip"));
-        assert_eq!(captured.body, compressed_body);
-        assert!(!captured.text().contains("13344441520"));
-        assert!(!captured.text().contains("[电话]"));
+        assert!(!captured.has_header_line("content-encoding:"));
+        assert_eq!(captured.body, plain_body.as_bytes());
+        assert!(captured.text().contains("13344441520"));
 
         let request_log = recv_terminal_request_log(&mut log_rx).await;
         assert_eq!(request_log.status, Some(200));
 
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_inspects_and_normalizes_zstd_codex_request() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.enable_codex_session_id_completion = true;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-zstd-normalization-test.sqlite"))
+            .expect("init test db");
+        let (upstream_base_url, captured_rx, upstream_task) =
+            spawn_capturing_raw_upstream(r#"{"id":"stub-ok","object":"response","output":[]}"#)
+                .await;
+        let provider_id = insert_codex_provider(&db, upstream_base_url);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let plain_body = serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "reasoning": {
+                "effort": "max"
+            },
+            "input": [{
+                "type": "message",
+                "role": "user",
+                "content": [{
+                    "type": "input_text",
+                    "text": "hello"
+                }]
+            }]
+        })
+        .to_string();
+        let compressed_body = zstd_bytes(plain_body.as_bytes());
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/codex/_aio/provider/{provider_id}/v1/responses"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, "zstd")
+            .body(Body::from(compressed_body))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("captured upstream request")
+            .expect("captured request");
+
+        assert!(!captured.has_header_line("content-encoding:"));
+        let captured_json: Value =
+            serde_json::from_slice(&captured.body).expect("captured request JSON");
+        assert_eq!(
+            captured_json.get("model").and_then(Value::as_str),
+            Some("gpt-5.6-sol")
+        );
+        let prompt_cache_key = captured_json
+            .get("prompt_cache_key")
+            .and_then(Value::as_str)
+            .expect("completed prompt cache key");
+        assert!(captured.has_header_line(&format!("session_id: {prompt_cache_key}")));
+        assert!(captured.has_header_line(&format!("x-session-id: {prompt_cache_key}")));
+
+        let request_log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(request_log.status, Some(200));
+        assert_eq!(request_log.requested_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(request_log.session_id.as_deref(), Some(prompt_cache_key));
+        let settings = parse_special_settings(&request_log);
+        let effort = settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("codex_reasoning_effort")
+            })
+            .expect("request reasoning effort setting");
+        assert_eq!(effort.get("effort").and_then(Value::as_str), Some("max"));
+        assert_eq!(
+            effort.get("source").and_then(Value::as_str),
+            Some("request")
+        );
+        assert!(!settings.iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("codex_context_compaction")
+        }));
+        let session_completion = settings
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("codex_session_id_completion")
+            })
+            .expect("session completion setting");
+        assert_eq!(
+            session_completion
+                .get("changedBody")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_normalizes_compressed_codex_compact_request_with_nested_prefix() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let plain_body = serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "input": "compact this context"
+        })
+        .to_string();
+        let (captured, request_log) = run_encoded_codex_route(
+            "gateway-gzip-compact-normalization-test.sqlite",
+            "/nested/openai/v1/responses/compact/",
+            "x-gzip",
+            gzip_bytes(plain_body.as_bytes()),
+            r#"{"id":"stub-compact","object":"response.compaction","output":[]}"#,
+        )
+        .await;
+
+        assert!(!captured.has_header_line("content-encoding:"));
+        assert_eq!(captured.body, plain_body.as_bytes());
+        assert_eq!(request_log.status, Some(200));
+        assert_eq!(request_log.requested_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(request_log.path, "/nested/openai/v1/responses/compact/");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_normalizes_brotli_codex_chat_completions_request() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let plain_body = serde_json::json!({
+            "model": "gpt-5.6-sol",
+            "messages": [{ "role": "user", "content": "hello" }]
+        })
+        .to_string();
+        let (captured, request_log) = run_encoded_codex_route(
+            "gateway-brotli-chat-normalization-test.sqlite",
+            "/v1/chat/completions/",
+            "br",
+            brotli_bytes(plain_body.as_bytes()),
+            r#"{"id":"stub-chat","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+
+        assert!(!captured.has_header_line("content-encoding:"));
+        assert_eq!(captured.body, plain_body.as_bytes());
+        assert_eq!(request_log.status, Some(200));
+        assert_eq!(request_log.requested_model.as_deref(), Some("gpt-5.6-sol"));
+        assert_eq!(request_log.path, "/v1/chat/completions/");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn damaged_codex_encoding_returns_400_without_upstream_attempt() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let sensitive_body =
+            br#"{"model":"gpt-5.6-sol","input":"secret-body-must-not-be-logged"}"#.to_vec();
+        let (status, payload, request_log) = run_rejected_encoded_codex_route(
+            "gateway-invalid-codex-encoding-test.sqlite",
+            "zstd",
+            sensitive_body,
+            None,
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::BAD_REQUEST);
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_INVALID_REQUEST_CONTENT_ENCODING")
+        );
+        let message = payload
+            .get("message")
+            .and_then(Value::as_str)
+            .expect("public error message");
+        assert!(message.contains("Content-Encoding"));
+        assert!(!message.contains("zstd"));
+        assert!(payload
+            .get("attempts")
+            .and_then(Value::as_array)
+            .is_some_and(|attempts| attempts.is_empty()));
+        assert!(!payload
+            .to_string()
+            .contains("secret-body-must-not-be-logged"));
+        assert_eq!(request_log.status, Some(400));
+        assert_eq!(
+            request_log.error_code.as_deref(),
+            Some("GW_INVALID_REQUEST_CONTENT_ENCODING")
+        );
+        assert_eq!(request_log.attempts_json, "[]");
+        assert!(!request_log
+            .error_details_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret-body-must-not-be-logged"));
+        assert!(!request_log
+            .special_settings_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret-body-must-not-be-logged"));
+        assert!(!request_log
+            .provider_chain_json
+            .as_deref()
+            .unwrap_or_default()
+            .contains("secret-body-must-not-be-logged"));
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn oversized_decoded_codex_body_returns_413_without_upstream_attempt() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let plain_body = format!(
+            r#"{{"model":"gpt-5.6-sol","input":"{}"}}"#,
+            "a".repeat(1024 * 1024)
+        );
+        let encoded_body = zstd_bytes(plain_body.as_bytes());
+        assert!(encoded_body.len() < 1024 * 1024);
+        let (status, payload, request_log) = run_rejected_encoded_codex_route(
+            "gateway-oversized-decoded-codex-body-test.sqlite",
+            "zstd",
+            encoded_body,
+            Some("1"),
+        )
+        .await;
+
+        assert_eq!(status, StatusCode::PAYLOAD_TOO_LARGE);
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some("GW_BODY_TOO_LARGE")
+        );
+        assert!(payload
+            .get("attempts")
+            .and_then(Value::as_array)
+            .is_some_and(|attempts| attempts.is_empty()));
+        assert_eq!(request_log.status, Some(413));
+        assert_eq!(request_log.error_code.as_deref(), Some("GW_BODY_TOO_LARGE"));
+        assert_eq!(request_log.attempts_json, "[]");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn gateway_preserves_non_codex_gzip_request_transport() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "grok", true, "http://127.0.0.1:37123")
+            .expect("enable grok cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-grok-gzip-passthrough.sqlite"))
+            .expect("init test db");
+        let (upstream_base_url, captured_rx, upstream_task) = spawn_capturing_raw_upstream(
+            r#"{"id":"stub-chat","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let provider_id =
+            insert_provider_with_priority(&db, "grok", "Grok Gzip Stub", upstream_base_url, 0);
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let plain_body = r#"{"model":"grok-build","messages":[{"role":"user","content":"hello"}]}"#;
+        let encoded_body = gzip_bytes(plain_body.as_bytes());
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/grok/_aio/provider/{provider_id}/v1/chat/completions"
+            ))
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(Body::from(encoded_body.clone()))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("captured upstream request")
+            .expect("captured request");
+        assert!(captured.has_header_line("content-encoding: gzip"));
+        assert_eq!(captured.body, encoded_body);
+        let request_log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(request_log.status, Some(200));
         upstream_task.abort();
     }
 

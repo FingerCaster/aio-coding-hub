@@ -20,6 +20,7 @@ export const GatewayErrorCodes = {
   REQUEST_INTERRUPTED_BY_GATEWAY_STOP: "GW_REQUEST_INTERRUPTED_BY_GATEWAY_STOP",
   INTERNAL_ERROR: "GW_INTERNAL_ERROR",
   BODY_TOO_LARGE: "GW_BODY_TOO_LARGE",
+  INVALID_REQUEST_CONTENT_ENCODING: "GW_INVALID_REQUEST_CONTENT_ENCODING",
   LARGE_BODY_MISSING_MODEL: "GW_LARGE_BODY_MISSING_MODEL",
   MANAGED_MODEL_INVALID: "GW_MANAGED_MODEL_INVALID",
   BRIDGE_UNSUPPORTED_FEATURE: "GW_BRIDGE_UNSUPPORTED_FEATURE",
@@ -66,6 +67,7 @@ const GatewayErrorShortLabels = {
   [GatewayErrorCodes.REQUEST_INTERRUPTED_BY_GATEWAY_STOP]: "网关停止",
   [GatewayErrorCodes.INTERNAL_ERROR]: "内部错误",
   [GatewayErrorCodes.BODY_TOO_LARGE]: "请求过大",
+  [GatewayErrorCodes.INVALID_REQUEST_CONTENT_ENCODING]: "请求编码无效",
   [GatewayErrorCodes.LARGE_BODY_MISSING_MODEL]: "缺少 model",
   [GatewayErrorCodes.MANAGED_MODEL_INVALID]: "受管模型无效",
   [GatewayErrorCodes.BRIDGE_UNSUPPORTED_FEATURE]: "转译不支持",
@@ -164,6 +166,11 @@ export const GatewayErrorDescriptions = {
   GW_BODY_TOO_LARGE: {
     desc: "请求体过大",
     suggestion: "发送的请求内容超过了网关允许的最大尺寸。请减小请求内容。",
+  },
+  GW_INVALID_REQUEST_CONTENT_ENCODING: {
+    desc: "请求体编码无效",
+    suggestion:
+      "Codex 请求使用了网关不支持的 Content-Encoding、损坏的压缩数据或过多编码层。请检查客户端或中间代理的请求压缩设置。",
   },
   GW_LARGE_BODY_MISSING_MODEL: {
     desc: "大请求体缺少 model 字段",

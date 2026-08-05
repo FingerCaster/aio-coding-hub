@@ -7,6 +7,9 @@ Rules for the root application's Rust backend and local gateway runtime.
 - [Gateway attempt budget contract](./gateway-attempt-budget-contract.md):
   per-request provider attempts, reserved internal retries, strict model
   discovery, and cross-request circuit-breaker accounting.
+- [Codex request content-encoding contract](./codex-request-content-encoding-contract.md):
+  bounded decoding at the gateway boundary, supported HTTP encodings, identity
+  forwarding, and local failure classification.
 - [Codex managed model route contract](../cross-layer/codex-managed-model-route-contract.md):
   readable profile aliases plus legacy UUID lookup, complete picker catalog
   lifecycle, one-provider routing, same-provider retry, and terminal
@@ -29,6 +32,13 @@ When changing managed Codex alias routing or model-route detection:
 3. Prove later terminal matched/unobserved evidence cannot leave a stale severe
    mapping from an earlier attempt.
 
+When changing Codex request-body encoding:
+
+1. Read [Codex request content-encoding contract](./codex-request-content-encoding-contract.md).
+2. Keep semantic context compaction separate from HTTP request-body encoding.
+3. Bound every decoded layer and preserve non-Codex transport behavior.
+4. Keep decoding failures before provider selection and circuit accounting.
+
 ## Quality Check
 
 - Unit-test the attempt-budget calculation at its boundary values.
@@ -37,3 +47,5 @@ When changing managed Codex alias routing or model-route detection:
 - Run the full Rust suite after changing shared failover-loop inputs.
 - Route-test managed and ordinary Codex requests together after changing
   provider selection, final wire-model tracking, or response observation.
+- Verify supported Codex encodings arrive upstream as identity JSON, while
+  invalid or oversized encoded bodies make zero upstream attempts.
