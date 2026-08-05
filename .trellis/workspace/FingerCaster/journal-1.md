@@ -859,3 +859,47 @@ Fixed OAuth-compatible proxy projection, provider collision handling, bounded re
 ### Next Steps
 
 - None - task complete
+
+
+## Session 25: 第一组低风险可靠性修复完成
+
+**Date**: 2026-08-05
+**Task**: 第一组低风险可靠性修复完成
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+在独立 Orca worktree 完成五项可靠性修复、全量校验并 fast-forward 合并 main。
+
+### Main Changes
+
+- Provider 路由草稿首次采用当前有效模式，且不覆盖异步加载期间的显式选择。
+- 上游同步改为只创建/更新 PR 并由策略自检禁止直接 push 或自动 merge。
+- 启动初始化支持失败后重试，诊断信息全链路有界脱敏，任务通知以后端活动快照复核。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `d0f58bda` | (see git log) |
+| `8196597e` | (see git log) |
+| `53c37de1` | (see git log) |
+| `e69b4529` | (see git log) |
+| `7d5c8d0b` | (see git log) |
+| `40446f24` | (see git log) |
+| `f1b14bf6` | (see git log) |
+
+### Testing
+
+- [OK] Vitest 302 files / 2697 tests 全部通过；通知最终回归 18/18。
+- [OK] Rust lib 2509 passed / 0 failed / 4 ignored；cargo check、fmt、Clippy、generated bindings 全部通过。
+- [OK] lint、typecheck、pre-commit、同步策略自检、spec links 与 Trellis 76 manifests 全部通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 传输错误重试退避保持独立范围，后续单独设计和授权。
