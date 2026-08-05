@@ -338,7 +338,7 @@ describe("services/providers/providers", () => {
         args: {
           input: expect.objectContaining({
             apiKey: "[REDACTED]",
-            name: "P1",
+            name: "[String length=2]",
             accountUsageCredentials: {
               newApiUserId: "[REDACTED]",
               newApiAccessToken: "[REDACTED]",

@@ -160,6 +160,40 @@ describe("services/consoleLog", () => {
     expect(details.hugeObject.__truncated_keys).toBe("[Truncated]");
   });
 
+  it("removes secrets from free text, URLs, circular values, and throwing getters", async () => {
+    const { clearConsoleLogs, logToConsole, setConsoleLogMinLevel, useConsoleLogs } =
+      await importFreshConsoleLog();
+    const secret = `sentinel-${crypto.randomUUID().replace(/-/g, "")}`;
+    const details: Record<string, unknown> = {
+      message: `Authorization: Bearer ${secret}`,
+      password: secret,
+      href: `https://example.test/path?token=${secret}#${secret}`,
+      safe: "ordinary diagnostic",
+    };
+    details.self = details;
+    Object.defineProperty(details, "throwing", {
+      enumerable: true,
+      get() {
+        throw new Error(secret);
+      },
+    });
+
+    clearConsoleLogs();
+    setConsoleLogMinLevel("debug");
+    const { result } = renderHook(() => useConsoleLogs());
+
+    act(() => logToConsole("error", "sentinel test", details));
+    await waitFor(() => expect(result.current).toHaveLength(1));
+
+    const serialized = JSON.stringify(result.current[0]);
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("[REDACTED]");
+    expect(serialized).toContain("[Circular]");
+    expect(serialized).toContain("[REDACTION_FAILED]");
+    expect(serialized).toContain("https://example.test/path");
+    expect(serialized).toContain("ordinary diagnostic");
+  });
+
   it("uses requestAnimationFrame when scheduling log updates", async () => {
     const originalRequestAnimationFrame = window.requestAnimationFrame;
     const requestAnimationFrameMock = vi.fn((callback: FrameRequestCallback) => {

@@ -399,7 +399,7 @@ describe("services/gateway/gateway", () => {
         args: {
           input: {
             proxyUrl: "http://127.0.0.1:7890",
-            proxyUsername: "proxy-user",
+            proxyUsername: "[String length=10]",
             proxyPassword: "[REDACTED]",
           },
         },

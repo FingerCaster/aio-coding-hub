@@ -1,4 +1,9 @@
 import { commands, type FrontendErrorReportInput } from "../../generated/bindings";
+import {
+  redactDiagnosticJsonText,
+  redactDiagnosticText,
+  sanitizeDiagnosticUrl,
+} from "../diagnosticRedaction";
 import { invokeGeneratedIpc, type GeneratedCommandResult } from "../generatedIpc";
 
 export type { FrontendErrorReportInput };
@@ -29,7 +34,7 @@ function normalizeRequiredReportText(value: string, label: string, maxChars: num
   if (!normalized) {
     throw new Error(`SEC_INVALID_INPUT: ${label} is required`);
   }
-  return truncateChars(normalized, maxChars);
+  return truncateChars(redactDiagnosticText(normalized, maxChars), maxChars);
 }
 
 function normalizeOptionalReportText(
@@ -39,7 +44,7 @@ function normalizeOptionalReportText(
   if (value == null) return null;
   const normalized = value.trim();
   if (!normalized) return null;
-  return truncateChars(normalized, maxChars);
+  return truncateChars(redactDiagnosticText(normalized, maxChars), maxChars);
 }
 
 export function normalizeFrontendErrorReportInput(
@@ -53,8 +58,11 @@ export function normalizeFrontendErrorReportInput(
       FRONTEND_ERROR_MESSAGE_MAX_CHARS
     ),
     stack: normalizeOptionalReportText(input.stack, FRONTEND_ERROR_STACK_MAX_CHARS),
-    detailsJson: normalizeOptionalReportText(input.detailsJson, FRONTEND_ERROR_DETAILS_MAX_CHARS),
-    href: normalizeOptionalReportText(input.href, FRONTEND_ERROR_HREF_MAX_CHARS),
+    detailsJson:
+      input.detailsJson == null || !input.detailsJson.trim()
+        ? null
+        : redactDiagnosticJsonText(input.detailsJson, FRONTEND_ERROR_DETAILS_MAX_CHARS),
+    href: sanitizeDiagnosticUrl(input.href, FRONTEND_ERROR_HREF_MAX_CHARS),
     userAgent: normalizeOptionalReportText(input.userAgent, FRONTEND_ERROR_USER_AGENT_MAX_CHARS),
   };
 }

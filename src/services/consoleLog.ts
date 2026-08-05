@@ -1,6 +1,7 @@
 import { useSyncExternalStore } from "react";
 import { GatewayErrorDescriptions, type GatewayErrorCode } from "../constants/gatewayErrorCodes";
 import { gatewayEventNames } from "../constants/gatewayEvents";
+import { redactDiagnosticValue } from "./diagnosticRedaction";
 
 export const CONSOLE_LOG_LEVELS = ["debug", "info", "warn", "error"] as const;
 
@@ -132,72 +133,16 @@ function formatTsText(ts: number) {
   )}:${pad2(date.getMinutes())}:${pad2(date.getSeconds())}`;
 }
 
-function isSensitiveKey(key: string): boolean {
-  const k = key.toLowerCase();
-  return (
-    k.includes("api_key") ||
-    k.includes("apikey") ||
-    k.includes("base_url") ||
-    k.includes("baseurl") ||
-    k.includes("base_origin") ||
-    k.includes("baseorigin") ||
-    k.includes("authorization") ||
-    k === "token" ||
-    k.endsWith("_token") ||
-    k.endsWith("token")
-  );
-}
-
-function sanitizeDetails(value: unknown, seen: WeakSet<object>, depth: number): unknown {
-  if (value === null) return value;
-  if (depth > 6) return "[Truncated]";
-
-  if (typeof value === "string") return truncateDetailString(value);
-  if (typeof value !== "object") return value;
-  if (seen.has(value)) return "[Circular]";
-  seen.add(value);
-
-  if (Array.isArray(value)) {
-    const out = value
-      .slice(0, MAX_DETAIL_ARRAY_ITEMS)
-      .map((item) => sanitizeDetails(item, seen, depth + 1));
-    if (value.length > MAX_DETAIL_ARRAY_ITEMS) {
-      out.push(`[Truncated ${value.length - MAX_DETAIL_ARRAY_ITEMS} items]`);
-    }
-    return out;
-  }
-
-  const input = value as Record<string, unknown>;
-  const out: Record<string, unknown> = {};
-  let copied = 0;
-
-  for (const k in input) {
-    if (!Object.prototype.hasOwnProperty.call(input, k)) continue;
-    if (copied >= MAX_DETAIL_OBJECT_KEYS) {
-      out.__truncated_keys = "[Truncated]";
-      break;
-    }
-    const v = input[k];
-    out[k] = isSensitiveKey(k) ? "[REDACTED]" : sanitizeDetails(v, seen, depth + 1);
-    copied += 1;
-  }
-
-  return out;
-}
-
-function truncateDetailString(value: string): string {
-  if (value.length <= MAX_DETAIL_STRING_CHARS) return value;
-  return `${value.slice(0, MAX_DETAIL_STRING_CHARS)}[Truncated]`;
-}
-
 function redactDetails(value: unknown): unknown | undefined {
   if (value === undefined) return undefined;
-  if (typeof value === "string") return truncateDetailString(value);
-  try {
-    return sanitizeDetails(value, new WeakSet(), 0);
-  } catch {
-    return String(value);
-  }
+  return redactDiagnosticValue(value, {
+    maxDepth: 6,
+    maxArrayItems: MAX_DETAIL_ARRAY_ITEMS,
+    maxObjectKeys: MAX_DETAIL_OBJECT_KEYS,
+    maxStringChars: MAX_DETAIL_STRING_CHARS,
+    objectTruncationKey: "__truncated_keys",
+    objectTruncationValue: "[Truncated]",
+  });
 }
 
 export function formatConsoleLogDetails(details: unknown): string | undefined {

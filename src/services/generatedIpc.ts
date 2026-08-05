@@ -1,5 +1,6 @@
 import { formatUnknownError } from "../utils/errors";
 import { logToConsole } from "./consoleLog";
+import { redactDiagnosticText, redactDiagnosticValue } from "./diagnosticRedaction";
 
 export type GeneratedCommandResult<T> =
   | { status: "ok"; data: T | null | undefined }
@@ -16,80 +17,19 @@ type InvokeGeneratedIpcOptions<T> = {
   nullResultBehavior?: "throw" | "return_fallback";
 };
 
-const LOG_PAYLOAD_MAX_DEPTH = 6;
-const LOG_PAYLOAD_MAX_ARRAY_ITEMS = 50;
-const LOG_PAYLOAD_MAX_OBJECT_KEYS = 50;
 const LOG_PAYLOAD_MAX_STRING_CHARS = 2048;
-
-function isSensitiveLogKey(key: string): boolean {
-  const normalized = key.toLowerCase();
-  const compact = normalized.replace(/[^a-z0-9]/g, "");
-  return (
-    normalized.includes("api_key") ||
-    normalized.includes("apikey") ||
-    normalized.includes("access_token") ||
-    normalized.includes("refreshtoken") ||
-    normalized.includes("refresh_token") ||
-    normalized.includes("authorization") ||
-    normalized === "token" ||
-    normalized.endsWith("_token") ||
-    normalized.endsWith("token") ||
-    normalized.includes("secret") ||
-    normalized.includes("password") ||
-    compact === "flowid" ||
-    compact === "devicecode" ||
-    compact === "usercode" ||
-    compact === "codeverifier" ||
-    compact === "nonce" ||
-    compact.includes("capability")
-  );
-}
-
-function truncateLogString(value: string): string {
-  if (value.length <= LOG_PAYLOAD_MAX_STRING_CHARS) return value;
-  return `${value.slice(0, LOG_PAYLOAD_MAX_STRING_CHARS)}[Truncated ${
-    value.length - LOG_PAYLOAD_MAX_STRING_CHARS
-  } chars]`;
-}
-
-function redactLogPayload(value: unknown, seen: WeakSet<object>, depth: number): unknown {
-  if (value == null) return value;
-  if (typeof value === "string") return truncateLogString(value);
-  if (depth > LOG_PAYLOAD_MAX_DEPTH) return "[Truncated]";
-  if (typeof value !== "object") return value;
-  if (seen.has(value)) return "[Circular]";
-
-  seen.add(value);
-
-  if (Array.isArray(value)) {
-    const items = value
-      .slice(0, LOG_PAYLOAD_MAX_ARRAY_ITEMS)
-      .map((item) => redactLogPayload(item, seen, depth + 1));
-    if (value.length > LOG_PAYLOAD_MAX_ARRAY_ITEMS) {
-      items.push(`[Truncated ${value.length - LOG_PAYLOAD_MAX_ARRAY_ITEMS} items]`);
-    }
-    return items;
-  }
-
-  const record = value as Record<string, unknown>;
-  const output: Record<string, unknown> = {};
-  const entries = Object.entries(record);
-  for (const [key, item] of entries.slice(0, LOG_PAYLOAD_MAX_OBJECT_KEYS)) {
-    output[key] = isSensitiveLogKey(key) ? "[REDACTED]" : redactLogPayload(item, seen, depth + 1);
-  }
-  if (entries.length > LOG_PAYLOAD_MAX_OBJECT_KEYS) {
-    output.__truncated__ = `${entries.length - LOG_PAYLOAD_MAX_OBJECT_KEYS} keys truncated`;
-  }
-  return output;
-}
 
 function sanitizeLogArgs(value: Record<string, unknown> | undefined) {
   if (value === undefined) return undefined;
-  try {
-    return redactLogPayload(value, new WeakSet(), 0) as Record<string, unknown>;
-  } catch {
-    return { error: "LOG_ARG_REDACTION_FAILED" };
-  }
+  return redactDiagnosticValue(value, {
+    maxDepth: 6,
+    maxArrayItems: 50,
+    maxObjectKeys: 50,
+    maxStringChars: LOG_PAYLOAD_MAX_STRING_CHARS,
+    stringMode: "metadata",
+    objectTruncationKey: "__truncated__",
+    objectTruncationValue: (omittedKeys) => `${omittedKeys} keys truncated`,
+  }) as Record<string, unknown>;
 }
 
 function generatedCommandError(cmd: string, error: unknown) {
@@ -100,39 +40,32 @@ function generatedCommandError(cmd: string, error: unknown) {
   return wrapped;
 }
 
-function sanitizeSensitiveErrorText(value: string): string {
-  return value
-    .replace(/SYNTHETIC_SECRET/gi, "[REDACTED]")
-    .replace(
-      /(["']?(?:flow_?id|device_?code|user_?code|code_?verifier|nonce|[a-z0-9_-]*capability[a-z0-9_-]*)["']?\s*:\s*["'])([^"']*)(["'])/gi,
-      "$1[REDACTED]$3"
-    )
-    .replace(
-      /(flow_?id|device_?code|user_?code|code_?verifier|nonce|[a-z0-9_-]*capability[a-z0-9_-]*)\s*[:=]\s*\S+/gi,
-      "$1=[REDACTED]"
-    )
-    .slice(0, LOG_PAYLOAD_MAX_STRING_CHARS);
-}
-
 function sanitizeLogError(error: unknown): string {
   let source = error;
   if (error instanceof Error) {
-    source = (error as Error & { cause?: unknown }).cause ?? error.message;
+    try {
+      source = (error as Error & { cause?: unknown }).cause ?? error.message;
+    } catch {
+      return "[REDACTION_FAILED]";
+    }
   }
   if (typeof source === "string") {
     const stringSource = source;
     try {
       source = JSON.parse(stringSource) as unknown;
     } catch {
-      return sanitizeSensitiveErrorText(stringSource);
+      return redactDiagnosticText(stringSource, LOG_PAYLOAD_MAX_STRING_CHARS);
     }
   }
-  try {
-    const redacted = redactLogPayload(source, new WeakSet(), 0);
-    return sanitizeSensitiveErrorText(formatUnknownError(redacted));
-  } catch {
-    return "LOG_ERROR_REDACTION_FAILED";
-  }
+  const redacted = redactDiagnosticValue(source, {
+    maxDepth: 6,
+    maxArrayItems: 50,
+    maxObjectKeys: 50,
+    maxStringChars: LOG_PAYLOAD_MAX_STRING_CHARS,
+    objectTruncationKey: "__truncated__",
+    objectTruncationValue: (omittedKeys) => `${omittedKeys} keys truncated`,
+  });
+  return redactDiagnosticText(formatUnknownError(redacted), LOG_PAYLOAD_MAX_STRING_CHARS);
 }
 
 function isGeneratedCommandResult<T>(value: unknown): value is GeneratedCommandResult<T> {

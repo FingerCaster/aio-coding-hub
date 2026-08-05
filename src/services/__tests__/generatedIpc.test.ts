@@ -102,7 +102,7 @@ describe("services/generatedIpc", () => {
           nonce: "[REDACTED]",
           nested: {
             refreshToken: "[REDACTED]",
-            safe: "ok",
+            safe: "[String length=2]",
           },
         },
       },
@@ -149,9 +149,9 @@ describe("services/generatedIpc", () => {
     expect(loggedDetails.args.input.apiKey).toBe("[REDACTED]");
     expect(loggedDetails.args.input.items).toHaveLength(51);
     expect(loggedDetails.args.input.items[0]).toMatchObject({
-      label: "item-0",
+      label: "[String length=6]",
       token: "[REDACTED]",
-      text: expect.stringContaining("[Truncated"),
+      text: "[String length=3000]",
     });
     expect(loggedDetails.args.input.items[loggedDetails.args.input.items.length - 1]).toBe(
       "[Truncated 30 items]"
@@ -162,6 +162,54 @@ describe("services/generatedIpc", () => {
     expect(loggedDetails.args.input.wide.k00).toBe(0);
     expect(loggedDetails.args.input.wide.k79).toBeUndefined();
     expect(loggedDetails.args.input.wide.__truncated__).toBe("30 keys truncated");
+  });
+
+  it.each(["text", "content", "toml", "requestJson"])(
+    "summarizes opaque %s args without changing the thrown error",
+    async (key) => {
+      const secret = `sentinel-${crypto.randomUUID().replace(/-/g, "")}`;
+      const original = new Error(`Authorization: Bearer ${secret}`);
+      const promise = invokeGeneratedIpc({
+        title: "原始输入失败",
+        cmd: "opaque_input",
+        args: { [key]: secret, source: "codex" },
+        invoke: async () => {
+          throw original;
+        },
+      });
+
+      await expect(promise).rejects.toBe(original);
+
+      const calls = vi.mocked(logToConsole).mock.calls;
+      const logged = JSON.stringify(calls[calls.length - 1]);
+      expect(logged).not.toContain(secret);
+      expect(logged).toContain(`[String length=${secret.length}]`);
+      expect(logged).toContain("[REDACTED]");
+    }
+  );
+
+  it("preserves the original error when diagnostic getters throw", async () => {
+    const secret = `sentinel-${crypto.randomUUID().replace(/-/g, "")}`;
+    const original = new Error("original failure");
+    Object.defineProperty(original, "cause", {
+      get() {
+        throw new Error(secret);
+      },
+    });
+
+    const promise = invokeGeneratedIpc({
+      title: "诊断失败",
+      cmd: "hostile_error",
+      invoke: async () => {
+        throw original;
+      },
+    });
+
+    await expect(promise).rejects.toBe(original);
+    const calls = vi.mocked(logToConsole).mock.calls;
+    const logged = JSON.stringify(calls[calls.length - 1]);
+    expect(logged).not.toContain(secret);
+    expect(logged).toContain("[REDACTION_FAILED]");
   });
 
   it("supports null-result fallback for commands that legitimately return null", async () => {

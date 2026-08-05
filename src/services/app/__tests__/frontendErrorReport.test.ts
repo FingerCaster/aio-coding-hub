@@ -56,7 +56,7 @@ describe("services/app/frontendErrorReport", () => {
       message: "boom",
       stack: "stack",
       detailsJson: null,
-      href: "http://localhost/#/",
+      href: "http://localhost/",
       userAgent: "test-agent",
     });
   });
@@ -67,7 +67,7 @@ describe("services/app/frontendErrorReport", () => {
       message: "m".repeat(FRONTEND_ERROR_MESSAGE_MAX_CHARS + 10),
       stack: null,
       detailsJson: null,
-      href: "h".repeat(FRONTEND_ERROR_HREF_MAX_CHARS + 10),
+      href: `https://example.test/${"h".repeat(FRONTEND_ERROR_HREF_MAX_CHARS + 10)}`,
       userAgent: null,
     });
 
@@ -99,6 +99,22 @@ describe("services/app/frontendErrorReport", () => {
     ).rejects.toThrow("SEC_INVALID_INPUT");
 
     expect(commands.appFrontendErrorReport).not.toHaveBeenCalled();
+  });
+
+  it("redacts every native-bound text field and strips href secrets", () => {
+    const secret = `sentinel-${crypto.randomUUID().replace(/-/g, "")}`;
+    const normalized = normalizeFrontendErrorReportInput({
+      source: "error",
+      message: `Authorization: Bearer ${secret}`,
+      stack: `api_key=${secret}`,
+      detailsJson: JSON.stringify({ password: secret }),
+      href: `https://user:${secret}@example.test/path?token=${secret}#${secret}`,
+      userAgent: `agent secret=${secret}`,
+    });
+
+    expect(JSON.stringify(normalized)).not.toContain(secret);
+    expect(JSON.stringify(normalized)).toContain("[REDACTED]");
+    expect(normalized.href).toBe("https://example.test/path");
   });
 
   it("rethrows invoke errors and logs", async () => {

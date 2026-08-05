@@ -1,5 +1,10 @@
 import { logToConsole } from "./consoleLog";
 import { appFrontendErrorReport, type FrontendErrorReportInput } from "./app/frontendErrorReport";
+import {
+  redactDiagnosticText,
+  redactDiagnosticValue,
+  sanitizeDiagnosticUrl,
+} from "./diagnosticRedaction";
 
 type FrontendErrorSource = "error" | "unhandledrejection" | "render";
 
@@ -35,7 +40,13 @@ function truncateText(value: string, max: number): string {
 
 function safeToString(value: unknown): string {
   if (typeof value === "string") return value;
-  if (value instanceof Error) return value.message || String(value);
+  if (value instanceof Error) {
+    try {
+      return value.message || String(value);
+    } catch {
+      return "[unreadable error]";
+    }
+  }
   try {
     return String(value);
   } catch {
@@ -43,9 +54,17 @@ function safeToString(value: unknown): string {
   }
 }
 
+function safeErrorField(error: Error, field: "message" | "stack"): unknown {
+  try {
+    return error[field];
+  } catch {
+    return null;
+  }
+}
+
 function safeJson(value: unknown, maxLength = MAX_JSON_LENGTH): string | null {
   try {
-    const text = JSON.stringify(value);
+    const text = JSON.stringify(redactDiagnosticValue(value, { maxStringChars: maxLength }));
     if (!text) return null;
     return truncateText(text, maxLength);
   } catch {
@@ -57,7 +76,7 @@ function normalizeStack(value: unknown): string | null {
   if (typeof value !== "string") return null;
   const trimmed = value.trim();
   if (!trimmed) return null;
-  return truncateText(trimmed, MAX_STACK_LENGTH);
+  return redactDiagnosticText(trimmed, MAX_STACK_LENGTH);
 }
 
 function makeDedupKey(payload: FrontendErrorPayload): string {
@@ -129,19 +148,24 @@ async function send(payload: FrontendErrorPayload): Promise<void> {
 function normalizeMessage(value: unknown): string {
   const text = safeToString(value).trim();
   if (!text) return "Unknown frontend error";
-  return truncateText(text, MAX_MESSAGE_LENGTH);
+  return redactDiagnosticText(text, MAX_MESSAGE_LENGTH);
 }
 
 function buildSharedMeta() {
   return {
-    href: typeof location !== "undefined" ? location.href : null,
-    userAgent: typeof navigator !== "undefined" ? navigator.userAgent : null,
+    href: typeof location !== "undefined" ? sanitizeDiagnosticUrl(location.href) : null,
+    userAgent:
+      typeof navigator !== "undefined"
+        ? redactDiagnosticText(navigator.userAgent, MAX_MESSAGE_LENGTH)
+        : null,
   };
 }
 
 function reportWindowError(event: ErrorEvent) {
   const message = normalizeMessage(event.message || event.error);
-  const stack = normalizeStack(event.error instanceof Error ? event.error.stack : null);
+  const stack = normalizeStack(
+    event.error instanceof Error ? safeErrorField(event.error, "stack") : null
+  );
   const details = safeJson({
     filename: event.filename || null,
     lineno: event.lineno || null,
@@ -159,11 +183,13 @@ function reportWindowError(event: ErrorEvent) {
 
 function reportUnhandledRejection(event: PromiseRejectionEvent) {
   const reason = event.reason;
-  const message = normalizeMessage(reason instanceof Error ? reason.message : reason);
-  const stack = normalizeStack(reason instanceof Error ? reason.stack : null);
+  const message = normalizeMessage(
+    reason instanceof Error ? safeErrorField(reason, "message") : reason
+  );
+  const stack = normalizeStack(reason instanceof Error ? safeErrorField(reason, "stack") : null);
   const details = safeJson({
     reason_type: typeof reason,
-    reason: reason instanceof Error ? reason.message : safeToString(reason),
+    reason: reason instanceof Error ? safeErrorField(reason, "message") : safeToString(reason),
   });
 
   void send({
@@ -176,8 +202,10 @@ function reportUnhandledRejection(event: PromiseRejectionEvent) {
 }
 
 export function reportRenderError(error: unknown, errorInfo?: { componentStack?: string }) {
-  const message = normalizeMessage(error instanceof Error ? error.message : error);
-  const stack = normalizeStack(error instanceof Error ? error.stack : null);
+  const message = normalizeMessage(
+    error instanceof Error ? safeErrorField(error, "message") : error
+  );
+  const stack = normalizeStack(error instanceof Error ? safeErrorField(error, "stack") : null);
   const details = safeJson({
     component_stack: errorInfo?.componentStack ?? null,
   });

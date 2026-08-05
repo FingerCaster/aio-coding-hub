@@ -332,7 +332,74 @@ describe("services/frontendErrorReporter", () => {
 
     expect(invokeCalls).toHaveLength(1);
     const payload = invokeCalls[0][0] as Record<string, unknown>;
-    expect(payload.href).toBe("http://localhost/#/");
+    expect(payload.href).toBe("http://localhost/");
     expect(payload.userAgent).toBe("test-agent");
+  });
+
+  it("redacts rejection diagnostics and strips href query and hash", async () => {
+    if (typeof globalThis.PromiseRejectionEvent === "undefined") {
+      (globalThis as any).PromiseRejectionEvent = class extends Event {
+        readonly reason: unknown;
+        readonly promise: Promise<unknown>;
+        constructor(type: string, init: { reason?: unknown; promise: Promise<unknown> }) {
+          super(type);
+          this.reason = init.reason;
+          this.promise = init.promise;
+        }
+      };
+    }
+
+    const secret = `sentinel-${crypto.randomUUID().replace(/-/g, "")}`;
+    Object.defineProperty(window, "location", {
+      configurable: true,
+      value: {
+        href: `https://example.test/console?token=${secret}#${secret}`,
+      },
+    });
+    const mod = await import("../frontendErrorReporter");
+    mod.__testResetFrontendErrorReporterState();
+    mod.installGlobalErrorReporting();
+
+    const error = new Error(`Authorization: Bearer ${secret}`);
+    window.dispatchEvent(
+      new PromiseRejectionEvent("unhandledrejection", {
+        reason: error,
+        promise: Promise.reject(error).catch(() => {}),
+      })
+    );
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const serialized = JSON.stringify({ invokeCalls, logToConsoleCalls });
+    expect(serialized).not.toContain(secret);
+    expect(serialized).toContain("[REDACTED]");
+    expect(invokeCalls[0]?.[0]).toEqual(
+      expect.objectContaining({ href: "https://example.test/console" })
+    );
+  });
+
+  it("does not throw when render error fields have hostile getters", async () => {
+    const secret = `sentinel-${crypto.randomUUID().replace(/-/g, "")}`;
+    const error = new Error("hidden");
+    Object.defineProperties(error, {
+      message: {
+        get() {
+          throw new Error(secret);
+        },
+      },
+      stack: {
+        get() {
+          throw new Error(secret);
+        },
+      },
+    });
+    const mod = await import("../frontendErrorReporter");
+    mod.__testResetFrontendErrorReporterState();
+
+    expect(() => mod.reportRenderError(error)).not.toThrow();
+    await new Promise((resolve) => setTimeout(resolve, 0));
+
+    const serialized = JSON.stringify({ invokeCalls, logToConsoleCalls });
+    expect(serialized).not.toContain(secret);
+    expect(invokeCalls).toHaveLength(1);
   });
 });
