@@ -903,3 +903,51 @@ Fixed OAuth-compatible proxy projection, provider collision handling, bounded re
 ### Next Steps
 
 - 传输错误重试退避保持独立范围，后续单独设计和授权。
+
+
+## Session 26: 完成上游错误处理与统一设置入口
+
+**Date**: 2026-08-05
+**Task**: 完成上游错误处理与统一设置入口
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/upstream-error-handling`
+
+### Summary
+
+在独立 worktree 完成最终 HTTP 错误改写、Codex SSE 流内恢复、统一分段设置入口、跨层合同和三层 Trellis 归档。
+
+### Main Changes
+
+- 最终 HTTP 4xx/5xx 仅在重试、切换、额度、冷却和熔断完成后按独立规则改写。
+- Codex 原生 Responses SSE 在下游提交前以共享预算和退避恢复可重试流内错误。
+- 通用设置新增统一上游错误处理入口，重试与改写模式及保存语义隔离。
+- 清理 12 个 Trellis 文档/jsonl 的 EOF 多余空行并归档父子任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `215b00c6` | (see git log) |
+| `88673001` | (see git log) |
+| `d884f830` | (see git log) |
+| `636fdd04` | (see git log) |
+| `6c515332` | (see git log) |
+| `aee00a24` | (see git log) |
+| `a9dc6d14` | (see git log) |
+| `37170bfe` | (see git log) |
+| `8ed45bcd` | (see git log) |
+| `402edac2` | (see git log) |
+
+### Testing
+
+- [OK] 前端 303 个测试文件、2714 项测试通过；typecheck、lint、build、generated bindings、spec links 通过。
+- [OK] Rust 2580 passed、0 failed、4 ignored；fmt、check、严格 Clippy 通过。
+- [OK] git diff --check 12e565c0..HEAD 通过；Trellis 82 个 manifests 全部有效。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 主会话审查提交序列后按需整合；本 worktree 不 merge、不 push、不发布。

@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 25
+- **Total Sessions**: 26
 - **Last Active**: 2026-08-05
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~905 | Active |
+| `journal-1.md` | ~953 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 26 | 2026-08-05 | 完成上游错误处理与统一设置入口 | `215b00c6`, `88673001`, `d884f830`, `636fdd04`, `6c515332`, `aee00a24`, `a9dc6d14`, `37170bfe`, `8ed45bcd`, `402edac2` | `FingerCaster/upstream-error-handling` |
 | 25 | 2026-08-05 | 第一组低风险可靠性修复完成 | `d0f58bda`, `8196597e`, `53c37de1`, `e69b4529`, `7d5c8d0b`, `40446f24`, `f1b14bf6` | `main` |
 | 24 | 2026-08-04 | 完成熔断试探与供应商回切策略 | `74132d59` | `FingerCaster/circuit-probe-impl` |
 | 23 | 2026-07-31 | 修复供应商删除残留与决策链身份展示 | `45691b89`, `b30b8a72` | `FingerCaster/fix-provider-delete-log-display` |
