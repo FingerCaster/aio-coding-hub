@@ -1949,11 +1949,61 @@ mod tests {
     }
 
     #[test]
-    fn buffered_native_stream_forwards_nonretry_and_unknown_terminal_errors() {
-        for message in ["content policy rejected", "unrecognized terminal failure"] {
-            let raw = format!(
-                "event: response.failed\ndata: {{\"error\":{{\"message\":{message:?}}}}}\n\n"
+    fn buffered_native_stream_retries_builtin_capacity_codes_before_commit() {
+        let cases = [
+            (
+                "response.failed",
+                r#"{"type":"response.failed","error":{"code":"SERVER_IS_OVERLOADED"}}"#,
+                "SERVER_IS_OVERLOADED",
+            ),
+            (
+                "response.error",
+                r#"{"type":"response.error","response":{"error":{"code":"SlOw_DoWn"}}}"#,
+                "SlOw_DoWn",
+            ),
+            (
+                "error",
+                r#"{"type":"error","code":"server_is_overloaded"}"#,
+                "server_is_overloaded",
+            ),
+        ];
+
+        for (event_name, data, expected_code) in cases {
+            let raw = format!("event: {event_name}\ndata: {data}\n\n");
+            let mut state = BufferedStreamPrefixState::default();
+            let decision = inspect_buffered_event_stream_prefix(
+                &native_prefix_config(
+                    &crate::settings::UpstreamRetryPolicy::default(),
+                    Duration::from_millis(500),
+                ),
+                &mut state,
+                raw.as_bytes(),
             );
+
+            match decision {
+                BufferedStreamPrefixDecision::ProviderFailure {
+                    error_code,
+                    evidence: Some(evidence),
+                } => {
+                    assert_eq!(error_code, "GW_FAKE_200");
+                    assert_eq!(evidence.classification, "retryable");
+                    assert_eq!(evidence.error_code.as_deref(), Some(expected_code));
+                    assert!(evidence.matched_keyword.is_none());
+                }
+                _ => panic!("built-in capacity code should be retried before commit"),
+            }
+        }
+    }
+
+    #[test]
+    fn buffered_native_stream_forwards_nonretry_and_unknown_terminal_errors() {
+        let terminal_errors = [
+            r#"{"error":{"message":"content policy rejected"}}"#,
+            r#"{"error":{"message":"unrecognized terminal failure"}}"#,
+            r#"{"error":{"code":"service_unavailable_error"}}"#,
+        ];
+        for data in terminal_errors {
+            let raw = format!("event: response.failed\ndata: {data}\n\n");
             let mut state = BufferedStreamPrefixState::default();
             assert!(matches!(
                 inspect_buffered_event_stream_prefix(
@@ -1976,7 +2026,7 @@ mod tests {
         let disabled_policy = crate::settings::UpstreamRetryPolicy {
             enabled: false,
             stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
-                enabled: false,
+                enabled: true,
                 ..Default::default()
             },
             ..Default::default()
@@ -1985,7 +2035,7 @@ mod tests {
         let decision = inspect_buffered_event_stream_prefix(
             &native_prefix_config(&disabled_policy, Duration::from_millis(500)),
             &mut state,
-            b"event: response.failed\ndata: {\"error\":{\"message\":\"Selected model is at capacity\"}}\n\n",
+            b"event: response.failed\ndata: {\"response\":{\"error\":{\"code\":\"SLOW_DOWN\"}}}\n\n",
         );
 
         match decision {
@@ -1995,6 +2045,7 @@ mod tests {
             } => {
                 assert_eq!(error_code, "GW_FAKE_200");
                 assert_eq!(evidence.classification, "disabled");
+                assert_eq!(evidence.error_code.as_deref(), Some("SLOW_DOWN"));
                 assert_eq!(evidence.disposition, "buffered_before_commit");
             }
             _ => panic!("capacity terminal event must not reach Codex when retries are disabled"),

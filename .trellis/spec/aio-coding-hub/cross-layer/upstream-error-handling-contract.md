@@ -43,13 +43,15 @@ but they remain separate persisted schemas and execute at different phases.
   is capped at 1 MiB per request.
 - Before downstream commit, a retry-keyword match may discard the buffered
   prefix and enter the configured retry engine. Positive retry keywords win
-  over non-retry keywords; matching is case-insensitive literal text. A
-  terminal `selected model is at capacity` match is always intercepted before
-  commit even when configured retries are disabled: enabled matching may retry,
-  while disabled matching switches Provider directly. At guard expiry or
-  buffer cap, or after downstream commit, preserve the original SSE without
-  splicing output from another attempt. Buffer-cap release is diagnostic and
-  is not a Provider failure.
+  over non-retry keywords; matching is case-insensitive literal text. Terminal
+  capacity signals are always intercepted before commit even when configured
+  retries are disabled: the legacy `selected model is at capacity` text and
+  Codex protocol codes `server_is_overloaded` / `slow_down` are built-in
+  capacity aliases. With stream retry enabled, those built-in codes are
+  retryable without a user-entered keyword; when retry is disabled, they switch
+  Provider directly. At guard expiry or buffer cap, or after downstream commit,
+  preserve the original SSE without splicing output from another attempt.
+  Buffer-cap release is diagnostic and is not a Provider failure.
 - If all Providers fail on retryable pre-commit stream errors, return the
   existing standard HTTP 502 / `GW_FAKE_200` terminal envelope instead of the
   original HTTP 200 capacity stream. Client-facing verbose attempts must remove
@@ -90,7 +92,7 @@ but they remain separate persisted schemas and execute at different phases.
 | Final HTTP 4xx/5xx matches rewrite | Rewrite only the client envelope/status; keep upstream attempt status |
 | Transport failure or HTTP 200 SSE error | Never evaluate final HTTP rewrite rules |
 | Retryable Codex error before commit | Discard buffer and use the shared configured retry budget/backoff |
-| Capacity error before commit with retry disabled | Do not forward SSE; switch Provider, then return gateway 502 if exhausted |
+| Capacity text or `server_is_overloaded` / `slow_down` before commit with retry disabled | Do not forward SSE; switch Provider, then return gateway 502 if exhausted |
 | Codex error after commit, guard expiry, or cap | Forward one original SSE stream; never splice attempts |
 | All Providers end in retryable capacity streams | Return standard 502 / fake-200 envelope; keep evidence internal and remove capacity text from client diagnostics |
 | Rule/evidence parsing fails | Preserve existing behavior without leaking raw content |
@@ -98,12 +100,13 @@ but they remain separate persisted schemas and execute at different phases.
 
 ### 5. Good / Base / Bad Cases
 
-- Good: an early capacity frame retries or switches, a later Provider succeeds,
-  and no capacity text reaches the client.
+- Good: an early capacity text or protocol-code frame retries or switches, a
+  later Provider succeeds, and no capacity text reaches the client.
 - Base: all Providers return early capacity frames; the client receives the
   standard `502/GW_FAKE_200` envelope and logs retain bounded evidence.
-- Bad: disabling stream retries forwards the original capacity SSE, or verbose
-  client attempts serialize the retained capacity message/matched keyword.
+- Bad: disabling stream retries forwards the original capacity SSE, a
+  `server_is_overloaded` code requires a UI keyword entry, or verbose client
+  attempts serialize the retained capacity message/matched keyword.
 
 ### 6. Tests Required
 
@@ -114,10 +117,11 @@ but they remain separate persisted schemas and execute at different phases.
   multi-Provider failure, transport exclusion, protocol envelopes, safe headers,
   client/attempt status separation, probe finalization, and fake-200.
 - Native Codex route tests cover exact path/bridge gating, event and data types,
-  evidence redaction, positive-keyword precedence, unknown/non-retry forwarding,
-  pre-commit retry success, retry-disabled capacity interception, client
-  diagnostic sanitization, all-Provider failure, guard expiry, 1 MiB cap, and
-  downstream-commit behavior.
+  evidence redaction, positive-keyword precedence, built-in
+  `server_is_overloaded` / `slow_down` aliases across known envelopes,
+  unknown/non-retry forwarding, pre-commit retry success, retry-disabled
+  capacity interception, client diagnostic sanitization, all-Provider failure,
+  guard expiry, 1 MiB cap, and downstream-commit behavior.
 - Use paused time for guard and backoff boundaries. Assert same-Provider waits
   exactly once and Provider switching waits zero.
 - Frontend tests cover segmented mode switching, retry/rewrite save ownership,

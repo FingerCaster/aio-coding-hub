@@ -92,21 +92,26 @@ fn stream_terminal_type(event_name: &str, data: &Value) -> Option<String> {
     is_codex_stream_terminal_type(event_name).then(|| event_name.trim().to_ascii_lowercase())
 }
 
+fn stream_error_fields<'a>(data: &'a Value, field: &str) -> [Option<&'a str>; 3] {
+    [
+        data.get("error")
+            .and_then(|error| error.get(field))
+            .and_then(Value::as_str),
+        data.get("response")
+            .and_then(|response| response.get("error"))
+            .and_then(|error| error.get(field))
+            .and_then(Value::as_str),
+        data.get(field)
+            .and_then(Value::as_str)
+            .filter(|value| field != "type" || !is_codex_stream_terminal_type(value)),
+    ]
+}
+
 fn stream_error_field<'a>(data: &'a Value, field: &str) -> Option<&'a str> {
-    data.get("error")
-        .and_then(|error| error.get(field))
-        .and_then(Value::as_str)
-        .or_else(|| {
-            data.get("response")
-                .and_then(|response| response.get("error"))
-                .and_then(|error| error.get(field))
-                .and_then(Value::as_str)
-        })
-        .or_else(|| {
-            data.get(field)
-                .and_then(Value::as_str)
-                .filter(|value| field != "type" || !is_codex_stream_terminal_type(value))
-        })
+    stream_error_fields(data, field)
+        .into_iter()
+        .flatten()
+        .next()
 }
 
 fn stream_error_message(data: &Value) -> Option<&str> {
@@ -123,25 +128,36 @@ fn stream_error_message(data: &Value) -> Option<&str> {
     })
 }
 
+fn is_codex_capacity_stream_error_code(data: &Value) -> bool {
+    stream_error_fields(data, "code")
+        .into_iter()
+        .flatten()
+        .any(|code| {
+            code.trim().eq_ignore_ascii_case("server_is_overloaded")
+                || code.trim().eq_ignore_ascii_case("slow_down")
+        })
+}
+
 pub fn is_codex_capacity_stream_internal_error(event_name: &str, data: &Value) -> bool {
     if stream_terminal_type(event_name, data).is_none() {
         return false;
     }
 
-    [
-        Some(event_name),
-        data.get("type").and_then(Value::as_str),
-        stream_error_field(data, "type"),
-        stream_error_field(data, "code"),
-        stream_error_message(data),
-    ]
-    .into_iter()
-    .flatten()
-    .any(|value| {
-        value
-            .to_ascii_lowercase()
-            .contains("selected model is at capacity")
-    })
+    is_codex_capacity_stream_error_code(data)
+        || [
+            Some(event_name),
+            data.get("type").and_then(Value::as_str),
+            stream_error_field(data, "type"),
+            stream_error_field(data, "code"),
+            stream_error_message(data),
+        ]
+        .into_iter()
+        .flatten()
+        .any(|value| {
+            value
+                .to_ascii_lowercase()
+                .contains("selected model is at capacity")
+        })
 }
 
 pub fn classify_codex_stream_internal_error(
@@ -180,6 +196,8 @@ pub fn classify_codex_stream_internal_error(
         ("disabled", None)
     } else if let Some(keyword) = retry_match {
         ("retryable", Some(keyword.as_str()))
+    } else if is_codex_capacity_stream_internal_error(event_name, data) {
+        ("retryable", None)
     } else if let Some(keyword) = non_retry_match {
         ("non_retryable", Some(keyword.as_str()))
     } else {
@@ -1434,6 +1452,70 @@ impl SseUsageTracker {
             usage_json: normalize_usage_json(&merged),
             metrics: merged,
         })
+    }
+}
+
+#[cfg(test)]
+mod capacity_alias_tests {
+    use super::{classify_codex_stream_internal_error, is_codex_capacity_stream_internal_error};
+
+    #[test]
+    fn codex_capacity_codes_match_known_envelopes_case_insensitively() {
+        let cases = [
+            serde_json::json!({
+                "type": "response.failed",
+                "error": {"code": "SERVER_IS_OVERLOADED"}
+            }),
+            serde_json::json!({
+                "type": "response.error",
+                "response": {"error": {"code": "SlOw_DoWn"}}
+            }),
+            serde_json::json!({
+                "type": "error",
+                "code": "server_is_overloaded"
+            }),
+        ];
+
+        for data in cases {
+            assert!(is_codex_capacity_stream_internal_error("message", &data));
+            let evidence = classify_codex_stream_internal_error(
+                "message",
+                &data,
+                true,
+                &[],
+                &[],
+                "buffered_before_commit",
+            )
+            .expect("terminal capacity error should classify");
+            assert_eq!(evidence.classification, "retryable");
+            assert!(evidence.matched_keyword.is_none());
+        }
+
+        assert!(is_codex_capacity_stream_internal_error(
+            "response.failed",
+            &serde_json::json!({
+                "error": {"code": "unrelated_error"},
+                "response": {"error": {"code": "slow_down"}}
+            })
+        ));
+    }
+
+    #[test]
+    fn codex_capacity_codes_require_a_terminal_event_and_known_code() {
+        assert!(!is_codex_capacity_stream_internal_error(
+            "response.output_text.delta",
+            &serde_json::json!({
+                "type": "response.output_text.delta",
+                "code": "server_is_overloaded"
+            })
+        ));
+        assert!(!is_codex_capacity_stream_internal_error(
+            "response.failed",
+            &serde_json::json!({
+                "type": "response.failed",
+                "error": {"code": "service_unavailable_error"}
+            })
+        ));
     }
 }
 
