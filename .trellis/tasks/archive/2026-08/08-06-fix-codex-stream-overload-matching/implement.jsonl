@@ -1,0 +1,3 @@
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Rust 后端规范与质量门"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"Codex HTTP 200 SSE 容量拦截、retry/failover 与日志合同"}
+{"file": ".trellis/tasks/archive/2026-08/08-06-fix-codex-stream-overload-matching/prd.md", "reason": "已批准的无新增 UI、内置协议码识别范围与验收标准"}
