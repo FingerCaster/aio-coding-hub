@@ -1,5 +1,13 @@
 # Changelog
 
+## [0.60.38](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.37...aio-coding-hub-v0.60.38) (2026-08-06)
+
+
+### Bug Fixes
+
+* **gateway:** prevent Codex capacity signal leakage ([7b24637](https://github.com/FingerCaster/aio-coding-hub/commit/7b24637279d71e7bd742b5c8ebec4e3090230a48))
+* **gateway:** recognize Codex overload stream codes ([03f91b3](https://github.com/FingerCaster/aio-coding-hub/commit/03f91b3a1cdf3dd7982ca4294ef0093ad4ffeba3))
+
 ## [0.60.37](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.36...aio-coding-hub-v0.60.37) (2026-08-05)
 
 
