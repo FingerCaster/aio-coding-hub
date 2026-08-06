@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 3
+- **Total Sessions**: 4
 - **Last Active**: 2026-08-06
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~142 | Active |
+| `journal-1.md` | ~164 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 4 | 2026-08-06 | Prevent Codex capacity signal leakage | `7b246372` | `main` |
 | 3 | 2026-08-06 | Fix Codex stream overload matching | `03f91b3a` | `main` |
 | 2 | 2026-08-04 | 有序自然回切与 aio-coding-hub v0.60.36 发布 | `026f392653f072325daa878b0c52a845650b44ba`, `64d2da995c68bf78403f7716ae21eaff8430848f` | `main` |
 | 1 | 2026-08-04 | 修复自然模式 CLOSED Provider 回切 | `f671183b00b0c35988dec34b4f34fff7d054235f`, `30b7ecf1722cadc69687968794584134f19aeef4` | `main` |

@@ -140,3 +140,25 @@ Recognized Codex server_is_overloaded and slow_down SSE codes before downstream 
 ### Status
 
 [OK] **Completed**
+
+
+## Session 4: Prevent Codex capacity signal leakage
+
+**Date**: 2026-08-06
+**Task**: Prevent Codex capacity signal leakage
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Hardened Codex terminal error sanitization, preserved internal capacity evidence, cleaned new-user retry defaults, and verified full frontend/Rust suites plus MSI packaging.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `7b246372` | (see git log) |
+
+### Status
+
+[OK] **Completed**
