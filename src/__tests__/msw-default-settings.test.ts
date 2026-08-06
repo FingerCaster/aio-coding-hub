@@ -45,12 +45,6 @@ describe("MSW defaults", () => {
         backoff_ms: 100,
         counts_toward_circuit_breaker: false,
         http_rules: [
-          ...[502, 503, 504].map((status_code) => ({
-            enabled: true,
-            status_code,
-            body_contains: [],
-            description: "",
-          })),
           {
             enabled: true,
             status_code: 400,
@@ -61,16 +55,8 @@ describe("MSW defaults", () => {
         transport_errors: ["connect", "timeout", "read"],
         stream_internal_errors: {
           enabled: true,
-          retry_keywords: ["selected model is at capacity"],
-          non_retry_keywords: [
-            "invalid_request",
-            "content_policy",
-            "policy",
-            "safety",
-            "high-risk cyber",
-            "not allowed",
-            "violat",
-          ],
+          retry_keywords: [],
+          non_retry_keywords: [],
         },
       },
       upstream_error_response_rules: [],

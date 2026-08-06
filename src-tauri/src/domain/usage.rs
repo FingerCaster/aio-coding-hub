@@ -8,6 +8,8 @@ use std::sync::LazyLock;
 
 const STREAM_INTERNAL_ERROR_MESSAGE_MAX_CHARS: usize = 2_048;
 const STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS: usize = 512;
+const CODEX_CAPACITY_MESSAGE: &str = "selected model is at capacity";
+const CODEX_CAPACITY_ERROR_CODES: [&str; 2] = ["server_is_overloaded", "slow_down"];
 
 static STREAM_ERROR_BEARER_RE: LazyLock<Regex> = LazyLock::new(|| {
     Regex::new(r#"(?i)(\bbearer\s+)([^\s,;\"']+)"#).expect("valid stream-error bearer regex")
@@ -45,6 +47,21 @@ impl StreamInternalErrorEvidence {
             bounded_stream_error_text(disposition, STREAM_INTERNAL_ERROR_SHORT_FIELD_MAX_CHARS);
         self.disposition = disposition;
         self.truncated |= truncated;
+    }
+
+    pub fn contains_codex_capacity_signal(&self) -> bool {
+        [
+            Some(self.event_type.as_str()),
+            self.error_type.as_deref(),
+            self.error_code.as_deref(),
+            self.message.as_deref(),
+            Some(self.classification.as_str()),
+            self.matched_keyword.as_deref(),
+            Some(self.disposition.as_str()),
+        ]
+        .into_iter()
+        .flatten()
+        .any(contains_codex_capacity_signal)
     }
 }
 
@@ -128,14 +145,27 @@ fn stream_error_message(data: &Value) -> Option<&str> {
     })
 }
 
+fn is_codex_capacity_error_code(value: &str) -> bool {
+    CODEX_CAPACITY_ERROR_CODES
+        .iter()
+        .any(|code| value.trim().eq_ignore_ascii_case(code))
+}
+
+pub fn contains_codex_capacity_signal(value: &str) -> bool {
+    let value = value.to_ascii_lowercase();
+    value.contains(CODEX_CAPACITY_MESSAGE)
+        || value.contains("capacity")
+        || value.contains("overload")
+        || CODEX_CAPACITY_ERROR_CODES
+            .iter()
+            .any(|code| value.contains(code))
+}
+
 fn is_codex_capacity_stream_error_code(data: &Value) -> bool {
     stream_error_fields(data, "code")
         .into_iter()
         .flatten()
-        .any(|code| {
-            code.trim().eq_ignore_ascii_case("server_is_overloaded")
-                || code.trim().eq_ignore_ascii_case("slow_down")
-        })
+        .any(is_codex_capacity_error_code)
 }
 
 pub fn is_codex_capacity_stream_internal_error(event_name: &str, data: &Value) -> bool {
@@ -153,11 +183,7 @@ pub fn is_codex_capacity_stream_internal_error(event_name: &str, data: &Value) -
         ]
         .into_iter()
         .flatten()
-        .any(|value| {
-            value
-                .to_ascii_lowercase()
-                .contains("selected model is at capacity")
-        })
+        .any(|value| value.to_ascii_lowercase().contains(CODEX_CAPACITY_MESSAGE))
 }
 
 pub fn classify_codex_stream_internal_error(

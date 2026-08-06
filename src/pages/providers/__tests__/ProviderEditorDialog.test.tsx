@@ -699,13 +699,13 @@ describe("pages/providers/ProviderEditorDialog", () => {
     fireEvent.click(within(retryEnabledRow).getByRole("switch"));
 
     fireEvent.click(dialog.getByRole("button", { name: "新增规则" }));
-    fireEvent.change(dialog.getByLabelText("规则 5 · 错误码"), {
+    fireEvent.change(dialog.getByLabelText("规则 2 · 错误码"), {
       target: { value: "429" },
     });
-    fireEvent.change(dialog.getByLabelText("HTTP 规则 5 描述"), {
+    fireEvent.change(dialog.getByLabelText("HTTP 规则 2 描述"), {
       target: { value: providerRule.description },
     });
-    fireEvent.change(dialog.getByLabelText("HTTP 规则 5 匹配内容"), {
+    fireEvent.change(dialog.getByLabelText("HTTP 规则 2 匹配内容"), {
       target: { value: providerRule.body_contains[0] },
     });
 

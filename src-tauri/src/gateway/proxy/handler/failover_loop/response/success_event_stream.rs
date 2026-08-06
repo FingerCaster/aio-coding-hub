@@ -1940,9 +1940,10 @@ mod tests {
                 assert_eq!(error_code, "GW_FAKE_200");
                 assert_eq!(evidence.classification, "retryable");
                 assert_eq!(
-                    evidence.matched_keyword.as_deref(),
-                    Some("selected model is at capacity")
+                    evidence.message.as_deref(),
+                    Some("Selected model is at capacity")
                 );
+                assert_eq!(evidence.matched_keyword, None);
             }
             _ => panic!("capacity terminal event should be retried before commit"),
         }

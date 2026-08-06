@@ -16,6 +16,7 @@ use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
 use std::sync::Arc;
 
 const MAX_PLUGIN_ERROR_BODY_BYTES: usize = 256 * 1024;
+const CLIENT_TRANSIENT_FAILURE_MESSAGE: &str = "upstream transient failure";
 
 #[derive(Debug, Serialize)]
 struct GatewayErrorResponse {
@@ -28,42 +29,34 @@ struct GatewayErrorResponse {
 }
 
 fn sanitize_attempts_for_client(mut attempts: Vec<FailoverAttempt>) -> Vec<FailoverAttempt> {
-    let contains_capacity_message = |value: &str| {
-        value
-            .to_ascii_lowercase()
-            .contains("selected model is at capacity")
-    };
-
     for attempt in &mut attempts {
-        if attempt
-            .reason
-            .as_deref()
-            .is_some_and(contains_capacity_message)
-        {
-            attempt.reason = Some("upstream capacity failure".to_string());
-        }
-        if attempt
+        let capacity_evidence = attempt
             .stream_internal_error
             .as_ref()
-            .is_some_and(|evidence| {
-                evidence
-                    .message
-                    .as_deref()
-                    .is_some_and(contains_capacity_message)
-                    || evidence
-                        .matched_keyword
-                        .as_deref()
-                        .is_some_and(contains_capacity_message)
-            })
-        {
+            .is_some_and(crate::usage::StreamInternalErrorEvidence::contains_codex_capacity_signal);
+        let capacity_reason = attempt
+            .reason
+            .as_deref()
+            .is_some_and(crate::usage::contains_codex_capacity_signal);
+
+        if capacity_evidence || capacity_reason {
+            attempt.reason = Some(CLIENT_TRANSIENT_FAILURE_MESSAGE.to_string());
             // The full bounded evidence remains in gateway events and request
-            // logs. Client-facing verbose diagnostics keep the attempt but not
-            // the upstream capacity text that makes Codex stop immediately.
+            // logs. Client-facing diagnostics must not expose any capacity
+            // signal that could make Codex stop instead of retrying.
             attempt.stream_internal_error = None;
         }
     }
 
     attempts
+}
+
+fn sanitize_message_for_client(message: String) -> String {
+    if crate::usage::contains_codex_capacity_signal(&message) {
+        CLIENT_TRANSIENT_FAILURE_MESSAGE.to_string()
+    } else {
+        message
+    }
 }
 
 pub(super) fn classify_reqwest_error(err: &reqwest::Error) -> (ErrorCategory, &'static str) {
@@ -156,7 +149,7 @@ pub(super) fn error_response_with_retry_after(
     let payload = GatewayErrorResponse {
         trace_id: trace_id.clone(),
         error_code,
-        message,
+        message: sanitize_message_for_client(message),
         attempts: sanitize_attempts_for_client(attempts),
         retry_after_seconds,
     };
@@ -288,8 +281,155 @@ pub(super) async fn apply_gateway_error_hook(
 
 #[cfg(test)]
 mod tests {
-    use super::{classify_upstream_status, FailoverDecision};
+    use super::{
+        classify_upstream_status, sanitize_attempts_for_client, sanitize_message_for_client,
+        FailoverDecision, CLIENT_TRANSIENT_FAILURE_MESSAGE,
+    };
+    use crate::gateway::events::FailoverAttempt;
     use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
+    use crate::usage::StreamInternalErrorEvidence;
+
+    fn stream_evidence() -> StreamInternalErrorEvidence {
+        StreamInternalErrorEvidence {
+            event_type: "response.failed".to_string(),
+            error_type: Some("server_error".to_string()),
+            error_code: None,
+            message: None,
+            classification: "retryable".to_string(),
+            matched_keyword: None,
+            disposition: "retry_exhausted".to_string(),
+            truncated: false,
+        }
+    }
+
+    fn attempt(
+        reason: Option<&str>,
+        stream_internal_error: Option<StreamInternalErrorEvidence>,
+    ) -> FailoverAttempt {
+        FailoverAttempt {
+            provider_id: 1,
+            provider_name: "Provider".to_string(),
+            base_url: "https://provider.example".to_string(),
+            outcome: "stream_error: code=GW_FAKE_200".to_string(),
+            status: Some(502),
+            provider_index: Some(1),
+            retry_index: Some(1),
+            session_reuse: None,
+            error_category: Some(ErrorCategory::ProviderError.as_str()),
+            error_code: Some(GatewayErrorCode::Fake200.as_str()),
+            decision: Some(FailoverDecision::Abort.as_str()),
+            reason: reason.map(str::to_string),
+            selection_method: None,
+            reason_code: None,
+            attempt_started_ms: None,
+            attempt_duration_ms: None,
+            circuit_state_before: None,
+            circuit_state_after: None,
+            circuit_failure_count: None,
+            circuit_failure_threshold: None,
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            provider_bridged: Some(false),
+            timeout_secs: None,
+            stream_internal_error,
+            requested_upstream_model: None,
+        }
+    }
+
+    #[test]
+    fn client_attempts_remove_capacity_signals_from_every_evidence_field() {
+        let mut cases = Vec::new();
+
+        let mut event_type = stream_evidence();
+        event_type.event_type = "SERVER_IS_OVERLOADED".to_string();
+        cases.push(event_type);
+
+        let mut error_type = stream_evidence();
+        error_type.error_type = Some("slow_down".to_string());
+        cases.push(error_type);
+
+        let mut error_code = stream_evidence();
+        error_code.error_code = Some("Server_Is_Overloaded".to_string());
+        cases.push(error_code);
+
+        let mut message = stream_evidence();
+        message.message = Some("Selected model is at capacity. Try another model.".to_string());
+        cases.push(message);
+
+        let mut matched_keyword = stream_evidence();
+        matched_keyword.matched_keyword = Some("SLOW_DOWN".to_string());
+        cases.push(matched_keyword);
+
+        for evidence in cases {
+            let sanitized = sanitize_attempts_for_client(vec![attempt(
+                Some("upstream returned a terminal stream error"),
+                Some(evidence),
+            )]);
+            assert_eq!(
+                sanitized[0].reason.as_deref(),
+                Some(CLIENT_TRANSIENT_FAILURE_MESSAGE)
+            );
+            assert!(sanitized[0].stream_internal_error.is_none());
+        }
+    }
+
+    #[test]
+    fn client_attempts_sanitize_capacity_reason_without_stream_evidence() {
+        for reason in [
+            "Selected model is at capacity; SERVER_IS_OVERLOADED",
+            "upstream capacity failure",
+            "provider overloaded",
+        ] {
+            let sanitized = sanitize_attempts_for_client(vec![attempt(Some(reason), None)]);
+
+            assert_eq!(
+                sanitized[0].reason.as_deref(),
+                Some(CLIENT_TRANSIENT_FAILURE_MESSAGE)
+            );
+            assert!(sanitized[0].stream_internal_error.is_none());
+        }
+    }
+
+    #[test]
+    fn client_attempts_preserve_unrelated_verbose_evidence() {
+        let mut evidence = stream_evidence();
+        evidence.error_code = Some("service_unavailable_error".to_string());
+        evidence.message = Some("temporary provider failure".to_string());
+        let sanitized = sanitize_attempts_for_client(vec![attempt(
+            Some("upstream returned a terminal stream error"),
+            Some(evidence.clone()),
+        )]);
+
+        assert_eq!(
+            sanitized[0].reason.as_deref(),
+            Some("upstream returned a terminal stream error")
+        );
+        assert_eq!(sanitized[0].stream_internal_error, Some(evidence));
+    }
+
+    #[test]
+    fn client_top_level_message_hides_capacity_signals() {
+        for message in [
+            "Selected model is at capacity",
+            "upstream code=SERVER_IS_OVERLOADED",
+            "please SLOW_DOWN",
+            "upstream capacity failure",
+            "provider overloaded",
+        ] {
+            assert_eq!(
+                sanitize_message_for_client(message.to_string()),
+                CLIENT_TRANSIENT_FAILURE_MESSAGE
+            );
+        }
+        assert_eq!(
+            sanitize_message_for_client("all providers failed".to_string()),
+            "all providers failed"
+        );
+    }
 
     #[test]
     fn upstream_402_switches_provider() {

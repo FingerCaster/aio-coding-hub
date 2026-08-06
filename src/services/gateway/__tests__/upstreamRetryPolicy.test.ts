@@ -7,15 +7,9 @@ import {
 } from "../upstreamRetryPolicy";
 
 describe("upstreamRetryPolicy", () => {
-  it("provides independent default transport-status and capacity rules", () => {
+  it("keeps only behavior-bearing new-user defaults", () => {
     const cloned = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
     expect(cloned.http_rules).toEqual([
-      ...[502, 503, 504].map((status_code) => ({
-        enabled: true,
-        status_code,
-        body_contains: [],
-        description: "",
-      })),
       {
         enabled: true,
         status_code: 400,
@@ -23,8 +17,16 @@ describe("upstreamRetryPolicy", () => {
         description: "Codex model capacity",
       },
     ]);
+    expect(cloned.transport_errors).toEqual(["connect", "timeout", "read"]);
+    expect(cloned.stream_internal_errors).toEqual({
+      enabled: true,
+      retry_keywords: [],
+      non_retry_keywords: [],
+    });
     cloned.http_rules[0].body_contains.push("changed");
-    expect(DEFAULT_UPSTREAM_RETRY_POLICY.http_rules[0].body_contains).toEqual([]);
+    expect(DEFAULT_UPSTREAM_RETRY_POLICY.http_rules[0].body_contains).toEqual([
+      "selected model is at capacity",
+    ]);
   });
 
   it("parses one literal body matcher per non-empty line", () => {
@@ -37,8 +39,12 @@ describe("upstreamRetryPolicy", () => {
 
   it("validates rule boundaries and enabled matcher requirements", () => {
     const base = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
-    base.http_rules[0].status_code = 400;
-    base.http_rules[1].status_code = 599;
+    base.http_rules.push({
+      enabled: true,
+      status_code: 599,
+      body_contains: [],
+      description: "",
+    });
     expect(validateUpstreamRetryPolicy(base)).toBeNull();
 
     base.http_rules[0].status_code = Number.NaN;

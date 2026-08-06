@@ -30,6 +30,13 @@ but they remain separate persisted schemas and execute at different phases.
   before reserving attempts. HTTP, transport, and pre-commit Codex stream
   matches share that policy's `max_retries`, `backoff_ms`, and
   `counts_toward_circuit_breaker`; they do not add independent budgets.
+- New retry-policy defaults expose only the behavior-bearing HTTP 400 capacity
+  content rule. Native 5xx handling does not require visible `502` / `503` /
+  `504` status-only rows. Stream inspection remains enabled with empty default
+  retry/non-retry keyword lists because capacity aliases are built in. Connect,
+  timeout, and read transport retries remain selected by default. Existing
+  persisted policies and complete Provider overrides are not migrated when
+  these construction defaults change.
 - A configured same-Provider retry waits once through the common backoff helper
   after the final decision is `RetrySameProvider`. Provider switches, aborts,
   and circuit-open rewrites add no wait.
@@ -54,9 +61,11 @@ but they remain separate persisted schemas and execute at different phases.
   Buffer-cap release is diagnostic and is not a Provider failure.
 - If all Providers fail on retryable pre-commit stream errors, return the
   existing standard HTTP 502 / `GW_FAKE_200` terminal envelope instead of the
-  original HTTP 200 capacity stream. Client-facing verbose attempts must remove
-  the capacity message and matched keyword; internal events/request logs retain
-  the bounded, redacted evidence.
+  original HTTP 200 capacity stream. Client-facing top-level messages, attempt
+  reasons, and verbose stream evidence must contain no capacity text or
+  built-in protocol alias, including `server_is_overloaded` and `slow_down`;
+  use only a neutral transient-upstream-failure reason. Internal events/request
+  logs retain the bounded, redacted evidence.
 - Final response rewriting considers only the terminal upstream HTTP 4xx/5xx
   candidate after retry, failover, quota, cooldown, and circuit decisions use
   the real upstream facts. HTTP 200 stream errors and transport errors never
@@ -94,7 +103,7 @@ but they remain separate persisted schemas and execute at different phases.
 | Retryable Codex error before commit | Discard buffer and use the shared configured retry budget/backoff |
 | Capacity text or `server_is_overloaded` / `slow_down` before commit with retry disabled | Do not forward SSE; switch Provider, then return gateway 502 if exhausted |
 | Codex error after commit, guard expiry, or cap | Forward one original SSE stream; never splice attempts |
-| All Providers end in retryable capacity streams | Return standard 502 / fake-200 envelope; keep evidence internal and remove capacity text from client diagnostics |
+| All Providers end in retryable capacity streams | Return standard 502 / fake-200 envelope; keep evidence internal and remove every capacity text/code signal from client diagnostics |
 | Rule/evidence parsing fails | Preserve existing behavior without leaking raw content |
 | Provider has an explicit complete override | Use only that override; do not append global rules |
 
@@ -106,7 +115,8 @@ but they remain separate persisted schemas and execute at different phases.
   standard `502/GW_FAKE_200` envelope and logs retain bounded evidence.
 - Bad: disabling stream retries forwards the original capacity SSE, a
   `server_is_overloaded` code requires a UI keyword entry, or verbose client
-  attempts serialize the retained capacity message/matched keyword.
+  attempts serialize any retained capacity message, code, type, keyword, or
+  capacity-bearing replacement reason.
 
 ### 6. Tests Required
 
@@ -122,6 +132,9 @@ but they remain separate persisted schemas and execute at different phases.
   unknown/non-retry forwarding, pre-commit retry success, retry-disabled
   capacity interception, client diagnostic sanitization, all-Provider failure,
   guard expiry, 1 MiB cap, and downstream-commit behavior.
+- Default-policy tests keep Rust and TypeScript aligned: only the HTTP 400
+  capacity content rule is prefilled, stream keyword lists are empty, and the
+  three transport retry kinds remain selected.
 - Use paused time for guard and backoff boundaries. Assert same-Provider waits
   exactly once and Provider switching waits zero.
 - Frontend tests cover segmented mode switching, retry/rewrite save ownership,

@@ -28,18 +28,18 @@ describe("RetryPolicyFields", () => {
     expect(screen.getByRole("switch", { name: "配置型重试计入熔断" })).toBeInTheDocument();
 
     fireEvent.click(screen.getByRole("button", { name: "新增规则" }));
-    expect(screen.getByRole("group", { name: "HTTP 规则 5" })).toBeInTheDocument();
-    expect(screen.getByRole("button", { name: "收起 HTTP 规则 5" })).toHaveAttribute(
+    expect(screen.getByRole("group", { name: "HTTP 规则 2" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "收起 HTTP 规则 2" })).toHaveAttribute(
       "aria-expanded",
       "true"
     );
-    fireEvent.change(screen.getByLabelText("规则 5 · 错误码"), {
+    fireEvent.change(screen.getByLabelText("规则 2 · 错误码"), {
       target: { value: "429" },
     });
-    fireEvent.change(screen.getByLabelText("HTTP 规则 5 描述"), {
+    fireEvent.change(screen.getByLabelText("HTTP 规则 2 描述"), {
       target: { value: "Quota retry" },
     });
-    const bodyInput = screen.getByLabelText("HTTP 规则 5 匹配内容");
+    const bodyInput = screen.getByLabelText("HTTP 规则 2 匹配内容");
     fireEvent.change(bodyInput, {
       target: { value: "quota exhausted" },
     });
@@ -50,23 +50,23 @@ describe("RetryPolicyFields", () => {
     fireEvent.change(bodyInput, {
       target: { value: "quota exhausted\nrate,limit\n*.json" },
     });
-    fireEvent.click(screen.getByRole("switch", { name: "启用 HTTP 规则 5" }));
+    fireEvent.click(screen.getByRole("switch", { name: "启用 HTTP 规则 2" }));
 
     const edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as {
       http_rules: Array<Record<string, unknown>>;
     };
-    expect(edited.http_rules[4]).toEqual({
+    expect(edited.http_rules[1]).toEqual({
       enabled: false,
       status_code: 429,
       body_contains: ["quota exhausted", "rate,limit", "*.json"],
       description: "Quota retry",
     });
 
-    fireEvent.click(screen.getByRole("button", { name: "删除 HTTP 规则 5" }));
+    fireEvent.click(screen.getByRole("button", { name: "删除 HTTP 规则 2" }));
     const deleted = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as {
       http_rules: unknown[];
     };
-    expect(deleted.http_rules).toHaveLength(4);
+    expect(deleted.http_rules).toHaveLength(1);
   });
 
   it("edits and disables the stream-internal-error keyword policy", () => {
@@ -125,7 +125,7 @@ describe("RetryPolicyFields", () => {
     const firstRule = screen.getByRole("button", { name: "编辑 HTTP 规则 1" });
     expect(firstRule).toHaveAttribute("aria-expanded", "false");
     expect(screen.queryByLabelText("HTTP 规则 1 匹配内容")).not.toBeInTheDocument();
-    expect(firstRule).toHaveTextContent("HTTP 502");
+    expect(firstRule).toHaveTextContent("HTTP 400");
 
     fireEvent.click(firstRule);
     expect(screen.getByRole("button", { name: "收起 HTTP 规则 1" })).toHaveAttribute(

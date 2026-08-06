@@ -26,7 +26,6 @@ export function createUpstreamHttpRetryRule(statusCode = 500): UpstreamHttpRetry
 export const DEFAULT_UPSTREAM_RETRY_POLICY: UpstreamRetryPolicy = {
   enabled: true,
   http_rules: [
-    ...[502, 503, 504].map(createUpstreamHttpRetryRule),
     {
       enabled: true,
       status_code: 400,
@@ -37,16 +36,8 @@ export const DEFAULT_UPSTREAM_RETRY_POLICY: UpstreamRetryPolicy = {
   transport_errors: ["connect", "timeout", "read"],
   stream_internal_errors: {
     enabled: true,
-    retry_keywords: ["selected model is at capacity"],
-    non_retry_keywords: [
-      "invalid_request",
-      "content_policy",
-      "policy",
-      "safety",
-      "high-risk cyber",
-      "not allowed",
-      "violat",
-    ],
+    retry_keywords: [],
+    non_retry_keywords: [],
   },
   max_retries: 1,
   backoff_ms: 100,

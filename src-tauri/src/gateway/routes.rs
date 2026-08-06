@@ -11181,9 +11181,10 @@ INSERT INTO codex_managed_profiles(
             Some("retryable")
         );
         assert_eq!(
-            attempts[0]["stream_internal_error"]["matched_keyword"].as_str(),
-            Some("selected model is at capacity")
+            attempts[0]["stream_internal_error"]["message"].as_str(),
+            Some("Selected model is at capacity")
         );
+        assert!(attempts[0]["stream_internal_error"]["matched_keyword"].is_null());
         assert_eq!(
             attempts[0]["stream_internal_error"]["disposition"].as_str(),
             Some("retry_same_provider")
@@ -11335,7 +11336,7 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
-    async fn codex_capacity_error_is_intercepted_when_stream_retries_are_disabled() {
+    async fn codex_capacity_code_is_intercepted_and_hidden_when_stream_retries_are_disabled() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
         let _env = isolate_app_env(home.path());
@@ -11359,7 +11360,7 @@ INSERT INTO codex_managed_profiles(
             .expect("init test db");
         let fake_200_body = concat!(
             "event: response.error\n",
-            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"Selected model is at capacity\",\"type\":\"server_error\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"total_tokens\":11}}\n\n"
+            "data: {\"type\":\"response.error\",\"error\":{\"message\":\"temporary upstream failure\",\"type\":\"server_error\",\"code\":\"SERVER_IS_OVERLOADED\"},\"usage\":{\"input_tokens\":11,\"output_tokens\":0,\"total_tokens\":11}}\n\n"
         );
         let (fake_200_base_url, fake_200_task) = spawn_sse_upstream(fake_200_body).await;
         let provider_id = insert_codex_provider_with_priority(
@@ -11399,7 +11400,19 @@ INSERT INTO codex_managed_profiles(
         let body = to_bytes(response.into_body(), usize::MAX)
             .await
             .expect("response body");
-        assert!(!String::from_utf8_lossy(&body).contains("Selected model is at capacity"));
+        let client_body = String::from_utf8_lossy(&body).to_ascii_lowercase();
+        for signal in [
+            "selected model is at capacity",
+            "server_is_overloaded",
+            "slow_down",
+            "capacity",
+            "overload",
+        ] {
+            assert!(
+                !client_body.contains(signal),
+                "client body leaked capacity signal {signal}: {client_body}"
+            );
+        }
         let payload: Value = serde_json::from_slice(&body).expect("json body");
         assert_eq!(
             payload.get("error_code").and_then(Value::as_str),
@@ -11431,6 +11444,10 @@ INSERT INTO codex_managed_profiles(
         assert_eq!(
             attempts[0]["stream_internal_error"]["classification"],
             "disabled"
+        );
+        assert_eq!(
+            attempts[0]["stream_internal_error"]["error_code"],
+            "SERVER_IS_OVERLOADED"
         );
         assert_eq!(
             attempts[0]["stream_internal_error"]["disposition"],

@@ -113,19 +113,8 @@ impl Default for UpstreamStreamInternalErrorPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            retry_keywords: vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()],
-            non_retry_keywords: [
-                "invalid_request",
-                "content_policy",
-                "policy",
-                "safety",
-                "high-risk cyber",
-                "not allowed",
-                "violat",
-            ]
-            .into_iter()
-            .map(str::to_string)
-            .collect(),
+            retry_keywords: Vec::new(),
+            non_retry_keywords: Vec::new(),
         }
     }
 }
@@ -146,17 +135,12 @@ impl Default for UpstreamRetryPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            http_rules: vec![
-                UpstreamHttpRetryRule::status_only(502),
-                UpstreamHttpRetryRule::status_only(503),
-                UpstreamHttpRetryRule::status_only(504),
-                UpstreamHttpRetryRule {
-                    enabled: true,
-                    status_code: 400,
-                    body_contains: vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()],
-                    description: "Codex model capacity".to_string(),
-                },
-            ],
+            http_rules: vec![UpstreamHttpRetryRule {
+                enabled: true,
+                status_code: 400,
+                body_contains: vec![DEFAULT_CAPACITY_RETRY_KEYWORD.to_string()],
+                description: "Codex model capacity".to_string(),
+            }],
             transport_errors: vec![
                 UpstreamTransportRetryKind::Connect,
                 UpstreamTransportRetryKind::Timeout,
@@ -543,4 +527,34 @@ pub(super) fn default_cli_priority_order() -> Vec<String> {
         .iter()
         .map(|cli_key| (*cli_key).to_string())
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{UpstreamRetryPolicy, UpstreamTransportRetryKind, DEFAULT_CAPACITY_RETRY_KEYWORD};
+
+    #[test]
+    fn upstream_retry_defaults_keep_only_behavior_bearing_visible_rules() {
+        let policy = UpstreamRetryPolicy::default();
+
+        assert_eq!(policy.http_rules.len(), 1);
+        let capacity_rule = &policy.http_rules[0];
+        assert!(capacity_rule.enabled);
+        assert_eq!(capacity_rule.status_code, 400);
+        assert_eq!(
+            capacity_rule.body_contains,
+            vec![DEFAULT_CAPACITY_RETRY_KEYWORD]
+        );
+        assert_eq!(
+            policy.transport_errors,
+            vec![
+                UpstreamTransportRetryKind::Connect,
+                UpstreamTransportRetryKind::Timeout,
+                UpstreamTransportRetryKind::Read,
+            ]
+        );
+        assert!(policy.stream_internal_errors.enabled);
+        assert!(policy.stream_internal_errors.retry_keywords.is_empty());
+        assert!(policy.stream_internal_errors.non_retry_keywords.is_empty());
+    }
 }
