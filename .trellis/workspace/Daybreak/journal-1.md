@@ -118,3 +118,25 @@
 ### Status
 
 [OK] **Completed**
+
+
+## Session 3: Fix Codex stream overload matching
+
+**Date**: 2026-08-06
+**Task**: Fix Codex stream overload matching
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Recognized Codex server_is_overloaded and slow_down SSE codes before downstream commit, preserving retry/failover behavior without new UI settings.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `03f91b3a` | (see git log) |
+
+### Status
+
+[OK] **Completed**
