@@ -1046,3 +1046,25 @@ Intercept early Codex capacity SSE failures before client commit, preserve inter
 ### Next Steps
 
 - 从隔离 worktree 构建并校验 Windows x64 MSI。
+
+
+## Session 30: Fix repeated balance failback skips
+
+**Date**: 2026-08-08
+**Task**: Fix repeated balance failback skips
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+Suppress trusted blocked providers only from stable-session failback planning, preserve first gate skip and pending triggers, restore routing on fresh recovery, add regression coverage, and build a local MSI.
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8757d32c` | (see git log) |
+
+### Status
+
+[OK] **Completed**

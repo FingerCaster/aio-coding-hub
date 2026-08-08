@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 29
+- **Total Sessions**: 30
 - **Last Active**: 2026-08-08
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1048 | Active |
+| `journal-1.md` | ~1070 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 30 | 2026-08-08 | Fix repeated balance failback skips | `8757d32c` | `main` |
 | 29 | 2026-08-08 | 自定义余额查询与路由恢复集成 | `708d2965`, `ef8892be` | `FingerCaster/account-usage-routing-build` |
 | 28 | 2026-08-06 | Harden upstream error handling | `f6d5de13` | `main` |
 | 27 | 2026-08-05 | 按变更范围分级 CI | `84423019`, `cfdc14af` | `FingerCaster/scope-aware-ci` |
