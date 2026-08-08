@@ -18,6 +18,8 @@ import {
   resolveAioManagedModelRouteFromSpecialSettings,
   resolveCodexReasoningEffort,
   resolveClaudeModelMappingFromSpecialSettings,
+  resolveConfiguredModelRouteFromSpecialSettings,
+  type ConfiguredModelRoute,
   type ModelRouteMapping,
 } from "../../services/gateway/requestLogSpecialSettings";
 import type { CliKey } from "../../services/providers/providers";
@@ -197,6 +199,9 @@ export type RequestLogModelDisplayMeta = {
   text: string;
   title: string;
   routeMapping: ModelRouteMapping | null;
+  configuredRoute: ConfiguredModelRoute | null;
+  configuredRouteText: string | null;
+  isConfiguredRoute: boolean;
   /** True when a request→actual mapping is shown (including expected auto-review). */
   isRouteMismatch: boolean;
   /**
@@ -208,6 +213,50 @@ export type RequestLogModelDisplayMeta = {
   mismatchLabel: string | null;
 };
 
+function formatConfiguredRouteText(route: ConfiguredModelRoute): string {
+  const modelText = route.modelApplied
+    ? `${route.sourceModel} → ${route.effectiveModel}`
+    : route.sourceModel;
+  return route.reasoningEffortApplied
+    ? `${modelText} · 思考强度 ${route.reasoningEffort ?? "未知"}`
+    : modelText;
+}
+
+function resolveConfiguredRouteTitle(route: ConfiguredModelRoute): string {
+  const parts = [
+    "已应用模型路由",
+    `策略：${route.policySource === "provider" ? "供应商专属" : "全局"}`,
+    `模型：${route.sourceModel} → ${route.effectiveModel}`,
+  ];
+  if (route.reasoningEffortApplied) {
+    parts.push(`思考强度：${route.reasoningEffort ?? "未知"}`);
+  }
+  if (route.providerName) {
+    parts.push(`供应商：${route.providerName}`);
+  }
+  return parts.join(" · ");
+}
+
+function sameConfiguredRoutePart(left: string, right: string): boolean {
+  return left.trim().toLowerCase() === right.trim().toLowerCase();
+}
+
+function isExpectedConfiguredRouteObservation(
+  route: ConfiguredModelRoute,
+  mapping: ModelRouteMapping
+): boolean {
+  const requestedMatches =
+    sameConfiguredRoutePart(mapping.requestedModel, route.sourceModel) ||
+    sameConfiguredRoutePart(mapping.requestedModel, route.effectiveModel);
+  if (!requestedMatches) return false;
+  if (!sameConfiguredRoutePart(mapping.actualModel, route.effectiveModel)) return false;
+  if (!route.reasoningEffortApplied || mapping.actualReasoningEffort === "unknown") return true;
+  return (
+    route.reasoningEffort != null &&
+    sameConfiguredRoutePart(mapping.actualReasoningEffort, route.reasoningEffort)
+  );
+}
+
 export function resolveRequestLogModelDisplayMeta(
   cliKey: CliKey | string,
   requestedModel: string | null | undefined,
@@ -215,10 +264,46 @@ export function resolveRequestLogModelDisplayMeta(
   mapping?: ClaudeModelMapping | null,
   finalProviderId?: number | null
 ): RequestLogModelDisplayMeta {
+  const configuredRoute = resolveConfiguredModelRouteFromSpecialSettings(
+    specialSettingsJson,
+    finalProviderId
+  );
   const routeMapping = resolveModelRouteMappingFromSpecialSettings(
     specialSettingsJson,
     finalProviderId
   );
+
+  if (configuredRoute) {
+    const unexpectedRouteMapping =
+      routeMapping && !isExpectedConfiguredRouteObservation(configuredRoute, routeMapping)
+        ? routeMapping
+        : null;
+    const expectedAutoReview = isExpectedCodexAutoReviewModelRoute(unexpectedRouteMapping);
+    const configuredRouteText = unexpectedRouteMapping
+      ? `${formatConfiguredRouteText(configuredRoute)} · 上游返回 ${formatModelRoutePart(
+          unexpectedRouteMapping.actualModel,
+          unexpectedRouteMapping.actualReasoningEffort
+        )}`
+      : formatConfiguredRouteText(configuredRoute);
+    return {
+      text: configuredRouteText,
+      title: unexpectedRouteMapping
+        ? `${resolveConfiguredRouteTitle(configuredRoute)} · ${resolveModelRouteTitle(
+            unexpectedRouteMapping
+          )}`
+        : resolveConfiguredRouteTitle(configuredRoute),
+      routeMapping: unexpectedRouteMapping,
+      configuredRoute,
+      configuredRouteText,
+      isConfiguredRoute: true,
+      isRouteMismatch: true,
+      isSevereRouteMismatch: unexpectedRouteMapping != null && !expectedAutoReview,
+      isExpectedAutoReviewRoute: unexpectedRouteMapping != null && expectedAutoReview,
+      mismatchLabel: unexpectedRouteMapping
+        ? resolveModelRouteMismatchLabel(unexpectedRouteMapping, { expectedAutoReview })
+        : "模型路由",
+    };
+  }
 
   if (routeMapping) {
     const expectedAutoReview = isExpectedCodexAutoReviewModelRoute(routeMapping);
@@ -230,6 +315,9 @@ export function resolveRequestLogModelDisplayMeta(
       text,
       title: resolveModelRouteTitle(routeMapping),
       routeMapping,
+      configuredRoute: null,
+      configuredRouteText: null,
+      isConfiguredRoute: false,
       isRouteMismatch: true,
       isSevereRouteMismatch: !expectedAutoReview,
       isExpectedAutoReviewRoute: expectedAutoReview,
@@ -243,6 +331,9 @@ export function resolveRequestLogModelDisplayMeta(
       text: modelText,
       title: modelText,
       routeMapping: null,
+      configuredRoute: null,
+      configuredRouteText: null,
+      isConfiguredRoute: false,
       isRouteMismatch: false,
       isSevereRouteMismatch: false,
       isExpectedAutoReviewRoute: false,
@@ -256,6 +347,9 @@ export function resolveRequestLogModelDisplayMeta(
     text,
     title: text,
     routeMapping: null,
+    configuredRoute: null,
+    configuredRouteText: null,
+    isConfiguredRoute: false,
     isRouteMismatch: false,
     isSevereRouteMismatch: false,
     isExpectedAutoReviewRoute: false,
@@ -373,10 +467,20 @@ export function buildRequestLogAuditMeta(log: RequestLogAuditInput): RequestLogA
       settingTypes.has("client_abort"));
   const isAllProvidersUnavailable = log.error_code === GatewayErrorCodes.ALL_PROVIDERS_UNAVAILABLE;
   const excludedFromStats = !!log.excluded_from_stats;
-  const modelRouteMapping = resolveModelRouteMappingFromSpecialSettings(
+  const rawModelRouteMapping = resolveModelRouteMappingFromSpecialSettings(
     log.special_settings_json,
     log.final_provider_id
   );
+  const configuredRoute = resolveConfiguredModelRouteFromSpecialSettings(
+    log.special_settings_json,
+    log.final_provider_id
+  );
+  const modelRouteMapping =
+    rawModelRouteMapping &&
+    configuredRoute &&
+    isExpectedConfiguredRouteObservation(configuredRoute, rawModelRouteMapping)
+      ? null
+      : rawModelRouteMapping;
   const managedModelRoute = resolveAioManagedModelRouteFromSpecialSettings(
     log.special_settings_json,
     log.final_provider_id

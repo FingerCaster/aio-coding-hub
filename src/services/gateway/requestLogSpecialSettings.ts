@@ -31,6 +31,7 @@ export type CodexReasoningEffortSource = "request" | "default" | "unknown";
 export type ModelRouteReasoningEffortSource =
   | CodexReasoningEffortSource
   | "model_default"
+  | "configured_route"
   | "response";
 
 export type CodexReasoningEffortResolution = {
@@ -60,6 +61,20 @@ export type AioManagedModelRoute = {
   remoteModelId: string;
   requestedUpstreamModel: string;
   pricedModel: string | null;
+  applied: true;
+};
+
+export type ConfiguredModelRoute = {
+  providerId: number;
+  providerName: string | null;
+  policySource: "global" | "provider";
+  sourceModel: string;
+  targetModel: string | null;
+  effectiveModel: string;
+  reasoningEffort: string | null;
+  pricedCliKey: string | null;
+  modelApplied: boolean;
+  reasoningEffortApplied: boolean;
   applied: true;
 };
 
@@ -211,6 +226,7 @@ function normalizeModelRouteReasoningEffortSource(value: unknown): ModelRouteRea
   if (source === "request") return "request";
   if (source === "default") return "default";
   if (source === "model_default") return "model_default";
+  if (source === "configured_route") return "configured_route";
   if (source === "response") return "response";
   return "unknown";
 }
@@ -281,6 +297,7 @@ export function formatModelRouteReasoningEffortSource(
   if (source === "request") return "请求显式";
   if (source === "default") return "默认推断";
   if (source === "model_default") return "模型默认推断";
+  if (source === "configured_route") return "配置路由";
   if (source === "response") return "返回显式";
   return "未知";
 }
@@ -288,6 +305,25 @@ export function formatModelRouteReasoningEffortSource(
 function normalizeRouteText(value: unknown): string | null {
   const text = parsedSettingString(value).trim();
   return text ? text : null;
+}
+
+function normalizeConfiguredRouteText(
+  value: unknown,
+  options: { maxBytes: number; maxChars?: number }
+): string | null {
+  const text = normalizeRouteText(value);
+  if (!text) return null;
+  if (options.maxChars != null && [...text].length > options.maxChars) return null;
+  if (new TextEncoder().encode(text).byteLength > options.maxBytes) return null;
+  if (
+    [...text].some((character) => {
+      const codePoint = character.codePointAt(0) ?? 0;
+      return codePoint <= 0x1f || (codePoint >= 0x7f && codePoint <= 0x9f);
+    })
+  ) {
+    return null;
+  }
+  return text;
 }
 
 function normalizeRouteNumber(value: unknown): number | null {
@@ -378,6 +414,86 @@ export function hasModelRouteMappingSpecialSetting(
   return resolveModelRouteMappingFromSpecialSettings(specialSettingsJson) !== null;
 }
 
+function normalizeConfiguredModelRouteSetting(
+  setting: ParsedRequestLogSpecialSetting
+): ConfiguredModelRoute | null {
+  if (setting.type !== "configured_model_route" || setting.applied !== true) return null;
+
+  const providerId = normalizeRouteNumber(setting.providerId);
+  const sourceModel = normalizeConfiguredRouteText(setting.sourceModel, { maxBytes: 256 });
+  const targetModel = normalizeConfiguredRouteText(setting.targetModel, { maxBytes: 256 });
+  const effectiveModel = normalizeConfiguredRouteText(setting.effectiveModel, { maxBytes: 256 });
+  const reasoningEffort = normalizeConfiguredRouteText(setting.reasoningEffort, {
+    maxBytes: 256,
+    maxChars: 64,
+  });
+  const policySource = setting.policySource;
+  const modelApplied = setting.modelApplied === true;
+  const reasoningEffortApplied = setting.reasoningEffortApplied === true;
+
+  if (
+    providerId == null ||
+    !Number.isSafeInteger(providerId) ||
+    providerId <= 0 ||
+    !sourceModel ||
+    !effectiveModel ||
+    (policySource !== "global" && policySource !== "provider") ||
+    (!modelApplied && !reasoningEffortApplied) ||
+    (modelApplied && (!targetModel || targetModel !== effectiveModel)) ||
+    (!modelApplied && targetModel != null) ||
+    (reasoningEffortApplied && !reasoningEffort)
+  ) {
+    return null;
+  }
+
+  return {
+    providerId,
+    providerName: normalizeConfiguredRouteText(setting.providerName, {
+      maxBytes: 256,
+      maxChars: 128,
+    }),
+    policySource,
+    sourceModel,
+    targetModel,
+    effectiveModel,
+    reasoningEffort,
+    pricedCliKey: normalizeConfiguredRouteText(setting.pricedCliKey, {
+      maxBytes: 32,
+      maxChars: 32,
+    }),
+    modelApplied,
+    reasoningEffortApplied,
+    applied: true,
+  };
+}
+
+export function resolveConfiguredModelRouteFromSpecialSettings(
+  specialSettingsJson: string | null | undefined,
+  finalProviderId?: number | null
+): ConfiguredModelRoute | null {
+  const routes = parseRequestLogSpecialSettings(specialSettingsJson)
+    .map(normalizeConfiguredModelRouteSetting)
+    .filter((route): route is ConfiguredModelRoute => route !== null);
+  if (routes.length === 0) return null;
+
+  if (finalProviderId != null) {
+    return (
+      routes
+        .slice()
+        .reverse()
+        .find((route) => route.providerId === finalProviderId) ?? null
+    );
+  }
+
+  return routes[routes.length - 1] ?? null;
+}
+
+export function hasConfiguredModelRouteSpecialSetting(
+  specialSettingsJson: string | null | undefined
+): boolean {
+  return resolveConfiguredModelRouteFromSpecialSettings(specialSettingsJson) !== null;
+}
+
 function normalizeAioManagedModelRouteSetting(
   setting: ParsedRequestLogSpecialSetting
 ): AioManagedModelRoute | null {
@@ -433,6 +549,9 @@ export function chooseModelRouteAwareSpecialSettingsJson(
   preferredSettings: string | null | undefined,
   fallbackSettings: string | null | undefined
 ): string | null {
+  if (hasConfiguredModelRouteSpecialSetting(preferredSettings)) return preferredSettings ?? null;
+  if (hasConfiguredModelRouteSpecialSetting(fallbackSettings)) return fallbackSettings ?? null;
+
   if (hasModelRouteMappingSpecialSetting(preferredSettings)) return preferredSettings ?? null;
   if (hasModelRouteMappingSpecialSetting(fallbackSettings)) return fallbackSettings ?? null;
 

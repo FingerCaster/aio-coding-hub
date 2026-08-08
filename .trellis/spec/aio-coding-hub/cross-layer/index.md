@@ -14,6 +14,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Gateway failover route contract](./gateway-failover-route-contract.md):
   common provider-gate ownership, Ready-provider limits, persisted attempts,
   route hops, and UI count semantics.
+- [Configured model routing contract](./configured-model-routing-contract.md):
+  exact original-model matching, global/provider three-state policy, final-wire
+  protocol rewrites, pre-send failover, and provider-scoped audit/cost basis.
 - [Upstream error handling contract](./upstream-error-handling-contract.md):
   configured retry budgets, native Codex SSE recovery, terminal HTTP response
   rewriting, bounded diagnostics, and the shared segmented settings entry.
@@ -29,7 +32,7 @@ TypeScript bindings, frontend adapters, and React UI.
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
 - [Provider share and import contract](./provider-share-contract.md): strict
-  single-provider v1 compatibility reads and v2 exports, backend-owned
+  single-provider v1/v2 compatibility reads and v3 exports, backend-owned
   secrets/native I/O, bounded preview capabilities, plugin snapshot binding,
   additive disabled import, and exclusion of private account identity/token data.
 - [Config migration bundle contract](./config-migration-skill-bundle-contract.md):
@@ -95,6 +98,18 @@ When changing provider account-usage fetching:
    explicit account-usage route gate may consume its normalized completion for
    fail-open routing. Fixtures/specs contain no upstream body/message,
    credential, PII, live host, token name, or actual account amount.
+
+When changing configured model routing:
+
+1. Read [Configured model routing contract](./configured-model-routing-contract.md).
+2. Trace the immutable client model through per-Provider policy resolution,
+   final-wire application, attempt isolation, request logs, and cost basis.
+3. Preserve the ordering after sanitizer and `RequestBeforeSend`, but before
+   URL/fingerprint/body finalization and transport commit.
+4. Verify route-application failure switches Provider without transport retry,
+   health/circuit/account/session mutation, or a second client request.
+5. Recheck settings 57, SQLite 45, Provider share v3, config bundle v4, and
+   generated TypeScript bindings together.
 
 When changing provider deletion or request-log provider identity:
 
@@ -228,6 +243,10 @@ When changing usage folders, development-time estimates, or provider metrics tre
   checks.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
+- When changing configured model routing, verify exact case-sensitive one-pass
+  matching, Provider replace/suppress semantics, all supported wire protocols,
+  compressed/plugin ordering, failure isolation, original-model audit, final
+  Provider marker ownership, and no source-price fallback.
 - When changing upstream error handling, verify retry/rewrite save isolation,
   shared retry budget/backoff, pre-commit-only stream recovery, terminal-only
   HTTP rewrite, client/attempt status separation, and bounded redacted evidence.

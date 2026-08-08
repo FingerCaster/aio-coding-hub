@@ -119,7 +119,7 @@ export function RequestLogDetailSummaryTab({
             {modelDisplayMeta.isRouteMismatch ? (
               <MetricCard
                 label="模型路由"
-                value={modelDisplayMeta.text}
+                value={modelDisplayMeta.configuredRouteText ?? modelDisplayMeta.text}
                 tone={modelDisplayMeta.isSevereRouteMismatch ? "danger" : "info"}
                 title={modelDisplayMeta.title}
               />

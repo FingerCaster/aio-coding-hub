@@ -1,6 +1,7 @@
 import type {
   ClaudeModels,
   CliKey,
+  ModelRoutingPolicy,
   ProviderOAuthDeviceCodeStartResult,
   ProviderOAuthStatusResult,
   ProviderExtensionValuesInput,
@@ -11,6 +12,8 @@ import type {
 import type { ProviderEditorDialogFormInput } from "../../schemas/providerEditorDialog";
 import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
 import type { ProviderModelCatalog } from "../../services/providers/providerModels";
+
+export type ProviderModelRoutingMode = "inherit" | "custom" | "disabled";
 
 /** Provider identity and lifecycle */
 export type ProviderActionContext = {
@@ -63,6 +66,8 @@ export type FormActionContext = {
   streamIdleTimeoutSeconds: string;
   upstreamRetryPolicyOverrideEnabled: boolean;
   upstreamRetryPolicyDraft: UpstreamRetryPolicy;
+  modelRoutingMode: ProviderModelRoutingMode;
+  modelRoutingPolicyDraft: ModelRoutingPolicy;
   apiKeyConfigured: boolean;
   apiKeyValue: string;
   form: {
@@ -88,6 +93,8 @@ export type ProviderEditorPayloadContext = {
   streamIdleTimeoutSeconds: string;
   upstreamRetryPolicyOverrideEnabled: boolean;
   upstreamRetryPolicyDraft: UpstreamRetryPolicy;
+  modelRoutingMode: ProviderModelRoutingMode;
+  modelRoutingPolicyDraft: ModelRoutingPolicy;
   apiKeyConfigured: boolean;
   isCodexGatewaySource: boolean;
   sourceProviderId: number | null;

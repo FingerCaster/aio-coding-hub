@@ -10,11 +10,138 @@ import {
   resolveClaudeModelMappingFromSpecialSettings,
   resolveAioManagedModelRouteFromSpecialSettings,
   resolveCodexReasoningEffort,
+  resolveConfiguredModelRouteFromSpecialSettings,
   resolveModelRouteMappingFromSpecialSettings,
   resolveUpstreamErrorResponseRuleMarker,
 } from "../requestLogSpecialSettings";
 
 describe("services/gateway/requestLogSpecialSettings", () => {
+  it("resolves only an applied configured route for the final provider", () => {
+    const settings = JSON.stringify([
+      {
+        type: "configured_model_route",
+        providerId: 1,
+        providerName: "Primary",
+        policySource: "global",
+        sourceModel: "source",
+        targetModel: "target",
+        effectiveModel: "target",
+        reasoningEffort: null,
+        pricedCliKey: "claude",
+        applied: true,
+        modelApplied: true,
+        reasoningEffortApplied: false,
+      },
+      {
+        type: "configured_model_route",
+        providerId: 2,
+        providerName: "Backup",
+        policySource: "provider",
+        sourceModel: "source",
+        targetModel: null,
+        effectiveModel: "source",
+        reasoningEffort: "low",
+        pricedCliKey: "claude",
+        applied: true,
+        modelApplied: false,
+        reasoningEffortApplied: true,
+      },
+    ]);
+
+    expect(resolveConfiguredModelRouteFromSpecialSettings(settings, 2)).toEqual({
+      providerId: 2,
+      providerName: "Backup",
+      policySource: "provider",
+      sourceModel: "source",
+      targetModel: null,
+      effectiveModel: "source",
+      reasoningEffort: "low",
+      pricedCliKey: "claude",
+      modelApplied: false,
+      reasoningEffortApplied: true,
+      applied: true,
+    });
+    expect(resolveConfiguredModelRouteFromSpecialSettings(settings, 99)).toBeNull();
+  });
+
+  it("accepts effort-only routing after an earlier model rewrite", () => {
+    const settings = JSON.stringify([
+      {
+        type: "configured_model_route",
+        providerId: 7,
+        policySource: "provider",
+        sourceModel: "source",
+        targetModel: null,
+        effectiveModel: "bridge-target",
+        reasoningEffort: "low",
+        pricedCliKey: "codex",
+        applied: true,
+        modelApplied: false,
+        reasoningEffortApplied: true,
+      },
+    ]);
+
+    expect(resolveConfiguredModelRouteFromSpecialSettings(settings, 7)).toMatchObject({
+      sourceModel: "source",
+      targetModel: null,
+      effectiveModel: "bridge-target",
+      reasoningEffort: "low",
+      modelApplied: false,
+      reasoningEffortApplied: true,
+    });
+  });
+
+  it("rejects pending, malformed, unbounded, and internally inconsistent route markers", () => {
+    const invalid = [
+      "bad-json",
+      JSON.stringify([{ type: "configured_model_route", applied: false }]),
+      JSON.stringify([
+        {
+          type: "configured_model_route",
+          providerId: 1,
+          policySource: "future",
+          sourceModel: "source",
+          targetModel: "target",
+          effectiveModel: "target",
+          applied: true,
+          modelApplied: true,
+          reasoningEffortApplied: false,
+        },
+      ]),
+      JSON.stringify([
+        {
+          type: "configured_model_route",
+          providerId: 1,
+          policySource: "global",
+          sourceModel: "source",
+          targetModel: "target",
+          effectiveModel: "different",
+          applied: true,
+          modelApplied: true,
+          reasoningEffortApplied: false,
+        },
+      ]),
+      JSON.stringify([
+        {
+          type: "configured_model_route",
+          providerId: 1,
+          policySource: "global",
+          sourceModel: "模".repeat(86),
+          targetModel: null,
+          effectiveModel: "模".repeat(86),
+          reasoningEffort: "low",
+          applied: true,
+          modelApplied: false,
+          reasoningEffortApplied: true,
+        },
+      ]),
+    ];
+
+    for (const value of invalid) {
+      expect(resolveConfiguredModelRouteFromSpecialSettings(value)).toBeNull();
+    }
+  });
+
   it("parses response-rule audit markers without exposing response content", () => {
     const marker = resolveUpstreamErrorResponseRuleMarker(
       JSON.stringify([

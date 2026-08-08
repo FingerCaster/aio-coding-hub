@@ -112,6 +112,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
+    model_routing_policy_override: partial.model_routing_policy_override ?? null,
   };
 }
 
@@ -170,6 +171,7 @@ function makeInitialValues(
     ...partial,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
+    model_routing_policy_override: partial.model_routing_policy_override ?? null,
   };
 }
 
@@ -836,6 +838,83 @@ describe("pages/providers/ProviderEditorDialog", () => {
           providerId: 1,
           upstreamRetryPolicyOverride: null,
         })
+      )
+    );
+  });
+
+  it("shows explicit routing tri-state and preserves disabled policy rules", async () => {
+    const disabledPolicy = {
+      enabled: false,
+      rules: [{ source_model: "source", target_model: "target", reasoning_effort: "low" }],
+    };
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({ id: 1, model_routing_policy_override: disabledPolicy })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          api_key_configured: true,
+          model_routing_policy_override: disabledPolicy,
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("tab", { name: "禁用路由" })).toHaveAttribute("aria-selected", "true");
+    expect(dialog.queryByDisplayValue("source")).not.toBeInTheDocument();
+
+    fireEvent.click(dialog.getByRole("tab", { name: "使用专属规则" }));
+    expect(dialog.getByDisplayValue("source")).toBeInTheDocument();
+    expect(dialog.getByDisplayValue("target")).toBeInTheDocument();
+    expect(dialog.getByDisplayValue("low")).toBeInTheDocument();
+
+    fireEvent.click(dialog.getByRole("tab", { name: "禁用路由" }));
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({ modelRoutingPolicyOverride: disabledPolicy })
+      )
+    );
+  });
+
+  it("clears an existing model routing override when inheritance is selected", async () => {
+    vi.mocked(providerUpsert).mockResolvedValue(
+      makeProvider({ id: 1, model_routing_policy_override: null })
+    );
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={makeProvider({
+          api_key_configured: true,
+          model_routing_policy_override: {
+            enabled: true,
+            rules: [{ source_model: "source", target_model: "target", reasoning_effort: null }],
+          },
+        })}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialog = within(screen.getByRole("dialog"));
+    expect(dialog.getByRole("tab", { name: "使用专属规则" })).toHaveAttribute(
+      "aria-selected",
+      "true"
+    );
+    fireEvent.click(dialog.getByRole("tab", { name: "继承全局" }));
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({ providerId: 1, modelRoutingPolicyOverride: null })
       )
     );
   });

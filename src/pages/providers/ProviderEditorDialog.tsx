@@ -1,6 +1,7 @@
 import { ChevronDown } from "lucide-react";
 import type {
   CliKey,
+  ModelRoutingPolicy,
   ProviderSummary,
   UpstreamRetryPolicy,
 } from "../../services/providers/providers";
@@ -19,6 +20,7 @@ import { ProviderAccountUsageSection } from "./ProviderAccountUsageSection";
 import { LimitsSection } from "./LimitsSection";
 import { ClaudeModelSection } from "./ClaudeModelSection";
 import { RetryPolicyFields } from "../../components/gateway/RetryPolicyFields";
+import { ModelRoutingPolicyFields } from "../../components/gateway/ModelRoutingPolicyFields";
 import { cn } from "../../utils/cn";
 import { ContributionSlot } from "../../plugins/contributions/ContributionSlot";
 
@@ -128,6 +130,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
         />
 
         <ProviderRetryPolicySection form={f} />
+        <ProviderModelRoutingPolicySection form={f} />
 
         <LimitsSection form={f} />
         <ClaudeModelSection form={f} />
@@ -165,6 +168,51 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
         </div>
       </div>
     </Dialog>
+  );
+}
+
+function ProviderModelRoutingPolicySection({
+  form,
+}: {
+  form: ReturnType<typeof useProviderEditorForm>;
+}) {
+  const mode = form.modelRoutingMode;
+
+  function updatePolicy(next: ModelRoutingPolicy) {
+    form.setModelRoutingPolicyDraft(next);
+  }
+
+  return (
+    <div className="overflow-hidden rounded-lg border border-border bg-white dark:bg-secondary">
+      <div className="space-y-3 px-4 py-3">
+        <div>
+          <div className="text-sm font-semibold text-foreground">模型路由</div>
+          <div className="mt-0.5 text-xs text-muted-foreground">
+            选择当前供应商继承全局策略、使用专属规则，或明确关闭模型路由。
+          </div>
+        </div>
+        <TabList<"inherit" | "custom" | "disabled">
+          ariaLabel="供应商模型路由模式"
+          items={[
+            { key: "inherit", label: "继承全局", disabled: form.saving },
+            { key: "custom", label: "使用专属规则", disabled: form.saving },
+            { key: "disabled", label: "禁用路由", disabled: form.saving },
+          ]}
+          value={mode}
+          onChange={form.setModelRoutingMode}
+        />
+      </div>
+      {mode === "custom" ? (
+        <div className="space-y-4 border-t border-border px-4 py-4">
+          <ModelRoutingPolicyFields
+            policy={{ ...form.modelRoutingPolicyDraft, enabled: true }}
+            disabled={form.saving}
+            showEnabled={false}
+            onChange={updatePolicy}
+          />
+        </div>
+      ) : null}
+    </div>
   );
 }
 

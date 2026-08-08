@@ -2,8 +2,9 @@
 
 use super::defaults::*;
 use super::types::{
-    AppSettings, CodexHomeMode, UpstreamErrorMessageBehavior, UpstreamErrorResponseRule,
-    UpstreamErrorStatusBehavior, UpstreamHttpRetryRule, UpstreamRetryPolicy,
+    AppSettings, CodexHomeMode, ModelRoutingPolicy, ModelRoutingRule, UpstreamErrorMessageBehavior,
+    UpstreamErrorResponseRule, UpstreamErrorStatusBehavior, UpstreamHttpRetryRule,
+    UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
@@ -373,6 +374,140 @@ pub fn sanitize_upstream_retry_policy(policy: &mut UpstreamRetryPolicy) -> bool 
         policy.enabled = false;
     }
 
+    *policy != original
+}
+
+fn normalize_optional_model_routing_text(
+    value: Option<String>,
+    max_bytes: usize,
+) -> Option<String> {
+    value
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty())
+        .filter(|value| value.len() <= max_bytes && !value.chars().any(char::is_control))
+}
+
+fn normalize_model_routing_rule_for_write(
+    rule: &mut ModelRoutingRule,
+    index: usize,
+) -> AppResult<()> {
+    rule.source_model = rule.source_model.trim().to_string();
+    if rule.source_model.is_empty() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: model_routing_policy.rules[{index}].source_model must not be empty"
+        )
+        .into());
+    }
+    if rule.source_model.len() > MAX_MODEL_ROUTING_MODEL_BYTES
+        || rule.source_model.chars().any(char::is_control)
+    {
+        return Err(format!(
+            "SEC_INVALID_INPUT: model_routing_policy.rules[{index}].source_model must be <= {MAX_MODEL_ROUTING_MODEL_BYTES} bytes and contain no control characters"
+        )
+        .into());
+    }
+
+    rule.target_model = rule
+        .target_model
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if rule.target_model.as_ref().is_some_and(|value| {
+        value.len() > MAX_MODEL_ROUTING_MODEL_BYTES || value.chars().any(char::is_control)
+    }) {
+        return Err(format!(
+            "SEC_INVALID_INPUT: model_routing_policy.rules[{index}].target_model must be <= {MAX_MODEL_ROUTING_MODEL_BYTES} bytes and contain no control characters"
+        )
+        .into());
+    }
+
+    rule.reasoning_effort = rule
+        .reasoning_effort
+        .take()
+        .map(|value| value.trim().to_string())
+        .filter(|value| !value.is_empty());
+    if rule.reasoning_effort.as_ref().is_some_and(|value| {
+        value.chars().count() > MAX_MODEL_ROUTING_EFFORT_CHARS
+            || value.chars().any(char::is_control)
+    }) {
+        return Err(format!(
+            "SEC_INVALID_INPUT: model_routing_policy.rules[{index}].reasoning_effort must be <= {MAX_MODEL_ROUTING_EFFORT_CHARS} characters and contain no control characters"
+        )
+        .into());
+    }
+
+    if rule.target_model.is_none() && rule.reasoning_effort.is_none() {
+        return Err(format!(
+            "SEC_INVALID_INPUT: model_routing_policy.rules[{index}] must override a model or reasoning effort"
+        )
+        .into());
+    }
+    Ok(())
+}
+
+pub fn normalize_model_routing_policy_for_write(
+    policy: &mut ModelRoutingPolicy,
+) -> AppResult<bool> {
+    let original = policy.clone();
+    if policy.rules.len() > MAX_MODEL_ROUTING_RULES {
+        return Err(format!(
+            "SEC_INVALID_INPUT: model_routing_policy.rules must contain <= {MAX_MODEL_ROUTING_RULES} entries"
+        )
+        .into());
+    }
+
+    let mut seen = HashSet::new();
+    for (index, rule) in policy.rules.iter_mut().enumerate() {
+        normalize_model_routing_rule_for_write(rule, index)?;
+        if !seen.insert(rule.source_model.clone()) {
+            return Err(format!(
+                "SEC_INVALID_INPUT: model_routing_policy.rules[{index}].source_model must be unique"
+            )
+            .into());
+        }
+    }
+    if policy.enabled && policy.rules.is_empty() {
+        policy.enabled = false;
+    }
+    Ok(*policy != original)
+}
+
+pub fn sanitize_model_routing_policy(policy: &mut ModelRoutingPolicy) -> bool {
+    let original = policy.clone();
+    let mut seen = HashSet::new();
+    let mut rules = Vec::new();
+    for rule in policy.rules.drain(..).take(MAX_MODEL_ROUTING_RULES) {
+        let source_model = rule.source_model.trim().to_string();
+        if source_model.is_empty()
+            || source_model.len() > MAX_MODEL_ROUTING_MODEL_BYTES
+            || source_model.chars().any(char::is_control)
+            || !seen.insert(source_model.clone())
+        {
+            continue;
+        }
+        let target_model =
+            normalize_optional_model_routing_text(rule.target_model, MAX_MODEL_ROUTING_MODEL_BYTES);
+        let reasoning_effort = rule
+            .reasoning_effort
+            .map(|value| value.trim().to_string())
+            .filter(|value| {
+                !value.is_empty()
+                    && value.chars().count() <= MAX_MODEL_ROUTING_EFFORT_CHARS
+                    && !value.chars().any(char::is_control)
+            });
+        if target_model.is_none() && reasoning_effort.is_none() {
+            continue;
+        }
+        rules.push(ModelRoutingRule {
+            source_model,
+            target_model,
+            reasoning_effort,
+        });
+    }
+    policy.rules = rules;
+    if policy.enabled && policy.rules.is_empty() {
+        policy.enabled = false;
+    }
     *policy != original
 }
 fn is_canonical_uuid_v4(value: &str) -> bool {
@@ -1315,6 +1450,17 @@ fn migrate_add_stream_internal_error_retry(
     }
     changed
 }
+
+fn migrate_add_model_routing_policy(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
+    )
+}
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -1356,6 +1502,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_provider_failback,
     migrate_add_upstream_error_response_rules,
     migrate_add_stream_internal_error_retry,
+    migrate_add_model_routing_policy,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1376,6 +1523,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_request_log_retention_days(settings);
     repaired |= sanitize_failover_settings(settings);
     repaired |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
+    repaired |= sanitize_model_routing_policy(&mut settings.model_routing_policy);
     repaired |= sanitize_upstream_error_response_rules(&mut settings.upstream_error_response_rules);
     repaired |= sanitize_circuit_breaker_settings(settings);
     repaired |= sanitize_provider_cooldown_seconds(settings);
@@ -1414,6 +1562,82 @@ mod tests {
                 message: " busy\r\nnow ".to_string(),
             },
         }
+    }
+
+    #[test]
+    fn normalize_model_routing_policy_trims_and_accepts_single_output_rules() {
+        let mut policy = ModelRoutingPolicy {
+            enabled: true,
+            rules: vec![
+                ModelRoutingRule {
+                    source_model: " source ".to_string(),
+                    target_model: Some(" target ".to_string()),
+                    reasoning_effort: None,
+                },
+                ModelRoutingRule {
+                    source_model: "effort-only".to_string(),
+                    target_model: None,
+                    reasoning_effort: Some(" high ".to_string()),
+                },
+            ],
+        };
+
+        assert!(normalize_model_routing_policy_for_write(&mut policy).unwrap());
+        assert_eq!(policy.rules[0].source_model, "source");
+        assert_eq!(policy.rules[0].target_model.as_deref(), Some("target"));
+        assert_eq!(policy.rules[1].reasoning_effort.as_deref(), Some("high"));
+    }
+
+    #[test]
+    fn normalize_model_routing_policy_rejects_duplicates_and_empty_outputs() {
+        let mut duplicates = ModelRoutingPolicy {
+            enabled: true,
+            rules: vec![
+                ModelRoutingRule {
+                    source_model: "same".to_string(),
+                    target_model: Some("one".to_string()),
+                    reasoning_effort: None,
+                },
+                ModelRoutingRule {
+                    source_model: " same ".to_string(),
+                    target_model: Some("two".to_string()),
+                    reasoning_effort: None,
+                },
+            ],
+        };
+        assert!(normalize_model_routing_policy_for_write(&mut duplicates).is_err());
+
+        let mut empty = ModelRoutingPolicy {
+            enabled: true,
+            rules: vec![ModelRoutingRule {
+                source_model: "source".to_string(),
+                target_model: Some("  ".to_string()),
+                reasoning_effort: None,
+            }],
+        };
+        assert!(normalize_model_routing_policy_for_write(&mut empty).is_err());
+    }
+
+    #[test]
+    fn sanitize_model_routing_policy_drops_invalid_rules_and_disables_empty_policy() {
+        let mut policy = ModelRoutingPolicy {
+            enabled: true,
+            rules: vec![
+                ModelRoutingRule {
+                    source_model: String::new(),
+                    target_model: Some("target".to_string()),
+                    reasoning_effort: None,
+                },
+                ModelRoutingRule {
+                    source_model: "source".to_string(),
+                    target_model: None,
+                    reasoning_effort: None,
+                },
+            ],
+        };
+
+        assert!(sanitize_model_routing_policy(&mut policy));
+        assert_eq!(policy, ModelRoutingPolicy::default());
     }
 
     #[test]

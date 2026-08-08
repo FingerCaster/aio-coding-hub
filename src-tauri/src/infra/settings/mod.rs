@@ -21,7 +21,8 @@ pub use defaults::{
     SCHEMA_VERSION,
 };
 pub(crate) use migration::{
-    normalize_upstream_error_response_rules_for_write, normalize_upstream_retry_policy_for_write,
+    normalize_model_routing_policy_for_write, normalize_upstream_error_response_rules_for_write,
+    normalize_upstream_retry_policy_for_write, sanitize_model_routing_policy,
     sanitize_upstream_retry_policy,
 };
 pub(crate) use persistence::validate_bounds;
@@ -30,10 +31,12 @@ pub use persistence::{
     request_log_retention_days_fail_open, set_settings_finalize_failpoint_for_tests,
     set_settings_finalize_restore_failpoint_for_tests, update, write,
 };
+#[allow(unused_imports)]
+pub use types::ModelRoutingRule;
 pub use types::{
-    AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, ProviderFailbackStrategy,
-    UpstreamErrorMessageBehavior, UpstreamErrorResponseMatchMode, UpstreamErrorResponseRule,
-    UpstreamErrorStatusBehavior, UpstreamHttpRetryRule, UpstreamRetryPolicy,
-    UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind, WslHostAddressMode,
-    WslTargetCli,
+    AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, ModelRoutingPolicy,
+    ProviderFailbackStrategy, UpstreamErrorMessageBehavior, UpstreamErrorResponseMatchMode,
+    UpstreamErrorResponseRule, UpstreamErrorStatusBehavior, UpstreamHttpRetryRule,
+    UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind,
+    WslHostAddressMode, WslTargetCli,
 };

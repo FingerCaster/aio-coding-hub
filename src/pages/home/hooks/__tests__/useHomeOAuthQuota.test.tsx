@@ -70,6 +70,7 @@ function makeProvider(
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
+    model_routing_policy_override: partial.model_routing_policy_override ?? null,
     api_key_configured: partial.api_key_configured ?? false,
     newapi_account_user_id: partial.newapi_account_user_id ?? null,
     newapi_account_access_token_configured: partial.newapi_account_access_token_configured ?? false,

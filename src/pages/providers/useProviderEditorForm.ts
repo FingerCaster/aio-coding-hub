@@ -4,6 +4,7 @@ import { useForm } from "react-hook-form";
 import type { ActiveUiContribution, JsonValue } from "../../generated/bindings";
 import type {
   ClaudeModels,
+  ModelRoutingPolicy,
   ProviderExtensionValuesInput,
   ProviderAccountUsageResult,
   ProviderOAuthDeviceCodeStartResult,
@@ -18,6 +19,7 @@ import type {
   OAuthActionContext,
   OAuthStatusValue,
   ProviderEditorPayloadContext,
+  ProviderModelRoutingMode,
   SaveActionContext,
 } from "./providerEditorActionContext";
 import {
@@ -73,6 +75,7 @@ import {
 import { logToConsole } from "../../services/consoleLog";
 import { formatUnknownError } from "../../utils/errors";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../services/gateway/upstreamRetryPolicy";
+import { DEFAULT_MODEL_ROUTING_POLICY } from "../../services/gateway/modelRoutingPolicy";
 import { useContributionsForSlot } from "../../plugins/contributions/useActiveContributions";
 import { contributionKey, type ContributionValues } from "../../plugins/contributions/types";
 
@@ -339,6 +342,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     useState(false);
   const [upstreamRetryPolicyDraft, setUpstreamRetryPolicyDraft] = useState<UpstreamRetryPolicy>(
     DEFAULT_UPSTREAM_RETRY_POLICY
+  );
+  const [modelRoutingMode, setModelRoutingMode] = useState<ProviderModelRoutingMode>("inherit");
+  const [modelRoutingPolicyDraft, setModelRoutingPolicyDraft] = useState<ModelRoutingPolicy>(
+    DEFAULT_MODEL_ROUTING_POLICY
   );
   const [saving, setSaving] = useState(false);
   const [savingWithModelFetch, setSavingWithModelFetch] = useState(false);
@@ -929,6 +936,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setStreamIdleTimeoutSeconds,
     setUpstreamRetryPolicyOverrideEnabled,
     setUpstreamRetryPolicyDraft,
+    setModelRoutingMode,
+    setModelRoutingPolicyDraft,
     setAuthMode,
     setCx2ccSourceValue,
     setOauthStatus,
@@ -967,6 +976,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
       upstreamRetryPolicyDraft,
+      modelRoutingMode,
+      modelRoutingPolicyDraft,
       apiKeyConfigured,
       isCodexGatewaySource,
       sourceProviderId,
@@ -1014,6 +1025,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
       upstreamRetryPolicyDraft,
+      modelRoutingMode,
+      modelRoutingPolicyDraft,
       apiKeyConfigured,
       isCodexGatewaySource,
       sourceProviderId,
@@ -1267,6 +1280,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setUpstreamRetryPolicyOverrideEnabled,
     upstreamRetryPolicyDraft,
     setUpstreamRetryPolicyDraft,
+    modelRoutingMode,
+    setModelRoutingMode,
+    modelRoutingPolicyDraft,
+    setModelRoutingPolicyDraft,
     oauthStatus,
     oauthLoading,
     oauthDeviceFlow,

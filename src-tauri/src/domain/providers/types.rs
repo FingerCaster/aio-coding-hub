@@ -101,6 +101,8 @@ pub struct ProviderUpsertParams {
     pub account_usage_credentials_copy_from_provider_id: Option<i64>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     pub upstream_retry_policy_override_specified: bool,
+    pub model_routing_policy_override: Option<crate::settings::ModelRoutingPolicy>,
+    pub model_routing_policy_override_specified: bool,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize, specta::Type)]
@@ -265,6 +267,7 @@ pub struct ProviderSummary {
     pub stream_idle_timeout_seconds: Option<u32>,
     pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
+    pub model_routing_policy_override: Option<crate::settings::ModelRoutingPolicy>,
     pub api_key_configured: bool,
     pub newapi_account_user_id: Option<String>,
     pub newapi_account_access_token_configured: bool,
@@ -322,6 +325,7 @@ pub(crate) struct ProviderForGateway {
     pub stream_idle_timeout_seconds: Option<u32>,
     pub extension_values: Vec<ProviderExtensionValues>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
+    pub model_routing_policy_override: Option<crate::settings::ModelRoutingPolicy>,
 }
 
 #[derive(Debug, Clone)]
@@ -390,6 +394,7 @@ pub(super) struct DecodedProviderRow {
     pub source_provider_id: Option<i64>,
     pub bridge_type: Option<String>,
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
+    pub model_routing_policy_override: Option<crate::settings::ModelRoutingPolicy>,
 }
 
 #[derive(Debug, Clone)]

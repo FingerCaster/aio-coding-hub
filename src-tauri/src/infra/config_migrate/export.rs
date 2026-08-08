@@ -89,7 +89,8 @@ SELECT
   source_provider_id,
   (SELECT source.provider_uuid FROM providers source WHERE source.id = providers.source_provider_id)
     AS source_provider_uuid,
-  bridge_type
+  bridge_type,
+  model_routing_policy_json
 FROM providers
 ORDER BY cli_key ASC, sort_order ASC, id ASC
 "#,
@@ -156,6 +157,10 @@ ORDER BY cli_key ASC, sort_order ASC, id ASC
                 bridge_type: row.get("bridge_type")?,
                 account_usage_config: None,
                 account_usage_credentials: None,
+                model_routing_policy_override:
+                    crate::providers::model_routing_policy_override_from_json(
+                        row.get("model_routing_policy_json")?,
+                    ),
             })
         })
         .map_err(|e| db_err!("failed to query providers for export: {e}"))?;

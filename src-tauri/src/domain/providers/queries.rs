@@ -64,6 +64,44 @@ pub(super) fn retry_policy_override_to_json(
         .map_err(|e| format!("SYSTEM_ERROR: failed to serialize retry policy override: {e}").into())
 }
 
+pub(crate) fn model_routing_policy_override_from_json(
+    raw: Option<String>,
+) -> Option<crate::settings::ModelRoutingPolicy> {
+    let raw = raw?;
+    let trimmed = raw.trim();
+    if trimmed.is_empty() {
+        tracing::warn!(
+            error_class = "empty_provider_model_routing_policy",
+            "disabled malformed provider model routing policy override"
+        );
+        return Some(crate::settings::ModelRoutingPolicy::default());
+    }
+    let mut policy = match serde_json::from_str::<crate::settings::ModelRoutingPolicy>(trimmed) {
+        Ok(policy) => policy,
+        Err(_) => {
+            tracing::warn!(
+                error_class = "invalid_provider_model_routing_policy",
+                "disabled malformed provider model routing policy override"
+            );
+            return Some(crate::settings::ModelRoutingPolicy::default());
+        }
+    };
+    crate::settings::sanitize_model_routing_policy(&mut policy);
+    Some(policy)
+}
+
+pub(crate) fn model_routing_policy_override_to_json(
+    policy: Option<crate::settings::ModelRoutingPolicy>,
+) -> crate::shared::error::AppResult<Option<String>> {
+    let Some(mut policy) = policy else {
+        return Ok(None);
+    };
+    crate::settings::normalize_model_routing_policy_for_write(&mut policy)?;
+    serde_json::to_string(&policy).map(Some).map_err(|error| {
+        format!("SYSTEM_ERROR: failed to serialize model routing policy override: {error}").into()
+    })
+}
+
 fn decode_provider_row(
     row: &rusqlite::Row<'_>,
     cli_key: &str,
@@ -105,6 +143,10 @@ fn decode_provider_row(
         bridge_type: row.get("bridge_type").unwrap_or(None),
         upstream_retry_policy_override: retry_policy_override_from_json(
             row.get::<_, Option<String>>("upstream_retry_policy_json")
+                .unwrap_or(None),
+        ),
+        model_routing_policy_override: model_routing_policy_override_from_json(
+            row.get::<_, Option<String>>("model_routing_policy_json")
                 .unwrap_or(None),
         ),
     })
@@ -150,6 +192,7 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
         ),
         extension_values: Vec::new(),
         upstream_retry_policy_override: decoded.upstream_retry_policy_override,
+        model_routing_policy_override: decoded.model_routing_policy_override,
         api_key_configured: row
             .get::<_, Option<i64>>("api_key_configured")
             .unwrap_or(None)
@@ -458,6 +501,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  model_routing_policy_json,
   CASE WHEN COALESCE(api_key_plaintext, '') = '' THEN 0 ELSE 1 END AS api_key_configured
 FROM providers
 WHERE id = ?1
@@ -957,6 +1001,7 @@ SELECT
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  model_routing_policy_json,
   CASE WHEN COALESCE(api_key_plaintext, '') = '' THEN 0 ELSE 1 END AS api_key_configured
 FROM providers
 WHERE cli_key = ?1
@@ -1022,6 +1067,7 @@ fn map_gateway_provider_row(
         ),
         extension_values: Vec::new(),
         upstream_retry_policy_override: decoded.upstream_retry_policy_override,
+        model_routing_policy_override: decoded.model_routing_policy_override,
     })
 }
 
@@ -1057,7 +1103,8 @@ SELECT
   p.source_provider_id,
   p.bridge_type,
   p.stream_idle_timeout_seconds,
-  p.upstream_retry_policy_json
+  p.upstream_retry_policy_json,
+  p.model_routing_policy_json
 FROM sort_mode_providers mp
 JOIN providers p ON p.id = mp.provider_id
 WHERE mp.mode_id = ?1
@@ -1115,7 +1162,8 @@ SELECT
   source_provider_id,
   bridge_type,
   stream_idle_timeout_seconds,
-  upstream_retry_policy_json
+  upstream_retry_policy_json,
+  model_routing_policy_json
 FROM providers
 WHERE cli_key = ?1
   AND enabled = 1
@@ -1258,7 +1306,8 @@ SELECT
   source_provider_id,
   bridge_type,
   stream_idle_timeout_seconds,
-  upstream_retry_policy_json
+  upstream_retry_policy_json,
+  model_routing_policy_json
 FROM providers
 WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL
 "#;
@@ -1308,7 +1357,8 @@ SELECT
   source_provider_id,
   bridge_type,
   stream_idle_timeout_seconds,
-  upstream_retry_policy_json
+  upstream_retry_policy_json,
+  model_routing_policy_json
 FROM providers
 WHERE id = ?1
   AND provider_uuid = ?2
@@ -1523,6 +1573,8 @@ pub(crate) fn upsert_with_provider_uuid(
         account_usage_credentials_copy_from_provider_id,
         upstream_retry_policy_override,
         upstream_retry_policy_override_specified,
+        model_routing_policy_override,
+        model_routing_policy_override_specified,
     } = input;
     if provider_id.is_some() && provider_uuid_override.is_some() {
         return Err("SEC_INVALID_INPUT: provider UUID override is create-only"
@@ -1663,6 +1715,8 @@ pub(crate) fn upsert_with_provider_uuid(
         normalize_stream_idle_timeout_seconds(stream_idle_timeout_seconds)?;
     let upstream_retry_policy_override_json =
         retry_policy_override_to_json(upstream_retry_policy_override)?;
+    let model_routing_policy_override_json =
+        model_routing_policy_override_to_json(model_routing_policy_override)?;
 
     let api_key = api_key.as_deref().map(str::trim).filter(|v| !v.is_empty());
 
@@ -1783,9 +1837,10 @@ INSERT INTO providers(
   bridge_type,
   stream_idle_timeout_seconds,
   upstream_retry_policy_json,
+  model_routing_policy_json,
   created_at,
   updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, '{}', ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31)
 "#,
                 params![
                     provider_uuid,
@@ -1816,6 +1871,7 @@ INSERT INTO providers(
                     bridge_type,
                     stream_idle_timeout_seconds,
                     upstream_retry_policy_override_json,
+                    model_routing_policy_override_json,
                     now,
                     now
                 ],
@@ -1871,6 +1927,7 @@ INSERT INTO providers(
                 Option<String>,
                 Option<i64>,
                 Option<String>,
+                Option<String>,
                 String,
                 String,
                 String,
@@ -1879,9 +1936,9 @@ INSERT INTO providers(
             );
             let existing: Option<ExistingProviderRow> = tx
                 .query_row(
-                    "SELECT cli_key, api_key_plaintext, priority, claude_models_json, auth_mode, daily_reset_mode, daily_reset_time, tags_json, note, availability_test_model, stream_idle_timeout_seconds, upstream_retry_policy_json, model_mapping_json, base_urls_json, base_url_mode, source_provider_id, bridge_type FROM providers WHERE id = ?1",
+                    "SELECT cli_key, api_key_plaintext, priority, claude_models_json, auth_mode, daily_reset_mode, daily_reset_time, tags_json, note, availability_test_model, stream_idle_timeout_seconds, upstream_retry_policy_json, model_routing_policy_json, model_mapping_json, base_urls_json, base_url_mode, source_provider_id, bridge_type FROM providers WHERE id = ?1",
                     params![id],
-                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?, row.get(15)?, row.get(16)?)),
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?, row.get(11)?, row.get(12)?, row.get(13)?, row.get(14)?, row.get(15)?, row.get(16)?, row.get(17)?)),
                 )
                 .optional()
                 .map_err(|e| db_err!("failed to query provider: {e}"))?;
@@ -1899,6 +1956,7 @@ INSERT INTO providers(
                 existing_availability_test_model,
                 existing_stream_idle_timeout_seconds,
                 existing_upstream_retry_policy_json,
+                existing_model_routing_policy_json,
                 _existing_model_mapping_json,
                 existing_base_urls_json,
                 existing_base_url_mode,
@@ -2003,6 +2061,12 @@ INSERT INTO providers(
                 } else {
                     existing_upstream_retry_policy_json
                 };
+            let next_model_routing_policy_override_json = if model_routing_policy_override_specified
+            {
+                model_routing_policy_override_json
+            } else {
+                existing_model_routing_policy_json
+            };
             let connection_changed = existing_base_urls_json != base_urls_json
                 || existing_base_url_mode != base_url_mode.as_str()
                 || existing_auth_mode_raw != next_auth_mode
@@ -2040,8 +2104,9 @@ SET
   bridge_type = ?23,
   stream_idle_timeout_seconds = ?24,
   upstream_retry_policy_json = ?25,
-  updated_at = ?26
-WHERE id = ?27
+  model_routing_policy_json = ?26,
+  updated_at = ?27
+WHERE id = ?28
 "#,
                 params![
                     name,
@@ -2069,6 +2134,7 @@ WHERE id = ?27
                     bridge_type,
                     next_stream_idle_timeout_seconds,
                     next_upstream_retry_policy_override_json,
+                    next_model_routing_policy_override_json,
                     now,
                     id
                 ],

@@ -110,6 +110,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     extension_values: [],
     upstream_retry_policy_override: null,
     ...partial,
+    model_routing_policy_override: partial.model_routing_policy_override ?? null,
   };
 }
 

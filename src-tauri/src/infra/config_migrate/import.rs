@@ -99,6 +99,7 @@ pub(super) fn import_into_transaction(
             bridge_type,
             account_usage_config,
             account_usage_credentials,
+            model_routing_policy_override,
         } = provider;
         let provider_uuid = provider_uuid.ok_or_else(|| {
             crate::shared::error::AppError::new(
@@ -113,6 +114,8 @@ pub(super) fn import_into_transaction(
         let base_urls_json = serde_json::to_string(&base_urls)
             .map_err(|e| format!("SYSTEM_ERROR: failed to serialize base_urls: {e}"))?;
         let base_url_primary = base_urls.first().cloned().unwrap_or_default();
+        let model_routing_policy_json =
+            crate::providers::model_routing_policy_override_to_json(model_routing_policy_override)?;
 
         tx.execute(
             r#"
@@ -155,9 +158,10 @@ INSERT INTO providers(
   oauth_last_error,
   source_provider_id,
   bridge_type,
+  model_routing_policy_json,
   created_at,
   updated_at
-) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, NULL, ?37, ?38, ?38)
+) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20, ?21, ?22, ?23, ?24, ?25, ?26, ?27, ?28, ?29, ?30, ?31, ?32, ?33, ?34, ?35, ?36, NULL, ?37, ?38, ?39, ?39)
 "#,
             params![
                 provider_uuid,
@@ -197,6 +201,7 @@ INSERT INTO providers(
                 oauth_last_refreshed_at,
                 oauth_last_error,
                 bridge_type,
+                model_routing_policy_json,
                 now,
             ],
         )

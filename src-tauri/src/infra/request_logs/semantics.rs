@@ -94,6 +94,37 @@ pub(crate) fn resolve_aio_managed_model_priced_model(
     })
 }
 
+pub(crate) fn resolve_configured_model_cost_basis(
+    special_settings_json: Option<&str>,
+    final_provider_id: Option<i64>,
+) -> Option<(String, String)> {
+    let final_provider_id = final_provider_id.filter(|provider_id| *provider_id > 0)?;
+    let raw = special_settings_json.map(trim_json_whitespace)?;
+    if raw.is_empty() {
+        return None;
+    }
+    let settings = serde_json::from_str::<Vec<Value>>(raw).ok()?;
+
+    settings.iter().rev().find_map(|setting| {
+        let object = setting.as_object()?;
+        if object.get("type").and_then(Value::as_str) != Some("configured_model_route")
+            || object.get("applied").and_then(Value::as_bool) != Some(true)
+            || object.get("providerId").and_then(Value::as_i64) != Some(final_provider_id)
+        {
+            return None;
+        }
+        let cli_key = bounded_marker_text(object.get("pricedCliKey")?, 64)?;
+        let model = bounded_marker_text(object.get("pricedModel")?, 256)?;
+        Some((cli_key.to_string(), model.to_string()))
+    })
+}
+
+fn bounded_marker_text(value: &Value, max_bytes: usize) -> Option<&str> {
+    value.as_str().map(trim_json_whitespace).filter(|value| {
+        !value.is_empty() && value.len() <= max_bytes && !value.chars().any(char::is_control)
+    })
+}
+
 fn parse_cost_basis(setting: &Value) -> Option<Cx2ccCostBasis> {
     let obj = setting.as_object()?;
     if obj.get("type").and_then(Value::as_str) != Some("cx2cc_cost_basis") {
@@ -268,5 +299,53 @@ mod tests {
             resolve_aio_managed_model_priced_model(Some(&json), None),
             None
         );
+    }
+
+    #[test]
+    fn configured_model_pricing_requires_applied_matching_provider_and_complete_basis() {
+        let json = serde_json::json!([
+            {
+                "type": "configured_model_route",
+                "providerId": 7,
+                "pricedCliKey": "codex",
+                "pricedModel": "not-applied",
+                "applied": false
+            },
+            {
+                "type": "configured_model_route",
+                "providerId": 8,
+                "pricedCliKey": "codex",
+                "pricedModel": "wrong-provider",
+                "applied": true
+            },
+            {
+                "type": "configured_model_route",
+                "providerId": 7,
+                "pricedCliKey": " codex ",
+                "pricedModel": " gpt-5.6-terra ",
+                "applied": true
+            }
+        ])
+        .to_string();
+
+        assert_eq!(
+            resolve_configured_model_cost_basis(Some(&json), Some(7)),
+            Some(("codex".to_string(), "gpt-5.6-terra".to_string()))
+        );
+        assert_eq!(
+            resolve_configured_model_cost_basis(Some(&json), Some(9)),
+            None
+        );
+        assert_eq!(resolve_configured_model_cost_basis(Some(&json), None), None);
+
+        for invalid in [
+            r#"[{"type":"configured_model_route","providerId":7,"pricedCliKey":"codex","applied":true}]"#,
+            r#"[{"type":"configured_model_route","providerId":7,"pricedCliKey":"codex","pricedModel":"bad\nmodel","applied":true}]"#,
+        ] {
+            assert_eq!(
+                resolve_configured_model_cost_basis(Some(invalid), Some(7)),
+                None
+            );
+        }
     }
 }

@@ -141,9 +141,9 @@ use crate::gateway::util::{
 };
 
 use context::{
-    build_stream_finalize_ctx, AttemptCtx, AttemptOutcome, CommonCtx, CommonCtxArgs,
-    CommonCtxOwned, FailoverRunState, LoopControl, LoopState, ProviderCtx, ProviderCtxOwned,
-    MAX_NON_SSE_BODY_BYTES,
+    build_stream_finalize_ctx, requested_model_for_audit, AttemptCtx, AttemptOutcome, CommonCtx,
+    CommonCtxArgs, CommonCtxOwned, FailoverRunState, LoopControl, LoopState, ProviderCtx,
+    ProviderCtxOwned, MAX_NON_SSE_BODY_BYTES,
 };
 
 /// Fallback stream detection from raw body bytes when introspection_json

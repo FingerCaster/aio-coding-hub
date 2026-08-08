@@ -34,6 +34,7 @@ pub(super) use error_code::GatewayErrorCode;
 pub(crate) use failover::resolve_transport_base_url;
 pub(in crate::gateway) use fake_200::is_fake_200_non_stream_body;
 pub(in crate::gateway) use logging::spawn_enqueue_request_log_with_backpressure;
+pub(in crate::gateway) use model_rewrite::{replace_model_in_body_json, replace_model_in_path};
 pub(super) use types::ErrorCategory;
 
 pub(super) use handler::proxy_impl;

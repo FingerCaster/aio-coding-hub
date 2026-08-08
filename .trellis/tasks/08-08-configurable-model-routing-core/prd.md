@@ -46,14 +46,14 @@
 
 ## Acceptance Criteria
 
-- [ ] 全局和 Provider 三态策略的校验、持久化、复制/分享/导入导出与 UI 测试通过。
-- [ ] 各支持协议、path/query/body/effort、压缩请求和插件顺序均有自动化覆盖。
-- [ ] 路由改写失败不发送当前 Provider，并按约定继续下一候选；健康、熔断、余额 gate、session/failback 与 transport retry 不受污染。
-- [ ] 日志保留原始模型且展示最终路由，成本只按最终目标模型结算，未知价格不回退。
-- [ ] managed `aio/`、辅助接口、非 POST 请求、无匹配规则与 disabled policy 均保持既有行为。
-- [ ] 损坏全局策略和 Provider override 均禁用正确作用域、无敏感信息泄漏且不中断原请求；损坏 override 不继承全局。
-- [ ] 普通 Codex 在删除 bridge 后仍支持配置路由；Observer/TUI、通知和发布链路未被引入。
-- [ ] 联合网关 E2E、Rust 测试、前端测试、lint、type-check 和生成绑定一致性检查通过。
+- [x] 全局和 Provider 三态策略的校验、持久化、复制/分享/导入导出与 UI 测试通过。
+- [x] 各支持协议、path/query/body/effort、压缩请求和插件顺序均有自动化覆盖。
+- [x] 路由改写失败不发送当前 Provider，并按约定继续下一候选；健康、熔断、余额 gate、session/failback 与 transport retry 不受污染。
+- [x] 日志保留原始模型且展示最终路由，成本只按最终目标模型结算，未知价格不回退。
+- [x] managed `aio/`、辅助接口、非 POST 请求、无匹配规则与 disabled policy 均保持既有行为。
+- [x] 损坏全局策略和 Provider override 均禁用正确作用域、无敏感信息泄漏且不中断原请求；损坏 override 不继承全局。
+- [x] 普通 Codex 在删除 bridge 后仍支持配置路由；Observer/TUI、通知和发布链路未被引入。
+- [x] 联合网关 E2E、Rust 测试、前端测试、lint、type-check 和生成绑定一致性检查通过。
 
 ## Out Of Scope
 

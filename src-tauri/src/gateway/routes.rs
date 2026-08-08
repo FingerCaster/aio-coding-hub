@@ -1035,6 +1035,8 @@ mod tests {
                 account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override: None,
                 upstream_retry_policy_override_specified: false,
+                model_routing_policy_override: None,
+                model_routing_policy_override_specified: false,
             },
         )
         .expect("insert provider")
@@ -1143,6 +1145,8 @@ mod tests {
                 account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override: None,
                 upstream_retry_policy_override_specified: false,
+                model_routing_policy_override: None,
+                model_routing_policy_override_specified: false,
             },
             Some(provider_uuid),
         )
@@ -1303,6 +1307,8 @@ INSERT INTO codex_managed_profiles(
                 account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override: None,
                 upstream_retry_policy_override_specified: false,
+                model_routing_policy_override: None,
+                model_routing_policy_override_specified: false,
             },
         )
         .expect("insert oauth provider")
@@ -1359,6 +1365,8 @@ INSERT INTO codex_managed_profiles(
                 account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override: None,
                 upstream_retry_policy_override_specified: false,
+                model_routing_policy_override: None,
+                model_routing_policy_override_specified: false,
             },
         )
         .expect("insert cx2cc bridge provider")
@@ -2548,6 +2556,27 @@ INSERT INTO codex_managed_profiles(
             .to_string();
         set_granted_permissions(&mut plugin, &["request.meta.read", "request.header.write"]);
         plugin
+    }
+
+    fn before_send_body_plugin() -> PluginDetail {
+        let mut plugin = before_send_header_plugin();
+        set_granted_permissions(&mut plugin, &["request.body.read", "request.body.write"]);
+        plugin
+    }
+
+    fn enable_test_model_route(
+        app_settings: &mut settings::AppSettings,
+        source_model: &str,
+        target_model: &str,
+    ) {
+        app_settings.model_routing_policy = settings::ModelRoutingPolicy {
+            enabled: true,
+            rules: vec![settings::ModelRoutingRule {
+                source_model: source_model.to_string(),
+                target_model: Some(target_model.to_string()),
+                reasoning_effort: None,
+            }],
+        };
     }
 
     fn response_after_plugin() -> PluginDetail {
@@ -4009,6 +4038,513 @@ INSERT INTO codex_managed_profiles(
             "fail-closed beforeSend should not send the request upstream"
         );
         upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_model_route_runs_after_gzip_and_before_send_plugin() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.enable_codex_session_id_completion = false;
+        disable_upstream_retry_policy(&mut app_settings);
+        enable_test_model_route(&mut app_settings, "route-source", "route-target");
+        app_settings.model_routing_policy.rules[0].reasoning_effort = Some("low".to_string());
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("configured-route-ordering.sqlite"))
+            .expect("init test db");
+        let (upstream_base_url, captured_rx, upstream_task) = spawn_capturing_raw_upstream(
+            r#"{"id":"route-ok","object":"response","model":"route-target","output":[]}"#,
+        )
+        .await;
+        let provider_id = insert_codex_provider(&db, upstream_base_url);
+
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_request_handler("test.before-send", |_ctx| {
+                GatewayHookResult {
+                    request_body: Some(
+                        r#"{"model":"plugin-target","input":"hello","stream":false,"pluginTouched":true,"reasoning":{"effort":"high"}}"#
+                            .to_string(),
+                    ),
+                    ..GatewayHookResult::continue_unchanged()
+                }
+            });
+        let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![before_send_body_plugin()],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_plugin_pipeline(
+            app_handle,
+            db,
+            log_tx,
+            plugin_pipeline,
+        ));
+        let plain_body = r#"{"model":"route-source","input":"hello","stream":false,"reasoning":{"effort":"max"}}"#;
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header(header::CONTENT_ENCODING, "gzip")
+            .body(Body::from(gzip_bytes(plain_body.as_bytes())))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("captured upstream request")
+            .expect("captured raw request");
+        assert!(!captured.has_header_line("content-encoding:"));
+        let upstream_body: Value =
+            serde_json::from_slice(&captured.body).expect("captured request JSON");
+        assert_eq!(
+            upstream_body.get("model").and_then(Value::as_str),
+            Some("route-target")
+        );
+        assert_eq!(
+            upstream_body.get("pluginTouched").and_then(Value::as_bool),
+            Some(true)
+        );
+        assert_eq!(
+            upstream_body
+                .get("reasoning")
+                .and_then(|value| value.get("effort"))
+                .and_then(Value::as_str),
+            Some("low")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.requested_model.as_deref(), Some("route-source"));
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 1);
+        assert_eq!(attempts[0]["provider_id"].as_i64(), Some(provider_id));
+        assert_eq!(attempts[0]["outcome"].as_str(), Some("success"));
+        assert_eq!(
+            attempts[0]["requested_upstream_model"].as_str(),
+            Some("route-target")
+        );
+
+        let markers = parse_special_settings(&log);
+        let configured_route = markers
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("configured_model_route")
+            })
+            .expect("configured route marker");
+        assert_eq!(
+            configured_route.get("providerId").and_then(Value::as_i64),
+            Some(provider_id)
+        );
+        assert_eq!(
+            configured_route.get("sourceModel").and_then(Value::as_str),
+            Some("route-source")
+        );
+        assert_eq!(
+            configured_route.get("targetModel").and_then(Value::as_str),
+            Some("route-target")
+        );
+        assert_eq!(
+            configured_route
+                .get("effectiveModel")
+                .and_then(Value::as_str),
+            Some("route-target")
+        );
+        assert_eq!(
+            configured_route
+                .get("reasoningEffort")
+                .and_then(Value::as_str),
+            Some("low")
+        );
+        assert_eq!(
+            configured_route
+                .get("reasoningEffortApplied")
+                .and_then(Value::as_bool),
+            Some(true)
+        );
+
+        upstream_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_model_route_apply_failure_switches_provider_without_runtime_pollution() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 3;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        enable_test_model_route(&mut app_settings, "route-source", "route-target");
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("configured-route-failover.sqlite"))
+            .expect("init test db");
+        let response_body = r#"{"id":"route-ok","object":"response","model":"route-target","output":[],"usage":{"input_tokens":1,"output_tokens":1,"total_tokens":2}}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::OK, response_body).await;
+        let (second_url, captured_rx, second_task) =
+            spawn_capturing_json_upstream(response_body).await;
+        let first_provider_id =
+            insert_codex_provider_with_priority(&db, "Route Apply Fails", first_url, 0);
+        let second_provider_id =
+            insert_codex_provider_with_priority(&db, "Route Apply Succeeds", second_url, 1);
+
+        let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_request_handler("test.before-send", {
+                let hook_calls = Arc::clone(&hook_calls);
+                move |_ctx| {
+                    let call = hook_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    GatewayHookResult {
+                        request_body: (call == 0).then(|| "not-json".to_string()),
+                        ..GatewayHookResult::continue_unchanged()
+                    }
+                }
+            });
+        let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![before_send_body_plugin()],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let session = Arc::new(session_manager::SessionManager::new());
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let mut state = gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::clone(&session),
+        );
+        state.plugin_pipeline = plugin_pipeline;
+        let router = build_router(state);
+        let session_id = "configured-route-failover-session";
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
+            .body(Body::from(
+                r#"{"model":"route-source","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            hook_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "route apply failure must switch provider without retrying the same provider"
+        );
+        assert_eq!(
+            first_calls.load(std::sync::atomic::Ordering::SeqCst),
+            0,
+            "failed route application must not reach the first upstream"
+        );
+        let captured = tokio::time::timeout(Duration::from_secs(2), captured_rx)
+            .await
+            .expect("captured second upstream request")
+            .expect("captured request body");
+        let captured: Value = serde_json::from_str(&captured).expect("captured request JSON");
+        assert_eq!(
+            captured.get("model").and_then(Value::as_str),
+            Some("route-target")
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(200));
+        assert_eq!(log.requested_model.as_deref(), Some("route-source"));
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0]["provider_id"].as_i64(), Some(first_provider_id));
+        assert_eq!(
+            attempts[0]["error_code"].as_str(),
+            Some(crate::gateway::proxy::GatewayErrorCode::ConfiguredModelRouteApplyFailed.as_str())
+        );
+        assert_eq!(attempts[0]["decision"].as_str(), Some("switch"));
+        assert_eq!(attempts[0]["circuit_state_before"].as_str(), Some("CLOSED"));
+        assert_eq!(attempts[0]["circuit_state_after"].as_str(), Some("CLOSED"));
+        assert_eq!(
+            attempts[1]["provider_id"].as_i64(),
+            Some(second_provider_id)
+        );
+        assert_eq!(attempts[1]["outcome"].as_str(), Some("success"));
+        assert_eq!(
+            attempts[1]["requested_upstream_model"].as_str(),
+            Some("route-target")
+        );
+
+        let markers = parse_special_settings(&log);
+        let configured_route = markers
+            .iter()
+            .find(|setting| {
+                setting.get("type").and_then(Value::as_str) == Some("configured_model_route")
+            })
+            .expect("configured route marker");
+        assert_eq!(
+            configured_route.get("providerId").and_then(Value::as_i64),
+            Some(second_provider_id)
+        );
+        assert_eq!(
+            configured_route.get("sourceModel").and_then(Value::as_str),
+            Some("route-source")
+        );
+        assert_eq!(
+            configured_route
+                .get("effectiveModel")
+                .and_then(Value::as_str),
+            Some("route-target")
+        );
+        assert_eq!(circuit.snapshot(first_provider_id, 0).failure_count, 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, 0),
+            Some(second_provider_id)
+        );
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn all_configured_model_route_apply_failures_return_dedicated_502_without_side_effects() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 3;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        enable_test_model_route(&mut app_settings, "route-source", "route-target");
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("configured-route-all-failed.sqlite"))
+            .expect("init test db");
+        let response_body = r#"{"id":"must-not-run","object":"response","output":[]}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::OK, response_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::OK, response_body).await;
+        let first_provider_id =
+            insert_codex_provider_with_priority(&db, "Route Apply Fails 1", first_url, 0);
+        let second_provider_id =
+            insert_codex_provider_with_priority(&db, "Route Apply Fails 2", second_url, 1);
+
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_request_handler("test.before-send", |_ctx| {
+                GatewayHookResult {
+                    request_body: Some("not-json".to_string()),
+                    ..GatewayHookResult::continue_unchanged()
+                }
+            });
+        let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![before_send_body_plugin()],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let session = Arc::new(session_manager::SessionManager::new());
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let mut state = gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::clone(&session),
+        );
+        state.plugin_pipeline = plugin_pipeline;
+        let router = build_router(state);
+        let session_id = "configured-route-all-failed-session";
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
+            .body(Body::from(
+                r#"{"model":"route-source","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("gateway error JSON");
+        let expected_error_code =
+            crate::gateway::proxy::GatewayErrorCode::ConfiguredModelRouteApplyFailed.as_str();
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some(expected_error_code)
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.status, Some(502));
+        assert_eq!(log.error_code.as_deref(), Some(expected_error_code));
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 2);
+        for (attempt, provider_id) in attempts.iter().zip([first_provider_id, second_provider_id]) {
+            assert_eq!(attempt["provider_id"].as_i64(), Some(provider_id));
+            assert_eq!(attempt["error_code"].as_str(), Some(expected_error_code));
+            assert_eq!(attempt["decision"].as_str(), Some("switch"));
+            assert_eq!(attempt["circuit_state_before"].as_str(), Some("CLOSED"));
+            assert_eq!(attempt["circuit_state_after"].as_str(), Some("CLOSED"));
+        }
+        assert!(!parse_special_settings(&log).iter().any(|setting| {
+            setting.get("type").and_then(Value::as_str) == Some("configured_model_route")
+        }));
+        assert_eq!(circuit.snapshot(first_provider_id, 0).failure_count, 0);
+        assert_eq!(circuit.snapshot(second_provider_id, 0).failure_count, 0);
+        assert_eq!(session.get_bound_provider("codex", session_id, 0), None);
+
+        first_task.abort();
+        second_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn configured_model_route_apply_failure_does_not_override_prior_upstream_error() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        enable_test_model_route(&mut app_settings, "route-source", "route-target");
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("configured-route-error-priority.sqlite"))
+            .expect("init test db");
+        let (first_url, first_calls, first_task) = spawn_counting_status_upstream(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"message":"upstream unavailable"}}"#,
+        )
+        .await;
+        let (second_url, second_calls, second_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"must-not-run","object":"response","output":[]}"#,
+        )
+        .await;
+        let first_provider_id =
+            insert_codex_provider_with_priority(&db, "Upstream Fails", first_url, 0);
+        let second_provider_id =
+            insert_codex_provider_with_priority(&db, "Route Apply Fails", second_url, 1);
+
+        let hook_calls = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let executor =
+            InMemoryGatewayPluginExecutor::new().with_request_handler("test.before-send", {
+                let hook_calls = Arc::clone(&hook_calls);
+                move |_ctx| {
+                    let call = hook_calls.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                    GatewayHookResult {
+                        request_body: (call == 1).then(|| "not-json".to_string()),
+                        ..GatewayHookResult::continue_unchanged()
+                    }
+                }
+            });
+        let plugin_pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![before_send_body_plugin()],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig::default(),
+        );
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let mut state = gateway_state(app_handle, db, log_tx);
+        state.plugin_pipeline = plugin_pipeline;
+        let router = build_router(state);
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"route-source","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::BAD_GATEWAY);
+        let payload: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("gateway error JSON");
+        let expected_error_code = crate::gateway::proxy::GatewayErrorCode::Upstream5xx.as_str();
+        assert_eq!(
+            payload.get("error_code").and_then(Value::as_str),
+            Some(expected_error_code)
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(log.error_code.as_deref(), Some(expected_error_code));
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(attempts[0]["provider_id"].as_i64(), Some(first_provider_id));
+        assert_eq!(
+            attempts[0]["error_code"].as_str(),
+            Some(expected_error_code)
+        );
+        assert_eq!(
+            attempts[1]["provider_id"].as_i64(),
+            Some(second_provider_id)
+        );
+        assert_eq!(
+            attempts[1]["error_code"].as_str(),
+            Some(crate::gateway::proxy::GatewayErrorCode::ConfiguredModelRouteApplyFailed.as_str())
+        );
+
+        first_task.abort();
+        second_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]

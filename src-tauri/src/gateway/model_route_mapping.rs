@@ -78,8 +78,12 @@ pub(in crate::gateway) fn build_model_route_mapping_setting(
 
     let requested_model = normalize_text(input.requested_model)?;
     let actual_model = normalize_text(input.actual_model)?;
-    let requested_effort =
-        resolve_requested_effort(input.cli_key, &requested_model, input.special_settings);
+    let requested_effort = resolve_requested_effort(
+        input.cli_key,
+        &requested_model,
+        input.special_settings,
+        input.provider_id,
+    );
     let actual_effort = resolve_actual_effort(
         &actual_model,
         input.actual_reasoning_effort,
@@ -203,11 +207,31 @@ fn resolve_requested_effort(
     cli_key: &str,
     requested_model: &str,
     special_settings: &[Value],
+    provider_id: i64,
 ) -> EffortResolution {
     if cli_key != "codex" {
         return EffortResolution {
             effort: None,
             source: "unknown",
+        };
+    }
+
+    let configured = special_settings.iter().rev().find(|setting| {
+        setting.get("type").and_then(Value::as_str) == Some("configured_model_route")
+            && setting.get("applied").and_then(Value::as_bool) == Some(true)
+            && setting
+                .get("reasoningEffortApplied")
+                .and_then(Value::as_bool)
+                == Some(true)
+            && setting.get("providerId").and_then(Value::as_i64) == Some(provider_id)
+    });
+    if let Some(setting) = configured {
+        return EffortResolution {
+            effort: setting
+                .get("reasoningEffort")
+                .and_then(Value::as_str)
+                .and_then(|value| normalize_text(Some(value))),
+            source: "configured_route",
         };
     }
 
@@ -352,6 +376,43 @@ mod tests {
         assert_eq!(
             setting.get("effortMismatch").and_then(Value::as_bool),
             Some(false)
+        );
+    }
+
+    #[test]
+    fn configured_route_effort_is_the_expected_response_comparison_basis() {
+        let setting = build_model_route_mapping_setting(ModelRouteSettingInput {
+            cli_key: "codex",
+            requested_model: Some("gpt-cheap"),
+            actual_model: Some("gpt-unexpected"),
+            actual_reasoning_effort: Some("medium"),
+            special_settings: &[json!({
+                "type": "configured_model_route",
+                "providerId": 7,
+                "reasoningEffort": "low",
+                "reasoningEffortApplied": true,
+                "applied": true
+            })],
+            provider_id: 7,
+            provider_name: "Provider A",
+        })
+        .expect("configured route response mismatch");
+
+        assert_eq!(
+            setting
+                .get("requestedReasoningEffort")
+                .and_then(Value::as_str),
+            Some("low")
+        );
+        assert_eq!(
+            setting
+                .get("requestedReasoningEffortSource")
+                .and_then(Value::as_str),
+            Some("configured_route")
+        );
+        assert_eq!(
+            setting.get("effortMismatch").and_then(Value::as_bool),
+            Some(true)
         );
     }
 

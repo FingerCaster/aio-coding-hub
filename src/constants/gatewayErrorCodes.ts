@@ -23,6 +23,7 @@ export const GatewayErrorCodes = {
   INVALID_REQUEST_CONTENT_ENCODING: "GW_INVALID_REQUEST_CONTENT_ENCODING",
   LARGE_BODY_MISSING_MODEL: "GW_LARGE_BODY_MISSING_MODEL",
   MANAGED_MODEL_INVALID: "GW_MANAGED_MODEL_INVALID",
+  CONFIGURED_MODEL_ROUTE_APPLY_FAILED: "GW_CONFIGURED_MODEL_ROUTE_APPLY_FAILED",
   BRIDGE_UNSUPPORTED_FEATURE: "GW_BRIDGE_UNSUPPORTED_FEATURE",
   INVALID_CLI_KEY: "GW_INVALID_CLI_KEY",
   INVALID_BASE_URL: "GW_INVALID_BASE_URL",
@@ -71,6 +72,7 @@ const GatewayErrorShortLabels = {
   [GatewayErrorCodes.INVALID_REQUEST_CONTENT_ENCODING]: "请求编码无效",
   [GatewayErrorCodes.LARGE_BODY_MISSING_MODEL]: "缺少 model",
   [GatewayErrorCodes.MANAGED_MODEL_INVALID]: "受管模型无效",
+  [GatewayErrorCodes.CONFIGURED_MODEL_ROUTE_APPLY_FAILED]: "模型路由失败",
   [GatewayErrorCodes.BRIDGE_UNSUPPORTED_FEATURE]: "转译不支持",
   [GatewayErrorCodes.INVALID_CLI_KEY]: "无效CLI",
   [GatewayErrorCodes.INVALID_BASE_URL]: "无效URL",
@@ -183,6 +185,10 @@ export const GatewayErrorDescriptions = {
     desc: "AIO 受管模型标识无效",
     suggestion:
       "请求中的受管模型标识不存在、格式无效或已失去有效供应商绑定。请从供应商模型目录重新创建 Codex Profile。",
+  },
+  GW_CONFIGURED_MODEL_ROUTE_APPLY_FAILED: {
+    desc: "模型路由无法应用到上游请求",
+    suggestion: "请检查当前 Provider 的模型路由目标、推理强度和上游协议是否匹配。",
   },
   GW_BRIDGE_UNSUPPORTED_FEATURE: {
     desc: "桥接协议不支持或无法转译该请求",

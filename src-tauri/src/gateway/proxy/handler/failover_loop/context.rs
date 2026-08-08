@@ -16,6 +16,22 @@ use std::time::{Duration, Instant};
 
 pub(super) const MAX_NON_SSE_BODY_BYTES: usize = 20 * 1024 * 1024;
 
+pub(super) fn requested_model_for_audit(
+    special_settings: &Arc<Mutex<Vec<serde_json::Value>>>,
+    managed_model_route: Option<&crate::gateway::managed_model_route::ManagedModelRoute>,
+    requested_model: Option<&str>,
+    active_requested_model: Option<&str>,
+) -> Option<String> {
+    if response_fixer::has_configured_model_route(special_settings) {
+        return requested_model.map(str::to_string);
+    }
+    crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+        managed_model_route,
+        requested_model,
+        active_requested_model,
+    )
+}
+
 pub(super) struct CommonCtxArgs<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) state: &'a GatewayAppState<R>,
     pub(super) cli_key: &'a String,
@@ -301,12 +317,12 @@ pub(super) fn build_stream_finalize_ctx<R: tauri::Runtime>(
         attempt_started,
         attempts: attempts.to_vec(),
         attempts_json,
-        requested_model:
-            crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
-                ctx.managed_model_route.as_ref(),
-                ctx.requested_model.as_deref(),
-                provider_ctx.active_requested_model.as_deref(),
-            ),
+        requested_model: requested_model_for_audit(
+            &ctx.special_settings,
+            ctx.managed_model_route.as_ref(),
+            ctx.requested_model.as_deref(),
+            provider_ctx.active_requested_model.as_deref(),
+        ),
         requested_upstream_model: provider_ctx.active_requested_model.clone(),
         managed_model_route: ctx.managed_model_route.is_some(),
         created_at_ms: ctx.created_at_ms,
@@ -443,5 +459,6 @@ impl<'a, R: tauri::Runtime> LoopState<'a, R> {
 pub(super) enum LoopControl {
     ContinueRetry,
     BreakRetry,
+    BreakRetryNeutral,
     Return(Response),
 }

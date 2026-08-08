@@ -266,6 +266,15 @@ const RequestLogCard = memo(function RequestLogCard({
                 </span>
               </span>
 
+              {modelDisplayMeta.isConfiguredRoute ? (
+                <span
+                  className="inline-flex shrink-0 cursor-help items-center whitespace-nowrap rounded-md border border-teal-500/20 bg-teal-50/80 px-1.5 py-0.5 text-[10px] font-semibold leading-4 text-teal-700 shadow-pill-subtle dark:border-teal-400/20 dark:bg-teal-500/15 dark:text-teal-300"
+                  title={modelDisplayMeta.title}
+                >
+                  模型路由
+                </span>
+              ) : null}
+
               <UpstreamErrorResponseRuleBadge
                 specialSettingsJson={log.special_settings_json}
                 showCustomTooltip={showCustomTooltip}

@@ -71,6 +71,7 @@ where
                 continue;
             }
             LoopControl::BreakRetry => break,
+            LoopControl::BreakRetryNeutral => return None,
             LoopControl::Return(resp) => {
                 finalize_current_probe(ctx, input, prepared, &mut loop_state);
                 return Some(resp);
@@ -180,12 +181,12 @@ where
                 stream_internal_error: None,
                 requested_upstream_model: prepared.active_requested_model.clone(),
             });
-            let requested_model =
-                crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
-                    ctx.managed_model_route,
-                    ctx.requested_model.as_deref(),
-                    prepared.active_requested_model.as_deref(),
-                );
+            let requested_model = requested_model_for_audit(
+                ctx.special_settings,
+                ctx.managed_model_route,
+                ctx.requested_model.as_deref(),
+                prepared.active_requested_model.as_deref(),
+            );
             let response = finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
                 state: ctx.state,
                 abort_guard: loop_state.abort_guard,
@@ -210,6 +211,63 @@ where
             })
             .await;
             LoopControl::Return(response)
+        }
+        AttemptSendOutcome::ConfiguredModelRouteApplyFailed(error) => {
+            let category = ErrorCategory::SystemError;
+            let error_code = GatewayErrorCode::ConfiguredModelRouteApplyFailed.as_str();
+            let attempt_started_ms = ctx.started.elapsed().as_millis();
+            tracing::warn!(
+                trace_id = %input.trace_id,
+                provider_id = prepared.provider_id,
+                reason_code = error.reason_code,
+                "configured model route could not be applied before send"
+            );
+            loop_state.attempts.push(FailoverAttempt {
+                provider_id: prepared.provider_id,
+                provider_name: prepared.provider_name_base.clone(),
+                base_url: prepared.provider_base_url_base.clone(),
+                outcome: "configured_model_route_apply_failed".to_string(),
+                status: None,
+                provider_index: Some(prepared.provider_index),
+                retry_index: Some(indices.retry_index),
+                session_reuse: prepared.session_reuse,
+                provider_bridged: Some(prepared.provider_bridged),
+                error_category: Some(category.as_str()),
+                error_code: Some(error_code),
+                decision: Some(FailoverDecision::SwitchProvider.as_str()),
+                reason: Some(format!(
+                    "configured model route apply failed: {}",
+                    error.reason_code
+                )),
+                selection_method: dc::selection_method(
+                    prepared.provider_index,
+                    indices.retry_index,
+                    prepared.session_reuse,
+                ),
+                reason_code: Some(category.reason_code()),
+                attempt_started_ms: Some(attempt_started_ms),
+                attempt_duration_ms: Some(0),
+                circuit_state_before: Some(prepared.circuit_snapshot.state.as_str()),
+                circuit_state_after: Some(prepared.circuit_snapshot.state.as_str()),
+                circuit_failure_count: Some(prepared.circuit_snapshot.failure_count),
+                circuit_failure_threshold: Some(prepared.circuit_snapshot.failure_threshold),
+                probe: None,
+                probe_trigger: None,
+                probe_result: None,
+                probe_generation: None,
+                circuit_recover_at_unix: prepared
+                    .circuit_snapshot
+                    .open_until
+                    .or(prepared.circuit_snapshot.cooldown_until),
+                circuit_trigger_error_code: prepared.circuit_snapshot.last_trigger_error_code,
+                timeout_secs: None,
+                stream_internal_error: None,
+                requested_upstream_model: None,
+            });
+            if loop_state.last_outcome.is_none() {
+                *loop_state.last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
+            }
+            LoopControl::BreakRetryNeutral
         }
         AttemptSendOutcome::Response(resp, timing) => {
             response_router::route_response(

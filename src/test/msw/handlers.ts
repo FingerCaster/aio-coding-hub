@@ -284,6 +284,12 @@ export const handlers = [
             ? null
             : (input.upstreamRetryPolicyOverride as ProviderSummary["upstream_retry_policy_override"])
           : (existing?.upstream_retry_policy_override ?? null),
+      model_routing_policy_override:
+        input.modelRoutingPolicyOverrideSpecified === true
+          ? input.modelRoutingPolicyOverride == null
+            ? null
+            : (input.modelRoutingPolicyOverride as ProviderSummary["model_routing_policy_override"])
+          : (existing?.model_routing_policy_override ?? null),
       newapi_account_user_id: accountUsageCredentials
         ? typeof accountUsageCredentials.newApiUserId === "string"
           ? accountUsageCredentials.newApiUserId.trim() || null

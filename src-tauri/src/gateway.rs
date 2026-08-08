@@ -5,6 +5,7 @@ mod binder;
 mod claude_metadata_user_id_injection;
 pub(crate) mod cli_auth;
 mod codex_session_id;
+mod configured_model_route;
 pub(crate) mod control_service;
 pub(crate) mod events;
 pub(crate) mod http_client;

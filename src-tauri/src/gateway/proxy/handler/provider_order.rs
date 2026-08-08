@@ -82,6 +82,7 @@ mod tests {
             stream_idle_timeout_seconds: None,
             extension_values: vec![],
             upstream_retry_policy_override: None,
+            model_routing_policy_override: None,
         }
     }
 

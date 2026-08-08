@@ -3529,6 +3529,12 @@ export type ModelPricesSyncReport = {
   skipped: number;
   total: number;
 };
+export type ModelRoutingPolicy = { enabled: boolean; rules: ModelRoutingRule[] };
+export type ModelRoutingRule = {
+  source_model: string;
+  target_model: string | null;
+  reasoning_effort: string | null;
+};
 export type NoticeLevel = "info" | "success" | "warning" | "error";
 export type NoticeSendInput = { level: NoticeLevel; title: string | null; body: string };
 export type PluginAuditLog = {
@@ -4159,6 +4165,7 @@ export type ProviderSummary = {
   stream_idle_timeout_seconds: number | null;
   extension_values: ProviderExtensionValues[];
   upstream_retry_policy_override: UpstreamRetryPolicy | null;
+  model_routing_policy_override: ModelRoutingPolicy | null;
   api_key_configured: boolean;
   newapi_account_user_id: string | null;
   newapi_account_access_token_configured: boolean;
@@ -4192,6 +4199,8 @@ export type ProviderUpsertInput = {
   accountUsageCredentials?: ProviderAccountUsageCredentialsPatch | null;
   upstreamRetryPolicyOverride: UpstreamRetryPolicy | null;
   upstreamRetryPolicyOverrideSpecified?: boolean;
+  modelRoutingPolicyOverride: ModelRoutingPolicy | null;
+  modelRoutingPolicyOverrideSpecified?: boolean;
 };
 export type RequestAttemptLog = {
   id: number;
@@ -4352,6 +4361,7 @@ export type SettingsUpdate = {
   failoverMaxAttemptsPerProvider: number;
   failoverMaxProvidersToTry: number;
   upstreamRetryPolicy: UpstreamRetryPolicy | null;
+  modelRoutingPolicy: ModelRoutingPolicy | null;
   upstreamErrorResponseRules: UpstreamErrorResponseRule[] | null;
   circuitBreakerFailureThreshold: number | null;
   circuitBreakerOpenDurationMinutes: number | null;
@@ -4416,6 +4426,7 @@ export type SettingsView = {
   failover_max_attempts_per_provider: number;
   failover_max_providers_to_try: number;
   upstream_retry_policy: UpstreamRetryPolicy;
+  model_routing_policy: ModelRoutingPolicy;
   upstream_error_response_rules: UpstreamErrorResponseRule[];
   circuit_breaker_failure_threshold: number;
   circuit_breaker_open_duration_minutes: number;

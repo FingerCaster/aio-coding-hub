@@ -479,6 +479,8 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         account_usage_credentials_copy_from_provider_id: None,
         upstream_retry_policy_override: None,
         upstream_retry_policy_override_specified: false,
+        model_routing_policy_override: None,
+        model_routing_policy_override_specified: false,
     }
 }
 
@@ -1366,6 +1368,72 @@ fn provider_retry_policy_override_writes_canonical_rules_and_rejects_invalid_dis
 }
 
 #[test]
+fn provider_model_routing_override_preserves_sets_clears_and_fails_closed_on_corruption() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_model_routing_override.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let mut create = default_provider_params("model-routing-override");
+    create.model_routing_policy_override = Some(crate::settings::ModelRoutingPolicy {
+        enabled: true,
+        rules: vec![crate::settings::ModelRoutingRule {
+            source_model: " source ".to_string(),
+            target_model: Some(" target ".to_string()),
+            reasoning_effort: None,
+        }],
+    });
+    create.model_routing_policy_override_specified = true;
+    let saved = upsert(&db, create).expect("create provider override");
+    let policy = saved
+        .model_routing_policy_override
+        .expect("explicit override");
+    assert_eq!(policy.rules[0].source_model, "source");
+    assert_eq!(policy.rules[0].target_model.as_deref(), Some("target"));
+
+    let mut preserve = default_provider_params("model-routing-override");
+    preserve.provider_id = Some(saved.id);
+    let preserved = upsert(&db, preserve).expect("preserve omitted override");
+    assert!(preserved
+        .model_routing_policy_override
+        .as_ref()
+        .is_some_and(|policy| policy.enabled));
+
+    let mut disable = default_provider_params("model-routing-override");
+    disable.provider_id = Some(saved.id);
+    disable.model_routing_policy_override = Some(crate::settings::ModelRoutingPolicy::default());
+    disable.model_routing_policy_override_specified = true;
+    let disabled = upsert(&db, disable).expect("disable provider routing");
+    assert!(disabled
+        .model_routing_policy_override
+        .as_ref()
+        .is_some_and(|policy| !policy.enabled));
+
+    let mut clear = default_provider_params("model-routing-override");
+    clear.provider_id = Some(saved.id);
+    clear.model_routing_policy_override_specified = true;
+    assert!(upsert(&db, clear)
+        .expect("clear provider override")
+        .model_routing_policy_override
+        .is_none());
+
+    db.open_connection()
+        .expect("open db")
+        .execute(
+            "UPDATE providers SET model_routing_policy_json = 'not-json' WHERE id = ?1",
+            params![saved.id],
+        )
+        .expect("corrupt provider policy");
+    let loaded = list_by_cli(&db, "claude")
+        .expect("list providers")
+        .into_iter()
+        .find(|provider| provider.id == saved.id)
+        .expect("provider row");
+    assert!(loaded
+        .model_routing_policy_override
+        .is_some_and(|policy| !policy.enabled && policy.rules.is_empty()));
+}
+
+#[test]
 fn legacy_provider_retry_statuses_load_as_rules_without_inheriting_global_policy() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("providers_legacy_retry_override.db");
@@ -1648,6 +1716,8 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             account_usage_credentials_copy_from_provider_id: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
+            model_routing_policy_override: None,
+            model_routing_policy_override_specified: false,
         },
     )
     .expect("create oauth provider")

@@ -41,6 +41,9 @@ pub(crate) struct ProviderUpsertInput {
     pub upstream_retry_policy_override: Option<crate::settings::UpstreamRetryPolicy>,
     #[serde(default)]
     pub upstream_retry_policy_override_specified: bool,
+    pub model_routing_policy_override: Option<crate::settings::ModelRoutingPolicy>,
+    #[serde(default)]
+    pub model_routing_policy_override_specified: bool,
 }
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -115,7 +118,8 @@ fn provider_runtime_reset_decision(
         || submitted_api_key_changed(previous_api_key, submitted_api_key)
         || previous.source_provider_id != next.source_provider_id
         || previous.bridge_type != next.bridge_type
-        || previous.upstream_retry_policy_override != next.upstream_retry_policy_override;
+        || previous.upstream_retry_policy_override != next.upstream_retry_policy_override
+        || previous.model_routing_policy_override != next.model_routing_policy_override;
 
     ProviderRuntimeResetDecision {
         clear_route_runtime_state: sensitive_config_changed
@@ -408,6 +412,8 @@ pub(crate) async fn provider_upsert(
         account_usage_credentials,
         upstream_retry_policy_override,
         upstream_retry_policy_override_specified,
+        model_routing_policy_override,
+        model_routing_policy_override_specified,
     } = input;
 
     let is_create = provider_id.is_none();
@@ -459,6 +465,8 @@ pub(crate) async fn provider_upsert(
                 account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override,
                 upstream_retry_policy_override_specified,
+                model_routing_policy_override,
+                model_routing_policy_override_specified,
             },
             provider_uuid_override,
         )?;
@@ -725,6 +733,8 @@ pub(crate) async fn provider_duplicate(
                 account_usage_credentials_copy_from_provider_id: Some(provider_id),
                 upstream_retry_policy_override: source.upstream_retry_policy_override.clone(),
                 upstream_retry_policy_override_specified: true,
+                model_routing_policy_override: source.model_routing_policy_override.clone(),
+                model_routing_policy_override_specified: true,
             },
             Some(destination_provider_uuid),
         )
@@ -1038,6 +1048,7 @@ mod tests {
             stream_idle_timeout_seconds: None,
             extension_values: vec![],
             upstream_retry_policy_override: None,
+            model_routing_policy_override: None,
             api_key_configured: true,
             newapi_account_user_id: None,
             newapi_account_access_token_configured: false,
@@ -1188,6 +1199,7 @@ mod tests {
             stream_idle_timeout_seconds: None,
             extension_values: vec![],
             upstream_retry_policy_override: None,
+            model_routing_policy_override: None,
             api_key_configured: true,
             newapi_account_user_id: None,
             newapi_account_access_token_configured: false,

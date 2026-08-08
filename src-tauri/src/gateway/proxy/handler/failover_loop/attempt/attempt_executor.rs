@@ -69,6 +69,10 @@ pub(super) enum AttemptSendOutcome {
     PluginBlocked(String),
     /// A request plugin changed a server-managed model binding before send.
     ManagedModelInvalid(String),
+    /// A configured route matched but could not be applied atomically.
+    ConfiguredModelRouteApplyFailed(
+        crate::gateway::configured_model_route::ConfiguredModelRouteApplyError,
+    ),
     /// Dispatch ownership became stale at the transport boundary; no network
     /// call was made and the outer loop may continue with the stable provider.
     DispatchRejected,
@@ -91,6 +95,9 @@ pub(super) enum PreparedSendOutcome {
     OAuthInjectFailed(Box<FailoverAttempt>),
     PluginBlocked(String),
     ManagedModelInvalid(String),
+    ConfiguredModelRouteApplyFailed(
+        crate::gateway::configured_model_route::ConfiguredModelRouteApplyError,
+    ),
     DispatchRejected,
 }
 
@@ -159,6 +166,9 @@ where
         PreparedSendOutcome::ManagedModelInvalid(reason) => {
             AttemptSendOutcome::ManagedModelInvalid(reason)
         }
+        PreparedSendOutcome::ConfiguredModelRouteApplyFailed(error) => {
+            AttemptSendOutcome::ConfiguredModelRouteApplyFailed(error)
+        }
         PreparedSendOutcome::DispatchRejected => AttemptSendOutcome::DispatchRejected,
     }
 }
@@ -186,20 +196,9 @@ where
         // Clear the previous provider before any local preparation can fail or await.
         abort_guard.replace_dispatch_ownership(None);
     }
+    crate::gateway::response_fixer::clear_configured_model_route(&input.special_settings);
     let attempt_started_ms = input.started.elapsed().as_millis();
     let circuit_before = prepared.circuit_snapshot.clone();
-
-    // --- Build URL ---
-    let url = match try_build_url(prepared) {
-        Ok(u) => u,
-        Err(err) => {
-            return PreparedSendOutcome::UrlBuildFailed(PreparedUrlBuildFailure {
-                error: err,
-                attempt_started_ms,
-                circuit_before,
-            });
-        }
-    };
 
     // --- Build headers + inject auth ---
     let mut headers = input.base_headers.clone();
@@ -300,6 +299,36 @@ where
     }
 
     headers = semantic_headers;
+    let mut configured_route_marker = None;
+    if let Some(route) = prepared.configured_model_route.clone() {
+        let priced_cli_key = prepared
+            .bridge_source
+            .as_ref()
+            .map(|(_, source_cli_key)| source_cli_key.as_str())
+            .unwrap_or(input.cli_key.as_str())
+            .to_string();
+        let outcome = match crate::gateway::configured_model_route::apply(
+            &route,
+            &prepared.upstream_forwarded_path,
+            prepared.upstream_query.as_deref(),
+            &body_state_for_attempt.decoded_clone(),
+        ) {
+            Ok(outcome) => outcome,
+            Err(error) => {
+                return PreparedSendOutcome::ConfiguredModelRouteApplyFailed(error);
+            }
+        };
+        prepared.upstream_forwarded_path = outcome.path.clone();
+        prepared.upstream_query = outcome.query.clone();
+        if outcome.body != body_state_for_attempt.decoded_clone() {
+            body_state_for_attempt.replace_decoded(outcome.body.clone());
+            prepared.upstream_body_bytes = outcome.body.clone();
+            prepared.strip_request_content_encoding = true;
+            prepared.request_body_mutated_before_attempt = true;
+        }
+        prepared.active_requested_model = outcome.effective_model.clone();
+        configured_route_marker = Some((route, priced_cli_key, outcome));
+    }
     if let Err(reason) = sync_final_wire_model(input, prepared, &body_state_for_attempt) {
         return PreparedSendOutcome::ManagedModelInvalid(reason);
     }
@@ -308,6 +337,24 @@ where
             &input.special_settings,
             route,
             route.remote_model_id.as_str(),
+        );
+    }
+    let url = match try_build_url(prepared) {
+        Ok(url) => url,
+        Err(error) => {
+            return PreparedSendOutcome::UrlBuildFailed(PreparedUrlBuildFailure {
+                error,
+                attempt_started_ms,
+                circuit_before,
+            });
+        }
+    };
+    if let Some((route, priced_cli_key, outcome)) = configured_route_marker.as_ref() {
+        crate::gateway::configured_model_route::mark_applied(
+            &input.special_settings,
+            route,
+            priced_cli_key,
+            outcome,
         );
     }
     let upstream_body = body_state_for_attempt
@@ -392,7 +439,11 @@ fn sync_final_wire_model<R: tauri::Runtime>(
     prepared: &mut PreparedProvider,
     body: &crate::gateway::proxy::request_body::GatewayRequestBody,
 ) -> Result<(), String> {
-    if !should_sync_final_wire_model(&input.cli_key, input.managed_model_route.is_some()) {
+    if !should_sync_final_wire_model(
+        &input.cli_key,
+        input.managed_model_route.is_some(),
+        prepared.configured_model_route.is_some(),
+    ) {
         return Ok(());
     }
 
@@ -412,8 +463,12 @@ fn sync_final_wire_model<R: tauri::Runtime>(
     Ok(())
 }
 
-fn should_sync_final_wire_model(cli_key: &str, managed_model_route: bool) -> bool {
-    managed_model_route || cli_key == "codex"
+fn should_sync_final_wire_model(
+    cli_key: &str,
+    managed_model_route: bool,
+    configured_model_route: bool,
+) -> bool {
+    managed_model_route || configured_model_route || cli_key == "codex"
 }
 
 fn validate_managed_wire_model(
@@ -627,12 +682,12 @@ fn emit_started_event<R: tauri::Runtime>(
         stream_internal_error: None,
         requested_upstream_model: prepared.active_requested_model.clone(),
     };
-    let audit_requested_model =
-        crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
-            input.managed_model_route.as_ref(),
-            input.requested_model.as_deref(),
-            prepared.active_requested_model.as_deref(),
-        );
+    let audit_requested_model = requested_model_for_audit(
+        &input.special_settings,
+        input.managed_model_route.as_ref(),
+        input.requested_model.as_deref(),
+        prepared.active_requested_model.as_deref(),
+    );
     abort_guard.update_requested_model(audit_requested_model.clone());
     let started_event = input.observe_request.then(|| {
         bound_attempt_event(GatewayAttemptEvent {
@@ -689,10 +744,11 @@ mod tests {
 
     #[test]
     fn final_wire_model_sync_is_scoped_to_codex_or_managed_routes() {
-        assert!(should_sync_final_wire_model("codex", false));
-        assert!(should_sync_final_wire_model("claude", true));
-        assert!(!should_sync_final_wire_model("claude", false));
-        assert!(!should_sync_final_wire_model("grok", false));
+        assert!(should_sync_final_wire_model("codex", false, false));
+        assert!(should_sync_final_wire_model("claude", true, false));
+        assert!(should_sync_final_wire_model("claude", false, true));
+        assert!(!should_sync_final_wire_model("claude", false, false));
+        assert!(!should_sync_final_wire_model("grok", false, false));
     }
 
     #[test]

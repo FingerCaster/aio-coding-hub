@@ -6,6 +6,7 @@ import { toast } from "sonner";
 import { CACHE_ANOMALY_MONITOR_GUIDE_COPY } from "../../../../services/gateway/cacheAnomalyMonitorConfig";
 import { createUpstreamErrorResponseRule } from "../../../../services/gateway/upstreamErrorResponseRules";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../../services/gateway/upstreamRetryPolicy";
+import { DEFAULT_MODEL_ROUTING_POLICY } from "../../../../services/gateway/modelRoutingPolicy";
 import type { GatewayRectifierSettingsPatch } from "../../../../services/settings/settingsGatewayRectifier";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
 import { CliManagerGeneralTab, type CliManagerGeneralTabProps } from "../GeneralTab";
@@ -121,6 +122,8 @@ function createDefaultTabProps(overrides: DefaultPropsOverrides = {}) {
     setCircuitBreakerOpenDurationMinutes: vi.fn(),
     upstreamRetryPolicy: DEFAULT_UPSTREAM_RETRY_POLICY,
     setUpstreamRetryPolicy: vi.fn(),
+    modelRoutingPolicy: DEFAULT_MODEL_ROUTING_POLICY,
+    setModelRoutingPolicy: vi.fn(),
     blurOnEnter: vi.fn(),
   };
 }
@@ -261,6 +264,8 @@ describe("cli-manager/GeneralTab", () => {
         setCircuitBreakerOpenDurationMinutes={vi.fn()}
         upstreamRetryPolicy={DEFAULT_UPSTREAM_RETRY_POLICY}
         setUpstreamRetryPolicy={vi.fn()}
+        modelRoutingPolicy={DEFAULT_MODEL_ROUTING_POLICY}
+        setModelRoutingPolicy={vi.fn()}
         blurOnEnter={vi.fn()}
       />
     );
@@ -344,6 +349,8 @@ describe("cli-manager/GeneralTab", () => {
         setCircuitBreakerOpenDurationMinutes={setCircuitBreakerOpenDurationMinutes}
         upstreamRetryPolicy={DEFAULT_UPSTREAM_RETRY_POLICY}
         setUpstreamRetryPolicy={vi.fn()}
+        modelRoutingPolicy={DEFAULT_MODEL_ROUTING_POLICY}
+        setModelRoutingPolicy={vi.fn()}
         blurOnEnter={blurOnEnter}
       />
     );
@@ -549,6 +556,45 @@ describe("cli-manager/GeneralTab", () => {
     );
   });
 
+  it("normalizes and saves the global model routing policy", async () => {
+    const modelRoutingPolicy = {
+      enabled: true,
+      rules: [
+        {
+          source_model: " source ",
+          target_model: " target ",
+          reasoning_effort: " low ",
+        },
+      ],
+    };
+    const normalized = {
+      enabled: true,
+      rules: [{ source_model: "source", target_model: "target", reasoning_effort: "low" }],
+    };
+    const onPersistCommonSettings = vi
+      .fn()
+      .mockResolvedValue(createTestAppSettings({ model_routing_policy: normalized }));
+    const setModelRoutingPolicy = vi.fn();
+
+    renderTab(
+      <CliManagerGeneralTab
+        {...createDefaultTabProps({ onPersistCommonSettings })}
+        modelRoutingPolicy={modelRoutingPolicy}
+        setModelRoutingPolicy={setModelRoutingPolicy}
+      />
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: /模型路由/ }));
+    fireEvent.click(screen.getByRole("button", { name: "保存模型路由" }));
+
+    await waitFor(() =>
+      expect(onPersistCommonSettings).toHaveBeenCalledWith({
+        model_routing_policy: normalized,
+      })
+    );
+    expect(setModelRoutingPolicy).toHaveBeenCalledWith(normalized);
+  });
+
   it("rejects an invalid Codex stream observation window when saving retry settings", () => {
     const onPersistCommonSettings = vi.fn();
     renderTab(
@@ -652,6 +698,8 @@ describe("cli-manager/GeneralTab", () => {
         setCircuitBreakerOpenDurationMinutes={vi.fn()}
         upstreamRetryPolicy={DEFAULT_UPSTREAM_RETRY_POLICY}
         setUpstreamRetryPolicy={vi.fn()}
+        modelRoutingPolicy={DEFAULT_MODEL_ROUTING_POLICY}
+        setModelRoutingPolicy={vi.fn()}
         blurOnEnter={vi.fn()}
       />
     );

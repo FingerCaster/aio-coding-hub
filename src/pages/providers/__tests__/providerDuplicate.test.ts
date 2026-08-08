@@ -57,6 +57,10 @@ describe("pages/providers/providerDuplicate", () => {
       base_urls: ["https://a.example.com", "https://b.example.com"],
       claude_models: { main_model: "main", reasoning_model: "reasoning" },
       tags: ["tag-a", "tag-b"],
+      model_routing_policy_override: {
+        enabled: false,
+        rules: [{ source_model: "source", target_model: "target", reasoning_effort: null }],
+      },
     });
 
     const duplicated = buildDuplicatedProviderInitialValues(
@@ -83,10 +87,19 @@ describe("pages/providers/providerDuplicate", () => {
       main_model: "main",
       reasoning_model: "reasoning",
     });
+    expect(duplicated.model_routing_policy_override).toEqual(
+      provider.model_routing_policy_override
+    );
 
     expect(duplicated.base_urls).not.toBe(provider.base_urls);
     expect(duplicated.tags).not.toBe(provider.tags);
     expect(duplicated.claude_models).not.toBe(provider.claude_models);
+    expect(duplicated.model_routing_policy_override).not.toBe(
+      provider.model_routing_policy_override
+    );
+    expect(duplicated.model_routing_policy_override?.rules).not.toBe(
+      provider.model_routing_policy_override.rules
+    );
   });
 
   it("clears api key for bridge or oauth providers and falls back optional values safely", () => {

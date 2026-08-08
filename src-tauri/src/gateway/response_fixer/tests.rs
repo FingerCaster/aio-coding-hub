@@ -2,10 +2,12 @@ use super::encoding::EncodingFixer;
 use super::json::JsonFixer;
 use super::sse::SseFixer;
 use super::{
-    process_non_stream, push_model_route_mapping_special_setting, push_special_setting,
-    special_settings_json, upsert_cx2cc_cost_basis, ResponseFixerConfig, ResponseFixerStream,
-    DEFAULT_MAX_FIX_SIZE, DEFAULT_MAX_JSON_DEPTH, SPECIAL_SETTINGS_JSON_MAX_BYTES,
-    SPECIAL_SETTINGS_MAX_ENTRIES, SPECIAL_SETTINGS_STRING_PREVIEW_BYTES,
+    clear_configured_model_route, has_configured_model_route, process_non_stream,
+    push_model_route_mapping_special_setting, push_special_setting, special_settings_json,
+    upsert_configured_model_route, upsert_cx2cc_cost_basis, ResponseFixerConfig,
+    ResponseFixerStream, DEFAULT_MAX_FIX_SIZE, DEFAULT_MAX_JSON_DEPTH,
+    SPECIAL_SETTINGS_JSON_MAX_BYTES, SPECIAL_SETTINGS_MAX_ENTRIES,
+    SPECIAL_SETTINGS_STRING_PREVIEW_BYTES,
 };
 use axum::body::Bytes;
 use futures_core::Stream;
@@ -136,6 +138,52 @@ fn model_route_mapping_special_setting_stays_first_under_entry_cap() {
             .and_then(serde_json::Value::as_str),
         Some("special_settings_truncated")
     );
+}
+
+#[test]
+fn configured_model_route_is_scoped_to_the_latest_attempt_and_can_be_cleared() {
+    let special_settings = Arc::new(Mutex::new(Vec::new()));
+    for index in 0..SPECIAL_SETTINGS_MAX_ENTRIES {
+        push_special_setting(
+            &special_settings,
+            serde_json::json!({"type": "diagnostic", "index": index}),
+        );
+    }
+
+    for provider_id in [7, 8] {
+        upsert_configured_model_route(
+            &special_settings,
+            serde_json::json!({
+                "type": "configured_model_route",
+                "providerId": provider_id,
+                "applied": true,
+            }),
+        );
+    }
+
+    assert!(has_configured_model_route(&special_settings));
+    let encoded = special_settings_json(&special_settings).expect("special settings json");
+    let decoded: Vec<serde_json::Value> = serde_json::from_str(&encoded).expect("valid json");
+    assert_eq!(decoded.len(), SPECIAL_SETTINGS_MAX_ENTRIES);
+    assert_eq!(
+        decoded[0]
+            .get("providerId")
+            .and_then(serde_json::Value::as_i64),
+        Some(8)
+    );
+    assert_eq!(
+        decoded
+            .iter()
+            .filter(|value| {
+                value.get("type").and_then(serde_json::Value::as_str)
+                    == Some("configured_model_route")
+            })
+            .count(),
+        1
+    );
+
+    clear_configured_model_route(&special_settings);
+    assert!(!has_configured_model_route(&special_settings));
 }
 
 #[test]

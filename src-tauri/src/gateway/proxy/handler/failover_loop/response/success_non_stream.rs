@@ -1218,12 +1218,12 @@ where
         }
         apply_circuit_snapshot_to_last_attempt(attempts, circuit_snapshot);
 
-        let requested_model_for_log =
-            crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
-                common.managed_model_route.as_ref(),
-                common.requested_model.as_deref(),
-                provider_ctx_owned.active_requested_model.as_deref(),
-            );
+        let requested_model_for_log = requested_model_for_audit(
+            &common.special_settings,
+            common.managed_model_route.as_ref(),
+            common.requested_model.as_deref(),
+            provider_ctx_owned.active_requested_model.as_deref(),
+        );
         emit_request_event_and_enqueue_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
                 deps: RequestEndDeps::new(
@@ -1380,6 +1380,12 @@ where
             *circuit_snapshot = terminal_snapshot;
 
             let verbose_provider_error = ctx.verbose_provider_error;
+            let requested_model_for_log = requested_model_for_audit(
+                &common.special_settings,
+                common.managed_model_route.as_ref(),
+                common.requested_model.as_deref(),
+                provider_ctx_owned.active_requested_model.as_deref(),
+            );
             let resp = finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
                 state,
                 abort_guard,
@@ -1395,7 +1401,7 @@ where
                 created_at_ms,
                 created_at,
                 session_id: common.session_id,
-                requested_model: active_requested_model_for_bridge,
+                requested_model: requested_model_for_log,
                 special_settings: common.special_settings,
                 verbose_provider_error,
                 error_category: ErrorCategory::NonRetryableClientError.as_str(),
@@ -1568,8 +1574,11 @@ where
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
-    let requested_model_for_log = if common.managed_model_route.is_some() {
-        crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+    let requested_model_for_log = if common.managed_model_route.is_some()
+        || response_fixer::has_configured_model_route(&common.special_settings)
+    {
+        requested_model_for_audit(
+            &common.special_settings,
             common.managed_model_route.as_ref(),
             common.requested_model.as_deref(),
             provider_ctx_owned.active_requested_model.as_deref(),

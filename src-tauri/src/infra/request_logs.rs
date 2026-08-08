@@ -313,6 +313,12 @@ pub(crate) fn effective_cost_basis(
     special_settings_json: Option<&str>,
     final_provider_id: Option<i64>,
 ) -> Option<EffectiveCostBasis> {
+    if let Some((cli_key, model)) =
+        semantics::resolve_configured_model_cost_basis(special_settings_json, final_provider_id)
+    {
+        return Some(EffectiveCostBasis { cli_key, model });
+    }
+
     if let Some((cli_key, model)) = parse_cx2cc_cost_basis(special_settings_json, final_provider_id)
     {
         return Some(EffectiveCostBasis { cli_key, model });
@@ -1547,6 +1553,81 @@ WHERE trace_id = ?1
             parse_cx2cc_cost_basis(Some(&special_settings_json), Some(12)),
             Some(("codex".to_string(), "gpt-5.4".to_string()))
         );
+    }
+
+    #[test]
+    fn configured_route_prices_effective_model_without_source_fallback() {
+        let (app, db, _dir) = init_test_db();
+        let app_handle = app.handle().clone();
+        let conn = db.open_connection().expect("open connection");
+        conn.execute(
+            r#"
+INSERT INTO model_prices (cli_key, model, price_json, created_at, updated_at)
+VALUES ('claude', 'source-priced', '{"input_cost_per_token":0.001}', 1, 1)
+"#,
+            [],
+        )
+        .expect("insert source model price");
+        conn.execute(
+            r#"
+INSERT INTO model_prices (cli_key, model, price_json, created_at, updated_at)
+VALUES ('claude', 'target-priced', '{"input_cost_per_token":0.002}', 1, 1)
+"#,
+            [],
+        )
+        .expect("insert target model price");
+        drop(conn);
+
+        let marker = |priced_model: &str| {
+            serde_json::json!([{
+                "type": "configured_model_route",
+                "providerId": 7,
+                "pricedCliKey": "claude",
+                "pricedModel": priced_model,
+                "applied": true
+            }])
+            .to_string()
+        };
+        let attempts_json = serde_json::json!([{
+            "provider_id": 7,
+            "provider_name": "Backup",
+            "outcome": "success",
+            "status": 200
+        }])
+        .to_string();
+        let items = [
+            RequestLogInsert {
+                special_settings_json: Some(marker("target-priced")),
+                requested_model: Some("source-priced".to_string()),
+                attempts_json: attempts_json.clone(),
+                input_tokens: Some(1_000),
+                total_tokens: Some(1_000),
+                ..request_log_insert("trace-configured-priced")
+            },
+            RequestLogInsert {
+                special_settings_json: Some(marker("target-missing")),
+                requested_model: Some("source-priced".to_string()),
+                attempts_json,
+                input_tokens: Some(1_000),
+                total_tokens: Some(1_000),
+                ..request_log_insert("trace-configured-missing")
+            },
+        ];
+
+        insert_batch_once(&app_handle, &db, &items, &mut InsertBatchCache::default())
+            .expect("insert configured-route request costs");
+
+        let conn = db.open_connection().expect("open connection");
+        let read_cost = |trace_id: &str| {
+            conn.query_row(
+                "SELECT cost_usd_femto FROM request_logs WHERE trace_id = ?1",
+                [trace_id],
+                |row| row.get::<_, Option<i64>>(0),
+            )
+            .expect("read configured route cost")
+        };
+        assert!(read_cost("trace-configured-priced").is_some());
+        assert_eq!(read_cost("trace-configured-missing"), None);
     }
 
     #[test]

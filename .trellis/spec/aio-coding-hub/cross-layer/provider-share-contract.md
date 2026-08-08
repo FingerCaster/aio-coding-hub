@@ -69,22 +69,23 @@ resources are `provider-share-preview:<preview_token>`.
 The domain boundary is:
 
 ```rust
-parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV2>
-serialize_provider_share_v2(envelope: &ProviderShareEnvelopeV2) -> AppResult<Vec<u8>>
-export_provider_share_v2(db: &Db, provider_id: i64) -> AppResult<ProviderShareEnvelopeV2>
-preview_provider_share(db: &Db, envelope: &ProviderShareEnvelopeV2)
+parse_provider_share(bytes: &[u8]) -> AppResult<ProviderShareEnvelopeV3>
+serialize_provider_share_v3(envelope: &ProviderShareEnvelopeV3) -> AppResult<Vec<u8>>
+export_provider_share_v3(db: &Db, provider_id: i64) -> AppResult<ProviderShareEnvelopeV3>
+preview_provider_share(db: &Db, envelope: &ProviderShareEnvelopeV3)
     -> AppResult<ProviderSharePreviewDraft>
 import_provider_share(
     db: &Db,
-    envelope: &ProviderShareEnvelopeV2,
+    envelope: &ProviderShareEnvelopeV3,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary>
 ```
 
 `parse_provider_share` is the only version-dispatch boundary. It strictly
-parses v1 or v2, converts v1 retry policies to canonical v2, and returns only
-`ProviderShareEnvelopeV2` to preview/import services.
+parses v1, v2, or v3, converts legacy retry policies to canonical v3, and
+returns only `ProviderShareEnvelopeV3` to preview/import services. A v1/v2
+payload that injects the v3 model-routing field is rejected before conversion.
 
 No schema migration is involved. Import writes one `providers` row plus its
 credential and extension fields in one SQLite transaction. It must not write
@@ -100,7 +101,7 @@ The top-level discriminator is exact:
 ```json
 {
   "type": "aio-coding-hub.provider-share",
-  "schema_version": 2,
+  "schema_version": 3,
   "provider": {
     "cli_key": "codex",
     "name": "Example",
@@ -132,7 +133,8 @@ The top-level discriminator is exact:
       "note": "",
       "bridge_type": null,
       "stream_idle_timeout_seconds": null,
-      "upstream_retry_policy_override": null
+      "upstream_retry_policy_override": null,
+      "model_routing_policy_override": null
     },
     "authentication": { "mode": "api_key", "api_key": "<secret>" },
     "extensions": []
@@ -144,18 +146,18 @@ OAuth authentication replaces `api_key` with `provider_type`, `access_token`,
 `refresh_token`, `id_token`, `token_uri`, `client_id`, `client_secret`,
 `expires_at`, `email`, and `refresh_lead_seconds`. A v1 retry override contains
 `enabled`, `status_codes`, `transport_errors`, `max_retries`, `backoff_ms`, and
-`counts_toward_circuit_breaker`. The v2 equivalent replaces `status_codes`
+`counts_toward_circuit_breaker`. The v2/v3 equivalent replaces `status_codes`
 with `http_rules`; each rule contains `enabled`, `status_code`,
 `body_contains`, and `description`. Each extension contains `plugin_id`,
 `plugin_version`, `namespace`, and plugin-owned open JSON `values`.
 
-All controlled v1 and v2 objects use `deny_unknown_fields`; only extension
+All controlled v1, v2, and v3 objects use `deny_unknown_fields`; only extension
 `values` is open. Each version rejects fields owned by the other version, as
 well as unknown discriminators, versions, fields, enum values, invalid UTF-8,
 and invalid provider fields. A future format gets a new explicit version
 reader rather than weakening either existing reader.
 
-The v1/v2 `model_mapping` member is a strict wire-compatibility shell. It is
+The v1/v2/v3 `model_mapping` member is a strict wire-compatibility shell. It is
 always normalized to `{"default_model":null,"exact":{}}` and never reaches an
 active Provider DTO or gateway mapper. The retired
 `codex_to_openai_chat`, `codex_to_openai_responses`, and
@@ -163,10 +165,12 @@ active Provider DTO or gateway mapper. The retired
 `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED`; they are never downgraded to a
 direct Provider.
 
-New serialization is v2 pretty JSON with one trailing newline and
+New serialization is v3 pretty JSON with one trailing newline and
 deterministic extension ordering by `(plugin_id, namespace)`. Copy and save
-call the same v2 serializer and enforce the 8 MiB encoded limit. There is no
-v1 export path. The default filename is
+call the same v3 serializer and enforce the 8 MiB encoded limit. There is no
+v1/v2 export path. V3 preserves the Provider model-routing override as
+`null` (inherit), an enabled policy (replace), or a disabled policy (suppress).
+The default filename is
 `aio-coding-hub-provider-<cli>-<sanitized-name>.json`, uses a cross-platform
 240-byte budget, and contains no timestamp.
 
@@ -288,7 +292,7 @@ extension values.
   disabled without any remote call.
 - Base: a standalone Claude `cx2cc` provider previews as `not_required` and
   round-trips without a source-provider ID.
-- Bad: unknown or cross-version v1/v2 fields, a future schema version, an
+- Bad: unknown or cross-version v1/v2/v3 fields, a future schema version, an
   external provider bridge, a changed preview file, an expired token, or
   plugin manifest/version drift fails before commit and leaves provider counts
   unchanged.
@@ -377,20 +381,20 @@ pub(crate) fn sanitize_account_usage_extension_value_for_config_bundle(
     values: &serde_json::Value,
 ) -> serde_json::Value;
 
-pub(crate) fn export_provider_share_v2(
+pub(crate) fn export_provider_share_v3(
     db: &Db,
     provider_id: i64,
-) -> AppResult<ProviderShareEnvelopeV2>;
+) -> AppResult<ProviderShareEnvelopeV3>;
 
 pub(crate) fn import_provider_share(
     db: &Db,
-    envelope: &ProviderShareEnvelopeV2,
+    envelope: &ProviderShareEnvelopeV3,
     expected_final_name: &str,
     expected_extensions: &[ProviderShareExtensionPreview],
 ) -> AppResult<ProviderSummary>;
 ```
 
-The `aio-coding-hub.provider-share` v1 compatibility reader and v2 export
+The `aio-coding-hub.provider-share` v1/v2 compatibility readers and v3 export
 schema contain no User ID or account access-token field. Their built-in
 extension value may contain only
 `adapterKind`, `newApiQueryMode`, `timedRefreshEnabled`, and
@@ -400,7 +404,7 @@ single-provider share policy.
 ### 3. Contracts
 
 - Normalize the exact built-in identity
-  `core.provider-account-usage/accountUsage` on v2 share export, strict v1/v2
+  `core.provider-account-usage/accountUsage` on v3 share export, strict v1/v2/v3
   parse, preview normalization, and import. Historical `newApiUserId`, account
   token, and unknown fields are removed through the shared sanitizer.
 - Preserve explicit `newApiQueryMode: "account"`. Do not downgrade it to
@@ -452,7 +456,7 @@ single-provider share policy.
 
 ### 5. Good / Base / Bad Cases
 
-- Good: an account-mode provider exports a v2 share whose canonical extension
+- Good: an account-mode provider exports a v3 share whose canonical extension
   keeps account mode but contains no account identity or token; the recipient
   imports it disabled and sees a credentials-required state.
 - Base: billing or sub2api providers retain their canonical account-usage

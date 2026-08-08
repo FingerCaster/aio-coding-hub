@@ -37,6 +37,95 @@ function createTrace(overrides: Partial<TraceSession> = {}): TraceSession {
 }
 
 describe("components/home/requestLogPresentation", () => {
+  it("shows configured routing as neutral final-provider audit data", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "configured_model_route",
+        providerId: 7,
+        providerName: "Budget backup",
+        policySource: "provider",
+        sourceModel: "source",
+        targetModel: "target",
+        effectiveModel: "target",
+        reasoningEffort: "low",
+        pricedCliKey: "claude",
+        applied: true,
+        modelApplied: true,
+        reasoningEffortApplied: true,
+      },
+      {
+        type: "model_route_mapping",
+        requestedModel: "target",
+        actualModel: "target",
+        requestedReasoningEffort: "high",
+        actualReasoningEffort: "low",
+        mismatch: true,
+        providerId: 7,
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta("claude", "source", specialSettings, null, 7);
+
+    expect(display.text).toBe("source → target · 思考强度 low");
+    expect(display.configuredRouteText).toBe(display.text);
+    expect(display.isConfiguredRoute).toBe(true);
+    expect(display.isSevereRouteMismatch).toBe(false);
+    expect(display.mismatchLabel).toBe("模型路由");
+    expect(display.title).toContain("供应商专属");
+
+    const audit = buildRequestLogAuditMeta({
+      cli_key: "claude",
+      path: "/v1/messages",
+      status: 200,
+      special_settings_json: specialSettings,
+      final_provider_id: 7,
+    });
+    expect(audit.tags.map((tag) => tag.label)).not.toContain("模型路由");
+  });
+
+  it("keeps an unexpected upstream observation severe after configured routing", () => {
+    const specialSettings = JSON.stringify([
+      {
+        type: "configured_model_route",
+        providerId: 7,
+        providerName: "Budget backup",
+        policySource: "global",
+        sourceModel: "source",
+        targetModel: "target",
+        effectiveModel: "target",
+        reasoningEffort: "low",
+        pricedCliKey: "codex",
+        applied: true,
+        modelApplied: true,
+        reasoningEffortApplied: true,
+      },
+      {
+        type: "model_route_mapping",
+        cliKey: "codex",
+        requestedModel: "target",
+        requestedReasoningEffort: "low",
+        requestedReasoningEffortSource: "configured_route",
+        actualModel: "unexpected",
+        actualReasoningEffort: "medium",
+        actualReasoningEffortSource: "response",
+        modelMismatch: true,
+        effortMismatch: true,
+        mismatch: true,
+        providerId: 7,
+        providerName: "Budget backup",
+      },
+    ]);
+
+    const display = resolveRequestLogModelDisplayMeta("codex", "source", specialSettings, null, 7);
+
+    expect(display.isConfiguredRoute).toBe(true);
+    expect(display.isSevereRouteMismatch).toBe(true);
+    expect(display.mismatchLabel).toBe("模型/思考等级不一致");
+    expect(display.configuredRouteText).toContain("source → target");
+    expect(display.configuredRouteText).toContain("上游返回 unexpected-medium");
+    expect(display.title).toContain("请求等级 配置路由");
+  });
+
   it("shows an AIO managed route as neutral audit information", () => {
     const specialSettings = JSON.stringify([
       {

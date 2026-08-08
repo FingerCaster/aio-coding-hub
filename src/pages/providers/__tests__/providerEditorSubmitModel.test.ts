@@ -20,6 +20,8 @@ function makeContext(
     streamIdleTimeoutSeconds: "",
     upstreamRetryPolicyOverrideEnabled: false,
     upstreamRetryPolicyDraft: DEFAULT_UPSTREAM_RETRY_POLICY,
+    modelRoutingMode: "inherit",
+    modelRoutingPolicyDraft: { enabled: false, rules: [] },
     apiKeyConfigured: false,
     isCodexGatewaySource: false,
     sourceProviderId: null,
@@ -129,6 +131,64 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     if (!result.ok) return;
 
     expect(result.value.payload.availabilityTestModel).toBe("gpt-5.4");
+  });
+
+  it("normalizes dedicated routing and preserves inherit and disabled states", () => {
+    const draft = {
+      enabled: false,
+      rules: [
+        {
+          source_model: " source ",
+          target_model: " target ",
+          reasoning_effort: " low ",
+        },
+      ],
+    };
+
+    const dedicated = buildProviderEditorUpsertInput(
+      makeContext({ modelRoutingMode: "custom", modelRoutingPolicyDraft: draft })
+    );
+    expect(dedicated.ok).toBe(true);
+    if (!dedicated.ok) return;
+    expect(dedicated.value.payload.modelRoutingPolicyOverride).toEqual({
+      enabled: true,
+      rules: [{ source_model: "source", target_model: "target", reasoning_effort: "low" }],
+    });
+
+    const disabled = buildProviderEditorUpsertInput(
+      makeContext({ modelRoutingMode: "disabled", modelRoutingPolicyDraft: draft })
+    );
+    expect(disabled.ok).toBe(true);
+    if (!disabled.ok) return;
+    expect(disabled.value.payload.modelRoutingPolicyOverride).toEqual({
+      enabled: false,
+      rules: [{ source_model: "source", target_model: "target", reasoning_effort: "low" }],
+    });
+
+    const inherited = buildProviderEditorUpsertInput(makeContext());
+    expect(inherited.ok).toBe(true);
+    if (!inherited.ok) return;
+    expect(inherited.value.payload.modelRoutingPolicyOverride).toBeNull();
+  });
+
+  it("rejects incomplete dedicated model routing rules", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        modelRoutingMode: "custom",
+        modelRoutingPolicyDraft: {
+          enabled: true,
+          rules: [{ source_model: "source", target_model: null, reasoning_effort: null }],
+        },
+      })
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "message",
+        message: "第 1 条模型路由至少填写目标模型或思考强度",
+      },
+    });
   });
 
   it("passes explicit NewAPI account credential preserve and clear semantics", () => {

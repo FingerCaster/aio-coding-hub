@@ -29,6 +29,8 @@ pub(super) struct PreparedProvider {
     pub(super) upstream_query: Option<String>,
     pub(super) upstream_body_bytes: Bytes,
     pub(super) active_requested_model: Option<String>,
+    pub(super) configured_model_route:
+        Option<crate::gateway::configured_model_route::ConfiguredModelRoute>,
     pub(super) strip_request_content_encoding: bool,
     pub(super) request_body_mutated_before_attempt: bool,
     pub(super) gemini_oauth_response_mode: Option<GeminiOAuthResponseMode>,
@@ -367,6 +369,18 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         );
     }
 
+    let configured_model_route = crate::gateway::configured_model_route::resolve(
+        &input.cli_key,
+        &input.method_hint,
+        &input.forwarded_path,
+        input.requested_model.as_deref(),
+        input.managed_model_route.is_some(),
+        &input.model_routing_policy,
+        provider.model_routing_policy_override.as_ref(),
+        provider_id,
+        &provider_name_base,
+    );
+
     let request_body_mutated_before_attempt = input.request_body_state.is_mutated()
         || upstream_body_bytes != input.request_body_state.decoded_clone()
         || strip_request_content_encoding;
@@ -388,6 +402,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         upstream_query,
         upstream_body_bytes,
         active_requested_model: active_requested_model.map(str::to_string),
+        configured_model_route,
         strip_request_content_encoding,
         request_body_mutated_before_attempt,
         gemini_oauth_response_mode,

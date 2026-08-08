@@ -5,8 +5,8 @@ use super::attempt_record::{
     RecordSystemFailureArgs,
 };
 use super::context::{
-    AttemptCtx, AttemptOutcome, CommonCtx, CommonCtxOwned, LoopControl, LoopState, ProviderCtx,
-    MAX_NON_SSE_BODY_BYTES,
+    requested_model_for_audit, AttemptCtx, AttemptOutcome, CommonCtx, CommonCtxOwned, LoopControl,
+    LoopState, ProviderCtx, MAX_NON_SSE_BODY_BYTES,
 };
 use super::thinking_signature_rectifier_400;
 use super::upstream_retry_policy::{
@@ -909,12 +909,12 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
                 response_fixer_non_stream_config,
                 ..
             } = CommonCtxOwned::from(ctx);
-            let requested_model_for_log =
-                crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
-                    managed_model_route.as_ref(),
-                    requested_model.as_deref(),
-                    active_requested_model.as_deref(),
-                );
+            let requested_model_for_log = requested_model_for_audit(
+                &special_settings,
+                managed_model_route.as_ref(),
+                requested_model.as_deref(),
+                active_requested_model.as_deref(),
+            );
 
             if let Some(rewrite) = error_response_rewrite.as_ref() {
                 if let Some(response) = rewrite.build_response(cli_key.as_str(), trace_id.as_str())

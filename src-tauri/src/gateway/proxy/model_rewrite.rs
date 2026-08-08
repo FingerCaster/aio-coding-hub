@@ -26,7 +26,7 @@ pub(super) fn replace_model_in_query(query: &str, model: &str) -> String {
     out.join("&")
 }
 
-pub(super) fn replace_model_in_path(path: &str, model: &str) -> Option<String> {
+pub(in crate::gateway) fn replace_model_in_path(path: &str, model: &str) -> Option<String> {
     let needle = "/models/";
     let idx = path.find(needle)?;
     let start = idx + needle.len();
@@ -44,7 +44,10 @@ pub(super) fn replace_model_in_path(path: &str, model: &str) -> Option<String> {
     Some(out)
 }
 
-pub(super) fn replace_model_in_body_json(root: &mut serde_json::Value, model: &str) -> bool {
+pub(in crate::gateway) fn replace_model_in_body_json(
+    root: &mut serde_json::Value,
+    model: &str,
+) -> bool {
     let Some(obj) = root.as_object_mut() else {
         return false;
     };

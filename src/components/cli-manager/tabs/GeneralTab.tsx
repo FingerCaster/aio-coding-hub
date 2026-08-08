@@ -8,7 +8,12 @@ import {
   gatewayUpstreamProxyTest,
 } from "../../../services/gateway/gateway";
 import { logToConsole } from "../../../services/consoleLog";
-import type { AppSettings, SensitiveStringUpdate } from "../../../services/settings/settings";
+import type {
+  AppSettings,
+  ModelRoutingPolicy,
+  SensitiveStringUpdate,
+  UpstreamRetryPolicy,
+} from "../../../services/settings/settings";
 import type { GatewayRectifierSettingsPatch } from "../../../services/settings/settingsGatewayRectifier";
 import {
   MAX_STREAM_INTERNAL_ERROR_GUARD_MS,
@@ -23,13 +28,18 @@ import { Switch } from "../../../ui/Switch";
 import { TabList } from "../../../ui/TabList";
 import { NetworkSettingsCard } from "../NetworkSettingsCard";
 import { WslSettingsCard } from "../WslSettingsCard";
-import { Bell, ChevronDown, Shield, ShieldAlert, TrendingDown, Globe } from "lucide-react";
-import type { UpstreamRetryPolicy } from "../../../services/settings/settings";
+import { Bell, ChevronDown, Shield, ShieldAlert, Shuffle, TrendingDown, Globe } from "lucide-react";
 import {
   cloneUpstreamRetryPolicy,
   validateUpstreamRetryPolicy,
 } from "../../../services/gateway/upstreamRetryPolicy";
 import { RetryPolicyFields } from "../../gateway/RetryPolicyFields";
+import { ModelRoutingPolicyFields } from "../../gateway/ModelRoutingPolicyFields";
+import {
+  cloneModelRoutingPolicy,
+  normalizeModelRoutingPolicy,
+  validateModelRoutingPolicy,
+} from "../../../services/gateway/modelRoutingPolicy";
 import { cn } from "../../../utils/cn";
 import { UpstreamErrorResponseRulesCard } from "../UpstreamErrorResponseRulesCard";
 
@@ -93,6 +103,8 @@ export type CliManagerGeneralTabProps = {
 
   upstreamRetryPolicy: UpstreamRetryPolicy;
   setUpstreamRetryPolicy: (value: UpstreamRetryPolicy) => void;
+  modelRoutingPolicy: ModelRoutingPolicy;
+  setModelRoutingPolicy: (value: ModelRoutingPolicy) => void;
 
   blurOnEnter: (e: ReactKeyboardEvent<HTMLInputElement>) => void;
 };
@@ -144,6 +156,8 @@ export function CliManagerGeneralTab({
   setCircuitBreakerOpenDurationMinutes,
   upstreamRetryPolicy,
   setUpstreamRetryPolicy,
+  modelRoutingPolicy,
+  setModelRoutingPolicy,
   blurOnEnter,
 }: CliManagerGeneralTabProps) {
   const navigate = useNavigate();
@@ -872,6 +886,45 @@ export function CliManagerGeneralTab({
                     />
                   </div>
                 )}
+              </CollapsibleSettingsCard>
+            ) : null}
+
+            {appSettings ? (
+              <CollapsibleSettingsCard
+                icon={<Shuffle className="h-5 w-5 text-white" />}
+                title="模型路由"
+                subtitle="按客户端原始模型精确匹配，并在最终上游请求中替换模型或思考强度。"
+                iconClassName="bg-teal-600"
+              >
+                <ModelRoutingPolicyFields
+                  policy={modelRoutingPolicy}
+                  disabled={commonSettingsDisabled}
+                  onChange={setModelRoutingPolicy}
+                />
+                <div className="mt-3 flex justify-end">
+                  <Button
+                    variant="secondary"
+                    size="sm"
+                    disabled={commonSettingsDisabled}
+                    onClick={async () => {
+                      const validationMessage = validateModelRoutingPolicy(modelRoutingPolicy);
+                      if (validationMessage) {
+                        toast(validationMessage);
+                        return;
+                      }
+                      const updated = await onPersistCommonSettings({
+                        model_routing_policy: normalizeModelRoutingPolicy(modelRoutingPolicy),
+                      });
+                      if (updated) {
+                        setModelRoutingPolicy(
+                          cloneModelRoutingPolicy(updated.model_routing_policy)
+                        );
+                      }
+                    }}
+                  >
+                    保存模型路由
+                  </Button>
+                </div>
               </CollapsibleSettingsCard>
             ) : null}
           </div>

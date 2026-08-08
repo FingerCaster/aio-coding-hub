@@ -10,6 +10,10 @@ import type {
 import { normalizeBaseUrlRows } from "./baseUrl";
 import { resolveStreamIdleTimeoutSeconds } from "./providerEditorTimeout";
 import { validateUpstreamRetryPolicy } from "../../services/gateway/upstreamRetryPolicy";
+import {
+  normalizeModelRoutingPolicy,
+  validateModelRoutingPolicy,
+} from "../../services/gateway/modelRoutingPolicy";
 
 export function buildProviderEditorUpsertInput(
   ctx: ProviderEditorPayloadContext
@@ -66,6 +70,22 @@ export function buildProviderEditorUpsertInput(
         error: {
           kind: "message",
           message: retryPolicyError,
+        },
+      };
+    }
+  }
+
+  if (ctx.modelRoutingMode !== "inherit") {
+    const modelRoutingPolicyError = validateModelRoutingPolicy({
+      ...ctx.modelRoutingPolicyDraft,
+      enabled: ctx.modelRoutingMode === "custom",
+    });
+    if (modelRoutingPolicyError) {
+      return {
+        ok: false,
+        error: {
+          kind: "message",
+          message: modelRoutingPolicyError,
         },
       };
     }
@@ -160,6 +180,13 @@ export function buildProviderEditorUpsertInput(
     upstreamRetryPolicyOverride: ctx.upstreamRetryPolicyOverrideEnabled
       ? ctx.upstreamRetryPolicyDraft
       : null,
+    modelRoutingPolicyOverride:
+      ctx.modelRoutingMode === "inherit"
+        ? null
+        : normalizeModelRoutingPolicy({
+            ...ctx.modelRoutingPolicyDraft,
+            enabled: ctx.modelRoutingMode === "custom",
+          }),
     ...(ctx.cliKey === "claude" ? { claudeModels: ctx.claudeModels } : {}),
     sourceProviderId:
       ctx.authMode === "cx2cc" && !(ctx.cliKey === "claude" && ctx.isCodexGatewaySource)

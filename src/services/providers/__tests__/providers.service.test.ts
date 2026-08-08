@@ -108,6 +108,7 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
     upstream_retry_policy_override: null,
     api_key_configured: false,
     ...overrides,
+    model_routing_policy_override: overrides.model_routing_policy_override ?? null,
     newapi_account_user_id: overrides.newapi_account_user_id ?? null,
     newapi_account_access_token_configured:
       overrides.newapi_account_access_token_configured ?? false,
@@ -292,6 +293,60 @@ describe("services/providers/providers", () => {
       expect.objectContaining({
         upstreamRetryPolicyOverride: null,
         upstreamRetryPolicyOverrideSpecified: true,
+      })
+    );
+  });
+
+  it("marks model routing override as specified only when the caller submits it", async () => {
+    const override = {
+      enabled: true,
+      rules: [{ source_model: "source", target_model: "target", reasoning_effort: "low" }],
+    };
+    vi.mocked(commands.providerUpsert).mockResolvedValue({
+      status: "ok",
+      data: createProviderSummary({ model_routing_policy_override: override }),
+    });
+    const baseInput = {
+      providerId: 1,
+      cliKey: "claude" as const,
+      name: "P1",
+      baseUrls: ["https://example.com"],
+      baseUrlMode: "order" as const,
+      apiKey: null,
+      enabled: true,
+      costMultiplier: 1,
+      priority: null,
+      claudeModels: null,
+      availabilityTestModel: null,
+      limit5hUsd: null,
+      limitDailyUsd: null,
+      dailyResetMode: "fixed" as const,
+      dailyResetTime: "00:00:00",
+      limitWeeklyUsd: null,
+      limitMonthlyUsd: null,
+      limitTotalUsd: null,
+    };
+
+    await providerUpsert(baseInput);
+    expect(commands.providerUpsert).toHaveBeenLastCalledWith(
+      expect.not.objectContaining({
+        modelRoutingPolicyOverrideSpecified: expect.anything(),
+      })
+    );
+
+    await providerUpsert({ ...baseInput, modelRoutingPolicyOverride: override });
+    expect(commands.providerUpsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelRoutingPolicyOverride: override,
+        modelRoutingPolicyOverrideSpecified: true,
+      })
+    );
+
+    await providerUpsert({ ...baseInput, modelRoutingPolicyOverride: null });
+    expect(commands.providerUpsert).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        modelRoutingPolicyOverride: null,
+        modelRoutingPolicyOverrideSpecified: true,
       })
     );
   });

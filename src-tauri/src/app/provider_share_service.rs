@@ -3,7 +3,7 @@
 use crate::db;
 use crate::providers::{
     parse_provider_share, preview_provider_share, ProviderAuthMode, ProviderShareCredentialStatus,
-    ProviderShareEnvelopeV2, ProviderShareExtensionPreview, ProviderSharePreviewDraft,
+    ProviderShareEnvelopeV3, ProviderShareExtensionPreview, ProviderSharePreviewDraft,
     PROVIDER_SHARE_MAX_BYTES,
 };
 use crate::shared::error::{AppError, AppResult};
@@ -46,7 +46,7 @@ struct PreviewEntry {
     token: String,
     created_at: Instant,
     sensitive_bytes: usize,
-    envelope: ProviderShareEnvelopeV2,
+    envelope: ProviderShareEnvelopeV3,
     expected_final_name: String,
     expected_extensions: Vec<ProviderShareExtensionPreview>,
     source: PreviewSource,
@@ -159,7 +159,7 @@ impl ProviderShareService {
 
     fn insert_at(
         &self,
-        envelope: ProviderShareEnvelopeV2,
+        envelope: ProviderShareEnvelopeV3,
         expected_final_name: String,
         expected_extensions: Vec<ProviderShareExtensionPreview>,
         source: PreviewSource,
@@ -374,7 +374,7 @@ fn preview_file_stale() -> AppError {
 mod tests {
     use super::*;
 
-    fn envelope() -> ProviderShareEnvelopeV2 {
+    fn envelope() -> ProviderShareEnvelopeV3 {
         parse_provider_share(
             br#"{
   "type": "aio-coding-hub.provider-share",

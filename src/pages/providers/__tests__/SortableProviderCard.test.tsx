@@ -94,6 +94,7 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
+    model_routing_policy_override: partial.model_routing_policy_override ?? null,
   };
 }
 

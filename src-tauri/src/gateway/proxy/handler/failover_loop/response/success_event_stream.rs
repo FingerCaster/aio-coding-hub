@@ -792,8 +792,11 @@ async fn finalize_buffered_stream_error_response<R: tauri::Runtime>(
         &common.special_settings,
     );
 
-    let requested_model_for_log = if common.managed_model_route.is_some() {
-        crate::gateway::managed_model_route::ManagedModelRoute::audit_requested_model(
+    let requested_model_for_log = if common.managed_model_route.is_some()
+        || response_fixer::has_configured_model_route(&common.special_settings)
+    {
+        requested_model_for_audit(
+            &common.special_settings,
             common.managed_model_route.as_ref(),
             common.requested_model.as_deref(),
             provider_ctx_owned.active_requested_model.as_deref(),

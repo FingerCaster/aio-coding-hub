@@ -219,6 +219,82 @@ fn make_test_bundle(schema_version: u32) -> ConfigBundle {
     }
 }
 
+#[test]
+fn config_v4_round_trips_model_routing_and_v1_to_v3_clear_injected_policies() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let provider = seed_direct_codex_provider(&test_app, "Model Routing Bundle");
+    let provider_policy = settings::ModelRoutingPolicy {
+        enabled: false,
+        rules: vec![settings::ModelRoutingRule {
+            source_model: "provider-source".to_string(),
+            target_model: Some("provider-target".to_string()),
+            reasoning_effort: None,
+        }],
+    };
+    test_app
+        .db
+        .open_connection()
+        .expect("open db")
+        .execute(
+            "UPDATE providers SET model_routing_policy_json = ?1 WHERE id = ?2",
+            params![
+                serde_json::to_string(&provider_policy).expect("provider policy json"),
+                provider.id
+            ],
+        )
+        .expect("set provider policy");
+
+    let mut app_settings = settings::read(&app).expect("read settings");
+    app_settings.model_routing_policy = settings::ModelRoutingPolicy {
+        enabled: true,
+        rules: vec![settings::ModelRoutingRule {
+            source_model: "global-source".to_string(),
+            target_model: Some("global-target".to_string()),
+            reasoning_effort: Some("high".to_string()),
+        }],
+    };
+    settings::write(&app, &app_settings).expect("write settings");
+
+    let bundle = config_export(&app, &test_app.db).expect("export v4");
+    assert_eq!(bundle.schema_version, CONFIG_BUNDLE_SCHEMA_VERSION);
+    assert_eq!(
+        bundle.providers[0].model_routing_policy_override,
+        Some(provider_policy.clone())
+    );
+    config_import(&app, &test_app.db, bundle).expect("import v4");
+
+    assert_eq!(
+        settings::read(&app)
+            .expect("read restored settings")
+            .model_routing_policy,
+        app_settings.model_routing_policy
+    );
+    assert_eq!(
+        crate::providers::list_by_cli(&test_app.db, "codex").expect("list restored providers")[0]
+            .model_routing_policy_override,
+        Some(provider_policy)
+    );
+
+    for legacy_version in [
+        CONFIG_BUNDLE_SCHEMA_VERSION_V1,
+        CONFIG_BUNDLE_SCHEMA_VERSION_V2,
+        CONFIG_BUNDLE_SCHEMA_VERSION_V3,
+    ] {
+        let mut legacy = config_export(&app, &test_app.db).expect("export legacy probe");
+        legacy.schema_version = legacy_version;
+        let prepared = prepare_config_import(legacy).expect("prepare legacy bundle");
+        assert_eq!(
+            prepared.settings_to_write.model_routing_policy,
+            settings::ModelRoutingPolicy::default()
+        );
+        assert!(prepared
+            .providers
+            .iter()
+            .all(|provider| provider.model_routing_policy_override.is_none()));
+    }
+}
+
 fn make_matrix_bundle(
     settings_value: &settings::AppSettings,
     label: &str,
@@ -409,6 +485,8 @@ fn seed_direct_codex_provider(
             account_usage_credentials_copy_from_provider_id: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
+            model_routing_policy_override: None,
+            model_routing_policy_override_specified: false,
         },
     )
     .expect("seed direct Codex provider")
@@ -537,6 +615,8 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
             account_usage_credentials_copy_from_provider_id: None,
             upstream_retry_policy_override: None,
             upstream_retry_policy_override_specified: false,
+            model_routing_policy_override: None,
+            model_routing_policy_override_specified: false,
         },
     )
     .expect("seed account provider");
@@ -2462,6 +2542,7 @@ fn config_import_v2_restores_full_prompt_and_skill_payload() {
             bridge_type: None,
             account_usage_config: None,
             account_usage_credentials: None,
+            model_routing_policy_override: None,
         }],
         sort_modes: Vec::new(),
         sort_mode_active: HashMap::new(),

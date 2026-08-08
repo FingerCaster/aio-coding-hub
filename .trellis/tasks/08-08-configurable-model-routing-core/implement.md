@@ -94,3 +94,12 @@ git diff --check
 - [ ] final marker/hash 只属于最终 Provider，requested model 不变，target 未定价不回退。
 - [ ] managed/辅助/探测/发现/非 POST 和 disabled/no-match 请求保持既有行为。
 - [ ] Provider 分享 v3、完整配置 v4、SQLite 45、settings 57 与生成绑定的版本矩阵一致。
+
+## 完成记录
+
+- 实际基线为 `10ceb1cd`，包含账户用量基线 `8757d32c` 与已归档的 Codex 转译删除子任务。
+- 已实现 settings 57、SQLite 45、Provider 分享 v3、完整配置 v4、Provider 三态覆盖、最终 wire 路由、失败切换、日志/成本语义与桌面端配置。
+- 已补充精确大小写、单次不级联、CX2CC 最终 Responses、同值 target、Gemini effort、压缩请求与插件顺序、零上游失败及下一 Provider 切换等自动化证据。
+- 全量通过：前端 304 个测试文件/2749 项测试、`typecheck`、`lint`、生成绑定检查、网关错误码检查、Rust fmt/check/clippy 与 `cargo test --locked`/`tauri:test`。
+- `git diff --check` 通过；仅任务 JSON 存在 Git 的 CRLF 转 LF 提示，无空白错误。
+- Orca 内嵌浏览器服务本轮未附着，无法执行截图式 UI QA；相关界面由组件测试、类型检查、lint 与响应式布局代码审查覆盖，未以截图完成冒充验证。

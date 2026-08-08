@@ -237,6 +237,41 @@ impl<'de> Deserialize<'de> for UpstreamRetryPolicy {
     }
 }
 
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelRoutingRule {
+    pub source_model: String,
+    pub target_model: Option<String>,
+    pub reasoning_effort: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
+#[serde(default, deny_unknown_fields)]
+pub struct ModelRoutingPolicy {
+    pub enabled: bool,
+    pub rules: Vec<ModelRoutingRule>,
+}
+
+fn deserialize_model_routing_policy_lossy<'de, D>(
+    deserializer: D,
+) -> Result<ModelRoutingPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    match serde_json::from_value(value) {
+        Ok(policy) => Ok(policy),
+        Err(_) => {
+            tracing::warn!(
+                target: "settings",
+                error_class = "invalid_model_routing_policy",
+                "disabled malformed global model routing policy"
+            );
+            Ok(ModelRoutingPolicy::default())
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum UpstreamErrorResponseMatchMode {
@@ -377,6 +412,8 @@ pub struct AppSettings {
     pub failover_max_providers_to_try: u32,
     #[serde(default)]
     pub upstream_retry_policy: UpstreamRetryPolicy,
+    #[serde(default, deserialize_with = "deserialize_model_routing_policy_lossy")]
+    pub model_routing_policy: ModelRoutingPolicy,
     #[serde(
         default,
         deserialize_with = "deserialize_upstream_error_response_rules_lossy"
@@ -473,6 +510,7 @@ impl Default for AppSettings {
             failover_max_attempts_per_provider: DEFAULT_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER,
             failover_max_providers_to_try: DEFAULT_FAILOVER_MAX_PROVIDERS_TO_TRY,
             upstream_retry_policy: UpstreamRetryPolicy::default(),
+            model_routing_policy: ModelRoutingPolicy::default(),
             upstream_error_response_rules: Vec::new(),
             circuit_breaker_failure_threshold: DEFAULT_CIRCUIT_BREAKER_FAILURE_THRESHOLD,
             circuit_breaker_open_duration_minutes: DEFAULT_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
@@ -531,7 +569,10 @@ pub(super) fn default_cli_priority_order() -> Vec<String> {
 
 #[cfg(test)]
 mod tests {
-    use super::{UpstreamRetryPolicy, UpstreamTransportRetryKind, DEFAULT_CAPACITY_RETRY_KEYWORD};
+    use super::{
+        AppSettings, ModelRoutingPolicy, UpstreamRetryPolicy, UpstreamTransportRetryKind,
+        DEFAULT_CAPACITY_RETRY_KEYWORD,
+    };
 
     #[test]
     fn upstream_retry_defaults_keep_only_behavior_bearing_visible_rules() {
@@ -556,5 +597,18 @@ mod tests {
         assert!(policy.stream_internal_errors.enabled);
         assert!(policy.stream_internal_errors.retry_keywords.is_empty());
         assert!(policy.stream_internal_errors.non_retry_keywords.is_empty());
+    }
+
+    #[test]
+    fn malformed_global_model_routing_policy_decodes_as_disabled() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["model_routing_policy"] = serde_json::json!({
+            "enabled": true,
+            "rules": "not-an-array"
+        });
+
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+
+        assert_eq!(settings.model_routing_policy, ModelRoutingPolicy::default());
     }
 }

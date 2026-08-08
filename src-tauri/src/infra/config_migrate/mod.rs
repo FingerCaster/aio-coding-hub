@@ -22,6 +22,7 @@ pub const CONFIG_BUNDLE_SCHEMA_VERSION_V3: u32 = 3;
 pub(crate) const CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION: u32 = 2;
 pub(crate) const CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION: u32 = 3;
 pub(crate) const CONFIG_BUNDLE_PROVIDER_UUID_MIN_VERSION: u32 = 4;
+pub(crate) const CONFIG_BUNDLE_MODEL_ROUTING_MIN_VERSION: u32 = 4;
 /// Shared encoded budget for config export serialization and import file reads.
 pub(crate) const CONFIG_BUNDLE_ENCODED_MAX_BYTES: usize = 64 * 1024 * 1024;
 /// Compatibility alias for the shared encoded budget.
@@ -127,6 +128,8 @@ pub struct ProviderExport {
     pub account_usage_config: Option<serde_json::Value>,
     #[serde(default)]
     pub account_usage_credentials: Option<ProviderAccountUsageCredentialsExport>,
+    #[serde(default)]
+    pub model_routing_policy_override: Option<settings::ModelRoutingPolicy>,
 }
 
 #[derive(Serialize, Deserialize, specta::Type)]
@@ -439,6 +442,7 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         bundle_schema_version >= CONFIG_BUNDLE_FULL_SKILL_PAYLOAD_MIN_VERSION;
     let imports_account_usage_snapshot =
         bundle_schema_version >= CONFIG_BUNDLE_ACCOUNT_USAGE_SNAPSHOT_MIN_VERSION;
+    let imports_model_routing = bundle_schema_version >= CONFIG_BUNDLE_MODEL_ROUTING_MIN_VERSION;
 
     let ConfigBundle {
         schema_version: _,
@@ -469,6 +473,13 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
     }
     for provider in &mut providers {
         provider.model_mapping_json = default_empty_json_object();
+        if imports_model_routing {
+            if let Some(policy) = provider.model_routing_policy_override.as_mut() {
+                settings::normalize_model_routing_policy_for_write(policy)?;
+            }
+        } else {
+            provider.model_routing_policy_override = None;
+        }
     }
 
     prepare_provider_identities(bundle_schema_version, &mut providers)?;
@@ -504,6 +515,13 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
 
     let mut settings_to_write: settings::AppSettings = serde_json::from_str(&settings)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid settings bundle: {e}"))?;
+    if imports_model_routing {
+        settings::normalize_model_routing_policy_for_write(
+            &mut settings_to_write.model_routing_policy,
+        )?;
+    } else {
+        settings_to_write.model_routing_policy = settings::ModelRoutingPolicy::default();
+    }
     settings_to_write.schema_version = settings::SCHEMA_VERSION;
 
     Ok(PreparedConfigImport {

@@ -15,6 +15,7 @@ import { openDesktopPath } from "../../services/desktop/opener";
 import { type GatewayRectifierSettingsPatch } from "../../services/settings/settingsGatewayRectifier";
 import type {
   AppSettings,
+  ModelRoutingPolicy,
   SensitiveStringUpdate,
   UpstreamRetryPolicy,
 } from "../../services/settings/settings";
@@ -32,6 +33,10 @@ import {
   cloneUpstreamRetryPolicy,
   DEFAULT_UPSTREAM_RETRY_POLICY,
 } from "../../services/gateway/upstreamRetryPolicy";
+import {
+  cloneModelRoutingPolicy,
+  DEFAULT_MODEL_ROUTING_POLICY,
+} from "../../services/gateway/modelRoutingPolicy";
 import {
   useCliManagerClaudeInfoQuery,
   useCliManagerClaudeSettingsQuery,
@@ -128,6 +133,9 @@ export function useCliManagerPageDataModel() {
     useState<number>(30);
   const [upstreamRetryPolicy, setUpstreamRetryPolicy] = useState<UpstreamRetryPolicy>(
     DEFAULT_UPSTREAM_RETRY_POLICY
+  );
+  const [modelRoutingPolicy, setModelRoutingPolicy] = useState<ModelRoutingPolicy>(
+    DEFAULT_MODEL_ROUTING_POLICY
   );
   const cacheAnomalyMonitorEnabled = appSettings?.enable_cache_anomaly_monitor ?? false;
   const taskCompleteNotifyEnabled = appSettings?.enable_task_complete_notify ?? true;
@@ -241,6 +249,7 @@ export function useCliManagerPageDataModel() {
     setCircuitBreakerFailureThreshold(appSettings.circuit_breaker_failure_threshold);
     setCircuitBreakerOpenDurationMinutes(appSettings.circuit_breaker_open_duration_minutes);
     setUpstreamRetryPolicy(cloneUpstreamRetryPolicy(appSettings.upstream_retry_policy));
+    setModelRoutingPolicy(cloneModelRoutingPolicy(appSettings.model_routing_policy));
   }, [appSettings]);
 
   async function persistRectifier(patch: Partial<GatewayRectifierSettingsPatch>) {
@@ -421,6 +430,7 @@ export function useCliManagerPageDataModel() {
       setCircuitBreakerFailureThreshold(updatedSettings.circuit_breaker_failure_threshold);
       setCircuitBreakerOpenDurationMinutes(updatedSettings.circuit_breaker_open_duration_minutes);
       setUpstreamRetryPolicy(cloneUpstreamRetryPolicy(updatedSettings.upstream_retry_policy));
+      setModelRoutingPolicy(cloneModelRoutingPolicy(updatedSettings.model_routing_policy));
       toast("已保存");
       return updatedSettings;
     } catch (err) {
@@ -443,6 +453,7 @@ export function useCliManagerPageDataModel() {
       setCircuitBreakerFailureThreshold(prev.circuit_breaker_failure_threshold);
       setCircuitBreakerOpenDurationMinutes(prev.circuit_breaker_open_duration_minutes);
       setUpstreamRetryPolicy(cloneUpstreamRetryPolicy(prev.upstream_retry_policy));
+      setModelRoutingPolicy(cloneModelRoutingPolicy(prev.model_routing_policy));
       return null;
     }
   }
@@ -714,6 +725,8 @@ export function useCliManagerPageDataModel() {
       setCircuitBreakerOpenDurationMinutes,
       upstreamRetryPolicy,
       setUpstreamRetryPolicy,
+      modelRoutingPolicy,
+      setModelRoutingPolicy,
       blurOnEnter,
     },
     claudeTabProps: {

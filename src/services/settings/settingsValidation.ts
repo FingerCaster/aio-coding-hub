@@ -1,5 +1,6 @@
 import type {
   GatewayListenMode,
+  ModelRoutingPolicy,
   ProviderFailbackStrategy,
   SensitiveStringUpdate,
   UpstreamRetryPolicy,
@@ -17,6 +18,7 @@ import {
   MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS,
   validateUpstreamRetryPolicy as validateGatewayUpstreamRetryPolicy,
 } from "../gateway/upstreamRetryPolicy";
+import { validateModelRoutingPolicy } from "../gateway/modelRoutingPolicy";
 import {
   MAX_UPSTREAM_ERROR_RESPONSE_RULE_DESCRIPTION_CHARS,
   MAX_UPSTREAM_ERROR_RESPONSE_RULE_KEYWORD_CHARS,
@@ -411,6 +413,7 @@ export type SettingsSetValidationInput = {
   failoverMaxAttemptsPerProvider?: number | null;
   failoverMaxProvidersToTry?: number | null;
   upstreamRetryPolicy?: UpstreamRetryPolicy | null;
+  modelRoutingPolicy?: ModelRoutingPolicy | null;
   upstreamErrorResponseRules?: UpstreamErrorResponseRule[] | null;
   circuitBreakerFailureThreshold?: number | null;
   circuitBreakerOpenDurationMinutes?: number | null;
@@ -523,6 +526,10 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
 
   const upstreamRetryPolicyMessage = validateUpstreamRetryPolicy(input.upstreamRetryPolicy);
   if (upstreamRetryPolicyMessage) return upstreamRetryPolicyMessage;
+  if (input.modelRoutingPolicy != null) {
+    const modelRoutingPolicyMessage = validateModelRoutingPolicy(input.modelRoutingPolicy);
+    if (modelRoutingPolicyMessage) return modelRoutingPolicyMessage;
+  }
   const upstreamErrorResponseRulesMessage = validateUpstreamErrorResponseRules(
     input.upstreamErrorResponseRules
   );

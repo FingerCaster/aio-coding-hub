@@ -1,5 +1,6 @@
 import type {
   ClaudeModels,
+  ModelRoutingPolicy,
   ProviderSummary,
   UpstreamRetryPolicy,
 } from "../../services/providers/providers";
@@ -29,6 +30,7 @@ export type ProviderEditorInitialValues = {
   bridge_type: string | null;
   stream_idle_timeout_seconds: number | null;
   upstream_retry_policy_override: UpstreamRetryPolicy | null;
+  model_routing_policy_override: ModelRoutingPolicy | null;
 };
 
 function normalizeProviderName(name: string) {
@@ -86,5 +88,11 @@ export function buildDuplicatedProviderInitialValues(
     bridge_type: provider.bridge_type ?? null,
     stream_idle_timeout_seconds: provider.stream_idle_timeout_seconds ?? null,
     upstream_retry_policy_override: provider.upstream_retry_policy_override ?? null,
+    model_routing_policy_override: provider.model_routing_policy_override
+      ? {
+          enabled: provider.model_routing_policy_override.enabled,
+          rules: provider.model_routing_policy_override.rules.map((rule) => ({ ...rule })),
+        }
+      : null,
   };
 }

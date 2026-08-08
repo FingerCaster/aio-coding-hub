@@ -25,6 +25,7 @@ const SPECIAL_SETTINGS_ENTRY_MAX_BYTES: usize = 4 * 1024;
 const SPECIAL_SETTINGS_JSON_MAX_BYTES: usize = 64 * 1024;
 const CX2CC_COST_BASIS_TYPE: &str = "cx2cc_cost_basis";
 const AIO_MANAGED_MODEL_ROUTE_TYPE: &str = "aio_managed_model_route";
+const CONFIGURED_MODEL_ROUTE_TYPE: &str = "configured_model_route";
 
 #[derive(Debug, Clone, Copy)]
 pub(super) struct ResponseFixerConfig {
@@ -51,7 +52,7 @@ pub(super) fn special_settings_json_from_values(settings: Vec<Value>) -> Option<
     if settings.is_empty() {
         return None;
     }
-    let settings = prioritize_cx2cc_cost_basis(settings);
+    let settings = prioritize_configured_model_route(prioritize_cx2cc_cost_basis(settings));
     let original_len = settings.len();
     let mut capped: Vec<Value> = settings
         .into_iter()
@@ -144,6 +145,34 @@ pub(super) fn upsert_aio_managed_model_route(shared: &Arc<Mutex<Vec<Value>>>, se
     }
 }
 
+pub(super) fn upsert_configured_model_route(shared: &Arc<Mutex<Vec<Value>>>, setting: Value) {
+    if !is_configured_model_route(&setting) {
+        push_special_setting(shared, setting);
+        return;
+    }
+
+    let setting = bound_special_setting(setting);
+    let mut guard = shared.lock_or_recover();
+    guard.retain(|value| !is_configured_model_route(value));
+    guard.insert(0, setting);
+    if guard.len() > SPECIAL_SETTINGS_MAX_ENTRIES {
+        guard.truncate(SPECIAL_SETTINGS_MAX_ENTRIES);
+        mark_special_settings_truncated(&mut guard);
+    }
+}
+
+pub(super) fn clear_configured_model_route(shared: &Arc<Mutex<Vec<Value>>>) {
+    let mut guard = shared.lock_or_recover();
+    guard.retain(|value| !is_configured_model_route(value));
+}
+
+pub(super) fn has_configured_model_route(shared: &Arc<Mutex<Vec<Value>>>) -> bool {
+    shared
+        .lock_or_recover()
+        .iter()
+        .any(is_configured_model_route)
+}
+
 fn prioritize_cx2cc_cost_basis(mut settings: Vec<Value>) -> Vec<Value> {
     let Some(marker_index) = settings.iter().rposition(is_cx2cc_cost_basis) else {
         return settings;
@@ -154,12 +183,26 @@ fn prioritize_cx2cc_cost_basis(mut settings: Vec<Value>) -> Vec<Value> {
     settings
 }
 
+fn prioritize_configured_model_route(mut settings: Vec<Value>) -> Vec<Value> {
+    let Some(marker_index) = settings.iter().rposition(is_configured_model_route) else {
+        return settings;
+    };
+    let marker = settings.remove(marker_index);
+    settings.retain(|value| !is_configured_model_route(value));
+    settings.insert(0, marker);
+    settings
+}
+
 fn is_cx2cc_cost_basis(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some(CX2CC_COST_BASIS_TYPE)
 }
 
 fn is_aio_managed_model_route(value: &Value) -> bool {
     value.get("type").and_then(Value::as_str) == Some(AIO_MANAGED_MODEL_ROUTE_TYPE)
+}
+
+fn is_configured_model_route(value: &Value) -> bool {
+    value.get("type").and_then(Value::as_str) == Some(CONFIGURED_MODEL_ROUTE_TYPE)
 }
 
 fn push_special_setting_locked(settings: &mut Vec<Value>, setting: Value) {

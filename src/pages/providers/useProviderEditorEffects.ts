@@ -5,6 +5,7 @@ import { logToConsole } from "../../services/consoleLog";
 import {
   type ProviderOAuthStatusResult,
   type ClaudeModels,
+  type ModelRoutingPolicy,
   type ProviderSummary,
   type UpstreamRetryPolicy,
 } from "../../services/providers/providers";
@@ -30,6 +31,11 @@ import {
   cloneUpstreamRetryPolicy,
   DEFAULT_UPSTREAM_RETRY_POLICY,
 } from "../../services/gateway/upstreamRetryPolicy";
+import {
+  cloneModelRoutingPolicy,
+  DEFAULT_MODEL_ROUTING_POLICY,
+} from "../../services/gateway/modelRoutingPolicy";
+import type { ProviderModelRoutingMode } from "./providerEditorActionContext";
 
 export type EffectDeps = {
   open: boolean;
@@ -60,6 +66,8 @@ export type EffectDeps = {
   setStreamIdleTimeoutSeconds: (v: string) => void;
   setUpstreamRetryPolicyOverrideEnabled: (v: boolean) => void;
   setUpstreamRetryPolicyDraft: (v: UpstreamRetryPolicy) => void;
+  setModelRoutingMode: (v: ProviderModelRoutingMode) => void;
+  setModelRoutingPolicyDraft: (v: ModelRoutingPolicy) => void;
   setAuthMode: (v: "api_key" | "oauth" | "cx2cc") => void;
   setCx2ccSourceValue: (v: string) => void;
   setOauthStatus: (v: ProviderOAuthStatusResult | null) => void;
@@ -109,6 +117,8 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setStreamIdleTimeoutSeconds,
     setUpstreamRetryPolicyOverrideEnabled,
     setUpstreamRetryPolicyDraft,
+    setModelRoutingMode,
+    setModelRoutingPolicyDraft,
     setAuthMode,
     setCx2ccSourceValue,
     setOauthStatus,
@@ -165,6 +175,17 @@ export function useProviderEditorEffects(d: EffectDeps) {
           createInitialValues?.upstream_retry_policy_override ?? DEFAULT_UPSTREAM_RETRY_POLICY
         )
       );
+      const initialModelRoutingPolicy = createInitialValues?.model_routing_policy_override ?? null;
+      setModelRoutingMode(
+        initialModelRoutingPolicy == null
+          ? "inherit"
+          : initialModelRoutingPolicy.enabled
+            ? "custom"
+            : "disabled"
+      );
+      setModelRoutingPolicyDraft(
+        cloneModelRoutingPolicy(initialModelRoutingPolicy ?? DEFAULT_MODEL_ROUTING_POLICY)
+      );
       setCx2ccSourceValue(initialCx2ccSourceValue);
       setAuthMode(
         initialCx2ccSourceValue ? "cx2cc" : (createInitialValues?.auth_mode ?? "api_key")
@@ -204,6 +225,18 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setUpstreamRetryPolicyDraft(
       cloneUpstreamRetryPolicy(
         snapshot.upstream_retry_policy_override ?? DEFAULT_UPSTREAM_RETRY_POLICY
+      )
+    );
+    setModelRoutingMode(
+      snapshot.model_routing_policy_override == null
+        ? "inherit"
+        : snapshot.model_routing_policy_override.enabled
+          ? "custom"
+          : "disabled"
+    );
+    setModelRoutingPolicyDraft(
+      cloneModelRoutingPolicy(
+        snapshot.model_routing_policy_override ?? DEFAULT_MODEL_ROUTING_POLICY
       )
     );
     reset({
@@ -250,6 +283,8 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setStreamIdleTimeoutSeconds,
     setUpstreamRetryPolicyDraft,
     setUpstreamRetryPolicyOverrideEnabled,
+    setModelRoutingMode,
+    setModelRoutingPolicyDraft,
     setTagInput,
     setTags,
   ]);
