@@ -280,12 +280,16 @@ FailoverAttempt {
   lease at a time. Provider-level global single-flight remains authoritative.
 - A persisted binding whose circuit denies reuse is not a stable planner
   anchor. Pass circuit-validated `session_bound_provider_id`; do not re-read
-  `routing_snapshot.provider_id`. If there is no effective binding and every
-  eligible routed provider is `OPEN`/`HALF_OPEN`, preserve the ordered
-  `new_unbound_session` all-open recovery intent containing the entire route.
-  This compatibility branch uses the same per-target intent and common gate;
-  it is not an ordinary-prefix length restriction. If any eligible routed
-  provider is `CLOSED`, do not misclassify the route as all-open recovery.
+  `routing_snapshot.provider_id`. When there is no effective binding, classify
+  recovery state using candidates that are not currently account-blocked. If
+  none remain, create no dispatch intent and let the ordinary loop record every
+  account skip. If every unblocked candidate is `OPEN`/`HALF_OPEN`, preserve
+  ordered `new_unbound_session` recovery through the last unblocked candidate.
+  Keep any blocked route entries inside that original prefix so their common
+  account gate remains observable before later probes. If an unblocked
+  `CLOSED` candidate exists, preserve ordinary mixed-route behavior by
+  targeting only through the first unblocked candidate. This classification
+  hint never removes a Provider, acquires a lease, or bypasses the common gate.
 - In all-open recovery, cooldown and in-flight candidates make zero calls and
   advance to the next routed provider. A dispatched probe that exhausts its
   retry chain also advances. First complete success closes and binds the actual
@@ -404,6 +408,8 @@ FailoverAttempt {
 | Account block plus circuit/limit denial | HTTP 503; retain the other gate's trusted `Retry-After`, but write no recent-error cache entry |
 | Session is bound to P2 while higher-priority P1 remains fresh account-blocked | Omit P1 from failback targets and `not_triggered` observations; send/log only P2 and create no P1 reservation |
 | P1 is blocked but the Session has no effective binding | Keep P1 in ordinary selection; the common gate records the first account skip before fallback |
+| Effective-unbound P1/P2 are account-blocked `CLOSED` and final P3 is `OPEN` | Keep P1/P2 as ordered account skips, then probe P3 as `new_unbound_session` in the same request |
+| Every effective-unbound candidate is account-blocked | Create no dispatch intent; keep every ordinary account skip and return the existing terminal result |
 | P1 is blocked during repeated Codex compaction turns, then becomes fresh available | Keep the fingerprint pending without repeated P1 rows; next eligible request Direct-dispatches P1 and consumes it only at transport send |
 | A previously blocked Provider becomes fresh available after Session baseline | If circuit is CLOSED, natural planner emits Direct in route order; bind only on real success |
 | Account recovery epoch is equal/older/zero or Provider reblocks | Do not plan Direct from account recovery |
@@ -615,6 +621,11 @@ FailoverAttempt {
   failure then P2 probe success, P1 cooldown, P1 in-flight, and all-cooldown.
   Assert ordered `new_unbound_session` metadata, per-provider single-flight,
   correct binding/closure, zero denied calls, and 503 only when all are denied.
+- Route-test an effective-unbound route with account-blocked `CLOSED` P1/P2
+  and `OPEN` P3. In one client request, assert ordered P1/P2 account skips,
+  zero P1/P2 calls and probe metadata, one P3 `new_unbound_session` probe,
+  complete P3 success, circuit closure, and no Ready-budget consumption by the
+  skipped prefix. Planner-test the same target prefix and an all-blocked Stay.
 - Circuit-test that a counted `CLOSED` failure arms the natural deadline, a
   later failure rearms it from the newer timestamp, complete success clears it,
   reload preserves it, and a max-wait configuration update recomputes it.

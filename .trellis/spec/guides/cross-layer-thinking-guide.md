@@ -77,6 +77,11 @@ streaming boundaries, and commits session or routing state later.
       steady reuse, and confirmed recovery. Decide explicitly whether the
       planner needs a typed suppression hint; never infer that fallback success
       consumed a reservation targeting another Provider.
+- [ ] For effective-unbound recovery, classify health using candidates that can
+      pass every durable planning hint, but preserve the original route prefix
+      through the selected recovery target so common-gate skips remain
+      observable. Test all-blocked Stay and blocked-closed-prefix plus final-open
+      probe in one client request.
 - [ ] Name every failure, reset, and reopen transition that invalidates a shared
       recovery marker.
 

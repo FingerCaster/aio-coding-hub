@@ -8561,6 +8561,167 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn balance_blocked_prefix_still_probes_final_open_provider_in_same_request() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let account_usage_runtime =
+            crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState::default();
+        app.manage(account_usage_runtime.clone());
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-balance-prefix-final-open-probe.sqlite"),
+        )
+        .expect("init test db");
+        let blocked_body = r#"{"error":{"message":"balance-blocked provider must not run"}}"#;
+        let (first_url, first_calls, first_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, blocked_body).await;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::INTERNAL_SERVER_ERROR, blocked_body).await;
+        let success_body = r#"{"id":"final-probe-ok","object":"response","status":"completed","model":"gpt-balance-prefix-final-probe","output":[]}"#;
+        let (third_url, third_calls, third_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_id = insert_provider_with_priority_and_extensions(
+            &db,
+            "codex",
+            "First Balance Blocked",
+            first_url,
+            0,
+            Some(account_usage_route_extension()),
+        );
+        let second_id = insert_provider_with_priority_and_extensions(
+            &db,
+            "codex",
+            "Second Balance Blocked",
+            second_url,
+            1,
+            Some(account_usage_route_extension()),
+        );
+        let third_id = insert_codex_provider_with_priority(&db, "Final Circuit Open", third_url, 2);
+
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        for provider_id in [first_id, second_id] {
+            let context = {
+                let connection = db.open_connection().expect("open provider db");
+                providers::get_account_usage_fetch_context(&connection, provider_id)
+                    .expect("load account usage context")
+            };
+            let target = crate::app::provider_account_usage_runtime::
+                ProviderAccountUsageTarget::from_gateway_fetch_context(provider_id, &context)
+                .expect("route-gated target");
+            account_usage_runtime.seed_gateway_route_snapshot_for_tests(
+                &target,
+                account_usage_route_result(
+                    crate::domain::provider_account_usage::ProviderAccountUsageStatus::ZeroBalance,
+                    Some(0.0),
+                    now,
+                ),
+                std::time::Instant::now(),
+                now,
+            );
+        }
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        circuit.record_failure(third_id, now.saturating_sub(31), None);
+        let session = Arc::new(session_manager::SessionManager::new());
+        let session_id = "0190c0de-0000-7000-8000-000000000109";
+        session.bind_sort_mode(
+            "codex",
+            session_id,
+            None,
+            Some(vec![first_id, second_id, third_id]),
+            now,
+        );
+        session.bind_success("codex", session_id, third_id, None, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            session.clone(),
+        ));
+        let response = router
+            .oneshot(all_open_probe_request(
+                session_id,
+                "gpt-balance-prefix-final-probe",
+            ))
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_logged_provider_order(&attempts, &[first_id, second_id, third_id]);
+        assert_eq!(attempts.len(), 3);
+        for attempt in &attempts[..2] {
+            assert_eq!(
+                attempt.get("outcome").and_then(Value::as_str),
+                Some("skipped")
+            );
+            assert_eq!(
+                attempt.get("reason_code").and_then(Value::as_str),
+                Some("account_usage_zero_balance")
+            );
+            assert_eq!(attempt.get("probe").and_then(Value::as_bool), None);
+            assert_eq!(attempt.get("probe_trigger").and_then(Value::as_str), None);
+        }
+        assert_eq!(
+            attempts[2].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(
+            attempts[2].get("selection_method").and_then(Value::as_str),
+            Some("circuit_probe")
+        );
+        assert_eq!(
+            attempts[2].get("probe_trigger").and_then(Value::as_str),
+            Some("new_unbound_session")
+        );
+        assert_eq!(
+            attempts[2].get("probe_result").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(first_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(third_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(
+            circuit.snapshot(third_id, now).state,
+            circuit_breaker::CircuitState::Closed
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, now),
+            Some(third_id)
+        );
+
+        first_task.abort();
+        second_task.abort();
+        third_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn natural_max_wait_directly_returns_to_closed_higher_priority_provider() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");

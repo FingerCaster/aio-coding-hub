@@ -222,10 +222,13 @@ they do not parse extension JSON or recompute its token.
 - Provider resolution reads each candidate once and projects that same result
   into either a nonzero recovery epoch or `blocked_provider_ids`. It must never
   combine an epoch from one read with a blocked classification from another.
-- `blocked_provider_ids` is a planner hint only for the higher-priority prefix
-  of an effectively bound fallback Session. It suppresses natural/compaction/
-  route-change/aggressive targets, observations, and reservations while fresh
-  Blocked remains trusted. It does not delete ordinary candidates or bypass the
+- For an effectively bound fallback Session, `blocked_provider_ids`
+  suppresses natural/compaction/route-change/aggressive higher-prefix targets,
+  observations, and reservations while fresh Blocked remains trusted. For an
+  effective-unbound Session, it may classify which candidates can actually
+  recover: preserve the original route prefix through the selected unblocked
+  target, so blocked entries still reach the common account gate before a
+  later circuit probe. It never deletes ordinary candidates or bypasses the
   common send-time gate for unbound, current-bound, forced, or normal fallback
   selection.
 - An all-blocked compaction prefix creates no reservation and leaves the
@@ -261,7 +264,9 @@ they do not parse extension JSON or recompute its token.
 | Fresh consistent `expired` | `Blocked(Expired)` |
 | Auth/config/query/unsupported result | `UnknownAllow`; retain same-generation transition memory |
 | Bound fallback Session repeatedly sees fresh Blocked higher-priority P1 | Suppress P1 failback target/observation/reservation; log only the actual fallback request |
-| New/effectively-unbound Session sees the same P1 | Preserve P1 in ordinary candidates; common gate records one account skip |
+| New/effectively-unbound Session sees blocked P1 before an available P2 | Preserve both in route order; common gate records P1's account skip before P2 sends |
+| Effective-unbound P1/P2 are blocked `CLOSED` and final P3 is `OPEN` | Preserve P1/P2 account skips, then allow the same request's `new_unbound_session` probe for P3 |
+| Every effective-unbound candidate is blocked | Plan no recovery target; ordinary selection still records every account skip |
 | Planner sees Available but common gate later sees Blocked | Record one account skip and fallback in that request; suppress P1 on the next request |
 | Blocked then fresh available in same generation | Publish exactly one Provider/global recovery epoch |
 | Reblocked after recovery | Clear Provider epoch immediately |
@@ -303,9 +308,11 @@ they do not parse extension JSON or recompute its token.
   checked overflow.
 - Planner tests must cover stable-bound blocked suppression for natural and
   explicit triggers, later-due candidates, all-blocked Stay, unbound audit, and
-  route-change confirmation. A route test must cover initial skip, two repeated
-  same-Session compaction requests with one fallback attempt each, then recovery
-  and real fingerprint consumption.
+  route-change confirmation. Cover an effective-unbound blocked `CLOSED`
+  prefix followed by an `OPEN` candidate, including the original-prefix target
+  order and the all-blocked Stay case. Route tests must cover same-request final
+  probing plus initial skip, two repeated same-Session compaction requests with
+  one fallback attempt each, then recovery and real fingerprint consumption.
 - Integration tests must prove DB-loaded `ProviderForGateway` stores the
   precomputed target, request reads perform no account network wait, and
   successful mutation/import reconciliation removes obsolete targets.
