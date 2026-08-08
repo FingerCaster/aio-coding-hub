@@ -114,6 +114,7 @@ fn confirmed_custom_account_usage_values() -> serde_json::Value {
         "adapterKind": "custom",
         "newApiQueryMode": "account",
         "timedRefreshEnabled": false,
+        "routeGateEnabled": true,
         "refreshIntervalSeconds": 120,
         "customScript": script,
         "customAllowedOrigins": ["https://private-usage.example.test"],
@@ -130,6 +131,7 @@ fn assert_portable_custom_account_usage_is_disabled(values: &serde_json::Value) 
     assert_eq!(values["adapterKind"], "disabled");
     assert_eq!(values["newApiQueryMode"], "account");
     assert_eq!(values["timedRefreshEnabled"], false);
+    assert_eq!(values["routeGateEnabled"], false);
     assert_eq!(values["refreshIntervalSeconds"], 120);
     for local_field in [
         "customScript",
@@ -523,6 +525,7 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
                     "newApiUserId": "999",
                     "systemAccessToken": "SYNTHETIC_EXTENSION_SECRET",
                     "timedRefreshEnabled": false,
+                    "routeGateEnabled": true,
                     "refreshIntervalSeconds": 120
                 }),
             }]),
@@ -600,6 +603,7 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
                     crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Newapi,
                 new_api_query_mode: crate::domain::provider_account_usage::NewapiQueryMode::Account,
                 timed_refresh_enabled: false,
+                route_gate_enabled: true,
                 refresh_interval_seconds: 120,
                 custom: None,
             }

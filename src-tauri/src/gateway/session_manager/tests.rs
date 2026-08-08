@@ -134,7 +134,7 @@ fn live_binding_preserves_its_recovery_epoch_baseline_across_refreshes() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "claude",
         "s1",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 7, initial_request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 7, 11, initial_request),
         t0,
     ));
     manager.bind_success("claude", "s1", 2, None, t0 + 100);
@@ -147,7 +147,7 @@ fn live_binding_preserves_its_recovery_epoch_baseline_across_refreshes() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "claude",
         "s1",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 99, refresh_request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 99, 101, refresh_request),
         t0 + 400,
     ));
     assert!(manager.confirm_route(
@@ -161,6 +161,7 @@ fn live_binding_preserves_its_recovery_epoch_baseline_across_refreshes() {
         .routing_snapshot("claude", "s1", t0 + 501)
         .expect("live binding");
     assert_eq!(snapshot.recovery_epoch_baseline, 7);
+    assert_eq!(snapshot.account_usage_recovery_epoch_baseline, 11);
 }
 
 #[test]
@@ -192,7 +193,7 @@ fn first_request_creates_and_commits_a_binding() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "codex",
         "new-session",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 7, request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 7, 0, request),
         now,
     ));
     assert!(manager.bind_success_for_request("codex", "new-session", 1, None, request, now + 1,));
@@ -210,7 +211,7 @@ fn clear_rejects_the_old_incarnation_and_allows_a_new_request() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "codex",
         "cleared-session",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, old_request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, 0, old_request),
         now,
     ));
     assert!(manager.bind_success_for_request(
@@ -236,7 +237,7 @@ fn clear_rejects_the_old_incarnation_and_allows_a_new_request() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "codex",
         "cleared-session",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, new_request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, 0, new_request),
         now + 3,
     ));
     assert!(!manager.bind_success_for_request(
@@ -269,7 +270,7 @@ fn ttl_recreation_rejects_a_request_from_the_expired_incarnation() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "codex",
         "expired-session",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, old_request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, 0, old_request),
         now,
     ));
     assert!(manager.bind_success_for_request(
@@ -286,7 +287,7 @@ fn ttl_recreation_rejects_a_request_from_the_expired_incarnation() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "codex",
         "expired-session",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, new_request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, 0, new_request),
         recreated_at,
     ));
     assert!(!manager.bind_success_for_request(
@@ -319,7 +320,7 @@ fn equal_request_token_is_idempotent_only_for_the_same_provider() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "codex",
         "idempotent-session",
-        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, request),
+        SessionBindingCreation::new(None, Some(vec![1, 2]), 0, 0, request),
         now,
     ));
 
@@ -378,7 +379,7 @@ fn recreated_binding_captures_the_then_current_recovery_epoch() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "claude",
         "expired",
-        SessionBindingCreation::new(None, None, 3, initial_request),
+        SessionBindingCreation::new(None, None, 3, 30, initial_request),
         t0,
     ));
     assert!(manager
@@ -390,7 +391,7 @@ fn recreated_binding_captures_the_then_current_recovery_epoch() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "claude",
         "expired",
-        SessionBindingCreation::new(None, None, 8, expired_request),
+        SessionBindingCreation::new(None, None, 8, 80, expired_request),
         t0 + DEFAULT_SESSION_TTL_SECS + 2,
     ));
     assert_eq!(
@@ -400,6 +401,13 @@ fn recreated_binding_captures_the_then_current_recovery_epoch() {
             .recovery_epoch_baseline,
         8
     );
+    assert_eq!(
+        manager
+            .routing_snapshot("claude", "expired", t0 + DEFAULT_SESSION_TTL_SECS + 3)
+            .expect("recreated expired binding")
+            .account_usage_recovery_epoch_baseline,
+        80
+    );
 
     assert!(manager.clear_bound_provider("claude", "expired", t0 + 400));
     let cleared_request = manager
@@ -408,7 +416,7 @@ fn recreated_binding_captures_the_then_current_recovery_epoch() {
     assert!(manager.bind_sort_mode_with_recovery_epoch(
         "claude",
         "expired",
-        SessionBindingCreation::new(None, None, 13, cleared_request),
+        SessionBindingCreation::new(None, None, 13, 130, cleared_request),
         t0 + 401,
     ));
     assert_eq!(
@@ -417,6 +425,13 @@ fn recreated_binding_captures_the_then_current_recovery_epoch() {
             .expect("recreated cleared binding")
             .recovery_epoch_baseline,
         13
+    );
+    assert_eq!(
+        manager
+            .routing_snapshot("claude", "expired", t0 + 402)
+            .expect("recreated cleared binding")
+            .account_usage_recovery_epoch_baseline,
+        130
     );
 }
 

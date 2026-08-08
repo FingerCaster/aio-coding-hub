@@ -232,6 +232,19 @@ fn fill_gateway_extension_values(
     provider: &mut ProviderForGateway,
 ) -> crate::shared::error::AppResult<()> {
     provider.extension_values = list_extension_values(conn, provider.id)?;
+    let context = ProviderAccountUsageFetchContext {
+        provider_uuid: provider.provider_uuid.clone(),
+        base_urls: provider.base_urls.clone(),
+        auth_mode: provider.auth_mode.clone(),
+        source_provider_id: provider.source_provider_id,
+        source_provider_uuid: None,
+        extension_values: provider.extension_values.clone(),
+    };
+    provider.account_usage_route_target =
+        crate::domain::provider_account_usage::ProviderAccountUsageTarget::from_gateway_fetch_context(
+            provider.id,
+            &context,
+        );
     Ok(())
 }
 
@@ -530,6 +543,81 @@ WHERE p.id = ?1
         source_provider_uuid,
         extension_values: account_usage_extension_values_from_row(values_json, updated_at)?,
     })
+}
+
+pub(crate) fn list_account_usage_gateway_target_contexts(
+    conn: &Connection,
+) -> crate::shared::error::AppResult<Vec<(i64, ProviderAccountUsageFetchContext)>> {
+    let mut statement = conn
+        .prepare_cached(
+            r#"
+SELECT
+  p.id,
+  p.provider_uuid,
+  p.base_url,
+  p.base_urls_json,
+  p.auth_mode,
+  e.values_json,
+  e.updated_at
+FROM providers p
+LEFT JOIN provider_extension_values e
+  ON e.provider_id = p.id
+ AND e.plugin_id = ?1
+ AND e.namespace = ?2
+WHERE p.enabled = 1
+  AND (p.auth_mode IS NULL OR p.auth_mode = 'api_key')
+  AND p.source_provider_id IS NULL
+ORDER BY p.id ASC
+"#,
+        )
+        .map_err(|error| {
+            db_err!("failed to prepare account usage gateway target query: {error}")
+        })?;
+    let rows = statement
+        .query_map(
+            params![
+                crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID,
+                crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE,
+            ],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, String>(1)?,
+                    row.get::<_, String>(2)?,
+                    row.get::<_, String>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<i64>>(6)?,
+                ))
+            },
+        )
+        .map_err(|error| db_err!("failed to query account usage gateway targets: {error}"))?;
+
+    let mut targets = Vec::new();
+    for row in rows {
+        let (
+            provider_id,
+            provider_uuid,
+            base_url,
+            base_urls_json,
+            auth_mode,
+            values_json,
+            updated_at,
+        ) = row
+            .map_err(|error| db_err!("failed to read account usage gateway target row: {error}"))?;
+        targets.push((
+            provider_id,
+            ProviderAccountUsageFetchContext {
+                provider_uuid,
+                base_urls: base_urls_from_row(&base_url, &base_urls_json),
+                auth_mode: auth_mode.unwrap_or_else(|| "api_key".to_string()),
+                source_provider_id: None,
+                source_provider_uuid: None,
+                extension_values: account_usage_extension_values_from_row(values_json, updated_at)?,
+            },
+        ));
+    }
+    Ok(targets)
 }
 
 pub(crate) fn get_account_usage_credential_context(
@@ -918,6 +1006,8 @@ fn map_gateway_provider_row(
 
     Ok(ProviderForGateway {
         id: decoded.id,
+        provider_uuid: row.get("provider_uuid")?,
+        account_usage_route_target: None,
         name: decoded.name,
         base_urls: decoded.base_urls,
         base_url_mode: decoded.base_url_mode,
@@ -954,6 +1044,7 @@ fn list_enabled_for_gateway_in_sort_mode(
             r#"
 SELECT
   p.id,
+  p.provider_uuid,
   p.name,
   p.base_url,
   p.base_urls_json,
@@ -1011,6 +1102,7 @@ fn list_enabled_for_gateway_default(
             r#"
 SELECT
   id,
+  provider_uuid,
   name,
   base_url,
   base_urls_json,
@@ -1160,6 +1252,7 @@ pub(crate) fn get_source_provider_for_gateway(
         r#"
 SELECT
   id,
+  provider_uuid,
   name,
   base_url,
   base_urls_json,
@@ -1210,6 +1303,7 @@ pub(crate) fn get_enabled_direct_codex_for_gateway_by_identity(
             r#"
 SELECT
   id,
+  provider_uuid,
   name,
   base_url,
   base_urls_json,

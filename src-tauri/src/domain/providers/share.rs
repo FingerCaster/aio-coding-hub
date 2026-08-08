@@ -1818,6 +1818,7 @@ mod tests {
             "adapterKind": "custom",
             "newApiQueryMode": "account",
             "timedRefreshEnabled": false,
+            "routeGateEnabled": true,
             "refreshIntervalSeconds": 120,
             "customScript": script,
             "customAllowedOrigins": ["https://private-usage.example.test"],
@@ -1834,6 +1835,7 @@ mod tests {
         assert_eq!(values["adapterKind"], "disabled");
         assert_eq!(values["newApiQueryMode"], "account");
         assert_eq!(values["timedRefreshEnabled"], false);
+        assert_eq!(values["routeGateEnabled"], false);
         assert_eq!(values["refreshIntervalSeconds"], 120);
         for local_field in [
             "customScript",
@@ -2627,6 +2629,7 @@ mod tests {
                 "newApiUserId": "999",
                 "systemAccessToken": "SYNTHETIC_EXTENSION_SECRET",
                 "timedRefreshEnabled": false,
+                "routeGateEnabled": true,
                 "refreshIntervalSeconds": 120
             }),
         }]);
@@ -2662,6 +2665,10 @@ mod tests {
         let source = super::super::queries::upsert(&source_db, input).expect("create source");
 
         let exported = export_provider_share_v2(&source_db, source.id).expect("export");
+        assert_eq!(
+            exported.provider.extensions[0].values["routeGateEnabled"],
+            false
+        );
         let bytes = serialize_provider_share_v2(&exported).expect("serialize");
         let serialized = std::str::from_utf8(&bytes).expect("utf8");
         assert!(serialized.contains("SYNTHETIC_API_KEY"));
@@ -2763,6 +2770,10 @@ mod tests {
         assert_eq!(
             imported.extension_values[0].values["newApiQueryMode"],
             "account"
+        );
+        assert_eq!(
+            imported.extension_values[0].values["routeGateEnabled"],
+            false
         );
         assert!(imported.newapi_account_user_id.is_none());
         assert!(!imported.newapi_account_access_token_configured);

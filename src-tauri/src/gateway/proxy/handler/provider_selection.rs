@@ -3,6 +3,7 @@ use crate::gateway::proxy::failover::should_reuse_provider;
 use crate::gateway::runtime::GatewayAppState;
 use crate::providers;
 use crate::{circuit_breaker, session_manager};
+use tauri::Manager;
 
 pub(super) mod probe_planner;
 
@@ -50,6 +51,10 @@ pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
                     effective_sort_mode_id,
                     Some(latest_provider_order.clone()),
                     state.circuit.recovery_epoch(),
+                    state
+                        .app
+                        .try_state::<crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState>()
+                        .map_or(0, |runtime| runtime.global_recovery_epoch()),
                     binding_request,
                 ),
                 created_at,

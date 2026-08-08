@@ -193,6 +193,21 @@ pub(crate) async fn config_import(
     >() {
         runtime.reset_all().await;
     }
+    let cleared =
+        crate::gateway_control::app_gateway_clear_all_route_runtime_state(&app_for_runtime);
+    tracing::info!(
+        cleared_sessions = cleared.cleared_sessions,
+        cleared_recent_errors = cleared.cleared_recent_errors,
+        "gateway route runtime state cleared after config import"
+    );
+    if let Err(error) =
+        crate::gateway_control::app_gateway_reconcile_account_usage_targets(&app_for_runtime).await
+    {
+        tracing::warn!(
+            error = %error,
+            "failed to reconcile account usage targets after config import"
+        );
+    }
 
     #[cfg(windows)]
     super::wsl::wsl_sync_trigger::trigger(app_for_wsl);

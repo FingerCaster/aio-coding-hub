@@ -1,5 +1,7 @@
 use crate::app_state::{ensure_db_ready, DbInitState};
-use crate::gateway_control::app_gateway_clear_cli_route_runtime_state;
+use crate::gateway_control::{
+    app_gateway_clear_cli_route_runtime_state, app_gateway_reconcile_account_usage_targets,
+};
 use crate::{blocking, providers};
 use tauri::Manager;
 
@@ -118,7 +120,8 @@ fn provider_runtime_reset_decision(
         || previous.upstream_retry_policy_override != next.upstream_retry_policy_override;
 
     ProviderRuntimeResetDecision {
-        clear_route_runtime_state: sensitive_config_changed,
+        clear_route_runtime_state: sensitive_config_changed
+            || account_usage_route_semantics(previous) != account_usage_route_semantics(next),
         clear_account_usage_runtime_state: previous.enabled != next.enabled
             || previous.base_urls != next.base_urls
             || previous.auth_mode != next.auth_mode
@@ -130,6 +133,24 @@ fn provider_runtime_reset_decision(
             || account_usage_secret_changed
             || account_usage_query_semantics(previous) != account_usage_query_semantics(next),
     }
+}
+
+fn account_usage_route_semantics(
+    provider: &providers::ProviderSummary,
+) -> Option<serde_json::Value> {
+    let mut values = provider
+        .extension_values
+        .iter()
+        .find(|value| {
+            value.plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                && value.namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        })?
+        .values
+        .clone();
+    if let Some(object) = values.as_object_mut() {
+        object.remove("timedRefreshEnabled");
+    }
+    Some(values)
 }
 
 fn account_usage_query_semantics(
@@ -162,6 +183,15 @@ async fn invalidate_provider_account_usage_runtime(app: &tauri::AppHandle, provi
             provider_id,
             error = %error,
             "failed to invalidate provider account usage runtime"
+        );
+    }
+}
+
+async fn reconcile_provider_account_usage_gateway_targets(app: &tauri::AppHandle) {
+    if let Err(error) = app_gateway_reconcile_account_usage_targets(app).await {
+        tracing::warn!(
+            error = %error,
+            "failed to reconcile account usage targets after provider mutation"
         );
     }
 }
@@ -451,6 +481,8 @@ pub(crate) async fn provider_upsert(
     .map_err(Into::into);
 
     if let Ok((ref provider, decision)) = result {
+        let reconcile_account_usage_targets =
+            decision.clear_route_runtime_state || decision.clear_account_usage_runtime_state;
         if is_create {
             tracing::info!(
                 provider_id = provider.id,
@@ -479,6 +511,9 @@ pub(crate) async fn provider_upsert(
         }
         if decision.clear_account_usage_runtime_state {
             invalidate_provider_account_usage_runtime(&app, provider.id).await;
+        }
+        if reconcile_account_usage_targets {
+            reconcile_provider_account_usage_gateway_targets(&app).await;
         }
     }
 
@@ -720,6 +755,7 @@ pub(crate) async fn provider_duplicate(
             provider_name = %provider.name,
             "provider duplicated"
         );
+        reconcile_provider_account_usage_gateway_targets(&app).await;
     }
 
     result
@@ -748,6 +784,7 @@ pub(crate) async fn provider_set_enabled(
             cleared_recent_errors = cleared.cleared_recent_errors,
             "provider enabled state changed"
         );
+        reconcile_provider_account_usage_gateway_targets(&app).await;
     }
 
     result
@@ -784,6 +821,7 @@ pub(crate) async fn provider_delete(
             cleared_recent_errors = cleared.cleared_recent_errors,
             "provider deleted"
         );
+        reconcile_provider_account_usage_gateway_targets(&app).await;
     }
 
     result.map(|(deleted, _)| deleted)
@@ -858,6 +896,26 @@ pub(crate) async fn default_route_providers_set_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn set_account_usage_config(
+        provider: &mut providers::ProviderSummary,
+        adapter_kind: &str,
+        timed_refresh_enabled: bool,
+        route_gate_enabled: bool,
+    ) {
+        provider.extension_values = vec![providers::ProviderExtensionValues {
+            plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+            namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+            values: serde_json::json!({
+                "adapterKind": adapter_kind,
+                "newApiQueryMode": "billing",
+                "refreshIntervalSeconds": 300,
+                "timedRefreshEnabled": timed_refresh_enabled,
+                "routeGateEnabled": route_gate_enabled,
+            }),
+            updated_at: 1,
+        }];
+    }
 
     #[test]
     fn custom_account_usage_permission_precheck_classifies_invalid_input() {
@@ -1031,6 +1089,56 @@ mod tests {
                 false
             ),
             ProviderRuntimeResetDecision::default()
+        );
+
+        let mut timed_previous = next.clone();
+        set_account_usage_config(&mut timed_previous, "sub2api", false, false);
+        let mut timed_next = timed_previous.clone();
+        set_account_usage_config(&mut timed_next, "sub2api", true, false);
+        assert_eq!(
+            provider_runtime_reset_decision(
+                Some(&timed_previous),
+                Some("sk-existing"),
+                &timed_next,
+                None,
+                false,
+            ),
+            ProviderRuntimeResetDecision::default(),
+            "display-only timed refresh must not invalidate route recovery state",
+        );
+
+        let mut gate_next = timed_previous.clone();
+        set_account_usage_config(&mut gate_next, "sub2api", false, true);
+        assert_eq!(
+            provider_runtime_reset_decision(
+                Some(&timed_previous),
+                Some("sk-existing"),
+                &gate_next,
+                None,
+                false,
+            ),
+            ProviderRuntimeResetDecision {
+                clear_route_runtime_state: true,
+                clear_account_usage_runtime_state: false,
+            },
+            "route gate changes must clear sessions without evicting the display cache",
+        );
+
+        let mut adapter_next = gate_next.clone();
+        set_account_usage_config(&mut adapter_next, "newapi", false, true);
+        assert_eq!(
+            provider_runtime_reset_decision(
+                Some(&gate_next),
+                Some("sk-existing"),
+                &adapter_next,
+                None,
+                false,
+            ),
+            ProviderRuntimeResetDecision {
+                clear_route_runtime_state: true,
+                clear_account_usage_runtime_state: true,
+            },
+            "adapter changes must invalidate both route and query runtime state",
         );
 
         let mut disabled = next.clone();

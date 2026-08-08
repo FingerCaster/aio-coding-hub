@@ -149,6 +149,7 @@ mod tests {
     use std::io::Write;
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
+    use tauri::Manager;
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use tower::ServiceExt;
 
@@ -991,6 +992,17 @@ mod tests {
         base_url: String,
         priority: i64,
     ) -> i64 {
+        insert_provider_with_priority_and_extensions(db, cli_key, name, base_url, priority, None)
+    }
+
+    fn insert_provider_with_priority_and_extensions(
+        db: &db::Db,
+        cli_key: &str,
+        name: &str,
+        base_url: String,
+        priority: i64,
+        extension_values: Option<Vec<providers::ProviderExtensionValuesInput>>,
+    ) -> i64 {
         let provider_id = providers::upsert(
             db,
             providers::ProviderUpsertParams {
@@ -1019,7 +1031,7 @@ mod tests {
                 source_provider_id: None,
                 bridge_type: None,
                 stream_idle_timeout_seconds: None,
-                extension_values: None,
+                extension_values,
                 account_usage_credentials_patch: None,
                 account_usage_credentials_copy_from_provider_id: None,
                 upstream_retry_policy_override: None,
@@ -1054,6 +1066,148 @@ mod tests {
 
     fn insert_codex_provider(db: &db::Db, base_url: String) -> i64 {
         insert_codex_provider_with_priority(db, "Timeout Stub", base_url, 0)
+    }
+
+    fn insert_confirmed_custom_provider_with_priority(
+        db: &db::Db,
+        name: &str,
+        model_base_url: String,
+        priority: i64,
+    ) -> i64 {
+        let provider_uuid = crate::shared::uuid::new_uuid_v4();
+        let account_base_url = "https://account-usage.example.test/v1";
+        let mut extension_values = Some(vec![providers::ProviderExtensionValuesInput {
+            plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+            namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+            values: serde_json::json!({
+                "adapterKind": "custom",
+                "newApiQueryMode": "billing",
+                "refreshIntervalSeconds": 300,
+                "timedRefreshEnabled": false,
+                "routeGateEnabled": true,
+                "customScript": "({ request: () => ({}), parse: () => ({ status: 'available' }) })",
+                "customAllowedOrigins": [],
+                "customTimeoutSeconds": 5,
+                "customEnabled": true,
+            }),
+        }]);
+        let scope = crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+            &provider_uuid,
+            "api_key",
+            None,
+            account_base_url,
+        )
+        .expect("custom permission scope");
+        let permission =
+            crate::domain::provider_account_usage::custom_account_usage_permission_request(
+                extension_values.as_deref(),
+                &scope,
+            )
+            .expect("custom permission request")
+            .expect("enabled custom adapter requires permission");
+        crate::domain::provider_account_usage::add_custom_account_usage_permission_proof(
+            &mut extension_values,
+            &permission.fingerprint,
+            &permission.base_origin,
+        )
+        .expect("custom permission proof");
+
+        let provider_id = providers::upsert_with_provider_uuid(
+            db,
+            providers::ProviderUpsertParams {
+                provider_id: None,
+                cli_key: "codex".to_string(),
+                name: name.to_string(),
+                base_urls: vec![account_base_url.to_string(), model_base_url],
+                base_url_mode: providers::ProviderBaseUrlMode::Ping,
+                auth_mode: None,
+                api_key: Some("sk-test".to_string()),
+                enabled: true,
+                cost_multiplier: 1.0,
+                priority: Some(priority),
+                claude_models: None,
+                model_mapping: None,
+                availability_test_model: None,
+                limit_5h_usd: None,
+                limit_daily_usd: None,
+                daily_reset_mode: None,
+                daily_reset_time: None,
+                limit_weekly_usd: None,
+                limit_monthly_usd: None,
+                limit_total_usd: None,
+                tags: None,
+                note: None,
+                source_provider_id: None,
+                bridge_type: None,
+                stream_idle_timeout_seconds: None,
+                extension_values,
+                account_usage_credentials_patch: None,
+                account_usage_credentials_copy_from_provider_id: None,
+                upstream_retry_policy_override: None,
+                upstream_retry_policy_override_specified: false,
+            },
+            Some(provider_uuid),
+        )
+        .expect("insert confirmed custom provider")
+        .id;
+        append_default_route_provider(db, "codex", provider_id);
+        provider_id
+    }
+
+    fn account_usage_route_extension() -> Vec<providers::ProviderExtensionValuesInput> {
+        vec![providers::ProviderExtensionValuesInput {
+            plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+            namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+            values: serde_json::json!({
+                "adapterKind": "sub2api",
+                "newApiQueryMode": "billing",
+                "refreshIntervalSeconds": 300,
+                "timedRefreshEnabled": false,
+                "routeGateEnabled": true,
+            }),
+        }]
+    }
+
+    fn account_usage_route_result(
+        status: crate::domain::provider_account_usage::ProviderAccountUsageStatus,
+        balance: Option<f64>,
+        last_fetched_at: i64,
+    ) -> crate::domain::provider_account_usage::ProviderAccountUsageResult {
+        account_usage_route_result_for_adapter(
+            crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Sub2api,
+            status,
+            balance,
+            last_fetched_at,
+        )
+    }
+
+    fn account_usage_route_result_for_adapter(
+        adapter_kind: crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind,
+        status: crate::domain::provider_account_usage::ProviderAccountUsageStatus,
+        balance: Option<f64>,
+        last_fetched_at: i64,
+    ) -> crate::domain::provider_account_usage::ProviderAccountUsageResult {
+        crate::domain::provider_account_usage::ProviderAccountUsageResult {
+            adapter_kind: Some(adapter_kind),
+            status,
+            freshness: crate::domain::provider_account_usage::ProviderAccountUsageFreshness::Fresh,
+            plan_name: None,
+            balance,
+            plan_remaining: None,
+            used: None,
+            total: None,
+            unit: None,
+            unit_note: None,
+            daily_used: None,
+            daily_total: None,
+            weekly_used: None,
+            weekly_total: None,
+            monthly_used: None,
+            monthly_total: None,
+            expires_at: None,
+            last_fetched_at: Some(last_fetched_at),
+            message: None,
+        }
     }
 
     fn insert_managed_codex_model(db: &db::Db, provider_id: i64, remote_model_id: &str) -> String {
@@ -6942,6 +7096,7 @@ INSERT INTO codex_managed_profiles(
                     None,
                     Some(latest_route.clone()),
                     initial_recovery_epoch,
+                    0,
                     binding_request,
                 ),
                 now,
@@ -7318,6 +7473,7 @@ INSERT INTO codex_managed_profiles(
                     None,
                     Some(latest_route.clone()),
                     initial_recovery_epoch,
+                    0,
                     binding_request,
                 ),
                 now,
@@ -8622,6 +8778,639 @@ INSERT INTO codex_managed_profiles(
         first_task.abort();
         second_task.abort();
         third_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn account_usage_gate_precedes_probe_and_ready_budget_with_zero_upstream_calls() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let account_usage_runtime =
+            crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState::default();
+        app.manage(account_usage_runtime.clone());
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-account-usage-gate.sqlite"))
+            .expect("init test db");
+        let (blocked_url, blocked_calls, blocked_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"must-not-run","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let (ready_url, ready_calls, ready_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"ready-ok","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let blocked_id = insert_provider_with_priority_and_extensions(
+            &db,
+            "codex",
+            "Balance Blocked",
+            blocked_url,
+            0,
+            Some(account_usage_route_extension()),
+        );
+        let ready_id = insert_codex_provider_with_priority(&db, "Ready Fallback", ready_url, 1);
+        let managed_model =
+            insert_managed_codex_model(&db, blocked_id, "gpt-account-managed-upstream");
+
+        let context = {
+            let connection = db.open_connection().expect("open provider db");
+            providers::get_account_usage_fetch_context(&connection, blocked_id)
+                .expect("load account usage context")
+        };
+        let target = crate::app::provider_account_usage_runtime::ProviderAccountUsageTarget::
+            from_gateway_fetch_context(blocked_id, &context)
+            .expect("route-gated target");
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        account_usage_runtime.seed_gateway_route_snapshot_for_tests(
+            &target,
+            account_usage_route_result(
+                crate::domain::provider_account_usage::ProviderAccountUsageStatus::ZeroBalance,
+                Some(0.0),
+                now,
+            ),
+            std::time::Instant::now(),
+            now,
+        );
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        circuit.record_failure(blocked_id, now, None);
+        let circuit_before = circuit.snapshot(blocked_id, now);
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(12);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            circuit.clone(),
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+
+        let forced_stream_request = Request::builder()
+            .method(Method::POST)
+            .uri(format!("/codex/_aio/provider/{blocked_id}/v1/responses"))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-account-forced","stream":true,"input":"hello"}"#,
+            ))
+            .expect("forced stream request");
+        let forced_stream_response = router
+            .clone()
+            .oneshot(forced_stream_request)
+            .await
+            .expect("forced stream response");
+        assert_eq!(
+            forced_stream_response.status(),
+            StatusCode::SERVICE_UNAVAILABLE
+        );
+        let forced_stream_log = recv_terminal_request_log(&mut log_rx).await;
+        let forced_stream_attempts: Value =
+            serde_json::from_str(&forced_stream_log.attempts_json).expect("forced attempts json");
+        assert_eq!(
+            forced_stream_attempts
+                .as_array()
+                .and_then(|attempts| attempts.first())
+                .and_then(|attempt| attempt.get("reason_code"))
+                .and_then(Value::as_str),
+            Some("account_usage_zero_balance")
+        );
+
+        let managed_request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                serde_json::json!({
+                    "model": managed_model,
+                    "stream": false,
+                    "input": "hello"
+                })
+                .to_string(),
+            ))
+            .expect("managed request");
+        let managed_response = router
+            .clone()
+            .oneshot(managed_request)
+            .await
+            .expect("managed response");
+        assert_eq!(managed_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let managed_log = recv_terminal_request_log(&mut log_rx).await;
+        let managed_attempts: Value =
+            serde_json::from_str(&managed_log.attempts_json).expect("managed attempts json");
+        assert_eq!(managed_attempts.as_array().map(Vec::len), Some(1));
+        assert_eq!(
+            managed_attempts
+                .as_array()
+                .and_then(|attempts| attempts.first())
+                .and_then(|attempt| attempt.get("reason_code"))
+                .and_then(Value::as_str),
+            Some("account_usage_zero_balance")
+        );
+
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/chat/completions")
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-account-gate","messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response = router
+            .clone()
+            .oneshot(request)
+            .await
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts: Value = serde_json::from_str(&log.attempts_json).expect("attempts json");
+        let attempts = attempts.as_array().expect("attempt array");
+        assert_eq!(attempts.len(), 2);
+        let blocked = &attempts[0];
+        assert_eq!(
+            blocked.get("provider_id").and_then(Value::as_i64),
+            Some(blocked_id)
+        );
+        assert_eq!(
+            blocked.get("outcome").and_then(Value::as_str),
+            Some("skipped")
+        );
+        assert_eq!(
+            blocked.get("decision").and_then(Value::as_str),
+            Some("skip")
+        );
+        assert_eq!(
+            blocked.get("selection_method").and_then(Value::as_str),
+            Some("filtered")
+        );
+        assert_eq!(
+            blocked.get("error_category").and_then(Value::as_str),
+            Some("account_usage")
+        );
+        assert_eq!(
+            blocked.get("error_code").and_then(Value::as_str),
+            Some("GW_PROVIDER_ACCOUNT_USAGE_BLOCKED")
+        );
+        assert_eq!(
+            blocked.get("reason_code").and_then(Value::as_str),
+            Some("account_usage_zero_balance")
+        );
+        for field in [
+            "provider_index",
+            "retry_index",
+            "circuit_state_before",
+            "circuit_state_after",
+            "circuit_failure_count",
+            "circuit_failure_threshold",
+            "probe",
+            "probe_trigger",
+            "probe_result",
+            "probe_generation",
+        ] {
+            assert!(blocked.get(field).is_none_or(Value::is_null), "{field}");
+        }
+        assert_eq!(
+            attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(ready_id)
+        );
+        assert_eq!(
+            attempts[1].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(blocked_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(ready_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        let circuit_after = circuit.snapshot(blocked_id, now);
+        assert_eq!(circuit_after.state, circuit_before.state);
+        assert_eq!(circuit_after.state_revision, circuit_before.state_revision);
+        assert!(!circuit_after.probe_in_flight);
+
+        let discovery_request = Request::builder()
+            .method(Method::GET)
+            .uri("/v1/models?client_version=0.144.2")
+            .body(Body::empty())
+            .expect("model discovery request");
+        let discovery_response = router
+            .oneshot(discovery_request)
+            .await
+            .expect("model discovery response");
+        assert_eq!(discovery_response.status(), StatusCode::OK);
+        assert_eq!(blocked_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(
+            ready_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "account gate must not consume the strict model-discovery send budget"
+        );
+
+        blocked_task.abort();
+        ready_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn account_usage_all_unavailable_retry_after_never_caches_a_mixed_503() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let account_usage_runtime =
+            crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState::default();
+        app.manage(account_usage_runtime.clone());
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("gateway-account-usage-unavailable-cache.sqlite"),
+        )
+        .expect("init test db");
+        let (blocked_url, blocked_calls, blocked_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"balance-recovered","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let blocked_id = insert_provider_with_priority_and_extensions(
+            &db,
+            "codex",
+            "Balance Blocked",
+            blocked_url,
+            0,
+            Some(account_usage_route_extension()),
+        );
+        let context = {
+            let connection = db.open_connection().expect("open provider db");
+            providers::get_account_usage_fetch_context(&connection, blocked_id)
+                .expect("load account usage context")
+        };
+        let target = crate::app::provider_account_usage_runtime::ProviderAccountUsageTarget::
+            from_gateway_fetch_context(blocked_id, &context)
+            .expect("route-gated target");
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        account_usage_runtime.seed_gateway_route_snapshot_for_tests(
+            &target,
+            account_usage_route_result(
+                crate::domain::provider_account_usage::ProviderAccountUsageStatus::ZeroBalance,
+                Some(0.0),
+                now,
+            ),
+            std::time::Instant::now(),
+            now,
+        );
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                open_duration_secs: 3_600,
+                ..Default::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(12);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db.clone(),
+            log_tx,
+            circuit.clone(),
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = || {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .body(Body::from(
+                    r#"{"model":"gpt-account-unavailable","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .expect("request")
+        };
+
+        let pure_response = router
+            .clone()
+            .oneshot(request())
+            .await
+            .expect("pure account gate response");
+        let pure_status = pure_response.status();
+        let pure_retry_after = pure_response.headers().get(header::RETRY_AFTER).cloned();
+        let pure_body = to_bytes(pure_response.into_body(), usize::MAX)
+            .await
+            .expect("pure response body");
+        let pure_payload: Value = serde_json::from_slice(&pure_body).expect("pure response json");
+        assert_eq!(
+            pure_status,
+            StatusCode::SERVICE_UNAVAILABLE,
+            "payload={pure_payload}, upstream_calls={}",
+            blocked_calls.load(std::sync::atomic::Ordering::SeqCst),
+        );
+        assert!(pure_retry_after.is_none());
+        assert_eq!(
+            pure_payload.get("error_code").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::AllProvidersUnavailable.as_str())
+        );
+        let pure_log = recv_terminal_request_log(&mut log_rx).await;
+        let pure_attempts: Value =
+            serde_json::from_str(&pure_log.attempts_json).expect("pure attempts json");
+        assert_eq!(pure_attempts.as_array().map(Vec::len), Some(1));
+
+        let (open_url, open_calls, open_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"must-not-run","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let open_id = insert_codex_provider_with_priority(&db, "Circuit Open", open_url, 1);
+        circuit.record_failure(open_id, now, None);
+
+        let mixed_response = router
+            .clone()
+            .oneshot(request())
+            .await
+            .expect("mixed gate response");
+        assert_eq!(mixed_response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        assert!(mixed_response.headers().get(header::RETRY_AFTER).is_some());
+        let mixed_payload: Value = serde_json::from_slice(
+            &to_bytes(mixed_response.into_body(), usize::MAX)
+                .await
+                .expect("mixed response body"),
+        )
+        .expect("mixed response json");
+        assert_eq!(
+            mixed_payload.get("error_code").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::AllProvidersUnavailable.as_str())
+        );
+        let mixed_log = recv_terminal_request_log(&mut log_rx).await;
+        let mixed_attempts: Value =
+            serde_json::from_str(&mixed_log.attempts_json).expect("mixed attempts json");
+        assert_eq!(mixed_attempts.as_array().map(Vec::len), Some(2));
+
+        account_usage_runtime.seed_gateway_route_snapshot_for_tests(
+            &target,
+            account_usage_route_result(
+                crate::domain::provider_account_usage::ProviderAccountUsageStatus::Available,
+                Some(10.0),
+                now,
+            ),
+            std::time::Instant::now(),
+            now,
+        );
+        let recovered_response = router
+            .oneshot(request())
+            .await
+            .expect("recovered route response");
+        assert_eq!(recovered_response.status(), StatusCode::OK);
+        let recovered_log = recv_terminal_request_log(&mut log_rx).await;
+        let recovered_attempts: Value =
+            serde_json::from_str(&recovered_log.attempts_json).expect("recovered attempts json");
+        assert_eq!(recovered_attempts.as_array().map(Vec::len), Some(1));
+        assert_eq!(blocked_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+        assert_eq!(open_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        blocked_task.abort();
+        open_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn account_usage_recovery_fails_back_each_live_session_from_its_own_baseline() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+        let account_usage_runtime =
+            crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState::default();
+        app.manage(account_usage_runtime.clone());
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("gateway-account-usage-recovery.sqlite"))
+            .expect("init test db");
+        let (primary_url, primary_calls, primary_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"primary-ok","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let (fallback_url, fallback_calls, fallback_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"fallback-ok","object":"chat.completion","choices":[]}"#,
+        )
+        .await;
+        let primary_id = insert_confirmed_custom_provider_with_priority(
+            &db,
+            "Recovered Custom Primary",
+            primary_url,
+            0,
+        );
+        let fallback_id =
+            insert_codex_provider_with_priority(&db, "Stable Fallback", fallback_url, 1);
+        let context = {
+            let connection = db.open_connection().expect("open provider db");
+            providers::get_account_usage_fetch_context(&connection, primary_id)
+                .expect("load account usage context")
+        };
+        let target = crate::app::provider_account_usage_runtime::ProviderAccountUsageTarget::
+            from_gateway_fetch_context(primary_id, &context)
+            .expect("route-gated target");
+        assert_eq!(
+            target.adapter_kind,
+            crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Custom
+        );
+        let now = crate::gateway::util::now_unix_seconds() as i64;
+        account_usage_runtime.seed_gateway_route_snapshot_for_tests(
+            &target,
+            account_usage_route_result_for_adapter(
+                crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Custom,
+                crate::domain::provider_account_usage::ProviderAccountUsageStatus::ZeroBalance,
+                Some(0.0),
+                now,
+            ),
+            std::time::Instant::now(),
+            now,
+        );
+
+        let session = Arc::new(session_manager::SessionManager::new());
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(12);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            Arc::new(circuit_breaker::CircuitBreaker::new(
+                circuit_breaker::CircuitBreakerConfig::default(),
+                HashMap::new(),
+                None,
+            )),
+            session.clone(),
+        ));
+        let first_session_id = "0190c0de-0000-7000-8000-000000000003";
+        let second_session_id = "0190c0de-0000-7000-8000-000000000004";
+        let request = |session_id: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/chat/completions")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("session_id", session_id)
+                .body(Body::from(
+                    r#"{"model":"gpt-account-recovery","messages":[{"role":"user","content":"hello"}]}"#,
+                ))
+                .expect("request")
+        };
+
+        let first_response = router
+            .clone()
+            .oneshot(request(first_session_id))
+            .await
+            .expect("first route response");
+        assert_eq!(first_response.status(), StatusCode::OK);
+        let first_log = recv_terminal_request_log(&mut log_rx).await;
+        let first_attempts: Value =
+            serde_json::from_str(&first_log.attempts_json).expect("first attempts json");
+        let first_attempts = first_attempts.as_array().expect("first attempt array");
+        assert_eq!(first_attempts.len(), 2);
+        assert_eq!(
+            first_attempts[0].get("reason_code").and_then(Value::as_str),
+            Some("account_usage_zero_balance")
+        );
+        assert_eq!(
+            first_attempts[1].get("provider_id").and_then(Value::as_i64),
+            Some(fallback_id)
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", first_session_id, now),
+            Some(fallback_id)
+        );
+
+        let other_first_response = router
+            .clone()
+            .oneshot(request(second_session_id))
+            .await
+            .expect("other session first route response");
+        assert_eq!(other_first_response.status(), StatusCode::OK);
+        let other_first_log = recv_terminal_request_log(&mut log_rx).await;
+        let other_first_attempts: Value = serde_json::from_str(&other_first_log.attempts_json)
+            .expect("other first attempts json");
+        let other_first_attempts = other_first_attempts
+            .as_array()
+            .expect("other first attempt array");
+        assert_eq!(
+            other_first_attempts[0]
+                .get("reason_code")
+                .and_then(Value::as_str),
+            Some("account_usage_zero_balance")
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", second_session_id, now),
+            Some(fallback_id)
+        );
+        assert_eq!(primary_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        account_usage_runtime.seed_gateway_route_snapshot_for_tests(
+            &target,
+            account_usage_route_result_for_adapter(
+                crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Custom,
+                crate::domain::provider_account_usage::ProviderAccountUsageStatus::Available,
+                Some(10.0),
+                now,
+            ),
+            std::time::Instant::now(),
+            now,
+        );
+        assert_eq!(account_usage_runtime.global_recovery_epoch(), 1);
+
+        let second_response = router
+            .clone()
+            .oneshot(request(first_session_id))
+            .await
+            .expect("second route response");
+        assert_eq!(second_response.status(), StatusCode::OK);
+        let second_log = recv_terminal_request_log(&mut log_rx).await;
+        let second_attempts: Value =
+            serde_json::from_str(&second_log.attempts_json).expect("second attempts json");
+        let second_attempts = second_attempts.as_array().expect("second attempt array");
+        assert_eq!(second_attempts.len(), 1);
+        assert_eq!(
+            second_attempts[0]
+                .get("provider_id")
+                .and_then(Value::as_i64),
+            Some(primary_id)
+        );
+        assert_eq!(
+            second_attempts[0].get("outcome").and_then(Value::as_str),
+            Some("success")
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", first_session_id, now),
+            Some(primary_id)
+        );
+        assert_eq!(
+            primary_calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "first custom recovery performs one base-URL probe and one model request"
+        );
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        let other_second_response = router
+            .oneshot(request(second_session_id))
+            .await
+            .expect("other session second route response");
+        assert_eq!(other_second_response.status(), StatusCode::OK);
+        let other_second_log = recv_terminal_request_log(&mut log_rx).await;
+        let other_second_attempts: Value = serde_json::from_str(&other_second_log.attempts_json)
+            .expect("other second attempts json");
+        let other_second_attempts = other_second_attempts
+            .as_array()
+            .expect("other second attempt array");
+        assert_eq!(other_second_attempts.len(), 1);
+        assert_eq!(
+            other_second_attempts[0]
+                .get("provider_id")
+                .and_then(Value::as_i64),
+            Some(primary_id)
+        );
+        assert_eq!(
+            session.get_bound_provider("codex", second_session_id, now),
+            Some(primary_id)
+        );
+        assert_eq!(
+            primary_calls.load(std::sync::atomic::Ordering::SeqCst),
+            3,
+            "the second session reuses the selected base URL and sends one model request"
+        );
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+
+        primary_task.abort();
+        fallback_task.abort();
     }
 
     #[tokio::test(flavor = "current_thread")]

@@ -38,8 +38,22 @@ pub(in crate::gateway::proxy::handler) struct ProbePlannerInput<'a> {
     pub now_unix: i64,
 }
 
+#[derive(Default)]
+pub(in crate::gateway::proxy::handler) struct AccountUsageRecoveryInput<'a> {
+    pub provider_recovery_epochs: &'a [(i64, u64)],
+    pub session_recovery_epoch_baseline: u64,
+}
+
+#[cfg(test)]
 pub(in crate::gateway::proxy::handler) fn plan_probe(
     input: ProbePlannerInput<'_>,
+) -> ProbePlannerDecision {
+    plan_probe_with_account_usage(input, AccountUsageRecoveryInput::default())
+}
+
+pub(in crate::gateway::proxy::handler) fn plan_probe_with_account_usage(
+    input: ProbePlannerInput<'_>,
+    account_usage: AccountUsageRecoveryInput<'_>,
 ) -> ProbePlannerDecision {
     let stable_index = input
         .bound_provider_id
@@ -121,8 +135,14 @@ pub(in crate::gateway::proxy::handler) fn plan_probe(
             continue;
         }
 
+        let account_usage_recovery_epoch = account_usage
+            .provider_recovery_epochs
+            .iter()
+            .find_map(|(candidate_id, epoch)| (*candidate_id == *provider_id).then_some(*epoch))
+            .unwrap_or(0);
         if snapshot.state == CircuitState::Closed
-            && snapshot.recovery_epoch > input.session_recovery_epoch_baseline
+            && (snapshot.recovery_epoch > input.session_recovery_epoch_baseline
+                || account_usage_recovery_epoch > account_usage.session_recovery_epoch_baseline)
         {
             targets.push(PlannedFailbackTarget {
                 provider_id: *provider_id,
@@ -680,6 +700,134 @@ mod tests {
             }),
             ProbePlannerDecision::Stay {
                 confirm_route: true,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_directs_to_fresh_account_usage_recovery_newer_than_its_baseline() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        let account_usage_epochs = vec![(1, 5)];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    provider_recovery_epochs: &account_usage_epochs,
+                    session_recovery_epoch_baseline: 4,
+                },
+            ),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![direct(1)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn natural_session_ignores_account_usage_recovery_at_or_before_its_baseline() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        let account_usage_epochs = vec![(1, 5)];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    provider_recovery_epochs: &account_usage_epochs,
+                    session_recovery_epoch_baseline: 5,
+                },
+            ),
+            ProbePlannerDecision::Stay {
+                confirm_route: false,
+                not_triggered_provider_ids: vec![1],
+            }
+        );
+    }
+
+    #[test]
+    fn account_usage_recovery_never_bypasses_open_or_half_open_circuit_rules() {
+        let open_candidates = vec![
+            (1, snapshot(CircuitState::Open, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        let account_usage_epochs = vec![(1, 7)];
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &open_candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    provider_recovery_epochs: &account_usage_epochs,
+                    session_recovery_epoch_baseline: 0,
+                },
+            ),
+            ProbePlannerDecision::Stay {
+                confirm_route: false,
+                not_triggered_provider_ids: vec![1],
+            }
+        );
+
+        let half_open_candidates = vec![
+            (1, snapshot(CircuitState::HalfOpen, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &half_open_candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    provider_recovery_epochs: &account_usage_epochs,
+                    session_recovery_epoch_baseline: 0,
+                },
+            ),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![probe(1, ProbeTrigger::NaturalMaxWait)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
                 not_triggered_provider_ids: Vec::new(),
             }
         );

@@ -165,8 +165,8 @@ pub(crate) async fn provider_account_usage_desktop_lease_release(
     Ok(())
 }
 
-pub(crate) async fn fetch_account_usage_uncached(
-    app: tauri::AppHandle,
+pub(crate) async fn fetch_account_usage_uncached<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
     provider_id: i64,
 ) -> Result<ProviderAccountUsageResult, String> {
     if provider_id <= 0 {

@@ -48,8 +48,12 @@ The query function calls `providerAccountUsageFetch(providerId)` and returns
 - Cache identity is provider ID. Editing or deleting a provider removes only
   that provider's account-usage key; refresh does not invalidate another
   provider, provider lists, OAuth quota, availability, or gateway circuit data.
-- Account usage is display-only. Refresh never tests availability, resets a
-  circuit, mutates/reorders providers, or changes routing health.
+- The TanStack query is the display-cache owner; it never directly tests
+  availability, resets a circuit, mutates/reorders providers, or writes route
+  state. When a Provider explicitly enables `routeGateEnabled`, the same
+  backend refresh completion may also update the process-owned route
+  projection described below. React remains neither a route owner nor a
+  second account-usage cache.
 
 ### 4. Validation & Error Matrix
 
@@ -117,6 +121,191 @@ return queryClient.fetchQuery({ ...options, staleTime: 0 });
 Cancellation establishes the new ordering boundary, and the forced shared
 query remains the only cache writer.
 
+## Scenario: Explicit Account-Usage Route Gate And Recovery
+
+### 1. Scope / Trigger
+
+Use this scenario when changing `routeGateEnabled`, account-usage runtime
+targets or leases, route snapshot projection, background Gateway refresh,
+Provider mutation invalidation, or the account-usage recovery epoch. The
+feature is opt-in and fail-open: missing or uncertain account data must never
+remove an otherwise eligible Provider.
+
+### 2. Signatures
+
+The canonical extension adds one independent field:
+
+```text
+routeGateEnabled: boolean, default false
+```
+
+The backend target and synchronous request boundary are:
+
+```rust
+struct ProviderAccountUsageTarget {
+    provider_id: i64,
+    schedule: ProviderAccountUsageRefreshSchedule,
+    adapter_kind: ProviderAccountUsageAdapterKind,
+    config_token: [u8; 32],
+    custom_permission_ready: bool,
+}
+
+enum ProviderAccountUsageRouteProjection {
+    ConfirmedAvailable,
+    Blocked(ProviderAccountUsageBlockReason),
+    UnknownAllow,
+}
+
+enum ProviderAccountUsageBlockReason { ZeroBalance, Expired }
+
+struct ProviderAccountUsageRouteRead {
+    projection: ProviderAccountUsageRouteProjection,
+    recovery_epoch: u64,
+}
+
+ProviderAccountUsageTarget::from_gateway_fetch_context(provider_id, context);
+ProviderAccountUsageRuntimeState::route_read(target, monotonic_now, wall_now_unix);
+ProviderAccountUsageRuntimeState::global_recovery_epoch();
+```
+
+`ProviderForGateway.account_usage_route_target` is computed after extension
+values are loaded from SQLite. Planner and common-gate reads reuse that target;
+they do not parse extension JSON or recompute its token.
+
+### 3. Contracts
+
+- Missing or non-boolean `routeGateEnabled` normalizes to `false`. It is
+  independent from `timedRefreshEnabled`; the latter remains a display
+  scheduling preference.
+- A Gateway target requires an enabled direct API-key Provider, a configured
+  adapter, `routeGateEnabled=true`, and, for custom scripts, a current local
+  permission confirmation. Missing config, gate off, OAuth, source Provider,
+  disabled Provider, invalid adapter, or unconfirmed custom config creates no
+  Gateway consumer and leaves routing unchanged.
+- Gateway startup reconciles immediately, then every 5 seconds renews a
+  15-second lease and exactly replaces the target set. Successful Provider
+  create/update/duplicate/enable/delete and successful full-config import also
+  request immediate reconciliation. Gateway stop releases its leases; an
+  independent desktop lease may continue display refresh.
+- Gateway targets refresh at the saved normalized 60..=300 second interval
+  even when display timed refresh is off. Manual, desktop, and Gateway demand
+  share one Provider generation, snapshot, in-flight request, force-tail rule,
+  and global four-Provider concurrency cap. A request never waits for or starts
+  a remote account query.
+- The coordinator query loads only Provider identity, transport shape, and
+  canonical extension config. API keys and private NewAPI credentials are
+  loaded only by the existing uncached fetch boundary after a target is due.
+- A route snapshot is trusted only when generation, token, adapter, and saved
+  interval match; freshness is `Fresh`; display time exists and is not in the
+  future; all numeric fields are finite; and monotonic age is strictly less
+  than `2 * refreshIntervalSeconds`. Age equal to the boundary is stale. The
+  one-hour display cache never extends route trust.
+- Fresh consistent `ZeroBalance` blocks only when neither `balance` nor
+  `plan_remaining` is a finite positive value. Fresh consistent `Expired`
+  blocks unless `expires_at` is in the future. An explicit amount-free custom
+  zero/expired status may block. Positive-amount zero, future-expiry expired,
+  invalid numbers, past-expiry available, missing/stale/future snapshots, and
+  unsupported/config/auth/query failures return `UnknownAllow`.
+- Fresh Blocked stores `last_confirmed=Blocked` and clears the Provider epoch.
+  In the same generation, only the first later fresh ConfirmedAvailable
+  publishes a recovery epoch. Initial/continuous available, continuous
+  blocked, contradictory output, and failures publish none. Failure or staleness
+  hides any Provider epoch from readers but retains transition memory; a later
+  fresh available may publish once after a blocked state or re-expose the
+  already published epoch without incrementing it.
+- Epoch increment is checked. While holding the route-state write lock, write
+  snapshot, Provider epoch, and confirmed state first, then Release-store the
+  process-global epoch. Session creation Acquire-loads the global baseline.
+  Overflow leaves the Provider routable but publishes no recovery marker and
+  never wraps.
+- Config-token/generation changes, permission revocation, gate/adapter close,
+  deletion, and runtime reset reject stale completion and remove old route
+  state. Name, note, and display-only timed-refresh changes preserve query and
+  transition state. Query semantics and route semantics are compared
+  separately so changing only the route switch need not evict the display
+  snapshot.
+- Route state and diagnostics contain only stable adapter/status/reason,
+  generation, epoch, and timing metadata. Amounts, messages, scripts, Origins,
+  credentials, and upstream bodies never enter Gateway DTOs or logs.
+
+### 4. Validation & Error Matrix
+
+| Input / state | Route projection / action |
+| --- | --- |
+| Field missing, malformed, or false | No Gateway target; existing route behavior |
+| Adapter disabled/invalid, Provider OAuth/source/disabled, or custom permission stale | No Gateway target; allow |
+| Gate true and display timed refresh false | Gateway lease still refreshes at saved interval |
+| Snapshot missing, lock contended, token/generation mismatch, or age `>= 2x` | `UnknownAllow`, recovery epoch hidden |
+| Fresh `zero_balance` with no positive spendable amount | `Blocked(ZeroBalance)` |
+| Fresh `zero_balance` with positive balance or plan remaining | `UnknownAllow`; publish no recovery |
+| Fresh `expired` with future expiry | `UnknownAllow`; publish no recovery |
+| Fresh consistent `expired` | `Blocked(Expired)` |
+| Auth/config/query/unsupported result | `UnknownAllow`; retain same-generation transition memory |
+| Blocked then fresh available in same generation | Publish exactly one Provider/global recovery epoch |
+| Reblocked after recovery | Clear Provider epoch immediately |
+| Epoch is `u64::MAX` | Allow available; publish zero Provider marker; do not wrap |
+
+### 5. Good / Base / Bad Cases
+
+- Good: timed display refresh is off, route gating is on, and the Gateway lease
+  continues one bounded shared refresh cadence without any UI mounted.
+- Good: a blocked Provider produces a query failure and immediately becomes
+  fail-open; the next fresh available result publishes one recovery signal,
+  while repeated available results publish none.
+- Base: an upgraded Provider lacks the new field, creates no Gateway target,
+  and follows the exact pre-feature route.
+- Bad: reuse the one-hour display TTL for routing, retain a stale zero-balance
+  block, or synchronously fetch account state from a model request.
+- Bad: treat query failure as recovery, use a global consumed boolean, or
+  publish the global epoch before the Provider snapshot carries it.
+
+### 6. Tests Required
+
+- Rust/TypeScript config tests must cover missing/invalid false defaults, field
+  independence, and disabled/unsupported Provider target exclusion.
+- Projection table tests must cover intervals 60 and 300 at `2x-1` and exact
+  `2x`, future display time, config/generation/adapter mismatch, all statuses,
+  absent/negative/positive amounts, future/past expiry, non-finite fields, and
+  sub2api/NewAPI/custom normalized results.
+- Scheduler tests must cover timed-off Gateway demand, manual force-tail
+  coalescing, exact target replacement, 5/15-second lease lifecycle, hard
+  display expiry, four-Provider nonwaiting concurrency, and Gateway stop.
+- Recovery tests must cover blocked-to-available exactly once,
+  blocked-to-error-to-available, temporary epoch hiding/re-exposure, reblock,
+  stale generation, token/permission changes, Release/Acquire publication, and
+  checked overflow.
+- Integration tests must prove DB-loaded `ProviderForGateway` stores the
+  precomputed target, request reads perform no account network wait, and
+  successful mutation/import reconciliation removes obsolete targets.
+- Keep full Rust, generated bindings, frontend tests, typecheck, lint, format,
+  Clippy, secret audit, and diff checks green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+// Reparse config and wait for a balance request in every model request.
+let config = config_from_extension_values(&provider.extension_values);
+let latest = fetch_account_usage(provider.id).await?;
+if latest.balance == Some(0.0) { deny(); }
+```
+
+#### Correct
+
+```rust
+let Some(target) = provider.account_usage_route_target.as_ref() else {
+    return UnknownAllow;
+};
+match runtime.route_read(target, Instant::now(), now_unix).projection {
+    Blocked(reason) => deny_with_stable_reason(reason),
+    ConfirmedAvailable | UnknownAllow => allow(),
+}
+```
+
+Provider loading owns canonical target construction; the request path is a
+bounded synchronous memory read and every uncertain state fails open.
+
 ## Scenario: NewAPI Model-Token Billing Adapter
 
 ### 1. Scope / Trigger
@@ -125,11 +314,12 @@ Use this scenario when changing the NewAPI account-usage adapter, its endpoint
 construction, authentication, response parsing, unit normalization, body
 limits, or error presentation. The production IPC entry remains
 `provider_account_usage_fetch`; this scenario owns the Rust boundary between a
-configured model API key and the display-only `ProviderAccountUsageResult`.
+configured model API key and the normalized `ProviderAccountUsageResult`.
 
-This scenario does not change the query-owner rules above and does not apply
-account-usage results to routing, circuit state, provider availability, order,
-or enablement.
+This scenario does not change the query-owner rules above. The adapter and
+parser have no direct routing, circuit, availability, ordering, or enablement
+side effects; only the explicit runtime route-gate scenario above may project
+their normalized result into a route decision.
 
 ### 2. Signatures
 
@@ -210,9 +400,10 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
 - Upstream bodies/messages, API keys, PII, hosts, token names, and actual
   account amounts must not enter logs, IPC errors, fixtures, research output,
   or this spec. Fixtures use synthetic values and reserved test hosts only.
-- Account usage is display-only. Fetching and parsing must not test or mutate
-  routing, circuit/cooldown state, availability, provider order/enablement,
-  OAuth quota, or local request usage.
+- Fetching and parsing must not directly test or mutate circuit/cooldown state,
+  availability, provider order/enablement, OAuth quota, or local request usage.
+  An explicitly enabled route consumer may read the completed normalized
+  snapshot only through the shared runtime projection.
 
 ### 4. Validation & Error Matrix
 
@@ -256,8 +447,8 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
   error to appear as a missing-field error.
 - Bad: accept a partial snapshot when status or one billing endpoint fails, or
   hard-label an unknown unit as USD.
-- Bad: feed account usage into availability, provider selection, circuit reset,
-  or automatic provider disablement.
+- Bad: let the adapter directly mutate availability, selection, circuit state,
+  or Provider enablement instead of publishing one normalized snapshot.
 
 ### 6. Tests Required
 
@@ -278,8 +469,8 @@ and normalization. The existing generated IPC DTO remains the frontend boundary.
 - Assert errors contain no upstream message, body, key, host, PII, token name,
   or actual account amount; fixtures must remain wholly synthetic.
 - Keep all sub2api fixtures green and prove its parser and redirect behavior do
-  not change. Keep the query-owner, manual-refresh race, display rendering, and
-  routing/circuit/availability isolation tests green.
+  not change. Keep the query-owner, manual-refresh race, display rendering,
+  explicit route-projection, and circuit/availability side-effect tests green.
 - Run focused Rust and frontend tests, generated-binding validation, typecheck,
   lint, Rust format/check/Clippy, secret/PII diff audit, and `git diff --check`
   in proportion to the change.
@@ -563,8 +754,9 @@ balance field or window-specific credential is introduced.
   fields untouched.
 - Keep all legacy root-balance, plan, subscription, expiry, validity-only,
   authentication, body-cap, and display regressions green.
-- Assert account usage remains display-only and never affects provider routing,
-  availability, circuit state, order, or enablement.
+- Assert the parser has no direct Provider/circuit/order side effects; when the
+  explicit route gate is enabled, only its normalized result may be consumed by
+  the shared projection contract above.
 
 ### 7. Wrong vs Correct
 

@@ -353,6 +353,9 @@ pub struct ProviderRouteRow {
 #[derive(Debug, Clone)]
 pub(crate) struct ProviderForGateway {
     pub id: i64,
+    pub provider_uuid: String,
+    pub account_usage_route_target:
+        Option<crate::domain::provider_account_usage::ProviderAccountUsageTarget>,
     pub name: String,
     pub base_urls: Vec<String>,
     pub base_url_mode: ProviderBaseUrlMode,

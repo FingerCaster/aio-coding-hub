@@ -9,7 +9,8 @@ use crate::gateway::proxy::handler::early_error::{
     respond_provider_selection_failed_with_spawn, EarlyErrorKind,
 };
 use crate::gateway::proxy::handler::provider_selection::probe_planner::{
-    plan_probe, PlannedDispatch, PlannedFailbackTarget, ProbePlannerDecision, ProbePlannerInput,
+    plan_probe_with_account_usage, AccountUsageRecoveryInput, PlannedDispatch,
+    PlannedFailbackTarget, ProbePlannerDecision, ProbePlannerInput,
 };
 use crate::gateway::proxy::handler::provider_selection::{
     resolve_session_bound_provider_id, resolve_session_routing_decision,
@@ -18,6 +19,7 @@ use crate::gateway::proxy::handler::provider_selection::{
 use crate::gateway::response_fixer;
 use crate::session_manager::{SessionProbeTrigger, SessionRouteFingerprint};
 use std::sync::Arc;
+use tauri::Manager;
 
 pub(in crate::gateway::proxy::handler) struct ProviderResolutionMiddleware;
 
@@ -243,19 +245,50 @@ fn plan_request_failback<R: tauri::Runtime>(
             )
         })
         .collect();
-    let decision = plan_probe(ProbePlannerInput {
-        ordered_candidates: &ordered_candidates,
-        bound_provider_id,
-        session_recovery_epoch_baseline: session_snapshot
-            .as_ref()
-            .map_or(0, |snapshot| snapshot.recovery_epoch_baseline),
-        route_changed,
-        strategy: runtime_settings.provider_failback_strategy,
-        compaction_generation_pending: compaction_generation.is_some(),
-        codex_compaction_pending,
-        request_eligible,
-        now_unix: ctx.created_at,
-    });
+    let account_usage_runtime = ctx.state.app.try_state::<
+        crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,
+    >();
+    let monotonic_now = std::time::Instant::now();
+    let account_usage_recovery_epochs: Vec<_> = ordered_candidates
+        .iter()
+        .filter_map(|(provider_id, _)| {
+            let provider = ctx
+                .providers
+                .iter()
+                .find(|provider| provider.id == *provider_id)?;
+            let target = provider.account_usage_route_target.as_ref()?;
+            let epoch = account_usage_runtime
+                .as_ref()
+                .map(|runtime| {
+                    runtime
+                        .route_read(target, monotonic_now, ctx.created_at)
+                        .recovery_epoch
+                })
+                .unwrap_or(0);
+            (epoch != 0).then_some((*provider_id, epoch))
+        })
+        .collect();
+    let decision = plan_probe_with_account_usage(
+        ProbePlannerInput {
+            ordered_candidates: &ordered_candidates,
+            bound_provider_id,
+            session_recovery_epoch_baseline: session_snapshot
+                .as_ref()
+                .map_or(0, |snapshot| snapshot.recovery_epoch_baseline),
+            route_changed,
+            strategy: runtime_settings.provider_failback_strategy,
+            compaction_generation_pending: compaction_generation.is_some(),
+            codex_compaction_pending,
+            request_eligible,
+            now_unix: ctx.created_at,
+        },
+        AccountUsageRecoveryInput {
+            provider_recovery_epochs: &account_usage_recovery_epochs,
+            session_recovery_epoch_baseline: session_snapshot
+                .as_ref()
+                .map_or(0, |snapshot| snapshot.account_usage_recovery_epoch_baseline),
+        },
+    );
 
     match decision {
         ProbePlannerDecision::Stay {

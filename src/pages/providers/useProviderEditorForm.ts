@@ -256,6 +256,7 @@ function buildAccountUsageState({
           adapterKind: "disabled" as const,
           newApiQueryMode: "billing" as const,
           timedRefreshEnabled: true,
+          routeGateEnabled: false,
           refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
           customScript: "",
           customAllowedOrigins: [],
@@ -583,6 +584,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     !effectiveAccountUsageState.clearNewApiAccessToken;
   const accountUsageClearNewApiAccessToken = effectiveAccountUsageState.clearNewApiAccessToken;
   const accountUsageTimedRefreshEnabled = effectiveAccountUsageState.timedRefreshEnabled;
+  const accountUsageRouteGateEnabled = effectiveAccountUsageState.routeGateEnabled;
   const accountUsageRefreshIntervalSeconds = effectiveAccountUsageState.refreshIntervalSeconds;
   const accountUsageCustomScript = effectiveAccountUsageState.customScript;
   const accountUsageCustomAllowedOrigins = effectiveAccountUsageState.customAllowedOrigins;
@@ -763,6 +765,13 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setAccountUsageState((prev) => ({
       ...prev,
       timedRefreshEnabled,
+    }));
+  }, []);
+
+  const setAccountUsageRouteGateEnabled = useCallback((routeGateEnabled: boolean) => {
+    setAccountUsageState((prev) => ({
+      ...prev,
+      routeGateEnabled,
     }));
   }, []);
 
@@ -1001,6 +1010,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
           adapterKind: authMode === "api_key" ? accountUsageAdapterKind : "disabled",
           newApiQueryMode: accountUsageNewApiQueryMode,
           timedRefreshEnabled: accountUsageTimedRefreshEnabled,
+          routeGateEnabled: authMode === "api_key" && accountUsageRouteGateEnabled,
           refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
             accountUsageRefreshIntervalSeconds
           ),
@@ -1047,6 +1057,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       accountUsageNewApiAccessToken,
       accountUsageClearNewApiAccessToken,
       accountUsageTimedRefreshEnabled,
+      accountUsageRouteGateEnabled,
       accountUsageRefreshIntervalSeconds,
       accountUsageCustomScript,
       accountUsageCustomAllowedOrigins,
@@ -1325,6 +1336,8 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     clearAccountUsageCredentials,
     accountUsageTimedRefreshEnabled,
     setAccountUsageTimedRefreshEnabled,
+    accountUsageRouteGateEnabled,
+    setAccountUsageRouteGateEnabled,
     accountUsageRefreshIntervalSeconds,
     setAccountUsageRefreshIntervalSeconds,
     accountUsageCustomScript,

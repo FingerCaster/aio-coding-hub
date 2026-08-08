@@ -1223,7 +1223,8 @@ fn provider_summary_hides_account_token_and_local_copy_keeps_private_credentials
             "adapterKind": "newapi",
             "newApiQueryMode": "account",
             "newApiUserId": "999",
-            "newApiAccessToken": "SYNTHETIC_EXTENSION_SECRET"
+            "newApiAccessToken": "SYNTHETIC_EXTENSION_SECRET",
+            "routeGateEnabled": true
         }),
     }]);
     source_params.account_usage_credentials_patch = Some(
@@ -1234,6 +1235,10 @@ fn provider_summary_hides_account_token_and_local_copy_keeps_private_credentials
         },
     );
     let source = upsert(&db, source_params).expect("save source");
+    assert_eq!(
+        account_usage_values(&source)["routeGateEnabled"],
+        serde_json::Value::Bool(true)
+    );
     assert_eq!(source.newapi_account_user_id.as_deref(), Some("42"));
     assert!(source.newapi_account_access_token_configured);
     let extension_json = source.extension_values[0].values.to_string();
@@ -1255,6 +1260,10 @@ fn provider_summary_hides_account_token_and_local_copy_keeps_private_credentials
     );
     copy_params.account_usage_credentials_copy_from_provider_id = Some(source.id);
     let copy = upsert(&db, copy_params).expect("save local copy");
+    assert_eq!(
+        account_usage_values(&copy)["routeGateEnabled"],
+        serde_json::Value::Bool(true)
+    );
     assert_eq!(copy.newapi_account_user_id.as_deref(), Some("42"));
     assert!(copy.newapi_account_access_token_configured);
 

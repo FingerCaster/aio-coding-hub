@@ -165,6 +165,7 @@ pub(crate) struct ProviderAccountUsageConfig {
     pub adapter_kind: ProviderAccountUsageAdapterKind,
     pub new_api_query_mode: NewapiQueryMode,
     pub timed_refresh_enabled: bool,
+    pub route_gate_enabled: bool,
     pub refresh_interval_seconds: i64,
     pub custom: Option<ProviderAccountUsageCustomConfig>,
 }
@@ -172,7 +173,119 @@ pub(crate) struct ProviderAccountUsageConfig {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) struct ProviderAccountUsageRefreshSchedule {
     pub timed_refresh_enabled: bool,
+    pub route_gate_enabled: bool,
     pub refresh_interval_seconds: i64,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct ProviderAccountUsageTarget {
+    pub provider_id: i64,
+    pub schedule: ProviderAccountUsageRefreshSchedule,
+    pub adapter_kind: ProviderAccountUsageAdapterKind,
+    pub config_token: [u8; 32],
+    pub custom_permission_ready: bool,
+}
+
+impl ProviderAccountUsageTarget {
+    pub(crate) fn from_fetch_context(
+        provider_id: i64,
+        context: &crate::providers::ProviderAccountUsageFetchContext,
+    ) -> Option<Self> {
+        let ProviderAccountUsageConfigState::Configured(config) =
+            config_from_extension_values(&context.extension_values)
+        else {
+            return None;
+        };
+        let schedule = ProviderAccountUsageRefreshSchedule {
+            timed_refresh_enabled: config.timed_refresh_enabled,
+            route_gate_enabled: config.route_gate_enabled,
+            refresh_interval_seconds: config.refresh_interval_seconds,
+        };
+        let mut hasher = Sha256::new();
+        hash_runtime_token_segment(&mut hasher, b"provider-account-usage-runtime-v2");
+        hash_runtime_token_segment(&mut hasher, context.provider_uuid.as_bytes());
+        hash_runtime_token_segment(&mut hasher, context.auth_mode.as_bytes());
+        hash_runtime_token_segment(
+            &mut hasher,
+            context
+                .source_provider_uuid
+                .as_deref()
+                .unwrap_or("")
+                .as_bytes(),
+        );
+        let base_url = context
+            .base_urls
+            .iter()
+            .map(|value| value.trim())
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        let base_origin = custom_account_usage_base_origin(base_url).unwrap_or_default();
+        hash_runtime_token_segment(&mut hasher, base_origin.as_bytes());
+        hash_runtime_token_segment(
+            &mut hasher,
+            match config.adapter_kind {
+                ProviderAccountUsageAdapterKind::Sub2api => b"sub2api".as_slice(),
+                ProviderAccountUsageAdapterKind::Newapi => b"newapi".as_slice(),
+                ProviderAccountUsageAdapterKind::Custom => b"custom".as_slice(),
+            },
+        );
+        hash_runtime_token_segment(
+            &mut hasher,
+            match config.new_api_query_mode {
+                NewapiQueryMode::Billing => b"billing".as_slice(),
+                NewapiQueryMode::Account => b"account".as_slice(),
+            },
+        );
+        hash_runtime_token_segment(&mut hasher, &config.refresh_interval_seconds.to_be_bytes());
+        hash_runtime_token_segment(&mut hasher, &[u8::from(config.route_gate_enabled)]);
+        let mut custom_permission_ready =
+            config.adapter_kind != ProviderAccountUsageAdapterKind::Custom;
+        if let Some(custom) = config.custom.as_ref() {
+            hash_runtime_token_segment(&mut hasher, &[u8::from(custom.enabled)]);
+            hash_runtime_token_segment(&mut hasher, &custom.timeout_seconds.to_be_bytes());
+            let valid_permission = custom_account_usage_permission_scope(
+                &context.provider_uuid,
+                &context.auth_mode,
+                context.source_provider_uuid.as_deref(),
+                base_url,
+            )
+            .ok()
+            .map(|scope| custom_account_usage_authorization_fingerprint(custom, &scope))
+            .filter(|expected| {
+                custom.enabled
+                    && custom.permission_fingerprint.as_deref() == Some(expected.as_str())
+            })
+            .unwrap_or_default();
+            custom_permission_ready = !valid_permission.is_empty();
+            hash_runtime_token_segment(&mut hasher, valid_permission.as_bytes());
+        }
+        Some(Self {
+            provider_id,
+            schedule,
+            adapter_kind: config.adapter_kind,
+            config_token: hasher.finalize().into(),
+            custom_permission_ready,
+        })
+    }
+
+    pub(crate) fn is_gateway_eligible(&self) -> bool {
+        self.schedule.route_gate_enabled && self.custom_permission_ready
+    }
+
+    pub(crate) fn from_gateway_fetch_context(
+        provider_id: i64,
+        context: &crate::providers::ProviderAccountUsageFetchContext,
+    ) -> Option<Self> {
+        if context.auth_mode != "api_key" || context.source_provider_id.is_some() {
+            return None;
+        }
+        Self::from_fetch_context(provider_id, context).filter(Self::is_gateway_eligible)
+    }
+}
+
+fn hash_runtime_token_segment(hasher: &mut Sha256, value: &[u8]) {
+    hasher.update((value.len() as u64).to_be_bytes());
+    hasher.update(value);
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -255,6 +368,10 @@ pub(crate) fn sanitize_account_usage_extension_value_for_persistence(
         .get("timedRefreshEnabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let route_gate_enabled = values
+        .get("routeGateEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let refresh_interval_seconds = values
         .get("refreshIntervalSeconds")
         .and_then(Value::as_f64)
@@ -270,6 +387,7 @@ pub(crate) fn sanitize_account_usage_extension_value_for_persistence(
         "adapterKind": adapter_kind,
         "newApiQueryMode": new_api_query_mode,
         "timedRefreshEnabled": timed_refresh_enabled,
+        "routeGateEnabled": route_gate_enabled,
         "refreshIntervalSeconds": refresh_interval_seconds,
     });
     if adapter_kind == "custom" {
@@ -355,16 +473,18 @@ pub(crate) fn sanitize_account_usage_extension_value_for_persistence(
     normalized
 }
 
-/// Produces the portable account-usage representation used by provider sharing
-/// and configuration migration. Custom scripts deliberately become disabled:
-/// source, origin permissions, and local acknowledgement must never leave the
-/// local profile.
-fn sanitize_account_usage_extension_value_for_portable(values: &Value) -> Value {
+/// Custom source, origin permissions, and local acknowledgement never leave
+/// the local profile. A disabled custom adapter cannot retain route gating.
+fn sanitize_account_usage_extension_value_for_portable(
+    values: &Value,
+    preserve_native_route_gate: bool,
+) -> Value {
     let mut normalized = sanitize_account_usage_extension_value(values);
-    if normalized.get("adapterKind").and_then(Value::as_str) == Some("custom") {
-        let object = normalized
-            .as_object_mut()
-            .expect("account usage normalized value must be an object");
+    let is_custom = normalized.get("adapterKind").and_then(Value::as_str) == Some("custom");
+    let object = normalized
+        .as_object_mut()
+        .expect("account usage normalized value must be an object");
+    if is_custom {
         object.insert(
             "adapterKind".to_string(),
             Value::String("disabled".to_string()),
@@ -376,15 +496,18 @@ fn sanitize_account_usage_extension_value_for_portable(values: &Value) -> Value 
         object.remove(CUSTOM_ACCOUNT_USAGE_PERMISSION_FINGERPRINT_FIELD);
         object.remove(CUSTOM_ACCOUNT_USAGE_PERMISSION_BASE_ORIGIN_FIELD);
     }
+    if is_custom || !preserve_native_route_gate {
+        object.insert("routeGateEnabled".to_string(), Value::Bool(false));
+    }
     normalized
 }
 
 pub(crate) fn sanitize_account_usage_extension_value_for_provider_share(values: &Value) -> Value {
-    sanitize_account_usage_extension_value_for_portable(values)
+    sanitize_account_usage_extension_value_for_portable(values, false)
 }
 
 pub(crate) fn sanitize_account_usage_extension_value_for_config_bundle(values: &Value) -> Value {
-    sanitize_account_usage_extension_value_for_portable(values)
+    sanitize_account_usage_extension_value_for_portable(values, true)
 }
 
 pub(crate) fn validate_account_usage_extension_value(values: &Value) -> Result<(), String> {
@@ -654,6 +777,7 @@ fn custom_config_from_value(values: &Value) -> Result<ProviderAccountUsageCustom
     Ok(custom)
 }
 
+#[cfg(test)]
 pub(crate) fn custom_account_usage_permission_fingerprint(
     config: &ProviderAccountUsageCustomConfig,
 ) -> String {
@@ -984,22 +1108,6 @@ pub(crate) fn config_from_extension_values(
     config_from_value(&row.values)
 }
 
-pub(crate) fn refresh_schedule_from_extension_values(
-    values: &[ProviderExtensionValues],
-) -> Option<ProviderAccountUsageRefreshSchedule> {
-    match config_from_extension_values(values) {
-        ProviderAccountUsageConfigState::Configured(config) => {
-            Some(ProviderAccountUsageRefreshSchedule {
-                timed_refresh_enabled: config.timed_refresh_enabled,
-                refresh_interval_seconds: config.refresh_interval_seconds,
-            })
-        }
-        ProviderAccountUsageConfigState::Missing
-        | ProviderAccountUsageConfigState::Disabled
-        | ProviderAccountUsageConfigState::Invalid(_) => None,
-    }
-}
-
 fn normalize_refresh_interval_seconds(values: &Value) -> i64 {
     values
         .get("refreshIntervalSeconds")
@@ -1023,6 +1131,10 @@ fn config_from_value(values: &Value) -> ProviderAccountUsageConfigState {
         .get("timedRefreshEnabled")
         .and_then(Value::as_bool)
         .unwrap_or(true);
+    let route_gate_enabled = values
+        .get("routeGateEnabled")
+        .and_then(Value::as_bool)
+        .unwrap_or(false);
     let refresh_interval_seconds = normalize_refresh_interval_seconds(values);
 
     match adapter_kind {
@@ -1031,6 +1143,7 @@ fn config_from_value(values: &Value) -> ProviderAccountUsageConfigState {
             adapter_kind: ProviderAccountUsageAdapterKind::Sub2api,
             new_api_query_mode: NewapiQueryMode::Billing,
             timed_refresh_enabled,
+            route_gate_enabled,
             refresh_interval_seconds,
             custom: None,
         }),
@@ -1043,6 +1156,7 @@ fn config_from_value(values: &Value) -> ProviderAccountUsageConfigState {
                 adapter_kind: ProviderAccountUsageAdapterKind::Newapi,
                 new_api_query_mode,
                 timed_refresh_enabled,
+                route_gate_enabled,
                 refresh_interval_seconds,
                 custom: None,
             })
@@ -1052,6 +1166,7 @@ fn config_from_value(values: &Value) -> ProviderAccountUsageConfigState {
                 adapter_kind: ProviderAccountUsageAdapterKind::Custom,
                 new_api_query_mode: NewapiQueryMode::Billing,
                 timed_refresh_enabled,
+                route_gate_enabled,
                 refresh_interval_seconds,
                 custom: Some(custom),
             }),
@@ -3009,6 +3124,7 @@ mod tests {
                 adapter_kind: ProviderAccountUsageAdapterKind::Newapi,
                 new_api_query_mode: NewapiQueryMode::Billing,
                 timed_refresh_enabled: true,
+                route_gate_enabled: false,
                 refresh_interval_seconds: ACCOUNT_USAGE_REFRESH_INTERVAL_DEFAULT_SECONDS,
                 custom: None,
             })
@@ -3020,6 +3136,7 @@ mod tests {
             "newApiUserId": "42",
             "newApiAccessToken": "SYNTHETIC_PRIVATE_VALUE",
             "timedRefreshEnabled": false,
+            "routeGateEnabled": true,
             "refreshIntervalSeconds": 120
         }));
         assert_eq!(
@@ -3028,6 +3145,7 @@ mod tests {
                 "adapterKind": "newapi",
                 "newApiQueryMode": "account",
                 "timedRefreshEnabled": false,
+                "routeGateEnabled": true,
                 "refreshIntervalSeconds": 120
             })
         );
@@ -3049,6 +3167,7 @@ mod tests {
             "customTimeoutSeconds": 7,
             "customEnabled": true,
             "timedRefreshEnabled": false,
+            "routeGateEnabled": true,
             "refreshIntervalSeconds": 120
         });
 
@@ -3109,8 +3228,9 @@ mod tests {
             "https://api.example.test"
         );
 
-        let portable = sanitize_account_usage_extension_value_for_portable(&acknowledged);
+        let portable = sanitize_account_usage_extension_value_for_config_bundle(&acknowledged);
         assert_eq!(portable["adapterKind"], "disabled");
+        assert_eq!(portable["routeGateEnabled"], false);
         assert!(portable.get("customScript").is_none());
         assert!(portable.get("customAllowedOrigins").is_none());
         assert!(portable.get("customEnabled").is_none());
@@ -3120,6 +3240,31 @@ mod tests {
         assert!(portable
             .get(CUSTOM_ACCOUNT_USAGE_PERMISSION_BASE_ORIGIN_FIELD)
             .is_none());
+    }
+
+    #[test]
+    fn portable_route_gate_policy_is_explicit_for_share_and_config_bundle() {
+        let native = json!({
+            "adapterKind": "newapi",
+            "routeGateEnabled": true,
+        });
+        assert_eq!(
+            sanitize_account_usage_extension_value_for_provider_share(&native)["routeGateEnabled"],
+            false
+        );
+        assert_eq!(
+            sanitize_account_usage_extension_value_for_config_bundle(&native)["routeGateEnabled"],
+            true
+        );
+
+        let invalid = json!({
+            "adapterKind": "sub2api",
+            "routeGateEnabled": "true",
+        });
+        assert_eq!(
+            sanitize_account_usage_extension_value_for_config_bundle(&invalid)["routeGateEnabled"],
+            false
+        );
     }
 
     #[test]

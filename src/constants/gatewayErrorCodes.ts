@@ -30,6 +30,7 @@ export const GatewayErrorCodes = {
   RESPONSE_BUILD_ERROR: "GW_RESPONSE_BUILD_ERROR",
   PROVIDER_RATE_LIMITED: "GW_PROVIDER_RATE_LIMITED",
   PROVIDER_CIRCUIT_OPEN: "GW_PROVIDER_CIRCUIT_OPEN",
+  PROVIDER_ACCOUNT_USAGE_BLOCKED: "GW_PROVIDER_ACCOUNT_USAGE_BLOCKED",
   CLI_PROXY_DISABLED: "GW_CLI_PROXY_DISABLED",
   CLI_PROXY_GUARD_ERROR: "GW_CLI_PROXY_GUARD_ERROR",
   HTTP_CLIENT_INIT: "GW_HTTP_CLIENT_INIT",
@@ -77,6 +78,7 @@ const GatewayErrorShortLabels = {
   [GatewayErrorCodes.RESPONSE_BUILD_ERROR]: "响应构建错误",
   [GatewayErrorCodes.PROVIDER_RATE_LIMITED]: "供应商限额",
   [GatewayErrorCodes.PROVIDER_CIRCUIT_OPEN]: "供应商熔断",
+  [GatewayErrorCodes.PROVIDER_ACCOUNT_USAGE_BLOCKED]: "账户额度不足",
   [GatewayErrorCodes.CLI_PROXY_DISABLED]: "代理未启用",
   [GatewayErrorCodes.CLI_PROXY_GUARD_ERROR]: "代理守卫错误",
   [GatewayErrorCodes.HTTP_CLIENT_INIT]: "客户端初始化失败",
@@ -211,6 +213,10 @@ export const GatewayErrorDescriptions = {
   GW_PROVIDER_CIRCUIT_OPEN: {
     desc: "Provider 已熔断",
     suggestion: "该 Provider 因连续失败已被熔断，请求已自动跳过。熔断将在设定时间后自动恢复。",
+  },
+  GW_PROVIDER_ACCOUNT_USAGE_BLOCKED: {
+    desc: "Provider 账户额度不足",
+    suggestion: "该 Provider 的可信账户用量快照显示余额不足或账户已过期。",
   },
   GW_CLI_PROXY_DISABLED: {
     desc: "CLI Proxy 未启用",

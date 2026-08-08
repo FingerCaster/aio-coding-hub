@@ -61,6 +61,8 @@ mod tests {
     fn provider(id: i64) -> providers::ProviderForGateway {
         providers::ProviderForGateway {
             id,
+            provider_uuid: format!("00000000-0000-4000-8000-{id:012}"),
+            account_usage_route_target: None,
             name: format!("p{id}"),
             base_urls: vec!["https://example.com".to_string()],
             base_url_mode: providers::ProviderBaseUrlMode::Order,

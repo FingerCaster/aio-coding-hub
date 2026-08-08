@@ -726,7 +726,7 @@ mod tests {
         assert!(older.session.bind_sort_mode_with_recovery_epoch(
             older.cli_key.as_str(),
             older.session_id.as_deref().expect("session"),
-            session_manager::SessionBindingCreation::new(None, None, 0, older_request),
+            session_manager::SessionBindingCreation::new(None, None, 0, 0, older_request),
             now_unix,
         ));
         assert!(older.session.bind_success_for_request(

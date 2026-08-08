@@ -3650,6 +3650,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
             adapterKind: "newapi",
             newApiQueryMode: "account",
             timedRefreshEnabled: true,
+            routeGateEnabled: true,
             refreshIntervalSeconds: 120,
           },
           updatedAt: 1,
@@ -3672,6 +3673,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     const dialog = within(dialogElement);
     const { details, summary } = openAccountUsageDisclosure(dialogElement);
     expect(within(summary).getByText("NewApi · 用户账户余额")).toBeInTheDocument();
+    expect(dialog.getByRole("switch", { name: "余额不足时跳过供应商路由" })).toBeChecked();
     expect(dialog.getByPlaceholderText("正整数")).toHaveValue("42");
     fireEvent.change(dialog.getByPlaceholderText("留空表示不改"), {
       target: { value: "SYNTHETIC_ACCOUNT_DRAFT" },
@@ -3693,6 +3695,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
       "aria-checked",
       "true"
     );
+    expect(dialog.getByRole("switch", { name: "余额不足时跳过供应商路由" })).toBeChecked();
 
     fireEvent.click(dialog.getByRole("button", { name: "清除账户凭据" }));
     expect(within(summary).getByText("需配置账户凭据")).toBeInTheDocument();
@@ -3716,6 +3719,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
               values: expect.objectContaining({
                 adapterKind: "newapi",
                 newApiQueryMode: "account",
+                routeGateEnabled: true,
               }),
             }),
           ]),

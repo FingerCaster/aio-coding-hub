@@ -41,6 +41,7 @@ struct SessionBinding {
     sort_mode_id: Option<i64>,
     provider_order: Option<Vec<i64>>,
     recovery_epoch_baseline: u64,
+    account_usage_recovery_epoch_baseline: u64,
     creation_request: SessionBindingRequest,
     last_binding_request: Option<SessionBindingRequest>,
     expires_at: i64,
@@ -88,6 +89,7 @@ struct TriggerReservationState {
 pub struct SessionRoutingSnapshot {
     pub route: SessionRouteFingerprint,
     pub recovery_epoch_baseline: u64,
+    pub account_usage_recovery_epoch_baseline: u64,
     pub completed_compaction_generation: u64,
     pub consumed_compaction_generation: u64,
     pub last_codex_compaction_fingerprint: Option<String>,
@@ -101,6 +103,7 @@ pub struct SessionBindingCreation {
     sort_mode_id: Option<i64>,
     provider_order: Option<Vec<i64>>,
     recovery_epoch_baseline: u64,
+    account_usage_recovery_epoch_baseline: u64,
     request: SessionBindingRequest,
 }
 
@@ -109,12 +112,14 @@ impl SessionBindingCreation {
         sort_mode_id: Option<i64>,
         provider_order: Option<Vec<i64>>,
         recovery_epoch_baseline: u64,
+        account_usage_recovery_epoch_baseline: u64,
         request: SessionBindingRequest,
     ) -> Self {
         Self {
             sort_mode_id,
             provider_order,
             recovery_epoch_baseline,
+            account_usage_recovery_epoch_baseline,
             request,
         }
     }
@@ -189,6 +194,13 @@ impl SessionManager {
         let before = guard.len();
         guard.retain(|k, _| k.cli_key != cli_key);
         before.saturating_sub(guard.len())
+    }
+
+    pub fn clear_all_bindings(&self) -> usize {
+        let mut guard = self.bindings.lock_or_recover();
+        let removed = guard.len();
+        guard.clear();
+        removed
     }
 
     pub fn extract_session_id_from_json(
@@ -344,7 +356,7 @@ impl SessionManager {
         let _ = self.bind_sort_mode_with_recovery_epoch(
             cli_key,
             session_id,
-            SessionBindingCreation::new(sort_mode_id, provider_order, 0, request),
+            SessionBindingCreation::new(sort_mode_id, provider_order, 0, 0, request),
             now_unix,
         );
     }
@@ -363,6 +375,7 @@ impl SessionManager {
             sort_mode_id,
             provider_order,
             recovery_epoch_baseline,
+            account_usage_recovery_epoch_baseline,
             request,
         } = creation;
 
@@ -400,6 +413,7 @@ impl SessionManager {
                 sort_mode_id,
                 provider_order,
                 recovery_epoch_baseline,
+                account_usage_recovery_epoch_baseline,
                 creation_request: request,
                 last_binding_request: None,
                 expires_at: now_unix.saturating_add(self.ttl_secs.max(1)),
@@ -455,7 +469,7 @@ impl SessionManager {
         if !self.bind_sort_mode_with_recovery_epoch(
             cli_key,
             session_id,
-            SessionBindingCreation::new(sort_mode_id, None, 0, request),
+            SessionBindingCreation::new(sort_mode_id, None, 0, 0, request),
             now_unix,
         ) {
             return;
@@ -555,6 +569,8 @@ impl SessionManager {
                         binding.provider_order.clone().unwrap_or_default(),
                     ),
                     recovery_epoch_baseline: binding.recovery_epoch_baseline,
+                    account_usage_recovery_epoch_baseline: binding
+                        .account_usage_recovery_epoch_baseline,
                     completed_compaction_generation: binding.completed_compaction_generation,
                     consumed_compaction_generation: binding.consumed_compaction_generation,
                     last_codex_compaction_fingerprint: binding

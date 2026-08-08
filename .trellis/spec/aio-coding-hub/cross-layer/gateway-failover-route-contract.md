@@ -5,7 +5,7 @@
 ### 1. Scope / Trigger
 
 Use this contract when changing session-bound provider selection, ordered
-failback planning, circuit or rate-limit gates, request-scoped trigger
+failback planning, circuit, rate-limit, or account-usage gates, request-scoped trigger
 reservations, `failover_max_providers_to_try`, persisted request attempts,
 route projection, probe-planning observations, or the Home request-log route
 label. These layers share one observable failover chain, but their counters
@@ -49,6 +49,12 @@ ProbePlannerInput {
     // ordered candidates, strategy, triggers, and request eligibility omitted
 }
 
+AccountUsageRecoveryInput {
+    provider_recovery_epochs: &[(provider_id, epoch)],
+    session_recovery_epoch_baseline:
+        session_snapshot.account_usage_recovery_epoch_baseline,
+}
+
 struct PlannedFailbackTarget {
     provider_id: i64,
     dispatch: PlannedDispatch,
@@ -76,6 +82,9 @@ Provider recovery and live session convergence use a schema-free process-local
 epoch. `CircuitSnapshot.recovery_epoch` is the Provider's latest applied probe
 success epoch; `SessionRoutingSnapshot.recovery_epoch_baseline` is captured
 when that live session binding is first created. Neither field is persisted.
+Account-usage recovery uses a separate process-local Provider/global epoch and
+`SessionRoutingSnapshot.account_usage_recovery_epoch_baseline`; it is never
+folded into the circuit epoch or globally consumed by one Session.
 
 Resolution projects that plan into one request-scoped intent. The target list
 is arbitrary in length and each provider independently carries either no probe
@@ -167,6 +176,15 @@ FailoverAttempt {
   their own trigger and independently acquire a Provider-global single-flight
   lease. A circuit, cooldown, in-flight, or provider-limit denial creates one
   stable `outcome="skipped"` attempt and makes zero upstream calls.
+- The account-usage gate is the first common pre-send gate, before
+  circuit/cooldown/probe-lease acquisition, OAuth/local-spend checks,
+  credential/Base-URL preparation, and Ready-provider counting. Only a current
+  trusted `Blocked(ZeroBalance|Expired)` projection denies. Missing, stale,
+  failed, conflicting, unconfigured, or gate-off state allows. Denial records
+  `GW_PROVIDER_ACCOUNT_USAGE_BLOCKED`, category `account_usage`, and reason
+  `account_usage_zero_balance` or `account_usage_expired`; provider/retry
+  indices and every circuit/probe field stay empty. It changes no circuit,
+  health, Session, retry budget, or Ready count.
 - The existing failover loop remains serial. A target that exhausts its normal
   retry chain, is gate-skipped, loses a probe race, or aborts before transport
   send advances to the next planned target. The first complete success stops
@@ -181,6 +199,13 @@ FailoverAttempt {
   sliding-TTL refresh, same-Provider success, an in-flight loser request, or a
   different session's convergence. It is not a globally consumed cursor, so
   any number of follower sessions can observe the same Provider recovery.
+- Account-usage recovery is independently observable in natural mode. For a
+  higher-priority candidate whose circuit is `CLOSED`, a current fresh
+  ConfirmedAvailable Provider epoch newer than that Session's account baseline
+  produces the existing `Direct` dispatch. Equal/older/zero/hidden/reblocked
+  epochs do not. Account recovery never turns `OPEN` or `HALF_OPEN` into Direct,
+  never closes a circuit, and never creates a new probe trigger; existing
+  circuit due/cooldown/single-flight planning remains authoritative.
 - A request already planned while another owner still holds the probe lease may
   record `in_flight` and complete on current `pX`. After the winner succeeds,
   that follower's next eligible request sees the newer `CLOSED` recovery epoch,
@@ -206,6 +231,12 @@ FailoverAttempt {
   does not advance the applied token. If token allocation is unavailable,
   including monotonic counter exhaustion, skip both binding creation and success
   publication; never fall back to an unversioned write.
+- New binding creation captures both circuit and account-usage global baselines
+  with their required Acquire reads. Sliding TTL, same-Provider success, route
+  confirmation, and old responses preserve both baselines. Clear or expiry
+  creates a new incarnation with fresh baselines. An account refresh never
+  calls a binding API; only a complete real non-stream or stream model response
+  can commit the recovery target.
 - Only after every planned target fails or is skipped may the loop continue to
   current `pX`, followed by the existing remaining fallback order. A complete
   `pX` success keeps or reconfirms its binding. Preserve the existing terminal
@@ -248,6 +279,13 @@ FailoverAttempt {
   `Ready` beyond the cap. Ordered failback adds no hidden attempt, no parallel
   send, no same-provider retry, and no increase to the per-provider or total
   attempt budget.
+- `IterationCounters.skipped_account_usage` is separate from circuit/cooldown/
+  limit counts. Account refresh cadence is not an authoritative recovery time,
+  so account skips never update `earliest_available_unix` and pure account-only
+  503 responses have no `Retry-After`. A mixed terminal response may retain
+  another gate's trusted `Retry-After`, but any terminal containing an account
+  skip must not enter the recent-error cache. Otherwise recovery, failure, or
+  staleness could be hidden by an old cached 503.
 - Forced-provider requests, single-candidate routes, model discovery,
   health-neutral requests, warmup, token accounting, the compaction request
   itself, and managed-model route eligibility retain their existing behavior.
@@ -275,6 +313,15 @@ FailoverAttempt {
   `GW_ALL_PROVIDERS_UNAVAILABLE` / HTTP 503 and preserve every denied provider
   in both attempts and route. Do not manufacture an upstream call to make the
   failure observable.
+- Gate-only terminal classification must explicitly include both account-usage
+  reason codes. A route containing only account skips, or account skips mixed
+  with circuit/cooldown/limit skips, is unavailable (503), not
+  `GW_UPSTREAM_ALL_FAILED` (502). Ordinary account skips remain route attempts;
+  they are not planner `not_triggered` observations.
+- Explicitly closing an active route gate or its adapter clears that CLI's live
+  Session bindings and recent-error cache after the Provider mutation, then
+  reconciles account targets. This is configuration invalidation, not recovery:
+  neither circuit nor account recovery epoch advances.
 - Upstream 401 and 403 bodies are authentication material and must never enter
   console diagnostics, persisted attempt reasons, `attempts_json`, or
   `error_details_json`. The bounded body may remain in memory only as needed by
@@ -330,6 +377,14 @@ FailoverAttempt {
 | Expired direct candidate fails while a later prefix candidate is eligible | Rearm the failed candidate from its failure and continue to the later planned target before current `pX` |
 | Candidate is gate-skipped | Zero upstream calls and no Ready-provider budget consumed |
 | All candidates are gate-skipped | HTTP 503 with every candidate in attempts and route |
+| Trusted zero-balance/expired projection reaches common gate | Account skip with stable code/reason, empty circuit/probe/index fields, zero upstream and Ready use |
+| Account projection is absent/stale/failed/conflicting or gate is off | Allow through this gate; preserve existing later gates |
+| Every candidate is account blocked | HTTP 503 `GW_ALL_PROVIDERS_UNAVAILABLE`, all account skips retained, no `Retry-After` |
+| Account block plus circuit/limit denial | HTTP 503; retain the other gate's trusted `Retry-After`, but write no recent-error cache entry |
+| A previously blocked Provider becomes fresh available after Session baseline | If circuit is CLOSED, natural planner emits Direct in route order; bind only on real success |
+| Account recovery epoch is equal/older/zero or Provider reblocks | Do not plan Direct from account recovery |
+| Account recovery exists while circuit is OPEN/HALF_OPEN | Do not bypass circuit; use existing probe/cooldown rules |
+| Active gate/adapter is explicitly closed | Clear live route runtime and reconcile targets; publish no recovery epoch |
 | Ready-provider cap is reached | Stop before the next Ready provider |
 | Two Ready providers consume cap 2, then a circuit-open candidate follows | Record the third skipped attempt/route; make no third upstream call |
 | Route has 3 hops and 4 attempt rows | 3 providers, 2 transitions, 4 attempts |
@@ -373,6 +428,16 @@ FailoverAttempt {
   either Ready slot.
 - Good: three gate-skipped candidates return 503, produce three route hops and
   three attempt rows, and call no upstream.
+- Good: P1 is account-blocked and P2 succeeds. P1 records a normal filtered
+  account skip before any probe lease or Ready slot, P1 makes zero calls, and
+  the Session binds P2 only after P2's real success.
+- Good: P1 account-blocked plus P2 circuit-open returns a mixed 503 with P2's
+  trusted `Retry-After`; after P1 becomes available, the identical next request
+  reaches P1 because the mixed response was not cached.
+- Good: two live Sessions are bound to P2 before P1's blocked-to-available
+  transition. Each retains its own baseline and independently direct-dispatches
+  P1 on its next eligible request; one Session's success consumes nothing for
+  the other.
 - Base: one Ready provider and one attempt render as a direct request with zero
   provider transitions.
 - Good: an effective-unbound all-open route serially probes every routed target
@@ -410,6 +475,9 @@ FailoverAttempt {
 - Bad: using `state_revision` as recovery evidence. Dispatch, failure, expiry,
   reset, and other transitions also advance that revision, so it is not a
   success-only recovery signal.
+- Bad: classify an account-only skipped chain as upstream failure, derive a
+  `Retry-After` from the refresh interval, cache a mixed account 503, or reuse
+  the circuit recovery epoch for balance recovery.
 
 ### 6. Tests Required
 
@@ -428,6 +496,11 @@ FailoverAttempt {
   baseline as `Direct`, equal/older epochs as `not_triggered`, and a mixed
   arbitrary-length prefix containing both recovered direct and due probe
   targets in route order.
+- Planner-test account recovery separately: current fresh Provider epoch newer
+  than the Session account baseline produces Direct only for `CLOSED`; equal,
+  older, zero, stale, failed, reblocked, `OPEN`, and `HALF_OPEN` never gain an
+  account-derived Direct. Mix circuit and account recoveries across an
+  arbitrary prefix and preserve route order.
 - Circuit-test that only an applied dispatched probe success publishes a
   monotonic recovery epoch. Failure, stale generation, abandon, and ordinary
   success must leave it unchanged, and publication must not expose the global
@@ -436,6 +509,9 @@ FailoverAttempt {
   exactly once. Sliding TTL, same-Provider success, route confirmation, and an
   in-flight loser completion preserve it; expiry/clear plus recreation captures
   the then-current baseline.
+- Session-test the independent account baseline under the same lifecycle, then
+  route-test at least two live Sessions observing one account recovery without
+  global consumption. Refresh alone must not bind either Session.
 - Session- and stream-finalizer-test both completion orders for two same-session
   request tokens. The later-started successful request must own the final
   binding, and an older late stream completion must be rejected.
@@ -481,6 +557,16 @@ FailoverAttempt {
   Ready candidate consumes the existing cap. Include the boundary before the
   next Ready candidate and `Ready, Ready, circuit-open/cooldown` at cap 2 so the
   third denial remains visible without a third network call.
+- Route-test account denial before circuit/probe/limits/Ready and assert stable
+  account code/reason, empty circuit/probe/index metadata, zero upstream calls,
+  unchanged circuit snapshot, and fallback success. Cover zero balance and
+  expiry through the shared normalized projection.
+- Route-test an account-only all-unavailable 503 with no `Retry-After`, then a
+  mixed account plus circuit/limit 503 with the other gate's trusted header.
+  Make the blocked snapshot available and repeat the exact request fingerprint;
+  assert it reaches upstream, proving no recent-error cache write.
+- Unit-test gate-only terminal classification with both account reason codes so
+  they cannot regress to `GW_UPSTREAM_ALL_FAILED`.
 - Unit-test selection so a temporarily denied bound provider stays in the
   candidate list while reuse selection returns no effective bound provider.
 - Preserve all-open recovery tests: a persisted ineffective binding, P1 probe
@@ -527,6 +613,22 @@ if !circuit.should_allow(bound_provider_id, created_at).allow {
 
 Keep selection responsible for preference and make the common gate the single
 authoritative owner of deny decisions and skipped attempts.
+
+Do not collapse account recovery into circuit state or cache its uncertain
+eligibility:
+
+```rust
+// Wrong: refresh time is not a recovery deadline and circuit state is not an
+// account-usage signal.
+earliest_available_unix = next_account_refresh;
+circuit.record_success(provider_id);
+
+// Correct: common gate reads the current projection, while natural planning
+// compares a separate Provider epoch to this Session's account baseline.
+let route = account_runtime.route_read(target, monotonic_now, wall_now);
+let recovered = circuit.state == Closed
+    && route.recovery_epoch > session.account_usage_recovery_epoch_baseline;
+```
 
 Do not use a persisted but circuit-denied binding as the probe planner anchor:
 

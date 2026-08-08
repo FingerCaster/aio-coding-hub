@@ -41,6 +41,7 @@ export type ProviderAccountUsageConfig = {
   adapterKind: ProviderAccountUsageAdapterKind;
   newApiQueryMode: ProviderAccountUsageNewApiQueryMode;
   timedRefreshEnabled: boolean;
+  routeGateEnabled: boolean;
   refreshIntervalSeconds: number;
   customScript: string;
   customAllowedOrigins: string[];
@@ -52,6 +53,7 @@ const DEFAULT_CONFIG: ProviderAccountUsageConfig = {
   adapterKind: "disabled",
   newApiQueryMode: "billing",
   timedRefreshEnabled: true,
+  routeGateEnabled: false,
   refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
   customScript: "",
   customAllowedOrigins: [],
@@ -417,6 +419,8 @@ export function readProviderAccountUsageConfig(
     : "billing";
   const timedRefreshEnabled =
     typeof row.values.timedRefreshEnabled === "boolean" ? row.values.timedRefreshEnabled : true;
+  const routeGateEnabled =
+    typeof row.values.routeGateEnabled === "boolean" ? row.values.routeGateEnabled : false;
   const refreshIntervalSeconds = normalizeProviderAccountUsageRefreshIntervalSeconds(
     row.values.refreshIntervalSeconds
   );
@@ -471,6 +475,7 @@ export function readProviderAccountUsageConfig(
     adapterKind,
     newApiQueryMode,
     timedRefreshEnabled,
+    routeGateEnabled,
     refreshIntervalSeconds,
     customScript,
     customAllowedOrigins,
@@ -541,6 +546,7 @@ export function mergeProviderAccountUsageExtensionValues({
   if (
     config.adapterKind === "disabled" &&
     config.newApiQueryMode === "billing" &&
+    !config.routeGateEnabled &&
     !existingAccountUsage
   ) {
     if (rows == null && withoutAccountUsage.length === existingRows.length) return null;
@@ -551,6 +557,7 @@ export function mergeProviderAccountUsageExtensionValues({
     adapterKind: config.adapterKind,
     newApiQueryMode: config.newApiQueryMode,
     timedRefreshEnabled: config.timedRefreshEnabled,
+    routeGateEnabled: config.routeGateEnabled,
     refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
       config.refreshIntervalSeconds
     ),

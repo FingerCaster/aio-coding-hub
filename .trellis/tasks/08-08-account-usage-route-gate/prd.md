@@ -64,28 +64,28 @@
 
 ## Acceptance Criteria
 
-- [ ] 升级后所有现有 Provider 默认保持原路由行为；未配置余额查询的 Provider 不产生额外刷新或门控。
-- [ ] `sub2api`、两种 NewAPI 模式和自定义 JavaScript 对同一归一化状态执行一致的门控、新鲜度与恢复规则。
-- [ ] 显式开启后，新鲜 `zero_balance` / `expired` Provider 产生可区分的 `skipped` attempt、零上游调用和零 Ready 尝试消耗。
-- [ ] 已知阻断不会让 planner 每次强制制造 Direct attempt；实际被既有路由/回切计划检查时仍以普通 `skipped` 可见。
-- [ ] 快照缺失、过期、查询失败、认证失败或配置不完整时立即恢复路由资格，后台重试不阻塞网关请求。
-- [ ] 不确定状态的 fail-open 不发布主动回切信号；后续新鲜 `available` 才使现有 Session 获得余额恢复回切机会。
-- [ ] 现金余额为零但套餐剩余为正的 Provider 可路由；所有已知可消费额度耗尽时才阻断。
-- [ ] 矛盾的 `zero_balance + positive amount` 与 `expired + future expiry` fail-open 且不发布恢复代次。
-- [ ] 全候选余额不足及余额不足与熔断/冷却混合时，错误码、attempts、route 和 Retry-After 行为符合现有共同门控规范。
-- [ ] 阻断期间无 UI 时仍会有界刷新；恢复后高优先级 Provider 在下一次符合条件的请求中按原顺序被直接尝试。
-- [ ] 路由门控开启时，展示定时刷新即使关闭也不停止 Gateway 刷新；实际调度沿用已配置的 `60–300` 秒间隔且同 Provider 请求继续合并。
-- [ ] 路由快照在 `2 × refreshIntervalSeconds` 边界失效；未来时间戳和显示层仍可展示但不再可路由信任的旧快照不会阻断 Provider。
-- [ ] 恢复刷新不改绑 Session；只有真实请求成功才完成回切，真实失败按现有 retry/failover 处理。
-- [ ] 恢复后发送前再次变为阻断时记录余额 `skipped` 并继续 fallback，不产生上游调用或错误回切。
-- [ ] 多 Session 各自观察同一恢复代次；旧响应不能反转较新的 Session 绑定。
-- [ ] 再次确认阻断会使尚未观察的旧恢复信号失效；查询失败/过期不会延续阻断，但后续新鲜 `available` 仍可确认一次恢复。
-- [ ] forced Provider、managed model、普通 API Key、OAuth、非流、流式和应用重启后的首次状态均有测试。
-- [ ] 路由日志、普通日志、IPC 和测试产物不包含余额、脚本、Origin、凭据或上游响应。
-- [ ] 完整备份和本机复制保留门控开关；单 Provider 分享导入不会替接收方开启余额路由门控。
-- [ ] 纯余额阻断无基于刷新计划的 `Retry-After`；混合门控只保留其他 gate 的可信时间。
-- [ ] 含余额 skipped 的混合 503 不写 recent-error cache；余额恢复、失败或 stale 后的下一请求不会被旧缓存短路。
-- [ ] 显式关闭 gate 后旧 fallback Session 在下一请求重新按当前路由选择，且两个 recovery epoch 均不因此增加。
+- [x] 升级后所有现有 Provider 默认保持原路由行为；未配置余额查询的 Provider 不产生额外刷新或门控。
+- [x] `sub2api`、两种 NewAPI 模式和自定义 JavaScript 对同一归一化状态执行一致的门控、新鲜度与恢复规则。
+- [x] 显式开启后，新鲜 `zero_balance` / `expired` Provider 产生可区分的 `skipped` attempt、零上游调用和零 Ready 尝试消耗。
+- [x] 已知阻断不会让 planner 每次强制制造 Direct attempt；实际被既有路由/回切计划检查时仍以普通 `skipped` 可见。
+- [x] 快照缺失、过期、查询失败、认证失败或配置不完整时立即恢复路由资格，后台重试不阻塞网关请求。
+- [x] 不确定状态的 fail-open 不发布主动回切信号；后续新鲜 `available` 才使现有 Session 获得余额恢复回切机会。
+- [x] 现金余额为零但套餐剩余为正的 Provider 可路由；所有已知可消费额度耗尽时才阻断。
+- [x] 矛盾的 `zero_balance + positive amount` 与 `expired + future expiry` fail-open 且不发布恢复代次。
+- [x] 全候选余额不足及余额不足与熔断/冷却混合时，错误码、attempts、route 和 Retry-After 行为符合现有共同门控规范。
+- [x] 阻断期间无 UI 时仍会有界刷新；恢复后高优先级 Provider 在下一次符合条件的请求中按原顺序被直接尝试。
+- [x] 路由门控开启时，展示定时刷新即使关闭也不停止 Gateway 刷新；实际调度沿用已配置的 `60–300` 秒间隔且同 Provider 请求继续合并。
+- [x] 路由快照在 `2 × refreshIntervalSeconds` 边界失效；未来时间戳和显示层仍可展示但不再可路由信任的旧快照不会阻断 Provider。
+- [x] 恢复刷新不改绑 Session；只有真实请求成功才完成回切，真实失败按现有 retry/failover 处理。
+- [x] 恢复后发送前再次变为阻断时记录余额 `skipped` 并继续 fallback，不产生上游调用或错误回切。
+- [x] 多 Session 各自观察同一恢复代次；旧响应不能反转较新的 Session 绑定。
+- [x] 再次确认阻断会使尚未观察的旧恢复信号失效；查询失败/过期不会延续阻断，但后续新鲜 `available` 仍可确认一次恢复。
+- [x] forced Provider、managed model、普通 API Key、OAuth、非流、流式和应用重启后的首次状态均有测试。
+- [x] 路由日志、普通日志、IPC 和测试产物不包含余额、脚本、Origin、凭据或上游响应。
+- [x] 完整备份和本机复制保留门控开关；单 Provider 分享导入不会替接收方开启余额路由门控。
+- [x] 纯余额阻断无基于刷新计划的 `Retry-After`；混合门控只保留其他 gate 的可信时间。
+- [x] 含余额 skipped 的混合 503 不写 recent-error cache；余额恢复、失败或 stale 后的下一请求不会被旧缓存短路。
+- [x] 显式关闭 gate 后旧 fallback Session 在下一请求重新按当前路由选择，且两个 recovery epoch 均不因此增加。
 
 ## Out of Scope
 

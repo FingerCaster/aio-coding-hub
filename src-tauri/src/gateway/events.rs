@@ -38,6 +38,9 @@ pub(in crate::gateway) mod decision_chain {
     pub(in crate::gateway) const REASON_CIRCUIT_OPEN: &str = "circuit_open";
     pub(in crate::gateway) const REASON_CIRCUIT_COOLDOWN: &str = "circuit_cooldown";
     pub(in crate::gateway) const REASON_RATE_LIMITED: &str = "rate_limited";
+    pub(in crate::gateway) const REASON_ACCOUNT_USAGE_ZERO_BALANCE: &str =
+        "account_usage_zero_balance";
+    pub(in crate::gateway) const REASON_ACCOUNT_USAGE_EXPIRED: &str = "account_usage_expired";
 
     /// Determine how the provider was selected for this attempt.
     /// Only meaningful for the first attempt (provider_index=1, retry_index=1).

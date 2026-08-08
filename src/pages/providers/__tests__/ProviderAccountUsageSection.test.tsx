@@ -23,6 +23,8 @@ function makeForm(partial: Partial<UseProviderEditorFormReturn> = {}): UseProvid
     clearAccountUsageCredentials: vi.fn(),
     accountUsageTimedRefreshEnabled: true,
     setAccountUsageTimedRefreshEnabled: vi.fn(),
+    accountUsageRouteGateEnabled: false,
+    setAccountUsageRouteGateEnabled: vi.fn(),
     accountUsageRefreshIntervalSeconds: 300,
     setAccountUsageRefreshIntervalSeconds: vi.fn(),
     accountUsageCustomScript: "",
@@ -111,6 +113,9 @@ describe("ProviderAccountUsageSection", () => {
     const { details, summary } = openDisclosure();
     expect(screen.getByRole("radiogroup", { name: "账户用量适配器" })).toBeInTheDocument();
     expect(screen.queryByRole("switch", { name: "定时刷新账户用量" })).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("switch", { name: "余额不足时跳过供应商路由" })
+    ).not.toBeInTheDocument();
     expect(screen.queryByRole("spinbutton")).not.toBeInTheDocument();
 
     fireEvent.click(summary);
@@ -163,16 +168,19 @@ describe("ProviderAccountUsageSection", () => {
     expect(within(getDisclosure().summary).getByText("NewApi · 用户账户余额")).toBeInTheDocument();
   });
 
-  it("renders timed refresh controls for configured account usage", () => {
+  it("renders independent timed refresh and route gate controls", () => {
     const setTimedRefreshEnabled = vi.fn();
+    const setRouteGateEnabled = vi.fn();
     const setRefreshIntervalSeconds = vi.fn();
     render(
       <ProviderAccountUsageSection
         form={makeForm({
           accountUsageAdapterKind: "sub2api",
           accountUsageTimedRefreshEnabled: true,
+          accountUsageRouteGateEnabled: false,
           accountUsageRefreshIntervalSeconds: 120,
           setAccountUsageTimedRefreshEnabled: setTimedRefreshEnabled,
+          setAccountUsageRouteGateEnabled: setRouteGateEnabled,
           setAccountUsageRefreshIntervalSeconds: setRefreshIntervalSeconds,
         })}
       />
@@ -187,20 +195,50 @@ describe("ProviderAccountUsageSection", () => {
     const refreshSwitch = within(refreshRow).getByRole("switch", {
       name: "定时刷新账户用量",
     });
+    const routeGateSwitch = within(refreshRow).getByRole("switch", {
+      name: "余额不足时跳过供应商路由",
+    });
     const refreshInterval = within(refreshRow).getByRole("spinbutton");
 
     expect(selectorRow).toHaveClass("grid", "sm:grid-cols-2");
-    expect(refreshRow).toHaveClass("grid", "sm:grid-cols-2");
+    expect(refreshRow).toHaveClass("grid", "sm:grid-cols-3");
     expectElementBefore(selectorRow, refreshRow);
     expectFullWidthRadioOptions(adapterGroup);
 
     fireEvent.click(refreshSwitch);
+    fireEvent.click(routeGateSwitch);
     fireEvent.change(refreshInterval, { target: { value: "180" } });
 
     expect(setTimedRefreshEnabled).toHaveBeenCalledWith(false);
+    expect(setRouteGateEnabled).toHaveBeenCalledWith(true);
     expect(setRefreshIntervalSeconds).toHaveBeenCalledWith(180);
     expect(refreshInterval).toHaveAttribute("min", "60");
     expect(refreshInterval).toHaveAttribute("max", "300");
+  });
+
+  it("keeps the refresh interval enabled for route-gate-only background refresh", () => {
+    const { rerender } = render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "sub2api",
+          accountUsageTimedRefreshEnabled: false,
+          accountUsageRouteGateEnabled: true,
+        })}
+      />
+    );
+    openDisclosure();
+    expect(screen.getByRole("spinbutton")).toBeEnabled();
+
+    rerender(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "sub2api",
+          accountUsageTimedRefreshEnabled: false,
+          accountUsageRouteGateEnabled: false,
+        })}
+      />
+    );
+    expect(screen.getByRole("spinbutton")).toBeDisabled();
   });
 
   it("keeps NewApi selectors, credentials, and refresh controls in natural responsive rows", () => {
@@ -229,7 +267,7 @@ describe("ProviderAccountUsageSection", () => {
     expect(within(selectorRow).getByText("NewApi 查询方式")).toBeInTheDocument();
     expect(selectorRow).toHaveClass("grid", "sm:grid-cols-2");
     expect(credentialsRow).toHaveClass("grid", "sm:grid-cols-2");
-    expect(refreshRow).toHaveClass("grid", "sm:grid-cols-2");
+    expect(refreshRow).toHaveClass("grid", "sm:grid-cols-3");
     expectElementBefore(selectorRow, credentialsRow);
     expectElementBefore(credentialsRow, refreshRow);
     expectFullWidthRadioOptions(adapterGroup);
@@ -240,6 +278,9 @@ describe("ProviderAccountUsageSection", () => {
     ).toBeInTheDocument();
     expect(
       within(refreshRow).getByRole("switch", { name: "定时刷新账户用量" })
+    ).toBeInTheDocument();
+    expect(
+      within(refreshRow).getByRole("switch", { name: "余额不足时跳过供应商路由" })
     ).toBeInTheDocument();
     expect(within(refreshRow).getByRole("spinbutton")).toBeInTheDocument();
     expect(refreshRow).not.toContainElement(screen.getByDisplayValue("42"));

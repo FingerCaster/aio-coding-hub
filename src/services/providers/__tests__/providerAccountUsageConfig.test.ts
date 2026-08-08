@@ -18,6 +18,7 @@ import {
 } from "../providerAccountUsageConfig";
 
 const customDefaults = {
+  routeGateEnabled: false,
   customScript: "",
   customAllowedOrigins: [] as string[],
   customTimeoutSeconds: 10,
@@ -85,6 +86,7 @@ describe("providerAccountUsageConfig", () => {
             values: {
               adapterKind: "sub2api",
               timedRefreshEnabled: false,
+              routeGateEnabled: "true",
               refreshIntervalSeconds: 15,
             },
             updatedAt: 1,
@@ -120,6 +122,7 @@ describe("providerAccountUsageConfig", () => {
         timedRefreshEnabled: false,
         refreshIntervalSeconds: 120,
         ...customDefaults,
+        routeGateEnabled: true,
       },
     });
 
@@ -136,6 +139,7 @@ describe("providerAccountUsageConfig", () => {
           adapterKind: "newapi",
           newApiQueryMode: "account",
           timedRefreshEnabled: false,
+          routeGateEnabled: true,
           refreshIntervalSeconds: 120,
         },
       },
@@ -181,6 +185,7 @@ describe("providerAccountUsageConfig", () => {
           adapterKind: "disabled",
           newApiQueryMode: "account",
           timedRefreshEnabled: true,
+          routeGateEnabled: false,
           refreshIntervalSeconds: 300,
         },
       },
@@ -236,6 +241,7 @@ describe("providerAccountUsageConfig", () => {
       adapterKind: "custom",
       newApiQueryMode: "billing",
       timedRefreshEnabled: true,
+      routeGateEnabled: false,
       refreshIntervalSeconds: 300,
       customScript: CUSTOM_SCRIPT,
       customAllowedOrigins: [CUSTOM_ORIGIN],
@@ -257,6 +263,7 @@ describe("providerAccountUsageConfig", () => {
           adapterKind: "custom",
           newApiQueryMode: "billing",
           timedRefreshEnabled: true,
+          routeGateEnabled: false,
           refreshIntervalSeconds: 300,
           customScript: CUSTOM_SCRIPT,
           customAllowedOrigins: [CUSTOM_ORIGIN],

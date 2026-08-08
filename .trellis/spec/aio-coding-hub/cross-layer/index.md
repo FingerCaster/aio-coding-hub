@@ -90,9 +90,10 @@ When changing provider account-usage fetching:
    signed identity validation, field/unit normalization, IPC, and display.
 6. For sub2api changes, distinguish account balance from the exact `1d`
    periodic window and fail closed on malformed or duplicate known windows.
-7. Confirm account usage remains display-only and that fixtures/specs contain
-   no upstream body/message, credential, PII, live host, token name, or actual
-   account amount.
+7. Confirm the display/query pipeline remains side-effect free; only the
+   explicit account-usage route gate may consume its normalized completion for
+   fail-open routing. Fixtures/specs contain no upstream body/message,
+   credential, PII, live host, token name, or actual account amount.
 
 When changing provider deletion or request-log provider identity:
 

@@ -366,6 +366,14 @@ pub struct ProviderAccountUsageCredentialsExport {
 pub(crate) fn prepare_config_import(
     bundle: ConfigBundle,
 ) -> AppResult<PreparedConfigImport>;
+
+pub(crate) fn sanitize_account_usage_extension_value_for_config_bundle(
+    values: &serde_json::Value,
+) -> serde_json::Value;
+
+ProviderAccountUsageRuntimeState::reset_all();
+app_gateway_clear_all_route_runtime_state(app);
+app_gateway_reconcile_account_usage_targets(app);
 ```
 
 The sensitive bundle and credential carrier types must not derive `Debug`.
@@ -385,6 +393,12 @@ same SQLite transaction that inserts the provider and canonical extension.
 - Account config passes through the shared extension sanitizer before leaving
   or entering the database. Private identity/token fields never remain inside
   extension JSON.
+- Config-bundle portability is path-specific. For native sub2api/NewAPI
+  adapters, schema v3/v4 preserves canonical `routeGateEnabled`; missing or
+  invalid values normalize to `false`. For a custom adapter, export/import
+  removes script, Origins, confirmation, proof/fingerprint, disables the
+  adapter, and forces the route gate to `false`. This field does not require a
+  schema v5.
 - Schema validation accepts exactly v1, v2, v3, and v4. Capability thresholds
   are feature-owned constants: complete installed/local Skill payload begins
   at v2, account config/credential snapshots begin at v3, and stable provider
@@ -410,6 +424,12 @@ same SQLite transaction that inserts the provider and canonical extension.
   credential restoration, and the rest of config import are atomic under the
   existing import transaction/rollback lifecycle. A credential failure leaves
   the pre-import database and private credentials intact.
+- Only after the blocking import transaction and filesystem lifecycle succeed
+  does the command reset the process-owned account-usage runtime, clear every
+  live Gateway Session binding and recent-error entry, and await immediate
+  account-target reconciliation when the Gateway is running. Preflight failure
+  and rollback perform none of these runtime mutations. Imported Provider IDs
+  may be reused, so correctness cannot wait for the 5-second heartbeat.
 - Exported v3 JSON is sensitive by design and remains under the existing
   user-facing backup warning and 64 MiB encoded bundle cap. Logs, errors,
   generated bindings, task artifacts, and test output must not print the
@@ -433,6 +453,11 @@ same SQLite transaction that inserts the provider and canonical extension.
 | Schema v3 has invalid/out-of-range User ID | `SEC_INVALID_INPUT`; roll back the whole import |
 | Schema v3 has invalid/oversized token | `SEC_INVALID_INPUT`; roll back the whole import |
 | Account config contains historical private fields | Strip them through the shared sanitizer |
+| v3/v4 native config has `routeGateEnabled=true` | Preserve true through export, preparation, and transactional import |
+| v3/v4 custom config has script/permission/gate enabled | Disable adapter, remove local capability fields, and force gate false |
+| v1/v2 JSON contains account config or a route gate | Ignore the whole account snapshot under the legacy capability threshold |
+| Import preflight, transaction, Skill activation, or rollback fails | Preserve account runtime, live Sessions, recent errors, and current targets |
+| Full import commits while Gateway runs | Reset runtime/route state and complete immediate target reconciliation |
 | Unsupported schema version | Reject before destructive import work |
 | Serialized bundle exceeds 64 MiB | Reject without replacing the export target |
 
@@ -443,6 +468,11 @@ same SQLite transaction that inserts the provider and canonical extension.
   exposing them through `ProviderSummary`.
 - Good: an invalid v3 User ID aborts import and preserves the complete prior
   provider and private credential winner.
+- Good: a native v4 Provider with the route gate enabled round-trips that
+  preference; successful import rebuilds targets immediately and no old
+  Session or cached 503 survives Provider-ID reuse.
+- Base: a custom Provider is intentionally restored with no executable script,
+  disabled adapter, and gate off even when its source machine confirmed it.
 - Base: v2 continues to restore complete installed/local Skills exactly as
   before and ignores account snapshot fields.
 - Base: v1 continues its legacy Skill preservation behavior.
@@ -450,6 +480,8 @@ same SQLite transaction that inserts the provider and canonical extension.
   gate after the current version advances to 3.
 - Bad: restore providers first, commit, then write private credentials in a
   second transaction.
+- Bad: apply single-provider-share gate policy to a full native backup, or
+  clear live runtime state before the import winner commits.
 
 ### 6. Tests Required
 
@@ -461,6 +493,9 @@ same SQLite transaction that inserts the provider and canonical extension.
   requirements.
 - Round-trip v3 account mode, User ID, token, and refresh settings; assert the
   extension contains no historical private keys and summary contains no token.
+  Add native gate-true preservation and custom disabled/gate-false assertions
+  through export, strict preparation, and transactional import; v1/v2 must
+  ignore crafted account fields.
 - Inject out-of-range User ID, invalid token, invalid account config, and a
   later import failure; assert provider rows, private credentials, Skills, and
   other rollback-owned state preserve the pre-import winner.
@@ -469,6 +504,10 @@ same SQLite transaction that inserts the provider and canonical extension.
 - Keep 64 MiB bundle, Skill payload, import lock, staged filesystem, and all
   existing v1/v2 rollback regressions green; run the full Rust suite after
   production config-migration changes.
+- Inject failures before and during commit and assert account runtime, live
+  Session bindings, recent-error cache, and Gateway targets keep the old
+  winner. On success assert reset, all-route clear, and completed immediate
+  reconciliation rather than eventual-heartbeat-only convergence.
 
 ### 7. Wrong vs Correct
 
@@ -490,6 +529,24 @@ let imports_account_credentials =
 
 Each feature keeps the version at which it first appeared, so advancing the
 current export schema cannot silently regress older bundle semantics.
+
+Do not reuse the single-provider portability policy or invalidate runtime on a
+losing import:
+
+```rust
+// Wrong: native backup loses route policy, then rollback still clears live state.
+let config = sanitize_account_usage_extension_value_for_provider_share(values);
+account_runtime.reset_all().await;
+prepared_import.commit()?;
+
+// Correct: full bundle preserves native gates, custom remains disabled, and
+// runtime convergence happens only after the import winner commits.
+let config = sanitize_account_usage_extension_value_for_config_bundle(values);
+prepared_import.commit()?;
+account_runtime.reset_all().await;
+app_gateway_clear_all_route_runtime_state(app);
+app_gateway_reconcile_account_usage_targets(app).await?;
+```
 
 ## Scenario: Local Managed Model State During Config Bundle V4 Import
 

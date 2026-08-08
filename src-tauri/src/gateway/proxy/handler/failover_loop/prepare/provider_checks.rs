@@ -8,6 +8,7 @@ use super::*;
 use crate::gateway::proxy::{
     gemini_oauth::GeminiOAuthResponseMode, provider_router::ProbeGateSkip,
 };
+use tauri::Manager;
 
 pub(super) fn skip_with_reason(
     attempts: &mut Vec<FailoverAttempt>,
@@ -50,6 +51,44 @@ pub(super) fn run_gates<R: tauri::Runtime>(
     counters: &mut IterationCounters,
     attempts: &mut Vec<FailoverAttempt>,
 ) -> Option<provider_gate::ProviderGateAllow> {
+    if let Some(target) = provider.account_usage_route_target.as_ref() {
+        if let Some(runtime) = ctx.state.app.try_state::<
+            crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,
+        >() {
+            let read = runtime.route_read(target, std::time::Instant::now(), input.created_at);
+            if let crate::app::provider_account_usage_runtime::ProviderAccountUsageRouteProjection::Blocked(reason) = read.projection {
+                let (reason_code, reason_label) = match reason {
+                    crate::app::provider_account_usage_runtime::ProviderAccountUsageBlockReason::ZeroBalance => (
+                        dc::REASON_ACCOUNT_USAGE_ZERO_BALANCE,
+                        "zero balance",
+                    ),
+                    crate::app::provider_account_usage_runtime::ProviderAccountUsageBlockReason::Expired => (
+                        dc::REASON_ACCOUNT_USAGE_EXPIRED,
+                        "expired",
+                    ),
+                };
+                counters.skipped_account_usage = counters.skipped_account_usage.saturating_add(1);
+                push_skipped_provider_attempt(
+                    attempts,
+                    SkippedProviderAttempt {
+                        provider_id: identity.provider_id,
+                        provider_name: identity.provider_name_base,
+                        base_url: identity.provider_base_url_display,
+                        error_category: "account_usage",
+                        error_code: GatewayErrorCode::ProviderAccountUsageBlocked.as_str(),
+                        reason: format!("provider skipped by account usage ({reason_label})"),
+                        reason_code: Some(reason_code),
+                        attempt_started_ms: input.started.elapsed().as_millis(),
+                        circuit: None,
+                        probe_trigger: None,
+                        probe_result: None,
+                    },
+                );
+                return None;
+            }
+        }
+    }
+
     let skipped_open_before = counters.skipped_open;
     let skipped_cooldown_before = counters.skipped_cooldown;
     let mut deny_snapshot = None;

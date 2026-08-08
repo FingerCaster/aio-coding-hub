@@ -58,6 +58,7 @@ pub(super) struct IterationCounters {
     pub(super) skipped_open: usize,
     pub(super) skipped_cooldown: usize,
     pub(super) skipped_limits: usize,
+    pub(super) skipped_account_usage: usize,
 }
 
 impl IterationCounters {
@@ -69,6 +70,7 @@ impl IterationCounters {
             skipped_open: 0,
             skipped_cooldown: 0,
             skipped_limits: 0,
+            skipped_account_usage: 0,
         }
     }
 }

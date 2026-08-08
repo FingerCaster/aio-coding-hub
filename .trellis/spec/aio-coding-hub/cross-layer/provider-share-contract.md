@@ -358,6 +358,14 @@ pub(crate) fn sanitize_account_usage_extension_value(
     values: &serde_json::Value,
 ) -> serde_json::Value;
 
+pub(crate) fn sanitize_account_usage_extension_value_for_provider_share(
+    values: &serde_json::Value,
+) -> serde_json::Value;
+
+pub(crate) fn sanitize_account_usage_extension_value_for_config_bundle(
+    values: &serde_json::Value,
+) -> serde_json::Value;
+
 pub(crate) fn export_provider_share_v2(
     db: &Db,
     provider_id: i64,
@@ -375,7 +383,8 @@ The `aio-coding-hub.provider-share` v1 compatibility reader and v2 export
 schema contain no User ID or account access-token field. Their built-in
 extension value may contain only
 `adapterKind`, `newApiQueryMode`, `timedRefreshEnabled`, and
-`refreshIntervalSeconds`.
+`refreshIntervalSeconds`, plus `routeGateEnabled` fixed to `false` by the
+single-provider share policy.
 
 ### 3. Contracts
 
@@ -385,6 +394,15 @@ extension value may contain only
   token, and unknown fields are removed through the shared sanitizer.
 - Preserve explicit `newApiQueryMode: "account"`. Do not downgrade it to
   billing just because share excludes the credentials.
+- Single-provider export, strict parse, preview, prepare-import, and
+  transactional import all apply the provider-share sanitizer. A native
+  sub2api/NewAPI adapter may retain its query/display config, but
+  `routeGateEnabled` is always rewritten to `false`; importing a disabled
+  Provider must never silently arm routing when the recipient later enables it.
+- Custom account-usage config is machine-local capability. Every share path
+  removes the script, allowed Origins, permission proof/fingerprint, and
+  confirmation, rewrites `adapterKind` to `disabled`, and fixes
+  `routeGateEnabled=false`. Crafted JSON cannot bypass this policy.
 - Never read `provider_account_usage_credentials` while building a
   single-provider share. The envelope, preview DTO, generated bindings,
   renderer, clipboard diagnostics, and file diagnostics contain neither User
@@ -394,10 +412,14 @@ extension value may contain only
   and sends no request until the recipient supplies their own credentials.
 - Local provider duplication is not share/import. It copies User ID and token
   inside the backend provider transaction so the local duplicate retains query
-  capability without exposing plaintext to React.
+  capability without exposing plaintext to React. It also preserves the route
+  gate preference. A custom duplicate preserves the local script draft and
+  preference but never inherits identity-bound permission; an enabled custom
+  source requires a new native confirmation before creating the duplicate.
 - Whole-config export/import is also not share/import; schema v3 intentionally
   includes private account credentials under its separately warned backup
-  contract.
+  contract. Its native adapter policy preserves `routeGateEnabled`, while its
+  custom adapter policy remains disabled with the gate off.
 - Built-in owner recreation and exact-namespace validation remain mandatory.
   No account-specific exception may weaken the rest of the plugin compatibility
   projection or the disabled/no-route import posture.
@@ -409,10 +431,13 @@ extension value may contain only
 | Built-in extension has private or unknown fields | Strip them and preserve only canonical config |
 | Built-in plugin ID uses another namespace | Reject as incompatible/invalid |
 | Share source is in account mode with credentials | Share mode/config only; omit both private fields |
+| Native share source has `routeGateEnabled=true` | Export/import canonical config with the field `false` |
+| Custom share source has a script, confirmation, and gate enabled | Remove script/permission, disable adapter, and force gate false |
 | Imported account-mode provider | Disabled, no credentials, explicit configuration required |
 | Imported provider is refreshed before credentials are set | Send no account request |
 | Local duplicate is requested | Copy private credentials in the same backend transaction |
-| Whole-config v4 export is requested | Follow config-migration contract, not share policy |
+| Local duplicate has route gate enabled | Preserve the preference; custom permission is re-confirmed for the new UUID |
+| Whole-config v4 export is requested | Follow config-migration policy: native gate preserved, custom gate false |
 
 ### 5. Good / Base / Bad Cases
 
@@ -420,13 +445,16 @@ extension value may contain only
   keeps account mode but contains no account identity or token; the recipient
   imports it disabled and sees a credentials-required state.
 - Base: billing or sub2api providers retain their canonical account-usage
-  extension settings with no new share fields.
+  extension settings, but the imported route gate is explicitly off.
 - Good: local duplication preserves synthetic credentials while the returned
-  `ProviderSummary` exposes only User ID and token-configured boolean.
+  `ProviderSummary` exposes only User ID and token-configured boolean; native
+  gate preference is preserved without serializing a config bundle.
 - Bad: reuse the whole-config `ProviderExport` credential snapshot as a
   single-provider envelope.
 - Bad: remove account mode during normalization and silently query billing with
   the recipient's model key.
+- Bad: preserve a sender's route gate in single-provider JSON, or disable a
+  custom adapter while accidentally retaining a true gate preference.
 
 ### 6. Tests Required
 
@@ -434,11 +462,18 @@ extension value may contain only
   preview DTOs, adapter diagnostics, and summaries contain no token and no
   source account identity.
 - Assert both export and import normalization remove historical private keys
-  from extension values while preserving canonical mode and refresh settings.
+  from extension values while preserving canonical mode and refresh settings;
+  native and custom shares must both end with `routeGateEnabled=false`.
+- Cover native/custom provider-share export, strict parse, preview, prepared
+  import, and real transactional import. A crafted true gate must never survive
+  any of those boundaries, and custom script/Origin/permission fields must be
+  absent with the adapter disabled.
 - Import an account-mode share and assert disabled state, no private credential
   row, no route/template writes, and configuration-required account usage.
 - Duplicate the same local provider and assert private credentials are copied
-  transactionally while no frontend response or log contains the token.
+  transactionally and the gate preference is preserved while no frontend
+  response or log contains the token. For custom sources, cover confirmation,
+  cancellation, stale confirmation, and the new Provider UUID permission.
 - Keep strict schema, built-in namespace, preview capability, rollback, plugin
   compatibility, and full credential/config/extension share tests green.
 
@@ -454,9 +489,22 @@ share.provider.account_credentials =
 #### Correct
 
 ```rust
-extension.values = sanitize_account_usage_extension_value(&extension.values);
+extension.values =
+    sanitize_account_usage_extension_value_for_provider_share(&extension.values);
 // Single-provider share never reads the private credential table.
 ```
 
 The user-selected account mode is portable configuration; the sender's account
 identity and system token are not portable share data.
+
+The route gate is also recipient-owned policy:
+
+```rust
+// Wrong: local persistence policy leaks an enabled gate into a share.
+extension.values = sanitize_account_usage_extension_value(&extension.values);
+
+// Correct: the path-specific policy preserves native query config but forces
+// every shared Provider's route gate off.
+extension.values =
+    sanitize_account_usage_extension_value_for_provider_share(&extension.values);
+```

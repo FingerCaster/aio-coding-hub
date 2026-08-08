@@ -221,6 +221,48 @@ mod tests {
         assert!(!cache.has_active_error_for_tests(now_unix, 88, "fp-claude"));
     }
 
+    #[test]
+    fn clear_all_route_runtime_state_clears_every_cli_and_recent_error() {
+        let rt = tokio::runtime::Runtime::new().expect("runtime");
+        let session = Arc::new(crate::session_manager::SessionManager::new());
+        let recent_errors = Arc::new(Mutex::new(
+            crate::gateway::proxy::RecentErrorCache::default(),
+        ));
+        let now_unix = 100;
+        session.bind_sort_mode("codex", "session_a", None, None, now_unix);
+        session.bind_sort_mode("claude", "session_b", None, None, now_unix);
+        recent_errors
+            .lock()
+            .expect("lock recent_errors")
+            .insert_unavailable_for_tests(now_unix, 77, "fp", 30);
+
+        let manager = GatewayManager {
+            running: Some(build_running_gateway(
+                &rt,
+                session.clone(),
+                recent_errors.clone(),
+            )),
+        };
+        let cleared = manager
+            .running
+            .as_ref()
+            .expect("running gateway")
+            .clear_all_route_runtime_state();
+
+        assert_eq!(cleared.cleared_sessions, 2);
+        assert_eq!(cleared.cleared_recent_errors, 1);
+        assert!(session
+            .get_bound_sort_mode_id("codex", "session_a", now_unix)
+            .is_none());
+        assert!(session
+            .get_bound_sort_mode_id("claude", "session_b", now_unix)
+            .is_none());
+        assert!(!recent_errors
+            .lock()
+            .expect("lock recent_errors")
+            .has_active_error_for_tests(now_unix, 77, "fp"));
+    }
+
     fn insert_provider(db: &crate::db::Db, cli_key: &str, name: &str) -> i64 {
         providers::upsert(
             db,

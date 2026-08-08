@@ -100,6 +100,36 @@ pub(crate) fn app_gateway_clear_cli_route_runtime_state<R: tauri::Runtime>(
     })
 }
 
+pub(crate) fn app_gateway_clear_all_route_runtime_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::gateway::runtime::GatewayRouteRuntimeClearResult {
+    super::gateway_state::with_app_running_gateway(app, |running| {
+        running
+            .map(crate::gateway::runtime::GatewayRuntime::clear_all_route_runtime_state)
+            .unwrap_or_default()
+    })
+}
+
+pub(crate) async fn app_gateway_reconcile_account_usage_targets<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<bool, String> {
+    let sender = super::gateway_state::try_with_app_running_gateway(app, |running| {
+        running.map(crate::gateway::runtime::GatewayRuntime::account_usage_reconcile_tx)
+    })
+    .flatten();
+    let Some(sender) = sender else {
+        return Ok(false);
+    };
+    let (reply_tx, reply_rx) = tokio::sync::oneshot::channel();
+    sender.send(reply_tx).await.map_err(|_| {
+        "SYSTEM_ERROR: account usage gateway coordinator is unavailable".to_string()
+    })?;
+    reply_rx
+        .await
+        .map_err(|_| "SYSTEM_ERROR: account usage gateway reconcile was cancelled".to_string())??;
+    Ok(true)
+}
+
 pub(crate) fn app_refresh_gateway_plugins<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     db: &db::Db,

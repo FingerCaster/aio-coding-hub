@@ -44,6 +44,7 @@ pub(super) struct AllUnavailableInput<'a, R: tauri::Runtime = tauri::Wry> {
     pub(super) skipped_open: usize,
     pub(super) skipped_cooldown: usize,
     pub(super) skipped_limits: usize,
+    pub(super) skipped_account_usage: usize,
     pub(super) fingerprint_key: u64,
     pub(super) fingerprint_debug: String,
     pub(super) unavailable_fingerprint_key: u64,
@@ -74,6 +75,7 @@ pub(super) async fn all_providers_unavailable<R: tauri::Runtime>(
         skipped_open,
         skipped_cooldown,
         skipped_limits,
+        skipped_account_usage,
         fingerprint_key,
         fingerprint_debug,
         unavailable_fingerprint_key,
@@ -87,7 +89,7 @@ pub(super) async fn all_providers_unavailable<R: tauri::Runtime>(
         .map(|v| v as u64);
 
     let detailed_message = format!(
-        "no provider available (skipped: open={skipped_open}, cooldown={skipped_cooldown}, limits={skipped_limits}) for cli_key={cli_key}",
+        "no provider available (skipped: open={skipped_open}, cooldown={skipped_cooldown}, limits={skipped_limits}, account_usage={skipped_account_usage}) for cli_key={cli_key}",
     );
     let message = if verbose_provider_error {
         detailed_message
@@ -103,6 +105,7 @@ pub(super) async fn all_providers_unavailable<R: tauri::Runtime>(
         skipped_open = skipped_open,
         skipped_cooldown = skipped_cooldown,
         skipped_limits = skipped_limits,
+        skipped_account_usage = skipped_account_usage,
         "all providers unavailable"
     );
 
@@ -152,7 +155,9 @@ pub(super) async fn all_providers_unavailable<R: tauri::Runtime>(
     )
     .await;
 
-    if let Some(retry_after_seconds) = retry_after_seconds.filter(|v| *v > 0) {
+    if let Some(retry_after_seconds) =
+        cacheable_all_unavailable_retry_after(skipped_account_usage, retry_after_seconds)
+    {
         let mut cache = state.recent_errors.lock_or_recover();
         cache.insert_error(
             now_unix,
@@ -184,6 +189,16 @@ pub(super) async fn all_providers_unavailable<R: tauri::Runtime>(
 
     abort_guard.disarm();
     apply_gateway_error_hook(&state.db, state.plugin_pipeline.clone(), trace_id, resp).await
+}
+
+fn cacheable_all_unavailable_retry_after(
+    skipped_account_usage: usize,
+    retry_after_seconds: Option<u64>,
+) -> Option<u64> {
+    (skipped_account_usage == 0)
+        .then_some(retry_after_seconds)
+        .flatten()
+        .filter(|value| *value > 0)
 }
 
 pub(super) struct AllFailedInput<'a, R: tauri::Runtime = tauri::Wry> {
@@ -412,4 +427,16 @@ pub(super) async fn terminal_request_error<R: tauri::Runtime>(
 
     abort_guard.disarm();
     apply_gateway_error_hook(&state.db, state.plugin_pipeline.clone(), trace_id, resp).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::cacheable_all_unavailable_retry_after;
+
+    #[test]
+    fn account_usage_skip_disables_recent_error_caching_even_with_other_retry_deadline() {
+        assert_eq!(cacheable_all_unavailable_retry_after(1, Some(30)), None);
+        assert_eq!(cacheable_all_unavailable_retry_after(0, Some(30)), Some(30));
+        assert_eq!(cacheable_all_unavailable_retry_after(0, Some(0)), None);
+    }
 }

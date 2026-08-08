@@ -154,6 +154,8 @@ pub(crate) type GatewayRuntimeHandles = (
     tauri::async_runtime::JoinHandle<()>,
     tokio::sync::watch::Sender<bool>,
     tauri::async_runtime::JoinHandle<()>,
+    tokio::sync::watch::Sender<bool>,
+    tauri::async_runtime::JoinHandle<()>,
 );
 
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
@@ -242,6 +244,19 @@ impl GatewayRuntime {
         }
     }
 
+    pub(crate) fn clear_all_route_runtime_state(&self) -> GatewayRouteRuntimeClearResult {
+        GatewayRouteRuntimeClearResult {
+            cleared_sessions: self.session.clear_all_bindings(),
+            cleared_recent_errors: self.clear_recent_errors(),
+        }
+    }
+
+    pub(crate) fn account_usage_reconcile_tx(
+        &self,
+    ) -> tokio::sync::mpsc::Sender<tokio::sync::oneshot::Sender<Result<(), String>>> {
+        self.background_tasks.account_usage_reconcile_tx()
+    }
+
     pub(crate) fn active_requests_snapshot(
         &self,
     ) -> Vec<super::active_requests::ActiveRequestSnapshotItem> {
@@ -320,8 +335,14 @@ impl GatewayRuntime {
     pub(super) fn into_handles(self) -> GatewayRuntimeHandles {
         self.active_requests
             .finish_all(ActiveRequestFinishReason::GatewayStopped);
-        let (log_task, circuit_task, oauth_refresh_shutdown, oauth_refresh_task) =
-            self.background_tasks.into_handles();
+        let (
+            log_task,
+            circuit_task,
+            oauth_refresh_shutdown,
+            oauth_refresh_task,
+            account_usage_shutdown,
+            account_usage_task,
+        ) = self.background_tasks.into_handles();
         (
             self.shutdown,
             self.task,
@@ -329,6 +350,8 @@ impl GatewayRuntime {
             circuit_task,
             oauth_refresh_shutdown,
             oauth_refresh_task,
+            account_usage_shutdown,
+            account_usage_task,
         )
     }
 

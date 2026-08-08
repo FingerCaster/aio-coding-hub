@@ -418,6 +418,7 @@ where
             skipped_open: counters.skipped_open,
             skipped_cooldown: counters.skipped_cooldown,
             skipped_limits: counters.skipped_limits,
+            skipped_account_usage: counters.skipped_account_usage,
             fingerprint_key: input.fingerprint_key,
             fingerprint_debug: input.fingerprint_debug.clone(),
             unavailable_fingerprint_key: input.unavailable_fingerprint_key,

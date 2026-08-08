@@ -204,6 +204,8 @@ pub(crate) async fn stop_gateway_best_effort_unlocked<R: tauri::Runtime>(
         mut circuit_task,
         _oauth_refresh_shutdown,
         mut oauth_refresh_task,
+        _account_usage_shutdown,
+        mut account_usage_task,
     )) = running
     else {
         return;
@@ -225,6 +227,7 @@ pub(crate) async fn stop_gateway_best_effort_unlocked<R: tauri::Runtime>(
         &mut log_task,
         &mut circuit_task,
         &mut oauth_refresh_task,
+        &mut account_usage_task,
         GATEWAY_STOP_TIMEOUTS,
     )
     .await;
@@ -278,6 +281,7 @@ async fn stop_gateway_tasks_best_effort(
     log_task: &mut tauri::async_runtime::JoinHandle<()>,
     circuit_task: &mut tauri::async_runtime::JoinHandle<()>,
     oauth_refresh_task: &mut tauri::async_runtime::JoinHandle<()>,
+    account_usage_task: &mut tauri::async_runtime::JoinHandle<()>,
     timeouts: GatewayStopTimeouts,
 ) {
     if !join_task_with_timeout(server_task, timeouts.server_stop).await {
@@ -302,6 +306,11 @@ async fn stop_gateway_tasks_best_effort(
     if !join_task_with_timeout(oauth_refresh_task, timeouts.oauth_stop).await {
         tracing::warn!("exit cleanup: gateway OAuth refresh task stop timed out, aborting task");
         abort_task_and_wait(oauth_refresh_task, timeouts.abort_grace).await;
+    }
+
+    if !join_task_with_timeout(account_usage_task, timeouts.oauth_stop).await {
+        tracing::warn!("exit cleanup: gateway account usage task stop timed out, aborting task");
+        abort_task_and_wait(account_usage_task, timeouts.abort_grace).await;
     }
 }
 
@@ -337,12 +346,14 @@ mod tests {
         });
         let mut circuit_task = tauri::async_runtime::spawn(async {});
         let mut oauth_refresh_task = tauri::async_runtime::spawn(async {});
+        let mut account_usage_task = tauri::async_runtime::spawn(async {});
 
         stop_gateway_tasks_best_effort(
             &mut server_task,
             &mut log_task,
             &mut circuit_task,
             &mut oauth_refresh_task,
+            &mut account_usage_task,
             GatewayStopTimeouts {
                 server_stop: Duration::from_millis(10),
                 background_drain: Duration::from_millis(100),

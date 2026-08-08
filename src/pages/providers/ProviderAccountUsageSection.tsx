@@ -498,7 +498,7 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
         ) : null}
 
         {accountUsageEnabled ? (
-          <div role="group" aria-label="账户用量刷新设置" className="grid gap-3 sm:grid-cols-2">
+          <div role="group" aria-label="账户用量刷新设置" className="grid gap-3 sm:grid-cols-3">
             <FormField label="定时刷新" className="min-w-0">
               <div className="flex h-10 items-center justify-between gap-3 rounded-lg border border-line bg-surface-inset px-3">
                 <span className="text-sm text-foreground">启用</span>
@@ -508,6 +508,19 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
                   onCheckedChange={(next) => form.setAccountUsageTimedRefreshEnabled(next)}
                   disabled={form.saving}
                   aria-label="定时刷新账户用量"
+                />
+              </div>
+            </FormField>
+
+            <FormField label="路由门禁" className="min-w-0">
+              <div className="flex h-10 items-center justify-between gap-3 rounded-lg border border-line bg-surface-inset px-3">
+                <span className="text-sm text-foreground">启用</span>
+                <Switch
+                  size="sm"
+                  checked={form.accountUsageRouteGateEnabled}
+                  onCheckedChange={(next) => form.setAccountUsageRouteGateEnabled(next)}
+                  disabled={form.saving}
+                  aria-label="余额不足时跳过供应商路由"
                 />
               </div>
             </FormField>
@@ -524,7 +537,10 @@ export function ProviderAccountUsageSection({ form }: { form: UseProviderEditorF
                   const next = event.currentTarget.valueAsNumber;
                   if (Number.isFinite(next)) form.setAccountUsageRefreshIntervalSeconds(next);
                 }}
-                disabled={form.saving || !form.accountUsageTimedRefreshEnabled}
+                disabled={
+                  form.saving ||
+                  (!form.accountUsageTimedRefreshEnabled && !form.accountUsageRouteGateEnabled)
+                }
               />
             </FormField>
           </div>
