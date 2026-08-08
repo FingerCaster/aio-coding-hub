@@ -43,7 +43,6 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
   const {
     providers,
     codexProviders,
-    bridgeSourceProviders,
     providersLoading,
     providersRefreshing,
     sortModes,
@@ -561,7 +560,6 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
           cliKey={createDialogState.cliKey}
           initialValues={createDialogState.initialValues}
           codexProviders={codexProviders}
-          bridgeSourceProviders={bridgeSourceProviders}
           onSaved={(cliKey) => {
             captureProvidersListScrollPosition(cliKey);
           }}
@@ -581,7 +579,6 @@ export function ProvidersView({ activeCli, setActiveCli }: ProvidersViewProps) {
           }}
           provider={editTarget}
           codexProviders={codexProviders}
-          bridgeSourceProviders={bridgeSourceProviders}
           onSaved={(cliKey) => {
             captureProvidersListScrollPosition(cliKey);
           }}

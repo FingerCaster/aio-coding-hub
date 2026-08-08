@@ -1,7 +1,6 @@
 import {
   createProviderEditorDialogSchema,
   validateProviderClaudeModels,
-  validateProviderModelMapping,
 } from "../../schemas/providerEditorDialog";
 import type {
   ProviderEditorPayloadBuildError,
@@ -11,10 +10,6 @@ import type {
 import { normalizeBaseUrlRows } from "./baseUrl";
 import { resolveStreamIdleTimeoutSeconds } from "./providerEditorTimeout";
 import { validateUpstreamRetryPolicy } from "../../services/gateway/upstreamRetryPolicy";
-import {
-  CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
-  CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
-} from "./providerEditorUtils";
 
 export function buildProviderEditorUpsertInput(
   ctx: ProviderEditorPayloadContext
@@ -85,21 +80,21 @@ export function buildProviderEditorUpsertInput(
     finalBaseUrls = [];
     finalBaseUrlMode = "order";
 
-    if (ctx.cliKey === "claude" && !ctx.sourceProviderId && !ctx.isCodexGatewaySource) {
+    if (ctx.cliKey !== "claude") {
+      return {
+        ok: false,
+        error: {
+          kind: "message",
+          message: "仅 Claude 供应商支持 CX2CC",
+        },
+      };
+    }
+    if (!ctx.sourceProviderId && !ctx.isCodexGatewaySource) {
       return {
         ok: false,
         error: {
           kind: "message",
           message: "请选择源 Codex 来源",
-        },
-      };
-    }
-    if (ctx.cliKey === "codex" && !ctx.sourceProviderId) {
-      return {
-        ok: false,
-        error: {
-          kind: "message",
-          message: "请选择上游来源",
         },
       };
     }
@@ -130,33 +125,13 @@ export function buildProviderEditorUpsertInput(
     }
   }
 
-  if (ctx.cliKey === "codex" && ctx.authMode === "cx2cc") {
-    const modelMappingError = validateProviderModelMapping(ctx.modelMapping);
-    if (modelMappingError) {
-      return {
-        ok: false,
-        error: {
-          kind: "message",
-          message: modelMappingError,
-        },
-      };
-    }
-  }
-
   const effectiveCostMultiplier =
     ctx.authMode === "cx2cc" && ctx.cliKey === "claude" && ctx.isCodexGatewaySource
       ? 0
       : ctx.authMode === "cx2cc" && ctx.selectedCx2ccSourceProvider
         ? ctx.selectedCx2ccSourceProvider.cost_multiplier
         : parsed.data.cost_multiplier;
-  const bridgeType =
-    ctx.authMode !== "cx2cc"
-      ? null
-      : ctx.cliKey === "codex"
-        ? ctx.codexBridgeTarget === "openai_responses"
-          ? CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE
-          : CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE
-        : "cx2cc";
+  const bridgeType = ctx.authMode === "cx2cc" ? "cx2cc" : null;
 
   const payload = {
     ...(ctx.editingProviderId ? { providerId: ctx.editingProviderId } : {}),
@@ -186,9 +161,6 @@ export function buildProviderEditorUpsertInput(
       ? ctx.upstreamRetryPolicyDraft
       : null,
     ...(ctx.cliKey === "claude" ? { claudeModels: ctx.claudeModels } : {}),
-    ...(ctx.cliKey === "codex" && ctx.authMode === "cx2cc"
-      ? { modelMapping: normalizeProviderModelMapping(ctx.modelMapping) }
-      : {}),
     sourceProviderId:
       ctx.authMode === "cx2cc" && !(ctx.cliKey === "claude" && ctx.isCodexGatewaySource)
         ? ctx.sourceProviderId
@@ -204,24 +176,5 @@ export function buildProviderEditorUpsertInput(
       payload,
       parsedName: parsed.data.name,
     },
-  };
-}
-
-function normalizeProviderModelMapping(input: {
-  default_model?: string | null;
-  exact?: Record<string, string | undefined> | null;
-}) {
-  const exact: Record<string, string> = {};
-  for (const [source, target] of Object.entries(input.exact ?? {})) {
-    const sourceModel = source.trim();
-    const targetModel = (target ?? "").trim();
-    if (!sourceModel || !targetModel) continue;
-    exact[sourceModel] = targetModel;
-  }
-
-  const defaultModel = (input.default_model ?? "").trim();
-  return {
-    default_model: defaultModel || null,
-    exact,
   };
 }

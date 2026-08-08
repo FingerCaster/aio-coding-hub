@@ -37,6 +37,11 @@ pub(crate) const CONFIG_SKILL_SOURCE_METADATA_MAX_BYTES: usize = 64 * 1024;
 pub(crate) const CONFIG_SKILL_MD_MAX_BYTES: usize = 256 * 1024;
 const SKILL_MANAGED_MARKER_FILE: &str = ".aio-coding-hub.managed";
 const SKILL_SOURCE_MARKER_FILE: &str = ".aio-coding-hub.source.json";
+const LEGACY_CODEX_BRIDGE_TYPES: [&str; 3] = [
+    "codex_to_openai_chat",
+    "codex_to_openai_responses",
+    "codex_to_anthropic_messages",
+];
 
 fn default_empty_json_object() -> String {
     "{}".to_string()
@@ -450,6 +455,21 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         local_skills,
         image_gen_configs,
     } = bundle;
+
+    if providers.iter().any(|provider| {
+        provider
+            .bridge_type
+            .as_deref()
+            .is_some_and(|value| LEGACY_CODEX_BRIDGE_TYPES.contains(&value.trim()))
+    }) {
+        return Err(crate::shared::error::AppError::new(
+            "CODEX_PROVIDER_TRANSLATION_UNSUPPORTED",
+            "Codex provider translation is no longer supported",
+        ));
+    }
+    for provider in &mut providers {
+        provider.model_mapping_json = default_empty_json_object();
+    }
 
     prepare_provider_identities(bundle_schema_version, &mut providers)?;
 

@@ -449,6 +449,8 @@ same SQLite transaction that inserts the provider and canonical extension.
 | Schema v3 with no credential snapshot | Restore provider/config without a private row |
 | Schema v4 with valid provider/source UUIDs | Restore v3 state and retain exact provider identity links |
 | Schema v4 with missing, invalid, duplicate, or dangling UUID | Reject before destructive import |
+| Any supported bundle version contains a retired Codex translation bridge | `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED` before import lock, DB clear, settings write, or Skill FS activation |
+| Provider `model_mapping_json` compatibility field is non-empty | Normalize it to `{}` during preparation and export; do not restore runtime mapping semantics |
 | Schema v1-v3 while local managed profiles exist | Reject before replacing providers |
 | Schema v3 has invalid/out-of-range User ID | `SEC_INVALID_INPUT`; roll back the whole import |
 | Schema v3 has invalid/oversized token | `SEC_INVALID_INPUT`; roll back the whole import |
@@ -491,6 +493,10 @@ same SQLite transaction that inserts the provider and canonical extension.
 - Run a v1/v2/v3/v4 matrix proving the independent Skill, account-snapshot,
   and provider-UUID capability thresholds, including v2's full Skill
   requirements.
+- For every supported bundle version, reject each retired Codex translation
+  bridge during pure preparation and prove current Provider rows, settings,
+  and Skill files remain unchanged. Round-trip a non-empty legacy
+  `model_mapping_json` input and assert the stored/exported value is `{}`.
 - Round-trip v3 account mode, User ID, token, and refresh settings; assert the
   extension contains no historical private keys and summary contains no token.
   Add native gate-true preservation and custom disabled/gate-false assertions

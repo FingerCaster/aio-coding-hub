@@ -135,3 +135,141 @@ renderProvider(`${requestTimeName} (#${providerId})`);
 
 The exact helpers may differ, but cancellation, ID-based filtering, immediate
 family invalidation, and snapshot-based rendering are mandatory.
+
+## Scenario: Retire built-in Provider bridge types
+
+### 1. Scope / Trigger
+
+Apply this contract when removing an active Provider bridge type or a
+Provider-owned mapping field across SQLite, Rust DTOs, generated bindings,
+gateway execution, config migration, single-Provider share, and React UI.
+The retirement must not turn a bridge into a direct Provider or copy transport
+credentials from its source.
+
+### 2. Signatures
+
+```rust
+const LATEST_SCHEMA_VERSION: i64 = 44;
+
+fn migrate_v43_to_v44(conn: &mut Connection) -> Result<(), String>;
+fn is_supported_bridge_type(bridge_type: &str) -> bool; // built-in: cx2cc only
+
+pub(crate) fn prepare_config_import(
+    bundle: ConfigBundle,
+) -> AppResult<PreparedConfigImport>;
+
+pub(crate) fn parse_provider_share(
+    bytes: &[u8],
+) -> AppResult<ProviderShareEnvelopeV2>;
+```
+
+The retired bridge identifiers are
+`codex_to_openai_chat`, `codex_to_openai_responses`, and
+`codex_to_anthropic_messages`. They are private compatibility data, not
+exported domain constants or generated DTO values.
+
+### 3. Contracts
+
+- SQLite 43 -> 44 deletes Providers whose `bridge_type` is one of the three
+  retired values inside one transaction. Existing foreign-key dependents are
+  removed, surviving `source_provider_id` references to a deleted row become
+  `NULL`, and all surviving `model_mapping_json` values become `{}`.
+- Before deleting anything, the migration rejects a managed Codex Profile that
+  reaches a retired Provider through `provider_models`. The stable error must
+  contain no model UUID, Profile name, path, credential, or Provider payload.
+- `request_logs` and their `attempts_json` snapshots are historical evidence.
+  They are neither deleted nor rewritten even when `final_provider_id` names a
+  removed Provider.
+- Active `ProviderUpsertParams`, `ProviderSummary`,
+  `ProviderForGateway`, TypeScript bindings, editor state, and gateway bridge
+  context expose no generic Provider `ModelMapping`. The physical SQLite
+  `model_mapping_json` column and Provider-share v1/v2 wire member are
+  compatibility shells only and always normalize to an empty object.
+- Runtime registration and Provider upsert accept only the still-supported
+  built-in `cx2cc` bridge. Retired identifiers may occur only in migration,
+  import/share rejection classifiers, and negative regression fixtures.
+- `prepare_config_import` rejects an entire bundle containing a retired bridge
+  with `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED` before taking the import lock,
+  clearing current rows, writing settings, or touching Skill files.
+- Provider-share v1/v2 rejects a retired bridge with the same stable code.
+  A legacy non-bridge `model_mapping` member parses strictly but is discarded
+  before preview, export, or import.
+- Ordinary Codex Responses/compact handling, Claude CX2CC, plugin protocol
+  contributions, account-usage routing, and historical attempt display remain
+  independent and must not be removed as collateral.
+
+### 4. Validation & Error Matrix
+
+| Condition | Required result |
+| --- | --- |
+| Upsert uses a retired or unknown bridge type | `SEC_INVALID_INPUT: unsupported bridge_type`; write nothing |
+| SQLite has ordinary Codex, source, or CX2CC Providers | Preserve the rows and normalize only the compatibility mapping column |
+| SQLite has a managed Profile referring to a retired Provider model | Abort and roll back the complete 43 -> 44 migration |
+| Full config bundle contains any retired bridge | `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED` before destructive import |
+| Provider share v1/v2 contains a retired bridge | Same stable error; create no preview/import row |
+| Old share/config mapping shell is non-empty without a retired bridge | Accept the compatible shape, normalize to `{}`, expose no active mapping DTO |
+| Registry lookup uses a retired bridge | Return no bridge factory |
+
+### 5. Good / Base / Bad Cases
+
+- Good: upgrade deletes three retired bridge rows and their active route/model
+  references while preserving source Providers, CX2CC, direct Codex Providers,
+  request logs, and request-time Provider names.
+- Base: an old direct-Provider share contains a non-empty `model_mapping`
+  member; parsing succeeds, reserialization emits the empty compatibility
+  shape, and the imported database column is `{}`.
+- Bad: copy a source Provider URL or credential into a retired bridge row and
+  silently convert it to a direct Provider.
+- Bad: clear current config, then discover a retired bridge in the backup.
+- Bad: leave a disabled registry/test branch that can still construct the
+  retired request, response, or stream translators.
+
+### 6. Tests Required
+
+- Migration: cover all three retired values, dependents, nested source
+  references, mapping normalization, historical logs, idempotence, and
+  `PRAGMA foreign_key_check`.
+- Migration failure: seed a managed Profile reference and assert schema version,
+  Providers, models, and Profile rows are unchanged and diagnostics are
+  sensitive-data free.
+- Domain/registry: reject all retired upserts, accept explicit Claude CX2CC,
+  and assert no retired factory is registered.
+- Config/share: assert stable preflight rejection preserves the current
+  Provider and that legacy mapping shells normalize to `{}`.
+- Cross-layer: regenerate bindings and assert the generic Provider
+  `ModelMapping` and editor fields are absent.
+- Regression: run complete Provider, failover, ordinary Codex, CX2CC,
+  account-usage, frontend, and Rust suites.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+if retired_bridge {
+    provider.bridge_type = None;
+    provider.base_urls = source.base_urls;
+    provider.api_key = source.api_key;
+}
+clear_existing_config_data(&tx)?;
+validate_imported_bridges(&bundle.providers)?;
+```
+
+This changes credential ownership and can destroy current configuration before
+reporting that the backup is unsupported.
+
+#### Correct
+
+```rust
+reject_retired_bridges(&bundle.providers)?;
+
+let tx = conn.transaction()?;
+reject_managed_profile_references(&tx)?;
+delete_retired_provider_dependents(&tx)?;
+delete_retired_providers(&tx)?;
+tx.execute("UPDATE providers SET model_mapping_json = '{}'", [])?;
+tx.commit()?;
+```
+
+Compatibility validation is pre-destructive, while database cleanup is
+bounded, transactional, and leaves historical log snapshots intact.

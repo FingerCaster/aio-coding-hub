@@ -2,7 +2,6 @@ import {
   commands,
   type ClaudeModels as GeneratedClaudeModels,
   type DailyResetMode as GeneratedDailyResetMode,
-  type ModelMapping as GeneratedModelMapping,
   type ProviderAuthMode as GeneratedProviderAuthMode,
   type ProviderAccountUsageResult,
   type ProviderAccountUsageCustomScriptDraft,
@@ -62,7 +61,6 @@ export type { CliKey } from "../../constants/clis";
 
 export type ClaudeModels = GeneratedClaudeModels;
 export type DailyResetMode = GeneratedDailyResetMode;
-export type ModelMapping = GeneratedModelMapping;
 export type ProviderAuthMode = GeneratedProviderAuthMode;
 export type ProviderBaseUrlMode = GeneratedProviderBaseUrlMode;
 
@@ -103,7 +101,6 @@ type ProviderUpsertFieldMap = {
   costMultiplier: "costMultiplier";
   priority: "priority";
   claudeModels: "claudeModels";
-  modelMapping: "modelMapping";
   availabilityTestModel: "availabilityTestModel";
   limit5hUsd: "limit5hUsd";
   limitDailyUsd: "limitDailyUsd";
@@ -202,7 +199,6 @@ function toProviderUpsertPayload(input: ProviderUpsertInput): ProviderUpsertTran
     costMultiplier: input.costMultiplier,
     priority: input.priority ?? null,
     claudeModels: input.claudeModels ?? null,
-    modelMapping: input.modelMapping ?? null,
     availabilityTestModel: input.availabilityTestModel ?? null,
     limit5hUsd: input.limit5hUsd ?? null,
     limitDailyUsd: input.limitDailyUsd ?? null,
@@ -756,8 +752,8 @@ export function getProviderTypeInfo(
       effectiveAuthMode: "api_key",
     };
   }
-  const isBridge = provider.bridge_type != null;
   const isCx2cc = provider.bridge_type === "cx2cc";
+  const isBridge = isCx2cc;
   const isCx2ccGateway = provider.bridge_type === "cx2cc" && provider.source_provider_id == null;
   const isOAuth = provider.auth_mode === "oauth";
   const effectiveAuthMode: ProviderTypeInfo["effectiveAuthMode"] = isBridge

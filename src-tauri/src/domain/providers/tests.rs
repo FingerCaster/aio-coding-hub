@@ -134,56 +134,6 @@ fn normalize_model_slot_truncates_multibyte_without_panic() {
 }
 
 #[test]
-fn get_source_provider_for_gateway_allows_cross_cli_codex_bridge_sources() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let db_path = temp.path().join("providers.sqlite3");
-    let db = crate::db::init_for_tests(&db_path).expect("init db");
-
-    let mut claude_params = default_provider_params("Claude source");
-    claude_params.base_urls = vec!["https://api.anthropic.com/v1".to_string()];
-    let claude_source = upsert(&db, claude_params).expect("insert claude source");
-
-    let mut codex_params = default_provider_params("Codex source");
-    codex_params.cli_key = "codex".to_string();
-    codex_params.base_urls = vec!["https://codex.example.com/v1".to_string()];
-    let codex_source = upsert(&db, codex_params).expect("insert codex source");
-
-    let (chat_source, chat_cli_key) =
-        get_source_provider_for_gateway(&db, claude_source.id, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE)
-            .expect("chat bridge source");
-    assert_eq!(chat_source.id, claude_source.id);
-    assert_eq!(chat_cli_key, "claude");
-
-    let (anthropic_source, anthropic_cli_key) = get_source_provider_for_gateway(
-        &db,
-        codex_source.id,
-        CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
-    )
-    .expect("anthropic bridge source");
-    assert_eq!(anthropic_source.id, codex_source.id);
-    assert_eq!(anthropic_cli_key, "codex");
-}
-
-#[test]
-fn get_source_provider_for_gateway_allows_disabled_source_for_codex_bridge() {
-    let temp = tempfile::tempdir().expect("tempdir");
-    let db_path = temp.path().join("providers-disabled-source.sqlite3");
-    let db = crate::db::init_for_tests(&db_path).expect("init db");
-
-    let mut source_params = default_provider_params("Disabled Codex source");
-    source_params.cli_key = "codex".to_string();
-    source_params.enabled = false;
-    let source = upsert(&db, source_params).expect("insert codex source");
-
-    let (resolved, cli_key) =
-        get_source_provider_for_gateway(&db, source.id, CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE)
-            .expect("codex responses bridge source");
-
-    assert_eq!(resolved.id, source.id);
-    assert_eq!(cli_key, "codex");
-}
-
-#[test]
 fn get_source_provider_for_gateway_keeps_cx2cc_codex_source_requirement() {
     let temp = tempfile::tempdir().expect("tempdir");
     let db_path = temp.path().join("providers.sqlite3");
@@ -212,34 +162,6 @@ fn get_source_provider_for_gateway_keeps_cx2cc_source_enabled_requirement() {
     let err = get_source_provider_for_gateway(&db, source.id, CX2CC_BRIDGE_TYPE)
         .expect_err("cx2cc should still reject disabled source");
     assert!(err.to_string().contains("source provider not found"));
-}
-
-// -- ModelMapping JSON compatibility --
-
-#[test]
-fn model_mapping_from_json_reads_legacy_flat_exact_mapping() {
-    let mapping =
-        model_mapping_from_json(r#"{" gpt-5.5 ":" deepseek-chat ","":"ignored","gpt-5.4":""}"#);
-
-    assert_eq!(mapping.default_model, None);
-    assert_eq!(mapping.exact.len(), 1);
-    assert_eq!(
-        mapping.exact.get("gpt-5.5"),
-        Some(&"deepseek-chat".to_string())
-    );
-}
-
-#[test]
-fn model_mapping_from_json_reads_structured_mapping() {
-    let mapping = model_mapping_from_json(
-        r#"{"default_model":" deepseek-reasoner ","exact":{" gpt-5.5 ":" deepseek-chat "}}"#,
-    );
-
-    assert_eq!(mapping.default_model.as_deref(), Some("deepseek-reasoner"));
-    assert_eq!(
-        mapping.exact.get("gpt-5.5"),
-        Some(&"deepseek-chat".to_string())
-    );
 }
 
 // -- DailyResetMode::parse --
@@ -539,7 +461,6 @@ fn default_provider_params(name: &str) -> ProviderUpsertParams {
         cost_multiplier: 1.0,
         priority: Some(100),
         claude_models: None,
-        model_mapping: None,
         availability_test_model: None,
         limit_5h_usd: None,
         limit_daily_usd: None,
@@ -1722,7 +1643,6 @@ fn create_oauth_provider_for_cas_test(db: &crate::db::Db, name: &str) -> i64 {
             source_provider_id: None,
             bridge_type: None,
             stream_idle_timeout_seconds: None,
-            model_mapping: None,
             extension_values: None,
             account_usage_credentials_patch: None,
             account_usage_credentials_copy_from_provider_id: None,

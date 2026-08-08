@@ -4,7 +4,6 @@
 //! through the Outbound → IR → Inbound pipeline.  When `active` is false the
 //! stream is a zero-cost passthrough.
 
-use super::response_cache;
 use super::traits::{BridgeContext, BridgeError};
 use crate::gateway::proxy::sse::{find_sse_event_end, parse_sse_frame};
 use axum::body::Bytes;
@@ -34,8 +33,6 @@ where
     buffer: VecDeque<Bytes>,
     /// Accumulator for partial SSE lines from the upstream.
     line_buf: Vec<u8>,
-    responses_cache_response: Option<Value>,
-    responses_cache_output: Vec<Value>,
     terminated: bool,
 }
 
@@ -98,35 +95,14 @@ where
         requested_model: Option<String>,
         cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     ) -> Self {
-        Self::for_bridge_type_with_cache(
-            upstream,
-            bridge_type,
-            requested_model,
-            cx2cc_settings,
-            None,
-            None,
-        )
-    }
-
-    pub fn for_bridge_type_with_cache(
-        upstream: S,
-        bridge_type: Option<&str>,
-        requested_model: Option<String>,
-        cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
-        responses_cache_namespace: Option<String>,
-        responses_cache_input: Option<Vec<Value>>,
-    ) -> Self {
         let Some(bridge_type) = bridge_type else {
             let dummy_ctx = BridgeContext {
                 claude_models: crate::domain::providers::ClaudeModels::default(),
-                model_mapping: Default::default(),
                 cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
                 requested_model: None,
                 mapped_model: None,
                 stream_requested: false,
                 is_chatgpt_backend: false,
-                responses_cache_namespace: None,
-                responses_cache_input: None,
             };
             return Self::new(upstream, false, None, dummy_ctx);
         };
@@ -140,14 +116,11 @@ where
                 );
                 let ctx = BridgeContext {
                     claude_models: crate::domain::providers::ClaudeModels::default(),
-                    model_mapping: Default::default(),
                     cx2cc_settings,
                     requested_model,
                     mapped_model: None,
                     stream_requested: true,
                     is_chatgpt_backend: false,
-                    responses_cache_namespace,
-                    responses_cache_input,
                 };
                 let mut stream = Self::new(upstream, true, None, ctx);
                 stream.terminate_registry_miss(bridge_type);
@@ -161,14 +134,11 @@ where
         };
         let ctx = BridgeContext {
             claude_models: crate::domain::providers::ClaudeModels::default(),
-            model_mapping: Default::default(),
             cx2cc_settings,
             requested_model,
             mapped_model: None,
             stream_requested: true,
             is_chatgpt_backend: false,
-            responses_cache_namespace,
-            responses_cache_input,
         };
         Self::new(upstream, true, Some(translator), ctx)
     }
@@ -190,8 +160,6 @@ where
             ctx,
             buffer: VecDeque::new(),
             line_buf: Vec::new(),
-            responses_cache_response: None,
-            responses_cache_output: Vec::new(),
             terminated: false,
         }
     }
@@ -289,7 +257,6 @@ where
                 };
                 match translator.translate_event(&event_type, &data, &self.ctx) {
                     Ok(frames) => {
-                        self.maybe_cache_responses_event(&event_type, &data);
                         for f in frames {
                             self.buffer.push_back(f);
                         }
@@ -301,54 +268,6 @@ where
                     }
                 }
             }
-        }
-    }
-
-    fn maybe_cache_responses_event(&mut self, event_type: &str, data: &Value) {
-        if self.ctx.responses_cache_namespace.is_none() || self.ctx.responses_cache_input.is_none()
-        {
-            return;
-        }
-
-        match event_type {
-            "response.created" => {
-                self.responses_cache_response = Some(
-                    data.get("response")
-                        .cloned()
-                        .unwrap_or_else(|| data.clone()),
-                );
-            }
-            "response.output_item.done" => {
-                if let Some(item) = data.get("item").cloned() {
-                    upsert_output_item(&mut self.responses_cache_output, item);
-                }
-            }
-            "response.completed" => {
-                let completed = data
-                    .get("response")
-                    .cloned()
-                    .unwrap_or_else(|| data.clone());
-                if let Some(existing) = self.responses_cache_response.as_mut() {
-                    merge_response_object(existing, &completed);
-                } else {
-                    self.responses_cache_response = Some(completed);
-                }
-
-                if let (Some(namespace), Some(input), Some(response)) = (
-                    self.ctx.responses_cache_namespace.as_deref(),
-                    self.ctx.responses_cache_input.as_deref(),
-                    self.responses_cache_response.as_mut(),
-                ) {
-                    if let Some(obj) = response.as_object_mut() {
-                        obj.insert(
-                            "output".to_string(),
-                            Value::Array(self.responses_cache_output.clone()),
-                        );
-                    }
-                    response_cache::cache_completed_response(namespace, input, response);
-                }
-            }
-            _ => {}
         }
     }
 }
@@ -388,34 +307,6 @@ where
             }
         }
     }
-}
-
-fn merge_response_object(base: &mut Value, update: &Value) {
-    let (Some(base_obj), Some(update_obj)) = (base.as_object_mut(), update.as_object()) else {
-        *base = update.clone();
-        return;
-    };
-
-    for (key, value) in update_obj {
-        if key == "output" {
-            continue;
-        }
-        base_obj.insert(key.clone(), value.clone());
-    }
-}
-
-fn upsert_output_item(output: &mut Vec<Value>, item: Value) {
-    let item_id = item.get("id").and_then(Value::as_str);
-    if let Some(item_id) = item_id {
-        if let Some(existing) = output
-            .iter_mut()
-            .find(|candidate| candidate.get("id").and_then(Value::as_str) == Some(item_id))
-        {
-            *existing = item;
-            return;
-        }
-    }
-    output.push(item);
 }
 
 // ─── Tests ──────────────────────────────────────────────────────────────────
@@ -497,71 +388,5 @@ mod tests {
             Pin::new(&mut stream).poll_next(&mut cx),
             Poll::Ready(None)
         ));
-    }
-
-    #[test]
-    fn bridge_stream_translation_error_uses_bridge_error_code() {
-        let raw = Bytes::from_static(
-            b"data: {\"choices\":[{\"delta\":{\"tool_calls\":[{\"index\":0,\"id\":\"call_1\",\"function\":{\"name\":\"lookup\",\"arguments\":\"{}\"}}]}}]}\n\n",
-        );
-        let mut stream = BridgeStream::for_bridge_type(
-            MockStream::new(vec![Ok(raw)]),
-            Some("codex_to_openai_chat"),
-            None,
-            crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
-        );
-        let waker = std::task::Waker::noop();
-        let mut cx = Context::from_waker(waker);
-
-        let first = Pin::new(&mut stream).poll_next(&mut cx);
-        let Poll::Ready(Some(Ok(frame))) = first else {
-            panic!("expected bridge translation error frame, got {first:?}");
-        };
-        let text = std::str::from_utf8(frame.as_ref()).expect("utf-8 error frame");
-        assert!(text.contains("event: error"));
-        assert!(text.contains("GW_BRIDGE_UNSUPPORTED_FEATURE"));
-        assert!(text.contains("tool_calls"));
-    }
-
-    #[test]
-    fn bridge_stream_caches_completed_responses_tool_context() {
-        let _guard = response_cache::test_guard();
-        response_cache::clear_for_tests();
-        let namespace = "codex_to_openai_responses:source=1:session=s1";
-        let input = vec![serde_json::json!({
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "call a tool"}]
-        })];
-        let raw = Bytes::from_static(
-            concat!(
-                "event: response.created\n",
-                "data: {\"response\":{\"id\":\"resp_stream\",\"model\":\"gpt-5\",\"status\":\"in_progress\",\"output\":[]}}\n\n",
-                "event: response.output_item.done\n",
-                "data: {\"item\":{\"id\":\"fc_1\",\"type\":\"function_call\",\"call_id\":\"call_1\",\"name\":\"lookup\",\"arguments\":\"{}\"}}\n\n",
-                "event: response.completed\n",
-                "data: {\"response\":{\"id\":\"resp_stream\",\"model\":\"gpt-5\",\"status\":\"completed\"}}\n\n",
-                "data: [DONE]\n\n"
-            )
-            .as_bytes(),
-        );
-        let mut stream = BridgeStream::for_bridge_type_with_cache(
-            MockStream::new(vec![Ok(raw)]),
-            Some("codex_to_openai_responses"),
-            Some("gpt-5".to_string()),
-            crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
-            Some(namespace.to_string()),
-            Some(input),
-        );
-        let waker = std::task::Waker::noop();
-        let mut cx = Context::from_waker(waker);
-
-        while let Poll::Ready(Some(Ok(_))) = Pin::new(&mut stream).poll_next(&mut cx) {}
-
-        let key = response_cache::ResponsesCacheKey::new(namespace, "resp_stream").unwrap();
-        let cached = response_cache::get(&key).expect("completed response cached");
-        assert_eq!(cached.len(), 2);
-        assert_eq!(cached[1]["type"], "function_call");
-        assert!(cached[1].get("id").is_none());
     }
 }

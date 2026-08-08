@@ -1,6 +1,6 @@
 import { describe, expect, it } from "vitest";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../services/gateway/upstreamRetryPolicy";
-import { DEFAULT_FORM_VALUES, deriveCodexBridgeTarget } from "../providerEditorUtils";
+import { DEFAULT_FORM_VALUES } from "../providerEditorUtils";
 import { buildProviderEditorUpsertInput } from "../providerEditorSubmitModel";
 import type { ProviderEditorPayloadContext } from "../providerEditorActionContext";
 
@@ -12,12 +12,10 @@ function makeContext(
     cliKey: "claude",
     editingProviderId: null,
     authMode: "api_key",
-    codexBridgeTarget: "openai_chat",
     baseUrlMode: "order",
     baseUrlRows: [{ id: "1", url: "https://example.com/v1", ping: { status: "idle" } }],
     tags: [],
     claudeModels: {},
-    modelMapping: { default_model: null, exact: {} },
     testModel: "",
     streamIdleTimeoutSeconds: "",
     upstreamRetryPolicyOverrideEnabled: false,
@@ -102,6 +100,23 @@ describe("pages/providers/providerEditorSubmitModel", () => {
     expect(result.value.payload.authMode).toBe("api_key");
   });
 
+  it("rejects cx2cc mode for Codex providers", () => {
+    const result = buildProviderEditorUpsertInput(
+      makeContext({
+        cliKey: "codex",
+        authMode: "cx2cc",
+      })
+    );
+
+    expect(result).toEqual({
+      ok: false,
+      error: {
+        kind: "message",
+        message: "仅 Claude 供应商支持 CX2CC",
+      },
+    });
+  });
+
   it("passes codex availability test model through the payload", () => {
     const result = buildProviderEditorUpsertInput(
       makeContext({
@@ -149,112 +164,6 @@ describe("pages/providers/providerEditorSubmitModel", () => {
       newApiUserId: null,
       newApiAccessToken: null,
       clearNewApiAccessToken: true,
-    });
-  });
-
-  it("builds codex chat-completions bridge payload", () => {
-    const result = buildProviderEditorUpsertInput(
-      makeContext({
-        cliKey: "codex",
-        authMode: "cx2cc",
-        codexBridgeTarget: "openai_chat",
-        sourceProviderId: 7,
-        formValues: {
-          ...DEFAULT_FORM_VALUES,
-          name: "Codex Chat Bridge",
-          api_key: "",
-        },
-      })
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.value.payload.bridgeType).toBe("codex_to_openai_chat");
-    expect(result.value.payload.sourceProviderId).toBe(7);
-    expect(result.value.payload.baseUrls).toEqual([]);
-    expect(result.value.payload.apiKey).toBeNull();
-  });
-
-  it("builds codex bridge model mapping payload", () => {
-    const result = buildProviderEditorUpsertInput(
-      makeContext({
-        cliKey: "codex",
-        authMode: "cx2cc",
-        sourceProviderId: 7,
-        modelMapping: {
-          default_model: " deepseek-reasoner ",
-          exact: {
-            " gpt-5.5 ": " deepseek-chat ",
-            "": "",
-          },
-        },
-        formValues: {
-          ...DEFAULT_FORM_VALUES,
-          name: "Codex DeepSeek Bridge",
-          api_key: "",
-        },
-      })
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.value.payload.modelMapping).toEqual({
-      default_model: "deepseek-reasoner",
-      exact: {
-        "gpt-5.5": "deepseek-chat",
-      },
-    });
-  });
-
-  it("builds codex responses bridge payload", () => {
-    const result = buildProviderEditorUpsertInput(
-      makeContext({
-        cliKey: "codex",
-        authMode: "cx2cc",
-        codexBridgeTarget: "openai_responses",
-        sourceProviderId: 9,
-        formValues: {
-          ...DEFAULT_FORM_VALUES,
-          name: "Codex Responses Bridge",
-          api_key: "",
-        },
-      })
-    );
-
-    expect(result.ok).toBe(true);
-    if (!result.ok) return;
-
-    expect(result.value.payload.bridgeType).toBe("codex_to_openai_responses");
-    expect(result.value.payload.sourceProviderId).toBe(9);
-  });
-
-  it("maps legacy codex anthropic messages bridge edits to responses target", () => {
-    expect(deriveCodexBridgeTarget({ bridge_type: "codex_to_anthropic_messages" })).toBe(
-      "openai_responses"
-    );
-  });
-
-  it("requires source provider for codex bridge payloads", () => {
-    const result = buildProviderEditorUpsertInput(
-      makeContext({
-        cliKey: "codex",
-        authMode: "cx2cc",
-        formValues: {
-          ...DEFAULT_FORM_VALUES,
-          name: "Codex Bridge",
-          api_key: "",
-        },
-      })
-    );
-
-    expect(result).toEqual({
-      ok: false,
-      error: {
-        kind: "message",
-        message: "请选择上游来源",
-      },
     });
   });
 });

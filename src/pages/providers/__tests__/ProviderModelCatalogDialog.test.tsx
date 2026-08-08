@@ -81,7 +81,6 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     base_urls: ["https://example.com/v1"],
     base_url_mode: "order",
     claude_models: {},
-    model_mapping: { default_model: null, exact: {} },
     enabled: true,
     priority: 0,
     cost_multiplier: 1,

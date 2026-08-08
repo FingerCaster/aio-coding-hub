@@ -83,7 +83,6 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     base_urls: ["https://example.com/v1"],
     base_url_mode: "order",
     claude_models: {},
-    model_mapping: { default_model: null, exact: {} },
     enabled: true,
     priority: 0,
     cost_multiplier: 1.0,
@@ -154,7 +153,6 @@ function makeInitialValues(
     base_urls: ["https://example.com/v1"],
     base_url_mode: "order",
     claude_models: { main_model: "claude-copy" },
-    model_mapping: { default_model: null, exact: {} },
     availability_test_model: "",
     enabled: true,
     cost_multiplier: 1.5,
@@ -326,7 +324,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     expect(dialog.getByPlaceholderText("sk-…")).toBeInTheDocument();
     // Auth mode tab label
     expect(dialog.getByText("OAuth 登录")).toBeInTheDocument();
-    expect(dialog.queryByText("CX2CC 转译")).not.toBeInTheDocument();
+    expect(dialog.queryByText("CX2CC")).not.toBeInTheDocument();
     expect(dialog.queryByText("Claude 模型映射")).not.toBeInTheDocument();
 
     fireEvent.click(dialog.getByText("OAuth 登录"));
@@ -939,7 +937,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
 
     const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC 转译" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC" }));
     fireEvent.change(dialog.getByPlaceholderText("default"), {
       target: { value: "Bridge Provider" },
     });
@@ -963,326 +961,6 @@ describe("pages/providers/ProviderEditorDialog", () => {
           costMultiplier: 1.8,
           sourceProviderId: 7,
           bridgeType: "cx2cc",
-        })
-      )
-    );
-  });
-
-  it("shows all eligible codex bridge sources for responses and chat endpoints", async () => {
-    vi.mocked(providerUpsert).mockResolvedValue(
-      makeProvider({
-        id: 21,
-        cli_key: "codex",
-        name: "Codex Responses Bridge",
-        base_urls: [],
-        cost_multiplier: 1.6,
-        source_provider_id: 8,
-        bridge_type: "codex_to_openai_responses",
-      })
-    );
-
-    render(
-      <ProviderEditorDialog
-        mode="create"
-        open={true}
-        cliKey="codex"
-        onSaved={vi.fn()}
-        onOpenChange={vi.fn()}
-        bridgeSourceProviders={[
-          makeProvider({
-            id: 7,
-            cli_key: "codex",
-            name: "Codex Chat Source",
-            cost_multiplier: 1.3,
-          }),
-          makeProvider({
-            id: 8,
-            cli_key: "claude",
-            name: "Claude Messages Source",
-            cost_multiplier: 1.6,
-          }),
-        ]}
-      />
-    );
-
-    const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
-    fireEvent.change(dialog.getByLabelText("名称"), {
-      target: { value: "Codex Responses Bridge" },
-    });
-
-    const sourceSelect = dialog.getByLabelText("上游来源");
-    expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
-    expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
-    expect(dialog.queryByRole("tab", { name: "Anthropic Messages" })).not.toBeInTheDocument();
-
-    fireEvent.change(sourceSelect, { target: { value: "7" } });
-    expect(sourceSelect).toHaveValue("7");
-
-    fireEvent.click(dialog.getByRole("tab", { name: "Responses" }));
-    await waitFor(() => expect(sourceSelect).toHaveValue("7"));
-    expect(within(sourceSelect).getByText("Codex Chat Source")).toBeInTheDocument();
-    expect(within(sourceSelect).getByText("Claude Messages Source")).toBeInTheDocument();
-
-    fireEvent.change(sourceSelect, { target: { value: "8" } });
-    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
-
-    await waitFor(() =>
-      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
-        expect.objectContaining({
-          cliKey: "codex",
-          name: "Codex Responses Bridge",
-          sourceProviderId: 8,
-          bridgeType: "codex_to_openai_responses",
-          costMultiplier: 1.6,
-        })
-      )
-    );
-  });
-
-  it("saves chat completions codex bridge with a claude source", async () => {
-    vi.mocked(providerUpsert).mockResolvedValue(
-      makeProvider({
-        id: 22,
-        cli_key: "codex",
-        name: "Codex Chat Bridge",
-        base_urls: [],
-        cost_multiplier: 1.6,
-        source_provider_id: 8,
-        bridge_type: "codex_to_openai_chat",
-      })
-    );
-
-    render(
-      <ProviderEditorDialog
-        mode="create"
-        open={true}
-        cliKey="codex"
-        onSaved={vi.fn()}
-        onOpenChange={vi.fn()}
-        bridgeSourceProviders={[
-          makeProvider({
-            id: 7,
-            cli_key: "codex",
-            name: "Codex Chat Source",
-            cost_multiplier: 1.3,
-          }),
-          makeProvider({
-            id: 8,
-            cli_key: "claude",
-            name: "Claude Messages Source",
-            cost_multiplier: 1.6,
-          }),
-        ]}
-      />
-    );
-
-    const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
-    fireEvent.change(dialog.getByLabelText("名称"), {
-      target: { value: "Codex Chat Bridge" },
-    });
-    fireEvent.change(dialog.getByLabelText("上游来源"), { target: { value: "8" } });
-    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
-
-    await waitFor(() =>
-      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
-        expect.objectContaining({
-          cliKey: "codex",
-          name: "Codex Chat Bridge",
-          sourceProviderId: 8,
-          bridgeType: "codex_to_openai_chat",
-          costMultiplier: 1.6,
-        })
-      )
-    );
-  });
-
-  it("edits legacy codex anthropic bridge as responses endpoint", async () => {
-    render(
-      <ProviderEditorDialog
-        mode="edit"
-        open={true}
-        onSaved={vi.fn()}
-        onOpenChange={vi.fn()}
-        provider={makeProvider({
-          id: 21,
-          cli_key: "codex",
-          name: "Codex Anthropic Bridge",
-          base_urls: [],
-          source_provider_id: 8,
-          bridge_type: "codex_to_anthropic_messages",
-        })}
-        bridgeSourceProviders={[
-          makeProvider({
-            id: 7,
-            cli_key: "codex",
-            name: "Codex Chat Source",
-          }),
-          makeProvider({
-            id: 8,
-            cli_key: "claude",
-            name: "Claude Messages Source",
-          }),
-        ]}
-      />
-    );
-
-    const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.getByRole("tab", { name: "转译" })).toHaveAttribute("aria-selected", "true");
-    expect(dialog.queryByRole("tab", { name: "Anthropic Messages" })).not.toBeInTheDocument();
-    expect(dialog.getByRole("tab", { name: "Responses" })).toHaveAttribute("aria-selected", "true");
-    expect(dialog.getByLabelText("上游来源")).toHaveValue("8");
-  });
-
-  it("reloads existing codex responses bridge endpoint in edit mode", async () => {
-    render(
-      <ProviderEditorDialog
-        mode="edit"
-        open={true}
-        onSaved={vi.fn()}
-        onOpenChange={vi.fn()}
-        provider={makeProvider({
-          id: 23,
-          cli_key: "codex",
-          name: "Codex Responses Bridge",
-          base_urls: [],
-          source_provider_id: 9,
-          bridge_type: "codex_to_openai_responses",
-        })}
-        bridgeSourceProviders={[
-          makeProvider({
-            id: 9,
-            cli_key: "gemini",
-            name: "Gemini Responses Source",
-          }),
-        ]}
-      />
-    );
-
-    const dialog = within(screen.getByRole("dialog"));
-    expect(dialog.getByRole("tab", { name: "转译" })).toHaveAttribute("aria-selected", "true");
-    expect(dialog.getByRole("tab", { name: "Responses" })).toHaveAttribute("aria-selected", "true");
-    expect(dialog.getByLabelText("上游来源")).toHaveValue("9");
-  });
-
-  it("saves responses codex bridge with a non-codex source", async () => {
-    vi.mocked(providerUpsert).mockResolvedValue(
-      makeProvider({
-        id: 24,
-        cli_key: "codex",
-        name: "Codex Responses Bridge",
-        base_urls: [],
-        cost_multiplier: 1.4,
-        source_provider_id: 9,
-        bridge_type: "codex_to_openai_responses",
-      })
-    );
-
-    render(
-      <ProviderEditorDialog
-        mode="create"
-        open={true}
-        cliKey="codex"
-        onSaved={vi.fn()}
-        onOpenChange={vi.fn()}
-        bridgeSourceProviders={[
-          makeProvider({
-            id: 9,
-            cli_key: "gemini",
-            name: "Gemini Responses Source",
-            cost_multiplier: 1.4,
-          }),
-        ]}
-      />
-    );
-
-    const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "转译" }));
-    fireEvent.click(dialog.getByRole("tab", { name: "Responses" }));
-    fireEvent.change(dialog.getByLabelText("名称"), {
-      target: { value: "Codex Responses Bridge" },
-    });
-    fireEvent.change(dialog.getByLabelText("上游来源"), { target: { value: "9" } });
-    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
-
-    await waitFor(() =>
-      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
-        expect.objectContaining({
-          cliKey: "codex",
-          name: "Codex Responses Bridge",
-          sourceProviderId: 9,
-          bridgeType: "codex_to_openai_responses",
-          costMultiplier: 1.4,
-        })
-      )
-    );
-  });
-
-  it("restores editable transport fields when switching a codex bridge back to api key mode", async () => {
-    vi.mocked(providerUpsert).mockResolvedValue(
-      makeProvider({
-        id: 21,
-        cli_key: "codex",
-        name: "Codex Restored Provider",
-        base_urls: ["https://restored.example/v1"],
-        auth_mode: "api_key",
-        source_provider_id: null,
-        bridge_type: null,
-        api_key_configured: true,
-      })
-    );
-
-    render(
-      <ProviderEditorDialog
-        mode="edit"
-        open={true}
-        onSaved={vi.fn()}
-        onOpenChange={vi.fn()}
-        provider={makeProvider({
-          id: 21,
-          cli_key: "codex",
-          name: "Codex Restored Provider",
-          base_urls: [],
-          auth_mode: "api_key",
-          source_provider_id: 8,
-          bridge_type: "codex_to_anthropic_messages",
-          api_key_configured: false,
-        })}
-        bridgeSourceProviders={[
-          makeProvider({
-            id: 8,
-            cli_key: "claude",
-            name: "Claude Messages Source",
-          }),
-        ]}
-      />
-    );
-
-    const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "API 密钥" }));
-    expect(dialog.getByRole("button", { name: "保存并获取模型" })).toBeInTheDocument();
-
-    const baseUrlInput = dialog.getByPlaceholderText(/中转 endpoint/);
-    fireEvent.change(baseUrlInput, {
-      target: { value: "https://restored.example/v1" },
-    });
-    fireEvent.change(dialog.getByPlaceholderText("sk-…"), {
-      target: { value: "sk-restored" },
-    });
-
-    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
-
-    await waitFor(() =>
-      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
-        expect.objectContaining({
-          providerId: 21,
-          cliKey: "codex",
-          name: "Codex Restored Provider",
-          baseUrls: ["https://restored.example/v1"],
-          apiKey: "sk-restored",
-          sourceProviderId: null,
-          bridgeType: null,
         })
       )
     );
@@ -1315,7 +993,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
 
     const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC 转译" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC" }));
     fireEvent.change(dialog.getByPlaceholderText("default"), {
       target: { value: "Bridge Gateway Provider" },
     });
@@ -1391,7 +1069,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
 
     const dialog = within(screen.getByRole("dialog"));
     fireEvent.change(dialog.getByPlaceholderText("1.0"), { target: { value: "2.5" } });
-    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC 转译" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC" }));
 
     await waitFor(() => {
       expect(
@@ -1416,7 +1094,7 @@ describe("pages/providers/ProviderEditorDialog", () => {
     );
 
     const dialog = within(screen.getByRole("dialog"));
-    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC 转译" }));
+    fireEvent.click(dialog.getByRole("tab", { name: "CX2CC" }));
     fireEvent.change(dialog.getByPlaceholderText("default"), {
       target: { value: "Empty Source" },
     });

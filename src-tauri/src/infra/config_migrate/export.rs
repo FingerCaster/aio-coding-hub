@@ -135,7 +135,7 @@ ORDER BY cli_key ASC, sort_order ASC, id ASC
                 oauth_last_error: row.get("oauth_last_error")?,
                 claude_models_json: row.get("claude_models_json")?,
                 supported_models_json: row.get("supported_models_json")?,
-                model_mapping_json: row.get("model_mapping_json")?,
+                model_mapping_json: "{}".to_string(),
                 enabled: row.get::<_, i64>("enabled")? != 0,
                 priority: row.get("priority")?,
                 cost_multiplier: row.get("cost_multiplier")?,

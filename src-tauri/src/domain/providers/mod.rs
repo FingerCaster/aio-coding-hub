@@ -6,8 +6,8 @@ mod types;
 mod validation;
 
 pub use types::{
-    ClaudeModels, DailyResetMode, ModelMapping, ProviderAuthMode, ProviderBaseUrlMode,
-    ProviderExtensionValues, ProviderExtensionValuesInput, ProviderSummary, ProviderUpsertParams,
+    ClaudeModels, DailyResetMode, ProviderAuthMode, ProviderBaseUrlMode, ProviderExtensionValues,
+    ProviderExtensionValuesInput, ProviderSummary, ProviderUpsertParams,
 };
 
 #[allow(unused_imports)]
@@ -15,8 +15,7 @@ pub(crate) use types::{
     has_bridged_input_semantics, is_supported_bridge_type, ClaudeTerminalLaunchContext,
     GatewayProvidersSelection, ProviderAccountUsageCredentialContext,
     ProviderAccountUsageFetchContext, ProviderForGateway, ProviderOAuthDetails, ProviderRouteRow,
-    ProviderTransportContext, CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
-    CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE, CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
+    ProviderTransportContext, CX2CC_BRIDGE_TYPE,
 };
 
 pub use queries::{
@@ -46,9 +45,7 @@ pub(crate) use share::{
 };
 
 #[cfg(test)]
-use types::{
-    claude_models_from_json, model_mapping_from_json, normalize_model_slot, MAX_MODEL_NAME_LEN,
-};
+use types::{claude_models_from_json, normalize_model_slot, MAX_MODEL_NAME_LEN};
 #[cfg(test)]
 use validation::{
     base_urls_from_row, normalize_base_urls, normalize_reset_time_hms_lossy,

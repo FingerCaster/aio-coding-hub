@@ -241,7 +241,7 @@ describe("services/providers provider models", () => {
       isCodexDirectProvider({
         cli_key: "codex",
         source_provider_id: 2,
-        bridge_type: "codex_to_openai_responses",
+        bridge_type: "cx2cc",
       })
     ).toBe(false);
     expect(

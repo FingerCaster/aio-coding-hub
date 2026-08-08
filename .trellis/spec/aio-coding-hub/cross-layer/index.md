@@ -22,8 +22,9 @@ TypeScript bindings, frontend adapters, and React UI.
   bounded NewAPI model-token/account protocols, private credential ownership,
   and validated sub2api daily-limit projection.
 - [Provider deletion and attempt identity contract](./provider-deletion-and-attempt-identity-contract.md):
-  persisted route cascades, cancel/filter/invalidate cache reconciliation, and
-  request-time provider identity in decision-chain displays.
+  persisted route cascades, retired bridge cleanup/import rejection,
+  cancel/filter/invalidate cache reconciliation, and request-time provider
+  identity in decision-chain displays.
 - [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.

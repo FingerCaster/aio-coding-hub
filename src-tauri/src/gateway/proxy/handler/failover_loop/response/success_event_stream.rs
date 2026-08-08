@@ -998,8 +998,6 @@ where
         gemini_oauth_response_mode,
         cx2cc_active,
         active_bridge_type,
-        responses_cache_namespace,
-        responses_cache_input,
         anthropic_stream_requested: _,
         ..
     } = attempt_ctx;
@@ -1594,13 +1592,11 @@ where
                 observed_upstream_conflicting_model.clone(),
                 observed_upstream_reasoning_effort.clone(),
             );
-            let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
+            let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                 upstream,
                 active_bridge_type,
                 active_requested_model_for_bridge.clone(),
                 common.cx2cc_settings.clone(),
-                responses_cache_namespace.map(str::to_string),
-                responses_cache_input.map(|items| items.to_vec()),
             );
             let upstream = response_fixer::ResponseFixerStream::new(
                 upstream,
@@ -1639,13 +1635,11 @@ where
                 observed_upstream_conflicting_model,
                 observed_upstream_reasoning_effort,
             );
-            let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type_with_cache(
+            let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
                 upstream,
                 active_bridge_type,
                 active_requested_model_for_bridge.clone(),
                 common.cx2cc_settings.clone(),
-                responses_cache_namespace.map(str::to_string),
-                responses_cache_input.map(|items| items.to_vec()),
             );
             let upstream = MaybePluginChunkStream::new(
                 upstream,

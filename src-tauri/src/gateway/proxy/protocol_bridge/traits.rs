@@ -97,8 +97,6 @@ pub(crate) trait ModelMapper: Send + Sync {
 pub(crate) struct BridgeContext {
     /// Provider-level model mapping configuration.
     pub claude_models: crate::domain::providers::ClaudeModels,
-    /// Generic provider-level model mapping configuration.
-    pub model_mapping: crate::domain::providers::ModelMapping,
     /// CX2CC runtime settings for request/response translation.
     pub cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings,
     /// Original model name from the client request (before mapping).
@@ -109,12 +107,6 @@ pub(crate) struct BridgeContext {
     pub stream_requested: bool,
     /// Whether the source provider is a ChatGPT backend (needs compat filter).
     pub is_chatgpt_backend: bool,
-    /// Optional namespace for Responses continuity cache. Only explicit
-    /// Responses bridge providers should set this.
-    pub responses_cache_namespace: Option<String>,
-    /// Already-expanded provider-facing Responses input for continuity cache
-    /// fill. Only set with `responses_cache_namespace`.
-    pub responses_cache_input: Option<Vec<Value>>,
 }
 
 /// Mutable state maintained across SSE events during a single streaming response.

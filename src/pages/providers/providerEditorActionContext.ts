@@ -1,7 +1,6 @@
 import type {
   ClaudeModels,
   CliKey,
-  ModelMapping,
   ProviderOAuthDeviceCodeStartResult,
   ProviderOAuthStatusResult,
   ProviderExtensionValuesInput,
@@ -11,7 +10,6 @@ import type {
 } from "../../services/providers/providers";
 import type { ProviderEditorDialogFormInput } from "../../schemas/providerEditorDialog";
 import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
-import type { CodexBridgeTarget } from "./providerEditorUtils";
 import type { ProviderModelCatalog } from "../../services/providers/providerModels";
 
 /** Provider identity and lifecycle */
@@ -46,7 +44,6 @@ export type AuthActionContext = {
   oauthDeviceError: string | null;
   setOauthDeviceError: (v: string | null) => void;
   cx2ccSourceValue: string;
-  codexBridgeTarget: CodexBridgeTarget;
   isCodexGatewaySource: boolean;
   sourceProviderId: number | null;
   selectedCx2ccSourceProvider: ProviderSummary | null;
@@ -62,7 +59,6 @@ export type FormActionContext = {
   baseUrlRows: BaseUrlRow[];
   tags: string[];
   claudeModels: ClaudeModels;
-  modelMapping: ModelMapping;
   testModel: string;
   streamIdleTimeoutSeconds: string;
   upstreamRetryPolicyOverrideEnabled: boolean;
@@ -84,12 +80,10 @@ export type ProviderEditorPayloadContext = {
   cliKey: CliKey;
   editingProviderId: number | null;
   authMode: "api_key" | "oauth" | "cx2cc";
-  codexBridgeTarget: CodexBridgeTarget;
   baseUrlMode: ProviderBaseUrlMode;
   baseUrlRows: BaseUrlRow[];
   tags: string[];
   claudeModels: ClaudeModels;
-  modelMapping: ModelMapping;
   testModel: string;
   streamIdleTimeoutSeconds: string;
   upstreamRetryPolicyOverrideEnabled: boolean;

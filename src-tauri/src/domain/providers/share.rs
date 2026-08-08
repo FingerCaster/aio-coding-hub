@@ -5,9 +5,8 @@ use super::queries::{
     retry_policy_override_to_json,
 };
 use super::types::{
-    claude_models_from_json, model_mapping_from_json, normalize_tags, ClaudeModels, DailyResetMode,
-    ModelMapping, ProviderAuthMode, ProviderBaseUrlMode, ProviderExtensionValuesInput,
-    ProviderSummary, CX2CC_BRIDGE_TYPE,
+    claude_models_from_json, normalize_tags, ClaudeModels, DailyResetMode, ProviderAuthMode,
+    ProviderBaseUrlMode, ProviderExtensionValuesInput, ProviderSummary, CX2CC_BRIDGE_TYPE,
 };
 use super::validation::{
     base_urls_from_row, normalize_base_urls, normalize_note, normalize_reset_time_hms_strict,
@@ -37,6 +36,11 @@ const MAX_EXTENSION_COUNT: usize = 128;
 const MAX_TAG_COUNT: usize = 128;
 const MAX_TAG_CHARS: usize = 128;
 const MAX_SHARE_FILENAME_BYTES: usize = 240;
+const LEGACY_CODEX_BRIDGE_TYPES: [&str; 3] = [
+    "codex_to_openai_chat",
+    "codex_to_openai_responses",
+    "codex_to_anthropic_messages",
+];
 
 #[derive(Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -120,24 +124,6 @@ impl From<ProviderShareClaudeModelsV1> for ClaudeModels {
 struct ProviderShareModelMappingV1 {
     default_model: Option<String>,
     exact: BTreeMap<String, String>,
-}
-
-impl From<ModelMapping> for ProviderShareModelMappingV1 {
-    fn from(value: ModelMapping) -> Self {
-        Self {
-            default_model: value.default_model,
-            exact: value.exact,
-        }
-    }
-}
-
-impl From<ProviderShareModelMappingV1> for ModelMapping {
-    fn from(value: ProviderShareModelMappingV1) -> Self {
-        Self {
-            default_model: value.default_model,
-            exact: value.exact,
-        }
-    }
 }
 
 #[derive(Clone, Serialize, Deserialize)]
@@ -402,7 +388,6 @@ struct ProviderShareDbRow {
     oauth_email: Option<String>,
     oauth_refresh_lead_s: i64,
     claude_models_json: String,
-    model_mapping_json: String,
     availability_test_model: Option<String>,
     enabled: bool,
     priority: i64,
@@ -537,6 +522,12 @@ fn normalize_bridge_configuration(provider: &mut ProviderShareProviderV2) -> App
         Some(CX2CC_BRIDGE_TYPE) if provider.cli_key == "claude" => {
             provider.configuration.bridge_type = Some(CX2CC_BRIDGE_TYPE.to_string());
         }
+        Some(value) if LEGACY_CODEX_BRIDGE_TYPES.contains(&value) => {
+            return Err(AppError::new(
+                "CODEX_PROVIDER_TRANSLATION_UNSUPPORTED",
+                "Codex provider translation is no longer supported",
+            ));
+        }
         Some(_) => {
             return Err(AppError::new(
                 "SEC_INVALID_INPUT",
@@ -627,20 +618,8 @@ fn normalize_provider_share_v2(
     }
     provider.configuration.claude_models = claude_models.into();
 
-    let mut model_mapping: ModelMapping = provider.configuration.model_mapping.clone().into();
-    model_mapping = model_mapping.normalized();
-    if provider.cli_key != "codex"
-        && (model_mapping.default_model.is_some() || !model_mapping.exact.is_empty())
-    {
-        return Err(AppError::new(
-            "SEC_INVALID_INPUT",
-            "provider share model_mapping is invalid for this CLI",
-        ));
-    }
-    if provider.cli_key != "codex" {
-        model_mapping = ModelMapping::default();
-    }
-    provider.configuration.model_mapping = model_mapping.into();
+    // Kept in the v1/v2 wire shape for strict backward compatibility only.
+    provider.configuration.model_mapping = ProviderShareModelMappingV1::default();
 
     provider.configuration.availability_test_model =
         super::types::normalize_model_slot(provider.configuration.availability_test_model.take());
@@ -930,7 +909,6 @@ SELECT
   oauth_email,
   oauth_refresh_lead_s,
   claude_models_json,
-  model_mapping_json,
   availability_test_model,
   enabled,
   priority,
@@ -974,7 +952,6 @@ WHERE id = ?1
                 oauth_email: row.get("oauth_email")?,
                 oauth_refresh_lead_s: row.get("oauth_refresh_lead_s")?,
                 claude_models_json: row.get("claude_models_json")?,
-                model_mapping_json: row.get("model_mapping_json")?,
                 availability_test_model: row.get("availability_test_model")?,
                 enabled: row.get::<_, i64>("enabled")? != 0,
                 priority: row.get("priority")?,
@@ -1131,7 +1108,7 @@ pub(crate) fn export_provider_share_v2(
                 priority: row.priority,
                 cost_multiplier: row.cost_multiplier,
                 claude_models: claude_models_from_json(&row.claude_models_json).into(),
-                model_mapping: model_mapping_from_json(&row.model_mapping_json).into(),
+                model_mapping: ProviderShareModelMappingV1::default(),
                 availability_test_model: row.availability_test_model,
                 limits: ProviderShareLimitsV1 {
                     limit_5h_usd: row.limit_5h_usd,
@@ -1541,9 +1518,7 @@ pub(crate) fn import_provider_share(
     let claude_models: ClaudeModels = configuration.claude_models.clone().into();
     let claude_models_json = serde_json::to_string(&claude_models)
         .map_err(|_| AppError::new("SYSTEM_ERROR", "failed to serialize Claude models"))?;
-    let model_mapping: ModelMapping = configuration.model_mapping.clone().into();
-    let model_mapping_json = serde_json::to_string(&model_mapping)
-        .map_err(|_| AppError::new("SYSTEM_ERROR", "failed to serialize model mapping"))?;
+    let model_mapping_json = "{}";
     let tags_json = serde_json::to_string(&configuration.tags)
         .map_err(|_| AppError::new("SYSTEM_ERROR", "failed to serialize provider tags"))?;
     let retry_policy = configuration
@@ -1738,7 +1713,6 @@ mod tests {
             cost_multiplier: 1.0,
             priority: Some(100),
             claude_models: None,
-            model_mapping: None,
             availability_test_model: None,
             limit_5h_usd: None,
             limit_daily_usd: None,
@@ -1914,6 +1888,46 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn legacy_codex_translation_share_is_rejected_with_stable_error() {
+        let mut share = minimal_share();
+        share.provider.cli_key = "codex".to_string();
+        share.provider.configuration.bridge_type = Some("codex_to_anthropic_messages".to_string());
+
+        let error = match normalize_provider_share_v2(share) {
+            Ok(_) => panic!("legacy translation share must fail"),
+            Err(error) => error,
+        };
+        assert_eq!(error.code(), "CODEX_PROVIDER_TRANSLATION_UNSUPPORTED");
+    }
+
+    #[test]
+    fn legacy_model_mapping_wire_field_is_normalized_to_empty() {
+        let mut share = minimal_share();
+        share.provider.configuration.model_mapping.default_model =
+            Some("legacy-default".to_string());
+        share
+            .provider
+            .configuration
+            .model_mapping
+            .exact
+            .insert("requested".to_string(), "effective".to_string());
+
+        let normalized = normalize_provider_share_v2(share).expect("normalize legacy mapping");
+        assert!(normalized
+            .provider
+            .configuration
+            .model_mapping
+            .default_model
+            .is_none());
+        assert!(normalized
+            .provider
+            .configuration
+            .model_mapping
+            .exact
+            .is_empty());
     }
 
     #[test]
@@ -2606,10 +2620,6 @@ mod tests {
         input.base_url_mode = ProviderBaseUrlMode::Ping;
         input.priority = Some(321);
         input.cost_multiplier = 1.75;
-        input.model_mapping = Some(ModelMapping {
-            default_model: Some("gpt-synthetic-default".to_string()),
-            exact: BTreeMap::from([("gpt-source".to_string(), "gpt-synthetic-target".to_string())]),
-        });
         input.availability_test_model = Some("gpt-synthetic-test".to_string());
         input.limit_5h_usd = Some(5.5);
         input.limit_daily_usd = Some(12.5);
@@ -2709,16 +2719,6 @@ mod tests {
         assert_eq!(imported.base_url_mode, ProviderBaseUrlMode::Ping);
         assert_eq!(imported.priority, 321);
         assert_eq!(imported.cost_multiplier, 1.75);
-        assert_eq!(
-            imported.model_mapping,
-            ModelMapping {
-                default_model: Some("gpt-synthetic-default".to_string()),
-                exact: BTreeMap::from([(
-                    "gpt-source".to_string(),
-                    "gpt-synthetic-target".to_string(),
-                )]),
-            }
-        );
         assert_eq!(
             imported.availability_test_model.as_deref(),
             Some("gpt-synthetic-test")

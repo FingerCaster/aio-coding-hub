@@ -191,14 +191,11 @@ pub(super) async fn prepare<R: tauri::Runtime>(args: Cx2ccPreparationInput<'_, R
             .find(|p| p.id == args.provider_id)
             .map(|p| p.claude_models.clone())
             .unwrap_or_default(),
-        model_mapping: Default::default(),
         cx2cc_settings: args.input.cx2cc_settings.clone(),
         requested_model: Some(requested_model.to_string()),
         mapped_model: None,
         stream_requested: args.anthropic_stream_requested,
         is_chatgpt_backend: false,
-        responses_cache_namespace: None,
-        responses_cache_input: None,
     };
 
     let translated = match protocol_bridge::get_bridge("cx2cc")

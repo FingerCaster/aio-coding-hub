@@ -7,7 +7,6 @@ use super::upstream_retry_policy::{
 };
 use super::*;
 use crate::domain::provider_oauth_limits;
-use crate::domain::providers::CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE;
 use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayResponseHookInput};
 use crate::gateway::proxy::request_context::RequestContext;
 use crate::gateway::proxy::{
@@ -535,14 +534,11 @@ fn translate_bridge_non_stream_body(
         .ok_or_else(|| format!("bridge not registered: {bridge_type}"))?;
     let bridge_ctx = protocol_bridge::BridgeContext {
         claude_models: crate::domain::providers::ClaudeModels::default(),
-        model_mapping: Default::default(),
         cx2cc_settings: cx2cc_settings.clone(),
         requested_model: requested_model.filter(|m| !m.is_empty()).map(String::from),
         mapped_model: None,
         stream_requested: anthropic_stream_requested,
         is_chatgpt_backend: false,
-        responses_cache_namespace: None,
-        responses_cache_input: None,
     };
 
     if anthropic_stream_requested {
@@ -570,24 +566,6 @@ fn translate_bridge_non_stream_body(
     );
 
     Ok(Bytes::from(encoded))
-}
-
-fn cache_bridge_non_stream_response(
-    active_bridge_type: Option<&str>,
-    responses_cache_namespace: Option<&str>,
-    responses_cache_input: Option<&[serde_json::Value]>,
-    body_bytes: &[u8],
-) {
-    if active_bridge_type != Some(CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE) {
-        return;
-    }
-    let (Some(namespace), Some(input)) = (responses_cache_namespace, responses_cache_input) else {
-        return;
-    };
-    let Ok(response) = serde_json::from_slice::<serde_json::Value>(body_bytes) else {
-        return;
-    };
-    protocol_bridge::response_cache::cache_completed_response(namespace, input, &response);
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -647,8 +625,6 @@ where
         gemini_oauth_response_mode,
         cx2cc_active,
         active_bridge_type,
-        responses_cache_namespace,
-        responses_cache_input,
         anthropic_stream_requested,
         ..
     } = attempt_ctx;
@@ -1308,7 +1284,6 @@ where
     );
 
     // Bridge providers translate upstream protocol responses back to client protocol.
-    let bridge_response_cache_body = body_bytes.clone();
     let active_requested_model_for_bridge = provider_ctx_owned
         .active_requested_model
         .clone()
@@ -1322,12 +1297,6 @@ where
         body_bytes,
     ) {
         Ok(translated_body) => {
-            cache_bridge_non_stream_response(
-                active_bridge_type,
-                responses_cache_namespace,
-                responses_cache_input,
-                bridge_response_cache_body.as_ref(),
-            );
             body_bytes = translated_body;
             if active_bridge_type.is_some() {
                 tracing::debug!(
@@ -1757,11 +1726,11 @@ where
 mod tests {
     use super::{
         apply_circuit_snapshot_to_last_attempt, buffer_cx2cc_event_stream_as_json,
-        cache_bridge_non_stream_response, classify_cx2cc_success_payload,
-        effective_terminal_failure_status, finish_downstream_response,
-        mark_last_attempt_terminal_failure, read_non_stream_body_with_limit,
-        resolve_requested_model_for_log, should_passthrough_non_stream_success,
-        translate_bridge_non_stream_body, Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
+        classify_cx2cc_success_payload, effective_terminal_failure_status,
+        finish_downstream_response, mark_last_attempt_terminal_failure,
+        read_non_stream_body_with_limit, resolve_requested_model_for_log,
+        should_passthrough_non_stream_success, translate_bridge_non_stream_body,
+        Cx2ccSuccessPayloadKind, NonStreamBodyReadError,
     };
     use crate::circuit_breaker::{CircuitBreaker, CircuitBreakerConfig, CircuitSnapshot};
     use crate::domain::usage;
@@ -2169,55 +2138,6 @@ mod tests {
             headers.get(header::CONTENT_TYPE).unwrap(),
             "application/json"
         );
-    }
-
-    #[test]
-    fn caches_only_responses_bridge_non_stream_tool_context() {
-        let _guard = crate::gateway::proxy::protocol_bridge::response_cache::test_guard();
-        crate::gateway::proxy::protocol_bridge::response_cache::clear_for_tests();
-        let namespace = "codex_to_openai_responses:source=1:session=s1";
-        let input = vec![json!({
-            "type": "message",
-            "role": "user",
-            "content": [{"type": "input_text", "text": "call a tool"}]
-        })];
-        let body = json!({
-            "id": "resp_json",
-            "output": [{
-                "id": "fc_1",
-                "type": "function_call",
-                "call_id": "call_1",
-                "name": "lookup",
-                "arguments": "{}"
-            }]
-        });
-        let bytes = serde_json::to_vec(&body).unwrap();
-
-        cache_bridge_non_stream_response(
-            Some(crate::domain::providers::CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE),
-            Some(namespace),
-            Some(input.as_slice()),
-            &bytes,
-        );
-        assert_eq!(
-            crate::gateway::proxy::protocol_bridge::response_cache::len_for_tests(),
-            0
-        );
-
-        cache_bridge_non_stream_response(
-            Some(crate::domain::providers::CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE),
-            Some(namespace),
-            Some(input.as_slice()),
-            &bytes,
-        );
-        let key = crate::gateway::proxy::protocol_bridge::response_cache::ResponsesCacheKey::new(
-            namespace,
-            "resp_json",
-        )
-        .unwrap();
-        let cached =
-            crate::gateway::proxy::protocol_bridge::response_cache::get(&key).expect("cache hit");
-        assert_eq!(cached[1]["type"], "function_call");
     }
 
     #[test]

@@ -72,7 +72,7 @@ export function ProviderShareDialog({ open, provider, onOpenChange }: ProviderSh
 
         {provider?.source_provider_id != null ? (
           <div className="rounded-md border border-border bg-muted px-3 py-2 text-sm text-muted-foreground">
-            该转译供应商引用了另一个供应商，无法作为独立配置分享。
+            该 CX2CC 供应商引用了另一个供应商，无法作为独立配置分享。
           </div>
         ) : null}
 

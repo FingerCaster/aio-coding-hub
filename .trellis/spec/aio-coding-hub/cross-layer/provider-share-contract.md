@@ -155,6 +155,14 @@ well as unknown discriminators, versions, fields, enum values, invalid UTF-8,
 and invalid provider fields. A future format gets a new explicit version
 reader rather than weakening either existing reader.
 
+The v1/v2 `model_mapping` member is a strict wire-compatibility shell. It is
+always normalized to `{"default_model":null,"exact":{}}` and never reaches an
+active Provider DTO or gateway mapper. The retired
+`codex_to_openai_chat`, `codex_to_openai_responses`, and
+`codex_to_anthropic_messages` bridge values fail with
+`CODEX_PROVIDER_TRANSLATION_UNSUPPORTED`; they are never downgraded to a
+direct Provider.
+
 New serialization is v2 pretty JSON with one trailing newline and
 deterministic extension ordering by `(plugin_id, namespace)`. Copy and save
 call the same v2 serializer and enforce the 8 MiB encoded limit. There is no
@@ -252,6 +260,8 @@ partial extension import is forbidden.
 | --- | --- |
 | Missing, mismatched, invalid, or expired risky confirmation | `SEC_CONFIRM_*`; perform no clipboard, file, or DB mutation |
 | Empty, oversized, non-UTF-8, malformed, unknown-field, invalid-field, or unsupported-version content | `SEC_INVALID_INPUT`; create no preview/import row |
+| Retired Codex translation bridge | `CODEX_PROVIDER_TRANSLATION_UNSUPPORTED`; create no preview/import row |
+| Non-empty legacy `model_mapping` shell on an otherwise valid share | Parse, discard its values, and normalize the shell to empty |
 | Export target does not exist | `DB_NOT_FOUND` |
 | Export target references another provider | `PROVIDER_SHARE_REFERENCED_PROVIDER`; write no output |
 | Exported extension has no installed owner version | `PROVIDER_SHARE_EXTENSION_UNAVAILABLE` |
@@ -290,7 +300,8 @@ extension values.
 - Domain tests: strict schema negatives, UTF-8 and 8 MiB boundaries,
   deterministic reserialization, cross-platform filename byte bounds, all
   configuration/credential/extension round-trips, referenced-provider refusal,
-  standalone `cx2cc`, collision naming, disabled/no-route import, and rollback.
+  standalone `cx2cc`, retired-bridge rejection, legacy mapping
+  normalization, collision naming, disabled/no-route import, and rollback.
 - Plugin tests: missing/unavailable owner, exact version mismatch, manifest
   ID/version mismatch, missing capability/namespace/target CLI, built-in owner
   recreation, and a compatibility change between preview and confirm. Assert

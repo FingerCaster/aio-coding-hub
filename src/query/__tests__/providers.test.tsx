@@ -148,7 +148,6 @@ function makeProvider(
     availability_test_model: partial.availability_test_model ?? null,
     stream_idle_timeout_seconds: partial.stream_idle_timeout_seconds ?? null,
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
-    model_mapping: partial.model_mapping ?? { default_model: null, exact: {} },
     extension_values: partial.extension_values ?? [],
     api_key_configured: partial.api_key_configured ?? false,
     newapi_account_user_id: partial.newapi_account_user_id ?? null,

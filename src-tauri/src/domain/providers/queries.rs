@@ -72,7 +72,6 @@ fn decode_provider_row(
     let base_urls_json: String = row.get("base_urls_json")?;
     let base_url_mode_raw: String = row.get("base_url_mode")?;
     let claude_models_json: String = row.get("claude_models_json")?;
-    let model_mapping_json: String = row.get("model_mapping_json")?;
     let daily_reset_mode_raw: String = row.get("daily_reset_mode")?;
     let daily_reset_time_raw: String = row.get("daily_reset_time")?;
 
@@ -86,11 +85,6 @@ fn decode_provider_row(
             claude_models_from_json(&claude_models_json)
         } else {
             ClaudeModels::default()
-        },
-        model_mapping: if cli_key == "codex" {
-            model_mapping_from_json(&model_mapping_json)
-        } else {
-            ModelMapping::default()
         },
         availability_test_model: normalize_model_slot(
             row.get::<_, Option<String>>("availability_test_model")?,
@@ -129,7 +123,6 @@ fn row_to_summary(row: &rusqlite::Row<'_>) -> Result<ProviderSummary, rusqlite::
         base_urls: decoded.base_urls,
         base_url_mode: decoded.base_url_mode,
         claude_models: decoded.claude_models,
-        model_mapping: decoded.model_mapping,
         availability_test_model: decoded.availability_test_model,
         enabled: row.get::<_, i64>("enabled")? != 0,
         priority: row.get("priority")?,
@@ -1013,7 +1006,6 @@ fn map_gateway_provider_row(
         base_url_mode: decoded.base_url_mode,
         api_key_plaintext: row.get("api_key_plaintext")?,
         claude_models: decoded.claude_models,
-        model_mapping: decoded.model_mapping,
         limit_5h_usd: decoded.limit_5h_usd,
         limit_daily_usd: decoded.limit_daily_usd,
         daily_reset_mode: decoded.daily_reset_mode,
@@ -1231,25 +1223,18 @@ pub(crate) fn get_source_provider_for_gateway(
         .ok_or_else(|| {
             crate::shared::error::AppError::from("DB_NOT_FOUND: source provider not found")
         })?;
-    if let Some(expected_cli_key) = source_cli_key_for_bridge_type(bridge_type) {
-        if cli_key_owned != expected_cli_key {
-            return Err(crate::shared::error::AppError::from(
-                "DB_NOT_FOUND: source provider not found",
-            ));
-        }
-    } else if !is_codex_bridge_type(bridge_type) {
+    let Some(expected_cli_key) = source_cli_key_for_bridge_type(bridge_type) else {
         return Err(crate::shared::error::AppError::from(format!(
             "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
         )));
+    };
+    if cli_key_owned != expected_cli_key {
+        return Err(crate::shared::error::AppError::from(
+            "DB_NOT_FOUND: source provider not found",
+        ));
     }
 
-    let enabled_filter = if is_codex_bridge_type(bridge_type) {
-        ""
-    } else {
-        " AND enabled = 1"
-    };
-    let sql = format!(
-        r#"
+    let sql = r#"
 SELECT
   id,
   provider_uuid,
@@ -1275,12 +1260,11 @@ SELECT
   stream_idle_timeout_seconds,
   upstream_retry_policy_json
 FROM providers
-WHERE id = ?1{enabled_filter} AND source_provider_id IS NULL AND bridge_type IS NULL
-"#,
-    );
+WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS NULL
+"#;
 
     let mut provider = conn
-        .query_row(&sql, params![source_provider_id], |row| {
+        .query_row(sql, params![source_provider_id], |row| {
             map_gateway_provider_row(row, &cli_key_owned)
         })
         .optional()
@@ -1521,7 +1505,6 @@ pub(crate) fn upsert_with_provider_uuid(
         cost_multiplier,
         priority,
         claude_models,
-        model_mapping,
         availability_test_model,
         limit_5h_usd,
         limit_daily_usd,
@@ -1590,8 +1573,7 @@ pub(crate) fn upsert_with_provider_uuid(
     }
 
     let is_cx2cc = is_cx2cc_bridge(bridge_type.as_deref());
-    let is_codex_bridge = bridge_type.as_deref().is_some_and(is_codex_bridge_type);
-    let is_bridge_provider = is_cx2cc || is_codex_bridge;
+    let is_bridge_provider = is_cx2cc;
 
     // Validate source_provider_id constraints for bridge providers.
     if let Some(source_id) = source_provider_id {
@@ -1630,16 +1612,15 @@ pub(crate) fn upsert_with_provider_uuid(
                             .into(),
                     );
                 };
-                if let Some(expected_source_cli) = source_cli_key_for_bridge_type(bridge_type) {
-                    if src_cli != expected_source_cli {
-                        return Err(format!(
-                            "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
-                        )
-                        .into());
-                    }
-                } else if !is_codex_bridge_type(bridge_type) {
+                let Some(expected_source_cli) = source_cli_key_for_bridge_type(bridge_type) else {
                     return Err(format!(
                         "SEC_INVALID_INPUT: unsupported bridge_type: {bridge_type}"
+                    )
+                    .into());
+                };
+                if src_cli != expected_source_cli {
+                    return Err(format!(
+                        "SEC_INVALID_INPUT: source provider must belong to {expected_source_cli} CLI for bridge_type={bridge_type}"
                     )
                     .into());
                 }
@@ -1666,21 +1647,6 @@ pub(crate) fn upsert_with_provider_uuid(
                 .into(),
         );
     }
-    if is_codex_bridge && cli_key != "codex" {
-        return Err(
-            "SEC_INVALID_INPUT: codex bridge is only supported for codex"
-                .to_string()
-                .into(),
-        );
-    }
-    if is_codex_bridge && source_provider_id.is_none() {
-        return Err(
-            "SEC_INVALID_INPUT: codex bridge requires source_provider_id"
-                .to_string()
-                .into(),
-        );
-    }
-
     let base_urls = if is_oauth || is_bridge_provider {
         // OAuth and bridge providers don't need base URLs; storing an empty list
         // keeps stale or malicious transport values out of gateway selection.
@@ -1758,11 +1724,6 @@ pub(crate) fn upsert_with_provider_uuid(
             } else {
                 ClaudeModels::default()
             };
-            let model_mapping = if cli_key == "codex" {
-                model_mapping.unwrap_or_default().normalized()
-            } else {
-                ModelMapping::default()
-            };
             let availability_test_model = if cli_key == "codex" {
                 normalize_model_slot(availability_test_model)
             } else {
@@ -1770,8 +1731,7 @@ pub(crate) fn upsert_with_provider_uuid(
             };
             let claude_models_json =
                 serde_json::to_string(&claude_models).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
-            let model_mapping_json =
-                serde_json::to_string(&model_mapping).map_err(|e| format!("SYSTEM_ERROR: {e}"))?;
+            let model_mapping_json = "{}";
 
             let limit_5h_usd = validate_limit_usd("limit_5h_usd", limit_5h_usd)?;
             let limit_daily_usd = validate_limit_usd("limit_daily_usd", limit_daily_usd)?;
@@ -1939,7 +1899,7 @@ INSERT INTO providers(
                 existing_availability_test_model,
                 existing_stream_idle_timeout_seconds,
                 existing_upstream_retry_policy_json,
-                existing_model_mapping_json,
+                _existing_model_mapping_json,
                 existing_base_urls_json,
                 existing_base_url_mode,
                 existing_source_provider_id,
@@ -1992,24 +1952,7 @@ INSERT INTO providers(
             } else {
                 "{}".to_string()
             };
-            let existing_model_mapping = if cli_key == "codex" {
-                model_mapping_from_json(&existing_model_mapping_json)
-            } else {
-                ModelMapping::default()
-            };
-            let next_model_mapping = match model_mapping {
-                Some(v) if cli_key == "codex" => Some(v.normalized()),
-                _ => None,
-            };
-            let final_model_mapping = next_model_mapping
-                .as_ref()
-                .unwrap_or(&existing_model_mapping);
-            let next_model_mapping_json = if cli_key == "codex" {
-                serde_json::to_string(final_model_mapping)
-                    .map_err(|e| format!("SYSTEM_ERROR: {e}"))?
-            } else {
-                "{}".to_string()
-            };
+            let next_model_mapping_json = "{}";
             let next_availability_test_model = if cli_key == "codex" {
                 match availability_test_model {
                     Some(value) => normalize_model_slot(Some(value)),

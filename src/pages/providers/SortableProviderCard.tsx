@@ -272,22 +272,8 @@ const ProviderCard = memo(function ProviderCard({
   const bridgeRouteLabel = isCx2ccGateway
     ? "跟随当前 Codex 分流"
     : (sourceProvider?.base_urls[0] ?? "跟随网关默认路由");
-  const bridgeBadgeLabel =
-    provider.bridge_type === "codex_to_openai_chat"
-      ? "Chat"
-      : provider.bridge_type === "codex_to_openai_responses"
-        ? "Responses"
-        : provider.bridge_type === "codex_to_anthropic_messages"
-          ? "Messages"
-          : "CX2CC";
-  const bridgeTitle =
-    provider.bridge_type === "codex_to_openai_chat"
-      ? "Codex → Chat Completions"
-      : provider.bridge_type === "codex_to_openai_responses"
-        ? "Codex → Responses"
-        : provider.bridge_type === "codex_to_anthropic_messages"
-          ? "Codex → Anthropic Messages"
-          : "CX2CC 转译模式";
+  const bridgeBadgeLabel = "CX2CC";
+  const bridgeTitle = "CX2CC 模式";
   const visibleTags = provider.tags ?? [];
   const resetCreditCount =
     isOAuth && provider.cli_key === "codex"
@@ -642,7 +628,7 @@ const ProviderCard = memo(function ProviderCard({
                   disabled={shareLoading || provider.source_provider_id != null}
                   title={
                     provider.source_provider_id != null
-                      ? "该转译供应商引用了另一个供应商，无法独立分享"
+                      ? "该 CX2CC 供应商引用了另一个供应商，无法独立分享"
                       : "分享供应商"
                   }
                 >

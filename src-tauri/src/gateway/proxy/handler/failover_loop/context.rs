@@ -350,8 +350,6 @@ pub(super) struct AttemptCtx<'a> {
     pub(super) gemini_oauth_response_mode: Option<gemini_oauth::GeminiOAuthResponseMode>,
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<&'a str>,
-    pub(super) responses_cache_namespace: Option<&'a str>,
-    pub(super) responses_cache_input: Option<&'a [serde_json::Value]>,
     pub(super) anthropic_stream_requested: bool,
 }
 

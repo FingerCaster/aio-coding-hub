@@ -5,7 +5,6 @@ import { logToConsole } from "../../services/consoleLog";
 import {
   type ProviderOAuthStatusResult,
   type ClaudeModels,
-  type ModelMapping,
   type ProviderSummary,
   type UpstreamRetryPolicy,
 } from "../../services/providers/providers";
@@ -16,7 +15,6 @@ import type { BaseUrlRow, ProviderBaseUrlMode } from "./types";
 import type { ProviderEditorInitialValues } from "./providerDuplicate";
 import type { UseFormReset, UseFormSetValue } from "react-hook-form";
 import {
-  type CodexBridgeTarget,
   valueOrEmpty,
   isZeroMultiplier,
   isNonZeroMultiplier,
@@ -24,7 +22,6 @@ import {
   areTagsEqual,
   buildFormValues,
   buildBaseUrlRows,
-  deriveCodexBridgeTarget,
   deriveAuthMode,
   deriveCx2ccSourceValue,
   withCx2ccDefaultModel,
@@ -42,7 +39,6 @@ export type EffectDeps = {
   editingProviderId: number | null;
   createInitialValues: ProviderEditorInitialValues | null;
   authMode: "api_key" | "oauth" | "cx2cc";
-  codexBridgeTarget: CodexBridgeTarget;
   costMultiplierValue: string;
   isCodexGatewaySource: boolean;
   selectedCx2ccSourceProvider: ProviderSummary | null;
@@ -58,7 +54,6 @@ export type EffectDeps = {
   setBaseUrlRows: (v: BaseUrlRow[]) => void;
   setPingingAll: (v: boolean) => void;
   setClaudeModels: (v: ClaudeModels) => void;
-  setModelMapping: (v: ModelMapping) => void;
   setTestModel: (v: string) => void;
   setTags: React.Dispatch<React.SetStateAction<string[]>>;
   setTagInput: (v: string) => void;
@@ -67,7 +62,6 @@ export type EffectDeps = {
   setUpstreamRetryPolicyDraft: (v: UpstreamRetryPolicy) => void;
   setAuthMode: (v: "api_key" | "oauth" | "cx2cc") => void;
   setCx2ccSourceValue: (v: string) => void;
-  setCodexBridgeTarget: (v: CodexBridgeTarget) => void;
   setOauthStatus: (v: ProviderOAuthStatusResult | null) => void;
   setOauthLoading: (v: boolean) => void;
   setCx2ccFallbackModels: (
@@ -103,14 +97,12 @@ export function useProviderEditorEffects(d: EffectDeps) {
     baseUrlRowSeqRef,
     oauthStatusRequestSeqRef,
     cancelActiveOAuthLoginAttempt,
-    codexBridgeTarget,
     newBaseUrlRow,
     setBaseUrlMode,
     baseUrlRows,
     setBaseUrlRows,
     setPingingAll,
     setClaudeModels,
-    setModelMapping,
     setTestModel,
     setTags,
     setTagInput,
@@ -119,7 +111,6 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setUpstreamRetryPolicyDraft,
     setAuthMode,
     setCx2ccSourceValue,
-    setCodexBridgeTarget,
     setOauthStatus,
     setOauthLoading,
     setCx2ccFallbackModels,
@@ -162,7 +153,6 @@ export function useProviderEditorEffects(d: EffectDeps) {
           ? withCx2ccDefaultModel(createInitialValues?.claude_models ?? {})
           : (createInitialValues?.claude_models ?? {})
       );
-      setModelMapping(createInitialValues?.model_mapping ?? { default_model: null, exact: {} });
       setTestModel(createInitialValues?.availability_test_model ?? "");
       setTags(createInitialValues?.tags ?? []);
       setTagInput("");
@@ -176,7 +166,6 @@ export function useProviderEditorEffects(d: EffectDeps) {
         )
       );
       setCx2ccSourceValue(initialCx2ccSourceValue);
-      setCodexBridgeTarget(deriveCodexBridgeTarget(createInitialValues));
       setAuthMode(
         initialCx2ccSourceValue ? "cx2cc" : (createInitialValues?.auth_mode ?? "api_key")
       );
@@ -198,7 +187,6 @@ export function useProviderEditorEffects(d: EffectDeps) {
     const initialCx2ccSourceValue = deriveCx2ccSourceValue(snapshot);
     setAuthMode(initialAuthMode);
     setCx2ccSourceValue(initialCx2ccSourceValue);
-    setCodexBridgeTarget(deriveCodexBridgeTarget(snapshot));
     setOauthStatus(null);
     setBaseUrlMode(snapshot.base_url_mode);
     setBaseUrlRows(snapshot.base_urls.map((url) => newBaseUrlRow(url)));
@@ -208,7 +196,6 @@ export function useProviderEditorEffects(d: EffectDeps) {
         ? withCx2ccDefaultModel(snapshot.claude_models ?? {})
         : (snapshot.claude_models ?? {})
     );
-    setModelMapping(snapshot.model_mapping ?? { default_model: null, exact: {} });
     setTestModel(snapshot.availability_test_model ?? "");
     setTags(snapshot.tags ?? []);
     setTagInput("");
@@ -254,9 +241,7 @@ export function useProviderEditorEffects(d: EffectDeps) {
     setAuthMode,
     setBaseUrlMode,
     setBaseUrlRows,
-    setCodexBridgeTarget,
     setClaudeModels,
-    setModelMapping,
     setTestModel,
     setCx2ccSourceValue,
     setOauthLoading,
@@ -292,27 +277,6 @@ export function useProviderEditorEffects(d: EffectDeps) {
       shouldValidate: false,
     });
   }, [authMode, costMultiplierValue, isCodexGatewaySource, selectedCx2ccSourceProvider, setValue]);
-
-  useEffect(() => {
-    if (!open || authMode !== "cx2cc" || cliKey !== "codex") return;
-    if (!selectedCx2ccSourceProvider) return;
-    if (
-      selectedCx2ccSourceProvider.id === editingProviderId ||
-      selectedCx2ccSourceProvider.source_provider_id != null ||
-      selectedCx2ccSourceProvider.bridge_type ||
-      !selectedCx2ccSourceProvider.enabled
-    ) {
-      setCx2ccSourceValue("");
-    }
-  }, [
-    authMode,
-    cliKey,
-    codexBridgeTarget,
-    editingProviderId,
-    open,
-    selectedCx2ccSourceProvider,
-    setCx2ccSourceValue,
-  ]);
 
   useEffect(() => {
     if (!open || cliKey !== "claude") return;

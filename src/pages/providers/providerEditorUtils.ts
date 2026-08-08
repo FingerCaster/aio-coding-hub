@@ -31,9 +31,6 @@ export const DEFAULT_FORM_VALUES: ProviderEditorDialogFormInput = {
 export const CX2CC_GLOBAL_SOURCE_VALUE = "__codex_gateway__";
 export const CX2CC_PROXY_TOKEN = "aio-coding-hub";
 export const CX2CC_DEFAULT_MODEL = "gpt-5.5";
-export const CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE = "codex_to_openai_chat";
-export const CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE = "codex_to_openai_responses";
-export const CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE = "codex_to_anthropic_messages";
 const CX2CC_MODEL_MAPPING_KEYS = [
   "main_model",
   "reasoning_model",
@@ -41,8 +38,6 @@ const CX2CC_MODEL_MAPPING_KEYS = [
   "sonnet_model",
   "opus_model",
 ] as const;
-
-export type CodexBridgeTarget = "openai_chat" | "openai_responses";
 
 export function cliNameFromKey(cliKey: CliKey) {
   return cliLongLabel(cliKey);
@@ -190,16 +185,4 @@ export function deriveCx2ccSourceValue(
   if (source.source_provider_id != null) return String(source.source_provider_id);
   if (source.bridge_type === "cx2cc") return CX2CC_GLOBAL_SOURCE_VALUE;
   return "";
-}
-
-export function deriveCodexBridgeTarget(
-  provider: Pick<ProviderSummary, "bridge_type"> | null | undefined
-): CodexBridgeTarget {
-  if (provider?.bridge_type === CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE) {
-    return "openai_responses";
-  }
-  if (provider?.bridge_type === CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE) {
-    return "openai_responses";
-  }
-  return "openai_chat";
 }

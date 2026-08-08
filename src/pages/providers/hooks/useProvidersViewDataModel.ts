@@ -165,23 +165,6 @@ function terminalLaunchCopiedToastMessage(command: string) {
 }
 const EMPTY_ROUTE_ROWS: ProviderRouteRow[] = [];
 
-type CodexBridgeSourceCliKey = Exclude<CliKey, "grok">;
-
-function allCodexBridgeSourceCliKeys<T extends readonly CodexBridgeSourceCliKey[]>(
-  keys: T &
-    (Exclude<CodexBridgeSourceCliKey, T[number]> extends never
-      ? unknown
-      : readonly ["missing", Exclude<CodexBridgeSourceCliKey, T[number]>])
-) {
-  return keys;
-}
-
-const CODEX_BRIDGE_SOURCE_CLI_KEYS = allCodexBridgeSourceCliKeys([
-  "codex",
-  "claude",
-  "gemini",
-] as const);
-
 function emptyActiveModeByCli(): Record<CliKey, number | null> {
   return {
     claude: null,
@@ -277,27 +260,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     () => codexProvidersQuery.data ?? [],
     [codexProvidersQuery.data]
   );
-  const claudeProvidersForBridgeQuery = useProvidersListQuery("claude", {
-    enabled: activeCli === "codex" && CODEX_BRIDGE_SOURCE_CLI_KEYS.includes("claude"),
-  });
-  const claudeProvidersForBridge = useMemo<ProviderSummary[]>(
-    () => claudeProvidersForBridgeQuery.data ?? [],
-    [claudeProvidersForBridgeQuery.data]
-  );
-  const geminiProvidersForBridgeQuery = useProvidersListQuery("gemini", {
-    enabled: activeCli === "codex" && CODEX_BRIDGE_SOURCE_CLI_KEYS.includes("gemini"),
-  });
-  const geminiProvidersForBridge = useMemo<ProviderSummary[]>(
-    () => geminiProvidersForBridgeQuery.data ?? [],
-    [geminiProvidersForBridgeQuery.data]
-  );
-  const bridgeSourceProviders = useMemo<ProviderSummary[]>(
-    () =>
-      activeCli === "codex" && CODEX_BRIDGE_SOURCE_CLI_KEYS.includes("codex")
-        ? [...providers, ...claudeProvidersForBridge, ...geminiProvidersForBridge]
-        : codexProviders,
-    [activeCli, claudeProvidersForBridge, codexProviders, geminiProvidersForBridge, providers]
-  );
+  const bridgeSourceProviders = useMemo<ProviderSummary[]>(() => codexProviders, [codexProviders]);
   const providersLoading = providersQuery.isFetching;
   const defaultRouteQuery = useDefaultRouteProvidersQuery(activeCli);
   const sortModesQuery = useSortModesListQuery();
@@ -697,9 +660,6 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     const refreshes: Array<Promise<ProviderRefreshResult>> = [providersQuery.refetch()];
     if (cliKey === "claude") {
       refreshes.push(codexProvidersQuery.refetch());
-    } else if (cliKey === "codex") {
-      refreshes.push(claudeProvidersForBridgeQuery.refetch());
-      refreshes.push(geminiProvidersForBridgeQuery.refetch());
     }
 
     try {
@@ -713,14 +673,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
     } finally {
       finishProvidersRefresh(cliKey, refreshToken);
     }
-  }, [
-    beginProvidersRefresh,
-    claudeProvidersForBridgeQuery,
-    codexProvidersQuery,
-    finishProvidersRefresh,
-    geminiProvidersForBridgeQuery,
-    providersQuery,
-  ]);
+  }, [beginProvidersRefresh, codexProvidersQuery, finishProvidersRefresh, providersQuery]);
 
   const sensors = useSensors(
     useSensor(PointerSensor, {
@@ -992,16 +945,7 @@ export function useProvidersViewDataModel(activeCli: CliKey) {
         if (!result) return;
 
         if (result.ok) {
-          const bridgeType = provider.bridge_type ?? "";
-          const isExplicitCodexBridge =
-            bridgeType === "codex_to_openai_chat" ||
-            bridgeType === "codex_to_openai_responses" ||
-            bridgeType === "codex_to_anthropic_messages";
-          toast(
-            isExplicitCodexBridge
-              ? `${provider.name}: 转译请求可用 (${result.latency_ms}ms)`
-              : `${provider.name}: 可用 (${result.latency_ms}ms)`
-          );
+          toast(`${provider.name}: 可用 (${result.latency_ms}ms)`);
         } else {
           toast(`${provider.name}: 不可用 — ${result.error ?? "未知错误"}`);
         }

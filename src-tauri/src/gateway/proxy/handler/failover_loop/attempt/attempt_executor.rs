@@ -554,8 +554,6 @@ fn build_attempt_ctx<'a>(
         gemini_oauth_response_mode: prepared.gemini_oauth_response_mode,
         cx2cc_active: prepared.cx2cc_active,
         active_bridge_type: prepared.active_bridge_type.as_deref(),
-        responses_cache_namespace: prepared.responses_cache_namespace.as_deref(),
-        responses_cache_input: prepared.responses_cache_input.as_deref(),
         anthropic_stream_requested: prepared.anthropic_stream_requested,
     }
 }

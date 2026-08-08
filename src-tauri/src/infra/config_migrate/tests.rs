@@ -391,7 +391,6 @@ fn seed_direct_codex_provider(
             cost_multiplier: 1.0,
             priority: Some(100),
             claude_models: None,
-            model_mapping: None,
             availability_test_model: None,
             limit_5h_usd: None,
             limit_daily_usd: None,
@@ -500,7 +499,6 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
             cost_multiplier: 1.0,
             priority: Some(100),
             claude_models: None,
-            model_mapping: None,
             availability_test_model: None,
             limit_5h_usd: None,
             limit_daily_usd: None,
@@ -2201,7 +2199,7 @@ VALUES (?1, ?2, 1, 1)
     assert_eq!(provider.oauth_last_refreshed_at, Some(1999999999));
     assert_eq!(provider.oauth_last_error.as_deref(), Some("last error"));
     assert_eq!(provider.supported_models_json, "{\"gpt-5.4\":true}");
-    assert_eq!(provider.model_mapping_json, "{\"gpt-5.4\":\"gpt-5.4\"}");
+    assert_eq!(provider.model_mapping_json, "{}");
 
     let codex_workspace = bundle
         .workspaces
@@ -2554,6 +2552,15 @@ fn config_import_v2_restores_full_prompt_and_skill_payload() {
         )
         .expect("oauth id token");
     assert_eq!(oauth_id_token.as_deref(), Some("id-token"));
+
+    let model_mapping_json: String = conn
+        .query_row(
+            "SELECT model_mapping_json FROM providers WHERE name = 'oauth-provider'",
+            [],
+            |row| row.get(0),
+        )
+        .expect("normalized model mapping");
+    assert_eq!(model_mapping_json, "{}");
 
     let skill_enabled_count: i64 = conn
         .query_row("SELECT COUNT(1) FROM workspace_skill_enabled", [], |row| {
@@ -3868,6 +3875,28 @@ fn config_v4_provider_uuid_preflight_rejects_invalid_duplicate_and_broken_source
     assert!(target.source_provider_id.is_none());
     assert!(target.source_provider_uuid.is_none());
     prepare_config_import(standalone).expect("standalone bridge remains importable");
+}
+
+#[test]
+fn config_import_rejects_legacy_codex_translation_before_clearing_existing_data() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let existing = seed_direct_codex_provider(&test_app, "Existing provider");
+
+    let mut bundle = config_export(&app, &test_app.db).expect("export legacy probe");
+    bundle.providers[0].bridge_type = Some("codex_to_openai_responses".to_string());
+
+    let error =
+        config_import(&app, &test_app.db, bundle).expect_err("legacy translation import must fail");
+    assert_eq!(error.code(), "CODEX_PROVIDER_TRANSLATION_UNSUPPORTED");
+
+    let conn = test_app
+        .db
+        .open_connection()
+        .expect("open preserved provider db");
+    let preserved = crate::providers::get_by_id(&conn, existing.id)
+        .expect("existing provider must remain after preflight rejection");
+    assert_eq!(preserved.name, "Existing provider");
 }
 
 #[test]

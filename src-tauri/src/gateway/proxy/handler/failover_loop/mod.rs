@@ -16,8 +16,6 @@ mod loop_helpers;
 mod request_end_helpers;
 
 // --- prepare/ : provider selection & request shaping ---
-#[path = "prepare/bridge_preparation.rs"]
-mod bridge_preparation;
 #[path = "prepare/claude_metadata_user_id_injection.rs"]
 mod claude_metadata_user_id_injection;
 #[path = "prepare/claude_model_mapping.rs"]
@@ -332,35 +330,6 @@ where
             provider_iterator::PreparationOutcome::Ready(p) => *p,
             provider_iterator::PreparationOutcome::ReadyLimitReached => break,
             provider_iterator::PreparationOutcome::Skipped => continue,
-            provider_iterator::PreparationOutcome::Terminal(reason) => {
-                let owned = finalize_owned_from_input(&input);
-                return finalize::terminal_request_error(finalize::TerminalRequestErrorInput {
-                    state: &input.state,
-                    abort_guard: &mut abort_guard,
-                    status: StatusCode::BAD_REQUEST,
-                    observe: input.observe_request,
-                    attempts: std::mem::take(&mut run_state.attempts),
-                    cli_key: owned.cli_key,
-                    method_hint: owned.method_hint,
-                    forwarded_path: owned.forwarded_path,
-                    query: owned.query,
-                    trace_id: owned.trace_id,
-                    started,
-                    created_at_ms,
-                    created_at,
-                    session_id: owned.session_id,
-                    requested_model: run_state
-                        .active_requested_model
-                        .clone()
-                        .or(owned.requested_model),
-                    special_settings: owned.special_settings,
-                    verbose_provider_error: input.verbose_provider_error,
-                    error_category: reason.error_category,
-                    error_code: reason.error_code,
-                    reason: reason.reason,
-                })
-                .await;
-            }
         };
 
         sync_codex_prepared_active_requested_model(

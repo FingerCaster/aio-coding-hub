@@ -81,7 +81,6 @@ function createProviderSummary(overrides: Partial<ProviderSummary> = {}): Provid
     base_urls: ["https://example.com"],
     base_url_mode: "order",
     claude_models: {},
-    model_mapping: { default_model: null, exact: {} },
     enabled: true,
     priority: 0,
     cost_multiplier: 1,
@@ -129,18 +128,18 @@ describe("services/providers/providers", () => {
     expect(info.effectiveAuthMode).toBe("api_key");
   });
 
-  it("classifies codex bridge types as bridge edit mode", () => {
+  it("does not classify unsupported bridge types as cx2cc", () => {
     const info = getProviderTypeInfo(
       createProviderSummary({
         cli_key: "codex",
         source_provider_id: 7,
-        bridge_type: "codex_to_openai_chat",
+        bridge_type: "unsupported_bridge",
       })
     );
 
-    expect(info.isBridge).toBe(true);
+    expect(info.isBridge).toBe(false);
     expect(info.isCx2cc).toBe(false);
-    expect(info.effectiveAuthMode).toBe("cx2cc");
+    expect(info.effectiveAuthMode).toBe("api_key");
   });
 
   it("rethrows and logs when invoke fails", async () => {
@@ -191,7 +190,6 @@ describe("services/providers/providers", () => {
       costMultiplier: 1,
       priority: null,
       claudeModels: null,
-      modelMapping: null,
       limit5hUsd: null,
       limitDailyUsd: null,
       dailyResetMode: "fixed",
@@ -241,7 +239,6 @@ describe("services/providers/providers", () => {
       costMultiplier: 1,
       priority: null,
       claudeModels: null,
-      modelMapping: null,
       limit5hUsd: null,
       limitDailyUsd: null,
       dailyResetMode: "fixed",
@@ -281,7 +278,6 @@ describe("services/providers/providers", () => {
       costMultiplier: 1,
       priority: null,
       claudeModels: null,
-      modelMapping: null,
       limit5hUsd: null,
       limitDailyUsd: null,
       dailyResetMode: "fixed",
@@ -316,7 +312,6 @@ describe("services/providers/providers", () => {
         costMultiplier: 1,
         priority: null,
         claudeModels: null,
-        modelMapping: null,
         limit5hUsd: null,
         limitDailyUsd: null,
         dailyResetMode: "fixed",
@@ -462,7 +457,6 @@ describe("services/providers/providers", () => {
       costMultiplier: 1,
       priority: null,
       claudeModels: null,
-      modelMapping: null,
       limit5hUsd: null,
       limitDailyUsd: null,
       dailyResetMode: "fixed",
@@ -533,7 +527,6 @@ describe("services/providers/providers", () => {
         costMultiplier: 1,
         priority: null,
         claudeModels: null,
-        modelMapping: null,
         limit5hUsd: null,
         limitDailyUsd: null,
         dailyResetMode: "fixed",
@@ -555,7 +548,6 @@ describe("services/providers/providers", () => {
         costMultiplier: 1,
         priority: null,
         claudeModels: null,
-        modelMapping: null,
         limit5hUsd: null,
         limitDailyUsd: null,
         dailyResetMode: "fixed",

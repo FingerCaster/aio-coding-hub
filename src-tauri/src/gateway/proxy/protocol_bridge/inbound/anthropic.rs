@@ -541,14 +541,11 @@ mod tests {
     fn default_ctx() -> BridgeContext {
         BridgeContext {
             claude_models: Default::default(),
-            model_mapping: Default::default(),
             cx2cc_settings: default_settings(),
             requested_model: None,
             mapped_model: None,
             stream_requested: false,
             is_chatgpt_backend: false,
-            responses_cache_namespace: None,
-            responses_cache_input: None,
         }
     }
 

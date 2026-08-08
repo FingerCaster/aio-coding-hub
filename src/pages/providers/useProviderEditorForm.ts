@@ -4,7 +4,6 @@ import { useForm } from "react-hook-form";
 import type { ActiveUiContribution, JsonValue } from "../../generated/bindings";
 import type {
   ClaudeModels,
-  ModelMapping,
   ProviderExtensionValuesInput,
   ProviderAccountUsageResult,
   ProviderOAuthDeviceCodeStartResult,
@@ -37,9 +36,7 @@ import { useSettingsQuery } from "../../query/settings";
 import {
   DEFAULT_FORM_VALUES,
   CX2CC_GLOBAL_SOURCE_VALUE,
-  type CodexBridgeTarget,
   deriveAuthMode,
-  deriveCodexBridgeTarget,
   deriveCx2ccSourceValue,
   cliNameFromKey,
   normalizeTagsForCostMultiplier,
@@ -309,15 +306,7 @@ function firstProviderAccountUsageBaseOrigin(rows: BaseUrlRow[]): string | null 
 }
 
 export function useProviderEditorForm(props: ProviderEditorDialogProps) {
-  const {
-    open,
-    onOpenChange,
-    onSaved,
-    onModelFetchFailedAfterSave,
-    codexProviders = [],
-    bridgeSourceProviders,
-  } = props;
-  const codexBridgeSourceProviders = bridgeSourceProviders ?? codexProviders;
+  const { open, onOpenChange, onSaved, onModelFetchFailedAfterSave, codexProviders = [] } = props;
 
   const mode = props.mode;
   const cliKey = mode === "create" ? props.cliKey : props.provider.cli_key;
@@ -342,10 +331,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   }, []);
   const [pingingAll, setPingingAll] = useState(false);
   const [claudeModels, setClaudeModels] = useState<ClaudeModels>({});
-  const [modelMapping, setModelMapping] = useState<ModelMapping>({
-    default_model: null,
-    exact: {},
-  });
   const [testModel, setTestModel] = useState("");
   const [tags, setTags] = useState<string[]>([]);
   const [tagInput, setTagInput] = useState("");
@@ -364,9 +349,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   );
   const [cx2ccSourceValue, setCx2ccSourceValue] = useState<string>(
     deriveCx2ccSourceValue(editProvider)
-  );
-  const [codexBridgeTarget, setCodexBridgeTarget] = useState<CodexBridgeTarget>(
-    deriveCodexBridgeTarget(editProvider)
   );
   const [oauthStatus, setOauthStatus] = useState<OAuthStatusValue>(null);
   const [oauthLoading, setOauthLoading] = useState(false);
@@ -422,9 +404,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       ? Number(cx2ccSourceValue)
       : null;
   const selectedCx2ccSourceProvider = sourceProviderId
-    ? (codexBridgeSourceProviders.find((provider) => provider.id === sourceProviderId) ??
-        codexProviders.find((provider) => provider.id === sourceProviderId)) ||
-      null
+    ? (codexProviders.find((provider) => provider.id === sourceProviderId) ?? null)
     : null;
   const codexGatewayBaseUrl = codexGatewayBaseOrigin
     ? `${codexGatewayBaseOrigin.replace(/\/$/, "")}/v1`
@@ -445,12 +425,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const resolveCx2ccInheritedMultiplier = useCallback(
     (sourceValue: string) => {
       if (sourceValue === CX2CC_GLOBAL_SOURCE_VALUE) return "0";
-      const sourceProvider = codexBridgeSourceProviders.find(
-        (provider) => String(provider.id) === sourceValue
-      );
+      const sourceProvider = codexProviders.find((provider) => String(provider.id) === sourceValue);
       return String(sourceProvider?.cost_multiplier ?? 1.0);
     },
-    [codexBridgeSourceProviders]
+    [codexProviders]
   );
 
   const setAuthModeFromUi = useCallback(
@@ -930,7 +908,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     editingProviderId,
     createInitialValues,
     authMode,
-    codexBridgeTarget,
     costMultiplierValue,
     isCodexGatewaySource,
     selectedCx2ccSourceProvider,
@@ -946,7 +923,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setBaseUrlRows: replaceBaseUrlRows,
     setPingingAll,
     setClaudeModels,
-    setModelMapping,
     setTestModel,
     setTags,
     setTagInput,
@@ -955,7 +931,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setUpstreamRetryPolicyDraft,
     setAuthMode,
     setCx2ccSourceValue,
-    setCodexBridgeTarget,
     setOauthStatus,
     setOauthLoading,
     setCx2ccFallbackModels,
@@ -976,7 +951,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
         }).length
       : 0;
   const supportsOAuth = cliKey === "codex" || cliKey === "gemini" || cliKey === "grok";
-  const supportsCx2cc = cliKey === "claude" || cliKey === "codex";
+  const supportsCx2cc = cliKey === "claude";
 
   const buildPayloadContext = useCallback(
     (): ProviderEditorPayloadContext => ({
@@ -984,12 +959,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       cliKey,
       editingProviderId,
       authMode,
-      codexBridgeTarget,
       baseUrlMode,
       baseUrlRows,
       tags,
       claudeModels,
-      modelMapping,
       testModel,
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
@@ -1033,12 +1006,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       cliKey,
       editingProviderId,
       authMode,
-      codexBridgeTarget,
       baseUrlMode,
       baseUrlRows,
       tags,
       claudeModels,
-      modelMapping,
       testModel,
       streamIdleTimeoutSeconds,
       upstreamRetryPolicyOverrideEnabled,
@@ -1287,8 +1258,6 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     newBaseUrlRow,
     claudeModels,
     setClaudeModels,
-    modelMapping,
-    setModelMapping,
     testModel,
     setTestModel,
     claudeModelCount,
@@ -1305,14 +1274,11 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     oauthDeviceError,
     cx2ccSourceValue,
     setCx2ccSourceValue: setCx2ccSourceValueFromUi,
-    codexBridgeTarget,
-    setCodexBridgeTarget,
     isCodexGatewaySource,
     selectedCx2ccSourceProvider,
     codexGatewayBaseUrl,
     cx2ccFallbackModels,
     codexProviders,
-    codexBridgeSourceProviders,
     extensionValuesByContributionKey,
     setExtensionValue,
     accountUsageAdapterKind,

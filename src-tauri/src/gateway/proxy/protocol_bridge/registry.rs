@@ -4,10 +4,7 @@
 //! produce fully assembled [`Bridge`] instances.
 
 use super::bridge::Bridge;
-use crate::domain::providers::{
-    CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
-    CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
-};
+use crate::domain::providers::CX2CC_BRIDGE_TYPE;
 use std::collections::HashMap;
 use std::sync::{OnceLock, RwLock};
 
@@ -18,18 +15,6 @@ fn registry() -> &'static RwLock<HashMap<&'static str, BridgeFactory>> {
     REGISTRY.get_or_init(|| {
         let mut m = HashMap::new();
         m.insert(CX2CC_BRIDGE_TYPE, cx2cc_factory as BridgeFactory);
-        m.insert(
-            CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
-            codex_to_openai_chat_factory as BridgeFactory,
-        );
-        m.insert(
-            CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
-            codex_to_anthropic_messages_factory as BridgeFactory,
-        );
-        m.insert(
-            CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
-            codex_to_openai_responses_factory as BridgeFactory,
-        );
         RwLock::new(m)
     })
 }
@@ -75,40 +60,5 @@ fn cx2cc_factory() -> Bridge {
         inbound: Box::new(super::inbound::anthropic::AnthropicMessagesInbound),
         outbound: Box::new(super::outbound::openai_responses::OpenAIResponsesOutbound),
         model_mapper: Box::new(super::cx2cc::CX2CCModelMapper),
-    }
-}
-
-fn codex_to_openai_chat_factory() -> Bridge {
-    Bridge {
-        bridge_type: CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
-        inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
-        outbound: Box::new(super::outbound::openai_chat::OpenAIChatCompletionsOutbound),
-        model_mapper: Box::new(ProviderModelMapper),
-    }
-}
-
-fn codex_to_anthropic_messages_factory() -> Bridge {
-    Bridge {
-        bridge_type: CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
-        inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
-        outbound: Box::new(super::outbound::anthropic_messages::AnthropicMessagesOutbound),
-        model_mapper: Box::new(ProviderModelMapper),
-    }
-}
-
-fn codex_to_openai_responses_factory() -> Bridge {
-    Bridge {
-        bridge_type: CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE,
-        inbound: Box::new(super::inbound::openai_responses::OpenAIResponsesInbound),
-        outbound: Box::new(super::outbound::openai_responses::OpenAIResponsesOutbound),
-        model_mapper: Box::new(ProviderModelMapper),
-    }
-}
-
-struct ProviderModelMapper;
-
-impl super::traits::ModelMapper for ProviderModelMapper {
-    fn map(&self, source_model: &str, ctx: &super::traits::BridgeContext) -> String {
-        ctx.model_mapping.map_model(source_model)
     }
 }

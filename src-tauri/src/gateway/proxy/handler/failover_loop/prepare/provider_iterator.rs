@@ -36,8 +36,6 @@ pub(super) struct PreparedProvider {
     pub(super) codex_chatgpt_account_id: Option<String>,
     pub(super) cx2cc_active: bool,
     pub(super) active_bridge_type: Option<String>,
-    pub(super) responses_cache_namespace: Option<String>,
-    pub(super) responses_cache_input: Option<Vec<serde_json::Value>>,
     pub(super) bridge_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_source: Option<(crate::providers::ProviderForGateway, String)>,
     pub(super) cx2cc_codex_session_id: Option<String>,
@@ -79,7 +77,6 @@ pub(super) enum PreparationOutcome {
     Ready(Box<PreparedProvider>),
     ReadyLimitReached,
     Skipped,
-    Terminal(SkipReason),
 }
 
 /// Structured skip reason used by CX2CC preparation and other skip paths.
@@ -130,9 +127,8 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     let is_cx2cc_bridge = provider.is_cx2cc_bridge();
     let provider_bridged =
         crate::providers::has_bridged_input_semantics(provider.source_provider_id, bridge_type);
-    let is_non_cx2cc_bridge = bridge_type.is_some() && !is_cx2cc_bridge;
 
-    let mut effective_credential = if is_cx2cc_bridge || is_non_cx2cc_bridge {
+    let mut effective_credential = if is_cx2cc_bridge {
         String::new()
     } else {
         match resolve_effective_credential(&input.state, &input.cli_key, provider).await {
@@ -255,8 +251,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
     // --- CX2CC translation ---
     let mut cx2cc_active = false;
     let mut active_bridge_type: Option<String> = None;
-    let mut responses_cache_namespace: Option<String> = None;
-    let mut responses_cache_input: Option<Vec<serde_json::Value>> = None;
     let mut bridge_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_source: Option<(crate::providers::ProviderForGateway, String)> = None;
     let mut cx2cc_codex_session_id: Option<String> = None;
@@ -303,48 +297,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
             }
         }
     }
-    if let Some(bridge_type) = bridge_type.filter(|_| is_non_cx2cc_bridge) {
-        let outcome = bridge_preparation::prepare(bridge_preparation::BridgePreparationInput {
-            input,
-            provider_id,
-            provider_name_base: &provider_name_base,
-            bridge_type,
-            source_id: provider.source_provider_id,
-            upstream_body_bytes,
-        })
-        .await;
-        match outcome {
-            bridge_preparation::BridgePreparationOutcome::Ready(boxed) => {
-                let result = *boxed;
-                active_bridge_type = Some(result.active_bridge_type);
-                bridge_source = result.bridge_source;
-                effective_credential = result.effective_credential;
-                provider_base_url_base = result.provider_base_url_base;
-                upstream_forwarded_path = result.upstream_forwarded_path;
-                upstream_query = result.upstream_query;
-                upstream_body_bytes = result.upstream_body_bytes;
-                strip_request_content_encoding = result.strip_request_content_encoding;
-                responses_cache_namespace = result.responses_cache_namespace;
-                responses_cache_input = result.responses_cache_input;
-            }
-            bridge_preparation::BridgePreparationOutcome::Terminal(reason) => {
-                provider_checks::skip_with_reason(
-                    attempts,
-                    provider_id,
-                    &provider_name_base,
-                    &provider_base_url_display,
-                    input.started.elapsed().as_millis(),
-                    SkipReason {
-                        error_category: reason.error_category,
-                        error_code: reason.error_code,
-                        reason: reason.reason.clone(),
-                    },
-                );
-                return PreparationOutcome::Terminal(reason);
-            }
-        }
-    }
-
     let circuit_snapshot = gate_allow.circuit_after;
     let dispatch_ownership = gate_allow.dispatch_ownership;
     if counters.providers_tried >= counters.ready_limit {
@@ -443,8 +395,6 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
         codex_chatgpt_account_id,
         cx2cc_active,
         active_bridge_type,
-        responses_cache_namespace,
-        responses_cache_input,
         bridge_source,
         cx2cc_source,
         cx2cc_codex_session_id,

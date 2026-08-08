@@ -335,14 +335,11 @@ mod tests {
     fn stub_ctx() -> BridgeContext {
         BridgeContext {
             claude_models: crate::domain::providers::ClaudeModels::default(),
-            model_mapping: Default::default(),
             cx2cc_settings: crate::gateway::proxy::cx2cc::settings::Cx2ccSettings::default(),
             requested_model: Some("claude-sonnet".into()),
             mapped_model: None,
             stream_requested: false,
             is_chatgpt_backend: false,
-            responses_cache_namespace: None,
-            responses_cache_input: None,
         }
     }
 

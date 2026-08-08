@@ -19,7 +19,6 @@ function provider(id: number, cliKey: ProviderSummary["cli_key"], name: string):
     base_urls: [],
     base_url_mode: "order",
     claude_models: {},
-    model_mapping: { default_model: null, exact: {} },
     availability_test_model: null,
     enabled: false,
     priority: 0,
