@@ -163,6 +163,12 @@ struct ProviderAccountUsageRouteRead {
     recovery_epoch: u64,
 }
 
+struct AccountUsageRecoveryInput<'a> {
+    provider_recovery_epochs: &'a [(i64, u64)],
+    blocked_provider_ids: &'a [i64],
+    session_recovery_epoch_baseline: u64,
+}
+
 ProviderAccountUsageTarget::from_gateway_fetch_context(provider_id, context);
 ProviderAccountUsageRuntimeState::route_read(target, monotonic_now, wall_now_unix);
 ProviderAccountUsageRuntimeState::global_recovery_epoch();
@@ -213,6 +219,19 @@ they do not parse extension JSON or recompute its token.
   hides any Provider epoch from readers but retains transition memory; a later
   fresh available may publish once after a blocked state or re-expose the
   already published epoch without incrementing it.
+- Provider resolution reads each candidate once and projects that same result
+  into either a nonzero recovery epoch or `blocked_provider_ids`. It must never
+  combine an epoch from one read with a blocked classification from another.
+- `blocked_provider_ids` is a planner hint only for the higher-priority prefix
+  of an effectively bound fallback Session. It suppresses natural/compaction/
+  route-change/aggressive targets, observations, and reservations while fresh
+  Blocked remains trusted. It does not delete ordinary candidates or bypass the
+  common send-time gate for unbound, current-bound, forced, or normal fallback
+  selection.
+- An all-blocked compaction prefix creates no reservation and leaves the
+  fingerprint pending. Fresh ConfirmedAvailable removes the hint and exposes a
+  newer recovery epoch; UnknownAllow removes the hint without fabricating a
+  recovery signal, and the common gate still handles Available-to-Blocked races.
 - Epoch increment is checked. While holding the route-state write lock, write
   snapshot, Provider epoch, and confirmed state first, then Release-store the
   process-global epoch. Session creation Acquire-loads the global baseline.
@@ -241,6 +260,9 @@ they do not parse extension JSON or recompute its token.
 | Fresh `expired` with future expiry | `UnknownAllow`; publish no recovery |
 | Fresh consistent `expired` | `Blocked(Expired)` |
 | Auth/config/query/unsupported result | `UnknownAllow`; retain same-generation transition memory |
+| Bound fallback Session repeatedly sees fresh Blocked higher-priority P1 | Suppress P1 failback target/observation/reservation; log only the actual fallback request |
+| New/effectively-unbound Session sees the same P1 | Preserve P1 in ordinary candidates; common gate records one account skip |
+| Planner sees Available but common gate later sees Blocked | Record one account skip and fallback in that request; suppress P1 on the next request |
 | Blocked then fresh available in same generation | Publish exactly one Provider/global recovery epoch |
 | Reblocked after recovery | Clear Provider epoch immediately |
 | Epoch is `u64::MAX` | Allow available; publish zero Provider marker; do not wrap |
@@ -252,12 +274,17 @@ they do not parse extension JSON or recompute its token.
 - Good: a blocked Provider produces a query failure and immediately becomes
   fail-open; the next fresh available result publishes one recovery signal,
   while repeated available results publish none.
+- Good: a Session initially logs P1 account skip and binds P2; repeated
+  post-compaction requests while P1 remains fresh Blocked contain only P2, and
+  the first real P1 send after recovery consumes the pending fingerprint.
 - Base: an upgraded Provider lacks the new field, creates no Gateway target,
   and follows the exact pre-feature route.
 - Bad: reuse the one-hour display TTL for routing, retain a stale zero-balance
   block, or synchronously fetch account state from a model request.
 - Bad: treat query failure as recovery, use a global consumed boolean, or
   publish the global epoch before the Provider snapshot carries it.
+- Bad: consume the Session trigger when the account gate skips, or repeatedly
+  create an intent for a target that is known to return before `claim_for_provider`.
 
 ### 6. Tests Required
 
@@ -274,6 +301,11 @@ they do not parse extension JSON or recompute its token.
   blocked-to-error-to-available, temporary epoch hiding/re-exposure, reblock,
   stale generation, token/permission changes, Release/Acquire publication, and
   checked overflow.
+- Planner tests must cover stable-bound blocked suppression for natural and
+  explicit triggers, later-due candidates, all-blocked Stay, unbound audit, and
+  route-change confirmation. A route test must cover initial skip, two repeated
+  same-Session compaction requests with one fallback attempt each, then recovery
+  and real fingerprint consumption.
 - Integration tests must prove DB-loaded `ProviderForGateway` stores the
   precomputed target, request reads perform no account network wait, and
   successful mutation/import reconciliation removes obsolete targets.
@@ -305,6 +337,19 @@ match runtime.route_read(target, Instant::now(), now_unix).projection {
 
 Provider loading owns canonical target construction; the request path is a
 bounded synchronous memory read and every uncertain state fails open.
+
+Do not turn the planning hint into a second eligibility list:
+
+```rust
+// Wrong: hides the first skip and changes unbound/forced behavior.
+providers.retain(|provider| !blocked_provider_ids.contains(&provider.id));
+
+// Correct: only stable-bound higher-priority failback candidates are omitted;
+// every actually selected candidate still reaches the common gate.
+let failback_targets = higher_prefix
+    .iter()
+    .filter(|provider| !blocked_provider_ids.contains(&provider.id));
+```
 
 ## Scenario: NewAPI Model-Token Billing Adapter
 

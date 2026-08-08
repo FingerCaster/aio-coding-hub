@@ -51,6 +51,7 @@ ProbePlannerInput {
 
 AccountUsageRecoveryInput {
     provider_recovery_epochs: &[(provider_id, epoch)],
+    blocked_provider_ids: &[provider_id],
     session_recovery_epoch_baseline:
         session_snapshot.account_usage_recovery_epoch_baseline,
 }
@@ -206,6 +207,26 @@ FailoverAttempt {
   epochs do not. Account recovery never turns `OPEN` or `HALF_OPEN` into Direct,
   never closes a circuit, and never creates a new probe trigger; existing
   circuit due/cooldown/single-flight planning remains authoritative.
+- Resolution must derive `provider_recovery_epochs` and `blocked_provider_ids`
+  from the same `route_read` result for each candidate. Only a current trusted
+  `Blocked(ZeroBalance|Expired)` enters the blocked set; missing, stale, failed,
+  conflicting, unconfigured, lock-contended, or gate-off state remains
+  `UnknownAllow` and must not suppress planning.
+- For a Session with an effective fallback binding, account blocking is a
+  failback-planning hint for the higher-priority prefix only. Natural,
+  compaction, route-change, and aggressive planning must omit a blocked
+  candidate before creating a Direct/Probe target, `not_triggered` observation,
+  or dispatch reservation. Do not remove the Provider from the ordinary
+  candidate list: new/effectively-unbound Sessions, the current bound Provider,
+  forced requests, and normal fallback still reach the common gate when they
+  actually select it.
+- If every higher-priority target is account-blocked, natural/compaction state
+  remains pending with no synthetic attempt or reservation. A route change may
+  confirm its new fingerprint without a send; a later fresh recovery epoch
+  re-enables the Provider. The common gate remains authoritative for races: a
+  candidate that becomes blocked after planning records one ordinary account
+  skip in that request, then the next request observes the blocked planning
+  hint.
 - A request already planned while another owner still holds the probe lease may
   record `in_flight` and complete on current `pX`. After the winner succeeds,
   that follower's next eligible request sees the newer `CLOSED` recovery epoch,
@@ -381,6 +402,9 @@ FailoverAttempt {
 | Account projection is absent/stale/failed/conflicting or gate is off | Allow through this gate; preserve existing later gates |
 | Every candidate is account blocked | HTTP 503 `GW_ALL_PROVIDERS_UNAVAILABLE`, all account skips retained, no `Retry-After` |
 | Account block plus circuit/limit denial | HTTP 503; retain the other gate's trusted `Retry-After`, but write no recent-error cache entry |
+| Session is bound to P2 while higher-priority P1 remains fresh account-blocked | Omit P1 from failback targets and `not_triggered` observations; send/log only P2 and create no P1 reservation |
+| P1 is blocked but the Session has no effective binding | Keep P1 in ordinary selection; the common gate records the first account skip before fallback |
+| P1 is blocked during repeated Codex compaction turns, then becomes fresh available | Keep the fingerprint pending without repeated P1 rows; next eligible request Direct-dispatches P1 and consumes it only at transport send |
 | A previously blocked Provider becomes fresh available after Session baseline | If circuit is CLOSED, natural planner emits Direct in route order; bind only on real success |
 | Account recovery epoch is equal/older/zero or Provider reblocks | Do not plan Direct from account recovery |
 | Account recovery exists while circuit is OPEN/HALF_OPEN | Do not bypass circuit; use existing probe/cooldown rules |
@@ -431,6 +455,10 @@ FailoverAttempt {
 - Good: P1 is account-blocked and P2 succeeds. P1 records a normal filtered
   account skip before any probe lease or Ready slot, P1 makes zero calls, and
   the Session binds P2 only after P2's real success.
+- Good: that Session's next two compaction turns see the same fresh Blocked P1,
+  log only the real P2 success, and leave the compaction fingerprint pending.
+  After P1 publishes a recovery epoch, the next turn sends P1 and only that
+  real transport send consumes the fingerprint.
 - Good: P1 account-blocked plus P2 circuit-open returns a mixed 503 with P2's
   trusted `Retry-After`; after P1 becomes available, the identical next request
   reaches P1 because the mixed response was not cached.
@@ -475,6 +503,9 @@ FailoverAttempt {
 - Bad: using `state_revision` as recovery evidence. Dispatch, failure, expiry,
   reset, and other transitions also advance that revision, so it is not a
   success-only recovery signal.
+- Bad: repeatedly planning a fresh account-blocked P1, letting its pre-claim
+  gate skip drop the unconsumed intent, and assuming P2 fallback success will
+  consume a reservation that never targeted P2.
 - Bad: classify an account-only skipped chain as upstream failure, derive a
   `Retry-After` from the refresh interval, cache a mixed account 503, or reuse
   the circuit recovery epoch for balance recovery.
@@ -501,6 +532,12 @@ FailoverAttempt {
   older, zero, stale, failed, reblocked, `OPEN`, and `HALF_OPEN` never gain an
   account-derived Direct. Mix circuit and account recoveries across an
   arbitrary prefix and preserve route order.
+- Planner-test fresh blocked IDs before all dispatch modes. A blocked natural
+  candidate produces neither target nor observation, does not starve a later
+  due candidate, and an all-blocked compaction prefix returns Stay without a
+  reservation. Keep an explicit unbound case proving the first candidate still
+  reaches the common gate, plus a route-change case that confirms the route
+  without reserving an all-blocked prefix.
 - Circuit-test that only an applied dispatched probe success publishes a
   monotonic recovery epoch. Failure, stale generation, abandon, and ordinary
   success must leave it unchanged, and publication must not expose the global
@@ -561,6 +598,11 @@ FailoverAttempt {
   account code/reason, empty circuit/probe/index metadata, zero upstream calls,
   unchanged circuit snapshot, and fallback success. Cover zero balance and
   expiry through the shared normalized projection.
+- Route-test one Session across at least three requests: initial P1 account
+  skip plus P2 success, two identical post-compaction turns with only P2 in raw
+  attempts, then fresh P1 recovery with one P1 success. Assert the compaction
+  fingerprint stays pending during suppression and commits only on the real P1
+  transport send.
 - Route-test an account-only all-unavailable 503 with no `Retry-After`, then a
   mixed account plus circuit/limit 503 with the other gate's trusted header.
   Make the blocked snapshot available and repeat the exact request fingerprint;
@@ -628,6 +670,26 @@ circuit.record_success(provider_id);
 let route = account_runtime.route_read(target, monotonic_now, wall_now);
 let recovered = circuit.state == Closed
     && route.recovery_epoch > session.account_usage_recovery_epoch_baseline;
+```
+
+Do not make a durable account block replay a pre-claim reservation on every
+request, and do not solve that by consuming the trigger at the gate:
+
+```rust
+// Wrong: P1 is planned every turn; its account gate returns before claim, so
+// intent drop leaves the compaction trigger pending forever.
+targets.push(plan_target(p1));
+
+// Also wrong: removing P1 from the ordinary provider list hides the first
+// authoritative skip and changes unbound/forced routing.
+providers.retain(|provider| provider.id != p1);
+
+// Correct: one route_read supplies both recovery and trusted-blocked planning
+// data. Suppress only the stable-bound higher-priority failback prefix; the
+// ordinary list and common send-time gate remain intact.
+if !account_usage.blocked_provider_ids.contains(&p1) {
+    targets.push(plan_target(p1));
+}
 ```
 
 Do not use a persisted but circuit-denied binding as the probe planner anchor:

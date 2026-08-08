@@ -48,8 +48,11 @@ The query function calls `providerAccountUsageFetch(providerId)` and returns
 - Cache identity is provider ID. Editing or deleting a provider removes only
   that provider's account-usage key; refresh does not invalidate another
   provider, provider lists, OAuth quota, availability, or gateway circuit data.
-- Account usage is display-only. Refresh never tests availability, resets a
-  circuit, mutates/reorders providers, or changes routing health.
+- The TanStack query is the display-cache owner. Refresh never directly tests
+  availability, resets a circuit, mutates/reorders providers, or changes
+  routing health. When `routeGateEnabled` is explicit, the same backend
+  completion may update the process-owned projection below; React is not a
+  route owner or second account-usage cache.
 
 ### 4. Validation & Error Matrix
 
@@ -117,6 +120,190 @@ return queryClient.fetchQuery({ ...options, staleTime: 0 });
 Cancellation establishes the new ordering boundary, and the forced shared
 query remains the only cache writer.
 
+## Scenario: Explicit Account-Usage Route Gate And Recovery
+
+### 1. Scope / Trigger
+
+Use this scenario when changing `routeGateEnabled`, account-usage runtime
+targets or leases, route projection, Gateway refresh, Provider invalidation,
+failback planning, or the account-usage recovery epoch. The feature is opt-in
+and fail-open: uncertain account data must never remove an otherwise eligible
+Provider.
+
+### 2. Signatures
+
+```text
+routeGateEnabled: boolean, default false
+```
+
+```rust
+struct ProviderAccountUsageTarget {
+    provider_id: i64,
+    schedule: ProviderAccountUsageRefreshSchedule,
+    adapter_kind: ProviderAccountUsageAdapterKind,
+    config_token: [u8; 32],
+    custom_permission_ready: bool,
+}
+
+enum ProviderAccountUsageRouteProjection {
+    ConfirmedAvailable,
+    Blocked(ProviderAccountUsageBlockReason),
+    UnknownAllow,
+}
+
+enum ProviderAccountUsageBlockReason { ZeroBalance, Expired }
+
+struct ProviderAccountUsageRouteRead {
+    projection: ProviderAccountUsageRouteProjection,
+    recovery_epoch: u64,
+}
+
+struct AccountUsageRecoveryInput<'a> {
+    provider_recovery_epochs: &'a [(i64, u64)],
+    blocked_provider_ids: &'a [i64],
+    session_recovery_epoch_baseline: u64,
+}
+
+ProviderAccountUsageTarget::from_gateway_fetch_context(provider_id, context);
+ProviderAccountUsageRuntimeState::route_read(target, monotonic_now, wall_now_unix);
+ProviderAccountUsageRuntimeState::global_recovery_epoch();
+```
+
+`ProviderForGateway.account_usage_route_target` is computed after extension
+values are loaded. Planner and common-gate reads reuse that target rather than
+reparsing extension JSON on the request path.
+
+### 3. Contracts
+
+- Missing or non-boolean `routeGateEnabled` normalizes to `false` and remains
+  independent from display-only `timedRefreshEnabled`.
+- A Gateway target requires an enabled direct API-key Provider, configured
+  adapter, explicit route gate, and current permission for custom scripts.
+  OAuth/source/disabled/invalid/unconfirmed Providers create no route consumer.
+- Gateway startup reconciles immediately, then exactly replaces targets through
+  bounded renewable leases. Gateway, desktop, and manual demand share one
+  Provider generation, snapshot, in-flight request, and concurrency cap; a
+  model request never starts or waits for an account query.
+- Route trust requires matching generation/token/adapter/interval, Fresh state,
+  non-future display time, finite fields, and monotonic age strictly below
+  `2 * refreshIntervalSeconds`. Display-cache lifetime never extends route
+  trust.
+- Fresh consistent ZeroBalance blocks only with no positive spendable balance
+  or plan remainder. Fresh consistent Expired blocks unless expiry is in the
+  future. Missing, stale, conflicting, unsupported, auth/config/query failures,
+  and invalid fields return `UnknownAllow`.
+- Fresh Blocked records transition memory and clears its Provider epoch. In one
+  generation, only the first later fresh ConfirmedAvailable publishes a checked
+  Provider/global epoch. Failure/staleness hides the epoch but keeps transition
+  memory; it never fabricates recovery.
+- Publish snapshot, Provider epoch, and confirmed state under the route-state
+  lock before Release-storing the global epoch. New bindings Acquire-load their
+  baseline. Overflow keeps the Provider routable without wrapping or publishing.
+- Resolution reads each candidate once and maps that same route read to either a
+  nonzero recovery epoch or `blocked_provider_ids`. It must not join values from
+  separate reads.
+- For an effective fallback binding, fresh Blocked suppresses only the
+  higher-priority failback prefix before natural/compaction/route-change/
+  aggressive target, observation, and reservation creation. Do not remove
+  ordinary candidates: new/unbound Sessions, current-bound, forced, and normal
+  fallback selection still reach the common gate.
+- An all-blocked compaction prefix creates no reservation and leaves its
+  fingerprint pending. Fresh recovery removes the hint and exposes a newer
+  epoch; the first real model transport send commits the pending trigger and
+  only complete success binds the recovered Provider.
+- The common gate remains authoritative for races. If planning sees Available
+  and the gate later sees Blocked, that request records one ordinary account
+  skip and falls back; the next request sees the blocked planning hint.
+- Config/generation/permission/gate changes reject stale completions and reset
+  route state. Route diagnostics contain no amount, script, Origin, credential,
+  identity, upstream message, or body.
+
+### 4. Validation & Error Matrix
+
+| Input / state | Route projection / action |
+| --- | --- |
+| Field missing, malformed, or false | No Gateway target; existing route behavior |
+| Snapshot missing, contended, mismatched, or age `>= 2x` | `UnknownAllow`; hide recovery epoch |
+| Fresh zero with no positive spendable amount | `Blocked(ZeroBalance)` |
+| Fresh zero with positive balance/plan remainder | `UnknownAllow`; no recovery |
+| Fresh expired with future expiry | `UnknownAllow`; no recovery |
+| Fresh consistent expired | `Blocked(Expired)` |
+| Auth/config/query/unsupported result | `UnknownAllow`; retain transition memory |
+| Bound P2 repeatedly sees fresh Blocked higher P1 | Suppress P1 target/observation/reservation; log only actual P2 |
+| New/effectively-unbound Session sees the same P1 | Preserve P1; common gate records the first account skip |
+| Planner sees Available, gate later sees Blocked | One skip plus fallback now; suppress on the next request |
+| Blocked then fresh Available | Publish one Provider/global epoch; re-enable eligible Direct failback |
+| Reblocked after recovery | Clear Provider epoch immediately |
+| Epoch reaches `u64::MAX` | Allow Available; publish no marker and never wrap |
+
+### 5. Good / Base / Bad Cases
+
+- Good: display timed refresh is off, route gating is on, and the Gateway lease
+  maintains one bounded shared refresh cadence with no UI mounted.
+- Good: initial P1 account skip binds P2; two identical post-compaction turns
+  contain only P2 while P1 stays blocked, then a fresh recovery lets the next
+  real P1 send consume the pending fingerprint.
+- Good: query failure after Blocked immediately fails open without publishing
+  recovery; a later fresh Available publishes exactly one recovery signal.
+- Base: upgraded config lacks the field, creates no target, and preserves old
+  routing exactly.
+- Bad: reuse display TTL for routing, retain stale blocking, synchronously fetch
+  from a model request, or treat query failure as recovery.
+- Bad: consume the Session trigger at the account gate, globally remove P1, or
+  repeatedly create an intent for a known pre-claim denial.
+
+### 6. Tests Required
+
+- Config/projection tests cover default false, field independence, target
+  exclusion, intervals 60/300 at `2x-1` and `2x`, future time, generation/token
+  mismatch, every status, amounts, expiry, and normalized adapter result.
+- Scheduler/recovery tests cover timed-off Gateway demand, exact target
+  replacement, lease lifecycle, coalescing, concurrency, Blocked-to-Available
+  once, Blocked-to-error-to-Available, hidden/re-exposed epoch, reblock,
+  invalidation, Release/Acquire publication, and overflow.
+- Planner tests cover stable-bound blocked suppression for natural and explicit
+  triggers, later-due candidates, all-blocked Stay, unbound audit, and
+  route-change confirmation.
+- Route-test initial P1 skip plus P2 success, two same-Session compaction turns
+  with one P2 attempt each, then fresh P1 recovery and fingerprint consumption
+  only at the real transport boundary.
+- Keep full Rust, generated bindings, frontend tests, typecheck, lint, format,
+  Clippy, secret audit, and diff checks green.
+
+### 7. Wrong vs Correct
+
+#### Wrong
+
+```rust
+let latest = fetch_account_usage(provider.id).await?;
+providers.retain(|provider| !blocked_provider_ids.contains(&provider.id));
+```
+
+This blocks the model request on remote I/O and hides the first authoritative
+skip from unbound/forced routing.
+
+#### Correct
+
+```rust
+let read = runtime.route_read(target, Instant::now(), now_unix);
+match read.projection {
+    Blocked(_) => {
+        blocked_provider_ids.push(provider.id);
+    }
+    ConfirmedAvailable if read.recovery_epoch != 0 => {
+        provider_recovery_epochs.push((provider.id, read.recovery_epoch));
+    }
+    ConfirmedAvailable | UnknownAllow => {}
+}
+
+let failback_targets = higher_prefix
+    .iter()
+    .filter(|provider| !blocked_provider_ids.contains(&provider.id));
+```
+
+One bounded memory read supplies the typed planner hint. The ordinary provider
+list and common send-time gate remain authoritative.
+
 ## Scenario: NewAPI Model-Token Billing Adapter
 
 ### 1. Scope / Trigger
@@ -127,9 +314,9 @@ limits, or error presentation. The production IPC entry remains
 `provider_account_usage_fetch`; this scenario owns the Rust boundary between a
 configured model API key and the display-only `ProviderAccountUsageResult`.
 
-This scenario does not change the query-owner rules above and does not apply
-account-usage results to routing, circuit state, provider availability, order,
-or enablement.
+This adapter does not directly apply account-usage results to routing, circuit
+state, provider availability, order, or enablement. Only the explicit route
+consumer above may read its completed normalized snapshot.
 
 ### 2. Signatures
 

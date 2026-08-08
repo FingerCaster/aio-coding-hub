@@ -9285,6 +9285,32 @@ INSERT INTO codex_managed_profiles(
                 ))
                 .expect("request")
         };
+        let compaction_request = |session_id: &str| {
+            Request::builder()
+                .method(Method::POST)
+                .uri("/v1/responses")
+                .header(header::CONTENT_TYPE, "application/json")
+                .header("session_id", session_id)
+                .body(Body::from(
+                    serde_json::json!({
+                        "model": "gpt-account-recovery",
+                        "stream": false,
+                        "input": [
+                            {
+                                "type": "compaction",
+                                "encrypted_content": "opaque-compaction-state"
+                            },
+                            {
+                                "type": "message",
+                                "role": "user",
+                                "content": [{"type": "input_text", "text": "hello"}]
+                            }
+                        ]
+                    })
+                    .to_string(),
+                ))
+                .expect("compaction request")
+        };
 
         let first_response = router
             .clone()
@@ -9310,6 +9336,44 @@ INSERT INTO codex_managed_profiles(
             Some(fallback_id)
         );
 
+        for request_index in 0..2 {
+            let repeated_response = router
+                .clone()
+                .oneshot(compaction_request(first_session_id))
+                .await
+                .expect("repeated blocked compaction response");
+            assert_eq!(repeated_response.status(), StatusCode::OK);
+            let repeated_log = recv_terminal_request_log(&mut log_rx).await;
+            let repeated_attempts: Value = serde_json::from_str(&repeated_log.attempts_json)
+                .expect("repeated blocked compaction attempts json");
+            let repeated_attempts = repeated_attempts
+                .as_array()
+                .expect("repeated blocked compaction attempt array");
+            assert_eq!(
+                repeated_attempts.len(),
+                1,
+                "blocked failback target must stay out of steady request {request_index}"
+            );
+            assert_eq!(
+                repeated_attempts[0]
+                    .get("provider_id")
+                    .and_then(Value::as_i64),
+                Some(fallback_id)
+            );
+            assert_eq!(
+                repeated_attempts[0].get("outcome").and_then(Value::as_str),
+                Some("success")
+            );
+        }
+        assert_eq!(
+            session
+                .routing_snapshot("codex", first_session_id, now)
+                .expect("first session snapshot")
+                .last_codex_compaction_fingerprint,
+            None,
+            "suppressed balance target must leave compaction pending"
+        );
+
         let other_first_response = router
             .clone()
             .oneshot(request(second_session_id))
@@ -9333,7 +9397,7 @@ INSERT INTO codex_managed_profiles(
             Some(fallback_id)
         );
         assert_eq!(primary_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
-        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
 
         account_usage_runtime.seed_gateway_route_snapshot_for_tests(
             &target,
@@ -9350,7 +9414,7 @@ INSERT INTO codex_managed_profiles(
 
         let second_response = router
             .clone()
-            .oneshot(request(first_session_id))
+            .oneshot(compaction_request(first_session_id))
             .await
             .expect("second route response");
         assert_eq!(second_response.status(), StatusCode::OK);
@@ -9373,12 +9437,20 @@ INSERT INTO codex_managed_profiles(
             session.get_bound_provider("codex", first_session_id, now),
             Some(primary_id)
         );
+        assert!(
+            session
+                .routing_snapshot("codex", first_session_id, now)
+                .expect("recovered first session snapshot")
+                .last_codex_compaction_fingerprint
+                .is_some(),
+            "real recovered dispatch must consume the pending compaction fingerprint"
+        );
         assert_eq!(
             primary_calls.load(std::sync::atomic::Ordering::SeqCst),
             2,
             "first custom recovery performs one base-URL probe and one model request"
         );
-        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
 
         let other_second_response = router
             .oneshot(request(second_session_id))
@@ -9407,7 +9479,7 @@ INSERT INTO codex_managed_profiles(
             3,
             "the second session reuses the selected base URL and sends one model request"
         );
-        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 2);
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 4);
 
         primary_task.abort();
         fallback_task.abort();

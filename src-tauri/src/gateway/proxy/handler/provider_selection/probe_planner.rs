@@ -41,6 +41,7 @@ pub(in crate::gateway::proxy::handler) struct ProbePlannerInput<'a> {
 #[derive(Default)]
 pub(in crate::gateway::proxy::handler) struct AccountUsageRecoveryInput<'a> {
     pub provider_recovery_epochs: &'a [(i64, u64)],
+    pub blocked_provider_ids: &'a [i64],
     pub session_recovery_epoch_baseline: u64,
 }
 
@@ -108,11 +109,19 @@ pub(in crate::gateway::proxy::handler) fn plan_probe_with_account_usage(
     };
 
     if let Some(trigger) = explicit_trigger {
+        let targets: Vec<_> = higher
+            .iter()
+            .filter(|(provider_id, _)| !account_usage.blocked_provider_ids.contains(provider_id))
+            .map(|(provider_id, snapshot)| planned_target(*provider_id, snapshot, trigger))
+            .collect();
+        if targets.is_empty() {
+            return ProbePlannerDecision::Stay {
+                confirm_route: input.route_changed,
+                not_triggered_provider_ids: Vec::new(),
+            };
+        }
         return ProbePlannerDecision::Dispatch {
-            targets: higher
-                .iter()
-                .map(|(provider_id, snapshot)| planned_target(*provider_id, snapshot, trigger))
-                .collect(),
+            targets,
             reservation_trigger: trigger,
             not_triggered_provider_ids: Vec::new(),
         };
@@ -122,6 +131,9 @@ pub(in crate::gateway::proxy::handler) fn plan_probe_with_account_usage(
     let mut not_triggered_provider_ids = Vec::new();
     let mut reservation_trigger = None;
     for (provider_id, snapshot) in higher {
+        if account_usage.blocked_provider_ids.contains(provider_id) {
+            continue;
+        }
         // Dispatch resets the Provider deadline while the lease is active.
         // Keep concurrent followers on the authoritative common gate so they
         // observe `in_flight` instead of a misleading `not_triggered` result.
@@ -706,6 +718,204 @@ mod tests {
     }
 
     #[test]
+    fn stable_session_suppresses_blocked_natural_target_without_observation() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, Some(90))),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        let blocked_provider_ids = vec![1];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    blocked_provider_ids: &blocked_provider_ids,
+                    ..Default::default()
+                },
+            ),
+            ProbePlannerDecision::Stay {
+                confirm_route: false,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn blocked_natural_candidate_does_not_starve_later_due_candidate() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Open, Some(90))),
+            (3, snapshot(CircuitState::Closed, None)),
+        ];
+        let blocked_provider_ids = vec![1];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: Some(3),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    blocked_provider_ids: &blocked_provider_ids,
+                    ..Default::default()
+                },
+            ),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![probe(2, ProbeTrigger::NaturalMaxWait)],
+                reservation_trigger: ProbeTrigger::NaturalMaxWait,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn compaction_filters_blocked_targets_and_stays_pending_when_none_remain() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Open, None)),
+            (3, snapshot(CircuitState::Closed, None)),
+        ];
+        let blocked_provider_ids = vec![1];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: Some(3),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: true,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    blocked_provider_ids: &blocked_provider_ids,
+                    ..Default::default()
+                },
+            ),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![probe(2, ProbeTrigger::NaturalCompaction)],
+                reservation_trigger: ProbeTrigger::NaturalCompaction,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+
+        let only_blocked_candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &only_blocked_candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: true,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    blocked_provider_ids: &blocked_provider_ids,
+                    ..Default::default()
+                },
+            ),
+            ProbePlannerDecision::Stay {
+                confirm_route: false,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn route_change_confirms_without_reservation_when_all_targets_are_blocked() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        let blocked_provider_ids = vec![1];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: Some(2),
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: true,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: false,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    blocked_provider_ids: &blocked_provider_ids,
+                    ..Default::default()
+                },
+            ),
+            ProbePlannerDecision::Stay {
+                confirm_route: true,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
+    fn unbound_session_keeps_blocked_candidate_for_common_gate_audit() {
+        let candidates = vec![
+            (1, snapshot(CircuitState::Closed, None)),
+            (2, snapshot(CircuitState::Closed, None)),
+        ];
+        let blocked_provider_ids = vec![1];
+
+        assert_eq!(
+            plan_probe_with_account_usage(
+                ProbePlannerInput {
+                    ordered_candidates: &candidates,
+                    bound_provider_id: None,
+                    session_recovery_epoch_baseline: 0,
+                    route_changed: false,
+                    strategy: ProviderFailbackStrategy::Natural,
+                    compaction_generation_pending: false,
+                    codex_compaction_pending: true,
+                    request_eligible: true,
+                    now_unix: 100,
+                },
+                AccountUsageRecoveryInput {
+                    blocked_provider_ids: &blocked_provider_ids,
+                    ..Default::default()
+                },
+            ),
+            ProbePlannerDecision::Dispatch {
+                targets: vec![direct(1)],
+                reservation_trigger: ProbeTrigger::NewUnboundSession,
+                not_triggered_provider_ids: Vec::new(),
+            }
+        );
+    }
+
+    #[test]
     fn natural_session_directs_to_fresh_account_usage_recovery_newer_than_its_baseline() {
         let candidates = vec![
             (1, snapshot(CircuitState::Closed, None)),
@@ -728,6 +938,7 @@ mod tests {
                 },
                 AccountUsageRecoveryInput {
                     provider_recovery_epochs: &account_usage_epochs,
+                    blocked_provider_ids: &[],
                     session_recovery_epoch_baseline: 4,
                 },
             ),
@@ -762,6 +973,7 @@ mod tests {
                 },
                 AccountUsageRecoveryInput {
                     provider_recovery_epochs: &account_usage_epochs,
+                    blocked_provider_ids: &[],
                     session_recovery_epoch_baseline: 5,
                 },
             ),
@@ -794,6 +1006,7 @@ mod tests {
                 },
                 AccountUsageRecoveryInput {
                     provider_recovery_epochs: &account_usage_epochs,
+                    blocked_provider_ids: &[],
                     session_recovery_epoch_baseline: 0,
                 },
             ),
@@ -822,6 +1035,7 @@ mod tests {
                 },
                 AccountUsageRecoveryInput {
                     provider_recovery_epochs: &account_usage_epochs,
+                    blocked_provider_ids: &[],
                     session_recovery_epoch_baseline: 0,
                 },
             ),

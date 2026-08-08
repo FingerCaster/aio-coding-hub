@@ -12,7 +12,8 @@ TypeScript bindings, frontend adapters, and React UI.
   route hops, and UI count semantics.
 - [Provider account-usage query contract](./provider-account-usage-query-contract.md):
   one TanStack Query owner for automatic, timed, and forced manual refreshes,
-  plus the bounded, same-origin NewAPI model-token billing protocol.
+  the explicit fail-open route gate/recovery projection, and the bounded,
+  same-origin NewAPI model-token billing protocol.
 - [Provider OAuth device-flow contract](./provider-oauth-device-flow-contract.md):
   bounded Codex/Grok device responses, safe polling arithmetic, flow ownership,
   cancellation, and token persistence.
@@ -118,8 +119,9 @@ When changing Trellis task archive or context validation:
   no-redirect rules, exact unit/formula/expiry parsing, per-response body caps,
   application-error precedence, all-or-nothing failure, and sub2api stability.
 - Audit account-usage diffs for credential, PII, host, upstream-message/body,
-  token-name, and actual-account-value leakage, and verify routing, circuit,
-  availability, order, and enablement remain untouched.
+  token-name, and actual-account-value leakage. Only an explicit route gate may
+  consume the normalized snapshot; fetching itself must not mutate circuit,
+  availability, order, or enablement.
 - When changing config migration Skill payloads, verify export/import boundary
   symmetry, failure before target-directory creation or file writes, v1/v2 and
   installed/local compatibility, and file-count, total-size, Base64, path,

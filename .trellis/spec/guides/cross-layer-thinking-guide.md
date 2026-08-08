@@ -72,6 +72,11 @@ streaming boundaries, and commits session or routing state later.
       the common gate even if transport dispatch moved its deadline. Followers
       should record `in_flight`, then use the winner's success on their next
       eligible request without waiting for another failback interval.
+- [ ] When a durable pre-send eligibility gate can reject before dispatch intent
+      claim, trace at least three consecutive requests: first skip/fallback,
+      steady reuse, and confirmed recovery. Decide explicitly whether the
+      planner needs a typed suppression hint; never infer that fallback success
+      consumed a reservation targeting another Provider.
 - [ ] Name every failure, reset, and reopen transition that invalidates a shared
       recovery marker.
 

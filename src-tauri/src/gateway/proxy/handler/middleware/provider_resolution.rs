@@ -1,6 +1,7 @@
 //! Middleware: resolves session routing and selects providers with session binding.
 
 use super::{MiddlewareAction, ProxyContext};
+use crate::app::provider_account_usage_runtime::ProviderAccountUsageRouteProjection;
 use crate::gateway::events::{decision_chain as dc, FailoverAttempt};
 use crate::gateway::proxy::dispatch::{RequestDispatchIntent, RequestDispatchTarget};
 use crate::gateway::proxy::handler::early_error::{
@@ -249,25 +250,33 @@ fn plan_request_failback<R: tauri::Runtime>(
         crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,
     >();
     let monotonic_now = std::time::Instant::now();
-    let account_usage_recovery_epochs: Vec<_> = ordered_candidates
-        .iter()
-        .filter_map(|(provider_id, _)| {
-            let provider = ctx
+    let mut account_usage_recovery_epochs = Vec::new();
+    let mut account_usage_blocked_provider_ids = Vec::new();
+    if let Some(runtime) = account_usage_runtime.as_ref() {
+        for (provider_id, _) in &ordered_candidates {
+            let Some(target) = ctx
                 .providers
                 .iter()
-                .find(|provider| provider.id == *provider_id)?;
-            let target = provider.account_usage_route_target.as_ref()?;
-            let epoch = account_usage_runtime
-                .as_ref()
-                .map(|runtime| {
-                    runtime
-                        .route_read(target, monotonic_now, ctx.created_at)
-                        .recovery_epoch
-                })
-                .unwrap_or(0);
-            (epoch != 0).then_some((*provider_id, epoch))
-        })
-        .collect();
+                .find(|provider| provider.id == *provider_id)
+                .and_then(|provider| provider.account_usage_route_target.as_ref())
+            else {
+                continue;
+            };
+            let read = runtime.route_read(target, monotonic_now, ctx.created_at);
+            match read.projection {
+                ProviderAccountUsageRouteProjection::Blocked(_) => {
+                    account_usage_blocked_provider_ids.push(*provider_id);
+                }
+                ProviderAccountUsageRouteProjection::ConfirmedAvailable
+                    if read.recovery_epoch != 0 =>
+                {
+                    account_usage_recovery_epochs.push((*provider_id, read.recovery_epoch));
+                }
+                ProviderAccountUsageRouteProjection::ConfirmedAvailable
+                | ProviderAccountUsageRouteProjection::UnknownAllow => {}
+            }
+        }
+    }
     let decision = plan_probe_with_account_usage(
         ProbePlannerInput {
             ordered_candidates: &ordered_candidates,
@@ -284,6 +293,7 @@ fn plan_request_failback<R: tauri::Runtime>(
         },
         AccountUsageRecoveryInput {
             provider_recovery_epochs: &account_usage_recovery_epochs,
+            blocked_provider_ids: &account_usage_blocked_provider_ids,
             session_recovery_epoch_baseline: session_snapshot
                 .as_ref()
                 .map_or(0, |snapshot| snapshot.account_usage_recovery_epoch_baseline),

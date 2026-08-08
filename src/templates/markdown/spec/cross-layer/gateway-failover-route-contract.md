@@ -43,6 +43,12 @@ ordered target list, one dispatch mode per target, and every ineligible natural
 observation:
 
 ```rust
+struct AccountUsageRecoveryInput<'a> {
+    provider_recovery_epochs: &'a [(i64, u64)],
+    blocked_provider_ids: &'a [i64],
+    session_recovery_epoch_baseline: u64,
+}
+
 struct PlannedFailbackTarget {
     provider_id: i64,
     dispatch: PlannedDispatch,
@@ -105,6 +111,11 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
   `failover_loop/prepare/provider_checks::run_gates`. A circuit, cooldown, or
   provider-limit denial creates one `outcome="skipped"` attempt with its stable
   error/reason data and makes zero upstream calls.
+- An explicitly enabled account-usage route gate runs first in that common
+  pre-send gate. Only a fresh trusted zero-balance/expired projection denies;
+  missing, stale, failed, conflicting, or unconfigured state fails open. The
+  denial is an ordinary account skip with zero circuit, retry, Ready, Session,
+  or upstream side effects.
 - Direct targets use ordinary gate metadata. Probe targets use their own trigger
   and Provider-global single-flight lease; a serial request holds at most one
   executing probe lease. The common gate, not selection or the planner, owns
@@ -119,6 +130,20 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
   stale, abandon, pre-send drop, and ordinary success publish none, and epoch
   overflow fails closed without reuse. Restart resets Provider epochs and live
   session bindings together; no epoch or baseline is persisted.
+- Account recovery uses a separate Provider/global epoch and per-Session
+  baseline. Resolution derives that epoch and `blocked_provider_ids` from one
+  route read per candidate. Only fresh trusted Blocked enters the set;
+  UnknownAllow never suppresses planning or fabricates recovery.
+- For an effectively bound fallback Session, omit blocked higher-priority
+  candidates before natural/compaction/route-change/aggressive target,
+  observation, or reservation creation. This is a failback hint, not a second
+  provider list: new/unbound Sessions, the current bound Provider, forced
+  requests, and normal fallback retain ordinary candidates and the common gate
+  remains authoritative for send-time races.
+- If all higher targets are blocked, create no synthetic attempt or reservation.
+  Compaction remains pending; route change may confirm its new fingerprint.
+  Fresh recovery removes the hint and re-enables Direct failback, whose real
+  transport send alone consumes any pending Session trigger.
 - Allocate one binding request token at proxy entry before the first `await`,
   retain it only for resolved session routing, and carry it through non-stream
   and stream finalizers. Binding creation installs the token as the creation
@@ -176,6 +201,9 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
 | Every planned target exits before send | Drop releases the reservation for a later request |
 | Candidate is gate-skipped | Zero upstream calls and no Ready-provider budget consumed |
 | All candidates are gate-skipped | HTTP 503 with every candidate in attempts and route |
+| Bound P2 repeatedly sees fresh account-blocked higher P1 | Omit P1 target/observation/reservation; send and log only P2 |
+| The same route has no effective binding | Keep P1 for common-gate account skip audit before fallback |
+| Blocked P1 becomes fresh available | Expose a newer account epoch; next eligible request sends P1 Direct and binds only on success |
 | Ready-provider cap is reached | Stop before the next Ready provider |
 | Two Ready providers consume cap 2, then a circuit-open candidate follows | Record the third skipped attempt/route; make no third upstream call |
 | Route has 3 hops and 4 attempt rows | 3 providers, 2 transitions, 4 attempts |
@@ -197,6 +225,9 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
   protected by the new binding's creation floor.
 - Good: two planned targets skip before send and the third sends. The third
   consumes the reservation once; an all-zero-send chain releases it on drop.
+- Good: initial P1 account skip binds P2; two identical post-compaction turns
+  contain only P2 while P1 stays blocked, then the first P1 send after recovery
+  consumes the still-pending fingerprint.
 - Base: all planned targets fail or skip, then current P3 succeeds and keeps or
   reconfirms the P3 binding.
 - Good: two circuit-open candidates are skipped, then a third Ready candidate
@@ -221,6 +252,8 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
   binding after clear, expiry, or a newer request completion.
 - Bad: a gate denial releases the request reservation, so a later target that
   really sends loses the reserved route-change/compaction trigger.
+- Bad: repeatedly create an intent for a durable account-blocked target that
+  returns before claim, then assume a non-target fallback success consumed it.
 - Bad: rendering four attempt rows as "switched 4 times" when they represent
   three providers, two transitions, and one retry.
 
@@ -230,6 +263,9 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
   targets `[p1, p2, p3, p4]` before P5. Cover explicit triggers, mixed
   direct/probe targets, per-candidate natural deadlines, later-due scanning,
   and active-lease targeting.
+- Planner-test fresh account-blocked IDs across natural and explicit triggers:
+  no target/observation/reservation, no starvation of later due candidates,
+  all-blocked Stay, unbound common-gate audit, and route-change confirmation.
 - Resolution-test session-rotated input plus multiple targets becomes one stable
   target-first order; duplicate/missing targets and observation-only IDs do not
   disturb non-target order.
@@ -261,6 +297,9 @@ incarnation floor and `last_binding_request` for CAS-style success publication.
   candidate list while reuse selection returns no bound provider.
 - Route-test all-gate-skip behavior: 503, one skipped row and route hop per
   candidate, preserved session binding, and zero upstream calls.
+- Route-test initial P1 account skip plus P2 success, two same-Session
+  post-compaction requests with only P2 in raw attempts, then fresh P1 recovery
+  and real fingerprint consumption at transport send.
 - Route-test that skipped candidates do not consume the Ready-provider cap,
   plus a boundary where the cap stops before the next Ready provider.
 - Route-test the reverse boundary `Ready, Ready, circuit-open/cooldown` at cap
@@ -353,6 +392,19 @@ intent.release_unclaimed_reservation();
 // Correct: the first planned sender commits exactly once at transport send.
 intent.commit_reservation_at_transport_send(provider_id)?;
 transport.send(request).await?;
+```
+
+Do not globally remove a trusted account-blocked Provider or repeatedly plan it
+for a stable fallback Session:
+
+```rust
+// Wrong: hides unbound/forced audit evidence.
+providers.retain(|provider| !blocked_provider_ids.contains(&provider.id));
+
+// Correct: suppress only the stable-bound higher-priority failback prefix.
+let targets = higher_prefix
+    .iter()
+    .filter(|provider| !blocked_provider_ids.contains(&provider.id));
 ```
 
 Use a success-only per-Provider recovery epoch, not a one-shot global boolean or
