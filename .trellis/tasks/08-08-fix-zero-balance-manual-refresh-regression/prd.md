@@ -25,12 +25,12 @@
 
 ## Acceptance Criteria
 
-- [ ] 自动化回归证明 `zero_balance -> 上游恢复 -> 单击手动刷新` 会发起新的远端查询并展示正余额，不需要先测试 Provider 或等待自动刷新。
-- [ ] deferred/in-flight 测试证明旧查询晚完成不能覆盖手动强刷结果；在途请求场景最多产生一次尾随强刷，调用者收到尾随结果。
-- [ ] fresh cache、`timedRefreshEnabled=false`、连续手动点击和多展示消费者场景均遵守同一强刷语义。
-- [ ] 可用性测试未被调用，账户刷新不改变 circuit、Provider 启停/顺序、Session 或路由状态。
-- [ ] 至少覆盖内置账户用量适配器，并对共享 runtime 路径做协议无关测试；若 custom adapter 走同一路径，也必须保持一致。
-- [ ] 相关前端 Query、Rust runtime/IPC、Provider 编辑器集成测试及全量质量门通过。
+- [x] 自动化回归证明 `zero_balance -> 上游恢复 -> 单击手动刷新` 会发起新的远端查询并展示正余额，不需要先测试 Provider 或等待自动刷新。
+- [x] deferred/in-flight 测试证明旧查询晚完成不能覆盖手动强刷结果；在途请求场景最多产生一次尾随强刷，调用者收到尾随结果。
+- [x] fresh cache、`timedRefreshEnabled=false`、连续手动点击和多展示消费者场景均遵守同一强刷语义。
+- [x] 可用性测试未被调用，账户刷新不改变 circuit、Provider 启停/顺序、Session 或路由状态。
+- [x] 至少覆盖内置账户用量适配器，并对共享 runtime 路径做协议无关测试；若 custom adapter 走同一路径，也必须保持一致。
+- [x] 相关前端 Query、Rust runtime/IPC、Provider 编辑器集成测试及全量质量门通过。
 
 ## Investigation Notes
 

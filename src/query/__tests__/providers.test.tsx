@@ -444,12 +444,12 @@ describe("query/providers", () => {
     );
   });
 
-  it("shares account usage query options and forces a fresh manual IPC request", async () => {
+  it("refreshes a cached zero balance through one fresh manual IPC request", async () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
     vi.mocked(providerAccountUsageRefresh).mockClear();
 
-    const accountUsage = makeAccountUsage(1);
+    const accountUsage = makeAccountUsage(0);
     vi.mocked(providerAccountUsageFetch).mockResolvedValue(accountUsage);
 
     const client = createTestQueryClient();
@@ -485,7 +485,7 @@ describe("query/providers", () => {
     expect(query?.options.queryFn).toBe(sharedOptions.queryFn);
     expect(providerAccountUsageQueryOptions(12).queryFn).toBe(sharedOptions.queryFn);
 
-    const refreshedAccountUsage = { ...accountUsage, balance: 4 };
+    const refreshedAccountUsage = { ...accountUsage, status: "available" as const, balance: 4 };
     vi.mocked(providerAccountUsageRefresh).mockResolvedValueOnce(refreshedAccountUsage);
     const cancelSpy = vi.spyOn(client, "cancelQueries");
     const fetchSpy = vi.spyOn(client, "fetchQuery");
@@ -504,6 +504,9 @@ describe("query/providers", () => {
     );
     expect(client.getQueryData(providerAccountUsageKeys.detail(12))).toEqual(refreshedAccountUsage);
     expect(readProviderAccountUsageCache(client, 12)).toEqual(refreshedAccountUsage);
+    expect(accountUsage.status).toBe("zero_balance");
+    expect(refreshedAccountUsage.status).toBe("available");
+    expect(providerTestAvailability).not.toHaveBeenCalled();
     expect(gatewayCircuitResetProvider).not.toHaveBeenCalled();
   });
 

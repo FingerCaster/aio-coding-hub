@@ -198,6 +198,17 @@ they do not parse extension JSON or recompute its token.
   share one Provider generation, snapshot, in-flight request, force-tail rule,
   and global four-Provider concurrency cap. A request never waits for or starts
   a remote account query.
+- Each coalesced manual refresh owns a checked, monotonic force epoch. Calls
+  arriving while the same force is pending share that epoch; a force arriving
+  during any in-flight fetch queues at most one immediate tail epoch. Ordinary
+  background completions and lifecycle notifications may wake waiters but must
+  not satisfy a force epoch. Pending/in-flight force work keeps the scheduler
+  active independently of desktop/Gateway leases and timed refresh settings.
+- A force epoch is complete only after its current-generation result is stored
+  in the display snapshot and the matching route projection is published.
+  The waiter validates config token and generation and clones that snapshot
+  under the same lock; target replacement wakes it with an unavailable result
+  instead of returning either the old or a replacement target's snapshot.
 - The coordinator query loads only Provider identity, transport shape, and
   canonical extension config. API keys and private NewAPI credentials are
   loaded only by the existing uncached fetch boundary after a target is due.
@@ -300,8 +311,11 @@ they do not parse extension JSON or recompute its token.
   absent/negative/positive amounts, future/past expiry, non-finite fields, and
   sub2api/NewAPI/custom normalized results.
 - Scheduler tests must cover timed-off Gateway demand, manual force-tail
-  coalescing, exact target replacement, 5/15-second lease lifecycle, hard
-  display expiry, four-Provider nonwaiting concurrency, and Gateway stop.
+  coalescing, event-driven tail dispatch below the periodic scheduler tick,
+  force-epoch identity, simultaneous manual waiters, exact target replacement,
+  5/15-second lease lifecycle, hard display expiry, four-Provider nonwaiting
+  concurrency, and Gateway stop. The zero-to-positive case must run through the
+  shared Sub2API/NewAPI/custom runtime without a Provider availability test.
 - Recovery tests must cover blocked-to-available exactly once,
   blocked-to-error-to-available, temporary epoch hiding/re-exposure, reblock,
   stale generation, token/permission changes, Release/Acquire publication, and

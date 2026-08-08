@@ -6,16 +6,27 @@ use crate::domain::provider_account_usage::{
     ProviderAccountUsageRefreshSchedule, ProviderAccountUsageResult, ProviderAccountUsageStatus,
 };
 use std::collections::{HashMap, HashSet};
+#[cfg(test)]
+use std::future::Future;
+#[cfg(test)]
+use std::pin::Pin;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tokio::sync::{watch, Mutex, OwnedSemaphorePermit, Semaphore};
+use tokio::sync::{watch, Mutex, Notify, OwnedSemaphorePermit, Semaphore};
 
 const DESKTOP_LEASE: Duration = Duration::from_secs(15);
 const GATEWAY_LEASE: Duration = Duration::from_secs(15);
 const SCHEDULER_TICK: Duration = Duration::from_secs(1);
 pub(crate) const SUCCESS_CACHE_TTL: Duration = Duration::from_secs(60 * 60);
 const MAX_CONCURRENT_PROVIDER_FETCHES: usize = 4;
+
+#[cfg(test)]
+type TestAccountUsageFetchFuture =
+    Pin<Box<dyn Future<Output = Result<ProviderAccountUsageResult, String>> + Send>>;
+#[cfg(test)]
+type TestAccountUsageFetcher =
+    Arc<dyn Fn(i64) -> TestAccountUsageFetchFuture + Send + Sync + 'static>;
 
 #[derive(Clone)]
 pub(crate) struct ProviderAccountUsageRuntimeState {
@@ -30,6 +41,9 @@ impl Default for ProviderAccountUsageRuntimeState {
                 route_entries: RwLock::new(HashMap::new()),
                 global_recovery_epoch: AtomicU64::new(0),
                 fetch_limiter: Arc::new(Semaphore::new(MAX_CONCURRENT_PROVIDER_FETCHES)),
+                scheduler_wake: Notify::new(),
+                #[cfg(test)]
+                test_fetcher: RwLock::new(None),
             }),
         }
     }
@@ -40,6 +54,9 @@ struct RuntimeShared {
     route_entries: RwLock<HashMap<i64, RouteEntry>>,
     global_recovery_epoch: AtomicU64,
     fetch_limiter: Arc<Semaphore>,
+    scheduler_wake: Notify,
+    #[cfg(test)]
+    test_fetcher: RwLock<Option<TestAccountUsageFetcher>>,
 }
 
 #[derive(Default)]
@@ -58,9 +75,13 @@ struct RuntimeEntry {
     gateway_lease_until: Option<Instant>,
     generation: u64,
     in_flight_generation: Option<u64>,
-    pending_force: bool,
-    tail_force: bool,
-    completion_generation: u64,
+    // Lifecycle notifications wake waiters; only a committed force epoch satisfies them.
+    pending_refresh: bool,
+    pending_force_epoch: Option<u64>,
+    in_flight_force_epoch: Option<u64>,
+    next_force_epoch: u64,
+    completed_force_epoch: u64,
+    completion_revision: u64,
     completion: watch::Sender<u64>,
 }
 
@@ -77,9 +98,12 @@ impl Default for RuntimeEntry {
             gateway_lease_until: None,
             generation: 0,
             in_flight_generation: None,
-            pending_force: false,
-            tail_force: false,
-            completion_generation: 0,
+            pending_refresh: false,
+            pending_force_epoch: None,
+            in_flight_force_epoch: None,
+            next_force_epoch: 0,
+            completed_force_epoch: 0,
+            completion_revision: 0,
             completion,
         }
     }
@@ -281,7 +305,7 @@ impl ProviderAccountUsageRuntimeState {
             self.sync_route_target(&target, generation);
             entry.desktop_lease_until = Some(now + DESKTOP_LEASE);
             if entry.snapshot.is_none() {
-                entry.pending_force = true;
+                entry.pending_refresh = true;
             }
             start_scheduler_if_needed(&mut inner, now)
         };
@@ -329,7 +353,7 @@ impl ProviderAccountUsageRuntimeState {
                 let generation = sync_target(entry, target)?;
                 entry.gateway_lease_until = Some(lease_until);
                 if entry.snapshot.is_none() {
-                    entry.pending_force = true;
+                    entry.pending_refresh = true;
                 }
                 self.sync_route_target(target, generation);
                 self.renew_route_gateway_lease(target.provider_id, lease_until);
@@ -371,43 +395,50 @@ impl ProviderAccountUsageRuntimeState {
         target: ProviderAccountUsageTarget,
     ) -> Result<ProviderAccountUsageResult, String> {
         let now = Instant::now();
-        let (mut completion, wanted_completion, should_start) = {
+        let (mut completion, target_generation, wanted_force_epoch, should_start) = {
             let mut inner = self.shared.inner.lock().await;
             let entry = inner.entries.entry(target.provider_id).or_default();
-            let generation = sync_target(entry, &target)?;
-            self.sync_route_target(&target, generation);
+            let target_generation = sync_target(entry, &target)?;
+            self.sync_route_target(&target, target_generation);
             entry.desktop_lease_until = Some(now + DESKTOP_LEASE);
-            let wanted_completion = request_forced_completion(entry);
+            let wanted_force_epoch = request_force_epoch(entry)?;
             let completion = entry.completion.subscribe();
             let should_start = start_scheduler_if_needed(&mut inner, now);
-            (completion, wanted_completion, should_start)
+            (
+                completion,
+                target_generation,
+                wanted_force_epoch,
+                should_start,
+            )
         };
         if should_start {
             self.spawn_scheduler(app.clone());
         }
+        self.shared.scheduler_wake.notify_one();
         self.dispatch_due(app).await;
         loop {
-            if *completion.borrow_and_update() >= wanted_completion {
-                break;
-            }
-            if completion.changed().await.is_err() {
-                break;
-            }
             let inner = self.shared.inner.lock().await;
-            if inner
-                .entries
-                .get(&target.provider_id)
-                .and_then(|entry| entry.config_token)
-                != Some(target.config_token)
+            let Some(entry) = inner.entries.get(&target.provider_id) else {
+                return Ok(unavailable_result());
+            };
+            if entry.config_token != Some(target.config_token)
+                || entry.generation != target_generation
             {
                 return Ok(unavailable_result());
             }
+            if entry.completed_force_epoch >= wanted_force_epoch {
+                return Ok(entry
+                    .snapshot
+                    .as_ref()
+                    .filter(|snapshot| snapshot.generation == target_generation)
+                    .map(|snapshot| snapshot.result.clone())
+                    .unwrap_or_else(unavailable_result));
+            }
+            drop(inner);
+            if completion.changed().await.is_err() {
+                return Ok(unavailable_result());
+            }
         }
-        Ok(self
-            .snapshot(target.provider_id)
-            .await
-            .map(|snapshot| snapshot.result)
-            .unwrap_or_else(unavailable_result))
     }
 
     pub(crate) async fn snapshot(&self, provider_id: i64) -> Option<ProviderAccountUsageSnapshot> {
@@ -437,8 +468,8 @@ impl ProviderAccountUsageRuntimeState {
             entry.last_attempt_at = None;
             entry.desktop_lease_until = None;
             entry.gateway_lease_until = None;
-            entry.pending_force = false;
-            entry.tail_force = false;
+            entry.pending_refresh = false;
+            entry.pending_force_epoch = None;
             publish_completion(entry);
         }
         self.route_entries_write().remove(&provider_id);
@@ -586,7 +617,10 @@ impl ProviderAccountUsageRuntimeState {
     async fn run_scheduler<R: tauri::Runtime>(self, app: tauri::AppHandle<R>) {
         loop {
             self.dispatch_due(app.clone()).await;
-            tokio::time::sleep(SCHEDULER_TICK).await;
+            tokio::select! {
+                _ = tokio::time::sleep(SCHEDULER_TICK) => {}
+                _ = self.shared.scheduler_wake.notified() => {}
+            }
             let now = Instant::now();
             let mut inner = self.shared.inner.lock().await;
             expire_leases(&mut inner, now);
@@ -616,13 +650,15 @@ impl ProviderAccountUsageRuntimeState {
                         return None;
                     }
                     let generation = entry.generation;
+                    let force_epoch = entry.pending_force_epoch.take();
                     entry.in_flight_generation = Some(generation);
+                    entry.in_flight_force_epoch = force_epoch;
                     entry.last_attempt_at = Some(now);
-                    entry.pending_force = false;
-                    Some((*provider_id, generation))
+                    entry.pending_refresh = false;
+                    Some((*provider_id, generation, force_epoch))
                 })
             };
-            let Some((provider_id, generation)) = selected else {
+            let Some((provider_id, generation, force_epoch)) = selected else {
                 drop(permit);
                 return;
             };
@@ -630,7 +666,7 @@ impl ProviderAccountUsageRuntimeState {
             let app_for_fetch = app.clone();
             tauri::async_runtime::spawn(async move {
                 state
-                    .perform_refresh(app_for_fetch, provider_id, generation, permit)
+                    .perform_refresh(app_for_fetch, provider_id, generation, force_epoch, permit)
                     .await;
             });
         }
@@ -641,48 +677,77 @@ impl ProviderAccountUsageRuntimeState {
         app: tauri::AppHandle<R>,
         provider_id: i64,
         generation: u64,
+        force_epoch: Option<u64>,
         permit: OwnedSemaphorePermit,
     ) {
+        #[cfg(test)]
+        let test_fetcher = self
+            .shared
+            .test_fetcher
+            .read()
+            .unwrap_or_else(std::sync::PoisonError::into_inner)
+            .clone();
+        #[cfg(test)]
+        let result = if let Some(fetcher) = test_fetcher {
+            fetcher(provider_id)
+                .await
+                .unwrap_or_else(|_| unavailable_result())
+        } else {
+            crate::commands::providers::fetch_account_usage_uncached(app.clone(), provider_id)
+                .await
+                .unwrap_or_else(|_| unavailable_result())
+        };
+        #[cfg(not(test))]
         let result =
             crate::commands::providers::fetch_account_usage_uncached(app.clone(), provider_id)
                 .await
                 .unwrap_or_else(|_| unavailable_result());
         let completed_at = Instant::now();
         let route_result = result.clone();
-        let mut accepted = false;
         {
             let mut inner = self.shared.inner.lock().await;
-            let Some(entry) = inner.entries.get_mut(&provider_id) else {
-                return;
-            };
-            if entry.in_flight_generation != Some(generation) {
-                return;
+            match inner.entries.get_mut(&provider_id) {
+                Some(entry)
+                    if entry.in_flight_generation == Some(generation)
+                        && entry.in_flight_force_epoch == force_epoch =>
+                {
+                    entry.in_flight_generation = None;
+                    entry.in_flight_force_epoch = None;
+                    let accepted = entry.generation == generation && entry.schedule.is_some();
+                    if accepted {
+                        entry.snapshot = Some(ProviderAccountUsageSnapshot {
+                            result,
+                            completed_at,
+                            generation,
+                        });
+                        if let Some(force_epoch) = force_epoch {
+                            entry.completed_force_epoch =
+                                entry.completed_force_epoch.max(force_epoch);
+                        }
+                        self.publish_route_snapshot(
+                            provider_id,
+                            generation,
+                            route_result,
+                            completed_at,
+                            crate::shared::time::now_unix_seconds(),
+                        );
+                    }
+                    publish_completion(entry);
+                }
+                _ => {}
             }
-            entry.in_flight_generation = None;
-            if entry.generation == generation && entry.schedule.is_some() {
-                entry.snapshot = Some(ProviderAccountUsageSnapshot {
-                    result,
-                    completed_at,
-                    generation,
-                });
-                accepted = true;
-            }
-            if entry.tail_force {
-                entry.tail_force = false;
-                entry.pending_force = true;
-            }
-            publish_completion(entry);
-        }
-        if accepted {
-            self.publish_route_snapshot(
-                provider_id,
-                generation,
-                route_result,
-                completed_at,
-                crate::shared::time::now_unix_seconds(),
-            );
         }
         drop(permit);
+        self.shared.scheduler_wake.notify_one();
+    }
+
+    #[cfg(test)]
+    fn set_test_fetcher(&self, fetcher: TestAccountUsageFetcher) {
+        *self
+            .shared
+            .test_fetcher
+            .write()
+            .unwrap_or_else(std::sync::PoisonError::into_inner) = Some(fetcher);
     }
 }
 
@@ -697,8 +762,8 @@ fn sync_target(
         entry.adapter_kind = Some(target.adapter_kind);
         entry.snapshot = None;
         entry.last_attempt_at = None;
-        entry.pending_force = true;
-        entry.tail_force = false;
+        entry.pending_refresh = true;
+        entry.pending_force_epoch = None;
         publish_completion(entry);
     } else {
         entry.schedule = Some(target.schedule);
@@ -716,18 +781,21 @@ fn bump_generation(entry: &mut RuntimeEntry) -> Result<(), String> {
 }
 
 fn publish_completion(entry: &mut RuntimeEntry) {
-    entry.completion_generation = entry.completion_generation.saturating_add(1);
-    entry.completion.send_replace(entry.completion_generation);
+    entry.completion_revision = entry.completion_revision.saturating_add(1);
+    entry.completion.send_replace(entry.completion_revision);
 }
 
-fn request_forced_completion(entry: &mut RuntimeEntry) -> u64 {
-    if entry.in_flight_generation.is_some() {
-        entry.tail_force = true;
-        entry.completion_generation.saturating_add(2)
-    } else {
-        entry.pending_force = true;
-        entry.completion_generation.saturating_add(1)
+fn request_force_epoch(entry: &mut RuntimeEntry) -> Result<u64, String> {
+    if let Some(epoch) = entry.pending_force_epoch {
+        return Ok(epoch);
     }
+    let epoch = entry
+        .next_force_epoch
+        .checked_add(1)
+        .ok_or_else(|| "SYSTEM_ERROR: account usage force epoch exhausted".to_string())?;
+    entry.next_force_epoch = epoch;
+    entry.pending_force_epoch = Some(epoch);
+    Ok(epoch)
 }
 
 fn start_scheduler_if_needed(inner: &mut RuntimeInner, now: Instant) -> bool {
@@ -762,9 +830,11 @@ fn expire_leases(inner: &mut RuntimeInner, now: Instant) {
 
 fn entry_has_active_consumer(entry: &RuntimeEntry, now: Instant) -> bool {
     entry.schedule.is_some()
-        && (entry
-            .desktop_lease_until
-            .is_some_and(|deadline| deadline > now)
+        && (entry.pending_force_epoch.is_some()
+            || entry.in_flight_force_epoch.is_some()
+            || entry
+                .desktop_lease_until
+                .is_some_and(|deadline| deadline > now)
             || entry
                 .gateway_lease_until
                 .is_some_and(|deadline| deadline > now))
@@ -777,7 +847,7 @@ fn entry_is_due(entry: &RuntimeEntry, now: Instant) -> bool {
     if entry.in_flight_generation.is_some() {
         return false;
     }
-    if entry.pending_force || entry.snapshot.is_none() {
+    if entry.pending_refresh || entry.pending_force_epoch.is_some() || entry.snapshot.is_none() {
         return true;
     }
     let Some(last_attempt_at) = entry.last_attempt_at else {
@@ -820,6 +890,8 @@ mod tests {
     use crate::domain::provider_account_usage::{
         ProviderAccountUsageFreshness, ProviderAccountUsageStatus,
     };
+    use std::sync::atomic::{AtomicUsize, Ordering as AtomicOrdering};
+    use tokio::sync::Notify;
 
     fn schedule(timed_refresh_enabled: bool) -> ProviderAccountUsageRefreshSchedule {
         ProviderAccountUsageRefreshSchedule {
@@ -903,6 +975,314 @@ mod tests {
         }
     }
 
+    fn zero_result() -> ProviderAccountUsageResult {
+        let mut result = ProviderAccountUsageResult::fetched(
+            ProviderAccountUsageAdapterKind::Newapi,
+            ProviderAccountUsageStatus::ZeroBalance,
+            100,
+        );
+        result.balance = Some(0.0);
+        result
+    }
+
+    async fn seed_runtime_snapshot(
+        state: &ProviderAccountUsageRuntimeState,
+        target: &ProviderAccountUsageTarget,
+        result: ProviderAccountUsageResult,
+        due: bool,
+    ) {
+        let now = Instant::now();
+        let route_result = result.clone();
+        let mut inner = state.shared.inner.lock().await;
+        let entry = inner.entries.entry(target.provider_id).or_default();
+        let generation = sync_target(entry, target).expect("sync target");
+        entry.snapshot = Some(ProviderAccountUsageSnapshot {
+            result,
+            completed_at: now,
+            generation,
+        });
+        entry.last_attempt_at = Some(if due {
+            now - Duration::from_secs(target.schedule.refresh_interval_seconds as u64)
+        } else {
+            now
+        });
+        entry.desktop_lease_until = Some(now + DESKTOP_LEASE);
+        entry.pending_refresh = false;
+        drop(inner);
+
+        state.sync_route_target(target, generation);
+        state.renew_route_gateway_lease(target.provider_id, now + GATEWAY_LEASE);
+        state.publish_route_snapshot(
+            target.provider_id,
+            generation,
+            route_result,
+            now,
+            crate::shared::time::now_unix_seconds(),
+        );
+    }
+
+    async fn wait_for_tail_force(state: &ProviderAccountUsageRuntimeState, provider_id: i64) {
+        for _ in 0..100 {
+            let queued = state
+                .shared
+                .inner
+                .lock()
+                .await
+                .entries
+                .get(&provider_id)
+                .is_some_and(|entry| entry.pending_force_epoch.is_some());
+            if queued {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("manual refresh did not queue a tail force");
+    }
+
+    async fn wait_for_force_waiters(
+        state: &ProviderAccountUsageRuntimeState,
+        provider_id: i64,
+        expected: usize,
+    ) {
+        for _ in 0..100 {
+            let waiters = state
+                .shared
+                .inner
+                .lock()
+                .await
+                .entries
+                .get(&provider_id)
+                .map(|entry| entry.completion.receiver_count())
+                .unwrap_or_default();
+            if waiters >= expected {
+                return;
+            }
+            tokio::task::yield_now().await;
+        }
+        panic!("manual refresh callers did not subscribe to the force epoch");
+    }
+
+    #[tokio::test]
+    async fn manual_refresh_replaces_a_fresh_zero_snapshot_without_provider_test() {
+        let state = ProviderAccountUsageRuntimeState::default();
+        let target = route_target(2);
+        seed_runtime_snapshot(&state, &target, zero_result(), false).await;
+        let calls = Arc::new(AtomicUsize::new(0));
+        state.set_test_fetcher(Arc::new({
+            let calls = calls.clone();
+            move |_| {
+                calls.fetch_add(1, AtomicOrdering::SeqCst);
+                Box::pin(async { Ok(result()) })
+            }
+        }));
+        let app = tauri::test::mock_app();
+
+        let refreshed = state
+            .refresh(app.handle().clone(), target.clone())
+            .await
+            .expect("manual refresh");
+
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 1);
+        assert_eq!(refreshed.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(refreshed.balance, Some(12.5));
+        assert_eq!(
+            state
+                .snapshot(target.provider_id)
+                .await
+                .expect("fresh snapshot")
+                .result,
+            refreshed
+        );
+        let route = state.route_read(
+            &target,
+            Instant::now(),
+            crate::shared::time::now_unix_seconds(),
+        );
+        assert_eq!(
+            route.projection,
+            ProviderAccountUsageRouteProjection::ConfirmedAvailable
+        );
+        assert_eq!(route.recovery_epoch, 1);
+    }
+
+    #[tokio::test]
+    async fn manual_force_runtime_is_shared_by_every_account_usage_adapter() {
+        for (provider_id, adapter_kind) in [
+            (21, ProviderAccountUsageAdapterKind::Sub2api),
+            (22, ProviderAccountUsageAdapterKind::Newapi),
+            (23, ProviderAccountUsageAdapterKind::Custom),
+        ] {
+            let state = ProviderAccountUsageRuntimeState::default();
+            let mut target = route_target(provider_id as u8);
+            target.provider_id = provider_id;
+            target.adapter_kind = adapter_kind;
+            let mut zero = zero_result();
+            zero.adapter_kind = Some(adapter_kind);
+            seed_runtime_snapshot(&state, &target, zero, false).await;
+            state.set_test_fetcher(Arc::new(move |_| {
+                Box::pin(async move {
+                    let mut available = result();
+                    available.adapter_kind = Some(adapter_kind);
+                    Ok(available)
+                })
+            }));
+            let app = tauri::test::mock_app();
+
+            let refreshed = state
+                .refresh(app.handle().clone(), target)
+                .await
+                .expect("adapter manual refresh");
+
+            assert_eq!(refreshed.adapter_kind, Some(adapter_kind));
+            assert_eq!(refreshed.status, ProviderAccountUsageStatus::Available);
+            assert_eq!(refreshed.balance, Some(12.5));
+        }
+    }
+
+    #[tokio::test]
+    async fn manual_refresh_callers_share_one_immediate_tail_after_an_old_request() {
+        let state = ProviderAccountUsageRuntimeState::default();
+        let mut target = route_target(3);
+        target.schedule.timed_refresh_enabled = true;
+        seed_runtime_snapshot(&state, &target, zero_result(), true).await;
+
+        let calls = Arc::new(AtomicUsize::new(0));
+        let first_started = Arc::new(Notify::new());
+        let release_first = Arc::new(Notify::new());
+        state.set_test_fetcher(Arc::new({
+            let calls = calls.clone();
+            let first_started = first_started.clone();
+            let release_first = release_first.clone();
+            move |_| {
+                let call = calls.fetch_add(1, AtomicOrdering::SeqCst);
+                let first_started = first_started.clone();
+                let release_first = release_first.clone();
+                Box::pin(async move {
+                    if call == 0 {
+                        first_started.notify_one();
+                        release_first.notified().await;
+                        Ok(zero_result())
+                    } else {
+                        Ok(result())
+                    }
+                })
+            }
+        }));
+        let app = tauri::test::mock_app();
+        state
+            .acquire_desktop_lease(app.handle(), target.clone())
+            .await
+            .expect("start automatic refresh");
+        first_started.notified().await;
+
+        let first_state = state.clone();
+        let first_target = target.clone();
+        let first_app = app.handle().clone();
+        let first_refresh =
+            tokio::spawn(async move { first_state.refresh(first_app, first_target).await });
+        wait_for_tail_force(&state, target.provider_id).await;
+
+        let second_state = state.clone();
+        let second_target = target.clone();
+        let second_app = app.handle().clone();
+        let second_refresh =
+            tokio::spawn(async move { second_state.refresh(second_app, second_target).await });
+        wait_for_force_waiters(&state, target.provider_id, 2).await;
+        release_first.notify_one();
+
+        let (first_result, second_result) =
+            tokio::time::timeout(Duration::from_millis(500), async {
+                tokio::join!(first_refresh, second_refresh)
+            })
+            .await
+            .expect("tail force should be dispatched by the old completion");
+        let first_result = first_result
+            .expect("first refresh task")
+            .expect("first manual refresh");
+        let second_result = second_result
+            .expect("second refresh task")
+            .expect("second manual refresh");
+
+        assert_eq!(calls.load(AtomicOrdering::SeqCst), 2);
+        assert_eq!(first_result, second_result);
+        assert_eq!(first_result.status, ProviderAccountUsageStatus::Available);
+        assert_eq!(first_result.balance, Some(12.5));
+    }
+
+    #[tokio::test]
+    async fn target_change_wakes_manual_waiter_without_committing_old_force_result() {
+        let state = ProviderAccountUsageRuntimeState::default();
+        let target = route_target(4);
+        seed_runtime_snapshot(&state, &target, zero_result(), false).await;
+        let fetch_started = Arc::new(Notify::new());
+        let release_fetch = Arc::new(Notify::new());
+        state.set_test_fetcher(Arc::new({
+            let fetch_started = fetch_started.clone();
+            let release_fetch = release_fetch.clone();
+            move |_| {
+                let fetch_started = fetch_started.clone();
+                let release_fetch = release_fetch.clone();
+                Box::pin(async move {
+                    fetch_started.notify_one();
+                    release_fetch.notified().await;
+                    Ok(result())
+                })
+            }
+        }));
+        let app = tauri::test::mock_app();
+        let refresh_state = state.clone();
+        let refresh_target = target.clone();
+        let refresh_app = app.handle().clone();
+        let refresh =
+            tokio::spawn(async move { refresh_state.refresh(refresh_app, refresh_target).await });
+        fetch_started.notified().await;
+
+        let mut replacement = target.clone();
+        replacement.config_token = [5; 32];
+        {
+            let mut inner = state.shared.inner.lock().await;
+            let entry = inner
+                .entries
+                .get_mut(&target.provider_id)
+                .expect("runtime entry");
+            sync_target(entry, &replacement).expect("replace target");
+            entry.desktop_lease_until = None;
+            entry.gateway_lease_until = None;
+            entry.pending_refresh = false;
+        }
+
+        let refreshed = tokio::time::timeout(Duration::from_millis(500), refresh)
+            .await
+            .expect("target replacement should wake the waiter")
+            .expect("refresh task")
+            .expect("manual refresh");
+        assert_eq!(refreshed.status, ProviderAccountUsageStatus::QueryFailed);
+        assert_eq!(refreshed.balance, None);
+
+        release_fetch.notify_one();
+        for _ in 0..100 {
+            let in_flight = state
+                .shared
+                .inner
+                .lock()
+                .await
+                .entries
+                .get(&target.provider_id)
+                .is_some_and(|entry| entry.in_flight_generation.is_some());
+            if !in_flight {
+                break;
+            }
+            tokio::task::yield_now().await;
+        }
+        let entry = state.shared.inner.lock().await;
+        let entry = entry
+            .entries
+            .get(&target.provider_id)
+            .expect("runtime entry");
+        assert!(entry.in_flight_generation.is_none());
+        assert!(entry.snapshot.is_none());
+    }
+
     #[test]
     fn gateway_target_requires_an_explicit_route_gate_but_not_timed_refresh() {
         let mut context = crate::providers::ProviderAccountUsageFetchContext {
@@ -964,35 +1344,38 @@ mod tests {
     }
 
     #[test]
-    fn force_arriving_during_in_flight_requests_one_tail_completion() {
+    fn forces_arriving_during_in_flight_share_one_tail_epoch() {
         let mut entry = entry_with_snapshot(true);
         entry.in_flight_generation = Some(entry.generation);
-        let current_completion = entry.completion_generation;
-        assert_eq!(
-            request_forced_completion(&mut entry),
-            current_completion.saturating_add(2)
-        );
-        entry.in_flight_generation = None;
-        if entry.tail_force {
-            entry.tail_force = false;
-            entry.pending_force = true;
-        }
-        publish_completion(&mut entry);
-        assert!(entry.pending_force);
-        assert_eq!(entry.completion_generation, current_completion + 1);
+        let first = request_force_epoch(&mut entry).expect("first force epoch");
+        let second = request_force_epoch(&mut entry).expect("shared force epoch");
+
+        assert_eq!(first, 1);
+        assert_eq!(second, first);
+        assert_eq!(entry.pending_force_epoch, Some(first));
+        assert_eq!(entry.completed_force_epoch, 0);
     }
 
     #[test]
-    fn force_while_idle_requests_only_the_next_completion() {
+    fn force_while_idle_requests_the_next_force_epoch() {
         let mut entry = entry_with_snapshot(true);
-        let current_completion = entry.completion_generation;
+        let epoch = request_force_epoch(&mut entry).expect("force epoch");
 
-        assert_eq!(
-            request_forced_completion(&mut entry),
-            current_completion.saturating_add(1)
-        );
-        assert!(entry.pending_force);
-        assert!(!entry.tail_force);
+        assert_eq!(epoch, 1);
+        assert_eq!(entry.pending_force_epoch, Some(epoch));
+        assert_eq!(entry.completed_force_epoch, 0);
+    }
+
+    #[test]
+    fn force_epoch_never_wraps() {
+        let mut entry = RuntimeEntry {
+            next_force_epoch: u64::MAX,
+            ..RuntimeEntry::default()
+        };
+
+        assert!(request_force_epoch(&mut entry).is_err());
+        assert_eq!(entry.next_force_epoch, u64::MAX);
+        assert_eq!(entry.pending_force_epoch, None);
     }
 
     #[test]

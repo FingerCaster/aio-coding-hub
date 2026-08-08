@@ -81,6 +81,12 @@ streaming boundaries, and commits session or routing state later.
       through the selected recovery target so common-gate skips remain
       observable. Test all-blocked Stay and blocked-closed-prefix plus final-open
       probe in one client request.
+- [ ] When a user action waits on shared asynchronous work, assign a checked
+      operation epoch instead of inferring identity from a generic completion
+      count. Background completions may wake the waiter but cannot satisfy it;
+      publish every downstream projection before completing the epoch, wake
+      queued tails from the completion event, and keep pending force work alive
+      independently of optional consumer leases.
 - [ ] Name every failure, reset, and reopen transition that invalidates a shared
       recovery marker.
 
