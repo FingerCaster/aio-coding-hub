@@ -4,7 +4,7 @@
 
 评估并规划将 KNaiFen/aio-coding-hub 的可配置模型路由能力融合到本项目当前网关的可行路径，形成可供后续实现使用的、代码库有证据支撑的范围与依赖结论。
 
-本任务当前只做调研和规划材料，不修改产品代码、不 cherry-pick 外部提交、不启动实现阶段。
+本任务以调研和规划开始；用户批准后，产品实现由两个子任务按顺序完成。父任务自身只维护共同需求与联合验收，不直接承载产品代码，也未 cherry-pick 外部提交。
 
 ## Background
 
@@ -92,3 +92,12 @@ SQLite 升级迁移自动删除 `codex_to_openai_chat`、`codex_to_openai_respon
 - 账户用量、余额门控和回切抑制本身的实现；本文只记录其已合入基线、依赖和交叉约束。
 - 目标提交中独立的任务通知、Observer/TUI、发布版本号和 CI/release 改动。
 - 在本任务获得实现批准前修改 `src/`、`src-tauri/` 或生成绑定。
+
+## Implementation Outcome
+
+- Codex Provider 转译删除提交：`86342292`；对应子任务归档提交：`10ceb1cd`。
+- 可配置模型路由实现提交：`f6773c15`；对应子任务归档提交：`5252f7fe`。
+- 最终版本矩阵为 SQLite 45、settings 57、Provider 分享 v3、完整配置 v4；Observer/TUI、通知、release/CI 均未引入。
+- 联合验收确认遗留 Codex bridge 标识仅存在于迁移、旧格式拒绝和负向测试；活动网关/UI 不再暴露转译功能。
+- 组合状态通过前端 304 个测试文件/2749 项测试、Rust 全量测试、lint、typecheck、fmt/check/clippy、生成绑定、错误码与差异检查。
+- Orca 内嵌浏览器服务未附着，无法补截图式 UI QA；组件测试和静态响应式布局审查通过，该环境限制已在路由子任务中如实记录。
