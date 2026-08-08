@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 30
-- **Last Active**: 2026-08-08
+- **Total Sessions**: 31
+- **Last Active**: 2026-08-09
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1070 | Active |
+| `journal-1.md` | ~1095 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 31 | 2026-08-09 | 完成可配置模型路由与供应商恢复修复 | `86342292`, `f6773c15`, `8587e5c1`, `eedf1069` | `FingerCaster/configurable-model-routing-implementation` |
 | 30 | 2026-08-08 | Fix repeated balance failback skips | `8757d32c` | `main` |
 | 29 | 2026-08-08 | 自定义余额查询与路由恢复集成 | `708d2965`, `ef8892be` | `FingerCaster/account-usage-routing-build` |
 | 28 | 2026-08-06 | Harden upstream error handling | `f6d5de13` | `main` |

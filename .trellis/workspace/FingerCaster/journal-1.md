@@ -1068,3 +1068,28 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 31: 完成可配置模型路由与供应商恢复修复
+
+**Date**: 2026-08-09
+**Task**: 完成可配置模型路由与供应商恢复修复
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/configurable-model-routing-implementation`
+
+### Summary
+
+融合可配置模型路由并删除 Codex 转译；修复余额跳过后的末位熔断试探，以及零余额手动刷新被在途自动请求遮蔽的问题；全量前后端检查通过。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `86342292` | (see git log) |
+| `f6773c15` | (see git log) |
+| `8587e5c1` | (see git log) |
+| `eedf1069` | (see git log) |
+
+### Status
+
+[OK] **Completed**
