@@ -13,10 +13,10 @@ pub use types::{
 #[allow(unused_imports)]
 pub(crate) use types::{
     has_bridged_input_semantics, is_supported_bridge_type, ClaudeTerminalLaunchContext,
-    GatewayProvidersSelection, ProviderAccountUsageFetchContext, ProviderForGateway,
-    ProviderOAuthDetails, ProviderRouteRow, ProviderTransportContext,
-    CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE, CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE,
-    CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
+    GatewayProvidersSelection, ProviderAccountUsageCredentialContext,
+    ProviderAccountUsageFetchContext, ProviderForGateway, ProviderOAuthDetails, ProviderRouteRow,
+    ProviderTransportContext, CODEX_TO_ANTHROPIC_MESSAGES_BRIDGE_TYPE,
+    CODEX_TO_OPENAI_CHAT_BRIDGE_TYPE, CODEX_TO_OPENAI_RESPONSES_BRIDGE_TYPE, CX2CC_BRIDGE_TYPE,
 };
 
 pub use queries::{
@@ -25,12 +25,13 @@ pub use queries::{
 };
 
 pub(crate) use queries::{
-    claude_terminal_launch_context, clear_oauth, cli_key_by_id, get_account_usage_fetch_context,
-    get_by_id, get_enabled_direct_codex_for_gateway_by_identity, get_oauth_details,
+    claude_terminal_launch_context, clear_oauth, cli_key_by_id,
+    get_account_usage_credential_context, get_account_usage_fetch_context, get_by_id,
+    get_enabled_direct_codex_for_gateway_by_identity, get_oauth_details,
     get_source_provider_for_gateway, list_enabled_for_gateway_using_active_mode,
     list_oauth_providers_needing_refresh, replace_extension_values, resolve_effective_credential,
     resolve_effective_transport_credential, set_enabled, set_oauth_last_error, update_oauth_tokens,
-    update_oauth_tokens_if_last_refreshed_matches,
+    update_oauth_tokens_if_last_refreshed_matches, upsert_with_provider_uuid,
 };
 
 #[cfg(test)]

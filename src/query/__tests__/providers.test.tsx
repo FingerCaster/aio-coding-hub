@@ -1,6 +1,6 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { QueryClient } from "@tanstack/react-query";
-import { describe, expect, it, vi } from "vitest";
+import { beforeEach, describe, expect, it, vi } from "vitest";
 import type {
   ProviderAccountUsageResult,
   ProviderOAuthStatusResult,
@@ -14,6 +14,10 @@ import {
   providerOAuthResetCodexQuota,
   providerOAuthStatus,
   providerAccountUsageFetch,
+  providerAccountUsageRefresh,
+  providerAccountUsageDesktopLeaseAcquire,
+  providerAccountUsageDesktopLeaseHeartbeat,
+  providerAccountUsageDesktopLeaseRelease,
   providerClaudeTerminalLaunchCommand,
   providerDelete,
   providerDuplicate,
@@ -67,6 +71,10 @@ vi.mock("../../services/providers/providers", async () => {
     providersList: vi.fn(),
     providerOAuthStatus: vi.fn(),
     providerAccountUsageFetch: vi.fn(),
+    providerAccountUsageRefresh: vi.fn(),
+    providerAccountUsageDesktopLeaseAcquire: vi.fn().mockResolvedValue(true),
+    providerAccountUsageDesktopLeaseHeartbeat: vi.fn().mockResolvedValue(true),
+    providerAccountUsageDesktopLeaseRelease: vi.fn().mockResolvedValue(undefined),
     providerOAuthFetchLimits: vi.fn(),
     providerOAuthResetCodexQuota: vi.fn(),
     providerUpsert: vi.fn(),
@@ -97,6 +105,12 @@ vi.mock("../../services/providers/providerModels", async () => {
     ...actual,
     providerModelsRefresh: vi.fn(),
   };
+});
+
+beforeEach(() => {
+  vi.mocked(providerAccountUsageDesktopLeaseAcquire).mockResolvedValue(true);
+  vi.mocked(providerAccountUsageDesktopLeaseHeartbeat).mockResolvedValue(true);
+  vi.mocked(providerAccountUsageDesktopLeaseRelease).mockResolvedValue(undefined);
 });
 
 function makeProvider(
@@ -433,6 +447,7 @@ describe("query/providers", () => {
   it("shares account usage query options and forces a fresh manual IPC request", async () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
+    vi.mocked(providerAccountUsageRefresh).mockClear();
 
     const accountUsage = makeAccountUsage(1);
     vi.mocked(providerAccountUsageFetch).mockResolvedValue(accountUsage);
@@ -471,17 +486,18 @@ describe("query/providers", () => {
     expect(providerAccountUsageQueryOptions(12).queryFn).toBe(sharedOptions.queryFn);
 
     const refreshedAccountUsage = { ...accountUsage, balance: 4 };
-    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce(refreshedAccountUsage);
+    vi.mocked(providerAccountUsageRefresh).mockResolvedValueOnce(refreshedAccountUsage);
     const cancelSpy = vi.spyOn(client, "cancelQueries");
     const fetchSpy = vi.spyOn(client, "fetchQuery");
     await expect(refreshProviderAccountUsage(client, 12)).resolves.toEqual(refreshedAccountUsage);
 
-    expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+    expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1);
+    expect(providerAccountUsageRefresh).toHaveBeenCalledWith(12);
     expect(cancelSpy).toHaveBeenCalledWith({ queryKey: sharedOptions.queryKey, exact: true });
     expect(fetchSpy).toHaveBeenCalledWith(
       expect.objectContaining({
         queryKey: sharedOptions.queryKey,
-        queryFn: sharedOptions.queryFn,
+        queryFn: expect.any(Function),
         staleTime: 0,
         retry: false,
       })
@@ -494,12 +510,12 @@ describe("query/providers", () => {
   it("keeps a manual result authoritative when an uncancellable initial request finishes late", async () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
+    vi.mocked(providerAccountUsageRefresh).mockClear();
 
     const initialOld = deferred<ProviderAccountUsageResult | null>();
     const manualNew = deferred<ProviderAccountUsageResult | null>();
-    vi.mocked(providerAccountUsageFetch)
-      .mockImplementationOnce(() => initialOld.promise)
-      .mockImplementationOnce(() => manualNew.promise);
+    vi.mocked(providerAccountUsageFetch).mockImplementationOnce(() => initialOld.promise);
+    vi.mocked(providerAccountUsageRefresh).mockImplementationOnce(() => manualNew.promise);
 
     const client = createTestQueryClient();
     const provider = makeProvider({
@@ -524,7 +540,8 @@ describe("query/providers", () => {
       manualPromise = refreshProviderAccountUsage(client, provider.id);
     });
     await waitFor(() => {
-      expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+      expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1);
+      expect(providerAccountUsageRefresh).toHaveBeenCalledTimes(1);
       expect(result.current.isFetching).toBe(true);
     });
 
@@ -550,14 +567,15 @@ describe("query/providers", () => {
   it("keeps a manual result authoritative when an uncancellable timed refetch finishes late", async () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
+    vi.mocked(providerAccountUsageRefresh).mockClear();
 
     const initialUsage = makeAccountUsage(1);
     const timedOld = deferred<ProviderAccountUsageResult | null>();
     const manualNew = deferred<ProviderAccountUsageResult | null>();
     vi.mocked(providerAccountUsageFetch)
       .mockResolvedValueOnce(initialUsage)
-      .mockImplementationOnce(() => timedOld.promise)
-      .mockImplementationOnce(() => manualNew.promise);
+      .mockImplementationOnce(() => timedOld.promise);
+    vi.mocked(providerAccountUsageRefresh).mockImplementationOnce(() => manualNew.promise);
 
     const client = createTestQueryClient();
     const provider = makeProvider({
@@ -590,7 +608,7 @@ describe("query/providers", () => {
     act(() => {
       manualPromise = refreshProviderAccountUsage(client, provider.id);
     });
-    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(3));
+    await waitFor(() => expect(providerAccountUsageRefresh).toHaveBeenCalledTimes(1));
 
     const newUsage = makeAccountUsage(11);
     await act(async () => {
@@ -610,20 +628,20 @@ describe("query/providers", () => {
 
   it("serializes repeated manual entry points by canceling the older same-key fetch", async () => {
     setTauriRuntime();
-    vi.mocked(providerAccountUsageFetch).mockClear();
+    vi.mocked(providerAccountUsageRefresh).mockClear();
 
     const first = deferred<ProviderAccountUsageResult | null>();
     const second = deferred<ProviderAccountUsageResult | null>();
-    vi.mocked(providerAccountUsageFetch)
+    vi.mocked(providerAccountUsageRefresh)
       .mockImplementationOnce(() => first.promise)
       .mockImplementationOnce(() => second.promise);
 
     const client = createTestQueryClient();
     const firstRefresh = refreshProviderAccountUsage(client, 18);
     const firstRefreshCanceled = expect(firstRefresh).rejects.toThrow("CancelledError");
-    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(providerAccountUsageRefresh).toHaveBeenCalledTimes(1));
     const secondRefresh = refreshProviderAccountUsage(client, 18);
-    await waitFor(() => expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2));
+    await waitFor(() => expect(providerAccountUsageRefresh).toHaveBeenCalledTimes(2));
 
     const secondUsage = makeAccountUsage(12);
     second.resolve(secondUsage);
@@ -647,7 +665,7 @@ describe("query/providers", () => {
     client.setQueryData(providersKeys.list("codex"), providerList);
     client.setQueryData(gatewayKeys.circuits(), gatewayState);
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
-    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce(makeAccountUsage(7));
+    vi.mocked(providerAccountUsageRefresh).mockResolvedValueOnce(makeAccountUsage(7));
 
     await refreshProviderAccountUsage(client, 19);
 
@@ -666,7 +684,7 @@ describe("query/providers", () => {
     expect(client.getQueryData(gatewayKeys.circuits())).toEqual(gatewayState);
   });
 
-  it("auto-fetches initial account usage even when timed refresh is disabled", async () => {
+  it("polls only the local snapshot when timed remote refresh is disabled", async () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
 
@@ -721,7 +739,7 @@ describe("query/providers", () => {
     });
 
     const query = client.getQueryCache().find({ queryKey: providerAccountUsageKeys.detail(13) });
-    expect((query?.options as { refetchInterval?: unknown }).refetchInterval).toBe(false);
+    expect((query?.options as { refetchInterval?: unknown }).refetchInterval).toBe(5_000);
   });
 
   it("does not auto-fetch provider account usage for disabled providers", async () => {
@@ -756,7 +774,7 @@ describe("query/providers", () => {
     expect(readProviderAccountUsageCache(client, 14)).toBeNull();
   });
 
-  it("uses configured account usage polling interval when timed refresh is enabled", () => {
+  it("keeps local snapshot polling independent from the configured remote interval", () => {
     setTauriRuntime();
     vi.mocked(providerAccountUsageFetch).mockClear();
     vi.mocked(providerAccountUsageFetch).mockResolvedValue({
@@ -805,7 +823,7 @@ describe("query/providers", () => {
     renderHook(() => useProviderAccountUsageQuery(provider), { wrapper });
 
     const query = client.getQueryCache().find({ queryKey: providerAccountUsageKeys.detail(15) });
-    expect((query?.options as { refetchInterval?: unknown }).refetchInterval).toBe(60_000);
+    expect((query?.options as { refetchInterval?: unknown }).refetchInterval).toBe(5_000);
   });
 
   it("active OAuth limits refresh resets circuit after every successful refresh", async () => {

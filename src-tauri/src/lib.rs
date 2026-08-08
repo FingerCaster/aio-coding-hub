@@ -44,6 +44,10 @@ pub fn run_extension_host_worker() {
     crate::app::plugins::extension_host_worker::run_stdio_worker();
 }
 
+pub fn run_account_usage_script_worker() {
+    crate::domain::provider_account_usage_script::run_account_usage_script_worker();
+}
+
 /// 导出前端使用的 TypeScript IPC 绑定。
 pub fn export_typescript_bindings(output_path: &str) -> Result<(), String> {
     commands::registry::export_typescript_bindings(output_path)

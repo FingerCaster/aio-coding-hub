@@ -5,6 +5,7 @@ use crate::shared::error::AppError;
 use crate::shared::fs::read_file_with_max_len;
 use crate::shared::ipc_confirm::RiskyIpcConfirm;
 use std::path::Path;
+use tauri::Manager;
 
 fn map_config_import_read_error(err: AppError) -> String {
     let message = err.to_string();
@@ -178,6 +179,7 @@ pub(crate) async fn config_import(
     RiskyIpcConfirm::require(confirm, "config_import", file_path.clone())?;
     #[cfg(windows)]
     let app_for_wsl = app.clone();
+    let app_for_runtime = app.clone();
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     let result = blocking::run("config_import", move || {
         let bundle = read_config_import_bundle(&file_path)?;
@@ -185,6 +187,12 @@ pub(crate) async fn config_import(
     })
     .await
     .map_err(|err| -> String { err.into() })?;
+
+    if let Some(runtime) = app_for_runtime.try_state::<
+        crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,
+    >() {
+        runtime.reset_all().await;
+    }
 
     #[cfg(windows)]
     super::wsl::wsl_sync_trigger::trigger(app_for_wsl);

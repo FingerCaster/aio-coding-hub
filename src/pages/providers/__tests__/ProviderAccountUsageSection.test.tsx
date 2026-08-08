@@ -5,7 +5,9 @@ import type { UseProviderEditorFormReturn } from "../useProviderEditorForm";
 
 function makeForm(partial: Partial<UseProviderEditorFormReturn> = {}): UseProviderEditorFormReturn {
   return {
+    editingProviderId: null,
     authMode: "api_key",
+    apiKeyConfigured: false,
     saving: false,
     accountUsageAdapterKind: "disabled",
     setAccountUsageAdapterKind: vi.fn(),
@@ -23,6 +25,21 @@ function makeForm(partial: Partial<UseProviderEditorFormReturn> = {}): UseProvid
     setAccountUsageTimedRefreshEnabled: vi.fn(),
     accountUsageRefreshIntervalSeconds: 300,
     setAccountUsageRefreshIntervalSeconds: vi.fn(),
+    accountUsageCustomScript: "",
+    setAccountUsageCustomScript: vi.fn(),
+    accountUsageCustomAllowedOrigins: [],
+    setAccountUsageCustomAllowedOrigins: vi.fn(),
+    accountUsageCustomAllowedOriginsCount: 0,
+    accountUsageCustomAllowedOriginsError: null,
+    accountUsageCustomTimeoutSeconds: 10,
+    setAccountUsageCustomTimeoutSeconds: vi.fn(),
+    accountUsageCustomEnabled: false,
+    setAccountUsageCustomEnabled: vi.fn(),
+    accountUsageCustomTestPending: false,
+    accountUsageCustomTestInFlight: false,
+    accountUsageCustomTestResult: null,
+    accountUsageCustomTestError: null,
+    testAccountUsageCustomScript: vi.fn(),
     ...partial,
   } as unknown as UseProviderEditorFormReturn;
 }
@@ -65,6 +82,16 @@ const summaryCases: Array<[string, Partial<UseProviderEditorFormReturn>, string]
     "NewApi 用户账户余额",
     { accountUsageAdapterKind: "newapi", accountUsageNewApiQueryMode: "account" },
     "NewApi · 用户账户余额",
+  ],
+  [
+    "自定义 JS 未启用",
+    { accountUsageAdapterKind: "custom", accountUsageCustomEnabled: false },
+    "自定义 JS · 未启用",
+  ],
+  [
+    "自定义 JS 已启用",
+    { accountUsageAdapterKind: "custom", accountUsageCustomEnabled: true },
+    "自定义 JS · 已启用",
   ],
 ];
 
@@ -255,6 +282,207 @@ describe("ProviderAccountUsageSection", () => {
     expect(setAccessToken).toHaveBeenCalledWith("SYNTHETIC_REPLACEMENT");
     fireEvent.click(screen.getByRole("button", { name: "清除账户凭据" }));
     expect(clearCredentials).toHaveBeenCalledOnce();
+  });
+
+  it("edits and tests a custom JavaScript account-usage draft", () => {
+    const setScript = vi.fn();
+    const setAllowedOrigins = vi.fn();
+    const setTimeoutSeconds = vi.fn();
+    const setCustomEnabled = vi.fn();
+    const testCustomScript = vi.fn();
+    render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          editingProviderId: 19,
+          apiKeyConfigured: true,
+          accountUsageAdapterKind: "custom",
+          accountUsageCustomScript: "中😀",
+          setAccountUsageCustomScript: setScript,
+          accountUsageCustomAllowedOrigins: ["https://usage.example.invalid"],
+          setAccountUsageCustomAllowedOrigins: setAllowedOrigins,
+          accountUsageCustomAllowedOriginsCount: 1,
+          accountUsageCustomTimeoutSeconds: 8,
+          setAccountUsageCustomTimeoutSeconds: setTimeoutSeconds,
+          setAccountUsageCustomEnabled: setCustomEnabled,
+          testAccountUsageCustomScript: testCustomScript,
+        })}
+      />
+    );
+
+    openDisclosure();
+    expect(screen.getByRole("radio", { name: "自定义 JS" })).toBeChecked();
+    expect(
+      screen.getByText(
+        /脚本和全部目标服务都可读取或转发当前供应商 API Key；仅信任已核对的脚本、Base URL 和额外 HTTPS Origin。/
+      )
+    ).toBeInTheDocument();
+    expect(screen.getByText("7/32768 字节")).toBeInTheDocument();
+
+    const script = screen.getByRole("textbox", { name: "账户用量 JavaScript" });
+    const origins = screen.getByRole("textbox", { name: "额外 HTTPS Origin，每行一个" });
+    const timeout = screen.getByRole("spinbutton", {
+      name: "自定义账户用量请求超时",
+    });
+    fireEvent.change(script, { target: { value: "({ request: 1, parse: 2 })" } });
+    fireEvent.change(origins, {
+      target: { value: "https://first.example.invalid\nhttps://second.example.invalid\n" },
+    });
+    fireEvent.change(timeout, { target: { value: "12" } });
+    const enableSwitch = screen.getByRole("switch", { name: "启用自定义账户用量脚本" });
+    const confirmationStatus = screen.getByRole("status", {
+      name: "自定义账户用量确认状态",
+    });
+    expect(script).toHaveAccessibleDescription(
+      /7\/32768 字节.*脚本和全部目标服务都可读取或转发当前供应商 API Key/
+    );
+    expect(origins).toHaveAccessibleDescription(
+      /1\/16.*仅信任已核对的脚本、Base URL 和额外 HTTPS Origin/
+    );
+    expect(timeout).toHaveAccessibleDescription("2-15s");
+    expect(enableSwitch).toHaveAccessibleDescription(
+      /保存时弹出系统确认；脚本、Base URL 或额外 Origin 变更后需重新确认.*脚本和全部目标服务/
+    );
+    expect(confirmationStatus).toHaveAttribute("aria-live", "polite");
+    expect(confirmationStatus).toHaveAttribute("aria-atomic", "true");
+    expect(confirmationStatus).toHaveTextContent("未启用");
+    fireEvent.click(enableSwitch);
+    fireEvent.click(screen.getByRole("button", { name: "测试脚本" }));
+
+    expect(setScript).toHaveBeenCalledWith("({ request: 1, parse: 2 })");
+    expect(setAllowedOrigins).toHaveBeenCalledWith([
+      "https://first.example.invalid",
+      "https://second.example.invalid",
+      "",
+    ]);
+    expect(setTimeoutSeconds).toHaveBeenCalledWith(12);
+    expect(setCustomEnabled).toHaveBeenCalledWith(true);
+    expect(testCustomScript).toHaveBeenCalledOnce();
+    expect(timeout).toHaveAttribute("min", "2");
+    expect(timeout).toHaveAttribute("max", "15");
+  });
+
+  it("requires a saved provider with a configured API key before testing", () => {
+    const { rerender } = render(
+      <ProviderAccountUsageSection
+        form={makeForm({ accountUsageAdapterKind: "custom", editingProviderId: null })}
+      />
+    );
+
+    openDisclosure();
+    expect(screen.getByRole("button", { name: "测试脚本" })).toBeDisabled();
+    expect(screen.getByText("保存供应商后可测试")).toBeInTheDocument();
+
+    rerender(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "custom",
+          editingProviderId: 20,
+          apiKeyConfigured: false,
+        })}
+      />
+    );
+    expect(screen.getByRole("button", { name: "测试脚本" })).toBeDisabled();
+    expect(screen.getByText("需先保存 API Key")).toBeInTheDocument();
+  });
+
+  it("associates explicit origin validation errors and blocks unsafe actions", () => {
+    render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          editingProviderId: 20,
+          apiKeyConfigured: true,
+          accountUsageAdapterKind: "custom",
+          accountUsageCustomScript: "({ request: () => ({}) })",
+          accountUsageCustomAllowedOrigins: ["http://invalid.example/path"],
+          accountUsageCustomAllowedOriginsError: "第 1 行必须是仅含协议、主机和端口的 HTTPS Origin",
+        })}
+      />
+    );
+
+    const { summary } = openDisclosure();
+    expect(within(summary).getByText("Origin 配置有误")).toBeInTheDocument();
+    const origins = screen.getByRole("textbox", { name: "额外 HTTPS Origin，每行一个" });
+    expect(origins).toHaveAttribute("aria-invalid", "true");
+    expect(origins).toHaveAccessibleDescription(/第 1 行必须是仅含协议、主机和端口的 HTTPS Origin/);
+    expect(screen.getByRole("alert")).toHaveTextContent(
+      "第 1 行必须是仅含协议、主机和端口的 HTTPS Origin"
+    );
+    expect(screen.getByRole("button", { name: "测试脚本" })).toBeDisabled();
+    expect(screen.getByRole("switch", { name: "启用自定义账户用量脚本" })).toBeDisabled();
+  });
+
+  it("keeps test and enable controls disabled until the real test promise settles", () => {
+    render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          editingProviderId: 20,
+          apiKeyConfigured: true,
+          accountUsageAdapterKind: "custom",
+          accountUsageCustomScript: "({ request: () => ({}) })",
+          accountUsageCustomTestPending: false,
+          accountUsageCustomTestInFlight: true,
+        })}
+      />
+    );
+
+    openDisclosure();
+    const testButton = screen.getByRole("button", { name: "测试中…" });
+    expect(testButton).toBeDisabled();
+    expect(testButton).toHaveAttribute("aria-busy", "true");
+    expect(testButton).toHaveAccessibleDescription(/请等待当前测试完成/);
+    expect(screen.getByRole("switch", { name: "启用自定义账户用量脚本" })).toBeDisabled();
+  });
+
+  it("renders only normalized custom test results or sanitized errors", () => {
+    const result = {
+      adapter_kind: null,
+      status: "available" as const,
+      freshness: "fresh" as const,
+      plan_name: "Synthetic",
+      balance: 12.5,
+      plan_remaining: null,
+      used: 7.5,
+      total: 20,
+      unit: "USD",
+      unit_note: null,
+      daily_used: null,
+      daily_total: null,
+      weekly_used: null,
+      weekly_total: null,
+      monthly_used: null,
+      monthly_total: null,
+      expires_at: null,
+      last_fetched_at: 1,
+      message: "测试成功",
+    };
+    const { rerender } = render(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "custom",
+          accountUsageCustomTestResult: result,
+        })}
+      />
+    );
+
+    openDisclosure();
+    const status = screen.getByRole("status", { name: "自定义账户用量测试结果" });
+    expect(status).toHaveTextContent("测试结果：可用");
+    expect(status).toHaveTextContent("套餐 Synthetic");
+    expect(status).toHaveTextContent("余额 12.5 USD");
+    expect(status).toHaveTextContent("测试成功");
+
+    rerender(
+      <ProviderAccountUsageSection
+        form={makeForm({
+          accountUsageAdapterKind: "custom",
+          accountUsageCustomTestError: "脚本解析失败",
+        })}
+      />
+    );
+    expect(
+      screen.queryByRole("status", { name: "自定义账户用量测试结果" })
+    ).not.toBeInTheDocument();
+    expect(screen.getByRole("alert")).toHaveTextContent("脚本解析失败");
   });
 
   it("does not render for non-API-key authentication", () => {

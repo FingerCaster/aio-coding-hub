@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useRef, useState } from "react";
+import { useCallback, useMemo, useRef, useState, type Dispatch, type SetStateAction } from "react";
 import { useQueryClient } from "@tanstack/react-query";
 import { useForm } from "react-hook-form";
 import type { ActiveUiContribution, JsonValue } from "../../generated/bindings";
@@ -6,6 +6,7 @@ import type {
   ClaudeModels,
   ModelMapping,
   ProviderExtensionValuesInput,
+  ProviderAccountUsageResult,
   ProviderOAuthDeviceCodeStartResult,
   ProviderSummary,
   UpstreamRetryPolicy,
@@ -53,16 +54,27 @@ import {
 } from "./providerEditorOAuthActions";
 import { runProviderEditorSave } from "./providerEditorSaveRunner";
 import { useProviderEditorEffects } from "./useProviderEditorEffects";
-import { providerOAuthCancelDeviceFlow } from "../../services/providers/providers";
 import {
+  providerAccountUsageTestCustomScript,
+  providerOAuthCancelDeviceFlow,
+} from "../../services/providers/providers";
+import {
+  PROVIDER_ACCOUNT_USAGE_CUSTOM_SCRIPT_TEMPLATE,
+  PROVIDER_ACCOUNT_USAGE_DEFAULT_CUSTOM_TIMEOUT_SECONDS,
   PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
+  hasProviderAccountUsageCustomPermissionChange,
   mergeProviderAccountUsageExtensionValues,
+  normalizeProviderAccountUsageCustomTimeoutSeconds,
+  prepareProviderAccountUsageCustomAllowedOrigins,
   readProviderAccountUsageConfig,
   normalizeProviderAccountUsageRefreshIntervalSeconds,
+  truncateProviderAccountUsageCustomScriptUtf8,
+  validateProviderAccountUsageCustomAllowedOrigins,
   type ProviderAccountUsageAdapterKind,
   type ProviderAccountUsageConfig,
 } from "../../services/providers/providerAccountUsageConfig";
 import { logToConsole } from "../../services/consoleLog";
+import { formatUnknownError } from "../../utils/errors";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../services/gateway/upstreamRetryPolicy";
 import { useContributionsForSlot } from "../../plugins/contributions/useActiveContributions";
 import { contributionKey, type ContributionValues } from "../../plugins/contributions/types";
@@ -177,6 +189,13 @@ type AccountUsageState = ProviderAccountUsageConfig & {
   clearNewApiAccessToken: boolean;
 };
 
+type AccountUsageCustomTestState = {
+  resetKey: string;
+  pending: boolean;
+  result: ProviderAccountUsageResult | null;
+  error: string | null;
+};
+
 function buildExtensionValuesResetKey({
   open,
   mode,
@@ -225,12 +244,10 @@ function buildExtensionValuesState({
 function buildAccountUsageState({
   resetKey,
   mode,
-  existingExtensionValues,
   editProvider,
 }: {
   resetKey: string;
   mode: ProviderEditorDialogProps["mode"];
-  existingExtensionValues: StoredProviderExtensionValues[];
   editProvider: ProviderSummary | null;
 }): AccountUsageState {
   const config =
@@ -240,8 +257,12 @@ function buildAccountUsageState({
           newApiQueryMode: "billing" as const,
           timedRefreshEnabled: true,
           refreshIntervalSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_REFRESH_INTERVAL_SECONDS,
+          customScript: "",
+          customAllowedOrigins: [],
+          customTimeoutSeconds: PROVIDER_ACCOUNT_USAGE_DEFAULT_CUSTOM_TIMEOUT_SECONDS,
+          customEnabled: false,
         }
-      : readProviderAccountUsageConfig(existingExtensionValues);
+      : readProviderAccountUsageConfig(editProvider);
 
   return {
     resetKey,
@@ -252,6 +273,38 @@ function buildAccountUsageState({
       mode === "edit" && editProvider?.newapi_account_access_token_configured === true,
     clearNewApiAccessToken: false,
   };
+}
+
+function buildAccountUsageCustomTestState(resetKey: string): AccountUsageCustomTestState {
+  return {
+    resetKey,
+    pending: false,
+    result: null,
+    error: null,
+  };
+}
+
+function firstProviderAccountUsageBaseOrigin(rows: BaseUrlRow[]): string | null {
+  const firstBaseUrl = rows.find((row) => row.url.trim())?.url.trim();
+  if (!firstBaseUrl) return null;
+
+  try {
+    const url = new URL(firstBaseUrl);
+    if (
+      url.protocol !== "https:" ||
+      !url.hostname ||
+      url.username ||
+      url.password ||
+      url.search ||
+      url.hash ||
+      url.origin === "null"
+    ) {
+      return null;
+    }
+    return url.origin;
+  } catch {
+    return null;
+  }
 }
 
 export function useProviderEditorForm(props: ProviderEditorDialogProps) {
@@ -279,7 +332,13 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   }, []);
 
   const [baseUrlMode, setBaseUrlMode] = useState<ProviderBaseUrlMode>("order");
-  const [baseUrlRows, setBaseUrlRows] = useState<BaseUrlRow[]>(() => [newBaseUrlRow()]);
+  const [baseUrlRows, setBaseUrlRowsState] = useState<BaseUrlRow[]>(() => [newBaseUrlRow()]);
+  const baseUrlRowsRef = useRef(baseUrlRows);
+  baseUrlRowsRef.current = baseUrlRows;
+  const replaceBaseUrlRows = useCallback((rows: BaseUrlRow[]) => {
+    baseUrlRowsRef.current = rows;
+    setBaseUrlRowsState(rows);
+  }, []);
   const [pingingAll, setPingingAll] = useState(false);
   const [claudeModels, setClaudeModels] = useState<ClaudeModels>({});
   const [modelMapping, setModelMapping] = useState<ModelMapping>({
@@ -324,6 +383,9 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const [codexGatewayBaseOrigin, setCodexGatewayBaseOrigin] = useState<string | null>(null);
   const oauthStatusRequestSeqRef = useRef(0);
   const oauthLoginAttemptSeqRef = useRef(0);
+  const accountUsageCustomTestRequestSeqRef = useRef(0);
+  const accountUsageCustomTestPromiseRef =
+    useRef<Promise<ProviderAccountUsageResult | null> | null>(null);
   const activeOAuthDeviceFlowRef = useRef<string | null>(null);
   const queryClient = useQueryClient();
   const providerUpsertMutation = useProviderUpsertMutation();
@@ -476,12 +538,17 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     buildAccountUsageState({
       resetKey: extensionValuesResetKey,
       mode,
-      existingExtensionValues,
       editProvider,
     })
   );
+  const [accountUsageCustomTestState, setAccountUsageCustomTestState] =
+    useState<AccountUsageCustomTestState>(() =>
+      buildAccountUsageCustomTestState(extensionValuesResetKey)
+    );
+  const [accountUsageCustomTestInFlight, setAccountUsageCustomTestInFlight] = useState(false);
   let effectiveExtensionValuesState = extensionValuesState;
   let effectiveAccountUsageState = accountUsageState;
+  let effectiveAccountUsageCustomTestState = accountUsageCustomTestState;
 
   if (extensionValuesState.resetKey !== extensionValuesResetKey) {
     effectiveExtensionValuesState = buildExtensionValuesState({
@@ -496,10 +563,15 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     effectiveAccountUsageState = buildAccountUsageState({
       resetKey: extensionValuesResetKey,
       mode,
-      existingExtensionValues,
       editProvider,
     });
     setAccountUsageState(effectiveAccountUsageState);
+  }
+  if (accountUsageCustomTestState.resetKey !== extensionValuesResetKey) {
+    accountUsageCustomTestRequestSeqRef.current += 1;
+    effectiveAccountUsageCustomTestState =
+      buildAccountUsageCustomTestState(extensionValuesResetKey);
+    setAccountUsageCustomTestState(effectiveAccountUsageCustomTestState);
   }
   const extensionValuesByContributionKey = effectiveExtensionValuesState.valuesByContributionKey;
   const accountUsageAdapterKind = effectiveAccountUsageState.adapterKind;
@@ -512,6 +584,18 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const accountUsageClearNewApiAccessToken = effectiveAccountUsageState.clearNewApiAccessToken;
   const accountUsageTimedRefreshEnabled = effectiveAccountUsageState.timedRefreshEnabled;
   const accountUsageRefreshIntervalSeconds = effectiveAccountUsageState.refreshIntervalSeconds;
+  const accountUsageCustomScript = effectiveAccountUsageState.customScript;
+  const accountUsageCustomAllowedOrigins = effectiveAccountUsageState.customAllowedOrigins;
+  const accountUsageCustomTimeoutSeconds = effectiveAccountUsageState.customTimeoutSeconds;
+  const accountUsageCustomEnabled = effectiveAccountUsageState.customEnabled;
+  const accountUsageCustomTestPending = effectiveAccountUsageCustomTestState.pending;
+  const accountUsageCustomTestResult = effectiveAccountUsageCustomTestState.result;
+  const accountUsageCustomTestError = effectiveAccountUsageCustomTestState.error;
+  const accountUsageCustomAllowedOriginsValidation = useMemo(
+    () => validateProviderAccountUsageCustomAllowedOrigins(accountUsageCustomAllowedOrigins),
+    [accountUsageCustomAllowedOrigins]
+  );
+  const accountUsageCustomAllowedOriginsError = accountUsageCustomAllowedOriginsValidation.error;
 
   const setExtensionValue = useCallback(
     (contribution: ActiveUiContribution, fieldKey: string, value: JsonValue) => {
@@ -530,10 +614,107 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     []
   );
 
-  const setAccountUsageAdapterKind = useCallback((adapterKind: ProviderAccountUsageAdapterKind) => {
+  const resetAccountUsageCustomTest = useCallback(() => {
+    accountUsageCustomTestRequestSeqRef.current += 1;
+    setAccountUsageCustomTestState((prev) => ({
+      ...prev,
+      pending: false,
+      result: null,
+      error: null,
+    }));
+  }, []);
+
+  const setBaseUrlRows = useCallback<Dispatch<SetStateAction<BaseUrlRow[]>>>(
+    (value) => {
+      const previousRows = baseUrlRowsRef.current;
+      const nextRows = typeof value === "function" ? value(previousRows) : value;
+      baseUrlRowsRef.current = nextRows;
+      setBaseUrlRowsState(nextRows);
+
+      if (
+        firstProviderAccountUsageBaseOrigin(previousRows) ===
+        firstProviderAccountUsageBaseOrigin(nextRows)
+      ) {
+        return;
+      }
+      setAccountUsageState((prev) => ({ ...prev, customEnabled: false }));
+      resetAccountUsageCustomTest();
+    },
+    [resetAccountUsageCustomTest]
+  );
+
+  const setAccountUsageAdapterKind = useCallback(
+    (adapterKind: ProviderAccountUsageAdapterKind) => {
+      setAccountUsageState((prev) => {
+        const shouldSeedCustomScript = adapterKind === "custom" && !prev.customScript.trim();
+        return {
+          ...prev,
+          adapterKind,
+          customScript: shouldSeedCustomScript
+            ? PROVIDER_ACCOUNT_USAGE_CUSTOM_SCRIPT_TEMPLATE
+            : prev.customScript,
+          customEnabled: shouldSeedCustomScript ? false : prev.customEnabled,
+        };
+      });
+      resetAccountUsageCustomTest();
+    },
+    [resetAccountUsageCustomTest]
+  );
+
+  const setAccountUsageCustomScript = useCallback(
+    (customScript: string) => {
+      const boundedCustomScript = truncateProviderAccountUsageCustomScriptUtf8(customScript);
+      setAccountUsageState((prev) => {
+        const permissionsChanged = hasProviderAccountUsageCustomPermissionChange(prev, {
+          customScript: boundedCustomScript,
+          customAllowedOrigins: prev.customAllowedOrigins,
+        });
+        return {
+          ...prev,
+          customScript: boundedCustomScript,
+          customEnabled: permissionsChanged ? false : prev.customEnabled,
+        };
+      });
+      resetAccountUsageCustomTest();
+    },
+    [resetAccountUsageCustomTest]
+  );
+
+  const setAccountUsageCustomAllowedOrigins = useCallback(
+    (customAllowedOrigins: string[]) => {
+      setAccountUsageState((prev) => {
+        const permissionsChanged = hasProviderAccountUsageCustomPermissionChange(prev, {
+          customScript: prev.customScript,
+          customAllowedOrigins,
+        });
+        const validation = validateProviderAccountUsageCustomAllowedOrigins(customAllowedOrigins);
+        return {
+          ...prev,
+          customAllowedOrigins,
+          customEnabled: permissionsChanged || validation.error ? false : prev.customEnabled,
+        };
+      });
+      resetAccountUsageCustomTest();
+    },
+    [resetAccountUsageCustomTest]
+  );
+
+  const setAccountUsageCustomTimeoutSeconds = useCallback(
+    (customTimeoutSeconds: number) => {
+      setAccountUsageState((prev) => ({
+        ...prev,
+        customTimeoutSeconds:
+          normalizeProviderAccountUsageCustomTimeoutSeconds(customTimeoutSeconds),
+      }));
+      resetAccountUsageCustomTest();
+    },
+    [resetAccountUsageCustomTest]
+  );
+
+  const setAccountUsageCustomEnabled = useCallback((customEnabled: boolean) => {
     setAccountUsageState((prev) => ({
       ...prev,
-      adapterKind,
+      customEnabled: customEnabled && Boolean(prev.customScript.trim()),
     }));
   }, []);
 
@@ -591,6 +772,75 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       refreshIntervalSeconds,
     }));
   }, []);
+
+  const testAccountUsageCustomScript = useCallback(async () => {
+    if (
+      !editingProviderId ||
+      !apiKeyConfigured ||
+      accountUsageCustomTestPromiseRef.current ||
+      accountUsageCustomAllowedOriginsError
+    ) {
+      return;
+    }
+
+    const requestId = accountUsageCustomTestRequestSeqRef.current + 1;
+    accountUsageCustomTestRequestSeqRef.current = requestId;
+    const requestResetKey = extensionValuesResetKey;
+    setAccountUsageCustomTestState({
+      resetKey: requestResetKey,
+      pending: true,
+      result: null,
+      error: null,
+    });
+
+    let requestPromise: Promise<ProviderAccountUsageResult | null> | null = null;
+    try {
+      requestPromise = providerAccountUsageTestCustomScript(editingProviderId, {
+        customScript: truncateProviderAccountUsageCustomScriptUtf8(accountUsageCustomScript),
+        customAllowedOrigins: prepareProviderAccountUsageCustomAllowedOrigins(
+          accountUsageCustomAllowedOrigins
+        ),
+        customTimeoutSeconds: normalizeProviderAccountUsageCustomTimeoutSeconds(
+          accountUsageCustomTimeoutSeconds
+        ),
+      });
+      accountUsageCustomTestPromiseRef.current = requestPromise;
+      setAccountUsageCustomTestInFlight(true);
+      const result = await requestPromise;
+      if (accountUsageCustomTestRequestSeqRef.current !== requestId) return;
+      setAccountUsageCustomTestState((prev) => {
+        if (prev.resetKey !== requestResetKey) return prev;
+        return result
+          ? { ...prev, pending: false, result, error: null }
+          : { ...prev, pending: false, result: null, error: "测试未返回账户用量结果" };
+      });
+    } catch (error) {
+      if (accountUsageCustomTestRequestSeqRef.current !== requestId) return;
+      setAccountUsageCustomTestState((prev) =>
+        prev.resetKey === requestResetKey
+          ? {
+              ...prev,
+              pending: false,
+              result: null,
+              error: formatUnknownError(error),
+            }
+          : prev
+      );
+    } finally {
+      if (requestPromise && accountUsageCustomTestPromiseRef.current === requestPromise) {
+        accountUsageCustomTestPromiseRef.current = null;
+        setAccountUsageCustomTestInFlight(false);
+      }
+    }
+  }, [
+    accountUsageCustomAllowedOrigins,
+    accountUsageCustomAllowedOriginsError,
+    accountUsageCustomScript,
+    accountUsageCustomTimeoutSeconds,
+    apiKeyConfigured,
+    editingProviderId,
+    extensionValuesResetKey,
+  ]);
 
   const refreshOauthStatus = useCallback(
     (providerId?: number | null) => {
@@ -654,11 +904,13 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const requestOpenChange = useCallback(
     (nextOpen: boolean) => {
       if (!nextOpen) {
+        if (accountUsageCustomTestPromiseRef.current) return;
         cancelActiveOAuthLoginAttempt();
+        resetAccountUsageCustomTest();
       }
       onOpenChange(nextOpen);
     },
-    [cancelActiveOAuthLoginAttempt, onOpenChange]
+    [cancelActiveOAuthLoginAttempt, onOpenChange, resetAccountUsageCustomTest]
   );
 
   useProviderEditorEffects({
@@ -682,7 +934,7 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     newBaseUrlRow,
     setBaseUrlMode,
     baseUrlRows,
-    setBaseUrlRows,
+    setBaseUrlRows: replaceBaseUrlRows,
     setPingingAll,
     setClaudeModels,
     setModelMapping,
@@ -752,6 +1004,12 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
           refreshIntervalSeconds: normalizeProviderAccountUsageRefreshIntervalSeconds(
             accountUsageRefreshIntervalSeconds
           ),
+          customScript: accountUsageCustomScript,
+          customAllowedOrigins: accountUsageCustomAllowedOrigins,
+          customTimeoutSeconds: normalizeProviderAccountUsageCustomTimeoutSeconds(
+            accountUsageCustomTimeoutSeconds
+          ),
+          customEnabled: accountUsageCustomEnabled,
         },
       }),
       accountUsageCredentials: {
@@ -790,6 +1048,10 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
       accountUsageClearNewApiAccessToken,
       accountUsageTimedRefreshEnabled,
       accountUsageRefreshIntervalSeconds,
+      accountUsageCustomScript,
+      accountUsageCustomAllowedOrigins,
+      accountUsageCustomTimeoutSeconds,
+      accountUsageCustomEnabled,
     ]
   );
 
@@ -924,15 +1186,50 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
   const canFetchProviderModels =
     cliKey === "codex" && authMode !== "cx2cc" && sourceProviderId == null;
 
+  const save = useCallback(() => {
+    if (
+      saving ||
+      savingWithModelFetch ||
+      accountUsageCustomTestPromiseRef.current ||
+      (accountUsageAdapterKind === "custom" && accountUsageCustomAllowedOriginsError)
+    ) {
+      return Promise.resolve();
+    }
+    resetAccountUsageCustomTest();
+    return runProviderEditorSave(buildSaveContext());
+  }, [
+    accountUsageAdapterKind,
+    accountUsageCustomAllowedOriginsError,
+    buildSaveContext,
+    resetAccountUsageCustomTest,
+    saving,
+    savingWithModelFetch,
+  ]);
+
   const saveAndFetchModels = useCallback(async () => {
-    if (saving || savingWithModelFetch) return;
+    if (
+      saving ||
+      savingWithModelFetch ||
+      accountUsageCustomTestPromiseRef.current ||
+      (accountUsageAdapterKind === "custom" && accountUsageCustomAllowedOriginsError)
+    ) {
+      return;
+    }
+    resetAccountUsageCustomTest();
     setSavingWithModelFetch(true);
     try {
       await runProviderEditorSave(buildSaveContext(), { refreshModels: true });
     } finally {
       setSavingWithModelFetch(false);
     }
-  }, [buildSaveContext, saving, savingWithModelFetch]);
+  }, [
+    accountUsageAdapterKind,
+    accountUsageCustomAllowedOriginsError,
+    buildSaveContext,
+    resetAccountUsageCustomTest,
+    saving,
+    savingWithModelFetch,
+  ]);
 
   return {
     mode,
@@ -1030,7 +1327,23 @@ export function useProviderEditorForm(props: ProviderEditorDialogProps) {
     setAccountUsageTimedRefreshEnabled,
     accountUsageRefreshIntervalSeconds,
     setAccountUsageRefreshIntervalSeconds,
-    save: () => runProviderEditorSave(buildSaveContext()),
+    accountUsageCustomScript,
+    setAccountUsageCustomScript,
+    accountUsageCustomAllowedOrigins,
+    setAccountUsageCustomAllowedOrigins,
+    accountUsageCustomAllowedOriginsCount:
+      accountUsageCustomAllowedOriginsValidation.normalizedOrigins.length,
+    accountUsageCustomAllowedOriginsError,
+    accountUsageCustomTimeoutSeconds,
+    setAccountUsageCustomTimeoutSeconds,
+    accountUsageCustomEnabled,
+    setAccountUsageCustomEnabled,
+    accountUsageCustomTestPending,
+    accountUsageCustomTestInFlight,
+    accountUsageCustomTestResult,
+    accountUsageCustomTestError,
+    testAccountUsageCustomScript,
+    save,
     saveAndFetchModels,
     copyApiKey: () => copyApiKeyAction(buildCopyApiKeyContext()),
     handleOAuthLogin: () => oauthLoginAction(buildOAuthContext()),

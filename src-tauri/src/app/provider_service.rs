@@ -1,6 +1,7 @@
 use crate::app_state::{ensure_db_ready, DbInitState};
 use crate::gateway_control::app_gateway_clear_cli_route_runtime_state;
 use crate::{blocking, providers};
+use tauri::Manager;
 
 #[derive(serde::Deserialize, specta::Type)]
 #[serde(rename_all = "camelCase")]
@@ -44,6 +45,7 @@ pub(crate) struct ProviderUpsertInput {
 #[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 struct ProviderRuntimeResetDecision {
     clear_route_runtime_state: bool,
+    clear_account_usage_runtime_state: bool,
 }
 
 fn normalize_provider_name(name: &str) -> String {
@@ -96,10 +98,12 @@ fn provider_runtime_reset_decision(
     previous_api_key: Option<&str>,
     next: &providers::ProviderSummary,
     submitted_api_key: Option<&str>,
+    account_usage_secret_changed: bool,
 ) -> ProviderRuntimeResetDecision {
     let Some(previous) = previous else {
         return ProviderRuntimeResetDecision {
             clear_route_runtime_state: next.enabled,
+            clear_account_usage_runtime_state: false,
         };
     };
 
@@ -115,7 +119,91 @@ fn provider_runtime_reset_decision(
 
     ProviderRuntimeResetDecision {
         clear_route_runtime_state: sensitive_config_changed,
+        clear_account_usage_runtime_state: previous.enabled != next.enabled
+            || previous.base_urls != next.base_urls
+            || previous.auth_mode != next.auth_mode
+            || previous.source_provider_id != next.source_provider_id
+            || submitted_api_key_changed(previous_api_key, submitted_api_key)
+            || previous.newapi_account_user_id != next.newapi_account_user_id
+            || previous.newapi_account_access_token_configured
+                != next.newapi_account_access_token_configured
+            || account_usage_secret_changed
+            || account_usage_query_semantics(previous) != account_usage_query_semantics(next),
     }
+}
+
+fn account_usage_query_semantics(
+    provider: &providers::ProviderSummary,
+) -> Option<serde_json::Value> {
+    let mut values = provider
+        .extension_values
+        .iter()
+        .find(|value| {
+            value.plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                && value.namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        })?
+        .values
+        .clone();
+    if let Some(object) = values.as_object_mut() {
+        object.remove("timedRefreshEnabled");
+        object.remove("routeGateEnabled");
+    }
+    Some(values)
+}
+
+async fn invalidate_provider_account_usage_runtime(app: &tauri::AppHandle, provider_id: i64) {
+    let Some(runtime) = app.try_state::<
+        crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,
+    >() else {
+        return;
+    };
+    if let Err(error) = runtime.invalidate(provider_id).await {
+        tracing::warn!(
+            provider_id,
+            error = %error,
+            "failed to invalidate provider account usage runtime"
+        );
+    }
+}
+
+fn custom_account_usage_permission_request(
+    values: Option<&[providers::ProviderExtensionValuesInput]>,
+    permission_scope: &crate::domain::provider_account_usage::ProviderAccountUsageCustomPermissionScope,
+) -> Result<
+    Option<crate::domain::provider_account_usage::ProviderAccountUsageCustomPermissionRequest>,
+    String,
+> {
+    crate::domain::provider_account_usage::custom_account_usage_permission_request(
+        values,
+        permission_scope,
+    )
+    .map_err(|message| format!("SEC_INVALID_INPUT: {message}"))
+}
+
+fn custom_account_usage_enable_requested(
+    values: Option<&[providers::ProviderExtensionValuesInput]>,
+) -> bool {
+    values
+        .and_then(|values| {
+            values.iter().find(|value| {
+                value.plugin_id.trim()
+                    == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                    && value.namespace.trim()
+                        == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+            })
+        })
+        .is_some_and(|value| {
+            value
+                .values
+                .get("adapterKind")
+                .and_then(serde_json::Value::as_str)
+                == Some("custom")
+                && value
+                    .values
+                    .get("customEnabled")
+                    .and_then(serde_json::Value::as_bool)
+                    == Some(true)
+        })
 }
 
 pub(crate) async fn providers_list(
@@ -134,8 +222,135 @@ pub(crate) async fn providers_list(
 pub(crate) async fn provider_upsert(
     app: tauri::AppHandle,
     db_state: tauri::State<'_, DbInitState>,
-    input: ProviderUpsertInput,
+    mut input: ProviderUpsertInput,
 ) -> Result<providers::ProviderSummary, String> {
+    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
+    crate::domain::provider_account_usage::strip_custom_account_usage_permission_proofs(
+        &mut input.extension_values,
+    );
+    let provider_uuid_override = input
+        .provider_id
+        .is_none()
+        .then(crate::shared::uuid::new_uuid_v4);
+    if custom_account_usage_enable_requested(input.extension_values.as_deref()) {
+        let provider_id = input.provider_id;
+        let source_provider_id = input.source_provider_id;
+        let db_for_identity = db.clone();
+        let provider_uuid_for_identity = provider_uuid_override.clone();
+        let (provider_uuid, existing_values, existing_auth_mode, source_provider_uuid) =
+            blocking::run(
+                "provider_upsert_load_custom_account_usage_identity",
+                move || {
+                    let conn = db_for_identity.open_connection()?;
+                    let (provider_uuid, existing_values, existing_auth_mode) = match provider_id {
+                        Some(provider_id) => {
+                            let context =
+                                providers::get_account_usage_fetch_context(&conn, provider_id)?;
+                            (
+                                context.provider_uuid,
+                                context.extension_values,
+                                Some(context.auth_mode),
+                            )
+                        }
+                        None => (
+                            provider_uuid_for_identity.expect(
+                                "create provider UUID must be allocated before confirmation",
+                            ),
+                            Vec::new(),
+                            None,
+                        ),
+                    };
+                    let source_provider_uuid = source_provider_id
+                        .map(|source_provider_id| {
+                            providers::get_account_usage_fetch_context(&conn, source_provider_id)
+                                .map(|context| context.provider_uuid)
+                        })
+                        .transpose()?;
+                    Ok::<_, crate::shared::error::AppError>((
+                        provider_uuid,
+                        existing_values,
+                        existing_auth_mode,
+                        source_provider_uuid,
+                    ))
+                },
+            )
+            .await
+            .map_err(Into::<String>::into)?;
+        let resolved_auth_mode = input
+            .auth_mode
+            .map(providers::ProviderAuthMode::as_str)
+            .or(existing_auth_mode.as_deref())
+            .unwrap_or(providers::ProviderAuthMode::ApiKey.as_str());
+        if resolved_auth_mode != providers::ProviderAuthMode::ApiKey.as_str()
+            || input.source_provider_id.is_some()
+        {
+            return Err(
+                "SEC_INVALID_INPUT: custom account usage requires a direct API Key provider"
+                    .to_string(),
+            );
+        }
+        let permission_base_url = input
+            .base_urls
+            .iter()
+            .map(|value| value.trim())
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        let permission_scope =
+            crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+                &provider_uuid,
+                resolved_auth_mode,
+                source_provider_uuid.as_deref(),
+                permission_base_url,
+            )
+            .map_err(|message| format!("SEC_INVALID_INPUT: {message}"))?;
+        let permission = custom_account_usage_permission_request(
+            input.extension_values.as_deref(),
+            &permission_scope,
+        )?
+        .ok_or_else(|| {
+            "SEC_INVALID_INPUT: custom account usage permission request is missing".to_string()
+        })?;
+        let already_confirmed =
+            crate::domain::provider_account_usage::custom_account_usage_saved_permission_matches(
+                &existing_values,
+                &permission.fingerprint,
+                &permission_scope,
+            );
+        if !already_confirmed {
+            let confirmed = crate::app::provider_account_usage_confirmation::
+                confirm_custom_account_usage_network_access(
+                    &app,
+                    crate::app::provider_account_usage_confirmation::
+                        CustomAccountUsageConfirmationKind::Enable,
+                    &permission.network_origins,
+                    &permission.fingerprint,
+                )
+                .await?;
+            if !confirmed {
+                return Err(
+                    "SEC_CONFIRM_REQUIRED: custom account usage permission was not confirmed"
+                        .to_string(),
+                );
+            }
+            crate::domain::provider_account_usage::add_custom_account_usage_permission_proof(
+                &mut input.extension_values,
+                &permission.fingerprint,
+                &permission.base_origin,
+            )?;
+        }
+    }
+
+    let account_usage_secret_changed =
+        input
+            .account_usage_credentials
+            .as_ref()
+            .is_some_and(|patch| {
+                patch.clear_new_api_access_token
+                    || patch
+                        .new_api_access_token
+                        .as_deref()
+                        .is_some_and(|value| !value.trim().is_empty())
+            });
     let ProviderUpsertInput {
         provider_id,
         cli_key,
@@ -172,7 +387,6 @@ pub(crate) async fn provider_upsert(
     let name_for_log = name.clone();
     let cli_key_for_log = cli_key.clone();
     let submitted_api_key = api_key.clone();
-    let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
     let result = blocking::run("provider_upsert", move || {
         let previous = match provider_id {
             Some(id) => {
@@ -186,7 +400,7 @@ pub(crate) async fn provider_upsert(
             None => None,
         };
 
-        let saved = providers::upsert(
+        let saved = providers::upsert_with_provider_uuid(
             &db,
             providers::ProviderUpsertParams {
                 provider_id,
@@ -220,6 +434,7 @@ pub(crate) async fn provider_upsert(
                 upstream_retry_policy_override,
                 upstream_retry_policy_override_specified,
             },
+            provider_uuid_override,
         )?;
 
         let decision = provider_runtime_reset_decision(
@@ -227,6 +442,7 @@ pub(crate) async fn provider_upsert(
             previous_api_key.as_deref(),
             &saved,
             submitted_api_key.as_deref(),
+            account_usage_secret_changed,
         );
 
         Ok::<_, crate::shared::error::AppError>((saved, decision))
@@ -261,6 +477,9 @@ pub(crate) async fn provider_upsert(
                 "provider route runtime state cleared after provider save"
             );
         }
+        if decision.clear_account_usage_runtime_state {
+            invalidate_provider_account_usage_runtime(&app, provider.id).await;
+        }
     }
 
     result.map(|(provider, _)| provider)
@@ -272,8 +491,167 @@ pub(crate) async fn provider_duplicate(
     provider_id: i64,
 ) -> Result<providers::ProviderSummary, String> {
     let db = ensure_db_ready(app.clone(), db_state.inner()).await?;
+    let destination_provider_uuid = crate::shared::uuid::new_uuid_v4();
+    let source_snapshot = blocking::run("provider_duplicate_load_permission_snapshot", {
+        let db = db.clone();
+        move || {
+            let conn = db.open_connection()?;
+            providers::get_account_usage_fetch_context(&conn, provider_id)
+        }
+    })
+    .await
+    .map_err(Into::<String>::into)?;
+    let mut extension_values = Some(
+        source_snapshot
+            .extension_values
+            .iter()
+            .map(|value| providers::ProviderExtensionValuesInput {
+                plugin_id: value.plugin_id.clone(),
+                namespace: value.namespace.clone(),
+                values: value.values.clone(),
+            })
+            .collect::<Vec<_>>(),
+    );
+    crate::domain::provider_account_usage::clear_custom_account_usage_permission(
+        &mut extension_values,
+    );
+
+    let source_custom_authorized = source_snapshot.auth_mode == "api_key"
+        && source_snapshot.source_provider_id.is_none()
+        && match crate::domain::provider_account_usage::config_from_extension_values(
+            &source_snapshot.extension_values,
+        )
+    {
+        crate::domain::provider_account_usage::ProviderAccountUsageConfigState::Configured(
+            config,
+        ) if config.adapter_kind
+            == crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Custom =>
+        {
+            let base_url = source_snapshot
+                .base_urls
+                .iter()
+                .map(|value| value.trim())
+                .find(|value| !value.is_empty())
+                .unwrap_or_default();
+            config.custom.as_ref().is_some_and(|custom| {
+                crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+                    &source_snapshot.provider_uuid,
+                    &source_snapshot.auth_mode,
+                    source_snapshot.source_provider_uuid.as_deref(),
+                    base_url,
+                )
+                .is_ok_and(|scope| {
+                    custom.enabled
+                        && custom.permission_fingerprint.as_deref()
+                            == Some(
+                                crate::domain::provider_account_usage::
+                                    custom_account_usage_authorization_fingerprint(custom, &scope)
+                                    .as_str(),
+                            )
+                })
+            })
+        }
+            _ => false,
+        };
+
+    if source_custom_authorized {
+        let base_url = source_snapshot
+            .base_urls
+            .iter()
+            .map(|value| value.trim())
+            .find(|value| !value.is_empty())
+            .unwrap_or_default();
+        let destination_scope =
+            crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+                &destination_provider_uuid,
+                &source_snapshot.auth_mode,
+                source_snapshot.source_provider_uuid.as_deref(),
+                base_url,
+            )
+            .map_err(|message| format!("SEC_INVALID_INPUT: {message}"))?;
+        let permission = custom_account_usage_permission_request(
+            extension_values.as_deref(),
+            &destination_scope,
+        )?
+        .ok_or_else(|| {
+            "SEC_INVALID_INPUT: duplicated custom account usage permission is missing".to_string()
+        })?;
+        let confirmed = crate::app::provider_account_usage_confirmation::
+            confirm_custom_account_usage_network_access(
+                &app,
+                crate::app::provider_account_usage_confirmation::
+                    CustomAccountUsageConfirmationKind::Duplicate,
+                &permission.network_origins,
+                &permission.fingerprint,
+            )
+            .await?;
+        if !confirmed {
+            return Err(
+                "SEC_CONFIRM_REQUIRED: custom account usage duplicate was not confirmed"
+                    .to_string(),
+            );
+        }
+        let current_snapshot = blocking::run("provider_duplicate_recheck_permission_snapshot", {
+            let db = db.clone();
+            move || {
+                let conn = db.open_connection()?;
+                providers::get_account_usage_fetch_context(&conn, provider_id)
+            }
+        })
+        .await
+        .map_err(Into::<String>::into)?;
+        if source_snapshot.provider_uuid != current_snapshot.provider_uuid
+            || source_snapshot.base_urls != current_snapshot.base_urls
+            || source_snapshot.auth_mode != current_snapshot.auth_mode
+            || source_snapshot.source_provider_id != current_snapshot.source_provider_id
+            || source_snapshot.source_provider_uuid != current_snapshot.source_provider_uuid
+            || source_snapshot.extension_values != current_snapshot.extension_values
+        {
+            return Err(
+                "SEC_CONFIRM_STALE: source provider changed during custom account usage confirmation"
+                    .to_string(),
+            );
+        }
+        crate::domain::provider_account_usage::add_custom_account_usage_permission_proof(
+            &mut extension_values,
+            &permission.fingerprint,
+            &permission.base_origin,
+        )?;
+    } else if let Some(values) = extension_values.as_mut() {
+        for value in values {
+            if value.plugin_id.trim()
+                == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                && value.namespace.trim()
+                    == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+            {
+                if let Some(object) = value.values.as_object_mut() {
+                    if object
+                        .get("adapterKind")
+                        .and_then(serde_json::Value::as_str)
+                        == Some("custom")
+                    {
+                        object.insert("customEnabled".to_string(), serde_json::Value::Bool(false));
+                    }
+                }
+            }
+        }
+    }
+
     let result = blocking::run("provider_duplicate", move || {
         let conn = db.open_connection()?;
+        let current_snapshot = providers::get_account_usage_fetch_context(&conn, provider_id)?;
+        if source_snapshot.provider_uuid != current_snapshot.provider_uuid
+            || source_snapshot.base_urls != current_snapshot.base_urls
+            || source_snapshot.auth_mode != current_snapshot.auth_mode
+            || source_snapshot.source_provider_id != current_snapshot.source_provider_id
+            || source_snapshot.source_provider_uuid != current_snapshot.source_provider_uuid
+            || source_snapshot.extension_values != current_snapshot.extension_values
+        {
+            return Err(crate::shared::error::AppError::new(
+                "SEC_CONFIRM_STALE",
+                "source provider changed before duplication",
+            ));
+        }
         let source = providers::get_by_id(&conn, provider_id)?;
         let siblings = providers::list_by_cli(&db, &source.cli_key)?;
         let api_key = if source.auth_mode == "api_key" && source.source_provider_id.is_none() {
@@ -281,19 +659,7 @@ pub(crate) async fn provider_duplicate(
         } else {
             None
         };
-        let extension_values = Some(
-            source
-                .extension_values
-                .iter()
-                .map(|value| providers::ProviderExtensionValuesInput {
-                    plugin_id: value.plugin_id.clone(),
-                    namespace: value.namespace.clone(),
-                    values: value.values.clone(),
-                })
-                .collect(),
-        );
-
-        providers::upsert(
+        providers::upsert_with_provider_uuid(
             &db,
             providers::ProviderUpsertParams {
                 provider_id: None,
@@ -330,6 +696,7 @@ pub(crate) async fn provider_duplicate(
                 upstream_retry_policy_override: source.upstream_retry_policy_override.clone(),
                 upstream_retry_policy_override_specified: true,
             },
+            Some(destination_provider_uuid),
         )
     })
     .await
@@ -372,6 +739,7 @@ pub(crate) async fn provider_set_enabled(
     .map_err(Into::into);
 
     if let Ok(ref provider) = result {
+        invalidate_provider_account_usage_runtime(&app, provider.id).await;
         let cleared = app_gateway_clear_cli_route_runtime_state(&app, &provider.cli_key);
         tracing::info!(
             provider_id = provider.id,
@@ -406,6 +774,7 @@ pub(crate) async fn provider_delete(
     .map_err(Into::into);
 
     if let Ok((true, ref cli_key)) = result {
+        invalidate_provider_account_usage_runtime(&app, provider_id).await;
         let cleared = app_gateway_clear_cli_route_runtime_state(&app, cli_key);
         tracing::info!(
             provider_id = provider_id,
@@ -489,6 +858,32 @@ pub(crate) async fn default_route_providers_set_order(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn custom_account_usage_permission_precheck_classifies_invalid_input() {
+        let values = vec![providers::ProviderExtensionValuesInput {
+            plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+            namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+            values: serde_json::json!({
+                "adapterKind": "custom",
+                "customAllowedOrigins": [],
+                "customTimeoutSeconds": 5,
+                "customEnabled": true
+            }),
+        }];
+
+        let scope = crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+            "11111111-1111-4111-8111-111111111111",
+            "api_key",
+            None,
+            "https://api.example.test/v1",
+        )
+        .expect("valid synthetic scope");
+        let error = custom_account_usage_permission_request(Some(&values), &scope)
+            .expect_err("invalid custom config must fail precheck");
+
+        assert_eq!(error, "SEC_INVALID_INPUT: 自定义账户用量脚本不能为空");
+    }
 
     #[test]
     fn provider_upsert_input_deserializes_runtime_camel_case_shape() {
@@ -597,16 +992,17 @@ mod tests {
         };
 
         assert_eq!(
-            provider_runtime_reset_decision(None, None, &next, None),
+            provider_runtime_reset_decision(None, None, &next, None, false),
             ProviderRuntimeResetDecision {
                 clear_route_runtime_state: true,
+                clear_account_usage_runtime_state: false,
             }
         );
 
         let mut disabled_create = next.clone();
         disabled_create.enabled = false;
         assert_eq!(
-            provider_runtime_reset_decision(None, None, &disabled_create, None),
+            provider_runtime_reset_decision(None, None, &disabled_create, None, false),
             ProviderRuntimeResetDecision::default()
         );
 
@@ -620,7 +1016,8 @@ mod tests {
                 Some(&previous),
                 Some("sk-existing"),
                 &next,
-                Some("   ")
+                Some("   "),
+                false
             ),
             ProviderRuntimeResetDecision::default()
         );
@@ -630,7 +1027,8 @@ mod tests {
                 Some(&previous),
                 Some("sk-existing"),
                 &next,
-                Some("sk-existing")
+                Some("sk-existing"),
+                false
             ),
             ProviderRuntimeResetDecision::default()
         );
@@ -639,9 +1037,16 @@ mod tests {
         disabled.enabled = false;
 
         assert_eq!(
-            provider_runtime_reset_decision(Some(&next), Some("sk-existing"), &disabled, None),
+            provider_runtime_reset_decision(
+                Some(&next),
+                Some("sk-existing"),
+                &disabled,
+                None,
+                false,
+            ),
             ProviderRuntimeResetDecision {
                 clear_route_runtime_state: true,
+                clear_account_usage_runtime_state: true,
             }
         );
     }
@@ -691,9 +1096,10 @@ mod tests {
         next.base_urls = vec!["https://api.new.example.com".to_string()];
 
         assert_eq!(
-            provider_runtime_reset_decision(Some(&previous), Some("sk-old"), &next, None),
+            provider_runtime_reset_decision(Some(&previous), Some("sk-old"), &next, None, false,),
             ProviderRuntimeResetDecision {
                 clear_route_runtime_state: true,
+                clear_account_usage_runtime_state: true,
             }
         );
 
@@ -705,10 +1111,12 @@ mod tests {
                 Some(&next_non_claude),
                 Some("sk-old"),
                 &next_non_claude,
-                Some("sk-new")
+                Some("sk-new"),
+                false
             ),
             ProviderRuntimeResetDecision {
                 clear_route_runtime_state: true,
+                clear_account_usage_runtime_state: true,
             }
         );
     }

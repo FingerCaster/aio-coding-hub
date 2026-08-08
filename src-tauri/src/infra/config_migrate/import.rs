@@ -210,9 +210,8 @@ INSERT INTO providers(
                         crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
                     namespace:
                         crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
-                    values: crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
-                        &account_usage_config,
-                    ),
+                    values: crate::domain::provider_account_usage::
+                        sanitize_account_usage_extension_value_for_config_bundle(&account_usage_config),
                 }];
                 crate::domain::provider_account_usage::ensure_account_usage_extension_owner_with_tx(
                     tx,

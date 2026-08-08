@@ -7,7 +7,7 @@ export type FormFieldProps = {
   /** Optional hint shown to the right of the label. */
   hint?: ReactNode;
   /** The form control(s) rendered inside this field. */
-  children: ReactNode | ((id: string) => ReactNode);
+  children: ReactNode | ((id: string, hintId?: string) => ReactNode);
   className?: string;
   /** Explicit id to associate the label with the control. When omitted a stable id is generated automatically. */
   htmlFor?: string;
@@ -16,6 +16,7 @@ export type FormFieldProps = {
 export function FormField({ label, hint, children, className, htmlFor }: FormFieldProps) {
   const autoId = useId();
   const fieldId = htmlFor ?? autoId;
+  const hintId = hint ? `${fieldId}-hint` : undefined;
 
   return (
     <div className={cn("space-y-1.5", className)}>
@@ -23,9 +24,13 @@ export function FormField({ label, hint, children, className, htmlFor }: FormFie
         <label htmlFor={fieldId} className="text-sm font-medium text-foreground">
           {label}
         </label>
-        {hint ? <div className="text-xs text-muted-foreground">{hint}</div> : null}
+        {hint ? (
+          <div id={hintId} className="text-xs text-muted-foreground">
+            {hint}
+          </div>
+        ) : null}
       </div>
-      {typeof children === "function" ? children(fieldId) : children}
+      {typeof children === "function" ? children(fieldId, hintId) : children}
     </div>
   );
 }

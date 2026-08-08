@@ -326,10 +326,23 @@ pub struct ProviderSummary {
 
 #[derive(Clone)]
 pub(crate) struct ProviderAccountUsageFetchContext {
+    pub provider_uuid: String,
     pub base_urls: Vec<String>,
     pub auth_mode: String,
     pub source_provider_id: Option<i64>,
+    pub source_provider_uuid: Option<String>,
     pub extension_values: Vec<ProviderExtensionValues>,
+}
+
+#[derive(Clone)]
+pub(crate) struct ProviderAccountUsageCredentialContext {
+    pub provider_uuid: String,
+    pub base_urls: Vec<String>,
+    pub auth_mode: String,
+    pub source_provider_id: Option<i64>,
+    pub source_provider_uuid: Option<String>,
+    pub extension_values: Vec<ProviderExtensionValues>,
+    pub api_key_plaintext: String,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type)]

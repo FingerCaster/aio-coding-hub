@@ -4,6 +4,10 @@ import { tauriOpenUrl } from "../../../test/mocks/tauri";
 import { SortableProviderCard, type SortableProviderCardProps } from "../SortableProviderCard";
 import {
   providerAccountUsageFetch,
+  providerAccountUsageRefresh,
+  providerAccountUsageDesktopLeaseAcquire,
+  providerAccountUsageDesktopLeaseHeartbeat,
+  providerAccountUsageDesktopLeaseRelease,
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
   type ProviderSummary,
@@ -21,6 +25,10 @@ vi.mock("../../../services/providers/providers", async () => {
   return {
     ...actual,
     providerAccountUsageFetch: vi.fn(),
+    providerAccountUsageRefresh: vi.fn(),
+    providerAccountUsageDesktopLeaseAcquire: vi.fn().mockResolvedValue(true),
+    providerAccountUsageDesktopLeaseHeartbeat: vi.fn().mockResolvedValue(true),
+    providerAccountUsageDesktopLeaseRelease: vi.fn().mockResolvedValue(undefined),
     providerOAuthFetchLimits: vi.fn(),
     providerOAuthResetCodexQuota: vi.fn(),
   };
@@ -122,6 +130,9 @@ function renderCard(
 describe("pages/providers/SortableProviderCard", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    vi.mocked(providerAccountUsageDesktopLeaseAcquire).mockResolvedValue(true);
+    vi.mocked(providerAccountUsageDesktopLeaseHeartbeat).mockResolvedValue(true);
+    vi.mocked(providerAccountUsageDesktopLeaseRelease).mockResolvedValue(undefined);
   });
 
   it("binds sortable listeners to the provider name drag handle", () => {
@@ -181,7 +192,7 @@ describe("pages/providers/SortableProviderCard", () => {
   });
 
   it("keeps manual refresh loading and error presentation on the account query lifecycle", async () => {
-    const manualRefresh = deferred<Awaited<ReturnType<typeof providerAccountUsageFetch>>>();
+    const manualRefresh = deferred<Awaited<ReturnType<typeof providerAccountUsageRefresh>>>();
     const usage = {
       adapter_kind: "newapi" as const,
       status: "available" as const,
@@ -203,9 +214,8 @@ describe("pages/providers/SortableProviderCard", () => {
       last_fetched_at: 1_700_000_000,
       message: null,
     };
-    vi.mocked(providerAccountUsageFetch)
-      .mockResolvedValueOnce(usage)
-      .mockImplementationOnce(() => manualRefresh.promise);
+    vi.mocked(providerAccountUsageFetch).mockResolvedValueOnce(usage);
+    vi.mocked(providerAccountUsageRefresh).mockImplementationOnce(() => manualRefresh.promise);
 
     renderCard({
       id: 14,
@@ -226,7 +236,8 @@ describe("pages/providers/SortableProviderCard", () => {
     fireEvent.click(refreshButton);
 
     await waitFor(() => {
-      expect(providerAccountUsageFetch).toHaveBeenCalledTimes(2);
+      expect(providerAccountUsageFetch).toHaveBeenCalledTimes(1);
+      expect(providerAccountUsageRefresh).toHaveBeenCalledTimes(1);
       expect(refreshButton).toBeDisabled();
       expect(refreshButton).toHaveAccessibleName("刷新账户用量，账户: 刷新中");
     });
@@ -237,7 +248,9 @@ describe("pages/providers/SortableProviderCard", () => {
       expect(refreshButton).toHaveAccessibleName(/刷新账户用量，账户: 可用 · 余额 8.00 USD/);
     });
 
-    vi.mocked(providerAccountUsageFetch).mockRejectedValueOnce(new Error("manual refresh failed"));
+    vi.mocked(providerAccountUsageRefresh).mockRejectedValueOnce(
+      new Error("manual refresh failed")
+    );
     fireEvent.click(refreshButton);
     await waitFor(() => {
       expect(refreshButton).toBeEnabled();

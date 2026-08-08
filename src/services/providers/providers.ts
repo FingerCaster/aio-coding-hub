@@ -5,6 +5,7 @@ import {
   type ModelMapping as GeneratedModelMapping,
   type ProviderAuthMode as GeneratedProviderAuthMode,
   type ProviderAccountUsageResult,
+  type ProviderAccountUsageCustomScriptDraft,
   type ProviderAvailabilityResult,
   type ProviderBaseUrlMode as GeneratedProviderBaseUrlMode,
   type ProviderExtensionValuesInput,
@@ -41,6 +42,7 @@ import { isCanonicalUuidV4 } from "./uuid";
 export type {
   ProviderAvailabilityResult,
   ProviderAccountUsageResult,
+  ProviderAccountUsageCustomScriptDraft,
   ProviderExtensionValuesInput,
   GeneratedProviderOAuthDeviceCodePollResult as ProviderOAuthDeviceCodePollResult,
   GeneratedProviderOAuthDeviceCodeStartResult as ProviderOAuthDeviceCodeStartResult,
@@ -602,10 +604,85 @@ export async function providerAccountUsageFetch(
 
   return invokeGeneratedIpc<ProviderAccountUsageResult>({
     title: "读取账户用量失败",
-    cmd: "provider_account_usage_fetch",
+    cmd: "provider_account_usage_snapshot",
     args: { providerId: normalizedProviderId },
     invoke: () =>
-      commands.providerAccountUsageFetch(normalizedProviderId) as Promise<
+      commands.providerAccountUsageSnapshot(normalizedProviderId) as Promise<
+        GeneratedCommandResult<ProviderAccountUsageResult>
+      >,
+  });
+}
+
+export async function providerAccountUsageRefresh(
+  providerId: number
+): Promise<ProviderAccountUsageResult | null> {
+  const normalizedProviderId = validateProviderId(providerId);
+  return invokeGeneratedIpc<ProviderAccountUsageResult>({
+    title: "刷新账户用量失败",
+    cmd: "provider_account_usage_refresh",
+    args: { providerId: normalizedProviderId },
+    invoke: () =>
+      commands.providerAccountUsageRefresh(normalizedProviderId) as Promise<
+        GeneratedCommandResult<ProviderAccountUsageResult>
+      >,
+  });
+}
+
+export async function providerAccountUsageDesktopLeaseAcquire(
+  providerId: number
+): Promise<boolean> {
+  const normalizedProviderId = validateProviderId(providerId);
+  return invokeGeneratedIpc<boolean>({
+    title: "启动账户用量刷新失败",
+    cmd: "provider_account_usage_desktop_lease_acquire",
+    args: { providerId: normalizedProviderId },
+    invoke: () =>
+      commands.providerAccountUsageDesktopLeaseAcquire(normalizedProviderId) as Promise<
+        GeneratedCommandResult<boolean>
+      >,
+  });
+}
+
+export async function providerAccountUsageDesktopLeaseHeartbeat(
+  providerId: number
+): Promise<boolean> {
+  const normalizedProviderId = validateProviderId(providerId);
+  return invokeGeneratedIpc<boolean>({
+    title: "续期账户用量刷新失败",
+    cmd: "provider_account_usage_desktop_lease_heartbeat",
+    args: { providerId: normalizedProviderId },
+    invoke: () =>
+      commands.providerAccountUsageDesktopLeaseHeartbeat(normalizedProviderId) as Promise<
+        GeneratedCommandResult<boolean>
+      >,
+  });
+}
+
+export async function providerAccountUsageDesktopLeaseRelease(providerId: number): Promise<void> {
+  const normalizedProviderId = validateProviderId(providerId);
+  await invokeGeneratedIpc<void>({
+    title: "停止账户用量刷新失败",
+    cmd: "provider_account_usage_desktop_lease_release",
+    args: { providerId: normalizedProviderId },
+    invoke: () =>
+      commands.providerAccountUsageDesktopLeaseRelease(normalizedProviderId) as Promise<
+        GeneratedCommandResult<void>
+      >,
+  });
+}
+
+export async function providerAccountUsageTestCustomScript(
+  providerId: number,
+  draft: ProviderAccountUsageCustomScriptDraft
+): Promise<ProviderAccountUsageResult | null> {
+  const normalizedProviderId = validateProviderId(providerId);
+
+  return invokeGeneratedIpc<ProviderAccountUsageResult>({
+    title: "测试自定义账户用量脚本失败",
+    cmd: "provider_account_usage_test_custom_script",
+    args: { providerId: normalizedProviderId, draft },
+    invoke: () =>
+      commands.providerAccountUsageTestCustomScript(normalizedProviderId, draft) as Promise<
         GeneratedCommandResult<ProviderAccountUsageResult>
       >,
   });

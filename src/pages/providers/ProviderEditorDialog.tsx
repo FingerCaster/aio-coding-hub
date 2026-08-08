@@ -45,12 +45,16 @@ export type ProviderEditorDialogProps =
 
 export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
   const f = useProviderEditorForm(props);
+  const saveBlocked =
+    f.saving ||
+    f.accountUsageCustomTestInFlight ||
+    (f.accountUsageAdapterKind === "custom" && Boolean(f.accountUsageCustomAllowedOriginsError));
 
   return (
     <Dialog
       open={f.open}
       onOpenChange={(nextOpen) => {
-        if (!nextOpen && f.saving) return;
+        if (!nextOpen && (f.saving || f.accountUsageCustomTestInFlight)) return;
         f.onOpenChange(nextOpen);
       }}
       title={f.title}
@@ -142,19 +146,23 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
             />
           </div>
           <div className="flex flex-wrap items-center justify-end gap-2">
-            <Button onClick={() => f.onOpenChange(false)} variant="secondary" disabled={f.saving}>
+            <Button
+              onClick={() => f.onOpenChange(false)}
+              variant="secondary"
+              disabled={f.saving || f.accountUsageCustomTestInFlight}
+            >
               取消
             </Button>
             {f.canFetchProviderModels ? (
               <Button
                 onClick={() => void f.saveAndFetchModels()}
                 variant="secondary"
-                disabled={f.saving}
+                disabled={saveBlocked}
               >
                 {f.savingWithModelFetch ? "保存并获取中…" : "保存并获取模型"}
               </Button>
             ) : null}
-            <Button onClick={f.save} variant="primary" disabled={f.saving}>
+            <Button onClick={f.save} variant="primary" disabled={saveBlocked}>
               {f.saving && !f.savingWithModelFetch ? "保存中…" : "保存"}
             </Button>
           </div>

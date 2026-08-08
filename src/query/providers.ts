@@ -6,7 +6,7 @@ import {
   useQueryClient,
 } from "@tanstack/react-query";
 import type { QueryClient, QueryFunctionContext } from "@tanstack/react-query";
-import { useCallback, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useState } from "react";
 import {
   defaultRouteProvidersList,
   defaultRouteProvidersSetOrder,
@@ -16,6 +16,10 @@ import {
   providerDelete,
   providerOAuthStatus,
   providerAccountUsageFetch,
+  providerAccountUsageRefresh,
+  providerAccountUsageDesktopLeaseAcquire,
+  providerAccountUsageDesktopLeaseHeartbeat,
+  providerAccountUsageDesktopLeaseRelease,
   providerOAuthFetchLimits,
   providerOAuthResetCodexQuota,
   providerSetEnabled,
@@ -33,10 +37,7 @@ import {
   validateProviderCliKey,
   validateProviderId,
 } from "../services/providers/providers";
-import {
-  isProviderAccountUsageConfigured,
-  readProviderAccountUsageConfig,
-} from "../services/providers/providerAccountUsageConfig";
+import { isProviderAccountUsageConfigured } from "../services/providers/providerAccountUsageConfig";
 import type { SortModeProviderRow } from "../services/providers/sortModes";
 import { logToConsole } from "../services/consoleLog";
 import { gatewayCircuitResetProvider } from "../services/gateway/gateway";
@@ -215,7 +216,11 @@ export async function refreshProviderAccountUsage(
 ): Promise<ProviderAccountUsageResult | null> {
   const options = providerAccountUsageQueryOptions(providerId);
   await queryClient.cancelQueries({ queryKey: options.queryKey, exact: true });
-  return queryClient.fetchQuery({ ...options, staleTime: 0 });
+  return queryClient.fetchQuery({
+    ...options,
+    queryFn: () => providerAccountUsageRefresh(validateProviderId(providerId)),
+    staleTime: 0,
+  });
 }
 
 export async function resetProviderOAuthCodexQuota(
@@ -568,15 +573,35 @@ export function useProviderAccountUsageQuery(provider: ProviderSummary, enabled 
   const normalizedProviderId = validateProviderId(provider.id);
   const options = providerAccountUsageQueryOptions(normalizedProviderId);
   const configured = isProviderAccountUsageConfigured(provider);
-  const config = readProviderAccountUsageConfig(provider.extension_values);
-  const autoFetchEnabled = enabled && provider.enabled && configured;
-  const refetchInterval =
-    autoFetchEnabled && config.timedRefreshEnabled ? config.refreshIntervalSeconds * 1000 : false;
+  const consumerEnabled = enabled && provider.enabled && configured;
+
+  useEffect(() => {
+    if (!consumerEnabled) return;
+    let active = true;
+    void providerAccountUsageDesktopLeaseAcquire(normalizedProviderId).catch((error) => {
+      if (active) {
+        logToConsole("warn", "启动账户用量刷新失败", {
+          provider_id: normalizedProviderId,
+          error: formatUnknownError(error),
+        });
+      }
+    });
+    const heartbeat = window.setInterval(() => {
+      void providerAccountUsageDesktopLeaseHeartbeat(normalizedProviderId).catch(() => undefined);
+    }, 10_000);
+    return () => {
+      active = false;
+      window.clearInterval(heartbeat);
+      void providerAccountUsageDesktopLeaseRelease(normalizedProviderId).catch(() => undefined);
+    };
+  }, [consumerEnabled, normalizedProviderId]);
 
   return useQuery({
     ...options,
-    enabled: autoFetchEnabled,
-    refetchInterval,
+    enabled: consumerEnabled,
+    refetchInterval: consumerEnabled ? 5_000 : false,
+    refetchIntervalInBackground: true,
+    refetchOnMount: "always",
     meta: {
       configured: enabled && configured,
     },

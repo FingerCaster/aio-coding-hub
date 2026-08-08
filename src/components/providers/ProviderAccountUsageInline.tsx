@@ -152,7 +152,7 @@ export function ProviderAccountUsageInline({
 }) {
   const configured = isProviderAccountUsageConfigured(provider);
   const accountCredentialsRequired = isProviderAccountUsageAccountCredentialsRequired(provider);
-  const config = readProviderAccountUsageConfig(provider.extension_values);
+  const config = readProviderAccountUsageConfig(provider);
   const queryClient = useQueryClient();
   const {
     data = null,

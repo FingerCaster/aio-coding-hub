@@ -1,6 +1,13 @@
 import type { ReactElement } from "react";
 import { QueryClientProvider } from "@tanstack/react-query";
-import { fireEvent, render as rtlRender, screen, waitFor, within } from "@testing-library/react";
+import {
+  act,
+  fireEvent,
+  render as rtlRender,
+  screen,
+  waitFor,
+  within,
+} from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
 import { ProviderEditorDialog } from "../ProviderEditorDialog";
@@ -10,6 +17,7 @@ import { openDesktopUrl } from "../../../services/desktop/opener";
 import { DEFAULT_UPSTREAM_RETRY_POLICY } from "../../../services/gateway/upstreamRetryPolicy";
 import { providerModelsRefresh } from "../../../services/providers/providerModels";
 import {
+  providerAccountUsageTestCustomScript,
   providerCopyApiKeyToClipboard,
   providerDelete,
   providerOAuthCancelDeviceFlow,
@@ -21,6 +29,7 @@ import {
   providerOAuthStartFlow,
   providerOAuthStatus,
   providerUpsert,
+  type ProviderAccountUsageResult,
   type ProviderOAuthDeviceCodeStartResult,
   type ProviderOAuthRefreshResult,
   type ProviderOAuthStartFlowResult,
@@ -49,6 +58,7 @@ vi.mock("../../../services/providers/providers", async () => {
   );
   return {
     ...actual,
+    providerAccountUsageTestCustomScript: vi.fn(),
     providerUpsert: vi.fn(),
     providerDelete: vi.fn(),
     baseUrlPingMs: vi.fn(),
@@ -104,6 +114,34 @@ function makeProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
     extension_values: partial.extension_values ?? [],
     upstream_retry_policy_override: partial.upstream_retry_policy_override ?? null,
   };
+}
+
+function makeCustomAccountUsageProvider(partial: Partial<ProviderSummary> = {}): ProviderSummary {
+  return makeProvider({
+    cli_key: "codex",
+    api_key_configured: true,
+    extension_values: [
+      {
+        pluginId: "core.provider-account-usage",
+        namespace: "accountUsage",
+        values: {
+          adapterKind: "custom",
+          newApiQueryMode: "billing",
+          timedRefreshEnabled: true,
+          refreshIntervalSeconds: 300,
+          customScript: "({ request: () => ({}), parse: () => ({ status: 'available' }) })",
+          customAllowedOrigins: [],
+          customTimeoutSeconds: 10,
+          customEnabled: true,
+          customPermissionFingerprint:
+            "6b6bb2347137328ff61abe105fc83f2ac6edca047b0480aadb70f09f60ab61ff",
+          customPermissionBaseOrigin: "https://example.com",
+        },
+        updatedAt: 1,
+      },
+    ],
+    ...partial,
+  });
 }
 
 function makeInitialValues(
@@ -184,6 +222,41 @@ function makeOAuthDeviceStartResult(
   };
 }
 
+function makeAccountUsageResult(
+  partial: Partial<ProviderAccountUsageResult> = {}
+): ProviderAccountUsageResult {
+  return {
+    adapter_kind: null,
+    status: "available",
+    freshness: "fresh",
+    plan_name: null,
+    balance: null,
+    plan_remaining: null,
+    used: null,
+    total: null,
+    unit: null,
+    unit_note: null,
+    daily_used: null,
+    daily_total: null,
+    weekly_used: null,
+    weekly_total: null,
+    monthly_used: null,
+    monthly_total: null,
+    expires_at: null,
+    last_fetched_at: 1,
+    message: null,
+    ...partial,
+  };
+}
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  const promise = new Promise<T>((resolvePromise) => {
+    resolve = resolvePromise;
+  });
+  return { promise, resolve };
+}
+
 function renderDialog(ui: ReactElement) {
   const client = createTestQueryClient();
   const view = rtlRender(<QueryClientProvider client={client}>{ui}</QueryClientProvider>);
@@ -214,6 +287,7 @@ function openAccountUsageDisclosure(dialog: HTMLElement) {
 
 describe("pages/providers/ProviderEditorDialog", () => {
   beforeEach(() => {
+    vi.mocked(providerAccountUsageTestCustomScript).mockReset();
     vi.mocked(providerUpsert).mockReset();
     vi.mocked(providerDelete).mockReset();
     vi.mocked(providerCopyApiKeyToClipboard).mockReset();
@@ -3280,6 +3354,287 @@ describe("pages/providers/ProviderEditorDialog", () => {
     const dialog = within(screen.getByRole("dialog"));
     expect(dialog.getByDisplayValue("Existing")).toBeInTheDocument();
   });
+
+  it("sends the normalized custom draft and saves script changes as unconfirmed", async () => {
+    const provider = makeCustomAccountUsageProvider();
+    const changedScript =
+      "({ request: () => ({}), parse: () => ({ status: 'available', balance: 5 }) })";
+    const allowedOrigins = Array.from(
+      { length: 16 },
+      (_, index) => `https://usage-${index + 1}.example.invalid`
+    );
+    const expectedAllowedOrigins = [...allowedOrigins].sort();
+    vi.mocked(providerAccountUsageTestCustomScript).mockResolvedValueOnce(
+      makeAccountUsageResult({ balance: 5, unit: "USD", message: "草稿测试成功" })
+    );
+    vi.mocked(providerUpsert).mockResolvedValueOnce(provider);
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={provider}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    openAccountUsageDisclosure(dialogElement);
+    const confirmation = dialog.getByRole("switch", {
+      name: "启用自定义账户用量脚本",
+    });
+    expect(confirmation).toBeChecked();
+
+    fireEvent.change(dialog.getByRole("textbox", { name: "账户用量 JavaScript" }), {
+      target: { value: changedScript },
+    });
+    fireEvent.change(dialog.getByRole("textbox", { name: "额外 HTTPS Origin，每行一个" }), {
+      target: {
+        value: ["", ...allowedOrigins, "https://USAGE-1.example.invalid:443/"].join("\n"),
+      },
+    });
+    fireEvent.change(dialog.getByRole("spinbutton", { name: "自定义账户用量请求超时" }), {
+      target: { value: "12" },
+    });
+    expect(confirmation).not.toBeChecked();
+
+    fireEvent.click(dialog.getByRole("button", { name: "测试脚本" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerAccountUsageTestCustomScript)).toHaveBeenCalledWith(1, {
+        customScript: changedScript,
+        customAllowedOrigins: expectedAllowedOrigins,
+        customTimeoutSeconds: 12,
+      })
+    );
+    expect(await dialog.findByText("草稿测试成功")).toBeInTheDocument();
+
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(vi.mocked(providerUpsert)).toHaveBeenCalledWith(
+        expect.objectContaining({
+          extensionValues: expect.arrayContaining([
+            expect.objectContaining({
+              pluginId: "core.provider-account-usage",
+              namespace: "accountUsage",
+              values: expect.objectContaining({
+                adapterKind: "custom",
+                customScript: changedScript,
+                customAllowedOrigins: expectedAllowedOrigins,
+                customTimeoutSeconds: 12,
+                customEnabled: false,
+              }),
+            }),
+          ]),
+        })
+      )
+    );
+  });
+
+  it("revokes custom enablement when the primary HTTPS origin changes and ignores the stale test", async () => {
+    const provider = makeCustomAccountUsageProvider();
+    const pendingTest = deferred<ProviderAccountUsageResult | null>();
+    vi.mocked(providerAccountUsageTestCustomScript).mockReturnValueOnce(pendingTest.promise);
+    vi.mocked(providerUpsert).mockResolvedValueOnce({
+      ...provider,
+      base_urls: ["https://other.example.com/v1"],
+    });
+
+    render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={provider}
+        onSaved={vi.fn()}
+        onOpenChange={vi.fn()}
+      />
+    );
+
+    const dialogElement = screen.getByRole("dialog");
+    const dialog = within(dialogElement);
+    openAccountUsageDisclosure(dialogElement);
+    const confirmation = dialog.getByRole("switch", {
+      name: "启用自定义账户用量脚本",
+    });
+    const confirmationStatus = dialog.getByRole("status", {
+      name: "自定义账户用量确认状态",
+    });
+    const baseUrl = dialog.getByPlaceholderText("中转 endpoint（例如：https://example.com/v1）");
+
+    fireEvent.change(baseUrl, { target: { value: "https://EXAMPLE.com:443/v2" } });
+    expect(confirmation).toBeChecked();
+    expect(confirmationStatus).toHaveTextContent("已启用");
+
+    fireEvent.click(dialog.getByRole("button", { name: "测试脚本" }));
+    await waitFor(() => expect(providerAccountUsageTestCustomScript).toHaveBeenCalledOnce());
+
+    fireEvent.change(baseUrl, { target: { value: "https://other.example.com/v1" } });
+    expect(confirmation).not.toBeChecked();
+    expect(confirmationStatus).toHaveTextContent("未启用");
+    expect(dialog.getByRole("button", { name: "测试中…" })).toBeDisabled();
+    expect(dialog.getByRole("button", { name: "保存" })).toBeDisabled();
+
+    await act(async () => {
+      pendingTest.resolve(makeAccountUsageResult({ message: "旧 Base URL 测试" }));
+      await pendingTest.promise;
+    });
+
+    expect(dialog.queryByText("旧 Base URL 测试")).not.toBeInTheDocument();
+    await waitFor(() => expect(dialog.getByRole("button", { name: "保存" })).toBeEnabled());
+    fireEvent.click(dialog.getByRole("button", { name: "保存" }));
+
+    await waitFor(() =>
+      expect(providerUpsert).toHaveBeenCalledWith(
+        expect.objectContaining({
+          baseUrls: ["https://other.example.com/v1"],
+          extensionValues: expect.arrayContaining([
+            expect.objectContaining({
+              pluginId: "core.provider-account-usage",
+              namespace: "accountUsage",
+              values: expect.objectContaining({ customEnabled: false }),
+            }),
+          ]),
+        })
+      )
+    );
+  });
+
+  it("does not let a custom test from before close write into a reopened dialog", async () => {
+    const provider = makeCustomAccountUsageProvider();
+    const pendingTest = deferred<ProviderAccountUsageResult | null>();
+    const onSaved = vi.fn();
+    const onOpenChange = vi.fn();
+    vi.mocked(providerAccountUsageTestCustomScript).mockReturnValueOnce(pendingTest.promise);
+
+    const { rerender } = render(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={provider}
+        onSaved={onSaved}
+        onOpenChange={onOpenChange}
+      />
+    );
+
+    openAccountUsageDisclosure(screen.getByRole("dialog"));
+    fireEvent.click(screen.getByRole("button", { name: "测试脚本" }));
+    await waitFor(() => expect(providerAccountUsageTestCustomScript).toHaveBeenCalledOnce());
+
+    rerender(
+      <ProviderEditorDialog
+        mode="edit"
+        open={false}
+        provider={provider}
+        onSaved={onSaved}
+        onOpenChange={onOpenChange}
+      />
+    );
+    rerender(
+      <ProviderEditorDialog
+        mode="edit"
+        open={true}
+        provider={provider}
+        onSaved={onSaved}
+        onOpenChange={onOpenChange}
+      />
+    );
+    const reopenedDialogElement = screen.getByRole("dialog");
+    const reopenedDialog = within(reopenedDialogElement);
+    openAccountUsageDisclosure(reopenedDialogElement);
+    expect(reopenedDialog.getByRole("button", { name: "测试中…" })).toBeDisabled();
+
+    await act(async () => {
+      pendingTest.resolve(makeAccountUsageResult({ message: "旧请求不应回写" }));
+      await pendingTest.promise;
+    });
+
+    expect(reopenedDialog.queryByText("旧请求不应回写")).not.toBeInTheDocument();
+    expect(
+      reopenedDialog.queryByRole("status", { name: "自定义账户用量测试结果" })
+    ).not.toBeInTheDocument();
+    await waitFor(() =>
+      expect(reopenedDialog.getByRole("button", { name: "测试脚本" })).toBeEnabled()
+    );
+  });
+
+  for (const buttonName of ["保存", "保存并获取模型"] as const) {
+    it(`${buttonName} stays blocked until the real custom test promise settles`, async () => {
+      const provider = makeCustomAccountUsageProvider();
+      const pendingTest = deferred<ProviderAccountUsageResult | null>();
+      const pendingSave = deferred<ProviderSummary>();
+      const onSaved = vi.fn();
+      const onOpenChange = vi.fn();
+      vi.mocked(providerAccountUsageTestCustomScript).mockReturnValueOnce(pendingTest.promise);
+      vi.mocked(providerUpsert).mockReturnValueOnce(pendingSave.promise);
+      vi.mocked(providerModelsRefresh).mockResolvedValueOnce({
+        providerId: provider.id,
+        providerUuid: provider.provider_uuid,
+        protocol: "openai_compatible",
+        stale: false,
+        lastAttemptAt: 100,
+        lastSuccessAt: 100,
+        lastErrorCode: null,
+        models: [],
+      });
+
+      render(
+        <ProviderEditorDialog
+          mode="edit"
+          open={true}
+          provider={provider}
+          onSaved={onSaved}
+          onOpenChange={onOpenChange}
+        />
+      );
+
+      const dialogElement = screen.getByRole("dialog");
+      const dialog = within(dialogElement);
+      openAccountUsageDisclosure(dialogElement);
+      fireEvent.click(dialog.getByRole("button", { name: "测试脚本" }));
+      await waitFor(() => expect(providerAccountUsageTestCustomScript).toHaveBeenCalledOnce());
+
+      const saveButton = dialog.getByRole("button", { name: buttonName });
+      const inFlightTestButton = dialog.getByRole("button", { name: "测试中…" });
+      expect(saveButton).toBeDisabled();
+      expect(inFlightTestButton).toBeDisabled();
+      expect(dialog.getByRole("button", { name: "取消" })).toBeDisabled();
+      inFlightTestButton.removeAttribute("disabled");
+      fireEvent.click(inFlightTestButton);
+      saveButton.removeAttribute("disabled");
+      fireEvent.click(saveButton);
+      fireEvent.click(dialog.getByRole("button", { name: "关闭" }));
+      fireEvent.keyDown(window, { key: "Escape" });
+      expect(providerUpsert).not.toHaveBeenCalled();
+      expect(providerAccountUsageTestCustomScript).toHaveBeenCalledOnce();
+      expect(onOpenChange).not.toHaveBeenCalled();
+
+      await act(async () => {
+        pendingTest.resolve(makeAccountUsageResult({ message: `测试完成-${buttonName}` }));
+        await pendingTest.promise;
+      });
+      expect(await dialog.findByText(`测试完成-${buttonName}`)).toBeInTheDocument();
+      await waitFor(() => expect(dialog.getByRole("button", { name: "测试脚本" })).toBeEnabled());
+
+      fireEvent.click(saveButton);
+      await waitFor(() => expect(providerUpsert).toHaveBeenCalledOnce());
+      expect(dialog.queryByText(`测试完成-${buttonName}`)).not.toBeInTheDocument();
+      expect(
+        dialog.queryByRole("status", { name: "自定义账户用量测试结果" })
+      ).not.toBeInTheDocument();
+
+      await act(async () => {
+        pendingSave.resolve(provider);
+        await pendingSave.promise;
+      });
+      await waitFor(() => expect(onSaved).toHaveBeenCalledWith("codex"));
+      if (buttonName === "保存并获取模型") {
+        expect(providerModelsRefresh).toHaveBeenCalledWith(provider.id, provider.provider_uuid);
+      }
+    });
+  }
 
   it("preserves account credentials across mode switches and only clears them explicitly", async () => {
     const provider = makeProvider({

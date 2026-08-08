@@ -98,6 +98,56 @@ fn query_workspace(conn: &Connection, cli_key: &str) -> (i64, String) {
     .expect("query workspace")
 }
 
+fn confirmed_custom_account_usage_values() -> serde_json::Value {
+    let script = "({ request: () => ({}), parse: () => ({ status: 'available' }) })".to_string();
+    let custom = crate::domain::provider_account_usage::custom_config_from_draft(
+        crate::domain::provider_account_usage::ProviderAccountUsageCustomScriptDraft {
+            custom_script: script.clone(),
+            custom_allowed_origins: vec!["https://private-usage.example.test".to_string()],
+            custom_timeout_seconds: 5,
+        },
+    )
+    .expect("valid confirmed custom account usage fixture");
+    let fingerprint =
+        crate::domain::provider_account_usage::custom_account_usage_permission_fingerprint(&custom);
+    serde_json::json!({
+        "adapterKind": "custom",
+        "newApiQueryMode": "account",
+        "timedRefreshEnabled": false,
+        "refreshIntervalSeconds": 120,
+        "customScript": script,
+        "customAllowedOrigins": ["https://private-usage.example.test"],
+        "customTimeoutSeconds": 5,
+        "customEnabled": true,
+        "customPermissionFingerprint": fingerprint.clone(),
+        "customPermissionBaseOrigin": "https://api.example.test",
+        "customPermissionProof": fingerprint,
+        "customPermissionBaseOriginProof": "https://api.example.test"
+    })
+}
+
+fn assert_portable_custom_account_usage_is_disabled(values: &serde_json::Value) {
+    assert_eq!(values["adapterKind"], "disabled");
+    assert_eq!(values["newApiQueryMode"], "account");
+    assert_eq!(values["timedRefreshEnabled"], false);
+    assert_eq!(values["refreshIntervalSeconds"], 120);
+    for local_field in [
+        "customScript",
+        "customAllowedOrigins",
+        "customTimeoutSeconds",
+        "customEnabled",
+        "customPermissionFingerprint",
+        "customPermissionBaseOrigin",
+        "customPermissionProof",
+        "customPermissionBaseOriginProof",
+    ] {
+        assert!(
+            values.get(local_field).is_none(),
+            "portable account usage must omit {local_field}"
+        );
+    }
+}
+
 fn write_skill_md(dir: &Path, name: &str, description: &str) {
     std::fs::create_dir_all(dir).expect("create skill dir");
     std::fs::write(
@@ -549,6 +599,9 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
                 adapter_kind:
                     crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Newapi,
                 new_api_query_mode: crate::domain::provider_account_usage::NewapiQueryMode::Account,
+                timed_refresh_enabled: false,
+                refresh_interval_seconds: 120,
+                custom: None,
             }
         )
     );
@@ -590,6 +643,88 @@ fn config_v3_round_trips_private_account_usage_snapshot_while_v2_ignores_it() {
         preserved_credentials.new_api_access_token.as_deref(),
         Some("SYNTHETIC_ACCOUNT_SECRET")
     );
+    let custom_config = confirmed_custom_account_usage_values();
+    conn.execute(
+        r#"
+UPDATE provider_extension_values
+SET values_json = ?1
+WHERE provider_id = ?2 AND plugin_id = ?3 AND namespace = ?4
+"#,
+        params![
+            custom_config.to_string(),
+            preserved.id,
+            crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID,
+            crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE,
+        ],
+    )
+    .expect("replace account usage with custom config");
+    drop(conn);
+
+    let exported_custom = config_export(&app, &test_app.db).expect("export custom config");
+    let exported_provider = exported_custom
+        .providers
+        .iter()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("exported custom provider");
+    assert_portable_custom_account_usage_is_disabled(
+        exported_provider
+            .account_usage_config
+            .as_ref()
+            .expect("portable disabled account usage config"),
+    );
+    let serialized = serde_json::to_string(&exported_custom).expect("serialize custom export");
+    for local_value in [
+        "customScript",
+        "private-usage.example.test",
+        "customPermissionFingerprint",
+        "customPermissionBaseOrigin",
+        "customPermissionProof",
+        "customPermissionBaseOriginProof",
+    ] {
+        assert!(!serialized.contains(local_value));
+    }
+
+    let mut crafted_import = exported_custom;
+    crafted_import
+        .providers
+        .iter_mut()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("crafted custom provider")
+        .account_usage_config = Some(custom_config.clone());
+    let prepared = prepare_config_import(crafted_import).expect("prepare crafted custom import");
+    let prepared_config = prepared
+        .providers
+        .iter()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("prepared custom provider")
+        .account_usage_config
+        .as_ref()
+        .expect("prepared portable disabled account usage config");
+    assert_portable_custom_account_usage_is_disabled(prepared_config);
+
+    let mut crafted_import = config_export(&app, &test_app.db).expect("export import probe");
+    crafted_import
+        .providers
+        .iter_mut()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("crafted import provider")
+        .account_usage_config = Some(custom_config);
+    config_import(&app, &test_app.db, crafted_import).expect("import crafted custom config");
+    let imported = crate::providers::list_by_cli(&test_app.db, "codex")
+        .expect("list imported providers")
+        .into_iter()
+        .find(|candidate| candidate.name == "account-backup")
+        .expect("imported custom provider");
+    let imported_values = imported
+        .extension_values
+        .iter()
+        .find(|extension| {
+            extension.plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                && extension.namespace
+                    == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        })
+        .expect("imported disabled account usage extension");
+    assert_portable_custom_account_usage_is_disabled(&imported_values.values);
 }
 
 #[test]

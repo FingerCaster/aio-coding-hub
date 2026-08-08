@@ -461,10 +461,8 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
     } else {
         for provider in &mut providers {
             if let Some(config) = provider.account_usage_config.as_mut() {
-                *config =
-                    crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
-                        config,
-                    );
+                *config = crate::domain::provider_account_usage::
+                    sanitize_account_usage_extension_value_for_config_bundle(config);
             }
         }
     }

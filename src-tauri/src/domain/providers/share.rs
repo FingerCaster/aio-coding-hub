@@ -778,10 +778,8 @@ fn normalize_provider_share_v2(
         if extension.plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
             && extension.namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
         {
-            extension.values =
-                crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
-                    &extension.values,
-                );
+            extension.values = crate::domain::provider_account_usage::
+                sanitize_account_usage_extension_value_for_provider_share(&extension.values);
         }
     }
     provider.extensions.sort_by(|left, right| {
@@ -1036,12 +1034,6 @@ ORDER BY extension_values.plugin_id ASC, extension_values.namespace ASC
     for row in rows {
         let (plugin_id, plugin_version, namespace, values_json) =
             row.map_err(|error| db_err!("failed to read provider share extension: {error}"))?;
-        let plugin_version = plugin_version.ok_or_else(|| {
-            AppError::new(
-                "PROVIDER_SHARE_EXTENSION_UNAVAILABLE",
-                format!("extension owner plugin {plugin_id} has no installed version"),
-            )
-        })?;
         let mut values = serde_json::from_str(&values_json).map_err(|_| {
             AppError::new(
                 "DB_INVALID_DATA",
@@ -1051,10 +1043,15 @@ ORDER BY extension_values.plugin_id ASC, extension_values.namespace ASC
         if plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
             && namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
         {
-            values = crate::domain::provider_account_usage::sanitize_account_usage_extension_value(
-                &values,
-            );
+            values = crate::domain::provider_account_usage::
+                sanitize_account_usage_extension_value_for_provider_share(&values);
         }
+        let plugin_version = plugin_version.ok_or_else(|| {
+            AppError::new(
+                "PROVIDER_SHARE_EXTENSION_UNAVAILABLE",
+                format!("extension owner plugin {plugin_id} has no installed version"),
+            )
+        })?;
         extensions.push(ProviderShareExtensionV1 {
             plugin_id,
             plugin_version,
@@ -1726,6 +1723,7 @@ INSERT INTO providers(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use serde_json::Value;
 
     fn provider_params(name: &str, cli_key: &str) -> super::super::types::ProviderUpsertParams {
         super::super::types::ProviderUpsertParams {
@@ -1801,6 +1799,59 @@ mod tests {
         }
     }
 
+    fn confirmed_custom_account_usage_values() -> Value {
+        let script =
+            "({ request: () => ({}), parse: () => ({ status: 'available' }) })".to_string();
+        let custom = crate::domain::provider_account_usage::custom_config_from_draft(
+            crate::domain::provider_account_usage::ProviderAccountUsageCustomScriptDraft {
+                custom_script: script.clone(),
+                custom_allowed_origins: vec!["https://private-usage.example.test".to_string()],
+                custom_timeout_seconds: 5,
+            },
+        )
+        .expect("valid confirmed custom account usage fixture");
+        let fingerprint =
+            crate::domain::provider_account_usage::custom_account_usage_permission_fingerprint(
+                &custom,
+            );
+        serde_json::json!({
+            "adapterKind": "custom",
+            "newApiQueryMode": "account",
+            "timedRefreshEnabled": false,
+            "refreshIntervalSeconds": 120,
+            "customScript": script,
+            "customAllowedOrigins": ["https://private-usage.example.test"],
+            "customTimeoutSeconds": 5,
+            "customEnabled": true,
+            "customPermissionFingerprint": fingerprint.clone(),
+            "customPermissionBaseOrigin": "https://api.example.test",
+            "customPermissionProof": fingerprint,
+            "customPermissionBaseOriginProof": "https://api.example.test"
+        })
+    }
+
+    fn assert_portable_custom_account_usage_is_disabled(values: &Value) {
+        assert_eq!(values["adapterKind"], "disabled");
+        assert_eq!(values["newApiQueryMode"], "account");
+        assert_eq!(values["timedRefreshEnabled"], false);
+        assert_eq!(values["refreshIntervalSeconds"], 120);
+        for local_field in [
+            "customScript",
+            "customAllowedOrigins",
+            "customTimeoutSeconds",
+            "customEnabled",
+            "customPermissionFingerprint",
+            "customPermissionBaseOrigin",
+            "customPermissionProof",
+            "customPermissionBaseOriginProof",
+        ] {
+            assert!(
+                values.get(local_field).is_none(),
+                "portable account usage must omit {local_field}"
+            );
+        }
+    }
+
     fn provider_extension_manifest(plugin_id: &str, version: &str) -> PluginManifest {
         serde_json::from_value(serde_json::json!({
             "id": plugin_id,
@@ -1861,6 +1912,44 @@ mod tests {
 
         assert_eq!(first, second);
         assert!(first.ends_with(b"\n"));
+    }
+
+    #[test]
+    fn provider_share_import_disables_custom_account_usage_configuration() {
+        let mut share = minimal_share();
+        share.provider.extensions.push(ProviderShareExtensionV1 {
+            plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+            plugin_version: "1.0.0".to_string(),
+            namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+            values: confirmed_custom_account_usage_values(),
+        });
+
+        let normalized = normalize_provider_share_v2(share).expect("normalize custom share");
+        assert_eq!(normalized.provider.extensions.len(), 1);
+        assert_portable_custom_account_usage_is_disabled(&normalized.provider.extensions[0].values);
+        let serialized = serialize_provider_share_v2(&normalized).expect("serialize custom share");
+        let serialized = std::str::from_utf8(&serialized).expect("custom share utf8");
+        for local_value in [
+            "customScript",
+            "private-usage.example.test",
+            "customPermissionFingerprint",
+            "customPermissionBaseOrigin",
+            "customPermissionProof",
+            "customPermissionBaseOriginProof",
+        ] {
+            assert!(!serialized.contains(local_value));
+        }
+
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db =
+            crate::db::init_for_tests(&dir.path().join("custom-share-import.db")).expect("init db");
+        let preview = preview_provider_share(&db, &normalized).expect("preview custom share");
+        assert!(preview.can_import);
+        let imported =
+            import_provider_share(&db, &normalized, &preview.final_name, &preview.extensions)
+                .expect("import custom share");
+        assert_eq!(imported.extension_values.len(), 1);
+        assert_portable_custom_account_usage_is_disabled(&imported.extension_values[0].values);
     }
 
     #[test]
@@ -2682,6 +2771,42 @@ mod tests {
                 .expect("default route")
                 .is_empty()
         );
+
+        let conn = source_db.open_connection().expect("open source db");
+        let custom_config = confirmed_custom_account_usage_values();
+        conn.execute(
+            r#"
+UPDATE provider_extension_values
+SET values_json = ?1
+WHERE provider_id = ?2 AND plugin_id = ?3 AND namespace = ?4
+"#,
+            params![
+                custom_config.to_string(),
+                source.id,
+                crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID,
+                crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE,
+            ],
+        )
+        .expect("replace source account usage config");
+        drop(conn);
+        let custom_export = export_provider_share_v2(&source_db, source.id)
+            .expect("export provider with custom account usage");
+        assert_eq!(custom_export.provider.extensions.len(), 1);
+        assert_portable_custom_account_usage_is_disabled(
+            &custom_export.provider.extensions[0].values,
+        );
+        let custom_bytes = serialize_provider_share_v2(&custom_export).expect("serialize custom");
+        let custom_text = std::str::from_utf8(&custom_bytes).expect("custom share utf8");
+        for local_value in [
+            "customScript",
+            "private-usage.example.test",
+            "customPermissionFingerprint",
+            "customPermissionBaseOrigin",
+            "customPermissionProof",
+            "customPermissionBaseOriginProof",
+        ] {
+            assert!(!custom_text.contains(local_value));
+        }
     }
 
     #[test]

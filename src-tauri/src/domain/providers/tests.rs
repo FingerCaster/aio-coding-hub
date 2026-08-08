@@ -673,6 +673,81 @@ INSERT INTO sort_mode_providers(
     }
 }
 
+fn upsert_confirmed_custom_account_usage(
+    db: &crate::db::Db,
+    name: &str,
+    base_url: &str,
+) -> ProviderSummary {
+    let mut params = default_provider_params(name);
+    params.base_urls = vec![base_url.to_string()];
+    params.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+        namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+        values: serde_json::json!({
+            "adapterKind": "custom",
+            "customScript": "({ request: () => ({}), parse: () => ({ status: 'available' }) })",
+            "customAllowedOrigins": [],
+            "customTimeoutSeconds": 5,
+            "customEnabled": true
+        }),
+    }]);
+    let provider_uuid = crate::shared::uuid::new_uuid_v4();
+    let scope = crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+        &provider_uuid,
+        "api_key",
+        None,
+        base_url,
+    )
+    .expect("valid permission scope");
+    let permission =
+        crate::domain::provider_account_usage::custom_account_usage_permission_request(
+            params.extension_values.as_deref(),
+            &scope,
+        )
+        .expect("valid permission request")
+        .expect("enabled custom config requires acknowledgement");
+    crate::domain::provider_account_usage::add_custom_account_usage_permission_proof(
+        &mut params.extension_values,
+        &permission.fingerprint,
+        &permission.base_origin,
+    )
+    .expect("add backend permission proof");
+    super::queries::upsert_with_provider_uuid(db, params, Some(provider_uuid))
+        .expect("save confirmed custom account usage")
+}
+
+fn account_usage_values(provider: &ProviderSummary) -> &serde_json::Value {
+    &provider
+        .extension_values
+        .iter()
+        .find(|value| {
+            value.plugin_id == crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID
+                && value.namespace == crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE
+        })
+        .expect("provider account usage values")
+        .values
+}
+
+fn assert_invalid_custom_account_usage_upsert(enabled: bool, provider_name: &str) {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join(format!("{provider_name}.db"));
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let mut params = default_provider_params(provider_name);
+    params.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+        namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+        values: serde_json::json!({
+            "adapterKind": "custom",
+            "customAllowedOrigins": [],
+            "customTimeoutSeconds": 5,
+            "customEnabled": enabled
+        }),
+    }]);
+
+    let error = upsert(&db, params).expect_err("invalid custom config must fail provider upsert");
+    assert_eq!(error.code(), "SEC_INVALID_INPUT");
+}
+
 #[test]
 fn provider_uuid_is_generated_preserved_on_edit_and_unique_per_copy() {
     let dir = tempfile::tempdir().expect("tempdir");
@@ -694,6 +769,46 @@ fn provider_uuid_is_generated_preserved_on_edit_and_unique_per_copy() {
         &copy.provider_uuid
     ));
     assert_ne!(copy.provider_uuid, original.provider_uuid);
+}
+
+#[test]
+fn account_usage_contexts_distinguish_reused_provider_id_by_uuid() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("account_usage_provider_id_reuse.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let original = upsert(&db, default_provider_params("Original Provider")).expect("create");
+    let before = {
+        let conn = db.open_connection().expect("open db");
+        get_account_usage_fetch_context(&conn, original.id).expect("load initial fetch context")
+    };
+    assert_eq!(before.provider_uuid, original.provider_uuid);
+
+    delete(&db, original.id, false).expect("delete original provider");
+    {
+        let conn = db.open_connection().expect("open db");
+        conn.execute(
+            "DELETE FROM sqlite_sequence WHERE name = 'providers'",
+            params![],
+        )
+        .expect("reset provider sequence for ID-reuse regression");
+    }
+
+    let replacement =
+        upsert(&db, default_provider_params("Replacement Provider")).expect("create replacement");
+    assert_eq!(replacement.id, original.id, "test must reuse provider ID");
+    let after = {
+        let conn = db.open_connection().expect("open db");
+        get_account_usage_credential_context(&conn, replacement.id)
+            .expect("load replacement credential context")
+    };
+
+    assert_eq!(after.provider_uuid, replacement.provider_uuid);
+    assert_ne!(before.provider_uuid, after.provider_uuid);
+    assert_eq!(before.base_urls, after.base_urls);
+    assert_eq!(before.auth_mode, after.auth_mode);
+    assert_eq!(before.source_provider_id, after.source_provider_id);
+    assert_eq!(before.extension_values, after.extension_values);
 }
 
 #[test]
@@ -914,6 +1029,183 @@ fn upsert_seeds_provider_account_usage_extension_owner_without_visible_plugin() 
         plugins.iter().all(|plugin| plugin.plugin_id
             != crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID),
         "internal owner must remain hidden from the visible plugin list"
+    );
+}
+
+#[test]
+fn provider_upsert_rejects_enabled_invalid_custom_account_usage_as_invalid_input() {
+    assert_invalid_custom_account_usage_upsert(true, "enabled-invalid-custom-account-usage");
+}
+
+#[test]
+fn provider_upsert_rejects_disabled_invalid_custom_account_usage_as_invalid_input() {
+    assert_invalid_custom_account_usage_upsert(false, "disabled-invalid-custom-account-usage");
+}
+
+#[test]
+fn custom_account_usage_config_round_trips_only_in_local_provider_values() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("providers_custom_account_usage.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let script = "({ request: () => ({}), parse: () => ({ status: 'available' }) })";
+
+    let mut params = default_provider_params("custom-account-usage");
+    params.extension_values = Some(vec![ProviderExtensionValuesInput {
+        plugin_id: crate::domain::provider_account_usage::ACCOUNT_USAGE_PLUGIN_ID.to_string(),
+        namespace: crate::domain::provider_account_usage::ACCOUNT_USAGE_NAMESPACE.to_string(),
+        values: serde_json::json!({
+            "adapterKind": "custom",
+            "customScript": script,
+            "customAllowedOrigins": ["https://usage.example.test:443/"],
+            "customTimeoutSeconds": 5,
+            "customEnabled": true
+        }),
+    }]);
+
+    let provider_uuid = crate::shared::uuid::new_uuid_v4();
+    let scope = crate::domain::provider_account_usage::custom_account_usage_permission_scope(
+        &provider_uuid,
+        "api_key",
+        None,
+        "https://api.example.com",
+    )
+    .expect("valid permission scope");
+    let permission =
+        crate::domain::provider_account_usage::custom_account_usage_permission_request(
+            params.extension_values.as_deref(),
+            &scope,
+        )
+        .expect("valid permission request")
+        .expect("enabled custom config requires acknowledgement");
+    crate::domain::provider_account_usage::add_custom_account_usage_permission_proof(
+        &mut params.extension_values,
+        &permission.fingerprint,
+        &permission.base_origin,
+    )
+    .expect("add backend permission proof");
+
+    let saved = super::queries::upsert_with_provider_uuid(&db, params, Some(provider_uuid))
+        .expect("save custom account usage config");
+    let values = &saved.extension_values[0].values;
+    assert_eq!(values["customScript"], script);
+    assert_eq!(
+        values["customAllowedOrigins"],
+        serde_json::json!(["https://usage.example.test"])
+    );
+    assert_eq!(values["customEnabled"], true);
+    assert_eq!(
+        values["customPermissionFingerprint"],
+        permission.fingerprint
+    );
+    assert_eq!(
+        values["customPermissionBaseOrigin"],
+        "https://api.example.com"
+    );
+    assert!(values.get("customPermissionProof").is_none());
+    let configured = crate::domain::provider_account_usage::config_from_extension_values(
+        &saved.extension_values,
+    );
+    let crate::domain::provider_account_usage::ProviderAccountUsageConfigState::Configured(
+        configured,
+    ) = configured
+    else {
+        panic!("custom account usage config must be configured");
+    };
+    assert_eq!(
+        configured.adapter_kind,
+        crate::domain::provider_account_usage::ProviderAccountUsageAdapterKind::Custom
+    );
+    assert!(configured.custom.expect("custom config").enabled);
+}
+
+#[test]
+fn upsert_without_extension_values_persistently_revokes_changed_base_origin_permission() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir
+        .path()
+        .join("providers_custom_account_usage_origin_aba.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let provider_name = "custom-account-usage-origin-aba";
+    let origin_one_url = "https://origin-one.example.test/v1";
+
+    let saved = upsert_confirmed_custom_account_usage(&db, provider_name, origin_one_url);
+    let saved_values = account_usage_values(&saved);
+    assert_eq!(saved_values["customEnabled"], true);
+    assert_eq!(
+        saved_values["customPermissionBaseOrigin"],
+        "https://origin-one.example.test"
+    );
+
+    let mut change_origin = default_provider_params(provider_name);
+    change_origin.provider_id = Some(saved.id);
+    change_origin.base_urls = vec!["https://origin-two.example.test/v1".to_string()];
+    change_origin.api_key = None;
+    let changed = upsert(&db, change_origin).expect("change Base Origin without extensions");
+    let changed_values = account_usage_values(&changed);
+    assert_eq!(changed_values["customEnabled"], false);
+    assert!(changed_values.get("customPermissionBaseOrigin").is_none());
+
+    let mut restore_origin = default_provider_params(provider_name);
+    restore_origin.provider_id = Some(saved.id);
+    restore_origin.base_urls = vec![origin_one_url.to_string()];
+    restore_origin.api_key = None;
+    let restored = upsert(&db, restore_origin).expect("restore original Base Origin");
+    let restored_values = account_usage_values(&restored);
+    assert_eq!(restored_values["customEnabled"], false);
+    assert!(restored_values.get("customPermissionBaseOrigin").is_none());
+}
+
+#[test]
+fn upsert_without_extension_values_keeps_permission_for_same_origin_and_key_rotation() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir
+        .path()
+        .join("providers_custom_account_usage_same_origin.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+    let provider_name = "custom-account-usage-same-origin";
+
+    let saved = upsert_confirmed_custom_account_usage(
+        &db,
+        provider_name,
+        "https://same-origin.example.test/v1",
+    );
+    let saved_values = account_usage_values(&saved);
+    let fingerprint = saved_values["customPermissionFingerprint"].clone();
+
+    let mut change_path = default_provider_params(provider_name);
+    change_path.provider_id = Some(saved.id);
+    change_path.base_urls = vec!["https://same-origin.example.test/v2".to_string()];
+    change_path.api_key = None;
+    let path_changed = upsert(&db, change_path).expect("change same-Origin path");
+    let path_changed_values = account_usage_values(&path_changed);
+    assert_eq!(path_changed_values["customEnabled"], true);
+    assert_eq!(
+        path_changed_values["customPermissionBaseOrigin"],
+        "https://same-origin.example.test"
+    );
+    assert_eq!(
+        path_changed_values["customPermissionFingerprint"],
+        fingerprint
+    );
+
+    let mut rotate_key = default_provider_params(provider_name);
+    rotate_key.provider_id = Some(saved.id);
+    rotate_key.base_urls = vec!["https://same-origin.example.test/v2".to_string()];
+    rotate_key.api_key = Some("sk-rotated-test".to_string());
+    let key_rotated = upsert(&db, rotate_key).expect("rotate API key without extensions");
+    let key_rotated_values = account_usage_values(&key_rotated);
+    assert_eq!(key_rotated_values["customEnabled"], true);
+    assert_eq!(
+        key_rotated_values["customPermissionBaseOrigin"],
+        "https://same-origin.example.test"
+    );
+    assert_eq!(
+        key_rotated_values["customPermissionFingerprint"],
+        fingerprint
+    );
+    assert_eq!(
+        get_api_key_plaintext(&db, saved.id).expect("read rotated API key"),
+        "sk-rotated-test"
     );
 }
 

@@ -25,4 +25,18 @@ describe("ui/FormField (branch coverage)", () => {
     const input = screen.getByTestId("explicit-input");
     expect(input.id).toBe("my-id");
   });
+
+  it("exposes the hint id to render-prop controls", () => {
+    render(
+      <FormField label="Origin" hint="每行一个 HTTPS Origin">
+        {(id, hintId) => <input id={id} aria-describedby={hintId} data-testid="hinted-input" />}
+      </FormField>
+    );
+
+    const input = screen.getByTestId("hinted-input");
+    const hint = screen.getByText("每行一个 HTTPS Origin");
+    expect(hint).toHaveAttribute("id");
+    expect(input).toHaveAttribute("aria-describedby", hint.id);
+    expect(input).toHaveAccessibleDescription("每行一个 HTTPS Origin");
+  });
 });

@@ -209,7 +209,9 @@ WHERE provider_id = ?1 AND plugin_id = ?2 AND namespace = ?3
     let values = serde_json::from_str::<serde_json::Value>(&values_json)
         .map_err(|_| "DB_INVALID_DATA: provider account usage config is invalid".to_string())?;
     Ok(Some(
-        crate::domain::provider_account_usage::sanitize_account_usage_extension_value(&values),
+        crate::domain::provider_account_usage::sanitize_account_usage_extension_value_for_config_bundle(
+            &values,
+        ),
     ))
 }
 
