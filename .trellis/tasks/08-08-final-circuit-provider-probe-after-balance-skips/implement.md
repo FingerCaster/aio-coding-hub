@@ -23,7 +23,7 @@
 ## 4. 收尾
 
 - [x] 执行 `trellis-check`，将通用根因写入 failover/account-usage 规格。
-- [ ] 提交产品修复，归档任务；随后启动零余额手动刷新回归任务。
+- [x] 提交产品修复，归档任务；随后启动零余额手动刷新回归任务。
 
 ## 验收门槛
 
@@ -47,3 +47,4 @@
   无空白错误。
 - 已执行 break-loop 分析，并同步 failover、account-usage、
   cross-layer thinking guide 与 Markdown 模板。
+- 产品修复提交：`8587e5c1`。
