@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 28
-- **Last Active**: 2026-08-06
+- **Total Sessions**: 29
+- **Last Active**: 2026-08-08
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1011 | Active |
+| `journal-1.md` | ~1048 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 29 | 2026-08-08 | 自定义余额查询与路由恢复集成 | `708d2965`, `ef8892be` | `FingerCaster/account-usage-routing-build` |
 | 28 | 2026-08-06 | Harden upstream error handling | `f6d5de13` | `main` |
 | 27 | 2026-08-05 | 按变更范围分级 CI | `84423019`, `cfdc14af` | `FingerCaster/scope-aware-ci` |
 | 26 | 2026-08-05 | 完成上游错误处理与统一设置入口 | `215b00c6`, `88673001`, `d884f830`, `636fdd04`, `6c515332`, `aee00a24`, `a9dc6d14`, `37170bfe`, `8ed45bcd`, `402edac2` | `FingerCaster/upstream-error-handling` |

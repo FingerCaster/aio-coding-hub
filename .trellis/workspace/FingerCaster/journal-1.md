@@ -1009,3 +1009,40 @@ Intercept early Codex capacity SSE failures before client commit, preserve inter
 ### Status
 
 [OK] **Completed**
+
+
+## Session 29: 自定义余额查询与路由恢复集成
+
+**Date**: 2026-08-08
+**Task**: 自定义余额查询与路由恢复集成
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/account-usage-routing-build`
+
+### Summary
+
+融合自定义 JavaScript 账户用量查询，并在 Gateway 路由前实施余额门控、跳过、恢复与会话级自然回切。
+
+### Main Changes
+
+- 新增可验证的自定义 JavaScript 查询配置、运行时缓存与导入、分享可移植性。
+- 新增独立余额门控，覆盖未开启余额查询、已跳过供应商、余额不足、恢复 epoch 和会话基线回切。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `708d2965` | (see git log) |
+| `ef8892be` | (see git log) |
+
+### Testing
+
+- [OK] 前端单测 303 个文件、2746 个用例通过；Rust 完整套件 2648 个库测试及全部集成测试通过。
+- [OK] ESLint、TypeScript、生成绑定、错误码、Clippy 严格模式、Rust/Prettier 格式和生产构建检查通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 从隔离 worktree 构建并校验 Windows x64 MSI。
