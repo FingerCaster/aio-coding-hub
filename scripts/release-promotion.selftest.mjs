@@ -1,13 +1,6 @@
 import assert from "node:assert/strict";
 import { spawnSync } from "node:child_process";
-import {
-  mkdirSync,
-  mkdtempSync,
-  readFileSync,
-  readdirSync,
-  rmSync,
-  writeFileSync,
-} from "node:fs";
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -15,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   RELEASE_CANDIDATE_MANIFEST,
   EXPECTED_RELEASE_ASSET_NAMES,
+  assertReleasePublicationTarget,
   assertReleasePromotionTarget,
   createReleaseCandidateManifest,
   parseReleaseCandidateManifest,
@@ -34,6 +28,28 @@ const releaseTag = "aio-coding-hub-v0.60.40";
 const runId = 123456;
 const runAttempt = 2;
 const root = mkdtempSync(join(tmpdir(), "aio-release-promotion-"));
+
+assert.equal(EXPECTED_RELEASE_ASSET_NAMES.length, 14, "the current release must keep 14 assets");
+assert.deepEqual(
+  [...EXPECTED_RELEASE_ASSET_NAMES].sort(),
+  [
+    "aio-coding-hub-linux-amd64.AppImage",
+    "aio-coding-hub-linux-amd64.AppImage.sig",
+    "aio-coding-hub-linux-amd64-wayland.AppImage",
+    "aio-coding-hub-linux-amd64.deb",
+    "aio-coding-hub-macos-arm.tar.gz",
+    "aio-coding-hub-macos-arm.tar.gz.sig",
+    "aio-coding-hub-macos-arm.zip",
+    "aio-coding-hub-macos-intel.tar.gz",
+    "aio-coding-hub-macos-intel.tar.gz.sig",
+    "aio-coding-hub-macos-intel.zip",
+    "aio-coding-hub-win64-portable.zip",
+    "aio-coding-hub-win64.msi",
+    "aio-coding-hub-win64.msi.sig",
+    "latest.json",
+  ].sort(),
+  "candidate verification must pin the current release and Homebrew asset matrix"
+);
 
 async function createFixture(name) {
   const directory = join(root, name);
@@ -84,7 +100,10 @@ async function expectStageRejected(name, mutate, expected) {
 
 try {
   const fixture = await createFixture("valid");
-  assert.deepEqual(parseReleaseCandidateManifest(JSON.stringify(fixture.manifest)), fixture.manifest);
+  assert.deepEqual(
+    parseReleaseCandidateManifest(JSON.stringify(fixture.manifest)),
+    fixture.manifest
+  );
   assert.deepEqual(
     await verifyReleaseCandidate({
       directory: fixture.directory,
@@ -196,6 +215,21 @@ try {
     /runId mismatch/
   );
   assert.equal(readdirSync(root).includes("wrong-run-argument-staged"), false);
+
+  const wrongAttemptFixture = await createFixture("wrong-attempt-argument");
+  await assert.rejects(
+    () =>
+      stageReleaseCandidate({
+        directory: wrongAttemptFixture.directory,
+        stagingDirectory: join(root, "wrong-attempt-argument-staged"),
+        tag: releaseTag,
+        sourceSha,
+        runId,
+        runAttempt: runAttempt + 1,
+      }),
+    /runAttempt mismatch/
+  );
+  assert.equal(readdirSync(root).includes("wrong-attempt-argument-staged"), false);
 
   await expectStageRejected(
     "tampered-asset",
@@ -313,6 +347,97 @@ try {
     /Release ID mismatch/
   );
 
+  const publishedAssets = fixture.manifest.assets.map((asset, index) => ({
+    id: 1000 + index,
+    name: asset.name,
+    state: "uploaded",
+    digest: `sha256:${asset.sha256}`,
+  }));
+  const uploadedAssets = publishedAssets.map(({ id, name }) => ({ id, name }));
+  const completeDraft = { ...emptyDraft, assets: publishedAssets };
+  assert.doesNotThrow(() =>
+    assertReleasePublicationTarget({
+      release: completeDraft,
+      expectedReleaseId: 77,
+      expectedTag: releaseTag,
+      candidateManifest: fixture.manifest,
+      uploadedReleaseId: 77,
+      uploadedAssets,
+    })
+  );
+  assert.throws(
+    () =>
+      assertReleasePublicationTarget({
+        release: completeDraft,
+        expectedReleaseId: 77,
+        expectedTag: releaseTag,
+        candidateManifest: fixture.manifest,
+        uploadedReleaseId: 78,
+        uploadedAssets,
+      }),
+    /Uploaded release ID mismatch/
+  );
+  assert.throws(
+    () =>
+      assertReleasePublicationTarget({
+        release: completeDraft,
+        expectedReleaseId: 77,
+        expectedTag: releaseTag,
+        candidateManifest: fixture.manifest,
+        uploadedReleaseId: 77,
+        uploadedAssets: uploadedAssets.map((asset, index) =>
+          index === 0 ? { ...asset, id: asset.id + 100 } : asset
+        ),
+      }),
+    /do not match the current upload IDs/
+  );
+  assert.throws(
+    () =>
+      assertReleasePublicationTarget({
+        release: completeDraft,
+        expectedReleaseId: 77,
+        expectedTag: releaseTag,
+        candidateManifest: fixture.manifest,
+        uploadedAssets: uploadedAssets.slice(1),
+      }),
+    /Uploaded release assets does not match the current release asset matrix/
+  );
+  assert.throws(
+    () =>
+      assertReleasePublicationTarget({
+        release: {
+          ...completeDraft,
+          assets: publishedAssets.map((asset, index) =>
+            index === 0 ? { ...asset, digest: `sha256:${"0".repeat(64)}` } : asset
+          ),
+        },
+        expectedReleaseId: 77,
+        expectedTag: releaseTag,
+        candidateManifest: fixture.manifest,
+      }),
+    /asset digest mismatch/
+  );
+  assert.throws(
+    () =>
+      assertReleasePublicationTarget({
+        release: { ...completeDraft, assets: publishedAssets.slice(1) },
+        expectedReleaseId: 77,
+        expectedTag: releaseTag,
+        candidateManifest: fixture.manifest,
+      }),
+    /GitHub Release assets does not match the current release asset matrix/
+  );
+  assert.throws(
+    () =>
+      assertReleasePublicationTarget({
+        release: { ...completeDraft, draft: false },
+        expectedReleaseId: 77,
+        expectedTag: releaseTag,
+        candidateManifest: fixture.manifest,
+      }),
+    /must be a non-prerelease draft/
+  );
+
   assert.equal(
     releaseConcurrencyGroup({ releaseTag: "", refName: releaseTag }),
     releaseConcurrencyGroup({ releaseTag, refName: "main" }),
@@ -359,12 +484,16 @@ requireWorkflowText(
   "exact platform artifact download"
 );
 requireWorkflowText(
-  "node \"$RUNNER_TEMP/release-promotion.mjs\" create-manifest \\",
+  'node "$RUNNER_TEMP/release-promotion.mjs" create-manifest \\',
   "candidate manifest generation"
 );
 requireWorkflowText(
   "name: release-candidate-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}",
   "immutable candidate artifact identity"
+);
+requireWorkflowText(
+  "candidate_artifact_name: ${{ format('release-candidate-{0}-{1}-{2}', needs.release-please.outputs.checkout_ref, github.run_id, github.run_attempt) }}",
+  "candidate-producing attempt output"
 );
 requireWorkflowText("promote-release:", "release promotion job");
 requireWorkflowText(
@@ -372,7 +501,7 @@ requireWorkflowText(
   "successful candidate conclusion gate"
 );
 requireWorkflowText(
-  "node \"$RUNNER_TEMP/release-promotion.mjs\" verify-and-stage \\",
+  'node "$RUNNER_TEMP/release-promotion.mjs" verify-and-stage \\',
   "candidate verification before promotion"
 );
 requireWorkflowText(
@@ -386,9 +515,46 @@ requireWorkflowText(
 requireWorkflowText("assertReleasePromotionTarget({", "empty draft preflight");
 requireWorkflowText("files: promotion-assets/*", "single staged publication set");
 requireWorkflowText("overwrite_files: false", "release asset no-overwrite policy");
+requireWorkflowText("draft: true", "candidate uploads must leave the release as a draft");
 requireWorkflowText(
-  "needs: [release-please, promote-release]",
+  "UPLOADED_RELEASE_ID: ${{ steps.upload_assets.outputs.id }}",
+  "exact upload target verification"
+);
+requireWorkflowText(
+  "UPLOADED_ASSETS: ${{ steps.upload_assets.outputs.assets }}",
+  "exact current-attempt upload result verification"
+);
+requireWorkflowText("assertReleasePublicationTarget({", "publication asset digest verification");
+requireWorkflowText(
+  "name: Download exact publication candidate",
+  "publication must reload the exact run-attempt candidate"
+);
+assert.equal(
+  releaseWorkflow.match(
+    /name: \$\{\{ needs\.assemble-release-candidate\.outputs\.candidate_artifact_name \}\}/g
+  )?.length,
+  2,
+  "promotion and publication must download the candidate-producing attempt artifact"
+);
+assert.equal(
+  releaseWorkflow.match(
+    /RUN_ATTEMPT: \$\{\{ needs\.assemble-release-candidate\.outputs\.candidate_run_attempt \}\}/g
+  )?.length,
+  2,
+  "promotion and publication must verify the candidate-producing attempt"
+);
+requireWorkflowText(
+  "name: Reverify release tag before publication",
+  "publication-time exact tag verification"
+);
+requireWorkflowText(
+  "needs: [release-please, assemble-release-candidate, promote-release]",
   "publication must wait for verified promotion"
+);
+assert.equal(
+  releaseWorkflow.includes("Number('${{ needs.release-please.outputs.release_id }}')"),
+  false,
+  "release IDs must enter scripts through the environment, not inline expressions"
 );
 assert.equal(
   /^\s+releaseId:/m.test(releaseWorkflow),
@@ -412,9 +578,19 @@ assert.equal(
 );
 
 const guardStageIndex = releaseWorkflow.indexOf("Stage release promotion guard");
-const immutablePromotionCheckoutIndex = releaseWorkflow.indexOf("Checkout immutable release source");
+const immutablePromotionCheckoutIndex = releaseWorkflow.indexOf(
+  "Checkout immutable release source"
+);
+const candidateGuardCheckoutIndex = releaseWorkflow.indexOf("Checkout candidate manifest helper");
+const latestJsonIndex = releaseWorkflow.indexOf("Generate latest.json");
+const candidateGuardStageIndex = releaseWorkflow.indexOf("Stage release candidate manifest helper");
+const candidateManifestIndex = releaseWorkflow.indexOf(
+  "Create immutable release candidate manifest"
+);
 const preflightIndex = releaseWorkflow.indexOf("Verify empty draft release target");
 const uploadIndex = releaseWorkflow.indexOf("Upload verified candidate assets");
+const uploadVerificationIndex = releaseWorkflow.indexOf("Verify uploaded draft assets");
+const publicationVerificationIndex = releaseWorkflow.indexOf("Verify and publish GitHub Release");
 assert.ok(
   guardStageIndex !== -1 &&
     immutablePromotionCheckoutIndex !== -1 &&
@@ -422,8 +598,32 @@ assert.ok(
   "promotion guard must be staged before the release-source checkout"
 );
 assert.ok(
+  candidateGuardCheckoutIndex !== -1 &&
+    candidateGuardStageIndex > candidateGuardCheckoutIndex &&
+    latestJsonIndex > candidateGuardStageIndex &&
+    candidateManifestIndex > latestJsonIndex,
+  "candidate assembly must use helpers staged from the workflow guard"
+);
+requireWorkflowText(
+  'run: cp workflow-guard/scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"',
+  "candidate manifest helper provenance"
+);
+requireWorkflowText(
+  "node workflow-guard/scripts/support-matrix.mjs generate-latest-json \\",
+  "candidate support-matrix helper provenance"
+);
+assert.equal(
+  releaseWorkflow.includes("Checkout immutable candidate source"),
+  false,
+  "candidate assembly must not execute helpers from the release source checkout"
+);
+assert.ok(
   preflightIndex !== -1 && uploadIndex !== -1 && preflightIndex < uploadIndex,
   "release target preflight must finish before the only upload step"
+);
+assert.ok(
+  uploadIndex < uploadVerificationIndex && uploadVerificationIndex < publicationVerificationIndex,
+  "the exact upload result must be verified before final publication"
 );
 
 console.log("[release-promotion:selftest] all assertions passed");

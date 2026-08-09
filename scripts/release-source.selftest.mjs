@@ -11,8 +11,7 @@ const releaseWorkflowPath = fileURLToPath(
 const releaseWorkflow = readFileSync(releaseWorkflowPath, "utf8").replace(/\r\n/g, "\n");
 const resolveStepIndex = releaseWorkflow.indexOf("name: Resolve release checkout ref");
 const tagFetchCommand = 'git fetch --force --no-tags origin "refs/tags/$tag"';
-const sourceResolveCommand =
-  'fetched_tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"';
+const sourceResolveCommand = 'fetched_tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"';
 const tagFetchIndex = releaseWorkflow.indexOf(tagFetchCommand, resolveStepIndex);
 const sourceResolveIndex = releaseWorkflow.indexOf(sourceResolveCommand, resolveStepIndex);
 const laterFetchIndex = releaseWorkflow.indexOf("git fetch --no-tags --depth=1", tagFetchIndex + 1);
@@ -26,7 +25,7 @@ assert.ok(
   "release workflow must peel FETCH_HEAD before another fetch can replace it"
 );
 assert.equal(
-  releaseWorkflow.includes('refs/tags/$tag:refs/tags/$tag'),
+  releaseWorkflow.includes("refs/tags/$tag:refs/tags/$tag"),
   false,
   "release workflow must not replace checkout-created local tag refs"
 );
@@ -35,7 +34,7 @@ assert.ok(
   "release workflow must pass the resolved immutable SHA to downstream jobs"
 );
 assert.ok(
-  releaseWorkflow.includes("[[ \"$checkout_ref\" =~ ^[0-9a-f]{40}$ ]]"),
+  releaseWorkflow.includes('[[ "$checkout_ref" =~ ^[0-9a-f]{40}$ ]]'),
   "release workflow must reject a non-SHA checkout ref"
 );
 assert.ok(
@@ -44,6 +43,32 @@ assert.ok(
   ),
   "release workflow must reject non-canonical release tags before mutation"
 );
+
+function workflowJobBlock(jobName) {
+  const lines = releaseWorkflow.split("\n");
+  const start = lines.findIndex((line) => line === `  ${jobName}:`);
+  assert.notEqual(start, -1, `release workflow must contain ${jobName}`);
+  let end = start + 1;
+  while (end < lines.length && !/^  [A-Za-z0-9_-]+:\s*$/.test(lines[end])) end += 1;
+  return lines.slice(start, end).join("\n");
+}
+
+function assertImmediateFetchHeadPeel(jobName) {
+  const job = workflowJobBlock(jobName);
+  const fetch = 'git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG"';
+  const peel = 'tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"';
+  const fetchIndex = job.indexOf(fetch);
+  const peelIndex = job.indexOf(peel, fetchIndex + 1);
+  const nextFetchIndex = job.indexOf("git fetch", fetchIndex + fetch.length);
+  assert.notEqual(fetchIndex, -1, `${jobName} must fetch the exact remote release tag`);
+  assert.ok(
+    peelIndex > fetchIndex && (nextFetchIndex === -1 || peelIndex < nextFetchIndex),
+    `${jobName} must peel FETCH_HEAD before another fetch can replace it`
+  );
+}
+
+assertImmediateFetchHeadPeel("promote-release");
+assertImmediateFetchHeadPeel("publish");
 
 function runGit(cwd, args, { allowFailure = false } = {}) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });

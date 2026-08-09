@@ -94,6 +94,7 @@ export function validateReleaseSigningSecretScope({ release }) {
   const build = executableLines(steps[buildIndex] ?? "");
   const cleanup = executableLines(steps[cleanupIndex] ?? "");
   const candidate = executableLines(buildJob);
+  const workflow = executableLines(release);
 
   const jobSigningEnvironment = jobLevelSigningEnvironment(buildJob);
   if (jobSigningEnvironment.length > 0) {
@@ -167,13 +168,13 @@ export function validateReleaseSigningSecretScope({ release }) {
     failures
   );
   if (
-    candidate.filter((line) => line.includes(privateKeySecret)).length !== 1 ||
+    workflow.filter((line) => line.includes(privateKeySecret)).length !== 1 ||
     validate.filter((line) => line.includes(privateKeySecret)).length !== 1
   ) {
     failures.push("private key secret must be referenced only by the validation step");
   }
   if (
-    candidate.filter((line) => line.includes(passwordSecret)).length !== 2 ||
+    workflow.filter((line) => line.includes(passwordSecret)).length !== 2 ||
     validate.filter((line) => line.includes(passwordSecret)).length !== 1 ||
     build.filter((line) => line.includes(passwordSecret)).length !== 1
   ) {

@@ -143,7 +143,7 @@ expectRejected(
   "cleanup only echoed",
   workflow.replace(
     'run: rm -f "$RUNNER_TEMP/tauri-updater.key"',
-    'run: echo \'rm -f "$RUNNER_TEMP/tauri-updater.key"\''
+    "run: echo 'rm -f \"$RUNNER_TEMP/tauri-updater.key\"'"
   ),
   /cleanup must execute rm/
 );
@@ -154,6 +154,28 @@ expectRejected(
     "      - name: Prepare stable updater assets\n        env:\n          TAURI_SIGNING_PRIVATE_KEY: still-visible\n        run:"
   ),
   /steps after signing key cleanup must not reference/
+);
+expectRejected(
+  "private key secret in another job",
+  workflow.replace(
+    "  publish:\n",
+    `  publish:
+    env:
+      LEAKED_PRIVATE_KEY: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+`
+  ),
+  /private key secret must be referenced only by the validation step/
+);
+expectRejected(
+  "signing password secret in another job",
+  workflow.replace(
+    "  publish:\n",
+    `  publish:
+    env:
+      LEAKED_SIGNING_PASSWORD: \${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
+`
+  ),
+  /signing password secret must be referenced only by validation and signed build/
 );
 expectRejected(
   "release contract disconnected",

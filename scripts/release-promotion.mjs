@@ -32,8 +32,7 @@ export const EXPECTED_RELEASE_ASSET_NAMES = Object.freeze([
   "latest.json",
 ]);
 const MANIFEST_VERSION = 1;
-const RELEASE_TAG_PATTERN =
-  /^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
+const RELEASE_TAG_PATTERN = /^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
 const SHA_PATTERN = /^[0-9a-f]{40}$/;
 const SHA256_PATTERN = /^[0-9a-f]{64}$/;
 const WINDOWS_RESERVED_SEGMENT = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
@@ -191,19 +190,7 @@ export async function createReleaseCandidateManifest({
   return { version: MANIFEST_VERSION, ...identity, assets };
 }
 
-export function parseReleaseCandidateManifest(manifestText) {
-  if (typeof manifestText !== "string") {
-    throw new Error("Release candidate manifest must be text");
-  }
-
-  let parsed;
-  try {
-    parsed = JSON.parse(manifestText);
-  } catch (error) {
-    throw new Error(
-      `Release candidate manifest is invalid JSON: ${error instanceof Error ? error.message : error}`
-    );
-  }
+function normalizeReleaseCandidateManifest(parsed) {
   const manifest = requirePlainObject(parsed, "Release candidate manifest");
   requireExactKeys(
     manifest,
@@ -235,19 +222,33 @@ export function parseReleaseCandidateManifest(manifestText) {
     });
   }
   const sortedAssets = [...assets].sort((left, right) => compareNames(left.name, right.name));
-  if (!sameArray(assets.map((asset) => asset.name), sortedAssets.map((asset) => asset.name))) {
+  if (
+    !sameArray(
+      assets.map((asset) => asset.name),
+      sortedAssets.map((asset) => asset.name)
+    )
+  ) {
     throw new Error("Release candidate manifest assets must be sorted by name");
   }
   return { version: MANIFEST_VERSION, ...identity, assets };
 }
 
-export async function verifyReleaseCandidate({
-  directory,
-  tag,
-  sourceSha,
-  runId,
-  runAttempt,
-}) {
+export function parseReleaseCandidateManifest(manifestText) {
+  if (typeof manifestText !== "string") {
+    throw new Error("Release candidate manifest must be text");
+  }
+
+  try {
+    return normalizeReleaseCandidateManifest(JSON.parse(manifestText));
+  } catch (error) {
+    if (error instanceof SyntaxError) {
+      throw new Error(`Release candidate manifest is invalid JSON: ${error.message}`);
+    }
+    throw error;
+  }
+}
+
+export async function verifyReleaseCandidate({ directory, tag, sourceSha, runId, runAttempt }) {
   const expected = normalizeIdentity({ tag, sourceSha, runId, runAttempt });
   const manifestPath = join(directory, RELEASE_CANDIDATE_MANIFEST);
   const manifest = parseReleaseCandidateManifest(readFileSync(manifestPath, "utf8"));
@@ -300,17 +301,14 @@ export async function stageReleaseCandidate({ stagingDirectory, ...candidate }) 
   return manifest;
 }
 
-export function assertReleasePromotionTarget({
-  release,
-  expectedReleaseId,
-  expectedTag,
-  candidateAssetNames,
-}) {
+function requireReleaseTarget({ release, expectedReleaseId, expectedTag }) {
   const target = requirePlainObject(release, "GitHub Release");
   requirePositiveInteger(expectedReleaseId, "Expected release ID");
   requireReleaseTag(expectedTag, "Expected release tag");
   if (target.id !== expectedReleaseId) {
-    throw new Error(`GitHub Release ID mismatch: expected ${expectedReleaseId}, received ${target.id}`);
+    throw new Error(
+      `GitHub Release ID mismatch: expected ${expectedReleaseId}, received ${target.id}`
+    );
   }
   if (target.tag_name !== expectedTag) {
     throw new Error(
@@ -320,6 +318,10 @@ export function assertReleasePromotionTarget({
   if (target.draft !== true || target.prerelease !== false) {
     throw new Error("Release promotion target must be a non-prerelease draft");
   }
+  return target;
+}
+
+function normalizeCandidateAssetNames(candidateAssetNames) {
   if (!Array.isArray(candidateAssetNames) || candidateAssetNames.length === 0) {
     throw new Error("Candidate release asset names are required");
   }
@@ -334,10 +336,19 @@ export function assertReleasePromotionTarget({
     candidateNames.add(foldedName);
     candidateNameList.push(normalized);
   }
-  requireCurrentAssetMatrix(
-    candidateNameList.sort(compareNames),
-    "Candidate release assets"
-  );
+  candidateNameList.sort(compareNames);
+  requireCurrentAssetMatrix(candidateNameList, "Candidate release assets");
+  return candidateNameList;
+}
+
+export function assertReleasePromotionTarget({
+  release,
+  expectedReleaseId,
+  expectedTag,
+  candidateAssetNames,
+}) {
+  const target = requireReleaseTarget({ release, expectedReleaseId, expectedTag });
+  normalizeCandidateAssetNames(candidateAssetNames);
   if (!Array.isArray(target.assets)) {
     throw new Error("GitHub Release assets must be an array");
   }
@@ -346,6 +357,129 @@ export function assertReleasePromotionTarget({
     throw new Error(
       `GitHub Release already contains assets; refusing overwrite: ${existingNames.join(", ")}`
     );
+  }
+}
+
+function normalizeUploadedAssets(uploadedAssets) {
+  if (!Array.isArray(uploadedAssets)) {
+    throw new Error("Uploaded release assets must be an array");
+  }
+  const ids = new Set();
+  const assets = [];
+  const foldedNames = new Set();
+  for (const [index, value] of uploadedAssets.entries()) {
+    const asset = requirePlainObject(value, `Uploaded release asset ${index}`);
+    const id = requirePositiveInteger(asset.id, `Uploaded release asset ${index} ID`);
+    const name = requireAssetName(asset.name, `Uploaded release asset ${index} name`);
+    const foldedName = name.toLowerCase();
+    if (ids.has(id) || foldedNames.has(foldedName)) {
+      throw new Error("Uploaded release assets contain duplicate IDs or names");
+    }
+    ids.add(id);
+    foldedNames.add(foldedName);
+    assets.push({ id, name });
+  }
+  assets.sort((left, right) => compareNames(left.name, right.name));
+  requireCurrentAssetMatrix(
+    assets.map((asset) => asset.name),
+    "Uploaded release assets"
+  );
+  return assets;
+}
+
+function normalizePublishedAssets(releaseAssets) {
+  if (!Array.isArray(releaseAssets)) {
+    throw new Error("GitHub Release assets must be an array");
+  }
+  const assets = [];
+  const ids = new Set();
+  const foldedNames = new Set();
+  for (const [index, value] of releaseAssets.entries()) {
+    const asset = requirePlainObject(value, `GitHub Release asset ${index}`);
+    const id = requirePositiveInteger(asset.id, `GitHub Release asset ${index} ID`);
+    const name = requireAssetName(asset.name, `GitHub Release asset ${index} name`);
+    const foldedName = name.toLowerCase();
+    if (ids.has(id) || foldedNames.has(foldedName)) {
+      throw new Error("GitHub Release assets contain duplicate IDs or names");
+    }
+    if (asset.state !== "uploaded") {
+      throw new Error(`GitHub Release asset is not uploaded: ${name}`);
+    }
+    const digest = typeof asset.digest === "string" ? asset.digest : "";
+    if (!digest.startsWith("sha256:")) {
+      throw new Error(`GitHub Release asset is missing a SHA-256 digest: ${name}`);
+    }
+    ids.add(id);
+    foldedNames.add(foldedName);
+    assets.push({
+      id,
+      name,
+      sha256: requireSha256(digest.slice("sha256:".length), `GitHub Release asset ${name}`),
+    });
+  }
+  assets.sort((left, right) => compareNames(left.name, right.name));
+  requireCurrentAssetMatrix(
+    assets.map((asset) => asset.name),
+    "GitHub Release assets"
+  );
+  return assets;
+}
+
+export function assertReleasePublicationTarget({
+  release,
+  expectedReleaseId,
+  expectedTag,
+  candidateManifest,
+  uploadedReleaseId,
+  uploadedAssets,
+}) {
+  const target = requireReleaseTarget({ release, expectedReleaseId, expectedTag });
+  const manifest = normalizeReleaseCandidateManifest(candidateManifest);
+  const candidateNames = normalizeCandidateAssetNames(manifest.assets.map((asset) => asset.name));
+  if (uploadedReleaseId !== undefined) {
+    const normalizedUploadedReleaseId = requirePositiveInteger(
+      uploadedReleaseId,
+      "Uploaded release ID"
+    );
+    if (normalizedUploadedReleaseId !== expectedReleaseId) {
+      throw new Error(
+        `Uploaded release ID mismatch: expected ${expectedReleaseId}, received ${normalizedUploadedReleaseId}`
+      );
+    }
+  }
+
+  let normalizedUploadedAssets;
+  if (uploadedAssets !== undefined) {
+    normalizedUploadedAssets = normalizeUploadedAssets(uploadedAssets);
+    if (
+      !sameArray(
+        normalizedUploadedAssets.map((asset) => asset.name),
+        candidateNames
+      )
+    ) {
+      throw new Error("Uploaded release asset set does not match the candidate manifest");
+    }
+  }
+
+  const publishedAssets = normalizePublishedAssets(target.assets);
+  if (
+    !sameArray(
+      publishedAssets.map((asset) => asset.name),
+      candidateNames
+    )
+  ) {
+    throw new Error("GitHub Release asset set does not match the candidate manifest");
+  }
+  if (
+    normalizedUploadedAssets !== undefined &&
+    normalizedUploadedAssets.some((asset, index) => asset.id !== publishedAssets[index].id)
+  ) {
+    throw new Error("GitHub Release assets do not match the current upload IDs");
+  }
+  for (let index = 0; index < manifest.assets.length; index += 1) {
+    if (publishedAssets[index].sha256 !== manifest.assets[index].sha256) {
+      throw new Error(`GitHub Release asset digest mismatch: ${manifest.assets[index].name}`);
+    }
   }
 }
 

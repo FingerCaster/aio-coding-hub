@@ -606,7 +606,7 @@ function checkWorkflowContracts() {
   );
   assertWorkflowContains(
     releaseWorkflow,
-    "node scripts/support-matrix.mjs generate-latest-json \\",
+    "node workflow-guard/scripts/support-matrix.mjs generate-latest-json \\",
     "latest.json generation delegation"
   );
   assertWorkflowContains(
