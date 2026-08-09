@@ -12,8 +12,9 @@ use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::error::Error as StdError;
 use std::net::{IpAddr, SocketAddr, ToSocketAddrs};
-use std::sync::{OnceLock, RwLock};
+use std::sync::{Arc, OnceLock, RwLock};
 use std::time::{Duration, Instant};
+use tokio::sync::Semaphore;
 
 /// Global HTTP client instance.
 static GLOBAL_CLIENT: OnceLock<RwLock<Client>> = OnceLock::new();
@@ -32,6 +33,10 @@ static GATEWAY_TARGET_RESOLUTION_CACHE: OnceLock<
     RwLock<BTreeMap<String, GatewayTargetResolutionCacheEntry>>,
 > = OnceLock::new();
 
+/// DNS calls can outlive their caller-side timeout on platforms backed by
+/// blocking `getaddrinfo`. Keep those detached calls independently bounded.
+static GATEWAY_TARGET_RESOLUTION_LIMITER: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
 /// Default connection timeout for upstream requests.
 const UPSTREAM_CONNECT_TIMEOUT: Duration = Duration::from_secs(30);
 const PROXY_TEST_TIMEOUT: Duration = Duration::from_secs(8);
@@ -44,6 +49,7 @@ const GATEWAY_TARGET_NEGATIVE_CACHE_TTL: Duration = Duration::from_secs(5);
 const GATEWAY_TARGET_FAILURE_CACHE_TTL: Duration = Duration::from_secs(1);
 const GATEWAY_TARGET_RESOLUTION_CACHE_LIMIT: usize = 128;
 const GATEWAY_TARGET_RESOLUTION_ADDRESS_LIMIT: usize = 64;
+const GATEWAY_TARGET_RESOLUTION_CONCURRENCY_LIMIT: usize = 8;
 
 #[cfg(test)]
 static TEST_PROXY_TEST_URL_OVERRIDE: OnceLock<RwLock<Option<String>>> = OnceLock::new();
@@ -68,6 +74,20 @@ struct GatewayTargetResolutionCacheEntry {
     context: GatewaySelfCheckContext,
     checked_at: Instant,
     resolution: GatewayTargetResolution,
+    pinned_addresses: Option<Arc<Vec<SocketAddr>>>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ValidatedGatewayTarget {
+    pinned_resolution: Option<(String, Arc<Vec<SocketAddr>>)>,
+}
+
+impl ValidatedGatewayTarget {
+    pub(crate) fn into_pinned_client(self) -> Result<Option<Client>, String> {
+        self.pinned_resolution
+            .map(|(host, addresses)| build_pinned_gateway_client(&host, addresses.as_slice()))
+            .transpose()
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -636,6 +656,7 @@ pub fn apply_proxy(proxy_url: Option<&str>) -> Result<(), String> {
     } else {
         let _ = CURRENT_RAW_PROXY_URL.set(RwLock::new(effective_url.map(str::to_string)));
     }
+    clear_gateway_target_resolution_cache();
 
     tracing::info!(
         "[HttpClient] Proxy applied: {}",
@@ -739,6 +760,12 @@ fn gateway_target_resolution_cache(
     GATEWAY_TARGET_RESOLUTION_CACHE.get_or_init(|| RwLock::new(BTreeMap::new()))
 }
 
+fn gateway_target_resolution_limiter() -> Arc<Semaphore> {
+    GATEWAY_TARGET_RESOLUTION_LIMITER
+        .get_or_init(|| Arc::new(Semaphore::new(GATEWAY_TARGET_RESOLUTION_CONCURRENCY_LIMIT)))
+        .clone()
+}
+
 fn clear_gateway_target_resolution_cache() {
     if let Some(cache) = GATEWAY_TARGET_RESOLUTION_CACHE.get() {
         cache
@@ -759,13 +786,13 @@ fn gateway_target_resolution_cache_ttl(resolution: GatewayTargetResolution) -> D
 fn cached_gateway_target_resolution(
     host: &str,
     context: &GatewaySelfCheckContext,
-) -> Option<GatewayTargetResolution> {
+) -> Option<GatewayTargetResolutionCacheEntry> {
     let cache = gateway_target_resolution_cache()
         .read()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     cache.get(host).and_then(|entry| {
         let ttl = gateway_target_resolution_cache_ttl(entry.resolution);
-        (entry.context == *context && entry.checked_at.elapsed() <= ttl).then_some(entry.resolution)
+        (entry.context == *context && entry.checked_at.elapsed() <= ttl).then_some(entry.clone())
     })
 }
 
@@ -773,6 +800,7 @@ fn cache_gateway_target_resolution(
     host: String,
     context: &GatewaySelfCheckContext,
     resolution: GatewayTargetResolution,
+    pinned_addresses: Option<Arc<Vec<SocketAddr>>>,
 ) {
     let mut cache = gateway_target_resolution_cache()
         .write()
@@ -791,6 +819,7 @@ fn cache_gateway_target_resolution(
             context: context.clone(),
             checked_at: Instant::now(),
             resolution,
+            pinned_addresses,
         },
     );
 }
@@ -871,6 +900,7 @@ fn extend_self_hosts(targets: &mut BTreeSet<String>, host: &str, local_hosts: &L
     };
 
     if matches!(normalized.as_str(), "0.0.0.0" | "::") {
+        targets.insert(normalized);
         targets.extend(local_hosts.all.iter().cloned());
         return;
     }
@@ -915,7 +945,13 @@ fn normalize_host_token(host: &str) -> Option<String> {
     }
 
     if let Ok(ip) = trimmed.parse::<IpAddr>() {
-        return Some(ip.to_string());
+        return Some(match ip {
+            IpAddr::V6(ipv6) => ipv6
+                .to_ipv4_mapped()
+                .map(|ipv4| ipv4.to_string())
+                .unwrap_or_else(|| ipv6.to_string()),
+            IpAddr::V4(ipv4) => ipv4.to_string(),
+        });
     }
 
     Some(trimmed.to_ascii_lowercase())
@@ -923,18 +959,33 @@ fn normalize_host_token(host: &str) -> Option<String> {
 
 /// Build HTTP client with optional proxy.
 fn build_client(proxy_url: Option<&str>) -> Result<Client, String> {
-    let builder = Client::builder()
+    configure_proxy(gateway_client_builder(), proxy_url)?
+        .build()
+        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+}
+
+fn gateway_client_builder() -> ClientBuilder {
+    Client::builder()
         .user_agent(format!(
             "aio-coding-hub-gateway/{}",
             env!("CARGO_PKG_VERSION")
         ))
         .connect_timeout(UPSTREAM_CONNECT_TIMEOUT)
         .pool_max_idle_per_host(10)
-        .tcp_keepalive(Duration::from_secs(60));
+        .tcp_keepalive(Duration::from_secs(60))
+}
 
-    configure_proxy(builder, proxy_url)?
-        .build()
-        .map_err(|e| format!("Failed to build HTTP client: {e}"))
+fn build_pinned_gateway_client(host: &str, addrs: &[SocketAddr]) -> Result<Client, String> {
+    let proxy_url = CURRENT_RAW_PROXY_URL
+        .get()
+        .and_then(|lock| lock.read().ok())
+        .and_then(|url| url.clone());
+    configure_proxy(
+        gateway_client_builder().resolve_to_addrs(host, addrs),
+        proxy_url.as_deref(),
+    )?
+    .build()
+    .map_err(|e| format!("Failed to build HTTP client: {e}"))
 }
 
 fn configure_proxy(
@@ -979,16 +1030,15 @@ fn system_proxy_points_to_gateway() -> bool {
         .any(|value| proxy_points_to_gateway_with_context(&value, &context))
 }
 
-pub(crate) async fn validate_gateway_target(url: &Url) -> Result<(), GatewayTargetValidationError> {
+pub(crate) async fn validate_gateway_target(
+    url: &Url,
+) -> Result<ValidatedGatewayTarget, GatewayTargetValidationError> {
     let context = current_self_context();
     if url_points_to_gateway_with_context(url, &context) {
         return Err(GatewayTargetValidationError::SelfLoop);
     }
 
-    match url_resolves_to_gateway_with_context(url, &context).await? {
-        true => Err(GatewayTargetValidationError::SelfLoop),
-        false => Ok(()),
-    }
+    validate_gateway_target_resolution(url, &context).await
 }
 
 fn url_points_to_gateway_with_context(url: &Url, context: &GatewaySelfCheckContext) -> bool {
@@ -1002,12 +1052,12 @@ fn url_points_to_gateway_with_context(url: &Url, context: &GatewaySelfCheckConte
     url.port_or_known_default() == Some(context.gateway_port) && context.hosts.contains(&normalized)
 }
 
-async fn url_resolves_to_gateway_with_context(
+async fn validate_gateway_target_resolution(
     url: &Url,
     context: &GatewaySelfCheckContext,
-) -> Result<bool, GatewayTargetValidationError> {
+) -> Result<ValidatedGatewayTarget, GatewayTargetValidationError> {
     if url.port_or_known_default() != Some(context.gateway_port) {
-        return Ok(false);
+        return Ok(ValidatedGatewayTarget::default());
     }
 
     let host = url
@@ -1015,55 +1065,120 @@ async fn url_resolves_to_gateway_with_context(
         .and_then(normalize_host_token)
         .ok_or(GatewayTargetValidationError::ResolutionFailed)?;
     if host.parse::<IpAddr>().is_ok() {
-        return Ok(false);
+        return Ok(ValidatedGatewayTarget::default());
     }
     if let Some(cached) = cached_gateway_target_resolution(&host, context) {
-        return match cached {
-            GatewayTargetResolution::Gateway => Ok(true),
-            GatewayTargetResolution::Remote => Ok(false),
+        return match cached.resolution {
+            GatewayTargetResolution::Gateway => Err(GatewayTargetValidationError::SelfLoop),
+            GatewayTargetResolution::Remote => cached
+                .pinned_addresses
+                .map(|addresses| ValidatedGatewayTarget {
+                    pinned_resolution: Some((host, addresses)),
+                })
+                .ok_or(GatewayTargetValidationError::ResolutionFailed),
             GatewayTargetResolution::Failed => Err(GatewayTargetValidationError::ResolutionFailed),
         };
     }
 
-    let resolution = match tokio::time::timeout(
+    let addresses = match bounded_gateway_target_lookup(&host).await {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            cache_gateway_target_resolution(host, context, GatewayTargetResolution::Failed, None);
+            return Err(error);
+        }
+    };
+    let addresses = match validate_gateway_target_addresses(addresses, context) {
+        Ok(addresses) => addresses,
+        Err(error) => {
+            let resolution = match error {
+                GatewayTargetValidationError::SelfLoop => GatewayTargetResolution::Gateway,
+                GatewayTargetValidationError::ResolutionFailed => GatewayTargetResolution::Failed,
+            };
+            cache_gateway_target_resolution(host, context, resolution, None);
+            return Err(error);
+        }
+    };
+    let addresses = Arc::new(addresses);
+    cache_gateway_target_resolution(
+        host.clone(),
+        context,
+        GatewayTargetResolution::Remote,
+        Some(addresses.clone()),
+    );
+
+    Ok(ValidatedGatewayTarget {
+        pinned_resolution: Some((host, addresses)),
+    })
+}
+
+fn validate_gateway_target_addresses(
+    addresses: Vec<SocketAddr>,
+    context: &GatewaySelfCheckContext,
+) -> Result<Vec<SocketAddr>, GatewayTargetValidationError> {
+    if addresses.is_empty() || addresses.len() > GATEWAY_TARGET_RESOLUTION_ADDRESS_LIMIT {
+        return Err(GatewayTargetValidationError::ResolutionFailed);
+    }
+
+    let mut unique_addresses = Vec::with_capacity(addresses.len());
+    for address in addresses {
+        if normalize_host_token(&address.ip().to_string())
+            .is_some_and(|resolved| context.hosts.contains(&resolved))
+        {
+            return Err(GatewayTargetValidationError::SelfLoop);
+        }
+        if !unique_addresses.contains(&address) {
+            unique_addresses.push(address);
+        }
+    }
+
+    Ok(unique_addresses)
+}
+
+async fn bounded_gateway_target_lookup(
+    host: &str,
+) -> Result<Vec<SocketAddr>, GatewayTargetValidationError> {
+    let host = host.to_string();
+    bounded_gateway_target_lookup_with(
+        gateway_target_resolution_limiter(),
         GATEWAY_TARGET_RESOLUTION_TIMEOUT,
-        tokio::net::lookup_host((host.as_str(), 0u16)),
+        move || {
+            (host.as_str(), 0u16).to_socket_addrs().map(|addresses| {
+                addresses
+                    .take(GATEWAY_TARGET_RESOLUTION_ADDRESS_LIMIT + 1)
+                    .collect()
+            })
+        },
     )
     .await
-    {
-        Ok(Ok(addrs)) => {
-            let mut saw_address = false;
-            let mut resolves_to_gateway = false;
-            for (index, addr) in addrs.enumerate() {
-                if index >= GATEWAY_TARGET_RESOLUTION_ADDRESS_LIMIT {
-                    resolves_to_gateway = false;
-                    saw_address = false;
-                    break;
-                }
-                saw_address = true;
-                if normalize_host_token(&addr.ip().to_string())
-                    .is_some_and(|resolved| context.hosts.contains(&resolved))
-                {
-                    resolves_to_gateway = true;
-                    break;
-                }
-            }
-            if !saw_address {
-                GatewayTargetResolution::Failed
-            } else if resolves_to_gateway {
-                GatewayTargetResolution::Gateway
-            } else {
-                GatewayTargetResolution::Remote
-            }
-        }
-        Ok(Err(_)) | Err(_) => GatewayTargetResolution::Failed,
-    };
-    cache_gateway_target_resolution(host, context, resolution);
+}
 
-    match resolution {
-        GatewayTargetResolution::Gateway => Ok(true),
-        GatewayTargetResolution::Remote => Ok(false),
-        GatewayTargetResolution::Failed => Err(GatewayTargetValidationError::ResolutionFailed),
+async fn bounded_gateway_target_lookup_with<T, F>(
+    limiter: Arc<Semaphore>,
+    timeout: Duration,
+    lookup: F,
+) -> Result<T, GatewayTargetValidationError>
+where
+    T: Send + 'static,
+    F: FnOnce() -> std::io::Result<T> + Send + 'static,
+{
+    let deadline = Instant::now() + timeout;
+    let permit = tokio::time::timeout(timeout, limiter.acquire_owned())
+        .await
+        .map_err(|_| GatewayTargetValidationError::ResolutionFailed)?
+        .map_err(|_| GatewayTargetValidationError::ResolutionFailed)?;
+    let remaining = deadline.saturating_duration_since(Instant::now());
+    if remaining.is_zero() {
+        return Err(GatewayTargetValidationError::ResolutionFailed);
+    }
+
+    let task = tokio::task::spawn_blocking(move || {
+        let _permit = permit;
+        lookup()
+    });
+
+    match tokio::time::timeout(remaining, task).await {
+        Ok(Ok(Ok(result))) => Ok(result),
+        Ok(Ok(Err(_))) | Ok(Err(_)) | Err(_) => Err(GatewayTargetValidationError::ResolutionFailed),
     }
 }
 
@@ -1100,6 +1215,7 @@ mod tests {
     use super::*;
     use std::io::{Read, Write};
     use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, TcpListener};
+    use std::sync::atomic::{AtomicBool, Ordering};
     use std::sync::{mpsc, MutexGuard};
     use std::thread;
 
@@ -1317,6 +1433,26 @@ mod tests {
         let ipv6 = Url::parse("http://[::1]:37123/v1").expect("IPv6 URL");
         assert!(url_points_to_gateway_with_context(&ipv6, &ipv6_context));
 
+        let mapped_ipv6 =
+            Url::parse("http://[::ffff:127.0.0.1]:37123/v1").expect("mapped IPv6 URL");
+        assert!(url_points_to_gateway_with_context(
+            &mapped_ipv6,
+            &loopback_context
+        ));
+
+        let wildcard_v4_context = build_self_check_context(37123, &["0.0.0.0".to_string()]);
+        let wildcard_v6_context = build_self_check_context(37123, &["::".to_string()]);
+        let wildcard_v4 = Url::parse("http://0.0.0.0:37123/v1").expect("IPv4 wildcard URL");
+        let wildcard_v6 = Url::parse("http://[::]:37123/v1").expect("IPv6 wildcard URL");
+        assert!(url_points_to_gateway_with_context(
+            &wildcard_v4,
+            &wildcard_v4_context
+        ));
+        assert!(url_points_to_gateway_with_context(
+            &wildcard_v6,
+            &wildcard_v6_context
+        ));
+
         let lan = Url::parse("http://192.168.1.10:37123/v1").expect("LAN URL");
         assert!(url_points_to_gateway_with_context(&lan, &lan_context));
 
@@ -1364,18 +1500,153 @@ mod tests {
                 Url::parse("http://localhost:37124/v1").expect("different-port alias URL");
 
             assert_eq!(
-                url_resolves_to_gateway_with_context(&alias, &context).await,
-                Ok(true)
+                validate_gateway_target_resolution(&alias, &context)
+                    .await
+                    .expect_err("local alias should be rejected"),
+                GatewayTargetValidationError::SelfLoop
             );
             assert_eq!(
-                cached_gateway_target_resolution("localhost", &context),
+                cached_gateway_target_resolution("localhost", &context)
+                    .map(|entry| entry.resolution),
                 Some(GatewayTargetResolution::Gateway)
             );
-            assert_eq!(
-                url_resolves_to_gateway_with_context(&different_port, &context).await,
-                Ok(false)
+            assert!(
+                validate_gateway_target_resolution(&different_port, &context)
+                    .await
+                    .expect("different port should remain valid")
+                    .into_pinned_client()
+                    .expect("different-port target should not need a scoped client")
+                    .is_none()
             );
         });
+    }
+
+    #[test]
+    fn test_gateway_target_address_validation_rejects_any_local_or_ambiguous_answer() {
+        let context = GatewaySelfCheckContext {
+            gateway_port: 37123,
+            hosts: BTreeSet::from(["127.0.0.1".to_string(), "::1".to_string()]),
+        };
+        let remote = SocketAddr::new(IpAddr::V4(Ipv4Addr::new(192, 0, 2, 20)), 0);
+        let local = SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0);
+        let mapped_local = SocketAddr::new(
+            IpAddr::V6("::ffff:127.0.0.1".parse().expect("mapped IPv6")),
+            0,
+        );
+
+        assert_eq!(
+            validate_gateway_target_addresses(vec![remote, local], &context),
+            Err(GatewayTargetValidationError::SelfLoop)
+        );
+        assert_eq!(
+            validate_gateway_target_addresses(vec![mapped_local], &context),
+            Err(GatewayTargetValidationError::SelfLoop)
+        );
+        assert_eq!(
+            validate_gateway_target_addresses(Vec::new(), &context),
+            Err(GatewayTargetValidationError::ResolutionFailed)
+        );
+        assert_eq!(
+            validate_gateway_target_addresses(
+                vec![remote; GATEWAY_TARGET_RESOLUTION_ADDRESS_LIMIT + 1],
+                &context,
+            ),
+            Err(GatewayTargetValidationError::ResolutionFailed)
+        );
+        assert_eq!(
+            validate_gateway_target_addresses(vec![remote, remote], &context),
+            Ok(vec![remote])
+        );
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn test_gateway_target_lookup_timeout_holds_its_concurrency_permit() {
+        let limiter = Arc::new(Semaphore::new(1));
+        let (started_tx, started_rx) = mpsc::channel();
+        let (release_tx, release_rx) = mpsc::channel();
+
+        let first = bounded_gateway_target_lookup_with(
+            limiter.clone(),
+            Duration::from_millis(100),
+            move || {
+                started_tx.send(()).expect("signal resolver start");
+                release_rx.recv().expect("release resolver");
+                Ok::<_, std::io::Error>(())
+            },
+        )
+        .await;
+        assert_eq!(first, Err(GatewayTargetValidationError::ResolutionFailed));
+        started_rx
+            .recv_timeout(Duration::from_secs(1))
+            .expect("resolver should have started");
+
+        let second_ran = Arc::new(AtomicBool::new(false));
+        let second_ran_in_lookup = second_ran.clone();
+        let second = bounded_gateway_target_lookup_with(
+            limiter.clone(),
+            Duration::from_millis(50),
+            move || {
+                second_ran_in_lookup.store(true, Ordering::SeqCst);
+                Ok::<_, std::io::Error>(())
+            },
+        )
+        .await;
+        assert_eq!(second, Err(GatewayTargetValidationError::ResolutionFailed));
+        assert!(!second_ran.load(Ordering::SeqCst));
+
+        release_tx.send(()).expect("release timed-out resolver");
+        bounded_gateway_target_lookup_with(limiter, Duration::from_secs(1), || {
+            Ok::<_, std::io::Error>(())
+        })
+        .await
+        .expect("permit should be released when detached resolver finishes");
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn test_pinned_gateway_client_uses_validated_addresses_for_transport() {
+        let (origin_url, request_rx) = spawn_http_origin_server();
+        let origin = Url::parse(&origin_url).expect("origin URL");
+        let origin_port = origin.port().expect("origin port");
+
+        let _guard = crate::test_support::test_env_lock();
+        for key in [
+            "HTTP_PROXY",
+            "http_proxy",
+            "HTTPS_PROXY",
+            "https_proxy",
+            "ALL_PROXY",
+            "all_proxy",
+        ] {
+            std::env::remove_var(key);
+        }
+        std::env::set_var("NO_PROXY", "*");
+        std::env::set_var("no_proxy", "*");
+        apply_proxy(None).expect("use direct proxy policy");
+        let pinned = build_pinned_gateway_client(
+            "provider-rebind.invalid",
+            &[SocketAddr::new(IpAddr::V4(Ipv4Addr::LOCALHOST), 0)],
+        )
+        .expect("build pinned client");
+        std::env::remove_var("NO_PROXY");
+        std::env::remove_var("no_proxy");
+        drop(_guard);
+
+        let response = pinned
+            .get(format!(
+                "http://provider-rebind.invalid:{origin_port}/pinned"
+            ))
+            .send()
+            .await
+            .expect("pinned request should not use system DNS");
+        assert_eq!(response.status(), StatusCode::OK);
+        let request = request_rx
+            .recv_timeout(Duration::from_secs(3))
+            .expect("pinned origin request");
+        assert!(request.starts_with("GET /pinned HTTP/1.1"));
+        assert!(
+            request.contains(&format!("Host: provider-rebind.invalid:{origin_port}"))
+                || request.contains(&format!("host: provider-rebind.invalid:{origin_port}"))
+        );
     }
 
     #[test]
@@ -1389,6 +1660,7 @@ mod tests {
                 format!("remote-{index}.example"),
                 &context,
                 GatewayTargetResolution::Remote,
+                None,
             );
         }
 

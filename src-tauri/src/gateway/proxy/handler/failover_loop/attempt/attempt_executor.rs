@@ -8,7 +8,17 @@ use super::*;
 use crate::gateway::plugins::context::{GatewayPluginHookName, GatewayRequestHookInput};
 use crate::gateway::proxy::abort_guard::RequestAbortGuard;
 use crate::gateway::proxy::request_context::RequestContext;
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
+use tokio::sync::Semaphore;
+
+const GATEWAY_PROVIDER_ENABLE_CHECK_MAX_CONCURRENT: usize = 4;
+static GATEWAY_PROVIDER_ENABLE_CHECK_LIMITER: OnceLock<Arc<Semaphore>> = OnceLock::new();
+
+fn gateway_provider_enable_check_limiter() -> Arc<Semaphore> {
+    GATEWAY_PROVIDER_ENABLE_CHECK_LIMITER
+        .get_or_init(|| Arc::new(Semaphore::new(GATEWAY_PROVIDER_ENABLE_CHECK_MAX_CONCURRENT)))
+        .clone()
+}
 
 /// Mutable per-provider state that persists across retries within one provider.
 pub(super) struct RetryLoopState {
@@ -367,27 +377,18 @@ where
             });
         }
     };
-    if let Err(error) = crate::gateway::http_client::validate_gateway_target(&url).await {
-        tracing::warn!(
-            trace_id = %input.trace_id,
-            cli_key = %input.cli_key,
-            provider_id = prepared.provider_id,
-            retry_index,
-            reason = error.message(),
-            "provider target rejected before upstream send"
-        );
-        return PreparedSendOutcome::ProviderTargetRejected(error);
-    }
-
-    let provider_ids = std::iter::once(prepared.provider_id)
-        .chain(prepared.bridge_source.as_ref().map(|(source, _)| source.id))
-        .collect::<Vec<_>>();
+    // Resolve first, but defer returning its result until after the authoritative
+    // enabled-state read so the outer Provider switch remains the master gate.
+    // The enabled-state read is therefore also the final async preparation step.
+    let target_validation = crate::gateway::http_client::validate_gateway_target(&url).await;
     let db = ctx.state.db.clone();
-    match crate::blocking::run("gateway_provider_enabled_check", move || {
-        crate::providers::first_disabled_provider_for_gateway(&db, &provider_ids)
-    })
-    .await
-    {
+    let provider_id = prepared.provider_id;
+    let provider_uuid = prepared.provider_uuid.clone();
+    let bridge_source = prepared
+        .bridge_source
+        .as_ref()
+        .map(|(source, _)| (source.id, source.provider_uuid.clone()));
+    match gateway_provider_enabled_check(db, provider_id, provider_uuid, bridge_source).await {
         Ok(Some(disabled_provider_id)) => {
             tracing::info!(
                 trace_id = %input.trace_id,
@@ -412,6 +413,36 @@ where
             return PreparedSendOutcome::ProviderEnableCheckFailed;
         }
     }
+    let validated_target = match target_validation {
+        Ok(target) => target,
+        Err(error) => {
+            tracing::warn!(
+                trace_id = %input.trace_id,
+                cli_key = %input.cli_key,
+                provider_id = prepared.provider_id,
+                retry_index,
+                reason = error.message(),
+                "provider target rejected before upstream send"
+            );
+            return PreparedSendOutcome::ProviderTargetRejected(error);
+        }
+    };
+    let pinned_client = match validated_target.into_pinned_client() {
+        Ok(client) => client,
+        Err(error) => {
+            tracing::warn!(
+                trace_id = %input.trace_id,
+                cli_key = %input.cli_key,
+                provider_id = prepared.provider_id,
+                retry_index,
+                error,
+                "failed to build DNS-pinned Provider target client"
+            );
+            return PreparedSendOutcome::ProviderTargetRejected(
+                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed,
+            );
+        }
+    };
     if let Some((route, priced_cli_key, outcome)) = configured_route_marker.as_ref() {
         crate::gateway::configured_model_route::mark_applied(
             &input.special_settings,
@@ -439,8 +470,9 @@ where
     };
 
     let dispatch_ownership = prepared.dispatch_ownership.clone();
+    let client = pinned_client.unwrap_or_else(|| ctx.state.client());
     let send_result = send::send_upstream_with_first_byte_timeout(
-        ctx,
+        client,
         input.req_method.clone(),
         url,
         headers,
@@ -480,6 +512,36 @@ where
 // ---------------------------------------------------------------------------
 // Helpers
 // ---------------------------------------------------------------------------
+
+async fn gateway_provider_enabled_check(
+    db: crate::db::Db,
+    provider_id: i64,
+    provider_uuid: String,
+    bridge_source: Option<(i64, String)>,
+) -> crate::shared::error::AppResult<Option<i64>> {
+    let permit = gateway_provider_enable_check_limiter()
+        .acquire_owned()
+        .await
+        .map_err(|_| {
+            crate::shared::error::AppError::new(
+                "TASK_JOIN",
+                "gateway_provider_enabled_check: limiter closed",
+            )
+        })?;
+
+    crate::blocking::run("gateway_provider_enabled_check", move || {
+        let _permit = permit;
+        crate::providers::first_disabled_provider_for_gateway(
+            &db,
+            provider_id,
+            &provider_uuid,
+            bridge_source
+                .as_ref()
+                .map(|(source_id, source_uuid)| (*source_id, source_uuid.as_str())),
+        )
+    })
+    .await
+}
 
 fn sync_before_send_body_output(
     prepared: &mut PreparedProvider,

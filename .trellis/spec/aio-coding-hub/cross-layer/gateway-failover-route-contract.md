@@ -136,21 +136,30 @@ FailoverAttempt {
   require both the route-member switch and `providers.enabled = 1`.
 - Candidate filtering is not sufficient for a running request. Immediately
   before every actual transport send, including same-Provider retries, perform
-  an authoritative enabled-state re-read for the selected Provider and its
-  bridge source. A send already admitted before a successful disable may
-  finish; every later send observes the disabled or missing row, records one
-  structured `provider_disabled` gate skip, advances serially, and makes no
-  upstream call. A first-attempt local rejection releases its Ready slot; a
-  Provider that already sent still consumes the existing Ready budget.
+  one authoritative enabled-state re-read for the selected Provider and its
+  bridge source. Bind that read to each row's stable Provider identity, not its
+  numeric ID alone, so a deleted-and-replaced row is also rejected. A send
+  already admitted before a successful disable may finish; every later send
+  observes the disabled, missing, or replaced row, records one structured
+  `provider_disabled` gate skip, advances serially, and makes no upstream call.
+  A first-attempt local rejection releases its Ready slot; a Provider that
+  already sent still consumes the existing Ready budget. Keep this per-send
+  SQLite read bounded independently from unrelated blocking work.
 - Validate the final Provider target URL at that same pre-send boundary. A
   target whose effective port is the Gateway port is rejected when its direct
   host token or a bounded DNS resolution matches the current Gateway listen
   context. DNS work must have a bounded address count, timeout, and short-lived
-  bounded cache; resolution failure is fail-closed. Direct and DNS-alias
+  bounded cache. Bound underlying system resolver calls independently because
+  a caller-side timeout need not cancel `getaddrinfo`, and pin an accepted DNS
+  result into the direct request transport so a second lookup cannot reopen a
+  DNS-rebinding window. Resolution failure is fail-closed. Direct and DNS-alias
   self-loops, resolution failures, and enabled-state check failures are local
   health-neutral skips: they do not record ordinary upstream/circuit failure,
-  alter account-usage state, or publish a Session binding. The Provider-specific
-  route remains available and passes through these same checks.
+  alter account-usage state, or publish a Session binding. Existing explicit
+  and system proxy policy and recursion protection remain intact. The
+  Provider-specific route remains available, never falls back from its forced
+  Provider, and passes through these same checks; this contract does not add a
+  new gateway authentication requirement.
 - For the latest effective route
   `p1 -> ... -> p(X-1) -> current pX -> ... -> pN`, ordinary failback planning
   scans the complete prefix `p1 -> ... -> p(X-1)`. The prefix length is dynamic;
@@ -600,13 +609,17 @@ FailoverAttempt {
   an explicit barrier between a configured retry's first response and second
   send: disabling the Provider after the first accepted send must prevent the
   retry, preserve its circuit health, continue to the next Provider, and bind
-  only the successful fallback. Keep bridge-source enabled filtering covered.
+  only the successful fallback. Repeat the barrier test for a bridge source and
+  assert disabling the source prevents the bridge's later send.
 - Target-validator tests must cover IPv4 and IPv6 loopback, local listen
-  addresses, a DNS alias, a different-port or remote target, and bounded cache
-  size. Route-test a self-loop followed by a healthy fallback and assert a
-  structured local skip, zero self-loop transport calls, unchanged circuit
-  state, and Session binding only to the fallback. Keep a Claude
-  Provider-specific route regression passing.
+  addresses, wildcard/bind addresses, IPv4-mapped IPv6, a DNS alias, a
+  different-port or remote target, bounded cache size, detached resolver
+  concurrency, and direct transport reuse of validated DNS addresses.
+  Route-test a self-loop followed by a healthy fallback and assert a structured
+  local skip, zero self-loop transport calls, unchanged circuit state, and
+  Session binding only to the fallback. Test that a disabled forced Provider
+  makes zero calls and does not fall back, while keeping an enabled Claude
+  Provider-specific route regression passing without introducing new auth.
 - Route-test mixed direct/probe targets. Assert direct attempts do not carry
   `selection_method="circuit_probe"` or probe metadata, each probe uses its own
   trigger/generation/lease, and the serial request never holds two executing

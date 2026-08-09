@@ -780,20 +780,36 @@ fn gateway_enabled_state_check_rejects_disabled_or_missing_provider() {
     let second = upsert(&db, default_provider_params("Second Provider")).expect("create second");
 
     assert_eq!(
-        first_disabled_provider_for_gateway(&db, &[first.id, second.id])
-            .expect("check enabled providers"),
+        first_disabled_provider_for_gateway(
+            &db,
+            first.id,
+            &first.provider_uuid,
+            Some((second.id, &second.provider_uuid)),
+        )
+        .expect("check enabled providers"),
         None
     );
 
     set_enabled(&db, second.id, false).expect("disable second provider");
     assert_eq!(
-        first_disabled_provider_for_gateway(&db, &[first.id, second.id])
-            .expect("check disabled provider"),
+        first_disabled_provider_for_gateway(
+            &db,
+            first.id,
+            &first.provider_uuid,
+            Some((second.id, &second.provider_uuid)),
+        )
+        .expect("check disabled provider"),
         Some(second.id)
     );
     assert_eq!(
-        first_disabled_provider_for_gateway(&db, &[i64::MAX]).expect("check missing provider"),
+        first_disabled_provider_for_gateway(&db, i64::MAX, "missing-provider-uuid", None)
+            .expect("check missing provider"),
         Some(i64::MAX)
+    );
+    assert_eq!(
+        first_disabled_provider_for_gateway(&db, first.id, "replaced-provider-uuid", None)
+            .expect("check replaced provider identity"),
+        Some(first.id)
     );
 }
 

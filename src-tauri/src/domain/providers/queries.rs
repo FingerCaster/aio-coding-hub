@@ -1326,31 +1326,44 @@ WHERE id = ?1 AND enabled = 1 AND source_provider_id IS NULL AND bridge_type IS 
     Ok((provider, cli_key_owned))
 }
 
-/// Return the first Provider that is missing or globally disabled.
+/// Return the first Provider that is missing, replaced, or globally disabled.
 ///
 /// Selection queries already filter disabled rows. This authoritative re-read
-/// closes the race where a Provider is disabled after selection but before a
-/// later retry reaches the transport boundary.
+/// closes the race where a Provider is disabled or its ID is reused after
+/// selection but before a later retry reaches the transport boundary. The
+/// selected Provider and its optional bridge source are checked in one query.
 pub(crate) fn first_disabled_provider_for_gateway(
     db: &db::Db,
-    provider_ids: &[i64],
+    provider_id: i64,
+    provider_uuid: &str,
+    bridge_source: Option<(i64, &str)>,
 ) -> crate::shared::error::AppResult<Option<i64>> {
     let conn = db.open_connection()?;
-    let mut statement = conn
-        .prepare_cached("SELECT enabled FROM providers WHERE id = ?1")
-        .map_err(|e| db_err!("failed to prepare provider enabled check: {e}"))?;
-
-    for &provider_id in provider_ids {
-        let enabled = statement
-            .query_row(params![provider_id], |row| row.get::<_, i64>(0))
-            .optional()
-            .map_err(|e| db_err!("failed to query provider enabled state: {e}"))?;
-        if enabled != Some(1) {
-            return Ok(Some(provider_id));
-        }
-    }
-
-    Ok(None)
+    let (source_id, source_uuid) = bridge_source
+        .map(|(id, uuid)| (Some(id), Some(uuid)))
+        .unwrap_or((None, None));
+    conn.query_row(
+        r#"
+WITH requested(slot, provider_id, provider_uuid) AS (
+  SELECT 0, ?1, ?2
+  UNION ALL
+  SELECT 1, ?3, ?4 WHERE ?3 IS NOT NULL
+)
+SELECT requested.provider_id
+FROM requested
+LEFT JOIN providers p
+  ON p.id = requested.provider_id
+ AND p.provider_uuid = requested.provider_uuid
+ AND p.enabled = 1
+WHERE p.id IS NULL
+ORDER BY requested.slot
+LIMIT 1
+"#,
+        params![provider_id, provider_uuid, source_id, source_uuid],
+        |row| row.get::<_, i64>(0),
+    )
+    .optional()
+    .map_err(|e| db_err!("failed to query Provider enabled identity: {e}"))
 }
 
 pub(crate) fn get_enabled_direct_codex_for_gateway_by_identity(

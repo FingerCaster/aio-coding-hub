@@ -13,6 +13,7 @@ use std::collections::HashSet;
 #[derive(Clone)]
 pub(super) struct PreparedProvider {
     pub(super) provider_id: i64,
+    pub(super) provider_uuid: String,
     pub(super) provider_name_base: String,
     pub(super) provider_base_url_base: String,
     pub(super) provider_base_url_display: String,
@@ -391,6 +392,7 @@ pub(super) async fn prepare_provider<R: tauri::Runtime>(
 
     PreparationOutcome::Ready(Box::new(PreparedProvider {
         provider_id,
+        provider_uuid: provider.provider_uuid.clone(),
         provider_name_base,
         provider_base_url_base,
         provider_base_url_display,

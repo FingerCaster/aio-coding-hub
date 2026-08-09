@@ -1,6 +1,5 @@
 //! Usage: Upstream request sending helpers (first-byte timeout aware).
 
-use super::context::CommonCtx;
 use axum::body::Bytes;
 use axum::http::{HeaderMap, Method};
 
@@ -11,8 +10,8 @@ pub(super) enum SendResult {
     DispatchRejected,
 }
 
-pub(super) async fn send_upstream_with_first_byte_timeout<R, F>(
-    ctx: CommonCtx<'_, R>,
+pub(super) async fn send_upstream_with_first_byte_timeout<F>(
+    client: reqwest::Client,
     method: Method,
     url: reqwest::Url,
     headers: HeaderMap,
@@ -21,7 +20,6 @@ pub(super) async fn send_upstream_with_first_byte_timeout<R, F>(
     on_first_poll: F,
 ) -> SendResult
 where
-    R: tauri::Runtime,
     F: FnOnce() -> bool,
 {
     // The async body does not execute until its future is first polled. Keep
@@ -30,7 +28,6 @@ where
     if !on_first_poll() {
         return SendResult::DispatchRejected;
     }
-    let client = ctx.state.client();
     let send = client
         .request(method, url)
         .headers(headers)

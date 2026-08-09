@@ -4298,6 +4298,197 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn bridge_source_disabled_between_retries_blocks_later_send() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 1;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
+            transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "claude", true, "http://127.0.0.1:37123")
+            .expect("enable claude cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("bridge-source-disable-during-retry.sqlite"),
+        )
+        .expect("init test db");
+        let mut source_upstream = spawn_gated_counting_status_upstream(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"message":"retry this bridged response"}}"#,
+        )
+        .await;
+        let source_provider_id = insert_provider_with_priority(
+            &db,
+            "codex",
+            "Bridge Source Disable During Retry",
+            source_upstream.base_url.clone(),
+            0,
+        );
+        let bridge_provider_id = insert_cx2cc_bridge_provider(&db, source_provider_id, 0);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db.clone(),
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::new(session_manager::SessionManager::new()),
+        ));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/claude/_aio/provider/{bridge_provider_id}/v1/messages"
+            ))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"claude-3-5-sonnet","max_tokens":128,"messages":[{"role":"user","content":"hello"}]}"#,
+            ))
+            .expect("request");
+
+        let response_task = tokio::spawn(router.oneshot(request));
+        source_upstream.wait_for_first_request().await;
+        providers::set_enabled(&db, source_provider_id, false)
+            .expect("disable bridge source after first send");
+        source_upstream.release_first_response();
+
+        let response = response_task
+            .await
+            .expect("route task")
+            .expect("route response");
+        assert!(!response.status().is_success());
+        assert_eq!(
+            source_upstream.calls(),
+            1,
+            "the disabled bridge source must not receive its configured retry"
+        );
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0]["provider_id"].as_i64(),
+            Some(bridge_provider_id)
+        );
+        assert_eq!(attempts[0]["decision"].as_str(), Some("retry"));
+        assert_eq!(
+            attempts[1]["provider_id"].as_i64(),
+            Some(bridge_provider_id)
+        );
+        assert_eq!(attempts[1]["outcome"].as_str(), Some("skipped"));
+        assert_eq!(
+            attempts[1]["reason_code"].as_str(),
+            Some("provider_disabled")
+        );
+        assert!(attempts[1]["reason"]
+            .as_str()
+            .is_some_and(|reason| reason.contains(&source_provider_id.to_string())));
+        assert_eq!(circuit.snapshot(bridge_provider_id, 0).failure_count, 0);
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn disabled_provider_specific_route_does_not_fall_back() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(
+            &db_dir
+                .path()
+                .join("disabled-provider-specific-route.sqlite"),
+        )
+        .expect("init test db");
+        let (disabled_url, disabled_calls, disabled_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"disabled-provider-should-not-send"}"#,
+        )
+        .await;
+        let (fallback_url, fallback_calls, fallback_task) = spawn_counting_status_upstream(
+            StatusCode::OK,
+            r#"{"id":"forced-route-must-not-fall-back"}"#,
+        )
+        .await;
+        let disabled_provider_id =
+            insert_codex_provider_with_priority(&db, "Disabled Forced Provider", disabled_url, 0);
+        insert_codex_provider_with_priority(&db, "Enabled But Not Forced", fallback_url, 1);
+        providers::set_enabled(&db, disabled_provider_id, false).expect("disable forced provider");
+
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(4);
+        let router = build_router(gateway_state(app_handle, db, log_tx));
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri(format!(
+                "/codex/_aio/provider/{disabled_provider_id}/v1/responses"
+            ))
+            .header(header::CONTENT_TYPE, "application/json")
+            .body(Body::from(
+                r#"{"model":"gpt-disabled-forced","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::SERVICE_UNAVAILABLE);
+        let body: Value = serde_json::from_slice(
+            &to_bytes(response.into_body(), usize::MAX)
+                .await
+                .expect("response body"),
+        )
+        .expect("response JSON");
+        assert_eq!(
+            body.get("error_code").and_then(Value::as_str),
+            Some(crate::gateway::proxy::GatewayErrorCode::NoEnabledProvider.as_str())
+        );
+        assert_eq!(disabled_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+        assert_eq!(fallback_calls.load(std::sync::atomic::Ordering::SeqCst), 0);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        assert_eq!(
+            log.error_code.as_deref(),
+            Some(crate::gateway::proxy::GatewayErrorCode::NoEnabledProvider.as_str())
+        );
+        assert!(request_log_attempts(&log).is_empty());
+
+        disabled_task.abort();
+        fallback_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn provider_self_loop_switches_without_circuit_or_session_pollution() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");
