@@ -50,6 +50,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [CI change-scope contract](./ci-change-scope-contract.md): fail-closed Git
   range and path classification, documentation tiers, conditional jobs, and
   the stable always-run CI gate.
+- [Release operations contract](./release-operations-contract.md): explicit
+  stable version selection, final-head release PR validation, immutable source
+  resolution, exact candidate promotion, and post-publication verification.
 - [Trellis task context archive contract](./trellis-task-context-archive-contract.md):
   exact self-reference rewriting and repository-wide context validation before archive commit.
 - [Usage insights contract](./usage-insights-contract.md): folder identity and
@@ -211,6 +214,17 @@ When changing CI path policy, classification, conditional jobs, or the final gat
 4. Preserve every existing full-tier check and verify selected jobs succeed
    while unselected jobs are explicitly skipped.
 
+When changing or running stable release automation:
+
+1. Read [Release operations contract](./release-operations-contract.md).
+2. Verify the manifest and historical `Release-As:` values before selecting the
+   next version; an override commit must have an empty index.
+3. Treat release PR creation and artifact publication as two separate
+   no-input dispatches, with final-head CI and six-file version review between
+   them.
+4. Resolve the tag to a 40-hex commit SHA before builds and independently
+   verify tag, Release target, asset digests, and `latest.json` after publish.
+
 When changing Trellis task archive or context validation:
 
 1. Read [Trellis task context archive contract](./trellis-task-context-archive-contract.md).
@@ -247,6 +261,10 @@ When changing usage folders, development-time estimates, or provider metrics tre
   workflow contract self-tests, all three documentation contracts, actionlint
   when available, and git diff --check; inspect the full job graph for retained
   checks.
+- When changing or executing release automation, run release source,
+  promotion, signing-scope, support-matrix, Homebrew, and CI-scope contracts;
+  verify the final PR head and all six version files, then verify the published
+  tag/source identity, exact asset matrix, digests, and signed updater entries.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
 - When changing configured model routing, verify exact case-sensitive one-pass
