@@ -1,6 +1,6 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"质量检查需要核对发布操作与跨层可靠性规范的一致性。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/ci-change-scope-contract.md","reason":"检查 release PR、工作流路径和 ci-gate 是否仍满足 fail-closed 约束。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md","reason":"检查错误状态、重试、候选制品和 Orca 清理失败是否被静默吞掉。"}
-{"file":".trellis/tasks/08-09-orca-cleanup-release/research/release-and-cleanup-state.md","reason":"按实证清单复核每个 worktree/terminal 的删除证据及 0.60.40 发布后的 SHA/资产一致性。"}
+{"file": ".trellis/tasks/archive/2026-08/08-09-orca-cleanup-release/research/release-and-cleanup-state.md", "reason": "按实证清单复核每个 worktree/terminal 的删除证据及 0.60.40 发布后的 SHA/资产一致性。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"复核 release PR 最终 head、六文件版本、不可变来源、候选资产和 latest.json 发布合同。"}
-{"file":".trellis/tasks/08-09-orca-cleanup-release/research/release-execution.md","reason":"复核发布 run、tag/source/Release 一致性、14 项资产和四平台更新签名的实际结果。"}
+{"file": ".trellis/tasks/archive/2026-08/08-09-orca-cleanup-release/research/release-execution.md", "reason": "复核发布 run、tag/source/Release 一致性、14 项资产和四平台更新签名的实际结果。"}

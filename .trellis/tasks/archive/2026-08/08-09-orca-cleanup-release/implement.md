@@ -54,8 +54,8 @@
 
 - [x] 运行 `trellis-check` 完成全范围质量检查并修复本任务产生的问题。
 - [x] 使用 `trellis-update-spec` 评估并记录本次发现的 release-as/不可变来源约束。
-- [ ] 仅归档/提交本任务记录与必要 journal/spec；不提交用户或其他活跃任务文件。
-- [ ] 复核 Orca comment、Git 状态和发布链接，运行 `task.py archive`。
+- [x] 仅归档/提交本任务记录与必要 journal/spec；不提交用户或其他活跃任务文件。
+- [x] 复核 Orca comment、Git 状态和发布链接，运行 `task.py archive`。
 
 ## 验证与回滚点
 
