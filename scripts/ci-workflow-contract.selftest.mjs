@@ -291,7 +291,7 @@ export function assertWorkflowContract(source) {
     "cargo clippy --all-targets --locked -- -D warnings",
     "cargo test --locked -- --test-threads=1",
     "cargo install cargo-audit --locked",
-    "cargo audit --ignore RUSTSEC-2026-0194 --ignore RUSTSEC-2026-0195",
+    "cargo audit",
   ]) {
     requireRunLine(rust, command, "rust command");
   }
