@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/archive/2026-08/08-09-provider-routing-master-switch-self-loop/research.md", "reason": "核对实现覆盖全部已确认缺口且未带入鉴权"}
+{"file": ".trellis/tasks/archive/2026-08/08-09-provider-routing-master-switch-self-loop/design.md", "reason": "检查发送边界、状态所有权与回滚契约"}
