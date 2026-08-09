@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/archive/2026-08/08-09-rust-audit-exception-removal/research.md", "reason": "检查最小 Cargo 更新与 pnpm 排除项"}
+{"file": ".trellis/tasks/archive/2026-08/08-09-rust-audit-exception-removal/design.md", "reason": "检查精确依赖更新策略"}
