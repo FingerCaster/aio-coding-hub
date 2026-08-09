@@ -34,6 +34,12 @@ pub(crate) struct RecordPluginRuntimeFailureInput {
     pub trace_id: Option<String>,
 }
 
+struct StoredPluginConfig {
+    config_version: u32,
+    config: serde_json::Value,
+    sensitive_keys: Vec<String>,
+}
+
 pub(crate) fn trusted_market_public_key_for_url(
     db: &db::Db,
     url: &str,
@@ -259,6 +265,7 @@ fn with_immediate_plugin_transaction<T>(
     }
 }
 
+#[cfg(test)]
 pub(crate) fn insert_plugin(db: &db::Db, input: InsertPluginInput) -> AppResult<PluginDetail> {
     let conn = db.open_connection()?;
     insert_plugin_with_conn(&conn, input)
@@ -555,6 +562,12 @@ pub(crate) fn save_plugin_config_with_tx_preserving_storage(
         .and_then(|object| object.get("storage"))
         .cloned();
     let mut next_config = config.clone();
+    if current_storage.is_some() && !next_config.is_object() {
+        return Err(AppError::new(
+            "PLUGIN_STORAGE_INVALID",
+            "plugin config must remain an object while runtime storage is present",
+        ));
+    }
     if let Some(next_object) = next_config.as_object_mut() {
         match current_storage {
             Some(storage) => {
@@ -582,11 +595,11 @@ pub(crate) fn save_plugin_storage_value(
 ) -> AppResult<PluginDetail> {
     with_immediate_plugin_transaction(db, |tx| {
         let current = get_plugin_with_conn(tx, plugin_id)?;
-        let config_version = current.manifest.config_version.unwrap_or(1);
-        let mut next_config = current.config;
-        if !next_config.is_object() {
-            next_config = serde_json::json!({});
-        }
+        let stored = load_plugin_config_record(tx, plugin_id)?;
+        let (config_version, mut next_config, sensitive_keys) = match stored {
+            Some(record) => (record.config_version, record.config, record.sensitive_keys),
+            None => (1, current.config, Vec::new()),
+        };
         let config_object = next_config.as_object_mut().ok_or_else(|| {
             AppError::new(
                 "PLUGIN_STORAGE_INVALID",
@@ -597,7 +610,10 @@ pub(crate) fn save_plugin_storage_value(
             .entry("storage".to_string())
             .or_insert_with(|| serde_json::json!({}));
         if !storage.is_object() {
-            *storage = serde_json::json!({});
+            return Err(AppError::new(
+                "PLUGIN_STORAGE_INVALID",
+                "plugin config storage value must be an object",
+            ));
         }
         storage
             .as_object_mut()
@@ -615,7 +631,7 @@ pub(crate) fn save_plugin_storage_value(
                 "plugin storage exceeded 64 KiB",
             ));
         }
-        save_plugin_config_with_conn(tx, plugin_id, config_version, &next_config, &[])
+        save_plugin_config_with_conn(tx, plugin_id, config_version, &next_config, &sensitive_keys)
     })
 }
 
@@ -678,6 +694,7 @@ pub(crate) fn plugin_config_version(db: &db::Db, plugin_id: &str) -> AppResult<O
     .map_err(|e| db_err!("failed to query plugin config version: {e}"))
 }
 
+#[cfg(test)]
 pub(crate) fn save_plugin_permissions(
     db: &db::Db,
     plugin_id: &str,
@@ -1018,14 +1035,32 @@ fn load_plugin_config(
     conn: &rusqlite::Connection,
     plugin_id: &str,
 ) -> AppResult<Option<serde_json::Value>> {
+    load_plugin_config_record(conn, plugin_id).map(|record| record.map(|record| record.config))
+}
+
+fn load_plugin_config_record(
+    conn: &rusqlite::Connection,
+    plugin_id: &str,
+) -> AppResult<Option<StoredPluginConfig>> {
     conn.query_row(
-        "SELECT config_json FROM plugin_configs WHERE plugin_id = ?1",
+        r#"
+SELECT config_version, config_json, sensitive_keys_json
+FROM plugin_configs
+WHERE plugin_id = ?1
+"#,
         params![plugin_id],
-        |row| row.get::<_, String>(0),
+        |row| {
+            let config_json = row.get::<_, String>(1)?;
+            let sensitive_keys_json = row.get::<_, String>(2)?;
+            Ok(StoredPluginConfig {
+                config_version: row.get(0)?,
+                config: parse_json_value(&config_json),
+                sensitive_keys: parse_string_array(&sensitive_keys_json),
+            })
+        },
     )
     .optional()
     .map_err(|e| db_err!("failed to query plugin config: {e}"))
-    .map(|raw| raw.map(|value| parse_json_value(&value)))
 }
 
 fn load_plugin_permissions(
@@ -1349,6 +1384,106 @@ mod tests {
         assert_eq!(
             get_plugin(&db, "config.user-first").unwrap().config,
             serde_json::json!({"mode": "balanced", "storage": {"cursor": "new"}})
+        );
+    }
+
+    #[test]
+    fn runtime_storage_save_preserves_config_metadata() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        install_config_test_plugin(&db, "config.metadata");
+        let sensitive_keys = vec!["apiToken".to_string()];
+        save_plugin_config(
+            &db,
+            "config.metadata",
+            7,
+            &serde_json::json!({"mode": "strict"}),
+            &sensitive_keys,
+        )
+        .unwrap();
+
+        save_plugin_storage_value(&db, "config.metadata", "cursor", serde_json::json!("next"))
+            .unwrap();
+
+        let conn = db.open_connection().unwrap();
+        let (config_version, sensitive_keys_json): (u32, String) = conn
+            .query_row(
+                r#"
+SELECT config_version, sensitive_keys_json
+FROM plugin_configs
+WHERE plugin_id = ?1
+"#,
+                params!["config.metadata"],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(config_version, 7);
+        assert_eq!(
+            serde_json::from_str::<Vec<String>>(&sensitive_keys_json).unwrap(),
+            sensitive_keys
+        );
+    }
+
+    #[test]
+    fn runtime_storage_save_rejects_non_object_config_without_data_loss() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        install_config_test_plugin(&db, "config.scalar");
+        save_plugin_config(
+            &db,
+            "config.scalar",
+            3,
+            &serde_json::json!("preserved"),
+            &[],
+        )
+        .unwrap();
+
+        let err =
+            save_plugin_storage_value(&db, "config.scalar", "cursor", serde_json::json!("next"))
+                .unwrap_err();
+
+        assert_eq!(err.code(), "PLUGIN_STORAGE_INVALID");
+        assert_eq!(
+            get_plugin(&db, "config.scalar").unwrap().config,
+            serde_json::json!("preserved")
+        );
+        assert_eq!(
+            plugin_config_version(&db, "config.scalar").unwrap(),
+            Some(3)
+        );
+    }
+
+    #[test]
+    fn user_config_save_rejects_removing_existing_runtime_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        install_config_test_plugin(&db, "config.storage-root");
+        save_plugin_config(
+            &db,
+            "config.storage-root",
+            1,
+            &serde_json::json!({"storage": {"cursor": "kept"}}),
+            &[],
+        )
+        .unwrap();
+
+        let err = save_plugin_config_preserving_storage(
+            &db,
+            "config.storage-root",
+            2,
+            &serde_json::json!("replacement"),
+            &[],
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), "PLUGIN_STORAGE_INVALID");
+        assert_eq!(
+            get_plugin(&db, "config.storage-root").unwrap().config,
+            serde_json::json!({"storage": {"cursor": "kept"}})
+        );
+        assert_eq!(
+            plugin_config_version(&db, "config.storage-root").unwrap(),
+            Some(1)
         );
     }
 

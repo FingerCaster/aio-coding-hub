@@ -229,10 +229,11 @@ export function usePluginInstallFromFileMutation() {
     mutationFn: (input: { filePath: string; expectedChecksum: string }) =>
       pluginInstallFromFile(input.filePath, input.expectedChecksum),
     onSuccess: (next) => {
-      if (!next) return;
-      setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);
+      if (next) {
+        setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);
+        queryClient.invalidateQueries({ queryKey: pluginKeys.detail(next.summary.plugin_id) });
+      }
       queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
-      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(next.summary.plugin_id) });
       queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });
@@ -311,11 +312,14 @@ export function usePluginInstallRemoteMutation() {
 
   return useMutation({
     mutationFn: (input: Parameters<typeof pluginInstallRemote>[0]) => pluginInstallRemote(input),
-    onSuccess: (next) => {
-      if (!next) return;
-      setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);
+    onSuccess: (next, input) => {
+      const normalizedPluginId = normalizePluginId(input.pluginId);
+      const detailPluginId = next?.summary.plugin_id ?? normalizedPluginId;
+      if (next) {
+        setPluginDetailAndSummary(queryClient, detailPluginId, next);
+      }
       queryClient.invalidateQueries({ queryKey: pluginKeys.list() });
-      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(next.summary.plugin_id) });
+      queryClient.invalidateQueries({ queryKey: pluginKeys.detail(detailPluginId) });
       queryClient.invalidateQueries({ queryKey: pluginContributionKeys.active() });
     },
   });

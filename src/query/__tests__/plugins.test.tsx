@@ -640,19 +640,34 @@ describe("query/plugins", () => {
         filePath: "/tmp/missing.aio-plugin",
         expectedChecksum: "sha256-missing",
       });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginKeys.list() });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginContributionKeys.active() });
+
+    invalidateSpy.mockClear();
+    await act(async () => {
       await installRemoteResult.current.mutateAsync({
         pluginId: "community.prompt-helper",
         downloadUrl: "https://github.com/acme/plugin/releases/download/v3/plugin.aio-plugin",
         checksum: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       });
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginKeys.list() });
+    expect(invalidateSpy).toHaveBeenCalledWith({
+      queryKey: pluginKeys.detail("community.prompt-helper"),
+    });
+    expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginContributionKeys.active() });
+
+    invalidateSpy.mockClear();
+    await act(async () => {
       await updateFromFileResult.current.mutateAsync({
         filePath: "/tmp/no-update.aio-plugin",
         expectedChecksum: "sha256-no-update",
       });
     });
-
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginKeys.list() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginContributionKeys.active() });
+
     expect(client.getQueryData(pluginKeys.detail("community.prompt-helper"))).toBeUndefined();
   });
 

@@ -419,6 +419,12 @@ pub(crate) fn install_official_plugin(
         plugin_id,
         official_resource_root,
     )?;
+    validate_manifest_for_source(
+        &fixture.manifest,
+        PluginInstallSource::Official,
+        host_version,
+    )?;
+    validate_reserved_builtin_source(&fixture.manifest, PluginInstallSource::Official)?;
     let _mutation_guard = plugin_package_mutation_guard();
     ensure_plugin_version_is_new(db, plugin_id, &fixture.manifest.version)?;
     let installed_dir = crate::app::plugins::official_assets::materialize_official_plugin(
@@ -427,32 +433,49 @@ pub(crate) fn install_official_plugin(
         installed_root,
         &fixture.manifest.version,
     )?;
-    install_plugin_manifest(
-        db,
-        fixture.manifest.clone(),
-        PluginInstallSource::Official,
-        Some(installed_dir.to_string_lossy().to_string()),
-        host_version,
-    )?;
-    repository::save_plugin_config_preserving_storage(
-        db,
-        plugin_id,
-        fixture.manifest.config_version.unwrap_or(1),
-        &fixture.default_config,
-        &[],
-    )?;
-    let detail = repository::save_plugin_permissions(db, plugin_id, &[], &[])?;
-    append_audit(
-        db,
-        Some(plugin_id.to_string()),
-        "plugin.official.installed",
-        "low",
-        "Official plugin installed",
-        serde_json::json!({ "source": "official" }),
-    )?;
-    Ok(detail)
+    let installed_dir_value = installed_dir.to_string_lossy().to_string();
+    let result = repository::with_plugin_transaction(db, |tx| {
+        repository::insert_plugin_with_tx(
+            tx,
+            repository::InsertPluginInput {
+                manifest: fixture.manifest.clone(),
+                install_source: PluginInstallSource::Official,
+                status: PluginStatus::Disabled,
+                installed_dir: Some(installed_dir_value.clone()),
+            },
+        )?;
+        repository::save_plugin_config_with_tx_preserving_storage(
+            tx,
+            plugin_id,
+            fixture.manifest.config_version.unwrap_or(1),
+            &fixture.default_config,
+            &[],
+        )?;
+        append_audit_with_tx(
+            tx,
+            Some(plugin_id.to_string()),
+            "plugin.installed",
+            "low",
+            "Plugin installed",
+            serde_json::json!({ "source": "official" }),
+        )?;
+        append_audit_with_tx(
+            tx,
+            Some(plugin_id.to_string()),
+            "plugin.official.installed",
+            "low",
+            "Official plugin installed",
+            serde_json::json!({ "source": "official" }),
+        )?;
+        repository::save_plugin_permissions_with_tx(tx, plugin_id, &[], &[])
+    });
+    if result.is_err() {
+        let _ = std::fs::remove_dir_all(&installed_dir);
+    }
+    result
 }
 
+#[cfg(test)]
 pub(crate) fn install_plugin_manifest(
     db: &crate::db::Db,
     manifest: PluginManifest,
@@ -463,29 +486,30 @@ pub(crate) fn install_plugin_manifest(
     validate_manifest_for_source(&manifest, install_source, host_version)?;
     validate_reserved_builtin_source(&manifest, install_source)?;
     let plugin_id = manifest.id.clone();
-    let detail = repository::insert_plugin(
-        db,
-        repository::InsertPluginInput {
-            manifest,
-            install_source,
-            status: PluginStatus::Disabled,
-            installed_dir,
-        },
-    )?;
-    let detail = if install_source == PluginInstallSource::Official {
-        detail
-    } else {
-        repository::save_plugin_permissions(db, &plugin_id, &[], &[])?
-    };
-    append_audit(
-        db,
-        Some(plugin_id.clone()),
-        "plugin.installed",
-        "low",
-        "Plugin installed",
-        serde_json::json!({ "source": install_source.as_str() }),
-    )?;
-    Ok(detail)
+    repository::with_plugin_transaction(db, |tx| {
+        let detail = repository::insert_plugin_with_tx(
+            tx,
+            repository::InsertPluginInput {
+                manifest,
+                install_source,
+                status: PluginStatus::Disabled,
+                installed_dir,
+            },
+        )?;
+        append_audit_with_tx(
+            tx,
+            Some(plugin_id.clone()),
+            "plugin.installed",
+            "low",
+            "Plugin installed",
+            serde_json::json!({ "source": install_source.as_str() }),
+        )?;
+        if install_source == PluginInstallSource::Official {
+            Ok(detail)
+        } else {
+            repository::save_plugin_permissions_with_tx(tx, &plugin_id, &[], &[])
+        }
+    })
 }
 
 #[cfg(test)]
@@ -3399,6 +3423,65 @@ mod tests {
 
         let uninstalled = uninstall_plugin(&db, "official.privacy-filter").unwrap();
         assert_eq!(uninstalled.summary.status, PluginStatus::Uninstalled);
+    }
+
+    #[test]
+    fn official_plugin_install_rolls_back_database_and_files_on_config_failure() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("official-rollback.db")).unwrap();
+        let installed_root = dir.path().join("installed");
+        let official_root = crate::app::plugins::official::official_resource_root_for_tests();
+        let fixture = crate::app::plugins::official::official_plugin_from_root(
+            "official.privacy-filter",
+            &official_root,
+        )
+        .unwrap();
+        db.open_connection()
+            .unwrap()
+            .execute_batch(
+                r#"
+CREATE TRIGGER fail_official_config
+BEFORE INSERT ON plugin_configs
+WHEN NEW.plugin_id = 'official.privacy-filter'
+BEGIN
+  SELECT RAISE(FAIL, 'forced config failure');
+END;
+"#,
+            )
+            .unwrap();
+
+        let error = install_official_plugin(
+            &db,
+            "official.privacy-filter",
+            &official_root,
+            env!("CARGO_PKG_VERSION"),
+            &installed_root,
+        )
+        .unwrap_err();
+
+        assert_eq!(error.code(), "DB_ERROR");
+        assert!(repository::get_plugin(&db, "official.privacy-filter").is_err());
+        assert!(!installed_root
+            .join("official.privacy-filter")
+            .join(&fixture.manifest.version)
+            .exists());
+        let conn = db.open_connection().unwrap();
+        for table in [
+            "plugins",
+            "plugin_versions",
+            "plugin_configs",
+            "plugin_permissions",
+            "plugin_audit_logs",
+        ] {
+            let count: i64 = conn
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE plugin_id = ?1"),
+                    rusqlite::params!["official.privacy-filter"],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} rows should roll back");
+        }
     }
 
     #[test]

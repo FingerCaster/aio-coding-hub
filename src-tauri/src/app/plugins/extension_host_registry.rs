@@ -213,6 +213,14 @@ impl ManagedExtensionHostInstance {
         self.process.lock().await.abort();
     }
 
+    fn try_abort(&self) -> bool {
+        let Ok(mut process) = self.process.try_lock() else {
+            return false;
+        };
+        process.abort();
+        true
+    }
+
     async fn recycle_if_idle(&self) -> AppResult<bool> {
         self.process.lock().await.recycle_if_idle().await
     }
@@ -372,7 +380,9 @@ impl ExtensionHostInstanceRegistry {
         call_timeout: Duration,
         now: Instant,
     ) -> Result<GatewayHookResult, GatewayPluginError> {
-        let deadline = tokio::time::Instant::now() + call_timeout;
+        let deadline = tokio::time::Instant::now()
+            .checked_add(call_timeout)
+            .ok_or_else(gateway_hook_timeout_error)?;
         let context_value = serde_json::to_value(&context).map_err(|err| {
             GatewayPluginError::new(
                 "PLUGIN_EXTENSION_HOST_INVALID_CONTEXT",
@@ -529,16 +539,47 @@ impl ExtensionHostInstanceRegistry {
             let instances = self.instances.lock().await;
             instances
                 .iter()
-                .map(|(key, instance)| (key.plugin_id.clone(), instance.clone()))
+                .map(|(key, instance)| (key.clone(), instance.clone()))
                 .collect::<Vec<_>>()
         };
-        for (plugin_id, instance) in instances {
-            if let Err(error) = instance.recycle_if_idle().await {
-                tracing::warn!(
-                    plugin_id,
-                    error = %error,
-                    "failed to recycle idle extension host child"
-                );
+        for (key, instance) in instances {
+            let plugin_lock = { self.plugin_locks.lock().await.get(&key.plugin_id).cloned() };
+            let Some(plugin_lock) = plugin_lock else {
+                continue;
+            };
+            let plugin_guard = plugin_lock.lock().await;
+            let is_current = self
+                .instances
+                .lock()
+                .await
+                .get(&key)
+                .is_some_and(|current| Arc::ptr_eq(current, &instance));
+            if !is_current {
+                continue;
+            }
+            let mut removed = false;
+            match instance.recycle_if_idle().await {
+                Ok(true) => {
+                    if let Some(instance) =
+                        self.take_warm_instance_if_current(&key, &instance).await
+                    {
+                        instance.dispose().await;
+                        removed = true;
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => {
+                    tracing::warn!(
+                        plugin_id = key.plugin_id,
+                        error = %error,
+                        "failed to recycle idle extension host child"
+                    );
+                }
+            }
+            drop(plugin_guard);
+            if removed {
+                self.remove_plugin_lock_if_unused(&key.plugin_id, &plugin_lock)
+                    .await;
             }
         }
     }
@@ -550,6 +591,7 @@ impl ExtensionHostInstanceRegistry {
             remove_idle_locked(&mut instances, self.limits.idle_recycle, now)
         };
         dispose_instances(disposals).await;
+        self.prune_orphaned_plugin_locks().await;
     }
 
     pub(crate) async fn dispose_all(&self) {
@@ -599,6 +641,11 @@ impl ExtensionHostInstanceRegistry {
             .keys()
             .filter(|key| key.plugin_id == plugin_id)
             .count()
+    }
+
+    #[cfg(test)]
+    async fn plugin_lock_count(&self) -> usize {
+        self.plugin_locks.lock().await.len()
     }
 
     async fn execute_warm_instance(
@@ -689,7 +736,7 @@ impl ExtensionHostInstanceRegistry {
         instance: &Arc<ManagedExtensionHostInstance>,
     ) {
         if let Some(instance) = self.take_warm_instance_if_current(key, instance).await {
-            schedule_abort_instance(instance);
+            abort_instance(instance);
         }
     }
 
@@ -730,6 +777,19 @@ impl ExtensionHostInstanceRegistry {
         if should_remove {
             plugin_locks.remove(plugin_id);
         }
+    }
+
+    async fn prune_orphaned_plugin_locks(&self) {
+        let active_plugin_ids = self
+            .instances
+            .lock()
+            .await
+            .keys()
+            .map(|key| key.plugin_id.clone())
+            .collect::<HashSet<_>>();
+        self.plugin_locks.lock().await.retain(|plugin_id, lock| {
+            active_plugin_ids.contains(plugin_id) || Arc::strong_count(lock) > 1
+        });
     }
 }
 
@@ -950,7 +1010,7 @@ async fn dispose_instances_before_gateway_deadline(
         .is_err()
     {
         for instance in aborts {
-            schedule_abort_instance(instance);
+            abort_instance(instance);
         }
         return Err(gateway_hook_timeout_error());
     }
@@ -971,7 +1031,10 @@ async fn dispose_process_before_gateway_deadline(
     Ok(())
 }
 
-fn schedule_abort_instance(instance: Arc<ManagedExtensionHostInstance>) {
+fn abort_instance(instance: Arc<ManagedExtensionHostInstance>) {
+    if instance.try_abort() {
+        return;
+    }
     tauri::async_runtime::spawn(async move {
         instance.abort().await;
     });
@@ -1265,6 +1328,7 @@ mod tests {
         start_timeouts: Vec<Duration>,
         executions: Vec<u64>,
         recycle_checks: Vec<u64>,
+        recycle_on_check: bool,
         disposals: Vec<u64>,
         aborts: Vec<u64>,
     }
@@ -1346,6 +1410,10 @@ mod tests {
             self.state.lock().unwrap().recycle_checks.len()
         }
 
+        fn recycle_on_check(&self) {
+            self.state.lock().unwrap().recycle_on_check = true;
+        }
+
         fn start_timeouts(&self) -> Vec<Duration> {
             self.state.lock().unwrap().start_timeouts.clone()
         }
@@ -1422,8 +1490,15 @@ mod tests {
 
         fn recycle_if_idle<'a>(&'a mut self) -> BoxFuture<'a, AppResult<bool>> {
             Box::pin(async move {
-                self.state.lock().unwrap().recycle_checks.push(self.id);
-                Ok(false)
+                let recycle = {
+                    let mut state = self.state.lock().unwrap();
+                    state.recycle_checks.push(self.id);
+                    state.recycle_on_check
+                };
+                if recycle {
+                    self.running = false;
+                }
+                Ok(recycle)
             })
         }
 
@@ -1816,6 +1891,32 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn gateway_hook_rejects_unrepresentable_deadline_without_starting_process() {
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        );
+
+        let error = registry
+            .execute_gateway_hook_with_now(
+                plugin_detail("acme.gateway", "overflow"),
+                GatewayPluginHookName::RequestAfterBodyRead.as_str(),
+                gateway_context("trace-overflow-deadline"),
+                Duration::MAX,
+                Instant::now(),
+            )
+            .await
+            .expect_err("unrepresentable invocation deadline should be rejected");
+
+        assert_eq!(error.code(), "PLUGIN_EXTENSION_HOST_TIMEOUT");
+        assert_eq!(factory.start_count(), 0);
+    }
+
+    #[tokio::test]
     async fn gateway_hook_deadline_includes_same_plugin_queue_wait() {
         let factory = Arc::new(BlockingExtensionHostFactory::default());
         let registry = Arc::new(ExtensionHostInstanceRegistry::new_for_tests(
@@ -1900,7 +2001,7 @@ mod tests {
 
         assert_eq!(error.code(), "PLUGIN_EXTENSION_HOST_TIMEOUT");
         assert_eq!(registry.instance_count().await, 0);
-        factory.wait_for_abort_count(1).await;
+        assert_eq!(factory.abort_count(), 1);
 
         registry
             .execute_gateway_hook_with_now(
@@ -2232,9 +2333,95 @@ mod tests {
             )
             .await
             .expect("first command");
+        assert_eq!(registry.plugin_lock_count().await, 1);
         registry.dispose_idle(now + Duration::from_secs(11)).await;
 
         assert_eq!(factory.disposed_instance_ids(), vec![1]);
+        assert_eq!(registry.instance_count().await, 0);
+        assert_eq!(registry.plugin_lock_count().await, 0);
+    }
+
+    #[tokio::test]
+    async fn active_recycler_removes_child_that_reports_it_was_recycled() {
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        );
+
+        registry
+            .execute_command_with_now(
+                plugin_detail("acme.echo", "recycled-child"),
+                "acme.echo",
+                json!({}),
+                Instant::now(),
+            )
+            .await
+            .expect("first command");
+        factory.recycle_on_check();
+        registry.recycle_idle_processes().await;
+
+        assert_eq!(factory.recycle_check_count(), 1);
+        assert_eq!(factory.dispose_count(), 1);
+        assert_eq!(registry.instance_count().await, 0);
+        registry
+            .execute_command_with_now(
+                plugin_detail("acme.echo", "recycled-child"),
+                "acme.echo",
+                json!({}),
+                Instant::now(),
+            )
+            .await
+            .expect("recycled child should be replaced by a cold instance");
+        assert_eq!(factory.start_count(), 2);
+    }
+
+    #[tokio::test]
+    async fn active_recycler_waits_for_same_plugin_operation_lock() {
+        let factory = Arc::new(FakeExtensionHostFactory::default());
+        let registry = Arc::new(ExtensionHostInstanceRegistry::new_for_tests(
+            factory.clone(),
+            ExtensionHostRegistryLimits {
+                max_warm_instances: 8,
+                idle_recycle: Duration::from_secs(120),
+            },
+        ));
+        let plugin_id = "acme.recycler-lock";
+        registry
+            .execute_command_with_now(
+                plugin_detail(plugin_id, "recycler-lock"),
+                plugin_id,
+                json!({}),
+                Instant::now(),
+            )
+            .await
+            .expect("warm command");
+        factory.recycle_on_check();
+        let plugin_lock = registry.plugin_lock_for(plugin_id).await;
+        let plugin_guard = plugin_lock.lock().await;
+        let sweep_registry = registry.clone();
+        let mut sweep = tokio::spawn(async move {
+            sweep_registry.recycle_idle_processes().await;
+        });
+
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut sweep)
+                .await
+                .is_err(),
+            "active recycler must wait for the same-plugin operation"
+        );
+        assert_eq!(factory.recycle_check_count(), 0);
+
+        drop(plugin_guard);
+        drop(plugin_lock);
+        tokio::time::timeout(Duration::from_secs(1), sweep)
+            .await
+            .expect("recycler should finish after the operation lock is released")
+            .expect("recycler task");
+        assert_eq!(factory.recycle_check_count(), 1);
         assert_eq!(registry.instance_count().await, 0);
     }
 

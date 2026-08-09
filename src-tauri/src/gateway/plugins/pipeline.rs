@@ -19,7 +19,7 @@ use axum::http::{HeaderMap, HeaderName, HeaderValue};
 use std::collections::HashMap;
 use std::future::Future;
 use std::pin::Pin;
-use std::sync::{Arc, Mutex, RwLock};
+use std::sync::{Arc, Mutex, RwLock, Weak};
 use std::time::{Duration, Instant};
 
 pub(crate) type GatewayHookFuture =
@@ -213,11 +213,17 @@ struct GatewayPluginSnapshot {
     by_hook: HashMap<GatewayPluginHookName, Arc<Vec<PluginDetail>>>,
 }
 
+#[derive(Default)]
+struct GatewayPluginCircuitState {
+    visible: GatewayPluginCircuitSnapshot,
+    half_open_owner: Option<Weak<GatewayPluginSnapshot>>,
+}
+
 pub(crate) struct GatewayPluginPipeline {
     plugins: RwLock<Arc<GatewayPluginSnapshot>>,
     executor: Arc<dyn GatewayPluginExecutor>,
     config: GatewayPluginPipelineConfig,
-    circuits: Mutex<HashMap<(String, GatewayPluginHookName), GatewayPluginCircuitSnapshot>>,
+    circuits: Mutex<HashMap<(String, GatewayPluginHookName), GatewayPluginCircuitState>>,
 }
 
 impl GatewayPluginPipeline {
@@ -281,7 +287,8 @@ impl GatewayPluginPipeline {
 
         let (plugin_snapshot, plugins) = self.plugins_for_hook(input.hook_name);
         for plugin in plugins.iter() {
-            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name) {
+            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name, &plugin_snapshot)
+            {
                 audit_events.push(audit_event(
                     plugin,
                     input.hook_name,
@@ -567,7 +574,8 @@ impl GatewayPluginPipeline {
 
         let (plugin_snapshot, plugins) = self.plugins_for_hook(input.hook_name);
         for plugin in plugins.iter() {
-            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name) {
+            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name, &plugin_snapshot)
+            {
                 audit_events.push(audit_event(
                     plugin,
                     input.hook_name,
@@ -825,7 +833,8 @@ impl GatewayPluginPipeline {
 
         let (plugin_snapshot, plugins) = self.plugins_for_hook(hook_name);
         for plugin in plugins.iter() {
-            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name) {
+            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name, &plugin_snapshot)
+            {
                 audit_events.push(audit_event(
                     plugin,
                     hook_name,
@@ -1049,7 +1058,8 @@ impl GatewayPluginPipeline {
 
         let (plugin_snapshot, plugins) = self.plugins_for_hook(hook_name);
         for plugin in plugins.iter() {
-            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name) {
+            if self.should_skip_for_circuit(&plugin.summary.plugin_id, hook_name, &plugin_snapshot)
+            {
                 audit_events.push(audit_event(
                     plugin,
                     hook_name,
@@ -1237,7 +1247,7 @@ impl GatewayPluginPipeline {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
             .get(&(plugin_id.to_string(), hook_name))
-            .copied()
+            .map(|state| state.visible)
             .unwrap_or_default()
     }
 
@@ -1311,16 +1321,29 @@ impl GatewayPluginPipeline {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         circuits.insert(
             (plugin_id.to_string(), hook_name),
-            GatewayPluginCircuitSnapshot {
-                failure_count: self.config.circuit_failure_threshold.max(1),
-                open: true,
-                opened_at: Some(Instant::now()),
-                half_open: false,
+            GatewayPluginCircuitState {
+                visible: GatewayPluginCircuitSnapshot {
+                    failure_count: self.config.circuit_failure_threshold.max(1),
+                    open: true,
+                    opened_at: Some(Instant::now()),
+                    half_open: false,
+                },
+                half_open_owner: None,
             },
         );
     }
 
-    fn should_skip_for_circuit(&self, plugin_id: &str, hook_name: GatewayPluginHookName) -> bool {
+    fn should_skip_for_circuit(
+        &self,
+        plugin_id: &str,
+        hook_name: GatewayPluginHookName,
+        plugin_snapshot: &Arc<GatewayPluginSnapshot>,
+    ) -> bool {
+        let current_snapshot = self
+            .plugins
+            .read()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        let is_current_snapshot = Arc::ptr_eq(&*current_snapshot, plugin_snapshot);
         let mut circuits = self
             .circuits
             .lock()
@@ -1328,14 +1351,24 @@ impl GatewayPluginPipeline {
         let Some(entry) = circuits.get_mut(&(plugin_id.to_string(), hook_name)) else {
             return false;
         };
-        if !entry.open {
+        if !entry.visible.open {
             return false;
         }
+        if !is_current_snapshot {
+            return true;
+        }
         let cooldown_elapsed = entry
+            .visible
             .opened_at
             .is_none_or(|opened_at| opened_at.elapsed() >= self.config.circuit_cooldown);
-        if cooldown_elapsed && !entry.half_open {
-            entry.half_open = true;
+        let probe_owned_by_snapshot = entry
+            .half_open_owner
+            .as_ref()
+            .and_then(Weak::upgrade)
+            .is_some_and(|owner| Arc::ptr_eq(&owner, plugin_snapshot));
+        if cooldown_elapsed && !probe_owned_by_snapshot {
+            entry.visible.half_open = true;
+            entry.half_open_owner = Some(Arc::downgrade(plugin_snapshot));
             return false;
         }
         true
@@ -1358,14 +1391,15 @@ impl GatewayPluginPipeline {
             .circuits
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        let entry = circuits
+        let state = circuits
             .entry((plugin_id.to_string(), hook_name))
             .or_default();
-        entry.failure_count = entry.failure_count.saturating_add(1);
-        if entry.failure_count >= self.config.circuit_failure_threshold.max(1) {
-            entry.open = true;
-            entry.opened_at = Some(Instant::now());
-            entry.half_open = false;
+        state.visible.failure_count = state.visible.failure_count.saturating_add(1);
+        if state.visible.failure_count >= self.config.circuit_failure_threshold.max(1) {
+            state.visible.open = true;
+            state.visible.opened_at = Some(Instant::now());
+            state.visible.half_open = false;
+            state.half_open_owner = None;
         }
     }
 
@@ -1388,7 +1422,7 @@ impl GatewayPluginPipeline {
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         circuits.insert(
             (plugin_id.to_string(), hook_name),
-            GatewayPluginCircuitSnapshot::default(),
+            GatewayPluginCircuitState::default(),
         );
     }
 
@@ -1476,7 +1510,10 @@ impl GatewayPluginPipeline {
             .circuits
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
-        match circuits.get(&(plugin_id.to_string(), hook_name)) {
+        match circuits
+            .get(&(plugin_id.to_string(), hook_name))
+            .map(|state| state.visible)
+        {
             Some(snapshot) if snapshot.open && snapshot.half_open => "halfOpen".to_string(),
             Some(snapshot) if snapshot.open => "open".to_string(),
             _ => "closed".to_string(),
@@ -2132,6 +2169,7 @@ mod tests {
     use axum::body::Bytes;
     use axum::http::{HeaderMap, Method};
     use std::collections::BTreeMap;
+    use std::sync::atomic::{AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
     use std::time::Duration;
     use tokio::sync::Notify;
@@ -3482,6 +3520,110 @@ mod tests {
             ),
             GatewayPluginCircuitSnapshot::default()
         );
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn replace_plugins_releases_half_open_probe_owned_by_old_snapshot() {
+        let started = Arc::new(Notify::new());
+        let release = Arc::new(Notify::new());
+        let calls = Arc::new(AtomicUsize::new(0));
+        let executor = InMemoryGatewayPluginExecutor::new().with_request_async_handler(
+            "plugin.half-open-refresh",
+            {
+                let started = Arc::clone(&started);
+                let release = Arc::clone(&release);
+                let calls = Arc::clone(&calls);
+                move |_ctx| {
+                    let started = Arc::clone(&started);
+                    let release = Arc::clone(&release);
+                    let call = calls.fetch_add(1, Ordering::SeqCst);
+                    async move {
+                        if call == 0 {
+                            started.notify_one();
+                            release.notified().await;
+                            GatewayHookResult::continue_unchanged()
+                        } else {
+                            GatewayHookResult {
+                                request_body: Some("recovered".to_string()),
+                                ..GatewayHookResult::continue_unchanged()
+                            }
+                        }
+                    }
+                }
+            },
+        );
+        let plugin = || {
+            plugin(
+                "plugin.half-open-refresh",
+                10,
+                vec!["request.body.read", "request.body.write"],
+            )
+        };
+        let pipeline = GatewayPluginPipeline::for_tests_shared(
+            vec![plugin()],
+            Arc::new(executor),
+            GatewayPluginPipelineConfig {
+                circuit_failure_threshold: 1,
+                circuit_cooldown: Duration::ZERO,
+                ..GatewayPluginPipelineConfig::default()
+            },
+        );
+        pipeline.force_open_circuit_for_tests(
+            "plugin.half-open-refresh",
+            GatewayPluginHookName::RequestAfterBodyRead,
+        );
+        let old_probe = {
+            let pipeline = Arc::clone(&pipeline);
+            tokio::spawn(async move { pipeline.run_request_hook(request_input()).await })
+        };
+
+        started.notified().await;
+        pipeline.replace_plugins(vec![plugin()]);
+        release.notify_one();
+        old_probe
+            .await
+            .expect("old half-open probe task")
+            .expect("old fail-open probe result");
+
+        let after_refresh = pipeline
+            .run_request_hook(request_input())
+            .await
+            .expect("replacement snapshot should receive a new half-open probe");
+        assert_eq!(after_refresh.body.as_ref(), b"recovered");
+        assert_eq!(calls.load(Ordering::SeqCst), 2);
+        assert!(
+            !pipeline
+                .circuit_snapshot(
+                    "plugin.half-open-refresh",
+                    GatewayPluginHookName::RequestAfterBodyRead,
+                )
+                .open
+        );
+    }
+
+    #[test]
+    fn replacement_snapshot_rejects_stale_probe_and_allows_one_current_probe() {
+        let plugin_id = "plugin.stale-half-open";
+        let hook_name = GatewayPluginHookName::RequestAfterBodyRead;
+        let plugin = || plugin(plugin_id, 10, vec!["request.body.read"]);
+        let pipeline = GatewayPluginPipeline::for_tests(
+            vec![plugin()],
+            Arc::new(InMemoryGatewayPluginExecutor::new()),
+            GatewayPluginPipelineConfig {
+                circuit_failure_threshold: 1,
+                circuit_cooldown: Duration::ZERO,
+                ..GatewayPluginPipelineConfig::default()
+            },
+        );
+        pipeline.force_open_circuit_for_tests(plugin_id, hook_name);
+        let (stale_snapshot, _) = pipeline.plugins_for_hook(hook_name);
+
+        pipeline.replace_plugins(vec![plugin()]);
+        assert!(pipeline.should_skip_for_circuit(plugin_id, hook_name, &stale_snapshot));
+
+        let (current_snapshot, _) = pipeline.plugins_for_hook(hook_name);
+        assert!(!pipeline.should_skip_for_circuit(plugin_id, hook_name, &current_snapshot));
+        assert!(pipeline.should_skip_for_circuit(plugin_id, hook_name, &current_snapshot));
     }
 
     #[tokio::test(flavor = "current_thread")]
