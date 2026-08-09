@@ -1,5 +1,23 @@
 # Changelog
 
+## [0.60.39](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.38...aio-coding-hub-v0.60.39) (2026-08-09)
+
+
+### Features
+
+* add custom account usage scripts ([708d296](https://github.com/FingerCaster/aio-coding-hub/commit/708d2965f650f3256445336df78defdd903cfd6b))
+* gate provider routing on account usage ([ef8892b](https://github.com/FingerCaster/aio-coding-hub/commit/ef8892be02e24b546a90f67d541cc46865ddc88f))
+* **gateway:** add configurable model routing ([f6773c1](https://github.com/FingerCaster/aio-coding-hub/commit/f6773c152ce90afc47dc0eab8c1fcd59628e3c31))
+* **providers:** remove Codex translation bridges ([8634229](https://github.com/FingerCaster/aio-coding-hub/commit/8634229212831f2d45f6e071571633b957c03ba4))
+
+
+### Bug Fixes
+
+* **deps:** patch high-severity advisories ([336e01b](https://github.com/FingerCaster/aio-coding-hub/commit/336e01be3be1898290e02be9dbb32c5d3502e6de))
+* **gateway:** probe final provider after balance skips ([8587e5c](https://github.com/FingerCaster/aio-coding-hub/commit/8587e5c14432029dfd7c84d1b246c8e999b5e907))
+* **gateway:** suppress repeated balance failback skips ([8757d32](https://github.com/FingerCaster/aio-coding-hub/commit/8757d32c275167a90082dacdb4193b4add9ce47d))
+* **providers:** make manual balance refresh authoritative ([eedf106](https://github.com/FingerCaster/aio-coding-hub/commit/eedf10693699c47fa8050dcd593ece9bacfd60ca))
+
 ## [0.60.38](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.37...aio-coding-hub-v0.60.38) (2026-08-06)
 
 
