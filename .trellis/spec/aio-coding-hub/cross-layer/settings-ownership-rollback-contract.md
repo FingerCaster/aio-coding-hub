@@ -26,11 +26,49 @@ pub struct SettingsUpdate {
     pub auto_start: Option<bool>,
     // ...other ordinary settings fields...
 }
+
+#[derive(Default, serde::Deserialize, specta::Type)]
+#[serde(default, rename_all = "camelCase")]
+pub struct SettingsPatch {
+    // Every ordinary settings field is Option<T>.
+    // None means this writer does not own or change that field.
+}
+
+#[tauri::command]
+pub async fn settings_patch(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    patch: SettingsPatch,
+) -> Result<SettingsMutationResult, String>;
+
+#[tauri::command]
+pub async fn model_price_aliases_get(
+    app: tauri::AppHandle,
+) -> Result<ModelPriceAliasesV1, String>;
+
+#[tauri::command]
+pub async fn model_price_aliases_set(
+    app: tauri::AppHandle,
+    aliases: ModelPriceAliasesV1,
+) -> Result<ModelPriceAliasesV1, String>;
 ```
 
 The generated frontend contract is `autoStart: boolean | null`. Existing clients that send a boolean remain
 compatible; new partial-save callers send `null` unless the source patch/changed-key set explicitly contains
 `auto_start`.
+
+`SettingsPatch` uses the same generated camelCase field names as `SettingsUpdate`, but every field is nullable.
+The frontend entry point is:
+
+```typescript
+export async function settingsPatch(
+  current: AppSettings,
+  patch: AppSettingsPatch
+): Promise<SettingsMutationResult | null>;
+```
+
+Model-price alias documents use schema version `2`, at most 512 rules, and the concrete rule fields
+`cli_key`, `match_type` (`exact | prefix | wildcard`), `pattern`, `target_model`, and `enabled`.
 
 Every field owner must also define an equality predicate or committed token containing only the fields it
 owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved for initialization and tests.
@@ -39,6 +77,14 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 
 - A production writer performs read, mutation, validation, serialization, and atomic replacement while
   holding the shared settings write lock through `settings::update`.
+- Settings-page persistence sends only the keys changed from the last committed snapshot through
+  `settings_patch`. Null/missing patch fields preserve the canonical value read under the backend write lock;
+  they must never be expanded into a stale whole-settings snapshot.
+- All ordinary settings mutations share one TanStack mutation scope. The Settings-page runner permits one
+  in-flight save and coalesces later edits into the latest pending desired snapshot; after each settlement it
+  recomputes changed keys against the returned canonical snapshot before issuing the next patch.
+- A failed or unavailable settings read enables read-only protection, clears pending saves, and reverts only
+  the affected local keys. Cached settings may remain visible but do not authorize writes.
 - A writer changes only its owned fields. Ordinary `settings_set` applies an explicit field patch under
   `settings::update`; it never rebuilds a whole snapshot from a lock-out-of-date read. Image Gen owns
   `image_gen_storage_dir` / `image_gen_storage_roots`, Grok owns `grok_proxy_preferences`, circuit notice owns
@@ -81,6 +127,13 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
   from the current canonical snapshot.
 - Searching production Rust sources for `settings::write(` must find no writer; fixture/seed calls are the
   only permitted exceptions.
+- The model-price alias editor uses strict `model_price_aliases_get`; malformed, unreadable, oversized, or
+  unsupported alias files keep the editor blocked until a retry succeeds. It must not replace failed reads with
+  defaults and then overwrite the user's file. Runtime cost lookup may continue to use the explicitly named
+  `read_fail_open` path because it does not authorize an edit.
+- Alias reads and writes accept schema versions 1 and 2, migrate v1 to v2, cap the file at 1 MiB and rules at
+  512, trim and validate non-empty fields up to 200 bytes, and write atomically. Wildcard patterns contain
+  exactly one `*`; exact/prefix patterns and target models contain none.
 
 ### 4. Validation & Error Matrix
 
@@ -99,6 +152,13 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 | External side effect fails and committed token still matches | Restore only owned fields | Report original operation failure |
 | External side effect fails after newer owned-field commit | Skip rollback and old runtime restoration | Preserve newer value; safe warning allowed |
 | Atomic settings persistence fails | Leave last durable snapshot authoritative | Return persistence error without partial file |
+| Patch field is null or absent | Preserve the latest canonical field | No ownership or side effect for that field |
+| One save is active and the user edits again | Retain the latest desired snapshot | Recompute a changed-key patch after settlement |
+| Settings GET fails while cached data exists | Keep cached display read-only | Clear queued writes and surface the read error |
+| Alias file is absent | Return the version-2 default document | Editor may load and save |
+| Alias file is malformed, oversized, or unsupported | Fail the strict GET | Keep editor controls and save blocked |
+| Alias v1 document is valid | Normalize to v2 and add the default Grok rule when missing | Return normalized document |
+| Wildcard count is not exactly one | Reject the document | `SEC_INVALID_INPUT`; do not replace the file |
 
 ### 5. Good / Base / Bad Cases
 
@@ -113,6 +173,10 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 - **Bad:** code clones `settings::read`, changes one field, and later calls `settings::write`; it can overwrite
   every owner that committed in between.
 - **Bad:** rollback writes an old whole snapshot or restores old runtime after its owned-field CAS loses.
+- **Good:** while save A is in flight, edits B and C coalesce into the latest desired snapshot; after A returns,
+  the runner sends only keys still different from A's canonical result.
+- **Bad:** convert a failed alias read to an empty/default editable draft and let Save replace the unreadable
+  file, or include unchanged settings keys in every queued request.
 
 ### 6. Tests Required
 
@@ -137,6 +201,12 @@ owns. `settings::write(app, snapshot)` is a whole-snapshot primitive reserved fo
 - Unit-test the Windows adapter without real registry mutation: open/delete success, missing key, missing value,
   and non-`NotFound` open/delete failures.
 - Search production Rust sources for `settings::write(` and allow only test fixtures/seeding.
+- Test changed-key patch construction, no-op patches, rapid queued edits, settled `auto_start` omission,
+  reverse/failed completion handling, pending-queue clearing on read failure, and backend merge after a
+  deterministic concurrent writer.
+- Test strict alias GET for invalid JSON, invalid UTF-8, oversized input, unsupported versions, rule-count and
+  field bounds, invalid CLI/match types, wildcard shape, v1-to-v2 migration, default behavior only when absent,
+  atomic write preservation, and UI save blocking until a successful retry.
 - Run settings, gateway, Grok, CLI proxy, config-migration focused suites and the full Rust library suite.
 
 ### 7. Wrong vs Correct
@@ -171,6 +241,23 @@ const input = { ...current, ...patch, autoStart: current.auto_start };
 // Correct: only the source patch owns intent; transport encodes omission as null.
 const input = createSettingsSetInput(current, patch);
 const update = { ...input, autoStart: input.autoStart ?? null };
+```
+
+```typescript
+// Wrong: every queued save resends a snapshot captured before the prior save settled.
+await settingsSet(createSettingsSetInput(staleSnapshot, desired));
+
+// Correct: serialize ordinary mutations and send only keys that still differ.
+const changedKeys = diffPersistedSettings(committed, desired);
+await settingsPatch(committed, buildPersistedSettingsPatch(desired, changedKeys));
+```
+
+```typescript
+// Wrong: a failed alias read silently becomes an editable empty document.
+const aliases = query.data ?? { version: 2, rules: [] };
+
+// Correct: cached data may render, but read error/null blocks edits and save.
+const blocked = query.isError || query.data == null;
 ```
 
 ## Follow-up Findings F9 and F13

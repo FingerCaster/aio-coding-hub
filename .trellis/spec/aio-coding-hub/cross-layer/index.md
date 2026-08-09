@@ -42,7 +42,8 @@ TypeScript bindings, frontend adapters, and React UI.
   DNS-pinned redirect-safe downloads, backend-owned native saving, canonical
   history paths, DB-reference validation, and asset-scope authority.
 - [Settings ownership and rollback contract](./settings-ownership-rollback-contract.md):
-  lock-internal field-owned RMW, whole-snapshot CAS, and safe rollback.
+  lock-internal field-owned RMW, changed-key patch serialization, strict model-price alias editing,
+  whole-snapshot CAS, and safe rollback.
 - [Reliability boundary contract](./reliability-boundaries-contract.md):
   route-draft initialization, retryable and maintenance-only startup state,
   bounded diagnostic redaction, backend-confirmed task notifications, and manual upstream review.
@@ -186,6 +187,10 @@ When changing a production settings writer:
 2. Name the fields owned by the writer and search every production `settings::write` call.
 3. Keep read, mutation, validation and write under the shared settings lock.
 4. Define a committed-field token and CAS rollback for external side effects.
+5. For ordinary UI saves, serialize mutations, recompute changed keys after settlement, and encode every
+   unowned `SettingsPatch` field as null/missing.
+6. For model-price aliases, keep editor reads strict and blocked on failure; do not reuse runtime
+   `read_fail_open` behavior for an editing surface.
 
 When changing startup recovery, diagnostic reporting, task-complete notification,
 Provider route-draft initialization, or the upstream-sync workflow:
