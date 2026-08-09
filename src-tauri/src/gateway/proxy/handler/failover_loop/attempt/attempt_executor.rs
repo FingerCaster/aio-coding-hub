@@ -76,6 +76,12 @@ pub(super) enum AttemptSendOutcome {
     /// Dispatch ownership became stale at the transport boundary; no network
     /// call was made and the outer loop may continue with the stable provider.
     DispatchRejected,
+    /// The Provider or its bridge source was disabled after route selection.
+    ProviderDisabled(i64),
+    /// The authoritative Provider enabled-state read failed closed.
+    ProviderEnableCheckFailed,
+    /// The final Provider target failed the local gateway self-loop guard.
+    ProviderTargetRejected(crate::gateway::http_client::GatewayTargetValidationError),
 }
 
 /// URL build failure from the shared prepared-send primitive.
@@ -99,6 +105,9 @@ pub(super) enum PreparedSendOutcome {
         crate::gateway::configured_model_route::ConfiguredModelRouteApplyError,
     ),
     DispatchRejected,
+    ProviderDisabled(i64),
+    ProviderEnableCheckFailed,
+    ProviderTargetRejected(crate::gateway::http_client::GatewayTargetValidationError),
 }
 
 /// Build request headers, inject auth, clean body, send upstream, and return
@@ -170,6 +179,15 @@ where
             AttemptSendOutcome::ConfiguredModelRouteApplyFailed(error)
         }
         PreparedSendOutcome::DispatchRejected => AttemptSendOutcome::DispatchRejected,
+        PreparedSendOutcome::ProviderDisabled(provider_id) => {
+            AttemptSendOutcome::ProviderDisabled(provider_id)
+        }
+        PreparedSendOutcome::ProviderEnableCheckFailed => {
+            AttemptSendOutcome::ProviderEnableCheckFailed
+        }
+        PreparedSendOutcome::ProviderTargetRejected(error) => {
+            AttemptSendOutcome::ProviderTargetRejected(error)
+        }
     }
 }
 
@@ -349,6 +367,51 @@ where
             });
         }
     };
+    if let Err(error) = crate::gateway::http_client::validate_gateway_target(&url).await {
+        tracing::warn!(
+            trace_id = %input.trace_id,
+            cli_key = %input.cli_key,
+            provider_id = prepared.provider_id,
+            retry_index,
+            reason = error.message(),
+            "provider target rejected before upstream send"
+        );
+        return PreparedSendOutcome::ProviderTargetRejected(error);
+    }
+
+    let provider_ids = std::iter::once(prepared.provider_id)
+        .chain(prepared.bridge_source.as_ref().map(|(source, _)| source.id))
+        .collect::<Vec<_>>();
+    let db = ctx.state.db.clone();
+    match crate::blocking::run("gateway_provider_enabled_check", move || {
+        crate::providers::first_disabled_provider_for_gateway(&db, &provider_ids)
+    })
+    .await
+    {
+        Ok(Some(disabled_provider_id)) => {
+            tracing::info!(
+                trace_id = %input.trace_id,
+                cli_key = %input.cli_key,
+                provider_id = prepared.provider_id,
+                disabled_provider_id,
+                retry_index,
+                "provider skipped because the global Provider switch is disabled"
+            );
+            return PreparedSendOutcome::ProviderDisabled(disabled_provider_id);
+        }
+        Ok(None) => {}
+        Err(error) => {
+            tracing::error!(
+                trace_id = %input.trace_id,
+                cli_key = %input.cli_key,
+                provider_id = prepared.provider_id,
+                retry_index,
+                error = %error,
+                "Provider enabled-state check failed before upstream send"
+            );
+            return PreparedSendOutcome::ProviderEnableCheckFailed;
+        }
+    }
     if let Some((route, priced_cli_key, outcome)) = configured_route_marker.as_ref() {
         crate::gateway::configured_model_route::mark_applied(
             &input.special_settings,

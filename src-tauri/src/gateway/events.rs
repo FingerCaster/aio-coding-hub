@@ -38,6 +38,13 @@ pub(in crate::gateway) mod decision_chain {
     pub(in crate::gateway) const REASON_CIRCUIT_OPEN: &str = "circuit_open";
     pub(in crate::gateway) const REASON_CIRCUIT_COOLDOWN: &str = "circuit_cooldown";
     pub(in crate::gateway) const REASON_RATE_LIMITED: &str = "rate_limited";
+    pub(in crate::gateway) const REASON_PROVIDER_DISABLED: &str = "provider_disabled";
+    pub(in crate::gateway) const REASON_PROVIDER_ENABLE_CHECK_FAILED: &str =
+        "provider_enable_check_failed";
+    pub(in crate::gateway) const REASON_PROVIDER_TARGET_SELF_LOOP: &str =
+        "provider_target_self_loop";
+    pub(in crate::gateway) const REASON_PROVIDER_TARGET_VALIDATION_FAILED: &str =
+        "provider_target_validation_failed";
     pub(in crate::gateway) const REASON_ACCOUNT_USAGE_ZERO_BALANCE: &str =
         "account_usage_zero_balance";
     pub(in crate::gateway) const REASON_ACCOUNT_USAGE_EXPIRED: &str = "account_usage_expired";

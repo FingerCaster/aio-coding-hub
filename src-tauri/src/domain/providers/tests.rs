@@ -771,6 +771,33 @@ fn managed_gateway_loader_accepts_only_enabled_direct_codex_provider() {
 }
 
 #[test]
+fn gateway_enabled_state_check_rejects_disabled_or_missing_provider() {
+    let dir = tempfile::tempdir().expect("tempdir");
+    let db_path = dir.path().join("gateway_enabled_state_check.db");
+    let db = crate::db::init_for_tests(&db_path).expect("init db");
+
+    let first = upsert(&db, default_provider_params("First Provider")).expect("create first");
+    let second = upsert(&db, default_provider_params("Second Provider")).expect("create second");
+
+    assert_eq!(
+        first_disabled_provider_for_gateway(&db, &[first.id, second.id])
+            .expect("check enabled providers"),
+        None
+    );
+
+    set_enabled(&db, second.id, false).expect("disable second provider");
+    assert_eq!(
+        first_disabled_provider_for_gateway(&db, &[first.id, second.id])
+            .expect("check disabled provider"),
+        Some(second.id)
+    );
+    assert_eq!(
+        first_disabled_provider_for_gateway(&db, &[i64::MAX]).expect("check missing provider"),
+        Some(i64::MAX)
+    );
+}
+
+#[test]
 fn delete_cascades_all_route_references_and_preserves_similar_provider_state() {
     let dir = tempfile::tempdir().expect("tempdir");
     let db_path = dir.path().join("provider_delete_route_cascade.db");

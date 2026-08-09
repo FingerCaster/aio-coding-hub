@@ -73,6 +73,10 @@ impl IterationCounters {
             skipped_account_usage: 0,
         }
     }
+
+    pub(super) fn release_ready_slot(&mut self) {
+        self.providers_tried = self.providers_tried.saturating_sub(1);
+    }
 }
 
 pub(super) enum PreparationOutcome {
@@ -483,12 +487,24 @@ fn effective_upstream_retry_policy(
 mod tests {
     use super::{
         codex_body_has_previous_response_id, configured_transient_retry_budget,
-        effective_upstream_retry_policy, provider_max_attempts_for_request,
+        effective_upstream_retry_policy, provider_max_attempts_for_request, IterationCounters,
     };
     use crate::settings::{UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamTransportRetryKind};
 
     fn body(value: serde_json::Value) -> Vec<u8> {
         serde_json::to_vec(&value).expect("serialize body")
+    }
+
+    #[test]
+    fn releasing_ready_slot_is_saturating() {
+        let mut counters = IterationCounters::new(1);
+        counters.providers_tried = 1;
+
+        counters.release_ready_slot();
+        assert_eq!(counters.providers_tried, 0);
+
+        counters.release_ready_slot();
+        assert_eq!(counters.providers_tried, 0);
     }
 
     #[test]

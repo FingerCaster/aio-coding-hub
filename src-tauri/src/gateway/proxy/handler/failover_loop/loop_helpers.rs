@@ -111,6 +111,10 @@ pub(super) fn is_gate_only_skipped_attempt(attempt: &FailoverAttempt) -> bool {
             dc::REASON_CIRCUIT_OPEN
                 | dc::REASON_CIRCUIT_COOLDOWN
                 | dc::REASON_RATE_LIMITED
+                | dc::REASON_PROVIDER_DISABLED
+                | dc::REASON_PROVIDER_ENABLE_CHECK_FAILED
+                | dc::REASON_PROVIDER_TARGET_SELF_LOOP
+                | dc::REASON_PROVIDER_TARGET_VALIDATION_FAILED
                 | dc::REASON_ACCOUNT_USAGE_ZERO_BALANCE
                 | dc::REASON_ACCOUNT_USAGE_EXPIRED
         )
@@ -206,6 +210,22 @@ mod tests {
         );
         assert!(should_finalize_as_all_providers_unavailable(&[observation]));
         assert_eq!(counted_provider_attempts(&[real_attempt]), 1);
+    }
+
+    #[test]
+    fn provider_safety_gate_skips_are_all_unavailable_evidence() {
+        for reason_code in [
+            dc::REASON_PROVIDER_DISABLED,
+            dc::REASON_PROVIDER_ENABLE_CHECK_FAILED,
+            dc::REASON_PROVIDER_TARGET_SELF_LOOP,
+            dc::REASON_PROVIDER_TARGET_VALIDATION_FAILED,
+        ] {
+            let mut skipped = attempt(None, None, None);
+            skipped.reason_code = Some(reason_code);
+
+            assert!(is_gate_only_skipped_attempt(&skipped));
+            assert!(should_finalize_as_all_providers_unavailable(&[skipped]));
+        }
     }
 
     #[test]

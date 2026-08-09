@@ -4178,6 +4178,220 @@ INSERT INTO codex_managed_profiles(
     }
 
     #[tokio::test(flavor = "current_thread")]
+    async fn provider_disabled_between_configured_retries_blocks_later_send() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        app_settings.upstream_retry_policy = settings::UpstreamRetryPolicy {
+            enabled: true,
+            http_rules: vec![settings::UpstreamHttpRetryRule::status_only(503)],
+            transport_errors: Vec::new(),
+            stream_internal_errors: Default::default(),
+            max_retries: 1,
+            backoff_ms: 0,
+            counts_toward_circuit_breaker: false,
+        };
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("provider-disable-during-retry.sqlite"))
+            .expect("init test db");
+        let mut first_upstream = spawn_gated_counting_status_upstream(
+            StatusCode::SERVICE_UNAVAILABLE,
+            r#"{"error":{"message":"retry this response"}}"#,
+        )
+        .await;
+        let success_body =
+            r#"{"id":"disable-failover-ok","object":"response","status":"completed","output":[]}"#;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let first_provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Disable During Retry",
+            first_upstream.base_url.clone(),
+            0,
+        );
+        let second_provider_id =
+            insert_codex_provider_with_priority(&db, "Enabled Fallback", second_url, 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let session = Arc::new(session_manager::SessionManager::new());
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db.clone(),
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::clone(&session),
+        ));
+        let session_id = "provider-disable-during-retry-session";
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
+            .body(Body::from(
+                r#"{"model":"gpt-disable-during-retry","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response_task = tokio::spawn(router.oneshot(request));
+        first_upstream.wait_for_first_request().await;
+        providers::set_enabled(&db, first_provider_id, false)
+            .expect("disable provider after first send");
+        first_upstream.release_first_response();
+
+        let response = response_task
+            .await
+            .expect("route task")
+            .expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(
+            first_upstream.calls(),
+            1,
+            "the disabled Provider must not receive its configured retry"
+        );
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 3);
+        assert_eq!(attempts[0]["provider_id"].as_i64(), Some(first_provider_id));
+        assert_eq!(attempts[0]["decision"].as_str(), Some("retry"));
+        assert_eq!(attempts[1]["provider_id"].as_i64(), Some(first_provider_id));
+        assert_eq!(attempts[1]["outcome"].as_str(), Some("skipped"));
+        assert_eq!(
+            attempts[1]["reason_code"].as_str(),
+            Some("provider_disabled")
+        );
+        assert_eq!(attempts[1]["provider_index"], Value::Null);
+        assert_eq!(attempts[1]["retry_index"], Value::Null);
+        assert_eq!(
+            attempts[2]["provider_id"].as_i64(),
+            Some(second_provider_id)
+        );
+        assert_eq!(attempts[2]["outcome"].as_str(), Some("success"));
+        assert_eq!(circuit.snapshot(first_provider_id, 0).failure_count, 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, 0),
+            Some(second_provider_id)
+        );
+
+        second_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn provider_self_loop_switches_without_circuit_or_session_pollution() {
+        let _env_lock = crate::test_support::test_env_lock();
+        let home = tempfile::tempdir().expect("home dir");
+        let _env = isolate_app_env(home.path());
+        let app = tauri::test::mock_app();
+        let app_handle = app.handle().clone();
+
+        let mut app_settings = settings::AppSettings::default();
+        app_settings.failover_max_attempts_per_provider = 1;
+        app_settings.failover_max_providers_to_try = 2;
+        app_settings.circuit_breaker_failure_threshold = 1;
+        app_settings.provider_cooldown_seconds = 0;
+        disable_upstream_retry_policy(&mut app_settings);
+        settings::write(&app_handle, &app_settings).expect("write settings");
+        crate::cli_proxy::set_enabled(&app_handle, "codex", true, "http://127.0.0.1:37123")
+            .expect("enable codex cli proxy");
+        crate::gateway::http_client::sync_runtime_context(37123, "127.0.0.1", "localhost");
+
+        let db_dir = tempfile::tempdir().expect("db dir");
+        let db = db::init_for_tests(&db_dir.path().join("provider-self-loop-route.sqlite"))
+            .expect("init test db");
+        let success_body = r#"{"id":"self-loop-failover-ok","object":"response","status":"completed","output":[]}"#;
+        let (second_url, second_calls, second_task) =
+            spawn_counting_status_upstream(StatusCode::OK, success_body).await;
+        let self_loop_provider_id = insert_codex_provider_with_priority(
+            &db,
+            "Self Loop",
+            "http://127.0.0.1:37123".to_string(),
+            0,
+        );
+        let second_provider_id =
+            insert_codex_provider_with_priority(&db, "Remote Fallback", second_url, 1);
+
+        let circuit = Arc::new(circuit_breaker::CircuitBreaker::new(
+            circuit_breaker::CircuitBreakerConfig {
+                failure_threshold: 1,
+                ..circuit_breaker::CircuitBreakerConfig::default()
+            },
+            HashMap::new(),
+            None,
+        ));
+        let session = Arc::new(session_manager::SessionManager::new());
+        let (log_tx, mut log_rx) = tokio::sync::mpsc::channel(8);
+        let router = build_router(gateway_state_with_parts(
+            app_handle,
+            db,
+            log_tx,
+            Arc::clone(&circuit),
+            Arc::clone(&session),
+        ));
+        let session_id = "provider-self-loop-session";
+        let request = Request::builder()
+            .method(Method::POST)
+            .uri("/v1/responses")
+            .header(header::CONTENT_TYPE, "application/json")
+            .header("session_id", session_id)
+            .body(Body::from(
+                r#"{"model":"gpt-self-loop","input":"hello","stream":false}"#,
+            ))
+            .expect("request");
+
+        let response = router.oneshot(request).await.expect("route response");
+        assert_eq!(response.status(), StatusCode::OK);
+        assert_eq!(second_calls.load(std::sync::atomic::Ordering::SeqCst), 1);
+
+        let log = recv_terminal_request_log(&mut log_rx).await;
+        let attempts = request_log_attempts(&log);
+        assert_eq!(attempts.len(), 2);
+        assert_eq!(
+            attempts[0]["provider_id"].as_i64(),
+            Some(self_loop_provider_id)
+        );
+        assert_eq!(attempts[0]["outcome"].as_str(), Some("skipped"));
+        assert_eq!(
+            attempts[0]["reason_code"].as_str(),
+            Some("provider_target_self_loop")
+        );
+        assert_eq!(attempts[0]["circuit_state_before"], Value::Null);
+        assert_eq!(attempts[0]["circuit_state_after"], Value::Null);
+        assert_eq!(
+            attempts[1]["provider_id"].as_i64(),
+            Some(second_provider_id)
+        );
+        assert_eq!(attempts[1]["outcome"].as_str(), Some("success"));
+        assert_eq!(circuit.snapshot(self_loop_provider_id, 0).failure_count, 0);
+        assert_eq!(
+            session.get_bound_provider("codex", session_id, 0),
+            Some(second_provider_id)
+        );
+
+        second_task.abort();
+    }
+
+    #[tokio::test(flavor = "current_thread")]
     async fn configured_model_route_apply_failure_switches_provider_without_runtime_pollution() {
         let _env_lock = crate::test_support::test_env_lock();
         let home = tempfile::tempdir().expect("home dir");

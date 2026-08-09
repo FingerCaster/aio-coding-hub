@@ -5,7 +5,7 @@
 //! return a final response to the client.
 
 use super::attempt_executor::{AttemptSendOutcome, AttemptTiming, RetryLoopState};
-use super::provider_iterator::PreparedProvider;
+use super::provider_iterator::{IterationCounters, PreparedProvider};
 use super::*;
 use crate::gateway::proxy::request_context::RequestContext;
 
@@ -24,6 +24,7 @@ pub(super) async fn run_retry_loop<R>(
     ctx: CommonCtx<'_, R>,
     input: &RequestContext<R>,
     prepared: &mut PreparedProvider,
+    counters: &mut IterationCounters,
     mut loop_state: LoopState<'_, R>,
 ) -> Option<Response>
 where
@@ -50,6 +51,7 @@ where
             &mut loop_state,
         )
         .await;
+        let release_ready_slot = should_release_ready_slot(retry_index, &send_outcome);
 
         let ctrl = dispatch_outcome(
             ctx,
@@ -71,7 +73,12 @@ where
                 continue;
             }
             LoopControl::BreakRetry => break,
-            LoopControl::BreakRetryNeutral => return None,
+            LoopControl::BreakRetryNeutral => {
+                if release_ready_slot {
+                    counters.release_ready_slot();
+                }
+                return None;
+            }
             LoopControl::Return(resp) => {
                 finalize_current_probe(ctx, input, prepared, &mut loop_state);
                 return Some(resp);
@@ -81,6 +88,16 @@ where
 
     finalize_current_probe(ctx, input, prepared, &mut loop_state);
     None
+}
+
+fn should_release_ready_slot(retry_index: u32, outcome: &AttemptSendOutcome) -> bool {
+    retry_index == 1
+        && matches!(
+            outcome,
+            AttemptSendOutcome::ProviderDisabled(_)
+                | AttemptSendOutcome::ProviderEnableCheckFailed
+                | AttemptSendOutcome::ProviderTargetRejected(_)
+        )
 }
 
 fn finalize_current_probe<R: tauri::Runtime>(
@@ -134,6 +151,54 @@ where
         AttemptSendOutcome::UrlBuildFailed(ctrl) => ctrl,
         AttemptSendOutcome::OAuthInjectFailed => LoopControl::BreakRetry,
         AttemptSendOutcome::DispatchRejected => LoopControl::BreakRetry,
+        AttemptSendOutcome::ProviderDisabled(disabled_provider_id) => {
+            push_pre_send_gate_skip(
+                input,
+                prepared,
+                loop_state.attempts,
+                "provider_disabled",
+                GatewayErrorCode::NoEnabledProvider.as_str(),
+                format!(
+                    "provider skipped because global Provider #{disabled_provider_id} is disabled"
+                ),
+                dc::REASON_PROVIDER_DISABLED,
+            );
+            LoopControl::BreakRetryNeutral
+        }
+        AttemptSendOutcome::ProviderEnableCheckFailed => {
+            push_pre_send_gate_skip(
+                input,
+                prepared,
+                loop_state.attempts,
+                "system",
+                GatewayErrorCode::InternalError.as_str(),
+                "provider skipped because its enabled state could not be verified".to_string(),
+                dc::REASON_PROVIDER_ENABLE_CHECK_FAILED,
+            );
+            LoopControl::BreakRetryNeutral
+        }
+        AttemptSendOutcome::ProviderTargetRejected(error) => {
+            let (reason, reason_code) = match error {
+                crate::gateway::http_client::GatewayTargetValidationError::SelfLoop => (
+                    "provider skipped because its target points to the local gateway".to_string(),
+                    dc::REASON_PROVIDER_TARGET_SELF_LOOP,
+                ),
+                crate::gateway::http_client::GatewayTargetValidationError::ResolutionFailed => (
+                    "provider skipped because its target could not be safely resolved".to_string(),
+                    dc::REASON_PROVIDER_TARGET_VALIDATION_FAILED,
+                ),
+            };
+            push_pre_send_gate_skip(
+                input,
+                prepared,
+                loop_state.attempts,
+                "target_validation",
+                GatewayErrorCode::InvalidBaseUrl.as_str(),
+                reason,
+                reason_code,
+            );
+            LoopControl::BreakRetryNeutral
+        }
         AttemptSendOutcome::PluginBlocked(reason) => LoopControl::Return(error_response(
             StatusCode::FORBIDDEN,
             input.trace_id.clone(),
@@ -320,6 +385,33 @@ where
     }
 }
 
+fn push_pre_send_gate_skip<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    prepared: &PreparedProvider,
+    attempts: &mut Vec<FailoverAttempt>,
+    error_category: &'static str,
+    error_code: &'static str,
+    reason: String,
+    reason_code: &'static str,
+) {
+    push_skipped_provider_attempt(
+        attempts,
+        SkippedProviderAttempt {
+            provider_id: prepared.provider_id,
+            provider_name: &prepared.provider_name_base,
+            base_url: &prepared.provider_base_url_display,
+            error_category,
+            error_code,
+            reason,
+            reason_code: Some(reason_code),
+            attempt_started_ms: input.started.elapsed().as_millis(),
+            circuit: None,
+            probe_trigger: None,
+            probe_result: None,
+        },
+    );
+}
+
 /// Build `AttemptCtx` and `ProviderCtx` for error-path handling (timeout / reqwest error).
 fn build_error_contexts<'a, R: tauri::Runtime>(
     _input: &RequestContext<R>,
@@ -359,4 +451,28 @@ fn build_error_contexts<'a, R: tauri::Runtime>(
 }
 
 #[cfg(test)]
-mod tests {}
+mod tests {
+    use super::{should_release_ready_slot, AttemptSendOutcome};
+
+    #[test]
+    fn only_first_local_pre_send_rejection_releases_ready_slot() {
+        assert!(should_release_ready_slot(
+            1,
+            &AttemptSendOutcome::ProviderDisabled(7)
+        ));
+        assert!(should_release_ready_slot(
+            1,
+            &AttemptSendOutcome::ProviderTargetRejected(
+                crate::gateway::http_client::GatewayTargetValidationError::SelfLoop
+            )
+        ));
+        assert!(!should_release_ready_slot(
+            2,
+            &AttemptSendOutcome::ProviderDisabled(7)
+        ));
+        assert!(!should_release_ready_slot(
+            1,
+            &AttemptSendOutcome::OAuthInjectFailed
+        ));
+    }
+}

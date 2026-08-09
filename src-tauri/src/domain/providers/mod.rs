@@ -25,9 +25,9 @@ pub use queries::{
 
 pub(crate) use queries::{
     claude_terminal_launch_context, clear_oauth, cli_key_by_id,
-    get_account_usage_credential_context, get_account_usage_fetch_context, get_by_id,
-    get_enabled_direct_codex_for_gateway_by_identity, get_oauth_details,
-    get_source_provider_for_gateway, list_account_usage_gateway_target_contexts,
+    first_disabled_provider_for_gateway, get_account_usage_credential_context,
+    get_account_usage_fetch_context, get_by_id, get_enabled_direct_codex_for_gateway_by_identity,
+    get_oauth_details, get_source_provider_for_gateway, list_account_usage_gateway_target_contexts,
     list_enabled_for_gateway_using_active_mode, list_oauth_providers_needing_refresh,
     model_routing_policy_override_from_json, model_routing_policy_override_to_json,
     replace_extension_values, resolve_effective_credential, resolve_effective_transport_credential,

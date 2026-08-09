@@ -5,11 +5,12 @@
 ### 1. Scope / Trigger
 
 Use this contract when changing session-bound provider selection, ordered
-failback planning, circuit, rate-limit, or account-usage gates, request-scoped trigger
-reservations, `failover_max_providers_to_try`, persisted request attempts,
-route projection, probe-planning observations, or the Home request-log route
-label. These layers share one observable failover chain, but their counters
-have different meanings.
+failback planning, Provider-global enablement or target validation, circuit,
+rate-limit, or account-usage gates, request-scoped trigger reservations,
+`failover_max_providers_to_try`, persisted request attempts, route projection,
+probe-planning observations, or the Home request-log route label. These layers
+share one observable failover chain, but their counters have different
+meanings.
 
 ### 2. Signatures
 
@@ -128,6 +129,28 @@ FailoverAttempt {
   denies reuse, keep it in the list and let the later common gate decide. Clear
   the binding only when the provider is no longer eligible for that candidate
   set.
+- The Provider-global `enabled` switch is the outer routing authority. Default
+  routes, custom sort-mode membership, Session reuse, forced Provider requests,
+  and bridge source resolution must never make a globally disabled Provider
+  sendable. Custom-route membership may remain stored, but candidate SQL must
+  require both the route-member switch and `providers.enabled = 1`.
+- Candidate filtering is not sufficient for a running request. Immediately
+  before every actual transport send, including same-Provider retries, perform
+  an authoritative enabled-state re-read for the selected Provider and its
+  bridge source. A send already admitted before a successful disable may
+  finish; every later send observes the disabled or missing row, records one
+  structured `provider_disabled` gate skip, advances serially, and makes no
+  upstream call. A first-attempt local rejection releases its Ready slot; a
+  Provider that already sent still consumes the existing Ready budget.
+- Validate the final Provider target URL at that same pre-send boundary. A
+  target whose effective port is the Gateway port is rejected when its direct
+  host token or a bounded DNS resolution matches the current Gateway listen
+  context. DNS work must have a bounded address count, timeout, and short-lived
+  bounded cache; resolution failure is fail-closed. Direct and DNS-alias
+  self-loops, resolution failures, and enabled-state check failures are local
+  health-neutral skips: they do not record ordinary upstream/circuit failure,
+  alter account-usage state, or publish a Session binding. The Provider-specific
+  route remains available and passes through these same checks.
 - For the latest effective route
   `p1 -> ... -> p(X-1) -> current pX -> ... -> pN`, ordinary failback planning
   scans the complete prefix `p1 -> ... -> p(X-1)`. The prefix length is dynamic;
@@ -572,6 +595,18 @@ FailoverAttempt {
   denial, and local pre-send failure on an earlier target. Assert zero calls and
   stable structured evidence for that target, then successful dispatch of a
   later eligible target.
+- Query-test that a globally disabled custom-route member is absent from the
+  candidate set and clears an ineligible Session reuse preference. Route-test
+  an explicit barrier between a configured retry's first response and second
+  send: disabling the Provider after the first accepted send must prevent the
+  retry, preserve its circuit health, continue to the next Provider, and bind
+  only the successful fallback. Keep bridge-source enabled filtering covered.
+- Target-validator tests must cover IPv4 and IPv6 loopback, local listen
+  addresses, a DNS alias, a different-port or remote target, and bounded cache
+  size. Route-test a self-loop followed by a healthy fallback and assert a
+  structured local skip, zero self-loop transport calls, unchanged circuit
+  state, and Session binding only to the fallback. Keep a Claude
+  Provider-specific route regression passing.
 - Route-test mixed direct/probe targets. Assert direct attempts do not carry
   `selection_method="circuit_probe"` or probe metadata, each probe uses its own
   trigger/generation/lease, and the serial request never holds two executing

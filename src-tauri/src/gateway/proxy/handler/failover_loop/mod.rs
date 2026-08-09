@@ -343,6 +343,7 @@ where
             ctx,
             &input,
             &mut prepared,
+            &mut counters,
             LoopState::new(
                 &mut run_state.attempts,
                 &mut run_state.failed_provider_ids,
