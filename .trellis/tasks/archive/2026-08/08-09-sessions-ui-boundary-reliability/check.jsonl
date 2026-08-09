@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/archive/2026-08/08-09-sessions-ui-boundary-reliability/research.md", "reason": "核对所有六项行为与测试矩阵"}
+{"file": ".trellis/tasks/archive/2026-08/08-09-sessions-ui-boundary-reliability/design.md", "reason": "检查各局部边界没有产生错误共享抽象"}
