@@ -8,8 +8,8 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 32
-- **Last Active**: 2026-08-09
+- **Total Sessions**: 33
+- **Last Active**: 2026-08-10
 <!-- @@@/auto:current-status -->
 
 ---
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1144 | Active |
+| `journal-1.md` | ~1180 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 33 | 2026-08-10 | 清理 Orca 工作区并发布 v0.60.40 | `cf3cbc1278d6a5ddc86ff3c8a6c575fd09336566`, `368ff3797120eb14b6b6ce3dfea69f7ff3474d6d`, `a8efc40d64bdac7e8cb2ba748a118d82a84fac40` | `main` |
 | 32 | 2026-08-09 | 完成候选仓库加固迁移 | `8093ca55`, `1b73df7b`, `02652f42`, `d0edbf78`, `edc13110`, `dc0336f0`, `de3053d5`, `9646f230`, `a174fc24`, `87dc5d62`, `a2295582`, `04f05937`, `43e7380f`, `3d5dc78d` | `FingerCaster/port-hardening-integration` |
 | 31 | 2026-08-09 | 完成可配置模型路由与供应商恢复修复 | `86342292`, `f6773c15`, `8587e5c1`, `eedf1069` | `FingerCaster/configurable-model-routing-implementation` |
 | 30 | 2026-08-08 | Fix repeated balance failback skips | `8757d32c` | `main` |

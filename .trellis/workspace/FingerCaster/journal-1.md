@@ -1142,3 +1142,39 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Next Steps
 
 - 由用户决定何时把独立集成分支合入 main；本次未触碰脏 main 工作区。
+
+
+## Session 33: 清理 Orca 工作区并发布 v0.60.40
+
+**Date**: 2026-08-10
+**Task**: 清理 Orca 工作区并发布 v0.60.40
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+清理 8 个已完成子 worktree，保留分支与当前终端，完成稳定版 v0.60.40 发布及全链路验证，并记录发布运维契约。
+
+### Main Changes
+
+- 通过 Orca CLI 清理 8 个子 worktree，并核验本地分支、stash 与用户脏文件未丢失
+- 发布稳定版 v0.60.40，验证 tag、不可变源 SHA、14 个制品与 latest.json
+- 新增稳定发布运维契约并归档完整执行证据
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `cf3cbc1278d6a5ddc86ff3c8a6c575fd09336566` | (see git log) |
+| `368ff3797120eb14b6b6ce3dfea69f7ff3474d6d` | (see git log) |
+| `a8efc40d64bdac7e8cb2ba748a118d82a84fac40` | (see git log) |
+
+### Testing
+
+- [OK] PR 最终 head 的 CI、Windows build 与 Cargo.lock 同步全部成功
+- [OK] 发布工作流 31326329193 的 9 个 job 全部成功
+- [OK] lint、typecheck、发布合同自测、Rust fmt/clippy/test 与远端 generated-bindings 均通过
+
+### Status
+
+[OK] **Completed**
