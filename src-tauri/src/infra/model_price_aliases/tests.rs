@@ -226,6 +226,38 @@ fn strict_read_rejects_oversized_file() {
 }
 
 #[test]
+fn strict_read_uses_defaults_only_when_alias_file_is_missing() {
+    let aliases = with_test_aliases_path(|handle, path| {
+        assert!(!path.exists());
+        read(handle).expect("missing aliases file should use defaults")
+    });
+
+    assert_eq!(aliases.version, ALIASES_SCHEMA_VERSION_CURRENT);
+    assert_eq!(
+        aliases.resolve_target_model("grok", "grok-build"),
+        Some("grok-build-0.1")
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn strict_read_rejects_broken_alias_symlink_instead_of_treating_it_as_missing() {
+    let err = with_test_aliases_path(|handle, path| {
+        std::os::unix::fs::symlink(path.with_extension("missing"), path)
+            .expect("create broken aliases symlink");
+        assert!(
+            !path.exists(),
+            "broken symlink must reproduce the exists() trap"
+        );
+        read(handle)
+            .expect_err("strict aliases read must reject a broken symlink")
+            .to_string()
+    });
+
+    assert!(err.contains("failed to read aliases"));
+}
+
+#[test]
 fn strict_read_rejects_unsupported_schema() {
     let err = read_fixture_error(br#"{"version":3,"rules":[]}"#);
 

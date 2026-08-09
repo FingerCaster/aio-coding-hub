@@ -18,6 +18,7 @@ macro_rules! generated_command_registry {
             // ── settings ──
             settings_get => crate::commands::settings::settings_get,
             settings_set => crate::commands::settings::settings_set,
+            settings_patch => crate::commands::settings::settings_patch,
             settings_gateway_rectifier_set => crate::commands::settings::settings_gateway_rectifier_set,
             settings_circuit_breaker_notice_set => crate::commands::settings::settings_circuit_breaker_notice_set,
             settings_codex_session_id_completion_set => crate::commands::settings::settings_codex_session_id_completion_set,

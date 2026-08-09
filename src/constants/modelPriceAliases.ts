@@ -1,0 +1,1 @@
+export const MODEL_PRICE_ALIASES_VERSION = 2;

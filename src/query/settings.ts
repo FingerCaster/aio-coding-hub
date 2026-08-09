@@ -1,7 +1,7 @@
 import { keepPreviousData, useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import {
-  createSettingsSetInput,
   settingsGet,
+  settingsPatch,
   settingsSet,
   type AppSettingsPatch,
   type AppSettings,
@@ -100,7 +100,7 @@ export function useSettingsPatchMutation() {
     scope: ORDINARY_SETTINGS_MUTATION_SCOPE,
     mutationFn: async (patch: AppSettingsPatch) => {
       const current = await settingsGet();
-      return settingsSet(createSettingsSetInput(current, patch));
+      return settingsPatch(current, patch);
     },
     onSuccess: (result) => syncSettingsMutationCaches(queryClient, result),
     onSettled: (_data, _error, patch) => {

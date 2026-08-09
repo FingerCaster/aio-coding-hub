@@ -4,7 +4,7 @@
 //! to resolve model name mismatches (e.g. `claude-opus-4-5-thinking` -> `claude-opus-4-5`).
 
 use crate::app_paths;
-use crate::shared::fs::read_file_with_max_len;
+use crate::shared::fs::read_optional_file_with_max_len;
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 
@@ -219,12 +219,12 @@ pub fn read<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<ModelPriceAliasesV1> {
     let path = aliases_path(app)?;
-    if !path.exists() {
+    let Some(bytes) = read_optional_file_with_max_len(&path, ALIASES_FILE_MAX_BYTES)
+        .map_err(|e| format!("failed to read aliases: {e}"))?
+    else {
         return Ok(ModelPriceAliasesV1::default());
-    }
+    };
 
-    let bytes = read_file_with_max_len(&path, ALIASES_FILE_MAX_BYTES)
-        .map_err(|e| format!("failed to read aliases: {e}"))?;
     let content = String::from_utf8(bytes)
         .map_err(|e| format!("SEC_INVALID_INPUT: invalid price aliases UTF-8: {e}"))?;
     let parsed: ModelPriceAliasesV1 =

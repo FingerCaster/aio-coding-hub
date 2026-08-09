@@ -5,7 +5,7 @@ use crate::app_state::DbInitState;
 
 pub(crate) use crate::app::settings_service::{
     CircuitBreakerNoticeUpdate, CodexSessionIdCompletionUpdate, GatewayRectifierSettingsUpdate,
-    SettingsMutationResult, SettingsUpdate, SettingsView,
+    SettingsMutationResult, SettingsPatch, SettingsUpdate, SettingsView,
 };
 
 #[tauri::command]
@@ -22,6 +22,16 @@ pub(crate) async fn settings_set(
     update: SettingsUpdate,
 ) -> Result<SettingsMutationResult, String> {
     settings_service::settings_set_impl(app, db_state.inner(), update).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn settings_patch(
+    app: tauri::AppHandle,
+    db_state: tauri::State<'_, DbInitState>,
+    patch: SettingsPatch,
+) -> Result<SettingsMutationResult, String> {
+    settings_service::settings_patch_impl(app, db_state.inner(), patch).await
 }
 
 #[tauri::command]

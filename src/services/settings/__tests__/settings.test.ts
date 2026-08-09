@@ -139,6 +139,39 @@ describe("services/settings/settings", () => {
     expect(input).not.toHaveProperty("codex_oauth_compatible_proxy_mode");
   });
 
+  it("sends only caller-owned fields through the partial settings command", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue({ schema_version: 1 } as any);
+
+    const { settingsPatch } = await import("../settings");
+    const current = createTestAppSettings({
+      preferred_port: 37123,
+      provider_cooldown_seconds: 30,
+    });
+
+    await settingsPatch(current, { provider_cooldown_seconds: 99 });
+
+    expect(tauriInvoke).toHaveBeenCalledWith(
+      "settings_patch",
+      expect.objectContaining({
+        patch: expect.objectContaining({
+          preferredPort: null,
+          logRetentionDays: null,
+          failoverMaxAttemptsPerProvider: null,
+          failoverMaxProvidersToTry: null,
+          autoStart: null,
+          providerCooldownSeconds: 99,
+        }),
+      })
+    );
+    const calls = vi.mocked(tauriInvoke).mock.calls;
+    const sentPatch = calls[calls.length - 1]?.[1]?.patch as Record<string, unknown>;
+    expect(
+      Object.fromEntries(Object.entries(sentPatch).filter(([, value]) => value !== null))
+    ).toEqual({ providerCooldownSeconds: 99 });
+  });
+
   it("only sends auto-start intent when the patch owns auto_start", async () => {
     setTauriRuntime();
     vi.resetModules();

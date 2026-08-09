@@ -3,6 +3,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { GatewayStatus } from "../../services/gateway/gateway";
 import {
   settingsGet,
+  settingsPatch,
   settingsSet,
   type AppSettings,
   type SettingsMutationResult,
@@ -29,7 +30,7 @@ vi.mock("../../services/settings/settings", async () => {
   const actual = await vi.importActual<typeof import("../../services/settings/settings")>(
     "../../services/settings/settings"
   );
-  return { ...actual, settingsGet: vi.fn(), settingsSet: vi.fn() };
+  return { ...actual, settingsGet: vi.fn(), settingsPatch: vi.fn(), settingsSet: vi.fn() };
 });
 vi.mock("../../services/settings/settingsGatewayRectifier", async () => {
   const actual = await vi.importActual<
@@ -221,7 +222,7 @@ describe("query/settings", () => {
     const current = createTestAppSettings();
     const updated = createTestAppSettings({ codex_oauth_compatible_proxy_mode: true });
     vi.mocked(settingsGet).mockResolvedValue(current);
-    vi.mocked(settingsSet).mockResolvedValue({
+    vi.mocked(settingsPatch).mockResolvedValue({
       settings: updated,
       runtime: {
         gateway_rebound: false,
@@ -246,9 +247,9 @@ describe("query/settings", () => {
       await result.current.mutateAsync({ codex_oauth_compatible_proxy_mode: true });
     });
 
-    expect(settingsSet).toHaveBeenCalledWith(
-      expect.objectContaining({ codexOauthCompatibleProxyMode: true })
-    );
+    expect(settingsPatch).toHaveBeenCalledWith(current, {
+      codex_oauth_compatible_proxy_mode: true,
+    });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
@@ -257,7 +258,7 @@ describe("query/settings", () => {
   it("serializes independent settings patches and rebuilds from authoritative settings", async () => {
     setTauriRuntime();
     vi.mocked(settingsGet).mockReset();
-    vi.mocked(settingsSet).mockReset();
+    vi.mocked(settingsPatch).mockReset();
 
     const initial = createTestAppSettings({
       provider_cooldown_seconds: 30,
@@ -277,7 +278,7 @@ describe("query/settings", () => {
     });
 
     vi.mocked(settingsGet).mockResolvedValueOnce(initial).mockResolvedValueOnce(firstUpdated);
-    vi.mocked(settingsSet)
+    vi.mocked(settingsPatch)
       .mockReturnValueOnce(firstResponse)
       .mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
 
@@ -302,11 +303,11 @@ describe("query/settings", () => {
       secondMutation = result.current.cliManager.mutateAsync({ wsl_auto_config: true });
     });
 
-    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(settingsPatch).toHaveBeenCalledTimes(1));
     expect(settingsGet).toHaveBeenCalledTimes(1);
-    expect(vi.mocked(settingsSet).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ providerCooldownSeconds: 41, wslAutoConfig: false })
-    );
+    expect(settingsPatch).toHaveBeenNthCalledWith(1, initial, {
+      provider_cooldown_seconds: 41,
+    });
 
     act(() => resolveFirst(createSettingsMutationResult(firstUpdated)));
     await act(async () => {
@@ -314,17 +315,17 @@ describe("query/settings", () => {
     });
 
     expect(settingsGet).toHaveBeenCalledTimes(2);
-    expect(settingsSet).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(settingsSet).mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({ providerCooldownSeconds: 41, wslAutoConfig: true })
-    );
+    expect(settingsPatch).toHaveBeenCalledTimes(2);
+    expect(settingsPatch).toHaveBeenNthCalledWith(2, firstUpdated, {
+      wsl_auto_config: true,
+    });
     expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
   });
 
   it("keeps same-field settings patches in FIFO order", async () => {
     setTauriRuntime();
     vi.mocked(settingsGet).mockReset();
-    vi.mocked(settingsSet).mockReset();
+    vi.mocked(settingsPatch).mockReset();
 
     const initial = createTestAppSettings({ provider_cooldown_seconds: 30 });
     const firstUpdated = createTestAppSettings({ provider_cooldown_seconds: 41 });
@@ -335,7 +336,7 @@ describe("query/settings", () => {
     });
 
     vi.mocked(settingsGet).mockResolvedValueOnce(initial).mockResolvedValueOnce(firstUpdated);
-    vi.mocked(settingsSet)
+    vi.mocked(settingsPatch)
       .mockReturnValueOnce(firstResponse)
       .mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
 
@@ -353,26 +354,81 @@ describe("query/settings", () => {
       secondMutation = result.current.second.mutateAsync({ provider_cooldown_seconds: 42 });
     });
 
-    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
-    expect(vi.mocked(settingsSet).mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ providerCooldownSeconds: 41 })
-    );
+    await waitFor(() => expect(settingsPatch).toHaveBeenCalledTimes(1));
+    expect(settingsPatch).toHaveBeenNthCalledWith(1, initial, {
+      provider_cooldown_seconds: 41,
+    });
 
     act(() => resolveFirst(createSettingsMutationResult(firstUpdated)));
     await act(async () => {
       await Promise.all([firstMutation, secondMutation]);
     });
 
-    expect(vi.mocked(settingsSet).mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({ providerCooldownSeconds: 42 })
+    expect(settingsPatch).toHaveBeenNthCalledWith(2, firstUpdated, {
+      provider_cooldown_seconds: 42,
+    });
+    expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
+  });
+
+  it("shares FIFO ordering between full set and changed-key patch mutations", async () => {
+    setTauriRuntime();
+    vi.mocked(settingsGet).mockReset();
+    vi.mocked(settingsPatch).mockReset();
+    vi.mocked(settingsSet).mockReset();
+
+    const firstUpdated = createTestAppSettings({ provider_cooldown_seconds: 41 });
+    const secondUpdated = createTestAppSettings({
+      provider_cooldown_seconds: 41,
+      wsl_auto_config: true,
+    });
+    let resolveFirst!: (value: SettingsMutationResult) => void;
+    const firstResponse = new Promise<SettingsMutationResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    vi.mocked(settingsGet).mockResolvedValue(firstUpdated);
+    vi.mocked(settingsSet).mockReturnValueOnce(firstResponse);
+    vi.mocked(settingsPatch).mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(
+      () => ({ full: useSettingsSetMutation(), patch: useSettingsPatchMutation() }),
+      { wrapper }
     );
+
+    let fullMutation!: Promise<unknown>;
+    let patchMutation!: Promise<unknown>;
+    act(() => {
+      fullMutation = result.current.full.mutateAsync({
+        preferredPort: firstUpdated.preferred_port,
+        logRetentionDays: firstUpdated.log_retention_days,
+        failoverMaxAttemptsPerProvider: firstUpdated.failover_max_attempts_per_provider,
+        failoverMaxProvidersToTry: firstUpdated.failover_max_providers_to_try,
+        providerCooldownSeconds: firstUpdated.provider_cooldown_seconds,
+      });
+      patchMutation = result.current.patch.mutateAsync({ wsl_auto_config: true });
+    });
+
+    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
+    expect(settingsGet).not.toHaveBeenCalled();
+    expect(settingsPatch).not.toHaveBeenCalled();
+
+    act(() => resolveFirst(createSettingsMutationResult(firstUpdated)));
+    await act(async () => {
+      await Promise.all([fullMutation, patchMutation]);
+    });
+
+    expect(settingsGet).toHaveBeenCalledTimes(1);
+    expect(settingsSet).toHaveBeenCalledTimes(1);
+    expect(settingsPatch).toHaveBeenCalledWith(firstUpdated, { wsl_auto_config: true });
     expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
   });
 
   it("continues queued settings patches after an earlier write fails", async () => {
     setTauriRuntime();
     vi.mocked(settingsGet).mockReset();
-    vi.mocked(settingsSet).mockReset();
+    vi.mocked(settingsPatch).mockReset();
 
     const initial = createTestAppSettings({
       provider_cooldown_seconds: 30,
@@ -388,7 +444,7 @@ describe("query/settings", () => {
     });
 
     vi.mocked(settingsGet).mockResolvedValue(initial);
-    vi.mocked(settingsSet)
+    vi.mocked(settingsPatch)
       .mockReturnValueOnce(firstResponse)
       .mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
 
@@ -407,17 +463,15 @@ describe("query/settings", () => {
       secondMutation = result.current.second.mutateAsync({ wsl_auto_config: true });
     });
 
-    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
+    await waitFor(() => expect(settingsPatch).toHaveBeenCalledTimes(1));
     act(() => rejectFirst(new Error("settings write failed")));
     await act(async () => {
       await expect(firstMutation).rejects.toThrow("settings write failed");
       await secondMutation;
     });
 
-    expect(settingsSet).toHaveBeenCalledTimes(2);
-    expect(vi.mocked(settingsSet).mock.calls[1]?.[0]).toEqual(
-      expect.objectContaining({ providerCooldownSeconds: 30, wslAutoConfig: true })
-    );
+    expect(settingsPatch).toHaveBeenCalledTimes(2);
+    expect(settingsPatch).toHaveBeenNthCalledWith(2, initial, { wsl_auto_config: true });
     expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
   });
 

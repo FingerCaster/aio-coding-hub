@@ -128,6 +128,25 @@ describe("query/modelPrices", () => {
     });
   });
 
+  it("useModelPriceAliasesQuery exposes refetch errors even when stale aliases remain cached", async () => {
+    setTauriRuntime();
+
+    const staleAliases: ModelPriceAliases = { version: 2, rules: [] };
+    vi.mocked(modelPriceAliasesGet).mockRejectedValue(new Error("alias read failed"));
+
+    const client = createTestQueryClient();
+    client.setQueryData(modelPricesKeys.aliases(), staleAliases);
+    const wrapper = createQueryWrapper(client);
+
+    const { result } = renderHook(() => useModelPriceAliasesQuery(), { wrapper });
+
+    await waitFor(() => {
+      expect(result.current.isError).toBe(true);
+    });
+    expect(result.current.data).toEqual(staleAliases);
+    expect(result.current.error).toEqual(new Error("alias read failed"));
+  });
+
   it("useModelPriceAliasesSetMutation updates cache and invalidates aliases", async () => {
     setTauriRuntime();
 

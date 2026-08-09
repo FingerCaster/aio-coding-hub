@@ -112,6 +112,161 @@ pub(crate) struct SettingsUpdate {
     pub upstream_proxy_password: Option<SensitiveStringUpdate>,
 }
 
+/// Nullable ordinary-settings patch used by changed-key callers.
+///
+/// Unlike `SettingsUpdate`, every field is optional. Omitted fields are merged
+/// from the canonical settings snapshot while holding the shared write lock.
+#[derive(Default, serde::Deserialize, specta::Type)]
+#[serde(default, rename_all = "camelCase")]
+pub(crate) struct SettingsPatch {
+    pub preferred_port: Option<u16>,
+    pub show_home_heatmap: Option<bool>,
+    pub show_home_usage: Option<bool>,
+    pub home_usage_period: Option<settings::HomeUsagePeriod>,
+    pub gateway_listen_mode: Option<settings::GatewayListenMode>,
+    pub gateway_custom_listen_address: Option<String>,
+    pub auto_start: Option<bool>,
+    pub start_minimized: Option<bool>,
+    pub tray_enabled: Option<bool>,
+    pub enable_cli_proxy_startup_recovery: Option<bool>,
+    pub log_retention_days: Option<u32>,
+    pub request_log_retention_days: Option<u32>,
+    pub provider_cooldown_seconds: Option<u32>,
+    pub provider_failback_strategy: Option<settings::ProviderFailbackStrategy>,
+    pub natural_probe_max_wait_seconds: Option<u32>,
+    pub provider_base_url_ping_cache_ttl_seconds: Option<u32>,
+    pub upstream_first_byte_timeout_seconds: Option<u32>,
+    pub upstream_stream_idle_timeout_seconds: Option<u32>,
+    pub stream_internal_error_guard_ms: Option<u32>,
+    pub upstream_request_timeout_non_streaming_seconds: Option<u32>,
+    pub enable_cache_anomaly_monitor: Option<bool>,
+    pub enable_debug_log: Option<bool>,
+    pub enable_task_complete_notify: Option<bool>,
+    pub enable_notification_sound: Option<bool>,
+    pub failover_max_attempts_per_provider: Option<u32>,
+    pub failover_max_providers_to_try: Option<u32>,
+    pub upstream_retry_policy: Option<settings::UpstreamRetryPolicy>,
+    pub model_routing_policy: Option<settings::ModelRoutingPolicy>,
+    pub upstream_error_response_rules: Option<Vec<settings::UpstreamErrorResponseRule>>,
+    pub circuit_breaker_failure_threshold: Option<u32>,
+    pub circuit_breaker_open_duration_minutes: Option<u32>,
+    pub update_releases_url: Option<String>,
+    pub wsl_auto_config: Option<bool>,
+    pub wsl_target_cli: Option<settings::WslTargetCli>,
+    pub cli_priority_order: Option<Vec<String>>,
+    pub wsl_host_address_mode: Option<settings::WslHostAddressMode>,
+    pub wsl_custom_host_address: Option<String>,
+    pub codex_home_mode: Option<settings::CodexHomeMode>,
+    pub codex_home_override: Option<String>,
+    pub codex_oauth_compatible_proxy_mode: Option<bool>,
+    pub codex_provider_test_model: Option<String>,
+    #[serde(rename = "cx2CcFallbackModelOpus")]
+    #[specta(rename = "cx2CcFallbackModelOpus")]
+    pub cx2cc_fallback_model_opus: Option<String>,
+    #[serde(rename = "cx2CcFallbackModelSonnet")]
+    #[specta(rename = "cx2CcFallbackModelSonnet")]
+    pub cx2cc_fallback_model_sonnet: Option<String>,
+    #[serde(rename = "cx2CcFallbackModelHaiku")]
+    #[specta(rename = "cx2CcFallbackModelHaiku")]
+    pub cx2cc_fallback_model_haiku: Option<String>,
+    #[serde(rename = "cx2CcFallbackModelMain")]
+    #[specta(rename = "cx2CcFallbackModelMain")]
+    pub cx2cc_fallback_model_main: Option<String>,
+    #[serde(rename = "cx2CcModelReasoningEffort")]
+    #[specta(rename = "cx2CcModelReasoningEffort")]
+    pub cx2cc_model_reasoning_effort: Option<String>,
+    #[serde(rename = "cx2CcServiceTier")]
+    #[specta(rename = "cx2CcServiceTier")]
+    pub cx2cc_service_tier: Option<String>,
+    #[serde(rename = "cx2CcDisableResponseStorage")]
+    #[specta(rename = "cx2CcDisableResponseStorage")]
+    pub cx2cc_disable_response_storage: Option<bool>,
+    #[serde(rename = "cx2CcEnableReasoningToThinking")]
+    #[specta(rename = "cx2CcEnableReasoningToThinking")]
+    pub cx2cc_enable_reasoning_to_thinking: Option<bool>,
+    #[serde(rename = "cx2CcDropStopSequences")]
+    #[specta(rename = "cx2CcDropStopSequences")]
+    pub cx2cc_drop_stop_sequences: Option<bool>,
+    #[serde(rename = "cx2CcCleanSchema")]
+    #[specta(rename = "cx2CcCleanSchema")]
+    pub cx2cc_clean_schema: Option<bool>,
+    #[serde(rename = "cx2CcFilterBatchTool")]
+    #[specta(rename = "cx2CcFilterBatchTool")]
+    pub cx2cc_filter_batch_tool: Option<bool>,
+    pub upstream_proxy_enabled: Option<bool>,
+    pub upstream_proxy_url: Option<String>,
+    pub upstream_proxy_username: Option<String>,
+    pub upstream_proxy_password: Option<SensitiveStringUpdate>,
+}
+
+impl SettingsPatch {
+    fn to_update(&self, latest: &settings::AppSettings) -> SettingsUpdate {
+        SettingsUpdate {
+            preferred_port: self.preferred_port.unwrap_or(latest.preferred_port),
+            show_home_heatmap: self.show_home_heatmap,
+            show_home_usage: self.show_home_usage,
+            home_usage_period: self.home_usage_period,
+            gateway_listen_mode: self.gateway_listen_mode,
+            gateway_custom_listen_address: self.gateway_custom_listen_address.clone(),
+            auto_start: self.auto_start,
+            start_minimized: self.start_minimized,
+            tray_enabled: self.tray_enabled,
+            enable_cli_proxy_startup_recovery: self.enable_cli_proxy_startup_recovery,
+            log_retention_days: self.log_retention_days.unwrap_or(latest.log_retention_days),
+            request_log_retention_days: self.request_log_retention_days,
+            provider_cooldown_seconds: self.provider_cooldown_seconds,
+            provider_failback_strategy: self.provider_failback_strategy,
+            natural_probe_max_wait_seconds: self.natural_probe_max_wait_seconds,
+            provider_base_url_ping_cache_ttl_seconds: self.provider_base_url_ping_cache_ttl_seconds,
+            upstream_first_byte_timeout_seconds: self.upstream_first_byte_timeout_seconds,
+            upstream_stream_idle_timeout_seconds: self.upstream_stream_idle_timeout_seconds,
+            stream_internal_error_guard_ms: self.stream_internal_error_guard_ms,
+            upstream_request_timeout_non_streaming_seconds: self
+                .upstream_request_timeout_non_streaming_seconds,
+            enable_cache_anomaly_monitor: self.enable_cache_anomaly_monitor,
+            enable_debug_log: self.enable_debug_log,
+            enable_task_complete_notify: self.enable_task_complete_notify,
+            enable_notification_sound: self.enable_notification_sound,
+            failover_max_attempts_per_provider: self
+                .failover_max_attempts_per_provider
+                .unwrap_or(latest.failover_max_attempts_per_provider),
+            failover_max_providers_to_try: self
+                .failover_max_providers_to_try
+                .unwrap_or(latest.failover_max_providers_to_try),
+            upstream_retry_policy: self.upstream_retry_policy.clone(),
+            model_routing_policy: self.model_routing_policy.clone(),
+            upstream_error_response_rules: self.upstream_error_response_rules.clone(),
+            circuit_breaker_failure_threshold: self.circuit_breaker_failure_threshold,
+            circuit_breaker_open_duration_minutes: self.circuit_breaker_open_duration_minutes,
+            update_releases_url: self.update_releases_url.clone(),
+            wsl_auto_config: self.wsl_auto_config,
+            wsl_target_cli: self.wsl_target_cli,
+            cli_priority_order: self.cli_priority_order.clone(),
+            wsl_host_address_mode: self.wsl_host_address_mode,
+            wsl_custom_host_address: self.wsl_custom_host_address.clone(),
+            codex_home_mode: self.codex_home_mode,
+            codex_home_override: self.codex_home_override.clone(),
+            codex_oauth_compatible_proxy_mode: self.codex_oauth_compatible_proxy_mode,
+            codex_provider_test_model: self.codex_provider_test_model.clone(),
+            cx2cc_fallback_model_opus: self.cx2cc_fallback_model_opus.clone(),
+            cx2cc_fallback_model_sonnet: self.cx2cc_fallback_model_sonnet.clone(),
+            cx2cc_fallback_model_haiku: self.cx2cc_fallback_model_haiku.clone(),
+            cx2cc_fallback_model_main: self.cx2cc_fallback_model_main.clone(),
+            cx2cc_model_reasoning_effort: self.cx2cc_model_reasoning_effort.clone(),
+            cx2cc_service_tier: self.cx2cc_service_tier.clone(),
+            cx2cc_disable_response_storage: self.cx2cc_disable_response_storage,
+            cx2cc_enable_reasoning_to_thinking: self.cx2cc_enable_reasoning_to_thinking,
+            cx2cc_drop_stop_sequences: self.cx2cc_drop_stop_sequences,
+            cx2cc_clean_schema: self.cx2cc_clean_schema,
+            cx2cc_filter_batch_tool: self.cx2cc_filter_batch_tool,
+            upstream_proxy_enabled: self.upstream_proxy_enabled,
+            upstream_proxy_url: self.upstream_proxy_url.clone(),
+            upstream_proxy_username: self.upstream_proxy_username.clone(),
+            upstream_proxy_password: self.upstream_proxy_password.clone(),
+        }
+    }
+}
+
 /// Explicit ordinary-owner field token used for equality and rollback.
 #[derive(Debug, Clone, PartialEq)]
 struct SettingsServiceOwnedToken {
@@ -1307,9 +1462,36 @@ pub(crate) async fn settings_get(app: tauri::AppHandle) -> Result<SettingsView, 
     .map_err(Into::into)
 }
 
-fn commit_settings_update_owned<R: tauri::Runtime>(
+enum SettingsMutationInput {
+    Set(SettingsUpdate),
+    Patch(SettingsPatch),
+}
+
+impl SettingsMutationInput {
+    fn auto_start_intent(&self) -> Option<bool> {
+        match self {
+            Self::Set(update) => update.auto_start,
+            Self::Patch(patch) => patch.auto_start,
+        }
+    }
+
+    fn apply(
+        &self,
+        latest: &mut settings::AppSettings,
+    ) -> crate::shared::error::AppResult<SettingsServiceOwnedToken> {
+        match self {
+            Self::Set(update) => apply_settings_update_owned_patch(latest, update),
+            Self::Patch(patch) => {
+                let update = patch.to_update(latest);
+                apply_settings_update_owned_patch(latest, &update)
+            }
+        }
+    }
+}
+
+fn commit_settings_mutation_owned<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    update: SettingsUpdate,
+    mutation: SettingsMutationInput,
 ) -> Result<
     (
         settings::AppSettings,
@@ -1320,11 +1502,11 @@ fn commit_settings_update_owned<R: tauri::Runtime>(
     ),
     String,
 > {
-    if let Some(desired_auto_start) = update.auto_start {
+    if let Some(desired_auto_start) = mutation.auto_start_intent() {
         let committed =
             crate::app::autostart::commit_auto_start_with_owner(app, desired_auto_start, || {
                 let (committed, previous_token, previous_auto_start) =
-                    persist_settings_update_owned(app, &update)?;
+                    persist_settings_mutation_owned(app, &mutation)?;
                 let committed_auto_start = committed.auto_start;
                 let committed_token = SettingsServiceOwnedToken::from_settings(&committed);
                 Ok((
@@ -1359,7 +1541,7 @@ fn commit_settings_update_owned<R: tauri::Runtime>(
     }
 
     let (committed, previous_token, previous_auto_start) =
-        persist_settings_update_owned(app, &update)?;
+        persist_settings_mutation_owned(app, &mutation)?;
     let committed_token = SettingsServiceOwnedToken::from_settings(&committed);
     #[cfg(test)]
     run_after_settings_autostart_commit_test_hook();
@@ -1374,14 +1556,31 @@ fn commit_settings_update_owned<R: tauri::Runtime>(
     ))
 }
 
-fn persist_settings_update_owned<R: tauri::Runtime>(
+#[cfg(test)]
+fn commit_settings_update_owned<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
-    update: &SettingsUpdate,
+    update: SettingsUpdate,
+) -> Result<
+    (
+        settings::AppSettings,
+        settings::AppSettings,
+        SettingsServiceOwnedToken,
+        SettingsServiceOwnedToken,
+        Option<crate::app::autostart::AutoStartCommitToken>,
+    ),
+    String,
+> {
+    commit_settings_mutation_owned(app, SettingsMutationInput::Set(update))
+}
+
+fn persist_settings_mutation_owned<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    mutation: &SettingsMutationInput,
 ) -> Result<(settings::AppSettings, SettingsServiceOwnedToken, bool), String> {
     let (committed, (previous_token, previous_auto_start)) =
         settings::update(app, |latest| {
             let previous_auto_start = latest.auto_start;
-            let previous = apply_settings_update_owned_patch(latest, update)?;
+            let previous = mutation.apply(latest)?;
             Ok((previous, previous_auto_start))
         })
         .map_err(|err| {
@@ -1509,14 +1708,14 @@ fn apply_preferred_port_repair_success(
 
 /// Production settings commit used by IPC and tests with any runtime.
 /// Gateway rebind (Wry-only) is only performed by the concrete AppHandle entry.
-pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
+async fn settings_mutation_impl_generic<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
-    update: SettingsUpdate,
+    mutation: SettingsMutationInput,
     allow_gateway_rebind: bool,
     db_state: Option<&DbInitState>,
 ) -> Result<SettingsMutationResult, String> {
     let app_for_work = app.clone();
-    let update_for_work = update;
+    let mutation_for_work = mutation;
 
     #[cfg(test)]
     run_before_settings_set_lock_test_hook();
@@ -1525,7 +1724,7 @@ pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
     // Other updates commit under SETTINGS only and produce no auto-start token.
     let (previous_settings, _committed_settings, previous_token, committed_token, auto_start_token) =
         blocking::run("settings_set", move || {
-            commit_settings_update_owned(&app_for_work, update_for_work)
+            commit_settings_mutation_owned(&app_for_work, mutation_for_work)
         })
         .await?;
 
@@ -1616,20 +1815,35 @@ pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
     })
 }
 
-async fn settings_set_impl_with_gateway(
+pub(crate) async fn settings_set_impl_generic<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    update: SettingsUpdate,
+    allow_gateway_rebind: bool,
+    db_state: Option<&DbInitState>,
+) -> Result<SettingsMutationResult, String> {
+    settings_mutation_impl_generic(
+        app,
+        SettingsMutationInput::Set(update),
+        allow_gateway_rebind,
+        db_state,
+    )
+    .await
+}
+
+async fn settings_mutation_impl_with_gateway(
     app: tauri::AppHandle,
     db_state: &DbInitState,
-    update: SettingsUpdate,
+    mutation: SettingsMutationInput,
 ) -> Result<SettingsMutationResult, String> {
     let app_for_work = app.clone();
-    let update_for_work = update;
+    let mutation_for_work = mutation;
 
     #[cfg(test)]
     run_before_settings_set_lock_test_hook();
 
     let (previous_settings, _committed_snapshot, previous_token, committed_token, auto_start_token) =
         blocking::run("settings_set", move || {
-            commit_settings_update_owned(&app_for_work, update_for_work)
+            commit_settings_mutation_owned(&app_for_work, mutation_for_work)
         })
         .await?;
 
@@ -1910,7 +2124,15 @@ pub(crate) async fn settings_set_impl(
     db_state: &DbInitState,
     update: SettingsUpdate,
 ) -> Result<SettingsMutationResult, String> {
-    settings_set_impl_with_gateway(app, db_state, update).await
+    settings_mutation_impl_with_gateway(app, db_state, SettingsMutationInput::Set(update)).await
+}
+
+pub(crate) async fn settings_patch_impl(
+    app: tauri::AppHandle,
+    db_state: &DbInitState,
+    patch: SettingsPatch,
+) -> Result<SettingsMutationResult, String> {
+    settings_mutation_impl_with_gateway(app, db_state, SettingsMutationInput::Patch(patch)).await
 }
 
 #[cfg(test)]
@@ -1919,6 +2141,14 @@ pub(crate) async fn settings_set_impl_for_test<R: tauri::Runtime>(
     update: SettingsUpdate,
 ) -> Result<SettingsMutationResult, String> {
     settings_set_impl_generic(app, update, false, None).await
+}
+
+#[cfg(test)]
+pub(crate) async fn settings_patch_impl_for_test<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    patch: SettingsPatch,
+) -> Result<SettingsMutationResult, String> {
+    settings_mutation_impl_generic(app, SettingsMutationInput::Patch(patch), false, None).await
 }
 
 #[cfg(test)]
@@ -2425,6 +2655,40 @@ mod tests {
         .expect("null autoStart should deserialize");
 
         assert!(update.auto_start.is_none());
+    }
+
+    #[test]
+    fn partial_patch_merges_with_canonical_settings_after_a_concurrent_writer() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let before = settings::read(&handle).expect("settings before patch");
+        let repaired_port = before.preferred_port.saturating_add(1);
+        let next_cooldown = before.provider_cooldown_seconds.saturating_add(1);
+
+        let writer_handle = handle.clone();
+        set_before_settings_set_lock_test_hook(Box::new(move || {
+            settings::update(&writer_handle, |latest| {
+                latest.preferred_port = repaired_port;
+                Ok(())
+            })
+            .expect("commit concurrent preferred-port writer");
+        }));
+
+        let result = tauri::async_runtime::block_on(settings_patch_impl_for_test(
+            handle.clone(),
+            SettingsPatch {
+                provider_cooldown_seconds: Some(next_cooldown),
+                ..SettingsPatch::default()
+            },
+        ))
+        .expect("partial settings patch");
+
+        assert_eq!(result.settings.preferred_port, repaired_port);
+        assert_eq!(result.settings.provider_cooldown_seconds, next_cooldown);
+        let canonical = settings::read(&handle).expect("canonical settings after patch");
+        assert_eq!(canonical.preferred_port, repaired_port);
+        assert_eq!(canonical.provider_cooldown_seconds, next_cooldown);
     }
 
     #[test]

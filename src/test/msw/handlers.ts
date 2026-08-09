@@ -4,6 +4,7 @@ import { http, HttpResponse } from "msw";
 import { TAURI_ENDPOINT } from "../tauriEndpoint";
 import type { CliKey, ClaudeModels, ProviderSummary } from "../../services/providers/providers";
 import { CLI_KEYS, isCliKey } from "../../constants/clis";
+import { MODEL_PRICE_ALIASES_VERSION } from "../../constants/modelPriceAliases";
 import {
   buildCliProxySetEnabledResult,
   getAppAboutState,
@@ -42,6 +43,49 @@ type PluginCommandPayload = {
 const pluginIdFromPayload = (payload: PluginCommandPayload): string =>
   payload.input?.pluginId ?? payload.pluginId ?? "";
 
+async function handleSettingsMutationRequest(request: Request) {
+  const payload = await withJson<{
+    update?: Partial<Record<string, unknown>>;
+    patch?: Partial<Record<string, unknown>>;
+  }>(request);
+  const input = payload.update ?? payload.patch;
+  let nextSettings = getSettingsState();
+  if (input) {
+    const normalizedEntries = Object.entries(input).map(([key, value]) => [
+      key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`),
+      value,
+    ]);
+    const normalizedUpdate = Object.fromEntries(
+      normalizedEntries.filter(
+        ([key, value]) => key !== "upstream_proxy_password" && value !== null
+      )
+    );
+
+    if (Object.prototype.hasOwnProperty.call(input, "upstreamProxyPassword")) {
+      const passwordPatch = input.upstreamProxyPassword as
+        | { mode?: string; value?: string }
+        | null
+        | undefined;
+      if (passwordPatch?.mode === "clear") {
+        normalizedUpdate.upstream_proxy_password_configured = false;
+      } else if (passwordPatch?.mode === "replace") {
+        normalizedUpdate.upstream_proxy_password_configured = Boolean(passwordPatch.value?.trim());
+      }
+    }
+
+    nextSettings = mergeSettingsState(normalizedUpdate as any);
+  }
+  return HttpResponse.json({
+    settings: nextSettings,
+    runtime: {
+      gateway_rebound: false,
+      cli_proxy_synced: false,
+      wsl_auto_sync_triggered: false,
+      gateway_status: getGatewayStatusState(),
+    },
+  });
+}
+
 export const handlers = [
   // ---- CLI Proxy ----
   http.post(`${TAURI_ENDPOINT}/cli_proxy_status_all`, () =>
@@ -66,42 +110,12 @@ export const handlers = [
   // ---- Settings ----
   http.post(`${TAURI_ENDPOINT}/settings_get`, () => HttpResponse.json(getSettingsState())),
 
-  http.post(`${TAURI_ENDPOINT}/settings_set`, async ({ request }) => {
-    const payload = await withJson<{ update?: Partial<Record<string, unknown>> }>(request);
-    let nextSettings = getSettingsState();
-    if (payload.update) {
-      const normalizedEntries = Object.entries(payload.update).map(([key, value]) => [
-        key.replace(/[A-Z]/g, (char) => `_${char.toLowerCase()}`),
-        value,
-      ]);
-      const normalizedUpdate = Object.fromEntries(
-        normalizedEntries.filter(([key]) => key !== "upstream_proxy_password")
-      );
-
-      if (Object.prototype.hasOwnProperty.call(payload.update, "upstreamProxyPassword")) {
-        const patch = payload.update.upstreamProxyPassword as
-          | { mode?: string; value?: string }
-          | null
-          | undefined;
-        if (patch?.mode === "clear") {
-          normalizedUpdate.upstream_proxy_password_configured = false;
-        } else if (patch?.mode === "replace") {
-          normalizedUpdate.upstream_proxy_password_configured = Boolean(patch.value?.trim());
-        }
-      }
-
-      nextSettings = mergeSettingsState(normalizedUpdate as any);
-    }
-    return HttpResponse.json({
-      settings: nextSettings,
-      runtime: {
-        gateway_rebound: false,
-        cli_proxy_synced: false,
-        wsl_auto_sync_triggered: false,
-        gateway_status: getGatewayStatusState(),
-      },
-    });
-  }),
+  http.post(`${TAURI_ENDPOINT}/settings_set`, ({ request }) =>
+    handleSettingsMutationRequest(request)
+  ),
+  http.post(`${TAURI_ENDPOINT}/settings_patch`, ({ request }) =>
+    handleSettingsMutationRequest(request)
+  ),
 
   // Settings sub-commands that return AppSettings.
   http.post(`${TAURI_ENDPOINT}/settings_circuit_breaker_notice_set`, () =>
@@ -514,7 +528,7 @@ export const handlers = [
   ),
   http.post(`${TAURI_ENDPOINT}/model_price_aliases_get`, () =>
     HttpResponse.json({
-      version: 1,
+      version: MODEL_PRICE_ALIASES_VERSION,
       rules: [
         {
           cli_key: "grok",
@@ -528,7 +542,9 @@ export const handlers = [
   ),
   http.post(`${TAURI_ENDPOINT}/model_price_aliases_set`, async ({ request }) => {
     const payload = await withJson<{ aliases?: unknown }>(request);
-    return HttpResponse.json(payload.aliases ?? { version: 1, rules: [] });
+    return HttpResponse.json(
+      payload.aliases ?? { version: MODEL_PRICE_ALIASES_VERSION, rules: [] }
+    );
   }),
 
   // ---- CLI Manager ----

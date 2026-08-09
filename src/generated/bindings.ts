@@ -22,6 +22,14 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async settingsPatch(patch: SettingsPatch): Promise<Result<SettingsMutationResult, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("settings_patch", { patch }) };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async settingsGatewayRectifierSet(
     update: GatewayRectifierSettingsUpdate
   ): Promise<Result<SettingsView, string>> {
@@ -4324,6 +4332,70 @@ export type SettingsMutationRuntime = {
   cli_proxy_synced: boolean;
   wsl_auto_sync_triggered: boolean;
   gateway_status: GatewayStatus;
+};
+/**
+ * Nullable ordinary-settings patch used by changed-key callers.
+ *
+ * Unlike `SettingsUpdate`, every field is optional. Omitted fields are merged
+ * from the canonical settings snapshot while holding the shared write lock.
+ */
+export type SettingsPatch = {
+  preferredPort: number | null;
+  showHomeHeatmap: boolean | null;
+  showHomeUsage: boolean | null;
+  homeUsagePeriod: HomeUsagePeriod | null;
+  gatewayListenMode: GatewayListenMode | null;
+  gatewayCustomListenAddress: string | null;
+  autoStart: boolean | null;
+  startMinimized: boolean | null;
+  trayEnabled: boolean | null;
+  enableCliProxyStartupRecovery: boolean | null;
+  logRetentionDays: number | null;
+  requestLogRetentionDays: number | null;
+  providerCooldownSeconds: number | null;
+  providerFailbackStrategy: ProviderFailbackStrategy | null;
+  naturalProbeMaxWaitSeconds: number | null;
+  providerBaseUrlPingCacheTtlSeconds: number | null;
+  upstreamFirstByteTimeoutSeconds: number | null;
+  upstreamStreamIdleTimeoutSeconds: number | null;
+  streamInternalErrorGuardMs: number | null;
+  upstreamRequestTimeoutNonStreamingSeconds: number | null;
+  enableCacheAnomalyMonitor: boolean | null;
+  enableDebugLog: boolean | null;
+  enableTaskCompleteNotify: boolean | null;
+  enableNotificationSound: boolean | null;
+  failoverMaxAttemptsPerProvider: number | null;
+  failoverMaxProvidersToTry: number | null;
+  upstreamRetryPolicy: UpstreamRetryPolicy | null;
+  modelRoutingPolicy: ModelRoutingPolicy | null;
+  upstreamErrorResponseRules: UpstreamErrorResponseRule[] | null;
+  circuitBreakerFailureThreshold: number | null;
+  circuitBreakerOpenDurationMinutes: number | null;
+  updateReleasesUrl: string | null;
+  wslAutoConfig: boolean | null;
+  wslTargetCli: WslTargetCli | null;
+  cliPriorityOrder: string[] | null;
+  wslHostAddressMode: WslHostAddressMode | null;
+  wslCustomHostAddress: string | null;
+  codexHomeMode: CodexHomeMode | null;
+  codexHomeOverride: string | null;
+  codexOauthCompatibleProxyMode: boolean | null;
+  codexProviderTestModel: string | null;
+  cx2CcFallbackModelOpus: string | null;
+  cx2CcFallbackModelSonnet: string | null;
+  cx2CcFallbackModelHaiku: string | null;
+  cx2CcFallbackModelMain: string | null;
+  cx2CcModelReasoningEffort: string | null;
+  cx2CcServiceTier: string | null;
+  cx2CcDisableResponseStorage: boolean | null;
+  cx2CcEnableReasoningToThinking: boolean | null;
+  cx2CcDropStopSequences: boolean | null;
+  cx2CcCleanSchema: boolean | null;
+  cx2CcFilterBatchTool: boolean | null;
+  upstreamProxyEnabled: boolean | null;
+  upstreamProxyUrl: string | null;
+  upstreamProxyUsername: string | null;
+  upstreamProxyPassword: SensitiveStringUpdate | null;
 };
 /**
  * Encapsulates ordinary `settings_set` owned fields only.

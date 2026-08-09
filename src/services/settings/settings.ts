@@ -9,6 +9,7 @@ import {
   type SensitiveStringUpdate,
   type SettingsMutationResult as GeneratedSettingsMutationResult,
   type SettingsMutationRuntime as GeneratedSettingsMutationRuntime,
+  type SettingsPatch as GeneratedSettingsPatch,
   type SettingsUpdate as GeneratedSettingsUpdate,
   type SettingsView as GeneratedAppSettings,
   type UpstreamHttpRetryRule,
@@ -65,6 +66,9 @@ export type AppSettings = Omit<GeneratedAppSettings, LegacyGeneratedSettingsView
 type FrontendSettingsUpdate = Omit<GeneratedSettingsUpdate, LegacyGeneratedSettingsUpdateKey> & {
   upstreamErrorResponseRules: UpstreamErrorResponseRule[] | null;
 };
+type FrontendSettingsPatch = Omit<GeneratedSettingsPatch, LegacyGeneratedSettingsUpdateKey> & {
+  upstreamErrorResponseRules: UpstreamErrorResponseRule[] | null;
+};
 export type SettingsMutationRuntime = GeneratedSettingsMutationRuntime;
 
 export type SettingsMutationResult = Omit<GeneratedSettingsMutationResult, "settings"> & {
@@ -81,6 +85,12 @@ type AssertNever<TValue extends never> = TValue;
 export type SettingsViewBackedInputKey = Exclude<
   keyof FrontendSettingsUpdate,
   "upstreamProxyPassword"
+>;
+export type __AssertNoSettingsPatchOnlyKeys = AssertNever<
+  Exclude<keyof FrontendSettingsPatch, keyof FrontendSettingsUpdate>
+>;
+export type __AssertNoSettingsUpdateOnlyKeys = AssertNever<
+  Exclude<keyof FrontendSettingsUpdate, keyof FrontendSettingsPatch>
 >;
 
 const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
@@ -290,15 +300,31 @@ export function createSettingsSetInput(
   return input;
 }
 
-export async function settingsGet() {
-  return invokeGeneratedIpc<AppSettings>({
-    title: "读取设置失败",
-    cmd: "settings_get",
-    invoke: () => commands.settingsGet() as Promise<GeneratedCommandResult<AppSettings>>,
-  });
+function createGeneratedSettingsPatch(
+  current: AppSettings,
+  patch: AppSettingsPatch
+): FrontendSettingsPatch {
+  const fullUpdate = toGeneratedSettingsUpdate(createSettingsSetInput(current, patch));
+  const next = Object.fromEntries(
+    SETTINGS_VIEW_BACKED_INPUT_KEYS.map((inputKey) => {
+      const viewKey = SETTINGS_VIEW_TO_UPDATE_FIELD_MAP[inputKey];
+      return [
+        inputKey,
+        Object.prototype.hasOwnProperty.call(patch, viewKey) ? fullUpdate[inputKey] : null,
+      ];
+    })
+  ) as FrontendSettingsPatch;
+  next.upstreamProxyPassword = Object.prototype.hasOwnProperty.call(
+    patch,
+    "upstream_proxy_password"
+  )
+    ? fullUpdate.upstreamProxyPassword
+    : null;
+
+  return next;
 }
 
-export async function settingsSet(input: SettingsSetInput) {
+function validateSettingsInputOrThrow(input: SettingsSetInput) {
   const requiredMessage = validateRequiredSettingsSetInput(input);
   if (requiredMessage) {
     throw new Error(requiredMessage);
@@ -308,6 +334,18 @@ export async function settingsSet(input: SettingsSetInput) {
   if (validationMessage) {
     throw new Error(validationMessage);
   }
+}
+
+export async function settingsGet() {
+  return invokeGeneratedIpc<AppSettings>({
+    title: "读取设置失败",
+    cmd: "settings_get",
+    invoke: () => commands.settingsGet() as Promise<GeneratedCommandResult<AppSettings>>,
+  });
+}
+
+export async function settingsSet(input: SettingsSetInput) {
+  validateSettingsInputOrThrow(input);
 
   const update = toGeneratedSettingsUpdate(input);
   return invokeGeneratedIpc<SettingsMutationResult>({
@@ -316,6 +354,22 @@ export async function settingsSet(input: SettingsSetInput) {
     args: { update },
     invoke: () =>
       commands.settingsSet(update as GeneratedSettingsUpdate) as Promise<
+        GeneratedCommandResult<SettingsMutationResult>
+      >,
+  });
+}
+
+export async function settingsPatch(current: AppSettings, patch: AppSettingsPatch) {
+  const candidate = createSettingsSetInput(current, patch);
+  validateSettingsInputOrThrow(candidate);
+
+  const update = createGeneratedSettingsPatch(current, patch);
+  return invokeGeneratedIpc<SettingsMutationResult>({
+    title: "更新设置失败",
+    cmd: "settings_patch",
+    args: { patch: update },
+    invoke: () =>
+      commands.settingsPatch(update as GeneratedSettingsPatch) as Promise<
         GeneratedCommandResult<SettingsMutationResult>
       >,
   });

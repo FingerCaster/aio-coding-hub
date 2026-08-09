@@ -12,6 +12,9 @@ import type { CliKey } from "../providers/providers";
 import { observePromiseLikeRejection, type MaybePromiseLike } from "../../utils/promiseLike";
 import { logToConsole } from "../consoleLog";
 import { CLI_KEYS } from "../../constants/clis";
+import { MODEL_PRICE_ALIASES_VERSION } from "../../constants/modelPriceAliases";
+
+export { MODEL_PRICE_ALIASES_VERSION } from "../../constants/modelPriceAliases";
 
 type Listener = () => MaybePromiseLike<void>;
 
@@ -23,7 +26,6 @@ const MODEL_PRICE_ALIAS_MATCH_TYPE_VALUES = [
   "wildcard",
 ] as const satisfies readonly GeneratedModelPriceAliasMatchType[];
 const MODEL_PRICES_SYNC_STATUS_VALUES = ["updated", "not_modified"] as const;
-export const MODEL_PRICE_ALIASES_VERSION = 2;
 const MODEL_PRICE_ALIASES_SUPPORTED_VERSIONS = new Set<number>([1, MODEL_PRICE_ALIASES_VERSION]);
 const MAX_MODEL_PRICE_ALIAS_RULES = 512;
 const MAX_MODEL_PRICE_MODEL_CHARS = 512;
