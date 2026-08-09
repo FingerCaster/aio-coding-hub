@@ -473,9 +473,10 @@ export function RetryPolicyFields({
 
       <div className="grid gap-4 md:grid-cols-3">
         <FormField label="每个供应商最多重试次数" hint="HTTP / 网络 / 流内部共享">
-          {(id) => (
+          {(id, hintId) => (
             <Input
               id={id}
+              aria-describedby={hintId}
               type="number"
               min={0}
               max={MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES}
@@ -489,9 +490,10 @@ export function RetryPolicyFields({
           )}
         </FormField>
         <FormField label="固定重试间隔（毫秒）" hint="每次同供应商重试前等待">
-          {(id) => (
+          {(id, hintId) => (
             <Input
               id={id}
+              aria-describedby={hintId}
               type="number"
               min={0}
               max={MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS}

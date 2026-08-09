@@ -39,4 +39,17 @@ describe("ui/FormField (branch coverage)", () => {
     expect(input).toHaveAttribute("aria-describedby", hint.id);
     expect(input).toHaveAccessibleDescription("每行一个 HTTPS Origin");
   });
+
+  it("uses labelled group semantics for composite controls", () => {
+    render(
+      <FormField label="认证方式" hint="选择一种方式" group>
+        <button type="button">API 密钥</button>
+        <button type="button">OAuth</button>
+      </FormField>
+    );
+
+    const group = screen.getByRole("group", { name: "认证方式" });
+    expect(group).toHaveAccessibleDescription("选择一种方式");
+    expect(screen.getByText("认证方式").closest("label")).toBeNull();
+  });
 });

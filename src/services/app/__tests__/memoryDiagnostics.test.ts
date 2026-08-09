@@ -75,6 +75,8 @@ describe("services/app/memoryDiagnostics", () => {
     expect(report.backend).toBe(backendSnapshot);
     expect(report.frontend.href).toContain("/diagnostics?tab=memory");
     expect(report.frontend.query_count).toBe(3);
+    expect(report.frontend.scanned_query_count).toBe(3);
+    expect(report.frontend.scan_truncated).toBe(false);
     expect(report.frontend.query_estimated_bytes).toBeGreaterThan(0);
     expect(report.frontend.js_heap).toEqual({
       used_js_heap_size: 100,
@@ -121,6 +123,8 @@ describe("services/app/memoryDiagnostics", () => {
     const report = await collectAppMemoryDiagnostics();
 
     expect(report.frontend.query_count).toBe(26);
+    expect(report.frontend.scanned_query_count).toBe(26);
+    expect(report.frontend.scan_truncated).toBe(false);
     expect(report.frontend.top_queries).toHaveLength(20);
     expect(report.frontend.query_groups).toEqual(
       expect.arrayContaining([
@@ -136,5 +140,81 @@ describe("services/app/memoryDiagnostics", () => {
 
     queryClient.getQueryCache = originalGetQueryCache;
     isolatedClient.clear();
+  });
+
+  it("shares the node budget across queries and stops after a truncated query", async () => {
+    queryClient.setQueryData(
+      ["budget-first"],
+      Array.from({ length: 110_000 }, () => null)
+    );
+    queryClient.setQueryData(
+      ["budget-second"],
+      Array.from({ length: 110_000 }, () => null)
+    );
+    queryClient.setQueryData(["budget-unscanned"], "must not be scanned");
+
+    const report = await collectAppMemoryDiagnostics();
+
+    expect(report.frontend.query_count).toBe(3);
+    expect(report.frontend.scanned_query_count).toBe(2);
+    expect(report.frontend.scan_truncated).toBe(true);
+    expect(report.frontend.query_groups.map((group) => group.key)).toEqual([
+      "budget-first",
+      "budget-second",
+    ]);
+    expect(report.frontend.top_queries).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          query_key: JSON.stringify(["budget-second"]),
+          truncated: true,
+        }),
+      ])
+    );
+  });
+
+  it("stops reading wide object values when the shared node budget is exhausted", async () => {
+    const unreadKey = "must-not-read-after-budget";
+    const keys = Array.from({ length: 200_000 }, (_, index) =>
+      index === 199_999 ? unreadKey : `wide-key-${index}`
+    );
+    const wideObject = new Proxy<Record<string, null>>(
+      {},
+      {
+        ownKeys: () => keys,
+        getOwnPropertyDescriptor: () => ({ configurable: true, enumerable: true }),
+        get: (_target, property) => {
+          if (property === unreadKey) throw new Error("node budget read past its limit");
+          return null;
+        },
+      }
+    );
+    queryClient.setQueryData(["wide-object"], wideObject);
+
+    const report = await collectAppMemoryDiagnostics();
+
+    expect(report.frontend.scanned_query_count).toBe(1);
+    expect(report.frontend.scan_truncated).toBe(true);
+    expect(report.frontend.top_queries[0]).toEqual(
+      expect.objectContaining({
+        query_key: JSON.stringify(["wide-object"]),
+        truncated: true,
+      })
+    );
+  });
+
+  it("caps the number of scanned queries for lightweight cache entries", async () => {
+    for (let index = 0; index < 2_001; index += 1) {
+      queryClient.setQueryData(["query-limit", index], index);
+    }
+
+    const report = await collectAppMemoryDiagnostics();
+
+    expect(report.frontend.query_count).toBe(2_001);
+    expect(report.frontend.scanned_query_count).toBe(2_000);
+    expect(report.frontend.scan_truncated).toBe(true);
+    expect(report.frontend.query_groups).toEqual([
+      expect.objectContaining({ key: "query-limit", count: 2_000 }),
+    ]);
+    expect(report.frontend.top_queries).toHaveLength(20);
   });
 });

@@ -35,82 +35,102 @@ export function ClaudeModelSection(props: { form: UseProviderEditorFormReturn })
           label="主模型"
           hint="默认兜底模型；未命中 haiku/sonnet/opus 且未启用 Thinking 时使用"
         >
-          <Input
-            value={claudeModels.main_model ?? ""}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              setClaudeModels((prev) => {
-                const oldMain = (prev.main_model ?? "").trim();
-                const syncIfMatch = (field: string | null | undefined) => {
-                  const trimmed = (field ?? "").trim();
-                  return !trimmed || trimmed === oldMain ? value : field;
-                };
-                return {
-                  ...prev,
-                  main_model: value,
-                  haiku_model: syncIfMatch(prev.haiku_model),
-                  sonnet_model: syncIfMatch(prev.sonnet_model),
-                  opus_model: syncIfMatch(prev.opus_model),
-                };
-              });
-            }}
-            placeholder={mainPlaceholder}
-            disabled={saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              value={claudeModels.main_model ?? ""}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setClaudeModels((prev) => {
+                  const oldMain = (prev.main_model ?? "").trim();
+                  const syncIfMatch = (field: string | null | undefined) => {
+                    const trimmed = (field ?? "").trim();
+                    return !trimmed || trimmed === oldMain ? value : field;
+                  };
+                  return {
+                    ...prev,
+                    main_model: value,
+                    haiku_model: syncIfMatch(prev.haiku_model),
+                    sonnet_model: syncIfMatch(prev.sonnet_model),
+                    opus_model: syncIfMatch(prev.opus_model),
+                  };
+                });
+              }}
+              placeholder={mainPlaceholder}
+              disabled={saving}
+            />
+          )}
         </FormField>
 
         <FormField
           label="推理模型 (Thinking)"
           hint="当请求中 thinking.type=enabled 且未命中 Haiku/Sonnet/Opus 槽位时使用"
         >
-          <Input
-            value={claudeModels.reasoning_model ?? ""}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              setClaudeModels((prev) => ({
-                ...prev,
-                reasoning_model: value,
-              }));
-            }}
-            placeholder="例如: kimi-k2-thinking / glm-4-plus-thinking"
-            disabled={saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              value={claudeModels.reasoning_model ?? ""}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setClaudeModels((prev) => ({
+                  ...prev,
+                  reasoning_model: value,
+                }));
+              }}
+              placeholder="例如: kimi-k2-thinking / glm-4-plus-thinking"
+              disabled={saving}
+            />
+          )}
         </FormField>
 
         <FormField label="Haiku 默认模型" hint="当请求模型名包含 haiku 时使用（子串匹配）">
-          <Input
-            value={claudeModels.haiku_model ?? ""}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              setClaudeModels((prev) => ({ ...prev, haiku_model: value }));
-            }}
-            placeholder="例如: glm-4-plus-haiku"
-            disabled={saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              value={claudeModels.haiku_model ?? ""}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setClaudeModels((prev) => ({ ...prev, haiku_model: value }));
+              }}
+              placeholder="例如: glm-4-plus-haiku"
+              disabled={saving}
+            />
+          )}
         </FormField>
 
         <FormField label="Sonnet 默认模型" hint="当请求模型名包含 sonnet 时使用（子串匹配）">
-          <Input
-            value={claudeModels.sonnet_model ?? ""}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              setClaudeModels((prev) => ({ ...prev, sonnet_model: value }));
-            }}
-            placeholder="例如: glm-4-plus-sonnet"
-            disabled={saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              value={claudeModels.sonnet_model ?? ""}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setClaudeModels((prev) => ({ ...prev, sonnet_model: value }));
+              }}
+              placeholder="例如: glm-4-plus-sonnet"
+              disabled={saving}
+            />
+          )}
         </FormField>
 
         <FormField label="Opus 默认模型" hint="当请求模型名包含 opus 时使用（子串匹配）">
-          <Input
-            value={claudeModels.opus_model ?? ""}
-            onChange={(e) => {
-              const value = e.currentTarget.value;
-              setClaudeModels((prev) => ({ ...prev, opus_model: value }));
-            }}
-            placeholder="例如: glm-4-plus-opus"
-            disabled={saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              value={claudeModels.opus_model ?? ""}
+              onChange={(e) => {
+                const value = e.currentTarget.value;
+                setClaudeModels((prev) => ({ ...prev, opus_model: value }));
+              }}
+              placeholder="例如: glm-4-plus-opus"
+              disabled={saving}
+            />
+          )}
         </FormField>
       </div>
     </details>

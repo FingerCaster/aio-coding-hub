@@ -16,6 +16,7 @@ import type { ImageGenAdapter, ImageGenCoreRequest, ImageGenResult, ImageGenUsag
 export const GENERATIONS_PATH = "/v1/images/generations";
 export const EDITS_PATH = "/v1/images/edits";
 export const DEFAULT_IMAGE_GEN_MODEL = "gpt-image-2";
+export const MAX_IMAGE_RESPONSE_ITEMS = 10;
 
 export type GptImageQuality = "auto" | "low" | "medium" | "high";
 export type GptImageOutputFormat = "png" | "jpeg" | "webp";
@@ -175,12 +176,22 @@ export function estimateGptImageCostUsd(usage: ImageGenUsage | undefined): numbe
 
 export type FetchImageByUrl = (url: string) => Promise<{ mime: string; b64: string }>;
 
+function resolveImageResponseItemLimit(requestedImageCount: number | undefined): number {
+  const limit = requestedImageCount ?? MAX_IMAGE_RESPONSE_ITEMS;
+  if (!Number.isSafeInteger(limit) || limit < 1) {
+    throw new Error("请求图片数量必须是正安全整数");
+  }
+  return Math.min(limit, MAX_IMAGE_RESPONSE_ITEMS);
+}
+
 /** 优先取 data[].b64_json；条目仅有 url 时经 fetchImageByUrl 兜底下载。 */
 export async function parseImagesResponse(
   bodyText: string,
   outputMime: string,
-  fetchImageByUrl: FetchImageByUrl
+  fetchImageByUrl: FetchImageByUrl,
+  requestedImageCount?: number
 ): Promise<ImageGenResult> {
+  const itemLimit = resolveImageResponseItemLimit(requestedImageCount);
   let parsed: unknown = null;
   try {
     parsed = JSON.parse(bodyText);
@@ -191,6 +202,9 @@ export async function parseImagesResponse(
   const data = record.data;
   if (!Array.isArray(data) || data.length === 0) {
     throw new Error("响应中没有图片数据（data 为空）");
+  }
+  if (data.length > itemLimit) {
+    throw new Error(`响应图片数量 ${data.length} 超过允许上限 ${itemLimit}`);
   }
   const images: { mime: string; b64: string }[] = [];
   for (const item of data) {
@@ -236,7 +250,8 @@ export const gptImageAdapter: ImageGenAdapter<GptImageOptions> = {
     return parseImagesResponse(
       response.bodyText,
       outputMimeFor(req.options.outputFormat),
-      fetchImageViaRust
+      fetchImageViaRust,
+      req.n
     );
   },
 };

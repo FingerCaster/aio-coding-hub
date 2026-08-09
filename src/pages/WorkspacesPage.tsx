@@ -665,7 +665,13 @@ function WorkspaceSwitchDialog({ model }: { model: WorkspacesModel }) {
         )}
 
         <FormField label="输入 APPLY 以确认切换">
-          <Input value={switchConfirm} onChange={(e) => setSwitchConfirm(e.currentTarget.value)} />
+          {(id) => (
+            <Input
+              id={id}
+              value={switchConfirm}
+              onChange={(e) => setSwitchConfirm(e.currentTarget.value)}
+            />
+          )}
         </FormField>
 
         <div className="flex flex-wrap items-center justify-between gap-2 border-t border-line-subtle pt-3">
@@ -722,10 +728,16 @@ function WorkspaceCreateDialog({ model }: { model: WorkspacesModel }) {
     >
       <div className="space-y-4">
         <FormField label="名称">
-          <Input value={createName} onChange={(e) => setCreateName(e.currentTarget.value)} />
+          {(id) => (
+            <Input
+              id={id}
+              value={createName}
+              onChange={(e) => setCreateName(e.currentTarget.value)}
+            />
+          )}
         </FormField>
 
-        <FormField label="创建方式">
+        <FormField label="创建方式" group>
           <div className="grid gap-2">
             <label className="flex items-center gap-2 text-sm text-secondary-foreground">
               <input
@@ -788,7 +800,13 @@ function WorkspaceRenameDialog({ model }: { model: WorkspacesModel }) {
     >
       <div className="space-y-4">
         <FormField label="名称">
-          <Input value={renameName} onChange={(e) => setRenameName(e.currentTarget.value)} />
+          {(id) => (
+            <Input
+              id={id}
+              value={renameName}
+              onChange={(e) => setRenameName(e.currentTarget.value)}
+            />
+          )}
         </FormField>
 
         {renameError ? <Notice tone="danger">{renameError}</Notice> : null}

@@ -23,10 +23,10 @@ export function OAuthSection(props: { form: UseProviderEditorFormReturn }) {
   return (
     <>
       <FormField label="名称">
-        <Input placeholder="default" {...register("name")} />
+        {(id) => <Input id={id} placeholder="default" {...register("name")} />}
       </FormField>
 
-      <FormField label="OAuth 连接">
+      <FormField label="OAuth 连接" group>
         <div className="rounded-md border border-border bg-secondary p-3 dark:border-border dark:bg-secondary/50">
           {oauthLoading && !oauthDeviceFlow ? (
             <div className="flex items-center gap-2 text-sm text-muted-foreground">
@@ -117,13 +117,16 @@ export function OAuthSection(props: { form: UseProviderEditorFormReturn }) {
       </FormField>
 
       <FormField label="价格倍率">
-        <Input
-          type="number"
-          min="0.0001"
-          step="0.01"
-          placeholder="1.0"
-          {...register("cost_multiplier")}
-        />
+        {(id) => (
+          <Input
+            id={id}
+            type="number"
+            min="0.0001"
+            step="0.01"
+            placeholder="1.0"
+            {...register("cost_multiplier")}
+          />
+        )}
       </FormField>
     </>
   );

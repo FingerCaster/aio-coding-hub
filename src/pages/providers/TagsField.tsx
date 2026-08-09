@@ -13,7 +13,7 @@ export function TagsField(props: {
 
   return (
     <FormField label="标签" hint="按 Enter 添加标签">
-      {(fieldId) => (
+      {(fieldId, hintId) => (
         <div className="flex min-h-10 flex-wrap items-center gap-1.5 rounded-lg border border-border bg-white px-3 shadow-sm dark:border-border dark:bg-secondary dark:shadow-none">
           {tags.map((tag) => (
             <span key={tag} className={tagBadgeClassName(tag)}>
@@ -32,6 +32,7 @@ export function TagsField(props: {
           <input
             id={fieldId}
             aria-label="标签"
+            aria-describedby={hintId}
             type="text"
             value={tagInput}
             onChange={(e) => setTagInput(e.currentTarget.value)}

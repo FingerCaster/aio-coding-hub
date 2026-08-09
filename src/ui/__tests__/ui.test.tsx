@@ -107,7 +107,7 @@ describe("ui components", () => {
 
   it("FormField renders label + hint", () => {
     render(
-      <FormField label="L" hint="H">
+      <FormField label="L" hint="H" group>
         <div>child</div>
       </FormField>
     );

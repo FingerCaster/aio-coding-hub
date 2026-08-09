@@ -1,4 +1,4 @@
-import { renderHook, waitFor } from "@testing-library/react";
+import { act, renderHook, waitFor } from "@testing-library/react";
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient, createQueryWrapper } from "../../test/utils/reactQuery";
 import { setTauriRuntime, clearTauriRuntime } from "../../test/utils/tauriRuntime";
@@ -18,6 +18,7 @@ vi.mock("../../services/cli/cliSessions", async () => {
 });
 
 import {
+  CLI_SESSIONS_MESSAGES_MAX_CACHED_PAGES,
   useCliSessionsFolderLookupByIdsQuery,
   useCliSessionsProjectsListQuery,
   useCliSessionsSessionsListQuery,
@@ -153,6 +154,61 @@ describe("query/cliSessions", () => {
         cliSessionsKeys.messages("claude", "  /path/to/file.json  ", true, undefined)
       )
     ).toBeUndefined();
+    clearTauriRuntime();
+  });
+
+  it("keeps a bounded message window navigable in both directions", async () => {
+    setTauriRuntime();
+    vi.mocked(cliSessionsMessagesGet).mockImplementation(async ({ page }) => ({
+      messages: [],
+      total: 550,
+      page,
+      page_size: 50,
+      has_more: page < 10,
+    }));
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result, rerender } = renderHook(
+      () =>
+        useCliSessionsMessagesInfiniteQuery("claude", "/path/to/long-session.json", {
+          fromEnd: false,
+        }),
+      { wrapper }
+    );
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    await waitFor(() => expect(result.current.hasNextPage).toBe(true));
+    for (let page = 1; page <= CLI_SESSIONS_MESSAGES_MAX_CACHED_PAGES; page += 1) {
+      await act(async () => {
+        await result.current.fetchNextPage();
+      });
+      rerender();
+      const calls = vi.mocked(cliSessionsMessagesGet).mock.calls;
+      expect(calls[calls.length - 1]?.[0].page).toBe(page);
+      await waitFor(() => {
+        const pages = result.current.data?.pages ?? [];
+        expect(pages[pages.length - 1]?.page).toBe(page);
+      });
+    }
+
+    expect(result.current.data?.pages.map((page) => page.page)).toEqual([
+      1, 2, 3, 4, 5, 6, 7, 8, 9, 10,
+    ]);
+    expect(result.current.hasPreviousPage).toBe(true);
+
+    await act(async () => {
+      await result.current.fetchPreviousPage();
+    });
+    rerender();
+    await waitFor(() => {
+      expect(result.current.data?.pages[0]?.page).toBe(0);
+    });
+    expect(result.current.data?.pages.map((page) => page.page)).toEqual([
+      0, 1, 2, 3, 4, 5, 6, 7, 8, 9,
+    ]);
+    expect(cliSessionsMessagesGet).toHaveBeenLastCalledWith(
+      expect.objectContaining({ page: 0, fromEnd: false })
+    );
     clearTauriRuntime();
   });
 

@@ -73,7 +73,7 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
     <>
       <div className="grid gap-3 sm:grid-cols-2">
         <FormField label="名称">
-          <Input placeholder="default" {...register("name")} />
+          {(id) => <Input id={id} placeholder="default" {...register("name")} />}
         </FormField>
 
         <TagsField
@@ -86,10 +86,12 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
       </div>
 
       <FormField label="备注">
-        <Input placeholder="可选备注信息" disabled={saving} {...register("note")} />
+        {(id) => (
+          <Input id={id} placeholder="可选备注信息" disabled={saving} {...register("note")} />
+        )}
       </FormField>
 
-      <FormField label="Base URLs">
+      <FormField label="Base URLs" group>
         <BaseUrlEditor
           rows={baseUrlRows}
           setRows={setBaseUrlRows}
@@ -104,60 +106,67 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
 
       <div className="grid gap-3 sm:grid-cols-2">
         <FormField label="API Key / Token" hint={apiKeyHint}>
-          <div className="flex items-center gap-2">
-            <Input
-              {...apiKeyField}
-              type="text"
-              placeholder={apiKeyPlaceholder}
-              autoComplete="off"
-            />
-            <Button
-              type="button"
-              onClick={() => void copyApiKey()}
-              variant="secondary"
-              size="sm"
-              className="h-9 shrink-0"
-              disabled={saving || copyingApiKey || !canCopyApiKey}
-            >
-              {copyingApiKey ? "复制中…" : "复制"}
-            </Button>
-          </div>
+          {(id, hintId) => (
+            <div className="flex items-center gap-2">
+              <Input
+                id={id}
+                aria-describedby={hintId}
+                {...apiKeyField}
+                type="text"
+                placeholder={apiKeyPlaceholder}
+                autoComplete="off"
+              />
+              <Button
+                type="button"
+                onClick={() => void copyApiKey()}
+                variant="secondary"
+                size="sm"
+                className="h-9 shrink-0"
+                disabled={saving || copyingApiKey || !canCopyApiKey}
+              >
+                {copyingApiKey ? "复制中…" : "复制"}
+              </Button>
+            </div>
+          )}
         </FormField>
 
         <FormField label="价格倍率">
-          <div className="flex items-center gap-2">
-            <Input
-              type="number"
-              min="0"
-              step="0.01"
-              placeholder="1.0"
-              {...costMultiplierField}
-              onChange={(event) => {
-                costMultiplierField.onChange(event);
-                syncFreeTagForCostMultiplier(event.currentTarget.value);
-              }}
-            />
-            <Button
-              type="button"
-              variant="secondary"
-              size="sm"
-              className={
-                isZeroMultiplier(costMultiplierValue)
-                  ? "h-9 shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/40"
-                  : "h-9 shrink-0"
-              }
-              disabled={saving}
-              onClick={() =>
-                setCostMultiplierValue("0", {
-                  shouldDirty: true,
-                  shouldTouch: true,
-                  shouldValidate: true,
-                })
-              }
-            >
-              免费
-            </Button>
-          </div>
+          {(id) => (
+            <div className="flex items-center gap-2">
+              <Input
+                id={id}
+                type="number"
+                min="0"
+                step="0.01"
+                placeholder="1.0"
+                {...costMultiplierField}
+                onChange={(event) => {
+                  costMultiplierField.onChange(event);
+                  syncFreeTagForCostMultiplier(event.currentTarget.value);
+                }}
+              />
+              <Button
+                type="button"
+                variant="secondary"
+                size="sm"
+                className={
+                  isZeroMultiplier(costMultiplierValue)
+                    ? "h-9 shrink-0 border-emerald-200 bg-emerald-50 text-emerald-700 hover:bg-emerald-100 dark:border-emerald-800 dark:bg-emerald-900/30 dark:text-emerald-300 dark:hover:bg-emerald-900/40"
+                    : "h-9 shrink-0"
+                }
+                disabled={saving}
+                onClick={() =>
+                  setCostMultiplierValue("0", {
+                    shouldDirty: true,
+                    shouldTouch: true,
+                    shouldValidate: true,
+                  })
+                }
+              >
+                免费
+              </Button>
+            </div>
+          )}
         </FormField>
       </div>
 
@@ -166,12 +175,16 @@ export function ApiKeySection(props: { form: UseProviderEditorFormReturn }) {
           label="测试模型"
           hint="仅用于供应商可用性测试。留空时会使用 Codex 页里的全局测试模型。"
         >
-          <Input
-            value={testModel}
-            onChange={(e) => setTestModel(e.currentTarget.value)}
-            placeholder="例如：gpt-5.4-mini"
-            disabled={saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              value={testModel}
+              onChange={(e) => setTestModel(e.currentTarget.value)}
+              placeholder="例如：gpt-5.4-mini"
+              disabled={saving}
+            />
+          )}
         </FormField>
       ) : null}
     </>

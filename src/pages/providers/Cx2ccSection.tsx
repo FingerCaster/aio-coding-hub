@@ -50,7 +50,7 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
     <>
       <div className="grid gap-3 sm:grid-cols-2">
         <FormField label="名称">
-          <Input placeholder="default" {...register("name")} />
+          {(id) => <Input id={id} placeholder="default" {...register("name")} />}
         </FormField>
 
         <TagsField
@@ -63,7 +63,9 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
       </div>
 
       <FormField label="备注">
-        <Input placeholder="可选备注信息" disabled={saving} {...register("note")} />
+        {(id) => (
+          <Input id={id} placeholder="可选备注信息" disabled={saving} {...register("note")} />
+        )}
       </FormField>
 
       <div className="grid gap-3 sm:grid-cols-[minmax(0,1fr)_minmax(12rem,16rem)]">
@@ -96,9 +98,10 @@ export function Cx2ccSection(props: { form: UseProviderEditorFormReturn }) {
         </FormField>
 
         <FormField label="默认模型" hint="用于 CX2CC 转译">
-          {(id) => (
+          {(id, hintId) => (
             <Select
               id={id}
+              aria-describedby={hintId}
               value={selectedDefaultModel}
               onChange={(e) => {
                 const value = e.currentTarget.value;

@@ -101,6 +101,8 @@ export function useCliSessionsMessagesInfiniteQuery(
       }),
     enabled: Boolean(normalizedFilePath) && (options?.enabled ?? true),
     getNextPageParam: (lastPage) => (lastPage?.has_more ? lastPage.page + 1 : undefined),
+    getPreviousPageParam: (firstPage) =>
+      firstPage && firstPage.page > 0 ? firstPage.page - 1 : undefined,
     initialPageParam: 0,
     maxPages: CLI_SESSIONS_MESSAGES_MAX_CACHED_PAGES,
     gcTime: CLI_SESSIONS_MESSAGES_GC_TIME_MS,

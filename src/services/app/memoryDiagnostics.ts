@@ -4,6 +4,7 @@ import { invokeGeneratedIpc, mapGeneratedCommandResponse } from "../generatedIpc
 import { logToConsole } from "../consoleLog";
 
 const ESTIMATE_MAX_NODES = 200_000;
+const QUERY_SCAN_LIMIT = 2_000;
 const TOP_QUERY_LIMIT = 20;
 
 export type { AppMemoryDiagnosticsSnapshot };
@@ -11,6 +12,10 @@ export type { AppMemoryDiagnosticsSnapshot };
 type SizeEstimate = {
   bytes: number;
   truncated: boolean;
+};
+
+type SizeEstimateBudget = {
+  remainingNodes: number;
 };
 
 type FrontendQueryDiagnostic = {
@@ -34,6 +39,8 @@ export type AppMemoryDiagnosticsReport = {
   frontend: {
     href: string;
     query_count: number;
+    scanned_query_count: number;
+    scan_truncated: boolean;
     query_estimated_bytes: number;
     query_groups: FrontendQueryGroupDiagnostic[];
     top_queries: FrontendQueryDiagnostic[];
@@ -45,17 +52,16 @@ export type AppMemoryDiagnosticsReport = {
   };
 };
 
-function estimateValueSize(value: unknown): SizeEstimate {
+function estimateValueSize(value: unknown, budget: SizeEstimateBudget): SizeEstimate {
   const seen = new WeakSet<object>();
-  let nodes = 0;
   let truncated = false;
 
   function walk(current: unknown): number {
-    nodes += 1;
-    if (nodes > ESTIMATE_MAX_NODES) {
+    if (budget.remainingNodes <= 0) {
       truncated = true;
       return 0;
     }
+    budget.remainingNodes -= 1;
 
     if (current == null) return 4;
     if (typeof current === "string") return current.length * 2;
@@ -69,16 +75,26 @@ function estimateValueSize(value: unknown): SizeEstimate {
 
     if (Array.isArray(current)) {
       let size = 16;
-      for (const item of current) {
-        size += 8 + walk(item);
+      for (let index = 0; index < current.length; index += 1) {
+        if (budget.remainingNodes <= 0) {
+          truncated = true;
+          break;
+        }
+        size += 8 + walk(current[index]);
         if (truncated) break;
       }
       return size;
     }
 
     let size = 32;
-    for (const [key, item] of Object.entries(current as Record<string, unknown>)) {
-      size += key.length * 2 + 8 + walk(item);
+    const record = current as Record<string, unknown>;
+    for (const key in record) {
+      if (!Object.prototype.hasOwnProperty.call(record, key)) continue;
+      if (budget.remainingNodes <= 0) {
+        truncated = true;
+        break;
+      }
+      size += key.length * 2 + 8 + walk(record[key]);
       if (truncated) break;
     }
     return size;
@@ -125,14 +141,42 @@ function readJsHeap() {
   };
 }
 
+function insertTopQuery(
+  topQueries: FrontendQueryDiagnostic[],
+  diagnostic: FrontendQueryDiagnostic
+) {
+  const insertAt = topQueries.findIndex(
+    (candidate) => diagnostic.estimated_bytes > candidate.estimated_bytes
+  );
+
+  if (insertAt === -1) {
+    if (topQueries.length < TOP_QUERY_LIMIT) topQueries.push(diagnostic);
+    return;
+  }
+
+  topQueries.splice(insertAt, 0, diagnostic);
+  if (topQueries.length > TOP_QUERY_LIMIT) topQueries.pop();
+}
+
 function collectFrontendDiagnostics(): AppMemoryDiagnosticsReport["frontend"] {
   const queries = queryClient.getQueryCache().getAll();
   const topQueries: FrontendQueryDiagnostic[] = [];
   const groups = new Map<string, FrontendQueryGroupDiagnostic>();
+  const estimateBudget: SizeEstimateBudget = {
+    remainingNodes: ESTIMATE_MAX_NODES,
+  };
   let queryEstimatedBytes = 0;
+  let scannedQueryCount = 0;
+  let scanTruncated = false;
 
   for (const query of queries) {
-    const estimate = estimateValueSize(query.state.data);
+    if (scannedQueryCount >= QUERY_SCAN_LIMIT || estimateBudget.remainingNodes <= 0) {
+      scanTruncated = true;
+      break;
+    }
+
+    const estimate = estimateValueSize(query.state.data, estimateBudget);
+    scannedQueryCount += 1;
     queryEstimatedBytes += estimate.bytes;
 
     const groupKey = queryGroupKey(query.queryKey);
@@ -147,7 +191,7 @@ function collectFrontendDiagnostics(): AppMemoryDiagnosticsReport["frontend"] {
 
     const observers =
       typeof query.getObserversCount === "function" ? query.getObserversCount() : null;
-    topQueries.push({
+    insertTopQuery(topQueries, {
       query_hash: query.queryHash,
       query_key: safeStringifyKey(query.queryKey),
       status: String(query.state.status),
@@ -156,9 +200,13 @@ function collectFrontendDiagnostics(): AppMemoryDiagnosticsReport["frontend"] {
       estimated_bytes: estimate.bytes,
       truncated: estimate.truncated,
     });
+
+    if (estimate.truncated) {
+      scanTruncated = true;
+      break;
+    }
   }
 
-  topQueries.sort((a, b) => b.estimated_bytes - a.estimated_bytes);
   const queryGroups = Array.from(groups.values()).sort(
     (a, b) => b.estimated_bytes - a.estimated_bytes
   );
@@ -166,9 +214,11 @@ function collectFrontendDiagnostics(): AppMemoryDiagnosticsReport["frontend"] {
   return {
     href: typeof window === "undefined" ? "" : window.location.href,
     query_count: queries.length,
+    scanned_query_count: scannedQueryCount,
+    scan_truncated: scanTruncated,
     query_estimated_bytes: queryEstimatedBytes,
     query_groups: queryGroups,
-    top_queries: topQueries.slice(0, TOP_QUERY_LIMIT),
+    top_queries: topQueries,
     js_heap: typeof performance === "undefined" ? undefined : readJsHeap(),
   };
 }

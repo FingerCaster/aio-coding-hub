@@ -343,18 +343,24 @@ export function PromptsView({ workspaceId, cliKey, isActiveWorkspace = true }: P
       >
         <div className="grid gap-4">
           <FormField label="名称">
-            <Input
-              value={name}
-              onChange={(e) => dispatch({ type: "setName", name: e.currentTarget.value })}
-            />
+            {(id) => (
+              <Input
+                id={id}
+                value={name}
+                onChange={(e) => dispatch({ type: "setName", name: e.currentTarget.value })}
+              />
+            )}
           </FormField>
           <FormField label="内容">
-            <Textarea
-              value={content}
-              onChange={(e) => dispatch({ type: "setContent", content: e.currentTarget.value })}
-              mono
-              className="min-h-[16rem] max-h-[50vh] lg:min-h-[24rem]"
-            />
+            {(id) => (
+              <Textarea
+                id={id}
+                value={content}
+                onChange={(e) => dispatch({ type: "setContent", content: e.currentTarget.value })}
+                mono
+                className="min-h-[16rem] max-h-[50vh] lg:min-h-[24rem]"
+              />
+            )}
           </FormField>
 
           <div className="flex items-center justify-end gap-2 border-t border-border pt-3">

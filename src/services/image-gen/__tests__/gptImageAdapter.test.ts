@@ -331,6 +331,50 @@ describe("services/image-gen/gptImageAdapter", () => {
       expect(result.usage).toBeUndefined();
     });
 
+    it("rejects responses above the hard item limit before downloading any url", async () => {
+      const fetchImage = vi.fn().mockResolvedValue({ mime: "image/png", b64: "FETCHED" } as never);
+      const body = JSON.stringify({
+        data: Array.from({ length: 11 }, (_, index) => ({
+          url: `https://cdn.example.com/${index}.png`,
+        })),
+      });
+
+      await expect(parseImagesResponse(body, "image/png", fetchImage)).rejects.toThrow(
+        "响应图片数量 11 超过允许上限 10"
+      );
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    it("rejects responses above the requested count before downloading any url", async () => {
+      const fetchImage = vi.fn().mockResolvedValue({ mime: "image/png", b64: "FETCHED" } as never);
+      const body = JSON.stringify({
+        data: [
+          { url: "https://cdn.example.com/first.png" },
+          { url: "https://cdn.example.com/second.png" },
+        ],
+      });
+
+      await expect(parseImagesResponse(body, "image/png", fetchImage, 1)).rejects.toThrow(
+        "响应图片数量 2 超过允许上限 1"
+      );
+      expect(fetchImage).not.toHaveBeenCalled();
+    });
+
+    it.each([0, 1.5, Number.NaN])(
+      "rejects invalid requested count %s before processing response data",
+      async (requestedImageCount) => {
+        await expect(
+          parseImagesResponse(
+            '{"data":[{"b64_json":"AAA"}]}',
+            "image/png",
+            noFetch,
+            requestedImageCount
+          )
+        ).rejects.toThrow("请求图片数量必须是正安全整数");
+        expect(noFetch).not.toHaveBeenCalled();
+      }
+    );
+
     it("throws for invalid JSON", async () => {
       await expect(parseImagesResponse("not json", "image/png", noFetch)).rejects.toThrow(
         "响应不是有效的 JSON"
@@ -404,6 +448,24 @@ describe("services/image-gen/gptImageAdapter", () => {
       expect(result.images).toEqual([{ mime: "image/png", b64: "DL" }]);
     });
 
+    it("binds the response item limit to the requested image count", async () => {
+      vi.mocked(imageGenPostJson).mockResolvedValue({
+        status: 200,
+        bodyText: JSON.stringify({
+          data: [
+            { url: "https://cdn.example.com/first.png" },
+            { url: "https://cdn.example.com/second.png" },
+          ],
+        }),
+      });
+      vi.mocked(imageGenFetchImage).mockResolvedValue({ mime: "image/png", dataB64: "DL" });
+
+      await expect(gptImageAdapter.generate(makeRequest({ n: 1 }))).rejects.toThrow(
+        "响应图片数量 2 超过允许上限 1"
+      );
+      expect(imageGenFetchImage).not.toHaveBeenCalled();
+    });
+
     it("resolves mixed b64_json and url entries in order within one response", async () => {
       vi.mocked(imageGenPostJson).mockResolvedValue({
         status: 200,
@@ -413,7 +475,7 @@ describe("services/image-gen/gptImageAdapter", () => {
       });
       vi.mocked(imageGenFetchImage).mockResolvedValue({ mime: "image/jpeg", dataB64: "BBB" });
 
-      const result = await gptImageAdapter.generate(makeRequest());
+      const result = await gptImageAdapter.generate(makeRequest({ n: 2 }));
 
       expect(imageGenFetchImage).toHaveBeenCalledTimes(1);
       expect(imageGenFetchImage).toHaveBeenCalledWith("https://cdn.example.com/b.jpg");

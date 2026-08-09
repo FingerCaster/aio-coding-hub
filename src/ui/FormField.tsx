@@ -1,36 +1,62 @@
 import { useId, type ReactNode } from "react";
 import { cn } from "../utils/cn";
 
-export type FormFieldProps = {
+type FormFieldBaseProps = {
   /** Visible label text. */
   label: string;
   /** Optional hint shown to the right of the label. */
   hint?: ReactNode;
-  /** The form control(s) rendered inside this field. */
-  children: ReactNode | ((id: string, hintId?: string) => ReactNode);
   className?: string;
+};
+
+type FormFieldControlProps = FormFieldBaseProps & {
+  /** Render content containing one primary labelable control with the generated control and hint ids. */
+  children: (id: string, hintId?: string) => ReactNode;
+  group?: false;
   /** Explicit id to associate the label with the control. When omitted a stable id is generated automatically. */
   htmlFor?: string;
 };
 
-export function FormField({ label, hint, children, className, htmlFor }: FormFieldProps) {
+type FormFieldGroupProps = FormFieldBaseProps & {
+  /** Render composite controls as one labelled and optionally described group. */
+  children: ReactNode;
+  group: true;
+  htmlFor?: never;
+};
+
+export type FormFieldProps = FormFieldControlProps | FormFieldGroupProps;
+
+export function FormField(props: FormFieldProps) {
   const autoId = useId();
-  const fieldId = htmlFor ?? autoId;
-  const hintId = hint ? `${fieldId}-hint` : undefined;
+  const fieldId = props.group ? autoId : (props.htmlFor ?? autoId);
+  const labelId = props.group ? `${fieldId}-label` : undefined;
+  const hintId = props.hint ? `${fieldId}-hint` : undefined;
 
   return (
-    <div className={cn("space-y-1.5", className)}>
+    <div className={cn("space-y-1.5", props.className)}>
       <div className="flex items-center justify-between gap-3">
-        <label htmlFor={fieldId} className="text-sm font-medium text-foreground">
-          {label}
-        </label>
-        {hint ? (
+        {props.group ? (
+          <span id={labelId} className="text-sm font-medium text-foreground">
+            {props.label}
+          </span>
+        ) : (
+          <label htmlFor={fieldId} className="text-sm font-medium text-foreground">
+            {props.label}
+          </label>
+        )}
+        {props.hint ? (
           <div id={hintId} className="text-xs text-muted-foreground">
-            {hint}
+            {props.hint}
           </div>
         ) : null}
       </div>
-      {typeof children === "function" ? children(fieldId, hintId) : children}
+      {props.group ? (
+        <div role="group" aria-labelledby={labelId} aria-describedby={hintId}>
+          {props.children}
+        </div>
+      ) : (
+        props.children(fieldId, hintId)
+      )}
     </div>
   );
 }

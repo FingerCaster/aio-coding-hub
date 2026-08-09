@@ -299,7 +299,7 @@ describe("pages/SessionsMessagesPage", () => {
     });
 
     expect(await screen.findByText("Hello from user")).toBeInTheDocument();
-    const loadMoreBtn = screen.getByTitle("加载更多消息");
+    const loadMoreBtn = screen.getByTitle("加载更晚消息");
     expect(loadMoreBtn).not.toBeDisabled();
   });
 
@@ -391,11 +391,71 @@ describe("pages/SessionsMessagesPage", () => {
     });
 
     expect(await screen.findByText("Hello from user")).toBeInTheDocument();
-    const loadMoreBtn = screen.getByTitle("加载更多消息");
+    const loadMoreBtn = screen.getByTitle("加载更晚消息");
     fireEvent.click(loadMoreBtn);
     await waitFor(() => {
       expect(cliSessionsMessagesGet).toHaveBeenCalledTimes(2);
     });
+  });
+
+  it("moves the bounded message window in both directions with accurate boundaries", async () => {
+    setTauriRuntime();
+    vi.mocked(cliSessionsMessagesGet).mockImplementation(async ({ page }) => ({
+      messages: [
+        {
+          uuid: `msg-page-${page}`,
+          role: "assistant",
+          timestamp: null,
+          model: null,
+          content: [{ type: "text", text: `Page ${page}` }],
+        },
+      ],
+      total: 550,
+      page,
+      page_size: 50,
+      has_more: page < 10,
+    }));
+
+    renderWithRoute("/sessions/claude/proj1/session/long-session.json", {
+      session: SESSION,
+    });
+
+    expect(await screen.findByText("Page 0")).toBeInTheDocument();
+    expect(screen.getByText("— 会话开始 —")).toBeInTheDocument();
+    expect(screen.getByText("— 已加载窗口终点 —")).toBeInTheDocument();
+    expect(screen.getByTitle("加载更早消息")).toBeDisabled();
+
+    for (let page = 1; page <= 10; page += 1) {
+      fireEvent.click(screen.getByTitle("加载更晚消息"));
+      await waitFor(() => {
+        expect(cliSessionsMessagesGet).toHaveBeenLastCalledWith(
+          expect.objectContaining({ page, fromEnd: false })
+        );
+      });
+      expect(await screen.findByText(`Page ${page}`)).toBeInTheDocument();
+      if (page < 10) {
+        await waitFor(() => expect(screen.getByTitle("加载更晚消息")).not.toBeDisabled());
+      }
+    }
+
+    expect(screen.queryByText("Page 0")).not.toBeInTheDocument();
+    expect(screen.queryByText("— 会话开始 —")).not.toBeInTheDocument();
+    expect(screen.getByText("— 已加载窗口起点 —")).toBeInTheDocument();
+    expect(screen.getByText("— 会话结束 —")).toBeInTheDocument();
+    expect(screen.getByText("#51")).toBeInTheDocument();
+    expect(screen.getByTitle("加载更早消息")).not.toBeDisabled();
+
+    fireEvent.click(screen.getByTitle("加载更早消息"));
+    await waitFor(() => {
+      expect(cliSessionsMessagesGet).toHaveBeenLastCalledWith(
+        expect.objectContaining({ page: 0, fromEnd: false })
+      );
+    });
+    expect(await screen.findByText("Page 0")).toBeInTheDocument();
+    expect(screen.getByText("— 会话开始 —")).toBeInTheDocument();
+    expect(screen.getByText("— 已加载窗口终点 —")).toBeInTheDocument();
+    expect(screen.queryByText("— 会话结束 —")).not.toBeInTheDocument();
+    expect(screen.getByText("#1")).toBeInTheDocument();
   });
 
   it("clicks scroll to bottom buttons", async () => {

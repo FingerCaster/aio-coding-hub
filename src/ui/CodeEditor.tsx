@@ -1,6 +1,9 @@
-import { useEffect, useRef } from "react";
+import { useEffect, useRef, useState } from "react";
+import { AlertTriangle, RefreshCw } from "lucide-react";
 import { cn } from "../utils/cn";
 import { BRAND } from "../constants/colors";
+import { Button } from "./Button";
+import { Tooltip } from "./Tooltip";
 
 export type CodeEditorLanguage = "toml" | "text";
 
@@ -44,6 +47,20 @@ function loadCodeMirrorBundle() {
     tomlMode: toml.toml,
   }));
 
+  const ownedPromise = codeMirrorBundlePromise;
+  return ownedPromise.catch((error) => {
+    if (codeMirrorBundlePromise === ownedPromise) {
+      codeMirrorBundlePromise = null;
+    }
+    throw error;
+  });
+}
+
+export function resetCodeMirrorBundleForTests() {
+  codeMirrorBundlePromise = null;
+}
+
+export function getCodeMirrorBundlePromiseForTests() {
   return codeMirrorBundlePromise;
 }
 
@@ -64,6 +81,10 @@ export function CodeEditor({
 
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
+  const [loadError, setLoadError] = useState(false);
+
+  const heightValue = height ? (typeof height === "number" ? `${height}px` : height) : undefined;
+  const containerStyle = heightValue ? { height: heightValue } : { minHeight };
 
   useEffect(() => {
     const parent = editorRef.current;
@@ -75,12 +96,6 @@ export function CodeEditor({
     void loadCodeMirrorBundle().then(
       ({ EditorView, basicSetup, EditorState, placeholderExt, StreamLanguage, tomlMode }) => {
         if (cancelled || !editorRef.current) return;
-
-        const heightValue = height
-          ? typeof height === "number"
-            ? `${height}px`
-            : height
-          : undefined;
 
         const baseTheme = EditorView.baseTheme({
           ".cm-editor": {
@@ -156,6 +171,9 @@ export function CodeEditor({
         });
 
         viewRef.current = view;
+      },
+      () => {
+        if (!cancelled) setLoadError(true);
       }
     );
 
@@ -163,7 +181,7 @@ export function CodeEditor({
       cancelled = true;
       view?.destroy();
     };
-  }, [language, readOnly, minHeight, height, placeholder]);
+  }, [language, readOnly, minHeight, heightValue, placeholder]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -178,5 +196,42 @@ export function CodeEditor({
     });
   }, [value]);
 
-  return <div ref={editorRef} className={cn("w-full", className)} />;
+  if (loadError) {
+    return (
+      <div
+        role="alert"
+        aria-label="编辑器加载失败"
+        style={containerStyle}
+        className={cn(
+          "flex w-full items-center justify-center overflow-hidden rounded-lg border border-rose-200 bg-rose-50 p-0 text-center sm:p-4 dark:border-rose-800 dark:bg-rose-950",
+          className
+        )}
+      >
+        <div className="flex min-w-0 max-w-full flex-col items-center gap-1 sm:gap-3">
+          <AlertTriangle className="h-4 w-4 shrink-0 text-rose-800 sm:hidden dark:text-rose-400" />
+          <div className="hidden sm:block">
+            <div className="text-sm font-semibold text-rose-900 dark:text-rose-300">
+              编辑器加载失败
+            </div>
+            <div className="mt-1 text-sm text-rose-800 dark:text-rose-400">
+              无法加载编辑器资源，请重新加载页面。
+            </div>
+          </div>
+          <Tooltip content="重新加载页面">
+            <Button
+              type="button"
+              variant="secondary"
+              size="icon"
+              aria-label="重新加载页面"
+              onClick={() => window.location.reload()}
+            >
+              <RefreshCw className="h-4 w-4" />
+            </Button>
+          </Tooltip>
+        </div>
+      </div>
+    );
+  }
+
+  return <div ref={editorRef} style={containerStyle} className={cn("w-full", className)} />;
 }

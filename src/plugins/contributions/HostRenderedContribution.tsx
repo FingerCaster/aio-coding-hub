@@ -205,14 +205,17 @@ function renderField({
   if (field.type === "boolean") {
     return (
       <FormField key={field.key} label={field.label}>
-        <div className="flex justify-end">
-          <Switch
-            aria-label={field.label}
-            checked={booleanValue(value)}
-            onCheckedChange={(checked) => onChange(field.key, checked)}
-            disabled={disabled}
-          />
-        </div>
+        {(id) => (
+          <div className="flex justify-end">
+            <Switch
+              id={id}
+              aria-label={field.label}
+              checked={booleanValue(value)}
+              onCheckedChange={(checked) => onChange(field.key, checked)}
+              disabled={disabled}
+            />
+          </div>
+        )}
       </FormField>
     );
   }

@@ -3,7 +3,7 @@
 import { useEffect, useMemo, useRef, useState, type RefObject } from "react";
 import { useLocation, useNavigate, useParams, useSearchParams } from "react-router-dom";
 import { useVirtualizer } from "@tanstack/react-virtual";
-import { ArrowDown, ArrowLeft, Copy, Loader2 } from "lucide-react";
+import { ArrowDown, ArrowLeft, ChevronDown, ChevronUp, Copy, Loader2 } from "lucide-react";
 import { toast } from "sonner";
 import {
   type CliSessionsDisplayContentBlock,
@@ -139,9 +139,17 @@ function renderBlock(block: CliSessionsDisplayContentBlock, key: string) {
 type MessageSide = "left" | "right" | "center";
 type LoadedMessagesRange = {
   total: number;
-  hasMore: boolean;
+  hasPrevious: boolean;
+  hasNext: boolean;
   loadedRangeText: string;
 };
+
+function loadedWindowStatus(range: LoadedMessagesRange) {
+  if (range.hasPrevious && range.hasNext) return "可加载更早和更晚";
+  if (range.hasPrevious) return "可加载更早";
+  if (range.hasNext) return "可加载更晚";
+  return "已加载完整会话";
+}
 
 function messageSide(roleRaw: string): MessageSide {
   const role = roleRaw.trim().toLowerCase();
@@ -209,7 +217,7 @@ function SessionsMessagesInfoPanel({
             {range.total > 0 ? (
               <span>
                 {range.loadedRangeText}
-                {range.hasMore ? "（可加载更多）" : ""}
+                {`（${loadedWindowStatus(range)}）`}
               </span>
             ) : (
               <span>—</span>
@@ -530,7 +538,9 @@ function SessionsMessagesListCard({
   containerRef,
   range,
   loading,
-  loadingMore,
+  loadingPrevious,
+  loadingNext,
+  onFetchPreviousPage,
   onFetchNextPage,
   onScrollToBottom,
   jumpBottomTitle,
@@ -543,7 +553,9 @@ function SessionsMessagesListCard({
   containerRef: RefObject<HTMLDivElement | null>;
   range: LoadedMessagesRange;
   loading: boolean;
-  loadingMore: boolean;
+  loadingPrevious: boolean;
+  loadingNext: boolean;
+  onFetchPreviousPage: () => void;
   onFetchNextPage: () => void;
   onScrollToBottom: () => void;
   jumpBottomTitle: string;
@@ -560,27 +572,48 @@ function SessionsMessagesListCard({
 
   return (
     <Card padding="none" className="flex min-h-0 flex-1 flex-col">
-      <div className="flex items-center justify-between border-b border-border px-4 py-3 text-xs text-muted-foreground dark:border-border dark:text-muted-foreground">
+      <div className="flex flex-col gap-2 border-b border-border px-4 py-3 text-xs text-muted-foreground sm:flex-row sm:items-center sm:justify-between dark:border-border dark:text-muted-foreground">
         <div>
           {range.total > 0 ? (
             <span>
-              {range.hasMore ? "可加载更多" : "已到会话末尾"} · {range.loadedRangeText}
+              {loadedWindowStatus(range)} · {range.loadedRangeText}
             </span>
           ) : (
             <span>—</span>
           )}
         </div>
-        <div className="flex items-center gap-2">
+        <div className="flex flex-wrap items-center justify-end gap-2 sm:shrink-0">
           <Button
             size="sm"
             variant="secondary"
-            disabled={!range.hasMore || loading || loadingMore}
-            onClick={onFetchNextPage}
-            title="加载更多消息"
+            disabled={!range.hasPrevious || loading || loadingPrevious || loadingNext}
+            onClick={onFetchPreviousPage}
+            title="加载更早消息"
+            aria-label="加载更早消息"
             className="h-9"
           >
-            {loadingMore ? <Loader2 className="h-4 w-4 animate-spin" /> : null}
-            加载更多
+            {loadingPrevious ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ChevronUp className="h-4 w-4" />
+            )}
+            <span className="hidden xl:inline">加载更早</span>
+          </Button>
+          <Button
+            size="sm"
+            variant="secondary"
+            disabled={!range.hasNext || loading || loadingPrevious || loadingNext}
+            onClick={onFetchNextPage}
+            title="加载更晚消息"
+            aria-label="加载更晚消息"
+            className="h-9"
+          >
+            {loadingNext ? (
+              <Loader2 className="h-4 w-4 animate-spin" />
+            ) : (
+              <ChevronDown className="h-4 w-4" />
+            )}
+            <span className="hidden xl:inline">加载更晚</span>
           </Button>
           <Button
             size="sm"
@@ -607,7 +640,9 @@ function SessionsMessagesListCard({
           <EmptyState title="此会话没有可显示的消息" variant="dashed" />
         ) : (
           <>
-            <div className="py-2 text-center text-[11px] text-muted-foreground">— 会话开始 —</div>
+            <div className="py-2 text-center text-[11px] text-muted-foreground">
+              — {range.hasPrevious ? "已加载窗口起点" : "会话开始"} —
+            </div>
             <div
               className="mx-auto w-full max-w-4xl"
               style={{
@@ -645,9 +680,9 @@ function SessionsMessagesListCard({
                 );
               })}
             </div>
-            {!range.hasMore ? (
-              <div className="py-2 text-center text-[11px] text-muted-foreground">— 会话结束 —</div>
-            ) : null}
+            <div className="py-2 text-center text-[11px] text-muted-foreground">
+              — {range.hasNext ? "已加载窗口终点" : "会话结束"} —
+            </div>
           </>
         )}
       </div>
@@ -689,16 +724,23 @@ export function SessionsMessagesPage() {
   const firstCachedPageSize = messagesQuery.data?.pages[0]?.page_size ?? 50;
   const globalStartIndex = firstCachedPage * firstCachedPageSize;
   const total = messagesQuery.data?.pages[0]?.total ?? 0;
-  const hasMore = messagesQuery.hasNextPage ?? false;
+  const hasPrevious = messagesQuery.hasPreviousPage ?? false;
+  const hasNext = messagesQuery.hasNextPage ?? false;
   const loading = messagesQuery.isLoading;
-  const loadingMore = messagesQuery.isFetchingNextPage;
+  const loadingPrevious = messagesQuery.isFetchingPreviousPage;
+  const loadingNext = messagesQuery.isFetchingNextPage;
   const error = messagesQuery.error ? String(messagesQuery.error) : null;
-  const canReachSessionEnd = !hasMore;
+  const canReachSessionEnd = !hasNext;
   const jumpBottomTitle = canReachSessionEnd ? "滚动到会话末尾" : "滚动到已加载底部";
   const jumpBottomLabel = canReachSessionEnd ? "到会话末尾" : "到已加载底部";
 
+  const handleFetchPreviousPage = async () => {
+    if (!hasPrevious || loading || loadingPrevious || loadingNext) return;
+    await messagesQuery.fetchPreviousPage();
+  };
+
   const handleFetchNextPage = async () => {
-    if (!hasMore || loading || loadingMore) return;
+    if (!hasNext || loading || loadingPrevious || loadingNext) return;
     await messagesQuery.fetchNextPage();
   };
 
@@ -757,7 +799,8 @@ export function SessionsMessagesPage() {
     loadedStart > 0 ? `显示 ${loadedStart}-${loadedEnd}/${total} 条消息` : "—";
   const range: LoadedMessagesRange = {
     total,
-    hasMore,
+    hasPrevious,
+    hasNext,
     loadedRangeText,
   };
 
@@ -805,7 +848,9 @@ export function SessionsMessagesPage() {
           containerRef={containerRef}
           range={range}
           loading={loading}
-          loadingMore={loadingMore}
+          loadingPrevious={loadingPrevious}
+          loadingNext={loadingNext}
+          onFetchPreviousPage={() => void handleFetchPreviousPage()}
           onFetchNextPage={() => void handleFetchNextPage()}
           onScrollToBottom={scrollToBottom}
           jumpBottomTitle={jumpBottomTitle}

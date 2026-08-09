@@ -48,9 +48,10 @@ export function ImageGenParamsPanel({ controller, className }: ImageGenParamsPan
           <h2 className="mb-3 text-sm font-semibold text-foreground">连接配置</h2>
           <div className="space-y-3">
             <FormField label="Base URL" hint="失焦自动保存">
-              {(id) => (
+              {(id, hintId) => (
                 <Input
                   id={id}
+                  aria-describedby={hintId}
                   mono
                   placeholder="https://api.example.com"
                   value={baseUrl}
@@ -62,9 +63,10 @@ export function ImageGenParamsPanel({ controller, className }: ImageGenParamsPan
               )}
             </FormField>
             <FormField label="API Key" hint={apiKeyConfigured ? "已配置" : "未配置"}>
-              {(id) => (
+              {(id, hintId) => (
                 <Input
                   id={id}
+                  aria-describedby={hintId}
                   type="password"
                   mono
                   placeholder={apiKeyConfigured ? "已配置（输入新值可替换）" : "请输入 API Key"}
@@ -150,9 +152,10 @@ export function ImageGenParamsPanel({ controller, className }: ImageGenParamsPan
               )}
             </FormField>
             <FormField label="压缩率" hint={compressionEnabled ? "0-100" : "仅 JPEG/WebP 可用"}>
-              {(id) => (
+              {(id, hintId) => (
                 <Input
                   id={id}
+                  aria-describedby={hintId}
                   type="number"
                   min={0}
                   max={100}
@@ -185,9 +188,10 @@ export function ImageGenParamsPanel({ controller, className }: ImageGenParamsPan
               )}
             </FormField>
             <FormField label="数量" hint="1-10">
-              {(id) => (
+              {(id, hintId) => (
                 <Input
                   id={id}
+                  aria-describedby={hintId}
                   type="number"
                   min={1}
                   max={10}

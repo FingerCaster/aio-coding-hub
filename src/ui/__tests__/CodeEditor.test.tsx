@@ -1,4 +1,4 @@
-import { cleanup, render, waitFor } from "@testing-library/react";
+import { act, cleanup, fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 /* ------------------------------------------------------------------ */
@@ -77,7 +77,11 @@ vi.mock("@codemirror/legacy-modes/mode/toml", () => ({
 /*  Import the component under test AFTER mocks are declared          */
 /* ------------------------------------------------------------------ */
 
-import { CodeEditor } from "../CodeEditor";
+import {
+  CodeEditor,
+  getCodeMirrorBundlePromiseForTests,
+  resetCodeMirrorBundleForTests,
+} from "../CodeEditor";
 
 /* ------------------------------------------------------------------ */
 /*  Tests                                                             */
@@ -87,13 +91,112 @@ async function waitForEditorCreated(times = 1) {
   await waitFor(() => expect(MockEditorState.create).toHaveBeenCalledTimes(times));
 }
 
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (reason?: unknown) => void;
+  const promise = new Promise<T>((resolvePromise, rejectPromise) => {
+    resolve = resolvePromise;
+    reject = rejectPromise;
+  });
+  return { promise, reject, resolve };
+}
+
 describe("ui/CodeEditor", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    resetCodeMirrorBundleForTests();
   });
 
   afterEach(() => {
     cleanup();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+  });
+
+  it("offers a page reload when the initial bundle load rejects", async () => {
+    const firstLoad = deferred<never[]>();
+    const promiseAllSpy = vi
+      .spyOn(Promise, "all")
+      .mockImplementationOnce(() => firstLoad.promise as never);
+    const reload = vi.fn();
+    vi.stubGlobal("location", { ...window.location, reload });
+
+    render(<CodeEditor value="recover" minHeight="260px" />);
+    await act(async () => {
+      firstLoad.reject(new Error("chunk unavailable"));
+      await firstLoad.promise.catch(() => undefined);
+    });
+
+    const error = await screen.findByRole("alert");
+    expect(error).toHaveAccessibleName("编辑器加载失败");
+    expect(error).toHaveTextContent("编辑器加载失败");
+    expect(error).toHaveStyle({ minHeight: "260px" });
+    expect(getCodeMirrorBundlePromiseForTests()).toBeNull();
+
+    fireEvent.click(screen.getByRole("button", { name: "重新加载页面" }));
+    expect(reload).toHaveBeenCalledTimes(1);
+    expect(promiseAllSpy).toHaveBeenCalledTimes(1);
+  });
+
+  it("does not let an older rejection clear a newer bundle load", async () => {
+    const firstLoad = deferred<never[]>();
+    const secondLoad = deferred<never[]>();
+    vi.spyOn(Promise, "all")
+      .mockImplementationOnce(() => firstLoad.promise as never)
+      .mockImplementationOnce(() => secondLoad.promise as never);
+
+    render(<CodeEditor value="first" />);
+    resetCodeMirrorBundleForTests();
+    render(<CodeEditor value="second" />);
+    const newerOwner = getCodeMirrorBundlePromiseForTests();
+    expect(newerOwner).not.toBeNull();
+
+    await act(async () => {
+      firstLoad.reject(new Error("older chunk unavailable"));
+      await firstLoad.promise.catch(() => undefined);
+    });
+    expect(getCodeMirrorBundlePromiseForTests()).toBe(newerOwner);
+
+    await act(async () => {
+      secondLoad.resolve([
+        { EditorView: MockEditorView, basicSetup: "basicSetup" },
+        { EditorState: MockEditorState },
+        { placeholder: mockPlaceholder },
+        { StreamLanguage: { define: mockStreamLanguageDefine } },
+        { toml: mockTomlMode },
+      ] as never[]);
+      await secondLoad.promise;
+    });
+    await waitForEditorCreated();
+  });
+
+  it("ignores a bundle rejection after unmount", async () => {
+    const load = deferred<never[]>();
+    vi.spyOn(Promise, "all").mockImplementationOnce(() => load.promise as never);
+    const { unmount } = render(<CodeEditor value="unmounted" />);
+    unmount();
+
+    await act(async () => {
+      load.reject(new Error("late chunk failure"));
+      await load.promise.catch(() => undefined);
+    });
+
+    expect(MockEditorState.create).not.toHaveBeenCalled();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("reuses a successful bundle load across mounts", async () => {
+    const promiseAllSpy = vi.spyOn(Promise, "all");
+    const first = render(<CodeEditor value="first" />);
+    await waitForEditorCreated();
+    const cached = getCodeMirrorBundlePromiseForTests();
+    expect(cached).not.toBeNull();
+    first.unmount();
+
+    render(<CodeEditor value="second" />);
+    await waitForEditorCreated(2);
+    expect(getCodeMirrorBundlePromiseForTests()).toBe(cached);
+    expect(promiseAllSpy).toHaveBeenCalledTimes(1);
   });
 
   /* --- Rendering -------------------------------------------------- */

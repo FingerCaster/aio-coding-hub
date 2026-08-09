@@ -64,7 +64,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
       <div className="space-y-4">
         {/* ── Auth mode selector ── */}
         {f.supportsOAuth ? (
-          <FormField label="认证方式" hint="选择后下方表单会相应变化">
+          <FormField label="认证方式" hint="选择后下方表单会相应变化" group>
             <TabList<"api_key" | "oauth">
               ariaLabel="认证方式"
               items={[
@@ -79,7 +79,7 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
             />
           </FormField>
         ) : f.supportsCx2cc ? (
-          <FormField label="认证方式" hint="选择后下方表单会相应变化">
+          <FormField label="认证方式" hint="选择后下方表单会相应变化" group>
             <TabList<"api_key" | "oauth" | "cx2cc">
               ariaLabel="认证方式"
               items={[
@@ -108,16 +108,20 @@ export function ProviderEditorDialog(props: ProviderEditorDialogProps) {
           label="流式空闲超时覆盖（秒）"
           hint="留空或 0 表示沿用全局设置；仅对当前 Provider 的流式请求生效。"
         >
-          <Input
-            type="number"
-            min="0"
-            max="3600"
-            step="1"
-            placeholder="0"
-            value={f.streamIdleTimeoutSeconds}
-            onChange={(e) => f.setStreamIdleTimeoutSeconds(e.currentTarget.value)}
-            disabled={f.saving}
-          />
+          {(id, hintId) => (
+            <Input
+              id={id}
+              aria-describedby={hintId}
+              type="number"
+              min="0"
+              max="3600"
+              step="1"
+              placeholder="0"
+              value={f.streamIdleTimeoutSeconds}
+              onChange={(e) => f.setStreamIdleTimeoutSeconds(e.currentTarget.value)}
+              disabled={f.saving}
+            />
+          )}
         </FormField>
 
         <ProviderAccountUsageSection form={f} />
