@@ -115,7 +115,7 @@ describe("query/modelPrices", () => {
   it("useModelPriceAliasesQuery calls modelPriceAliasesGet", async () => {
     setTauriRuntime();
 
-    const aliases: ModelPriceAliases = { version: 1, rules: [] };
+    const aliases: ModelPriceAliases = { version: 2, rules: [] };
     vi.mocked(modelPriceAliasesGet).mockResolvedValue(aliases);
 
     const client = createTestQueryClient();
@@ -131,7 +131,7 @@ describe("query/modelPrices", () => {
   it("useModelPriceAliasesSetMutation updates cache and invalidates aliases", async () => {
     setTauriRuntime();
 
-    const updated: ModelPriceAliases = {
+    const legacyInput: ModelPriceAliases = {
       version: 1,
       rules: [
         {
@@ -143,21 +143,33 @@ describe("query/modelPrices", () => {
         },
       ],
     };
+    const updated: ModelPriceAliases = {
+      version: 2,
+      rules: [
+        {
+          cli_key: "codex",
+          match_type: "prefix",
+          pattern: "gpt-",
+          target_model: "gpt-5",
+          enabled: true,
+        },
+      ],
+    };
     vi.mocked(modelPriceAliasesSet).mockResolvedValue(updated);
 
     const client = createTestQueryClient();
-    client.setQueryData(modelPricesKeys.aliases(), { version: 1, rules: [] } as ModelPriceAliases);
+    client.setQueryData(modelPricesKeys.aliases(), { version: 2, rules: [] } as ModelPriceAliases);
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const wrapper = createQueryWrapper(client);
 
     const { result } = renderHook(() => useModelPriceAliasesSetMutation(), { wrapper });
     await act(async () => {
-      await result.current.mutateAsync(updated);
+      await result.current.mutateAsync(legacyInput);
     });
 
     expect(client.getQueryData(modelPricesKeys.aliases())).toEqual(updated);
     expect(modelPriceAliasesSet).toHaveBeenCalledWith({
-      version: 1,
+      version: 2,
       rules: [
         {
           cli_key: "codex",

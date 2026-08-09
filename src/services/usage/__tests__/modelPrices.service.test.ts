@@ -57,7 +57,7 @@ function makeModelPriceSummary(overrides: Partial<ModelPriceSummary> = {}): Mode
 
 function makeModelPriceAliases(overrides: Partial<ModelPriceAliases> = {}): ModelPriceAliases {
   return {
-    version: 1,
+    version: 2,
     rules: [
       {
         cli_key: "codex",
@@ -138,7 +138,7 @@ describe("services/usage/modelPrices", () => {
     expect(aliases?.rules[0]?.cli_key).toBe("codex");
     expect(aliases?.rules[0]?.pattern).toBe("gpt-");
     expect(aliases?.rules[0]?.target_model).toBe("gpt-5");
-    expect(updated?.version).toBe(1);
+    expect(updated?.version).toBe(2);
     expect(report).toEqual(expect.objectContaining({ status: "updated", inserted: 1, total: 1 }));
     expect(commands.modelPricesList).toHaveBeenCalledWith("claude");
     expect(commands.modelPriceAliasesSet).toHaveBeenCalledWith(aliases);
@@ -185,7 +185,7 @@ describe("services/usage/modelPrices", () => {
         ],
       })
     ).toEqual({
-      version: 1,
+      version: 2,
       rules: [
         {
           cli_key: "gemini",
@@ -197,7 +197,11 @@ describe("services/usage/modelPrices", () => {
       ],
     });
 
-    expect(() => normalizeModelPriceAliases({ version: 2, rules: [] })).toThrow(
+    expect(normalizeModelPriceAliases({ version: 2, rules: [] })).toEqual({
+      version: 2,
+      rules: [],
+    });
+    expect(() => normalizeModelPriceAliases({ version: 3, rules: [] })).toThrow(
       "SEC_INVALID_INPUT"
     );
   });

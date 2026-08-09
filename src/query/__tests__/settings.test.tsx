@@ -1,7 +1,12 @@
 import { act, renderHook, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import type { GatewayStatus } from "../../services/gateway/gateway";
-import { settingsGet, settingsSet } from "../../services/settings/settings";
+import {
+  settingsGet,
+  settingsSet,
+  type AppSettings,
+  type SettingsMutationResult,
+} from "../../services/settings/settings";
 import { settingsCircuitBreakerNoticeSet } from "../../services/settings/settingsCircuitBreakerNotice";
 import { settingsCodexSessionIdCompletionSet } from "../../services/settings/settingsCodexSessionIdCompletion";
 import { settingsGatewayRectifierSet } from "../../services/settings/settingsGatewayRectifier";
@@ -44,6 +49,23 @@ vi.mock("../../services/settings/settingsCodexSessionIdCompletion", async () => 
   >("../../services/settings/settingsCodexSessionIdCompletion");
   return { ...actual, settingsCodexSessionIdCompletionSet: vi.fn() };
 });
+
+function createSettingsMutationResult(settings: AppSettings): SettingsMutationResult {
+  return {
+    settings,
+    runtime: {
+      gateway_rebound: false,
+      cli_proxy_synced: false,
+      wsl_auto_sync_triggered: false,
+      gateway_status: {
+        running: false,
+        port: settings.preferred_port,
+        base_url: `http://127.0.0.1:${settings.preferred_port}`,
+        listen_addr: `127.0.0.1:${settings.preferred_port}`,
+      },
+    },
+  };
+}
 
 describe("query/settings", () => {
   it("getSettingsReadProtection blocks writes when there is no data and query errored", () => {
@@ -196,7 +218,9 @@ describe("query/settings", () => {
   it("useSettingsPatchMutation invalidates Codex projection queries for OAuth mode", async () => {
     setTauriRuntime();
 
+    const current = createTestAppSettings();
     const updated = createTestAppSettings({ codex_oauth_compatible_proxy_mode: true });
+    vi.mocked(settingsGet).mockResolvedValue(current);
     vi.mocked(settingsSet).mockResolvedValue({
       settings: updated,
       runtime: {
@@ -213,7 +237,7 @@ describe("query/settings", () => {
     });
 
     const client = createTestQueryClient();
-    client.setQueryData(settingsKeys.get(), createTestAppSettings());
+    client.setQueryData(settingsKeys.get(), current);
     const invalidateSpy = vi.spyOn(client, "invalidateQueries");
     const wrapper = createQueryWrapper(client);
 
@@ -228,6 +252,173 @@ describe("query/settings", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfig() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliManagerKeys.codexConfigToml() });
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: cliProxyKeys.statusAll() });
+  });
+
+  it("serializes independent settings patches and rebuilds from authoritative settings", async () => {
+    setTauriRuntime();
+    vi.mocked(settingsGet).mockReset();
+    vi.mocked(settingsSet).mockReset();
+
+    const initial = createTestAppSettings({
+      provider_cooldown_seconds: 30,
+      wsl_auto_config: false,
+    });
+    const firstUpdated = createTestAppSettings({
+      provider_cooldown_seconds: 41,
+      wsl_auto_config: false,
+    });
+    const secondUpdated = createTestAppSettings({
+      provider_cooldown_seconds: 41,
+      wsl_auto_config: true,
+    });
+    let resolveFirst!: (value: SettingsMutationResult) => void;
+    const firstResponse = new Promise<SettingsMutationResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    vi.mocked(settingsGet).mockResolvedValueOnce(initial).mockResolvedValueOnce(firstUpdated);
+    vi.mocked(settingsSet)
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
+
+    const client = createTestQueryClient();
+    client.setQueryData(
+      settingsKeys.get(),
+      createTestAppSettings({ provider_cooldown_seconds: 12, wsl_auto_config: false })
+    );
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(
+      () => ({
+        settingsPage: useSettingsPatchMutation(),
+        cliManager: useSettingsPatchMutation(),
+      }),
+      { wrapper }
+    );
+
+    let firstMutation!: Promise<unknown>;
+    let secondMutation!: Promise<unknown>;
+    act(() => {
+      firstMutation = result.current.settingsPage.mutateAsync({ provider_cooldown_seconds: 41 });
+      secondMutation = result.current.cliManager.mutateAsync({ wsl_auto_config: true });
+    });
+
+    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
+    expect(settingsGet).toHaveBeenCalledTimes(1);
+    expect(vi.mocked(settingsSet).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ providerCooldownSeconds: 41, wslAutoConfig: false })
+    );
+
+    act(() => resolveFirst(createSettingsMutationResult(firstUpdated)));
+    await act(async () => {
+      await Promise.all([firstMutation, secondMutation]);
+    });
+
+    expect(settingsGet).toHaveBeenCalledTimes(2);
+    expect(settingsSet).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(settingsSet).mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ providerCooldownSeconds: 41, wslAutoConfig: true })
+    );
+    expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
+  });
+
+  it("keeps same-field settings patches in FIFO order", async () => {
+    setTauriRuntime();
+    vi.mocked(settingsGet).mockReset();
+    vi.mocked(settingsSet).mockReset();
+
+    const initial = createTestAppSettings({ provider_cooldown_seconds: 30 });
+    const firstUpdated = createTestAppSettings({ provider_cooldown_seconds: 41 });
+    const secondUpdated = createTestAppSettings({ provider_cooldown_seconds: 42 });
+    let resolveFirst!: (value: SettingsMutationResult) => void;
+    const firstResponse = new Promise<SettingsMutationResult>((resolve) => {
+      resolveFirst = resolve;
+    });
+
+    vi.mocked(settingsGet).mockResolvedValueOnce(initial).mockResolvedValueOnce(firstUpdated);
+    vi.mocked(settingsSet)
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(
+      () => ({ first: useSettingsPatchMutation(), second: useSettingsPatchMutation() }),
+      { wrapper }
+    );
+
+    let firstMutation!: Promise<unknown>;
+    let secondMutation!: Promise<unknown>;
+    act(() => {
+      firstMutation = result.current.first.mutateAsync({ provider_cooldown_seconds: 41 });
+      secondMutation = result.current.second.mutateAsync({ provider_cooldown_seconds: 42 });
+    });
+
+    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
+    expect(vi.mocked(settingsSet).mock.calls[0]?.[0]).toEqual(
+      expect.objectContaining({ providerCooldownSeconds: 41 })
+    );
+
+    act(() => resolveFirst(createSettingsMutationResult(firstUpdated)));
+    await act(async () => {
+      await Promise.all([firstMutation, secondMutation]);
+    });
+
+    expect(vi.mocked(settingsSet).mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ providerCooldownSeconds: 42 })
+    );
+    expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
+  });
+
+  it("continues queued settings patches after an earlier write fails", async () => {
+    setTauriRuntime();
+    vi.mocked(settingsGet).mockReset();
+    vi.mocked(settingsSet).mockReset();
+
+    const initial = createTestAppSettings({
+      provider_cooldown_seconds: 30,
+      wsl_auto_config: false,
+    });
+    const secondUpdated = createTestAppSettings({
+      provider_cooldown_seconds: 30,
+      wsl_auto_config: true,
+    });
+    let rejectFirst!: (reason: Error) => void;
+    const firstResponse = new Promise<never>((_resolve, reject) => {
+      rejectFirst = reject;
+    });
+
+    vi.mocked(settingsGet).mockResolvedValue(initial);
+    vi.mocked(settingsSet)
+      .mockReturnValueOnce(firstResponse)
+      .mockResolvedValueOnce(createSettingsMutationResult(secondUpdated));
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(
+      () => ({ first: useSettingsPatchMutation(), second: useSettingsPatchMutation() }),
+      { wrapper }
+    );
+
+    let firstMutation!: Promise<unknown>;
+    let secondMutation!: Promise<unknown>;
+    act(() => {
+      firstMutation = result.current.first.mutateAsync({ provider_cooldown_seconds: 41 });
+      void firstMutation.catch(() => undefined);
+      secondMutation = result.current.second.mutateAsync({ wsl_auto_config: true });
+    });
+
+    await waitFor(() => expect(settingsSet).toHaveBeenCalledTimes(1));
+    act(() => rejectFirst(new Error("settings write failed")));
+    await act(async () => {
+      await expect(firstMutation).rejects.toThrow("settings write failed");
+      await secondMutation;
+    });
+
+    expect(settingsSet).toHaveBeenCalledTimes(2);
+    expect(vi.mocked(settingsSet).mock.calls[1]?.[0]).toEqual(
+      expect.objectContaining({ providerCooldownSeconds: 30, wslAutoConfig: true })
+    );
+    expect(client.getQueryData(settingsKeys.get())).toEqual(secondUpdated);
   });
 
   it("useSettingsGatewayRectifierSetMutation updates cache", async () => {

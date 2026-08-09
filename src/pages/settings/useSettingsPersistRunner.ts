@@ -6,12 +6,12 @@ import type { AppAboutInfo } from "../../services/app/appAbout";
 import { logToConsole } from "../../services/consoleLog";
 import { parseErrorCodeMessage } from "../../utils/errors";
 import { gatewayCheckPortAvailable, type GatewayStatus } from "../../services/gateway/gateway";
-import type { SettingsMutationResult, SettingsSetInput } from "../../services/settings/settings";
+import type { SettingsMutationResult } from "../../services/settings/settings";
 import { SETTINGS_READONLY_MESSAGE } from "../../query/settings";
 import { presentSettingsMutationFeedback } from "./settingsPersistenceFeedback";
 import {
   buildPersistedSettingsSnapshot,
-  buildPersistedSettingsMutationInput,
+  buildPersistedSettingsPatch,
   diffPersistedSettings,
   replacePersistedSettingsKeys,
   validatePersistedSettings,
@@ -34,8 +34,8 @@ type UseSettingsPersistRunnerInput = {
   desiredSettingsRef: MutableRefObject<PersistedSettings>;
   setSettingsReadErrorMessage: (message: string | null) => void;
   reportSettingsReadFailure: (error: unknown) => void;
-  settingsSetMutation: {
-    mutateAsync: (input: SettingsSetInput) => Promise<SettingsMutationResult | null>;
+  settingsPatchMutation: {
+    mutateAsync: (patch: PersistedSettingsPatch) => Promise<SettingsMutationResult | null>;
   };
   reconcileSettledKeys: (
     desiredSnapshot: PersistedSettings,
@@ -57,7 +57,7 @@ export function useSettingsPersistRunner(input: UseSettingsPersistRunnerInput) {
     desiredSettingsRef,
     setSettingsReadErrorMessage,
     reportSettingsReadFailure,
-    settingsSetMutation,
+    settingsPatchMutation,
     reconcileSettledKeys,
     revertKeys,
     setField,
@@ -182,8 +182,8 @@ export function useSettingsPersistRunner(input: UseSettingsPersistRunnerInput) {
 
       let nextResult: SettingsMutationResult | null;
       try {
-        nextResult = await settingsSetMutation.mutateAsync(
-          buildPersistedSettingsMutationInput(desired, changedKeys)
+        nextResult = await settingsPatchMutation.mutateAsync(
+          buildPersistedSettingsPatch(desired, changedKeys)
         );
       } catch (err) {
         if (isSettingsReadFailure(err)) {
@@ -233,7 +233,7 @@ export function useSettingsPersistRunner(input: UseSettingsPersistRunnerInput) {
       reportSettingsReadFailure,
       enterReadOnlyProtection,
       revertSettledKeys,
-      settingsSetMutation,
+      settingsPatchMutation,
     ]
   );
 

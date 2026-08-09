@@ -79,12 +79,9 @@ pub(crate) async fn model_prices_sync_basellm(
 pub(crate) async fn model_price_aliases_get(
     app: tauri::AppHandle,
 ) -> Result<model_price_aliases::ModelPriceAliasesV1, String> {
-    blocking::run(
-        "model_price_aliases_get",
-        move || -> crate::shared::error::AppResult<model_price_aliases::ModelPriceAliasesV1> {
-            Ok(model_price_aliases::read_fail_open(&app))
-        },
-    )
+    blocking::run("model_price_aliases_get", move || {
+        model_price_aliases::read(&app)
+    })
     .await
     .map_err(Into::into)
 }

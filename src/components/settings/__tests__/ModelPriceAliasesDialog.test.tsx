@@ -96,7 +96,7 @@ describe("settings/ModelPriceAliasesDialog", () => {
     const onOpenChange = vi.fn();
 
     vi.mocked(useModelPriceAliasesQuery).mockReturnValue({
-      data: { version: 1, rules: [] },
+      data: { version: 2, rules: [] },
       isFetching: false,
       refetch: vi.fn(),
     } as any);
@@ -120,6 +120,66 @@ describe("settings/ModelPriceAliasesDialog", () => {
     expect(onOpenChange).not.toHaveBeenCalled();
   });
 
+  it("blocks editing and offers retry when aliases cannot be loaded", () => {
+    const aliasesRefetch = vi.fn().mockResolvedValue({ data: {} });
+    const aliasesData = {
+      version: 2,
+      rules: [
+        {
+          cli_key: "gemini",
+          match_type: "prefix",
+          pattern: "gemini-3",
+          target_model: "gemini-3-preview",
+          enabled: true,
+        },
+      ],
+    } as const;
+    let aliasesQuery = {
+      data: aliasesData,
+      isFetching: false,
+      isError: true,
+      error: new Error("alias read failed"),
+      refetch: aliasesRefetch,
+    } as any;
+    vi.mocked(useModelPriceAliasesQuery).mockImplementation(() => aliasesQuery);
+    vi.mocked(useModelPricesListQuery).mockReturnValue({
+      data: [],
+      isFetching: false,
+      refetch: vi.fn(),
+    } as any);
+    const mutateAsync = vi.fn();
+    vi.mocked(useModelPriceAliasesSetMutation).mockReturnValue({
+      isPending: false,
+      mutateAsync,
+    } as any);
+
+    const { rerender } = render(<ModelPriceAliasesDialog open={true} onOpenChange={vi.fn()} />);
+
+    expect(screen.getByText("加载失败")).toBeInTheDocument();
+    expect(screen.getByText("alias read failed")).toBeInTheDocument();
+    expect(screen.queryByText("规则 #1")).not.toBeInTheDocument();
+    const addButton = screen.getByRole("button", { name: "新增规则" });
+    const saveButton = screen.getByRole("button", { name: "保存" });
+    expect(addButton).toBeDisabled();
+    expect(saveButton).toBeDisabled();
+    fireEvent.click(addButton);
+    fireEvent.click(saveButton);
+    expect(mutateAsync).not.toHaveBeenCalled();
+
+    fireEvent.click(screen.getByRole("button", { name: "重试" }));
+    expect(aliasesRefetch).toHaveBeenCalledTimes(1);
+
+    aliasesQuery = {
+      data: aliasesData,
+      isFetching: false,
+      isError: false,
+      error: null,
+      refetch: aliasesRefetch,
+    } as any;
+    rerender(<ModelPriceAliasesDialog open={true} onOpenChange={vi.fn()} />);
+    expect(screen.getByText("规则 #1")).toBeInTheDocument();
+  });
+
   it("supports add/edit/delete and save flows", async () => {
     const onOpenChange = vi.fn();
 
@@ -130,7 +190,7 @@ describe("settings/ModelPriceAliasesDialog", () => {
     const grokRefetch = vi.fn().mockResolvedValue({ data: {} });
 
     vi.mocked(useModelPriceAliasesQuery).mockReturnValue({
-      data: { version: 1, rules: [] },
+      data: { version: 2, rules: [] },
       isFetching: false,
       refetch: aliasesRefetch,
     } as any);
@@ -152,7 +212,7 @@ describe("settings/ModelPriceAliasesDialog", () => {
     });
 
     const mutateAsync = vi.fn().mockResolvedValue({
-      version: 1,
+      version: 2,
       rules: [
         {
           cli_key: "gemini",
@@ -204,6 +264,7 @@ describe("settings/ModelPriceAliasesDialog", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "保存" }));
     await waitFor(() => expect(mutateAsync).toHaveBeenCalled());
+    expect(mutateAsync).toHaveBeenCalledWith(expect.objectContaining({ version: 2 }));
     expect(toast).toHaveBeenCalledWith("已保存定价匹配规则");
     expect(onOpenChange).toHaveBeenCalledWith(false);
 
@@ -218,7 +279,7 @@ describe("settings/ModelPriceAliasesDialog", () => {
 
     vi.mocked(useModelPriceAliasesQuery).mockReturnValue({
       data: {
-        version: 1,
+        version: 2,
         rules: [
           {
             cli_key: "gemini",

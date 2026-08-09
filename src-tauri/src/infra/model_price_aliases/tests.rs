@@ -1,4 +1,51 @@
 use super::*;
+use std::ffi::OsString;
+
+struct ScopedEnvVar {
+    key: &'static str,
+    value: Option<OsString>,
+}
+
+impl ScopedEnvVar {
+    fn set(key: &'static str, value: impl Into<OsString>) -> Self {
+        let previous = std::env::var_os(key);
+        std::env::set_var(key, value.into());
+        Self {
+            key,
+            value: previous,
+        }
+    }
+}
+
+impl Drop for ScopedEnvVar {
+    fn drop(&mut self) {
+        match self.value.take() {
+            Some(previous) => std::env::set_var(self.key, previous),
+            None => std::env::remove_var(self.key),
+        }
+    }
+}
+
+fn with_test_aliases_path<T>(
+    test: impl FnOnce(&tauri::AppHandle<tauri::test::MockRuntime>, &Path) -> T,
+) -> T {
+    let _guard = crate::test_support::test_env_lock();
+    let temp = tempfile::tempdir().expect("tempdir");
+    let _home = ScopedEnvVar::set("AIO_CODING_HUB_TEST_HOME", temp.path());
+    let app = tauri::test::mock_app();
+    let handle = app.handle().clone();
+    let path = aliases_path(&handle).expect("aliases path");
+    test(&handle, &path)
+}
+
+fn read_fixture_error(bytes: &[u8]) -> String {
+    with_test_aliases_path(|handle, path| {
+        std::fs::write(path, bytes).expect("write aliases fixture");
+        read(handle)
+            .expect_err("strict aliases read must reject invalid content")
+            .to_string()
+    })
+}
 
 #[test]
 fn wildcard_single_star_matches_prefix_suffix() {
@@ -155,4 +202,58 @@ fn write_json_atomically_rejects_oversized_aliases_file() {
 
     assert!(err.contains("price aliases file too large"));
     assert!(!path.exists());
+}
+
+#[test]
+fn strict_read_rejects_malformed_json() {
+    let err = read_fixture_error(b"{invalid json");
+
+    assert!(err.contains("failed to parse aliases"));
+}
+
+#[test]
+fn strict_read_rejects_invalid_utf8() {
+    let err = read_fixture_error(&[0xff, 0xfe, 0xfd]);
+
+    assert!(err.contains("invalid price aliases UTF-8"));
+}
+
+#[test]
+fn strict_read_rejects_oversized_file() {
+    let err = read_fixture_error(&vec![b'x'; ALIASES_FILE_MAX_BYTES + 1]);
+
+    assert!(err.contains("too large"));
+}
+
+#[test]
+fn strict_read_rejects_unsupported_schema() {
+    let err = read_fixture_error(br#"{"version":3,"rules":[]}"#);
+
+    assert!(err.contains("unsupported aliases version 3"));
+}
+
+#[test]
+fn strict_read_propagates_unreadable_alias_path() {
+    let err = with_test_aliases_path(|handle, path| {
+        std::fs::create_dir(path).expect("create unreadable aliases path");
+        read(handle)
+            .expect_err("strict aliases read must propagate filesystem errors")
+            .to_string()
+    });
+
+    assert!(err.contains("failed to read aliases"));
+}
+
+#[test]
+fn fail_open_read_keeps_cost_calculation_defaults() {
+    let aliases = with_test_aliases_path(|handle, path| {
+        std::fs::write(path, b"{invalid json").expect("write aliases fixture");
+        read_fail_open(handle)
+    });
+
+    assert_eq!(aliases.version, ALIASES_SCHEMA_VERSION_CURRENT);
+    assert_eq!(
+        aliases.resolve_target_model("grok", "grok-build"),
+        Some("grok-build-0.1")
+    );
 }

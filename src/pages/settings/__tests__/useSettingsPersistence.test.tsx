@@ -6,7 +6,7 @@ import type { GatewayStatus } from "../../../services/gateway/gateway";
 import { gatewayCheckPortAvailable } from "../../../services/gateway/gateway";
 import type { AppSettings, SettingsMutationResult } from "../../../services/settings/settings";
 import { createTestAppSettings } from "../../../test/fixtures/settings";
-import { useSettingsQuery, useSettingsSetMutation } from "../../../query/settings";
+import { useSettingsQuery, useSettingsPatchMutation } from "../../../query/settings";
 import { AppErrorCodes } from "../../../constants/appErrorCodes";
 import { useSettingsPersistence } from "../useSettingsPersistence";
 
@@ -25,7 +25,7 @@ vi.mock("../../../services/gateway/gateway", async () => {
 vi.mock("../../../query/settings", async () => {
   const actual =
     await vi.importActual<typeof import("../../../query/settings")>("../../../query/settings");
-  return { ...actual, useSettingsQuery: vi.fn(), useSettingsSetMutation: vi.fn() };
+  return { ...actual, useSettingsQuery: vi.fn(), useSettingsPatchMutation: vi.fn() };
 });
 
 function createSettings(overrides: Partial<AppSettings> = {}) {
@@ -66,7 +66,7 @@ describe("settings/useSettingsPersistence", () => {
 
   it("defers initialization while settings query is loading and ignores persistence until ready", async () => {
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     let loading = true;
     vi.mocked(useSettingsQuery).mockImplementation(() => {
@@ -108,7 +108,7 @@ describe("settings/useSettingsPersistence", () => {
       error: null,
     } as any);
 
-    vi.mocked(useSettingsSetMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
 
@@ -139,7 +139,7 @@ describe("settings/useSettingsPersistence", () => {
       error: null,
     } as any);
 
-    vi.mocked(useSettingsSetMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -157,7 +157,7 @@ describe("settings/useSettingsPersistence", () => {
       error: new Error("boom"),
     } as any);
 
-    vi.mocked(useSettingsSetMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
 
@@ -174,7 +174,7 @@ describe("settings/useSettingsPersistence", () => {
 
   it("clears readonly protection when a later query succeeds", async () => {
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     let queryState: any = {
       data: null,
@@ -216,7 +216,7 @@ describe("settings/useSettingsPersistence", () => {
       error: new Error("stale boom"),
     } as any);
 
-    vi.mocked(useSettingsSetMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue({ mutateAsync: vi.fn() } as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
 
@@ -242,7 +242,7 @@ describe("settings/useSettingsPersistence", () => {
     } as any);
 
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -285,7 +285,7 @@ describe("settings/useSettingsPersistence", () => {
 
     const mutation = { mutateAsync: vi.fn() };
     mutation.mutateAsync.mockResolvedValue(null);
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
 
@@ -317,7 +317,7 @@ describe("settings/useSettingsPersistence", () => {
     } as any);
 
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -348,7 +348,7 @@ describe("settings/useSettingsPersistence", () => {
     vi.mocked(gatewayCheckPortAvailable).mockResolvedValue(false);
 
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -386,7 +386,7 @@ describe("settings/useSettingsPersistence", () => {
     );
 
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -435,7 +435,7 @@ describe("settings/useSettingsPersistence", () => {
       .mockResolvedValueOnce(
         createSettingsMutationResult({ provider_base_url_ping_cache_ttl_seconds: 120 })
       );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -481,7 +481,7 @@ describe("settings/useSettingsPersistence", () => {
     mutation.mutateAsync
       .mockReturnValueOnce(firstPromise)
       .mockResolvedValueOnce(createSettingsMutationResult({ provider_cooldown_seconds: 12 }));
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -493,15 +493,15 @@ describe("settings/useSettingsPersistence", () => {
 
     await waitFor(() => expect(mutation.mutateAsync).toHaveBeenCalledTimes(1));
     expect(mutation.mutateAsync.mock.calls[0]?.[0]).toEqual(
-      expect.objectContaining({ autoStart: true })
+      expect.objectContaining({ auto_start: true })
     );
 
     resolveFirst.fn?.(createSettingsMutationResult({ auto_start: true }));
     await waitFor(() => expect(mutation.mutateAsync).toHaveBeenCalledTimes(2));
 
     const queuedInput = mutation.mutateAsync.mock.calls[1]?.[0];
-    expect(queuedInput).toEqual(expect.objectContaining({ providerCooldownSeconds: 12 }));
-    expect(queuedInput).not.toHaveProperty("autoStart");
+    expect(queuedInput).toEqual(expect.objectContaining({ provider_cooldown_seconds: 12 }));
+    expect(queuedInput).not.toHaveProperty("auto_start");
   });
 
   it("drops queued persists when an in-flight save enters readonly protection", async () => {
@@ -525,7 +525,7 @@ describe("settings/useSettingsPersistence", () => {
       .mockResolvedValueOnce(
         createSettingsMutationResult({ provider_base_url_ping_cache_ttl_seconds: 120 })
       );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -562,7 +562,7 @@ describe("settings/useSettingsPersistence", () => {
     mutation.mutateAsync.mockRejectedValue(
       new Error(`${AppErrorCodes.SETTINGS_PERSISTENCE_FAILED}: failed to finalize settings`)
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -589,7 +589,7 @@ describe("settings/useSettingsPersistence", () => {
     mutation.mutateAsync.mockResolvedValue(
       createSettingsMutationResult({ home_usage_period: "month" })
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -601,7 +601,7 @@ describe("settings/useSettingsPersistence", () => {
 
     await waitFor(() =>
       expect(mutation.mutateAsync).toHaveBeenCalledWith(
-        expect.objectContaining({ homeUsagePeriod: "month" })
+        expect.objectContaining({ home_usage_period: "month" })
       )
     );
     expect(result.current.homeUsagePeriod).toBe("month");
@@ -616,7 +616,7 @@ describe("settings/useSettingsPersistence", () => {
     } as any);
 
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -650,7 +650,7 @@ describe("settings/useSettingsPersistence", () => {
     mutation.mutateAsync.mockResolvedValue(
       createSettingsMutationResult({ log_retention_days: 10 })
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -707,7 +707,7 @@ describe("settings/useSettingsPersistence", () => {
     } as any);
 
     const mutation = { mutateAsync: vi.fn() };
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() => useSettingsPersistence({ gateway: null, about: null }));
     await waitFor(() => expect(result.current.settingsReady).toBe(true));
@@ -788,7 +788,7 @@ describe("settings/useSettingsPersistence", () => {
         circuit_breaker_open_duration_minutes: undefined,
       } as unknown as AppSettings,
     });
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -849,7 +849,7 @@ describe("settings/useSettingsPersistence", () => {
 
     const mutation = { mutateAsync: vi.fn() };
     mutation.mutateAsync.mockResolvedValue(createSettingsMutationResult({ preferred_port: 40001 }));
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -906,7 +906,7 @@ describe("settings/useSettingsPersistence", () => {
     mutation.mutateAsync.mockResolvedValue(
       createSettingsMutationResult({ provider_cooldown_seconds: 12 })
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -952,7 +952,7 @@ describe("settings/useSettingsPersistence", () => {
     mutation.mutateAsync.mockResolvedValue(
       createSettingsMutationResult({ circuit_breaker_failure_threshold: 6 })
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -980,7 +980,7 @@ describe("settings/useSettingsPersistence", () => {
 
     const mutation = { mutateAsync: vi.fn() };
     mutation.mutateAsync.mockResolvedValue(createSettingsMutationResult({ auto_start: false }));
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1018,7 +1018,7 @@ describe("settings/useSettingsPersistence", () => {
         }
       )
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1080,7 +1080,7 @@ describe("settings/useSettingsPersistence", () => {
         }
       )
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1141,7 +1141,7 @@ describe("settings/useSettingsPersistence", () => {
         }
       )
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1194,7 +1194,7 @@ describe("settings/useSettingsPersistence", () => {
         }
       )
     );
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1238,7 +1238,7 @@ describe("settings/useSettingsPersistence", () => {
 
     const mutation = { mutateAsync: vi.fn() };
     mutation.mutateAsync.mockResolvedValue(createSettingsMutationResult({ preferred_port: 40000 }));
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1277,7 +1277,7 @@ describe("settings/useSettingsPersistence", () => {
 
     const mutation = { mutateAsync: vi.fn() };
     mutation.mutateAsync.mockRejectedValue(new Error("boom"));
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({
@@ -1305,7 +1305,7 @@ describe("settings/useSettingsPersistence", () => {
 
     const mutation = { mutateAsync: vi.fn() };
     mutation.mutateAsync.mockResolvedValue(createSettingsMutationResult({ auto_start: true }));
-    vi.mocked(useSettingsSetMutation).mockReturnValue(mutation as any);
+    vi.mocked(useSettingsPatchMutation).mockReturnValue(mutation as any);
 
     const { result } = renderHook(() =>
       useSettingsPersistence({

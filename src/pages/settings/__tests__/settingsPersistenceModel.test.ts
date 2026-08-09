@@ -2,7 +2,7 @@ import { describe, expect, it } from "vitest";
 import { createTestAppSettings } from "../../../test/fixtures/settings";
 import {
   applyPersistedSettingsPatch,
-  buildPersistedSettingsMutationInput,
+  buildPersistedSettingsPatch,
   buildPersistedSettingsSnapshot,
   diffPersistedSettings,
   replacePersistedSettingsKeys,
@@ -135,8 +135,8 @@ describe("pages/settings/settingsPersistenceModel", () => {
     ).toBe("Provider 重试总量必须不超过 100");
   });
 
-  it("builds the generated settings mutation payload from persisted draft state", () => {
-    const input = buildPersistedSettingsMutationInput(
+  it("builds a changed-key patch from persisted draft state", () => {
+    const patch = buildPersistedSettingsPatch(
       applyPersistedSettingsPatch(DEFAULT_PERSISTED_SETTINGS, {
         preferred_port: 38080,
         show_home_heatmap: false,
@@ -145,30 +145,14 @@ describe("pages/settings/settingsPersistenceModel", () => {
       ["preferred_port", "show_home_heatmap", "cli_priority_order"]
     );
 
-    expect(input).toEqual({
-      preferredPort: 38080,
-      showHomeHeatmap: false,
-      showHomeUsage: true,
-      homeUsagePeriod: "last15",
-      cliPriorityOrder: ["codex", "gemini", "claude"],
-      startMinimized: false,
-      trayEnabled: true,
-      logRetentionDays: 7,
-      requestLogRetentionDays: 0,
-      providerCooldownSeconds: 30,
-      providerBaseUrlPingCacheTtlSeconds: 60,
-      upstreamFirstByteTimeoutSeconds: 0,
-      upstreamStreamIdleTimeoutSeconds: 0,
-      upstreamRequestTimeoutNonStreamingSeconds: 0,
-      enableDebugLog: false,
-      failoverMaxAttemptsPerProvider: 5,
-      failoverMaxProvidersToTry: 5,
-      circuitBreakerFailureThreshold: 5,
-      circuitBreakerOpenDurationMinutes: 30,
+    expect(patch).toEqual({
+      preferred_port: 38080,
+      show_home_heatmap: false,
+      cli_priority_order: ["codex", "gemini", "claude"],
     });
 
-    expect(
-      buildPersistedSettingsMutationInput(DEFAULT_PERSISTED_SETTINGS, ["auto_start"]).autoStart
-    ).toBe(false);
+    expect(buildPersistedSettingsPatch(DEFAULT_PERSISTED_SETTINGS, ["auto_start"])).toEqual({
+      auto_start: false,
+    });
   });
 });

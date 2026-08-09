@@ -23,7 +23,8 @@ const MODEL_PRICE_ALIAS_MATCH_TYPE_VALUES = [
   "wildcard",
 ] as const satisfies readonly GeneratedModelPriceAliasMatchType[];
 const MODEL_PRICES_SYNC_STATUS_VALUES = ["updated", "not_modified"] as const;
-const MODEL_PRICE_ALIASES_VERSION = 1;
+export const MODEL_PRICE_ALIASES_VERSION = 2;
+const MODEL_PRICE_ALIASES_SUPPORTED_VERSIONS = new Set<number>([1, MODEL_PRICE_ALIASES_VERSION]);
 const MAX_MODEL_PRICE_ALIAS_RULES = 512;
 const MAX_MODEL_PRICE_MODEL_CHARS = 512;
 const MAX_MODEL_PRICE_ALIAS_PATTERN_CHARS = 200;
@@ -197,7 +198,10 @@ function toModelPriceAliasRule(value: GeneratedModelPriceAliasRule): ModelPriceA
 }
 
 export function normalizeModelPriceAliases(value: GeneratedModelPriceAliases): ModelPriceAliases {
-  if (!Number.isSafeInteger(value.version) || value.version !== MODEL_PRICE_ALIASES_VERSION) {
+  if (
+    !Number.isSafeInteger(value.version) ||
+    !MODEL_PRICE_ALIASES_SUPPORTED_VERSIONS.has(value.version)
+  ) {
     throw new Error(`SEC_INVALID_INPUT: unsupported aliases version ${value.version}`);
   }
   if (!Array.isArray(value.rules)) {

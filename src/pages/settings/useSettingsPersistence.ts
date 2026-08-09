@@ -2,7 +2,7 @@ import { useCallback } from "react";
 import type { AppAboutInfo } from "../../services/app/appAbout";
 import type { CliKey } from "../../services/providers/providers";
 import type { GatewayStatus } from "../../services/gateway/gateway";
-import { useSettingsQuery, useSettingsSetMutation } from "../../query/settings";
+import { useSettingsPatchMutation, useSettingsQuery } from "../../query/settings";
 import { type PersistedSettings } from "./settingsPersistenceModel";
 import { useSettingsFormController } from "./useSettingsFormController";
 import { useSettingsPersistenceReadState } from "./useSettingsPersistenceReadState";
@@ -15,7 +15,7 @@ export function useSettingsPersistence(options: {
   const { gateway, about } = options;
 
   const settingsQuery = useSettingsQuery();
-  const settingsSetMutation = useSettingsSetMutation();
+  const settingsPatchMutation = useSettingsPatchMutation();
   const {
     settingsReady,
     settingsReadErrorMessage,
@@ -50,7 +50,7 @@ export function useSettingsPersistence(options: {
     desiredSettingsRef,
     setSettingsReadErrorMessage,
     reportSettingsReadFailure,
-    settingsSetMutation,
+    settingsPatchMutation,
     reconcileSettledKeys,
     revertKeys,
     setField,

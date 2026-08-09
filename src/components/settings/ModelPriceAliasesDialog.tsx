@@ -10,9 +10,12 @@ import { Dialog } from "../../ui/Dialog";
 import { Input } from "../../ui/Input";
 import { Select } from "../../ui/Select";
 import { Switch } from "../../ui/Switch";
+import { QueryErrorCard } from "../shared/QueryErrorCard";
 import { cn } from "../../utils/cn";
+import { formatUnknownError } from "../../utils/errors";
 import type { CliKey } from "../../services/providers/providers";
 import {
+  MODEL_PRICE_ALIASES_VERSION,
   type ModelPriceAliasMatchType,
   type ModelPriceAliasRule,
   type ModelPriceAliases,
@@ -31,7 +34,7 @@ const MATCH_TYPE_ITEMS: Array<{ key: ModelPriceAliasMatchType; label: string }> 
   { key: "prefix", label: "前缀 (prefix)" },
 ];
 
-const EMPTY_ALIASES: ModelPriceAliases = { version: 1, rules: [] };
+const EMPTY_ALIASES: ModelPriceAliases = { version: MODEL_PRICE_ALIASES_VERSION, rules: [] };
 
 type RuleRow = ModelPriceAliasRule & { id: string };
 type AliasesDraft = { version: number; rules: RuleRow[] };
@@ -60,10 +63,9 @@ function ruleRow(seed?: Partial<ModelPriceAliasRule>): RuleRow {
 
 function normalizeAliases(input: ModelPriceAliases | null | undefined): AliasesDraft {
   if (!input || typeof input !== "object") return { version: EMPTY_ALIASES.version, rules: [] };
-  const version = Number.isFinite(input.version) ? input.version : 1;
   const rules = Array.isArray(input.rules) ? input.rules : [];
   return {
-    version,
+    version: MODEL_PRICE_ALIASES_VERSION,
     rules: rules.map((rule) =>
       rule && typeof rule === "object" ? ruleRow(rule) : ruleRow({ enabled: false })
     ),
@@ -86,6 +88,7 @@ function ModelPriceAliasesToolbar({
   modelCountsByCli,
   loading,
   saving,
+  blocked,
   addRule,
   refresh,
 }: {
@@ -93,6 +96,7 @@ function ModelPriceAliasesToolbar({
   modelCountsByCli: Record<CliKey, number>;
   loading: boolean;
   saving: boolean;
+  blocked: boolean;
   addRule: () => void;
   refresh: () => void;
 }) {
@@ -109,7 +113,12 @@ function ModelPriceAliasesToolbar({
         </span>
       </div>
       <div className="flex items-center gap-2">
-        <Button variant="secondary" size="sm" disabled={loading || saving} onClick={addRule}>
+        <Button
+          variant="secondary"
+          size="sm"
+          disabled={loading || saving || blocked}
+          onClick={addRule}
+        >
           新增规则
         </Button>
         <Button variant="secondary" size="sm" disabled={loading || saving} onClick={refresh}>
@@ -405,11 +414,13 @@ function ModelPriceAliasesRuleList({
 function ModelPriceAliasesActions({
   loading,
   saving,
+  blocked,
   onCancel,
   save,
 }: {
   loading: boolean;
   saving: boolean;
+  blocked: boolean;
   onCancel: () => void;
   save: () => void;
 }) {
@@ -418,7 +429,7 @@ function ModelPriceAliasesActions({
       <Button variant="secondary" onClick={onCancel} disabled={saving}>
         取消
       </Button>
-      <Button variant="primary" onClick={save} disabled={loading || saving}>
+      <Button variant="primary" onClick={save} disabled={loading || saving || blocked}>
         {saving ? (
           <span className="flex items-center gap-2">
             <svg
@@ -472,6 +483,8 @@ export function ModelPriceAliasesDialog({
   const aliasesSetMutation = useModelPriceAliasesSetMutation();
 
   const saving = aliasesSetMutation.isPending;
+  const aliasesErrorText = aliasesQuery.isError ? formatUnknownError(aliasesQuery.error) : null;
+  const aliasesBlocked = aliasesQuery.isError || aliasesQuery.data == null;
   const loading =
     aliasesQuery.isFetching ||
     claudeModelsQuery.isFetching ||
@@ -509,7 +522,7 @@ export function ModelPriceAliasesDialog({
     ]);
   }, [aliasesQuery, claudeModelsQuery, codexModelsQuery, geminiModelsQuery, grokModelsQuery]);
 
-  const sourceAliases = open ? (aliasesQuery.data ?? null) : null;
+  const sourceAliases = open && !aliasesBlocked ? (aliasesQuery.data ?? null) : null;
   let effectiveAliasesState = aliasesState;
   if (sourceAliases && aliasesState.querySource !== sourceAliases) {
     effectiveAliasesState = {
@@ -548,7 +561,7 @@ export function ModelPriceAliasesDialog({
   }
 
   async function save() {
-    if (saving) return;
+    if (saving || aliasesBlocked) return;
     try {
       const saved = await aliasesSetMutation.mutateAsync(serializeAliases(aliases));
       if (!saved) {
@@ -583,13 +596,21 @@ export function ModelPriceAliasesDialog({
           modelCountsByCli={modelCountsByCli}
           loading={loading}
           saving={saving}
+          blocked={aliasesBlocked}
           addRule={() => setAliases((prev) => ({ ...prev, rules: [...prev.rules, ruleRow()] }))}
           refresh={refresh}
         />
 
         <ModelPriceAliasesDatalists modelsByCli={modelsByCli} />
 
-        {loading ? (
+        {aliasesErrorText ? (
+          <QueryErrorCard
+            errorText={aliasesErrorText}
+            loading={aliasesQuery.isFetching}
+            onRetry={() => void aliasesQuery.refetch()}
+            message="定价匹配规则加载失败，重试成功后才能编辑或保存。"
+          />
+        ) : loading || aliasesBlocked ? (
           <ModelPriceAliasesLoadingState />
         ) : aliases.rules.length === 0 ? (
           <ModelPriceAliasesEmptyState />
@@ -606,6 +627,7 @@ export function ModelPriceAliasesDialog({
         <ModelPriceAliasesActions
           loading={loading}
           saving={saving}
+          blocked={aliasesBlocked}
           onCancel={() => onOpenChange(false)}
           save={save}
         />

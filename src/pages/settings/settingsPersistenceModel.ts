@@ -1,16 +1,10 @@
-import type {
-  AppSettings,
-  HomeUsagePeriod,
-  SettingsSetInput,
-  SettingsViewBackedInputKey,
-} from "../../services/settings/settings";
+import type { AppSettings, HomeUsagePeriod } from "../../services/settings/settings";
 import type { CliKey } from "../../services/providers/providers";
 import { DEFAULT_GATEWAY_PORT } from "../../constants/gateway";
 import {
   DEFAULT_CLI_PRIORITY_ORDER,
   normalizeCliPriorityOrder,
 } from "../../services/cli/cliPriorityOrder";
-import { pickSettingsSetInputFieldsFromView } from "../../services/settings/settings";
 import { DEFAULT_HOME_USAGE_PERIOD } from "../../utils/homeUsagePeriod";
 
 export type PersistedSettings = {
@@ -65,29 +59,6 @@ export const DEFAULT_PERSISTED_SETTINGS: PersistedSettings = {
 const MAX_FAILOVER_ATTEMPTS_PER_PROVIDER = 20;
 const MAX_FAILOVER_PROVIDERS_TO_TRY = 20;
 const MAX_FAILOVER_TOTAL_ATTEMPTS = 100;
-
-const PERSISTED_SETTINGS_INPUT_KEYS = [
-  "preferredPort",
-  "showHomeHeatmap",
-  "showHomeUsage",
-  "homeUsagePeriod",
-  "cliPriorityOrder",
-  "autoStart",
-  "startMinimized",
-  "trayEnabled",
-  "logRetentionDays",
-  "requestLogRetentionDays",
-  "providerCooldownSeconds",
-  "providerBaseUrlPingCacheTtlSeconds",
-  "upstreamFirstByteTimeoutSeconds",
-  "upstreamStreamIdleTimeoutSeconds",
-  "upstreamRequestTimeoutNonStreamingSeconds",
-  "enableDebugLog",
-  "failoverMaxAttemptsPerProvider",
-  "failoverMaxProvidersToTry",
-  "circuitBreakerFailureThreshold",
-  "circuitBreakerOpenDurationMinutes",
-] as const satisfies readonly SettingsViewBackedInputKey[];
 
 function persistedSettingValuesEqual(
   left: PersistedSettings[PersistKey],
@@ -181,18 +152,23 @@ export function buildPersistedSettingsSnapshot(
   };
 }
 
-export function buildPersistedSettingsMutationInput(
+function assignPersistedSettingsPatch<K extends PersistKey>(
+  target: PersistedSettingsPatch,
+  key: K,
+  value: PersistedSettings[K]
+) {
+  target[key] = value;
+}
+
+export function buildPersistedSettingsPatch(
   desired: PersistedSettings,
   changedKeys: PersistKey[]
-): SettingsSetInput {
-  const input: SettingsSetInput = pickSettingsSetInputFieldsFromView(
-    desired,
-    PERSISTED_SETTINGS_INPUT_KEYS
-  );
-  if (!changedKeys.includes("auto_start")) {
-    delete input.autoStart;
+): PersistedSettingsPatch {
+  const patch: PersistedSettingsPatch = {};
+  for (const key of changedKeys) {
+    assignPersistedSettingsPatch(patch, key, desired[key]);
   }
-  return input;
+  return patch;
 }
 
 function isIntegerInRange(value: number, min: number, max: number) {
