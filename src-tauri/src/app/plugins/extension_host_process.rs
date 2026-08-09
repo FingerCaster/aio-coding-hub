@@ -233,6 +233,19 @@ impl ExtensionHostChildProcess {
         self.kill_child().await;
     }
 
+    pub(crate) fn abort(&mut self) {
+        self.stdin.take();
+        self.stdout.take();
+        if let Some(mut child) = self.child.take() {
+            let _ = child.start_kill();
+            if let Ok(handle) = tokio::runtime::Handle::try_current() {
+                handle.spawn(async move {
+                    let _ = child.wait().await;
+                });
+            }
+        }
+    }
+
     async fn write_line(&mut self, bytes: &[u8]) -> AppResult<()> {
         let Some(stdin) = self.stdin.as_mut() else {
             return Err(AppError::new(
@@ -418,16 +431,7 @@ impl ExtensionHostChildProcess {
 
 impl Drop for ExtensionHostChildProcess {
     fn drop(&mut self) {
-        self.stdin.take();
-        self.stdout.take();
-        if let Some(mut child) = self.child.take() {
-            let _ = child.start_kill();
-            if let Ok(handle) = tokio::runtime::Handle::try_current() {
-                handle.spawn(async move {
-                    let _ = child.wait().await;
-                });
-            }
-        }
+        self.abort();
     }
 }
 

@@ -226,7 +226,8 @@ export function usePluginInstallFromFileMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (filePath: string) => pluginInstallFromFile(filePath),
+    mutationFn: (input: { filePath: string; expectedChecksum: string }) =>
+      pluginInstallFromFile(input.filePath, input.expectedChecksum),
     onSuccess: (next) => {
       if (!next) return;
       setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);
@@ -274,7 +275,8 @@ export function usePluginUpdateFromFileMutation() {
   const queryClient = useQueryClient();
 
   return useMutation({
-    mutationFn: (filePath: string) => pluginUpdateFromFile(filePath),
+    mutationFn: (input: { filePath: string; expectedChecksum: string }) =>
+      pluginUpdateFromFile(input.filePath, input.expectedChecksum),
     onSuccess: (next) => {
       if (next) {
         setPluginDetailAndSummary(queryClient, next.summary.plugin_id, next);

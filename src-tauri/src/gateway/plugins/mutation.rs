@@ -1,6 +1,6 @@
 //! Usage: Descriptor-driven gateway plugin mutation enforcement.
 
-use super::context::{GatewayHookResult, GatewayPluginHookName};
+use super::context::{GatewayHookResult, GatewayPluginHookName, DEFAULT_PLUGIN_CONTEXT_BODY_BYTES};
 use super::permissions::GatewayPluginError;
 use super::registry::HookDescriptor;
 
@@ -21,7 +21,7 @@ pub(crate) struct GatewayPluginMutationBudget {
 impl Default for GatewayPluginMutationBudget {
     fn default() -> Self {
         Self {
-            body_bytes: crate::gateway::util::max_request_body_bytes(),
+            body_bytes: DEFAULT_PLUGIN_CONTEXT_BODY_BYTES,
             stream_bytes: DEFAULT_PLUGIN_MUTATION_STREAM_BYTES,
             log_bytes: DEFAULT_PLUGIN_MUTATION_LOG_BYTES,
             header_count: DEFAULT_PLUGIN_MUTATION_HEADER_COUNT,
@@ -206,6 +206,37 @@ mod tests {
     use super::*;
     use crate::gateway::plugins::context::GatewayPluginHookName;
     use crate::gateway::plugins::registry::HookRegistry;
+
+    #[test]
+    fn default_mutation_body_budget_matches_plugin_context_body_budget() {
+        assert_eq!(
+            GatewayPluginMutationBudget::default().body_bytes,
+            DEFAULT_PLUGIN_CONTEXT_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn default_mutation_body_budget_accepts_the_cap_and_rejects_one_byte_more() {
+        let descriptor = HookRegistry::new()
+            .descriptor(GatewayPluginHookName::RequestBeforeSend)
+            .expect("request before send descriptor should resolve");
+        let permissions = ["request.body.write".to_string()];
+        let at_cap = GatewayHookResult {
+            request_body: Some("x".repeat(DEFAULT_PLUGIN_CONTEXT_BODY_BYTES)),
+            ..GatewayHookResult::continue_unchanged()
+        };
+        let over_cap = GatewayHookResult {
+            request_body: Some("x".repeat(DEFAULT_PLUGIN_CONTEXT_BODY_BYTES + 1)),
+            ..GatewayHookResult::continue_unchanged()
+        };
+
+        enforce_descriptor_permissions(descriptor, &permissions, &at_cap)
+            .expect("body mutation at the plugin budget should be accepted");
+        let err = enforce_descriptor_permissions(descriptor, &permissions, &over_cap)
+            .expect_err("body mutation above the plugin budget should be rejected");
+
+        assert_eq!(err.code_for_logging(), "PLUGIN_OUTPUT_TOO_LARGE");
+    }
 
     #[test]
     fn request_body_mutation_requires_descriptor_permission() {

@@ -1,7 +1,9 @@
 //! Usage: Best-effort enqueue to DB log tasks with backpressure and fallbacks.
 
 use crate::gateway::plugins::context::GatewayLogHookInput;
-use crate::gateway::plugins::pipeline::GatewayPluginPipeline;
+use crate::gateway::plugins::pipeline::{
+    GatewayLogHookOutput, GatewayLogPersistencePolicy, GatewayPluginPipeline,
+};
 use crate::{db, request_logs};
 use serde_json::Value;
 use std::sync::atomic::{AtomicU32, AtomicU64, Ordering};
@@ -268,13 +270,39 @@ fn apply_log_hook_message_to_args(args: &mut super::RequestLogEnqueueArgs, messa
     true
 }
 
+fn apply_log_hook_output_to_args(
+    args: &mut super::RequestLogEnqueueArgs,
+    output: &GatewayLogHookOutput,
+) -> bool {
+    if apply_log_hook_message_to_args(args, output.message.as_str()) {
+        return true;
+    }
+
+    match output.persistence_policy {
+        GatewayLogPersistencePolicy::AllowRawFallback => {
+            tracing::warn!(
+                trace_id = %args.trace_id,
+                "plugin log hook returned invalid request log payload; keeping original log"
+            );
+            true
+        }
+        GatewayLogPersistencePolicy::RequireValidPayload => {
+            tracing::warn!(
+                trace_id = %args.trace_id,
+                "fail-closed plugin log hook returned invalid request log payload; dropping request log"
+            );
+            false
+        }
+    }
+}
+
 async fn apply_log_before_persist_hook(
     db: &db::Db,
     plugin_pipeline: Option<Arc<GatewayPluginPipeline>>,
     args: &mut super::RequestLogEnqueueArgs,
-) {
+) -> bool {
     let Some(plugin_pipeline) = plugin_pipeline else {
-        return;
+        return true;
     };
     let input = GatewayLogHookInput {
         trace_id: args.trace_id.clone(),
@@ -288,12 +316,7 @@ async fn apply_log_before_persist_hook(
                 output.audit_events.clone(),
                 output.execution_reports.clone(),
             );
-            if !apply_log_hook_message_to_args(args, output.message.as_str()) {
-                tracing::warn!(
-                    trace_id = %args.trace_id,
-                    "plugin log hook returned invalid request log payload; keeping original log"
-                );
-            }
+            apply_log_hook_output_to_args(args, &output)
         }
         Err(mut err) => {
             crate::gateway::plugins::audit::persist_gateway_plugin_error_audit_events(
@@ -304,8 +327,9 @@ async fn apply_log_before_persist_hook(
             tracing::warn!(
                 trace_id = %args.trace_id,
                 error = %err,
-                "plugin log hook failed before request log persistence; keeping original log"
+                "plugin log hook failed before request log persistence; dropping request log"
             );
+            false
         }
     }
 }
@@ -317,7 +341,9 @@ pub(super) async fn enqueue_request_log_with_backpressure_and_plugins<R: tauri::
     plugin_pipeline: Option<Arc<GatewayPluginPipeline>>,
     mut args: super::RequestLogEnqueueArgs,
 ) {
-    apply_log_before_persist_hook(db, plugin_pipeline, &mut args).await;
+    if !apply_log_before_persist_hook(db, plugin_pipeline, &mut args).await {
+        return;
+    }
     let trace_id = args.trace_id.clone();
     let cli_key = args.cli_key.clone();
     let Some(insert) = request_log_insert_from_args(args) else {
@@ -672,6 +698,34 @@ WHERE trace_id = ?1
             provider_chain_json: None,
             error_details_json: None,
         }
+    }
+
+    #[test]
+    fn invalid_fail_open_log_hook_output_keeps_original_log() {
+        let mut args = base_args();
+        let original_method = args.method.clone();
+        let output = GatewayLogHookOutput {
+            message: "not-json".to_string(),
+            persistence_policy: GatewayLogPersistencePolicy::AllowRawFallback,
+            audit_events: vec![],
+            execution_reports: vec![],
+        };
+
+        assert!(apply_log_hook_output_to_args(&mut args, &output));
+        assert_eq!(args.method, original_method);
+    }
+
+    #[test]
+    fn invalid_fail_closed_log_hook_output_drops_persistence() {
+        let mut args = base_args();
+        let output = GatewayLogHookOutput {
+            message: "not-json".to_string(),
+            persistence_policy: GatewayLogPersistencePolicy::RequireValidPayload,
+            audit_events: vec![],
+            execution_reports: vec![],
+        };
+
+        assert!(!apply_log_hook_output_to_args(&mut args, &output));
     }
 
     #[test]

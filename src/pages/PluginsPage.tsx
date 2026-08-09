@@ -561,7 +561,10 @@ export function PluginsPage() {
   async function confirmInstallPreview() {
     if (!installPreviewState) return;
     const done = await runPluginAction("导入插件", () =>
-      installMutation.mutateAsync(installPreviewState.filePath)
+      installMutation.mutateAsync({
+        filePath: installPreviewState.filePath,
+        expectedChecksum: installPreviewState.preview.trust.checksum,
+      })
     );
     if (done) setInstallPreviewState(null);
   }
@@ -572,7 +575,10 @@ export function PluginsPage() {
       if (updatePreviewState.source === "remote") {
         return updateRemoteMutation.mutateAsync(updatePreviewState.input);
       }
-      return updateMutation.mutateAsync(updatePreviewState.filePath);
+      return updateMutation.mutateAsync({
+        filePath: updatePreviewState.filePath,
+        expectedChecksum: updatePreviewState.diff.trust.checksum,
+      });
     });
     if (done) setUpdatePreviewState(null);
   }

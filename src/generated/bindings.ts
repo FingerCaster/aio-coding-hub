@@ -3661,7 +3661,7 @@ export type PluginHookLifecycleSummary = {
   timeoutMs?: number | null;
 };
 export type PluginHostCompatibility = { app: string; pluginApi: string; platforms?: string[] };
-export type PluginInstallFromFileInput = { filePath: string };
+export type PluginInstallFromFileInput = { filePath: string; expectedChecksum: string | null };
 export type PluginInstallPreview = {
   pluginId: string;
   name: string;

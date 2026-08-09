@@ -29,12 +29,12 @@ impl RuntimeGatewayPluginExecutor {
     pub(crate) fn with_db(db: db::Db) -> Self {
         let privacy_redaction = Arc::new(PrivacyRedactionService::default());
         Self::with_extension_host_registry(
-            Some(Arc::new(
-                ExtensionHostInstanceRegistry::new_with_privacy_redaction(
+            Some(
+                ExtensionHostInstanceRegistry::new_shared_with_privacy_redaction(
                     db,
                     privacy_redaction.clone(),
                 ),
-            )),
+            ),
             privacy_redaction,
         )
     }
@@ -216,9 +216,10 @@ mod tests {
         PluginPermissionRisk, PluginRuntime, PluginStatus, PluginSummary,
     };
     use crate::gateway::plugins::context::{
-        GatewayHookResult, GatewayPluginHookName, GatewayRequestHookInput,
-        GatewayVisibleHookContext, GatewayVisibleLogContext, GatewayVisibleRequestContext,
-        GatewayVisibleResponseContext, GatewayVisibleStreamContext,
+        GatewayHookAction, GatewayHookResult, GatewayNormalizedMessage, GatewayPluginHookName,
+        GatewayRequestHookInput, GatewayVisibleHookContext, GatewayVisibleLogContext,
+        GatewayVisibleRequestContext, GatewayVisibleResponseContext, GatewayVisibleStreamContext,
+        DEFAULT_PLUGIN_CONTEXT_BODY_BYTES,
     };
     use crate::gateway::plugins::pipeline::{GatewayPluginPipeline, GatewayPluginPipelineConfig};
     use axum::body::Bytes;
@@ -280,8 +281,64 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn runtime_executor_extension_host_request_hooks_receive_large_bodies_without_truncation()
-    {
+    async fn runtime_executor_extension_host_exposes_canonical_and_legacy_context_fields() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        write_gateway_extension_plugin(
+            temp.path(),
+            "gateway.request.afterBodyRead",
+            r#"(() => {
+                const payload = arguments[0];
+                const context = payload.context;
+                const request = context.request;
+                const aliasesMatch =
+                  context.hook_name === payload.hook &&
+                  context.trace_id === payload.traceId &&
+                  request.cliKey === request.cli_key &&
+                  request.bodyTruncated === request.body_truncated &&
+                  request.normalizedMessages === request.normalized_messages &&
+                  request.normalizedMessagesTruncated === request.normalized_messages_truncated &&
+                  request.requestedModel === request.requested_model &&
+                  context.response.bodyTruncated === context.response.body_truncated &&
+                  context.stream.chunkTruncated === context.stream.chunk_truncated &&
+                  context.log.messageTruncated === context.log.message_truncated;
+                const aliasesRemainEnumerable =
+                  Object.keys(context).includes("hook_name") &&
+                  Object.keys(request).includes("normalized_messages");
+                if (!aliasesMatch || !aliasesRemainEnumerable) {
+                  return { action: "block", reason: "context compatibility aliases mismatch" };
+                }
+                return { action: "replace", requestBody: "aliases-ok" };
+            })()"#,
+        );
+        let plugin = extension_host_plugin_detail_with_root("example.extension", temp.path());
+        let mut context = hook_context(
+            "gateway.request.afterBodyRead",
+            "trace-context-compatibility",
+        );
+        context.request.cli_key = Some("codex".to_string());
+        context.request.body_truncated = true;
+        context.request.normalized_messages = vec![GatewayNormalizedMessage {
+            role: "user".to_string(),
+            text: "hello".to_string(),
+            source: "openai.responses.input_text".to_string(),
+        }];
+        context.request.normalized_messages_truncated = true;
+        context.request.requested_model = Some("gpt-test".to_string());
+        context.response.body_truncated = true;
+        context.stream.chunk_truncated = true;
+        context.log.message_truncated = true;
+
+        let result = executor()
+            .execute_request_hook(&plugin, context, test_hook_timeout())
+            .await
+            .expect("extension host should receive canonical fields and legacy aliases");
+
+        assert_eq!(result.request_body.as_deref(), Some("aliases-ok"));
+    }
+
+    #[tokio::test]
+    async fn runtime_executor_extension_host_request_hooks_receive_context_body_budget_without_truncation(
+    ) {
         let temp = tempfile::tempdir().expect("tempdir");
         write_gateway_extension_plugin(
             temp.path(),
@@ -298,16 +355,13 @@ mod tests {
             })()"#,
         );
         let plugin = extension_host_plugin_detail_with_root("example.extension", temp.path());
-        let body = json!({
-            "messages": [{
-                "role": "user",
-                "content": format!(
-                    "{} 你知道 13344441520 是哪里的手机号嘛",
-                    "x".repeat(300 * 1024)
-                )
-            }]
-        })
-        .to_string();
+        let prefix = "{\"messages\":[{\"role\":\"user\",\"content\":\"";
+        let suffix = "\"}]}";
+        let secret = "13344441520";
+        let filler_len =
+            DEFAULT_PLUGIN_CONTEXT_BODY_BYTES - prefix.len() - secret.len() - suffix.len();
+        let body = format!("{prefix}{}{secret}{suffix}", "x".repeat(filler_len));
+        assert_eq!(body.len(), DEFAULT_PLUGIN_CONTEXT_BODY_BYTES);
         let pipeline = GatewayPluginPipeline::for_tests(
             vec![plugin],
             Arc::new(RuntimeGatewayPluginExecutor::for_tests()),
@@ -327,7 +381,9 @@ mod tests {
                 requested_model: None,
             })
             .await
-            .expect("large extension host request body should be available to plugins");
+            .expect(
+                "context-budget-sized extension host request body should be available to plugins",
+            );
         let redacted = String::from_utf8(output.body.to_vec()).expect("utf8 body");
 
         assert!(redacted.contains("[电话]"));
@@ -429,6 +485,63 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn runtime_executor_extension_host_invocation_deadline_covers_activation_and_recovers() {
+        let temp = tempfile::tempdir().expect("tempdir");
+        let hook_name = "gateway.request.afterBodyRead";
+        write_gateway_extension_plugin_source(
+            temp.path(),
+            hook_name,
+            r#"
+            module.exports.activate = function() {
+              while (true) {}
+            };
+            "#,
+        );
+        let plugin = extension_host_plugin_detail_with_root("example.extension", temp.path());
+        let registry = Arc::new(ExtensionHostInstanceRegistry::new_real_for_tests());
+        let executor =
+            RuntimeGatewayPluginExecutor::for_tests_with_extension_host_registry(registry.clone());
+        let invocation_timeout = Duration::from_secs(2);
+        let deadline_bound = invocation_timeout + Duration::from_secs(1);
+        let started = std::time::Instant::now();
+
+        let error = tokio::time::timeout(
+            deadline_bound,
+            executor.execute_request_hook(
+                &plugin,
+                hook_context(hook_name, "trace-activation-timeout"),
+                invocation_timeout,
+            ),
+        )
+        .await
+        .expect("registry should enforce the invocation deadline")
+        .expect_err("activation should exceed the invocation deadline");
+
+        assert_eq!(error.code(), "PLUGIN_EXTENSION_HOST_TIMEOUT");
+        assert!(
+            started.elapsed() < deadline_bound,
+            "activation timeout should not wait for the independent startup budget"
+        );
+        assert_eq!(registry.instance_count_for_tests().await, 0);
+
+        write_gateway_extension_plugin(temp.path(), hook_name, r#"{ action: "continue" }"#);
+        let recovered = tokio::time::timeout(
+            deadline_bound,
+            executor.execute_request_hook(
+                &plugin,
+                hook_context(hook_name, "trace-activation-retry"),
+                invocation_timeout,
+            ),
+        )
+        .await
+        .expect("recovery invocation should complete within its deadline")
+        .expect("recovery should cold start a clean extension host");
+
+        assert_eq!(recovered.action, GatewayHookAction::Continue);
+        assert_eq!(registry.instance_count_for_tests().await, 1);
+    }
+
+    #[tokio::test]
     async fn runtime_executor_retain_prunes_extension_host_gateway_instances() {
         let temp = tempfile::tempdir().expect("tempdir");
         write_gateway_extension_plugin(
@@ -523,6 +636,19 @@ mod tests {
     }
 
     fn write_gateway_extension_plugin(root: &Path, hook_name: &str, result_source: &str) {
+        let extension_source = format!(
+            r#"
+            module.exports.activate = function(api) {{
+              api.gateway.registerHook("{hook_name}", function() {{
+                return {result_source};
+              }});
+            }};
+            "#
+        );
+        write_gateway_extension_plugin_source(root, hook_name, &extension_source);
+    }
+
+    fn write_gateway_extension_plugin_source(root: &Path, hook_name: &str, extension_source: &str) {
         std::fs::create_dir_all(root.join("dist")).expect("create dist");
         let manifest = json!({
             "id": "example.extension",
@@ -542,19 +668,7 @@ mod tests {
             serde_json::to_vec_pretty(&manifest).expect("manifest json"),
         )
         .expect("write plugin manifest");
-        std::fs::write(
-            root.join("dist/index.js"),
-            format!(
-                r#"
-                module.exports.activate = function(api) {{
-                  api.gateway.registerHook("{hook_name}", function() {{
-                    return {result_source};
-                  }});
-                }};
-                "#
-            ),
-        )
-        .expect("write extension");
+        std::fs::write(root.join("dist/index.js"), extension_source).expect("write extension");
     }
 
     fn plugin_detail(

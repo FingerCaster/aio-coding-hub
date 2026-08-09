@@ -1069,6 +1069,14 @@ fn is_valid_contribution_id(value: &str) -> bool {
 
 fn validate_hook(hook: &PluginHook) -> Result<(), PluginValidationError> {
     validate_hook_name(&hook.name)?;
+    if let Some(failure_policy) = hook.failure_policy.as_deref() {
+        if !matches!(failure_policy, "fail-open" | "fail-closed") {
+            return Err(PluginValidationError::new(
+                "PLUGIN_INVALID_FAILURE_POLICY",
+                "hook failurePolicy must be fail-open or fail-closed",
+            ));
+        }
+    }
     if hook.timeout_ms == Some(0) {
         return Err(PluginValidationError::new(
             "PLUGIN_INVALID_HOOK_TIMEOUT",
@@ -1689,6 +1697,26 @@ mod tests {
         let err = validate_hook(&hook).unwrap_err();
 
         assert_eq!(err.code, "PLUGIN_INVALID_HOOK_TIMEOUT");
+    }
+
+    #[test]
+    fn manifest_accepts_supported_hook_failure_policies() {
+        let mut hook = hook("gateway.request.afterBodyRead");
+        hook.failure_policy = Some("fail-closed".to_string());
+        validate_hook(&hook).unwrap();
+
+        hook.failure_policy = None;
+        validate_hook(&hook).unwrap();
+    }
+
+    #[test]
+    fn manifest_rejects_unknown_hook_failure_policy() {
+        let mut hook = hook("gateway.request.afterBodyRead");
+        hook.failure_policy = Some("fail-close".to_string());
+
+        let err = validate_hook(&hook).unwrap_err();
+
+        assert_eq!(err.code, "PLUGIN_INVALID_FAILURE_POLICY");
     }
 
     #[test]

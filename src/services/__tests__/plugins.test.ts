@@ -176,7 +176,7 @@ describe("services/plugins", () => {
       },
     });
 
-    await pluginInstallFromFile(" /tmp/plugin.json ");
+    await pluginInstallFromFile(" /tmp/plugin.json ", " sha256-install ");
     await pluginInstallRemote({
       pluginId: " community.remote ",
       downloadUrl: " https://github.com/acme/plugin/releases/download/v1/plugin.aio-plugin ",
@@ -186,7 +186,7 @@ describe("services/plugins", () => {
       marketSourceUrl: " https://plugins.example.test/index.json ",
       source: "github_release",
     });
-    await pluginUpdateFromFile(" /tmp/plugin-update.aio-plugin ");
+    await pluginUpdateFromFile(" /tmp/plugin-update.aio-plugin ", " sha256-update ");
     await pluginRollback(" community.prompt-helper ", " 1.0.0 ");
     await pluginParseMarketIndex(
       ' {"plugins":[]} ',
@@ -222,7 +222,10 @@ describe("services/plugins", () => {
       traceId: " trace-replay-1 ",
     });
 
-    expect(commands.pluginInstallFromFile).toHaveBeenCalledWith({ filePath: "/tmp/plugin.json" });
+    expect(commands.pluginInstallFromFile).toHaveBeenCalledWith({
+      filePath: "/tmp/plugin.json",
+      expectedChecksum: "sha256-install",
+    });
     expect(commands.pluginInstallRemote).toHaveBeenCalledWith({
       pluginId: "community.remote",
       downloadUrl: "https://github.com/acme/plugin/releases/download/v1/plugin.aio-plugin",
@@ -234,6 +237,7 @@ describe("services/plugins", () => {
     });
     expect(commands.pluginUpdateFromFile).toHaveBeenCalledWith({
       filePath: "/tmp/plugin-update.aio-plugin",
+      expectedChecksum: "sha256-update",
     });
     expect(commands.pluginRollback).toHaveBeenCalledWith({
       pluginId: "community.prompt-helper",
@@ -291,6 +295,9 @@ describe("services/plugins", () => {
     await expect(pluginGet(" ")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(pluginExecuteCommand(" ")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(pluginInstallFromFile(" ")).rejects.toThrow("SEC_INVALID_INPUT");
+    await expect(pluginInstallFromFile("/tmp/plugin.aio-plugin", " ")).rejects.toThrow(
+      "SEC_INVALID_INPUT"
+    );
     await expect(pluginInstallOfficial(" ")).rejects.toThrow("SEC_INVALID_INPUT");
     await expect(
       pluginInstallRemote({

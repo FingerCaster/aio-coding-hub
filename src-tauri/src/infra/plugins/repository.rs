@@ -4,9 +4,11 @@ use crate::domain::plugins::{
     PluginAuditLog, PluginDetail, PluginInstallSource, PluginManifest, PluginPermissionRisk,
     PluginRuntimeFailure, PluginStatus, PluginSummary,
 };
-use crate::shared::error::{db_err, AppResult};
+use crate::shared::error::{db_err, AppError, AppResult};
 use crate::shared::time::now_unix_seconds;
-use rusqlite::{params, OptionalExtension};
+use rusqlite::{params, OptionalExtension, TransactionBehavior};
+
+const PLUGIN_STORAGE_MAX_BYTES: usize = 64 * 1024;
 
 pub(crate) struct InsertPluginInput {
     pub manifest: PluginManifest,
@@ -223,6 +225,27 @@ pub(crate) fn with_plugin_transaction<T>(
     let tx = conn
         .transaction()
         .map_err(|e| db_err!("failed to start plugin transaction: {e}"))?;
+    match f(&tx) {
+        Ok(value) => {
+            tx.commit()
+                .map_err(|e| db_err!("failed to commit plugin transaction: {e}"))?;
+            Ok(value)
+        }
+        Err(err) => {
+            let _ = tx.rollback();
+            Err(err)
+        }
+    }
+}
+
+fn with_immediate_plugin_transaction<T>(
+    db: &db::Db,
+    f: impl FnOnce(&rusqlite::Transaction<'_>) -> AppResult<T>,
+) -> AppResult<T> {
+    let mut conn = db.open_connection()?;
+    let tx = conn
+        .transaction_with_behavior(TransactionBehavior::Immediate)
+        .map_err(|e| db_err!("failed to start immediate plugin transaction: {e}"))?;
     match f(&tx) {
         Ok(value) => {
             tx.commit()
@@ -460,6 +483,35 @@ WHERE plugin_id = ?1 AND version = ?2
     .ok_or_else(|| crate::shared::error::AppError::new("DB_NOT_FOUND", "plugin version not found"))
 }
 
+pub(crate) fn plugin_version_exists(
+    db: &db::Db,
+    plugin_id: &str,
+    version: &str,
+) -> AppResult<bool> {
+    let conn = db.open_connection()?;
+    let exists = conn
+        .query_row(
+            r#"
+SELECT CASE WHEN
+  EXISTS(
+    SELECT 1
+    FROM plugins
+    WHERE plugin_id = ?1 AND current_version = ?2
+  ) OR EXISTS(
+    SELECT 1
+    FROM plugin_versions
+    WHERE plugin_id = ?1 AND version = ?2
+  )
+THEN 1 ELSE 0 END
+"#,
+            params![plugin_id, version],
+            |row| row.get::<_, i64>(0),
+        )
+        .map_err(|e| db_err!("failed to query plugin version existence: {e}"))?;
+    Ok(exists != 0)
+}
+
+#[cfg(test)]
 pub(crate) fn save_plugin_config(
     db: &db::Db,
     plugin_id: &str,
@@ -471,14 +523,100 @@ pub(crate) fn save_plugin_config(
     save_plugin_config_with_conn(&conn, plugin_id, config_version, config, sensitive_keys)
 }
 
-pub(crate) fn save_plugin_config_with_tx(
+pub(crate) fn save_plugin_config_preserving_storage(
+    db: &db::Db,
+    plugin_id: &str,
+    config_version: u32,
+    config: &serde_json::Value,
+    sensitive_keys: &[String],
+) -> AppResult<PluginDetail> {
+    with_immediate_plugin_transaction(db, |tx| {
+        save_plugin_config_with_tx_preserving_storage(
+            tx,
+            plugin_id,
+            config_version,
+            config,
+            sensitive_keys,
+        )
+    })
+}
+
+pub(crate) fn save_plugin_config_with_tx_preserving_storage(
     conn: &rusqlite::Transaction<'_>,
     plugin_id: &str,
     config_version: u32,
     config: &serde_json::Value,
     sensitive_keys: &[String],
 ) -> AppResult<PluginDetail> {
-    save_plugin_config_with_conn(conn, plugin_id, config_version, config, sensitive_keys)
+    let current = get_plugin_with_conn(conn, plugin_id)?;
+    let current_storage = current
+        .config
+        .as_object()
+        .and_then(|object| object.get("storage"))
+        .cloned();
+    let mut next_config = config.clone();
+    if let Some(next_object) = next_config.as_object_mut() {
+        match current_storage {
+            Some(storage) => {
+                next_object.insert("storage".to_string(), storage);
+            }
+            None => {
+                next_object.remove("storage");
+            }
+        }
+    }
+    save_plugin_config_with_conn(
+        conn,
+        plugin_id,
+        config_version,
+        &next_config,
+        sensitive_keys,
+    )
+}
+
+pub(crate) fn save_plugin_storage_value(
+    db: &db::Db,
+    plugin_id: &str,
+    key: &str,
+    value: serde_json::Value,
+) -> AppResult<PluginDetail> {
+    with_immediate_plugin_transaction(db, |tx| {
+        let current = get_plugin_with_conn(tx, plugin_id)?;
+        let config_version = current.manifest.config_version.unwrap_or(1);
+        let mut next_config = current.config;
+        if !next_config.is_object() {
+            next_config = serde_json::json!({});
+        }
+        let config_object = next_config.as_object_mut().ok_or_else(|| {
+            AppError::new(
+                "PLUGIN_STORAGE_INVALID",
+                "plugin config storage root must be an object",
+            )
+        })?;
+        let storage = config_object
+            .entry("storage".to_string())
+            .or_insert_with(|| serde_json::json!({}));
+        if !storage.is_object() {
+            *storage = serde_json::json!({});
+        }
+        storage
+            .as_object_mut()
+            .expect("storage object")
+            .insert(key.to_string(), value);
+        let storage_bytes = serde_json::to_vec(storage).map_err(|err| {
+            AppError::new(
+                "PLUGIN_STORAGE_INVALID",
+                format!("failed to encode plugin storage: {err}"),
+            )
+        })?;
+        if storage_bytes.len() > PLUGIN_STORAGE_MAX_BYTES {
+            return Err(AppError::new(
+                "PLUGIN_STORAGE_LIMIT_EXCEEDED",
+                "plugin storage exceeded 64 KiB",
+            ));
+        }
+        save_plugin_config_with_conn(tx, plugin_id, config_version, &next_config, &[])
+    })
 }
 
 fn save_plugin_config_with_conn(
@@ -1078,6 +1216,19 @@ mod tests {
         manifest
     }
 
+    fn install_config_test_plugin(db: &crate::db::Db, plugin_id: &str) {
+        insert_plugin(
+            db,
+            InsertPluginInput {
+                manifest: test_manifest(plugin_id, "1.0.0"),
+                install_source: PluginInstallSource::Local,
+                status: PluginStatus::Disabled,
+                installed_dir: None,
+            },
+        )
+        .unwrap();
+    }
+
     #[test]
     fn plugin_repository_transaction_rolls_back_partial_plugin_writes() {
         let dir = tempfile::tempdir().unwrap();
@@ -1132,6 +1283,133 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table} rows should roll back");
         }
+    }
+
+    #[test]
+    fn user_config_save_preserves_newer_runtime_storage() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        install_config_test_plugin(&db, "config.runtime-first");
+        save_plugin_config(
+            &db,
+            "config.runtime-first",
+            1,
+            &serde_json::json!({"mode": "strict", "storage": {"cursor": "old"}}),
+            &[],
+        )
+        .unwrap();
+
+        save_plugin_storage_value(
+            &db,
+            "config.runtime-first",
+            "cursor",
+            serde_json::json!("new"),
+        )
+        .unwrap();
+        save_plugin_config_preserving_storage(
+            &db,
+            "config.runtime-first",
+            1,
+            &serde_json::json!({"mode": "balanced", "storage": {"cursor": "old"}}),
+            &[],
+        )
+        .unwrap();
+
+        assert_eq!(
+            get_plugin(&db, "config.runtime-first").unwrap().config,
+            serde_json::json!({"mode": "balanced", "storage": {"cursor": "new"}})
+        );
+    }
+
+    #[test]
+    fn runtime_storage_save_preserves_newer_user_config() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        install_config_test_plugin(&db, "config.user-first");
+        save_plugin_config(
+            &db,
+            "config.user-first",
+            1,
+            &serde_json::json!({"mode": "strict", "storage": {"cursor": "old"}}),
+            &[],
+        )
+        .unwrap();
+
+        save_plugin_config_preserving_storage(
+            &db,
+            "config.user-first",
+            1,
+            &serde_json::json!({"mode": "balanced", "storage": {"cursor": "stale"}}),
+            &[],
+        )
+        .unwrap();
+        save_plugin_storage_value(&db, "config.user-first", "cursor", serde_json::json!("new"))
+            .unwrap();
+
+        assert_eq!(
+            get_plugin(&db, "config.user-first").unwrap().config,
+            serde_json::json!({"mode": "balanced", "storage": {"cursor": "new"}})
+        );
+    }
+
+    #[test]
+    fn oversized_runtime_storage_leaves_config_unchanged() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        install_config_test_plugin(&db, "config.storage-limit");
+        save_plugin_config(
+            &db,
+            "config.storage-limit",
+            1,
+            &serde_json::json!({"mode": "strict", "storage": {"cursor": "kept"}}),
+            &[],
+        )
+        .unwrap();
+        let before = get_plugin(&db, "config.storage-limit").unwrap().config;
+
+        let err = save_plugin_storage_value(
+            &db,
+            "config.storage-limit",
+            "oversized",
+            serde_json::json!("x".repeat(PLUGIN_STORAGE_MAX_BYTES)),
+        )
+        .unwrap_err();
+
+        assert_eq!(err.code(), "PLUGIN_STORAGE_LIMIT_EXCEEDED");
+        assert_eq!(
+            get_plugin(&db, "config.storage-limit").unwrap().config,
+            before
+        );
+    }
+
+    #[test]
+    fn plugin_version_exists_checks_current_and_historical_versions() {
+        let dir = tempfile::tempdir().unwrap();
+        let db = crate::db::init_for_tests(&dir.path().join("plugins.db")).unwrap();
+        let v1 = test_manifest("version.exists", "1.0.0");
+
+        assert!(!plugin_version_exists(&db, "version.exists", "1.0.0").unwrap());
+        insert_plugin(
+            &db,
+            InsertPluginInput {
+                manifest: v1,
+                install_source: PluginInstallSource::Local,
+                status: PluginStatus::Disabled,
+                installed_dir: Some("/tmp/plugin-v1".to_string()),
+            },
+        )
+        .unwrap();
+        assert!(plugin_version_exists(&db, "version.exists", "1.0.0").unwrap());
+
+        update_plugin_manifest(
+            &db,
+            test_manifest("version.exists", "1.1.0"),
+            Some("/tmp/plugin-v2".to_string()),
+        )
+        .unwrap();
+        assert!(plugin_version_exists(&db, "version.exists", "1.0.0").unwrap());
+        assert!(plugin_version_exists(&db, "version.exists", "1.1.0").unwrap());
+        assert!(!plugin_version_exists(&db, "version.exists", "2.0.0").unwrap());
     }
 
     #[test]

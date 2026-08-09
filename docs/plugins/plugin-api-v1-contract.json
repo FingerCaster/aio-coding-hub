@@ -116,8 +116,18 @@
   "gatewayHookContribution": {
     "requiredFields": ["name"],
     "optionalFields": ["priority", "failurePolicy", "timeoutMs"],
+    "failurePolicies": ["fail-open", "fail-closed"],
     "defaultTimeoutMs": 5000,
     "timeoutMs": "positive integer milliseconds; omitted hooks use defaultHookTimeoutMs"
+  },
+  "gatewayHookResourceBudgets": {
+    "contextBodyBytes": 1048576,
+    "mutationBodyBytes": 1048576,
+    "streamBytes": 65536,
+    "logBytes": 65536,
+    "normalizedMessageLimit": 64,
+    "normalizedMessageTextBytes": 8192,
+    "failClosedDirectContentTruncation": "Visible limits apply after invalid UTF-8 replacement as well as to raw input bytes; replacement expansion is capped and marks the field truncated. The host returns PLUGIN_CONTEXT_TRUNCATED before Extension Host execution when a visible request body, response body, stream chunk, or log message is truncated. Normalized-message-only truncation does not trigger this rejection."
   },
   "hostRenderedSchema": {
     "schemaTypes": ["section", "panel", "badge"],
@@ -188,8 +198,10 @@
         "request.query",
         "request.headers",
         "request.body",
+        "request.bodyTruncated",
         "request.requestedModel",
-        "request.normalizedMessages"
+        "request.normalizedMessages",
+        "request.normalizedMessagesTruncated"
       ]
     },
     "gateway.request.beforeSend": {
@@ -216,8 +228,10 @@
         "request.query",
         "request.headers",
         "request.body",
+        "request.bodyTruncated",
         "request.requestedModel",
-        "request.normalizedMessages"
+        "request.normalizedMessages",
+        "request.normalizedMessagesTruncated"
       ]
     },
     "gateway.response.chunk": {
@@ -233,7 +247,7 @@
         "stream.modify": ["stream.inspect"]
       },
       "mutationFields": ["streamChunk"],
-      "contextFields": ["traceId", "stream.sequence", "stream.chunk"]
+      "contextFields": ["traceId", "stream.sequence", "stream.chunk", "stream.chunkTruncated"]
     },
     "gateway.response.after": {
       "phase": "after a complete non-streaming upstream response body is available",
@@ -248,7 +262,13 @@
         "response.body.write": ["response.body.read"]
       },
       "mutationFields": ["headers", "responseBody"],
-      "contextFields": ["traceId", "response.status", "response.headers", "response.body"]
+      "contextFields": [
+        "traceId",
+        "response.status",
+        "response.headers",
+        "response.body",
+        "response.bodyTruncated"
+      ]
     },
     "gateway.error": {
       "phase": "after gateway error response materialization and before it is sent",
@@ -261,7 +281,13 @@
       "writePermissions": ["response.header.write", "response.body.write"],
       "permissionDependencies": {},
       "mutationFields": ["headers", "responseBody"],
-      "contextFields": ["traceId", "response.status", "response.headers", "response.body"]
+      "contextFields": [
+        "traceId",
+        "response.status",
+        "response.headers",
+        "response.body",
+        "response.bodyTruncated"
+      ]
     },
     "log.beforePersist": {
       "phase": "before gateway request log persistence",
@@ -274,7 +300,7 @@
       "writePermissions": ["log.redact"],
       "permissionDependencies": {},
       "mutationFields": ["logMessage"],
-      "contextFields": ["traceId", "log.message"]
+      "contextFields": ["traceId", "log.message", "log.messageTruncated"]
     }
   },
   "extensionHostContract": {

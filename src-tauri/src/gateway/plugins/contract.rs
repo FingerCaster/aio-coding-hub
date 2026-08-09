@@ -91,8 +91,10 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             "request.query",
             "request.headers",
             "request.body",
+            "request.bodyTruncated",
             "request.requestedModel",
             "request.normalizedMessages",
+            "request.normalizedMessagesTruncated",
         ],
     },
     HookContract {
@@ -120,8 +122,10 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             "request.query",
             "request.headers",
             "request.body",
+            "request.bodyTruncated",
             "request.requestedModel",
             "request.normalizedMessages",
+            "request.normalizedMessagesTruncated",
         ],
     },
     HookContract {
@@ -139,7 +143,12 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             requires: &["stream.inspect"],
         }],
         mutation_fields: &["streamChunk"],
-        context_fields: &["traceId", "stream.sequence", "stream.chunk"],
+        context_fields: &[
+            "traceId",
+            "stream.sequence",
+            "stream.chunk",
+            "stream.chunkTruncated",
+        ],
     },
     HookContract {
         id: "gateway.response.after",
@@ -161,6 +170,7 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             "response.status",
             "response.headers",
             "response.body",
+            "response.bodyTruncated",
         ],
     },
     HookContract {
@@ -180,6 +190,7 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
             "response.status",
             "response.headers",
             "response.body",
+            "response.bodyTruncated",
         ],
     },
     HookContract {
@@ -194,7 +205,7 @@ pub(crate) const ACTIVE_HOOKS: &[HookContract] = &[
         write_permissions: &["log.redact"],
         permission_dependencies: &[],
         mutation_fields: &["logMessage"],
-        context_fields: &["traceId", "log.message"],
+        context_fields: &["traceId", "log.message", "log.messageTruncated"],
     },
 ];
 

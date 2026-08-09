@@ -24,8 +24,6 @@ use std::time::Duration;
 const DEFAULT_EXTENSION_HOST_START_TIMEOUT: Duration = Duration::from_secs(5);
 pub(crate) const DEFAULT_EXTENSION_HOST_CALL_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_EXTENSION_HOST_IDLE_RECYCLE: Duration = Duration::from_secs(30);
-const PLUGIN_STORAGE_MAX_BYTES: usize = 64 * 1024;
-
 #[derive(Debug)]
 pub(crate) struct ExtensionHostInstance {
     manifest: PluginManifest,
@@ -286,6 +284,13 @@ impl ExtensionHostInstance {
         self.runtime.is_running()
     }
 
+    pub(crate) async fn recycle_if_idle(&mut self) -> AppResult<bool> {
+        self.runtime
+            .recycle_if_idle()
+            .await
+            .map_err(map_extension_host_process_error)
+    }
+
     #[allow(dead_code)]
     pub(crate) async fn dispose(&mut self) {
         let _ = self
@@ -293,6 +298,10 @@ impl ExtensionHostInstance {
             .call_method_with_timeout("extension.deactivate", Value::Null, self.startup_timeout)
             .await;
         self.runtime.shutdown().await;
+    }
+
+    pub(crate) fn abort(&mut self) {
+        self.runtime.abort();
     }
 
     #[cfg(test)]
@@ -395,41 +404,7 @@ impl ExtensionHostApiHandler {
         let plugin_id = self.host_api_plugin_id(&params)?.to_string();
         let key = required_string(&params, "key")?.to_string();
         let value = params.get("value").cloned().unwrap_or(Value::Null);
-        let detail = repository::get_plugin(&self.db, &plugin_id)?;
-        let mut config = detail.config;
-        if !config.is_object() {
-            config = json!({});
-        }
-        let object = config.as_object_mut().ok_or_else(|| {
-            AppError::new(
-                "PLUGIN_STORAGE_INVALID",
-                "plugin config storage root must be an object",
-            )
-        })?;
-        let storage_value = object
-            .entry("storage".to_string())
-            .or_insert_with(|| json!({}));
-        if !storage_value.is_object() {
-            *storage_value = json!({});
-        }
-        storage_value
-            .as_object_mut()
-            .expect("storage object")
-            .insert(key, value);
-        let storage_bytes = serde_json::to_vec(storage_value).map_err(|err| {
-            AppError::new(
-                "PLUGIN_STORAGE_INVALID",
-                format!("failed to encode plugin storage: {err}"),
-            )
-        })?;
-        if storage_bytes.len() > PLUGIN_STORAGE_MAX_BYTES {
-            return Err(AppError::new(
-                "PLUGIN_STORAGE_LIMIT_EXCEEDED",
-                "plugin storage exceeded 64 KiB",
-            ));
-        }
-        let config_version = detail.manifest.config_version.unwrap_or(1);
-        repository::save_plugin_config(&self.db, &plugin_id, config_version, &config, &[])?;
+        repository::save_plugin_storage_value(&self.db, &plugin_id, &key, value)?;
         Ok(json!({ "ok": true }))
     }
 

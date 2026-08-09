@@ -574,7 +574,10 @@ describe("query/plugins", () => {
     });
     await act(async () => {
       await enableResult.current.mutateAsync("community.prompt-helper");
-      await installFromFileResult.current.mutateAsync("/tmp/plugin.aio-plugin");
+      await installFromFileResult.current.mutateAsync({
+        filePath: "/tmp/plugin.aio-plugin",
+        expectedChecksum: "sha256-install",
+      });
       await installRemoteResult.current.mutateAsync({
         pluginId: "community.prompt-helper",
         downloadUrl: "https://github.com/acme/plugin/releases/download/v1/plugin.aio-plugin",
@@ -584,7 +587,10 @@ describe("query/plugins", () => {
       await quarantineRevokedResult.current.mutateAsync("community.prompt-helper");
       await disableResult.current.mutateAsync("community.prompt-helper");
       await uninstallResult.current.mutateAsync("community.prompt-helper");
-      await updateResult.current.mutateAsync("/tmp/plugin-update.aio-plugin");
+      await updateResult.current.mutateAsync({
+        filePath: "/tmp/plugin-update.aio-plugin",
+        expectedChecksum: "sha256-update",
+      });
       await rollbackResult.current.mutateAsync({
         pluginId: "community.prompt-helper",
         version: "1.0.0",
@@ -605,6 +611,11 @@ describe("query/plugins", () => {
     expect(invalidateSpy).toHaveBeenCalledWith({
       queryKey: pluginContributionKeys.active(),
     });
+    expect(pluginInstallFromFile).toHaveBeenCalledWith("/tmp/plugin.aio-plugin", "sha256-install");
+    expect(pluginUpdateFromFile).toHaveBeenCalledWith(
+      "/tmp/plugin-update.aio-plugin",
+      "sha256-update"
+    );
   });
 
   it("invalidates broad plugin state when install or update returns no detail", async () => {
@@ -625,13 +636,19 @@ describe("query/plugins", () => {
     });
 
     await act(async () => {
-      await installFromFileResult.current.mutateAsync("/tmp/missing.aio-plugin");
+      await installFromFileResult.current.mutateAsync({
+        filePath: "/tmp/missing.aio-plugin",
+        expectedChecksum: "sha256-missing",
+      });
       await installRemoteResult.current.mutateAsync({
         pluginId: "community.prompt-helper",
         downloadUrl: "https://github.com/acme/plugin/releases/download/v3/plugin.aio-plugin",
         checksum: "sha256:cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
       });
-      await updateFromFileResult.current.mutateAsync("/tmp/no-update.aio-plugin");
+      await updateFromFileResult.current.mutateAsync({
+        filePath: "/tmp/no-update.aio-plugin",
+        expectedChecksum: "sha256-no-update",
+      });
     });
 
     expect(invalidateSpy).toHaveBeenCalledWith({ queryKey: pluginKeys.list() });

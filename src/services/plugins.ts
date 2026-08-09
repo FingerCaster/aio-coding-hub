@@ -137,25 +137,37 @@ export async function pluginPreviewUpdateFromFile(filePath: string) {
   });
 }
 
-export async function pluginInstallFromFile(filePath: string) {
+export async function pluginInstallFromFile(filePath: string, expectedChecksum?: string | null) {
   const normalizedFilePath = normalizePluginFilePath(filePath);
+  const normalizedExpectedChecksum =
+    expectedChecksum == null ? null : normalizeRequiredText("expectedChecksum", expectedChecksum);
 
   return invokeGeneratedIpc<PluginDetail>({
     title: "导入插件失败",
     cmd: "plugin_install_from_file",
-    args: { filePath: normalizedFilePath },
-    invoke: async () => commands.pluginInstallFromFile({ filePath: normalizedFilePath }),
+    args: { filePath: normalizedFilePath, expectedChecksum: normalizedExpectedChecksum },
+    invoke: async () =>
+      commands.pluginInstallFromFile({
+        filePath: normalizedFilePath,
+        expectedChecksum: normalizedExpectedChecksum,
+      }),
   });
 }
 
-export async function pluginUpdateFromFile(filePath: string) {
+export async function pluginUpdateFromFile(filePath: string, expectedChecksum?: string | null) {
   const normalizedFilePath = normalizePluginFilePath(filePath);
+  const normalizedExpectedChecksum =
+    expectedChecksum == null ? null : normalizeRequiredText("expectedChecksum", expectedChecksum);
 
   return invokeGeneratedIpc<PluginDetail>({
     title: "更新插件失败",
     cmd: "plugin_update_from_file",
-    args: { filePath: normalizedFilePath },
-    invoke: async () => commands.pluginUpdateFromFile({ filePath: normalizedFilePath }),
+    args: { filePath: normalizedFilePath, expectedChecksum: normalizedExpectedChecksum },
+    invoke: async () =>
+      commands.pluginUpdateFromFile({
+        filePath: normalizedFilePath,
+        expectedChecksum: normalizedExpectedChecksum,
+      }),
   });
 }
 

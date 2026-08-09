@@ -7,6 +7,7 @@ use std::collections::BTreeMap;
 
 pub(crate) const DEFAULT_PLUGIN_CONTEXT_STREAM_BYTES: usize = 64 * 1024;
 pub(crate) const DEFAULT_PLUGIN_CONTEXT_LOG_BYTES: usize = 64 * 1024;
+pub(crate) const DEFAULT_PLUGIN_CONTEXT_BODY_BYTES: usize = 1024 * 1024;
 pub(crate) const DEFAULT_PLUGIN_NORMALIZED_MESSAGE_LIMIT: usize = 64;
 pub(crate) const DEFAULT_PLUGIN_NORMALIZED_MESSAGE_TEXT_BYTES: usize = 8 * 1024;
 
@@ -22,7 +23,7 @@ pub(crate) struct GatewayPluginContextBudget {
 impl Default for GatewayPluginContextBudget {
     fn default() -> Self {
         Self {
-            body_bytes: crate::gateway::util::max_request_body_bytes(),
+            body_bytes: DEFAULT_PLUGIN_CONTEXT_BODY_BYTES,
             stream_bytes: DEFAULT_PLUGIN_CONTEXT_STREAM_BYTES,
             log_bytes: DEFAULT_PLUGIN_CONTEXT_LOG_BYTES,
             normalized_messages: DEFAULT_PLUGIN_NORMALIZED_MESSAGE_LIMIT,
@@ -256,7 +257,9 @@ impl GatewayLogHookInput {
 
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub(crate) struct GatewayVisibleHookContext {
+    #[serde(skip_serializing)]
     pub(crate) hook_name: String,
+    #[serde(skip_serializing)]
     pub(crate) trace_id: String,
     pub(crate) request: GatewayVisibleRequestContext,
     pub(crate) response: GatewayVisibleResponseContext,
@@ -286,6 +289,7 @@ pub(crate) struct GatewayNormalizedMessage {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GatewayVisibleRequestContext {
     pub(crate) cli_key: Option<String>,
     pub(crate) method: Option<String>,
@@ -300,6 +304,7 @@ pub(crate) struct GatewayVisibleRequestContext {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GatewayVisibleResponseContext {
     pub(crate) status: Option<u16>,
     pub(crate) headers: Option<serde_json::Map<String, serde_json::Value>>,
@@ -308,6 +313,7 @@ pub(crate) struct GatewayVisibleResponseContext {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GatewayVisibleStreamContext {
     pub(crate) sequence: Option<u64>,
     pub(crate) chunk: Option<String>,
@@ -315,6 +321,7 @@ pub(crate) struct GatewayVisibleStreamContext {
 }
 
 #[derive(Debug, Clone, Default, PartialEq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
 pub(crate) struct GatewayVisibleLogContext {
     pub(crate) message: Option<String>,
     pub(crate) message_truncated: bool,
@@ -355,22 +362,20 @@ fn has_permission(permissions: &[String], permission: &str) -> bool {
     permissions.iter().any(|item| item == permission)
 }
 
-fn bytes_to_visible_string(bytes: &Bytes) -> String {
-    String::from_utf8_lossy(bytes.as_ref()).into_owned()
-}
-
 fn visible_string_with_limit(bytes: &Bytes, limit: usize) -> (String, bool) {
-    if bytes.len() <= limit {
-        return (bytes_to_visible_string(bytes), false);
+    let capped = &bytes.as_ref()[..bytes.len().min(limit)];
+    match std::str::from_utf8(capped) {
+        Ok(text) => (text.to_string(), bytes.len() > limit),
+        Err(err) if bytes.len() > limit && err.error_len().is_none() => (
+            String::from_utf8_lossy(&capped[..err.valid_up_to()]).into_owned(),
+            true,
+        ),
+        Err(_) => {
+            let visible = String::from_utf8_lossy(capped);
+            let (visible, expanded_truncated) = text_with_limit(visible.as_ref(), limit);
+            (visible, bytes.len() > limit || expanded_truncated)
+        }
     }
-    let capped = &bytes.as_ref()[..limit];
-    let boundary = std::str::from_utf8(capped)
-        .map(|_| limit)
-        .unwrap_or_else(|err| err.valid_up_to());
-    (
-        String::from_utf8_lossy(&bytes.as_ref()[..boundary]).into_owned(),
-        true,
-    )
 }
 
 fn text_with_limit(text: &str, limit: usize) -> (String, bool) {
@@ -617,6 +622,96 @@ mod tests {
         assert_eq!(GatewayPluginHookName::from_str("gateway.unknown"), None);
     }
 
+    #[test]
+    fn visible_hook_context_serializes_only_canonical_camel_case_wire_fields() {
+        let mut request_headers = serde_json::Map::new();
+        request_headers.insert("x-public".to_string(), serde_json::json!("visible"));
+        let context = GatewayVisibleHookContext {
+            hook_name: GatewayPluginHookName::RequestAfterBodyRead
+                .as_str()
+                .to_string(),
+            trace_id: "trace-canonical-wire".to_string(),
+            request: GatewayVisibleRequestContext {
+                cli_key: Some("codex".to_string()),
+                method: Some("POST".to_string()),
+                path: Some("/v1/responses".to_string()),
+                query: Some("debug=1".to_string()),
+                headers: Some(request_headers),
+                body: Some("request-body".to_string()),
+                body_truncated: true,
+                normalized_messages: vec![GatewayNormalizedMessage {
+                    role: "user".to_string(),
+                    text: "hello".to_string(),
+                    source: "openai.responses.input_text".to_string(),
+                }],
+                normalized_messages_truncated: true,
+                requested_model: Some("gpt-test".to_string()),
+            },
+            response: GatewayVisibleResponseContext {
+                status: Some(200),
+                headers: None,
+                body: Some("response-body".to_string()),
+                body_truncated: true,
+            },
+            stream: GatewayVisibleStreamContext {
+                sequence: Some(3),
+                chunk: Some("stream-chunk".to_string()),
+                chunk_truncated: true,
+            },
+            log: GatewayVisibleLogContext {
+                message: Some("log-message".to_string()),
+                message_truncated: true,
+            },
+        };
+
+        let serialized = serde_json::to_value(context).expect("visible context serializes");
+
+        assert_eq!(
+            serialized,
+            serde_json::json!({
+                "request": {
+                    "cliKey": "codex",
+                    "method": "POST",
+                    "path": "/v1/responses",
+                    "query": "debug=1",
+                    "headers": { "x-public": "visible" },
+                    "body": "request-body",
+                    "bodyTruncated": true,
+                    "normalizedMessages": [{
+                        "role": "user",
+                        "text": "hello",
+                        "source": "openai.responses.input_text"
+                    }],
+                    "normalizedMessagesTruncated": true,
+                    "requestedModel": "gpt-test"
+                },
+                "response": {
+                    "status": 200,
+                    "headers": null,
+                    "body": "response-body",
+                    "bodyTruncated": true
+                },
+                "stream": {
+                    "sequence": 3,
+                    "chunk": "stream-chunk",
+                    "chunkTruncated": true
+                },
+                "log": {
+                    "message": "log-message",
+                    "messageTruncated": true
+                }
+            })
+        );
+        assert!(serialized.get("hook_name").is_none());
+        assert!(serialized.get("trace_id").is_none());
+        assert!(serialized.pointer("/request/cli_key").is_none());
+        assert!(serialized.pointer("/request/body_truncated").is_none());
+        assert!(serialized.pointer("/request/normalized_messages").is_none());
+        assert!(serialized.pointer("/response/body_truncated").is_none());
+        assert!(serialized.pointer("/stream/chunk_truncated").is_none());
+        assert!(serialized.pointer("/log/message_truncated").is_none());
+    }
+
     fn headers() -> HeaderMap {
         let mut headers = HeaderMap::new();
         headers.insert("authorization", HeaderValue::from_static("Bearer secret"));
@@ -669,6 +764,100 @@ mod tests {
                 .get("authorization")
                 .and_then(|v| v.as_str()),
             Some("Bearer secret")
+        );
+    }
+
+    #[test]
+    fn gateway_plugin_context_default_body_budget_is_fixed() {
+        assert_eq!(
+            GatewayPluginContextBudget::default().body_bytes,
+            DEFAULT_PLUGIN_CONTEXT_BODY_BYTES
+        );
+    }
+
+    #[test]
+    fn gateway_plugin_context_default_body_budget_marks_only_values_above_the_cap() {
+        for (body_len, truncated) in [
+            (DEFAULT_PLUGIN_CONTEXT_BODY_BYTES - 1, false),
+            (DEFAULT_PLUGIN_CONTEXT_BODY_BYTES, false),
+            (DEFAULT_PLUGIN_CONTEXT_BODY_BYTES + 1, true),
+        ] {
+            let input = GatewayRequestHookInput {
+                hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+                trace_id: format!("trace-default-budget-{body_len}"),
+                cli_key: "codex".to_string(),
+                method: Method::POST,
+                path: "/v1/responses".to_string(),
+                query: None,
+                headers: HeaderMap::new(),
+                body: Bytes::from(vec![b'x'; body_len]),
+                requested_model: None,
+            };
+
+            let visible = input.visible_context(&["request.body.read".to_string()]);
+
+            assert_eq!(visible.request.body_truncated, truncated);
+            assert_eq!(
+                visible.request.body.as_deref().map(str::len),
+                Some(body_len.min(DEFAULT_PLUGIN_CONTEXT_BODY_BYTES))
+            );
+        }
+    }
+
+    #[test]
+    fn gateway_plugin_context_bounds_lossy_request_response_and_stream_at_their_caps() {
+        let budget = GatewayPluginContextBudget::default();
+        let invalid_body = Bytes::from(vec![0xff; budget.body_bytes]);
+        let request = GatewayRequestHookInput {
+            hook_name: GatewayPluginHookName::RequestAfterBodyRead,
+            trace_id: "trace-lossy-request-budget".to_string(),
+            cli_key: "codex".to_string(),
+            method: Method::POST,
+            path: "/v1/responses".to_string(),
+            query: None,
+            headers: HeaderMap::new(),
+            body: invalid_body.clone(),
+            requested_model: None,
+        };
+        let response = GatewayResponseHookInput {
+            hook_name: GatewayPluginHookName::ResponseAfter,
+            trace_id: "trace-lossy-response-budget".to_string(),
+            status: 200,
+            headers: HeaderMap::new(),
+            body: invalid_body,
+        };
+        let stream = GatewayStreamHookInput {
+            trace_id: "trace-lossy-stream-budget".to_string(),
+            chunk: Bytes::from(vec![0xff; budget.stream_bytes]),
+            sequence: 1,
+        };
+
+        let visible_request =
+            request.visible_context_with_budget(&["request.body.read".to_string()], budget);
+        let visible_response =
+            response.visible_context_with_budget(&["response.body.read".to_string()], budget);
+        let visible_stream =
+            stream.visible_context_with_budget(&["stream.inspect".to_string()], budget);
+
+        assert!(visible_request.request.body_truncated);
+        assert!(visible_response.response.body_truncated);
+        assert!(visible_stream.stream.chunk_truncated);
+        assert!(visible_request.request.body.as_deref().unwrap().len() <= budget.body_bytes);
+        assert!(visible_response.response.body.as_deref().unwrap().len() <= budget.body_bytes);
+        assert!(visible_stream.stream.chunk.as_deref().unwrap().len() <= budget.stream_bytes);
+    }
+
+    #[test]
+    fn visible_string_with_zero_limit_truncates_any_nonempty_input() {
+        let empty = Bytes::new();
+        let valid = Bytes::from_static(b"x");
+        let invalid = Bytes::from_static(&[0xff]);
+
+        assert_eq!(visible_string_with_limit(&empty, 0), (String::new(), false));
+        assert_eq!(visible_string_with_limit(&valid, 0), (String::new(), true));
+        assert_eq!(
+            visible_string_with_limit(&invalid, 0),
+            (String::new(), true)
         );
     }
 

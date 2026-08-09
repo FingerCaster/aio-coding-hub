@@ -329,4 +329,47 @@ describe("PluginConfigSchemaForm", () => {
 
     expect(screen.getByLabelText("提示词模板").tagName).toBe("TEXTAREA");
   });
+
+  it("disables every editable control while a save is pending", () => {
+    render(
+      <PluginConfigSchemaForm
+        identity="publisher.pending:1"
+        schema={{
+          type: "object",
+          properties: {
+            name: { type: "string", title: "名称" },
+            enabled: { type: "boolean", title: "启用" },
+            mode: { type: "string", title: "模式", enum: ["strict", "balanced"] },
+            scopes: {
+              type: "array",
+              title: "范围",
+              items: { type: "string", enum: ["request", "response"] },
+              "x-aio-ui": { widget: "checkboxGroup" },
+            },
+            notes: {
+              type: "string",
+              title: "备注",
+              "x-aio-ui": { widget: "textarea" },
+            },
+          },
+        }}
+        value={{
+          name: "Privacy filter",
+          enabled: true,
+          mode: "strict",
+          scopes: ["request"],
+          notes: "Saved value",
+        }}
+        pending
+        onSubmit={vi.fn()}
+      />
+    );
+
+    expect(screen.getByLabelText("名称")).toBeDisabled();
+    expect(screen.getByLabelText("启用")).toBeDisabled();
+    expect(screen.getByRole("combobox", { name: "模式" })).toBeDisabled();
+    expect(screen.getByLabelText("request")).toBeDisabled();
+    expect(screen.getByLabelText("备注")).toBeDisabled();
+    expect(screen.getByRole("button", { name: "保存配置" })).toBeDisabled();
+  });
 });

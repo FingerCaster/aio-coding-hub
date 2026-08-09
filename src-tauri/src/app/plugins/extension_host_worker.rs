@@ -16,6 +16,63 @@ const WORKER_VERSION: u32 = 1;
 const EXTENSION_HOST_JSON_RPC_BODY_EXPANSION_FACTOR: usize = 6;
 const EXTENSION_HOST_JSON_RPC_OVERHEAD_BYTES: usize = 1024 * 1024;
 const DEFAULT_JS_TIMEOUT_MS: u64 = 30_000;
+const GATEWAY_HOOK_CONTEXT_COMPATIBILITY_SOURCE: &str = r#"
+(payload) => {
+  const context = payload && payload.context;
+  if (!context || typeof context !== "object") {
+    return payload;
+  }
+
+  const defineAlias = (target, legacyKey, source, canonicalKey) => {
+    if (
+      !target ||
+      typeof target !== "object" ||
+      !source ||
+      typeof source !== "object" ||
+      !Object.prototype.hasOwnProperty.call(source, canonicalKey) ||
+      Object.prototype.hasOwnProperty.call(target, legacyKey)
+    ) {
+      return;
+    }
+    Object.defineProperty(target, legacyKey, {
+      configurable: true,
+      enumerable: true,
+      get() {
+        return source[canonicalKey];
+      },
+      set(value) {
+        source[canonicalKey] = value;
+      },
+    });
+  };
+
+  defineAlias(context, "hook_name", payload, "hook");
+  defineAlias(context, "trace_id", payload, "traceId");
+
+  const request = context.request;
+  defineAlias(request, "cli_key", request, "cliKey");
+  defineAlias(request, "body_truncated", request, "bodyTruncated");
+  defineAlias(request, "normalized_messages", request, "normalizedMessages");
+  defineAlias(
+    request,
+    "normalized_messages_truncated",
+    request,
+    "normalizedMessagesTruncated",
+  );
+  defineAlias(request, "requested_model", request, "requestedModel");
+
+  const response = context.response;
+  defineAlias(response, "body_truncated", response, "bodyTruncated");
+
+  const stream = context.stream;
+  defineAlias(stream, "chunk_truncated", stream, "chunkTruncated");
+
+  const log = context.log;
+  defineAlias(log, "message_truncated", log, "messageTruncated");
+
+  return payload;
+}
+"#;
 
 pub(crate) fn default_extension_host_max_line_bytes() -> usize {
     crate::gateway::util::max_request_body_bytes()
@@ -748,6 +805,13 @@ impl WorkerState {
                 let parsed_context: JsValue = ctx
                     .eval(format!("JSON.parse({})", json_string_literal(&context_json)).as_str())
                     .map_err(js_runtime_error)?;
+                let install_compatibility_aliases: Function = ctx
+                    .eval(GATEWAY_HOOK_CONTEXT_COMPATIBILITY_SOURCE)
+                    .map_err(js_runtime_error)?;
+                let parsed_context: JsValue = install_compatibility_aliases
+                    .call((parsed_context,))
+                    .catch(&ctx)
+                    .map_err(|err| self.js_caught_error(err))?;
                 let result: JsValue = handler
                     .call((parsed_context,))
                     .catch(&ctx)

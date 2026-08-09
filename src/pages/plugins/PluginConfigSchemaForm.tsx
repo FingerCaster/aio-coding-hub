@@ -310,27 +310,29 @@ export function PluginConfigSchemaForm({
         onSubmit(buildSubmitValue());
       }}
     >
-      <div className="grid gap-4">
-        {model.sections.map((section) => (
-          <section key={section.id} className="grid gap-3">
-            <div>
-              <h3 className="text-sm font-semibold text-foreground">{section.title}</h3>
-              {section.description ? (
-                <p className="text-xs text-muted-foreground">{section.description}</p>
-              ) : null}
-            </div>
-            <div className="grid gap-3">
-              {section.fields.map((field) => renderField(field, section.title))}
-            </div>
-          </section>
-        ))}
-      </div>
+      <fieldset disabled={pending} className="m-0 min-w-0 space-y-4 border-0 p-0">
+        <div className="grid gap-4">
+          {model.sections.map((section) => (
+            <section key={section.id} className="grid gap-3">
+              <div>
+                <h3 className="text-sm font-semibold text-foreground">{section.title}</h3>
+                {section.description ? (
+                  <p className="text-xs text-muted-foreground">{section.description}</p>
+                ) : null}
+              </div>
+              <div className="grid gap-3">
+                {section.fields.map((field) => renderField(field, section.title))}
+              </div>
+            </section>
+          ))}
+        </div>
 
-      <div className="flex justify-end">
-        <Button type="submit" disabled={pending || Object.keys(fieldErrors).length > 0}>
-          保存配置
-        </Button>
-      </div>
+        <div className="flex justify-end">
+          <Button type="submit" disabled={pending || Object.keys(fieldErrors).length > 0}>
+            保存配置
+          </Button>
+        </div>
+      </fieldset>
     </form>
   );
 }

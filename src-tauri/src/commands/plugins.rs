@@ -24,6 +24,7 @@ pub(crate) struct PluginGetInput {
 #[serde(rename_all = "camelCase")]
 pub(crate) struct PluginInstallFromFileInput {
     pub file_path: String,
+    pub expected_checksum: Option<String>,
 }
 
 #[derive(Debug, Clone, serde::Deserialize, specta::Type)]
@@ -313,12 +314,16 @@ pub(crate) async fn plugin_install_from_file(
         let path = PathBuf::from(&input.file_path);
         let cache_dir = crate::app_paths::plugins_cache_dir(&app)?;
         let installed_dir = crate::app_paths::plugins_installed_dir(&app)?;
-        plugin_service::install_plugin_from_local_package(
+        plugin_service::install_plugin_from_local_package_with_policy(
             &db,
             &path,
             &cache_dir,
             &installed_dir,
             env!("CARGO_PKG_VERSION"),
+            plugin_service::LocalPackageInstallPolicy {
+                expected_checksum: input.expected_checksum,
+                ..plugin_service::LocalPackageInstallPolicy::default()
+            },
         )
         .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
         .and_then(|detail| ensure_plugin_runtime_dirs(&app, detail))
@@ -348,7 +353,10 @@ pub(crate) async fn plugin_update_from_file(
             &cache_dir,
             &installed_dir,
             env!("CARGO_PKG_VERSION"),
-            plugin_service::LocalPackageInstallPolicy::default(),
+            plugin_service::LocalPackageInstallPolicy {
+                expected_checksum: input.expected_checksum,
+                ..plugin_service::LocalPackageInstallPolicy::default()
+            },
         )
         .and_then(|detail| refresh_running_gateway_plugins(&app, &db, detail))
         .and_then(|detail| ensure_plugin_runtime_dirs(&app, detail))
@@ -910,6 +918,23 @@ fn validate_remote_plugin_download_url(download_url: &str) -> Result<(), String>
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn plugin_install_from_file_input_accepts_optional_expected_checksum() {
+        let legacy: PluginInstallFromFileInput = serde_json::from_value(serde_json::json!({
+            "filePath": "/tmp/plugin.aio-plugin"
+        }))
+        .expect("legacy local package input");
+        assert_eq!(legacy.file_path, "/tmp/plugin.aio-plugin");
+        assert!(legacy.expected_checksum.is_none());
+
+        let bound: PluginInstallFromFileInput = serde_json::from_value(serde_json::json!({
+            "filePath": "/tmp/plugin.aio-plugin",
+            "expectedChecksum": "sha256:abc"
+        }))
+        .expect("checksum-bound local package input");
+        assert_eq!(bound.expected_checksum.as_deref(), Some("sha256:abc"));
+    }
 
     #[test]
     fn official_resource_root_resolves_packaged_plugin_manifest() {
