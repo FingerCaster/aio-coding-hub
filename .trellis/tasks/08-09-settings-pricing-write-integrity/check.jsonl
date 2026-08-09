@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/08-09-settings-pricing-write-integrity/research.md", "reason": "核对并发、失败优先与 schema 风险"}
+{"file": ".trellis/tasks/08-09-settings-pricing-write-integrity/design.md", "reason": "检查缓存与持久化所有权分离"}

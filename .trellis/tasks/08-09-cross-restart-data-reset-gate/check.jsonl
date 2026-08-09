@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/08-09-cross-restart-data-reset-gate/research.md", "reason": "核对跨进程失败路径与排除的 recovery journal"}
+{"file": ".trellis/tasks/08-09-cross-restart-data-reset-gate/design.md", "reason": "检查 maintenance 状态机与启动顺序"}

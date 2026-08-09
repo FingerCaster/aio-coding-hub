@@ -1,0 +1,28 @@
+{
+  "id": "plugin-runtime-hardening",
+  "name": "plugin-runtime-hardening",
+  "title": "插件运行时完整性与资源边界",
+  "description": "在插件运行时保留前提下，适配本地包内容绑定、版本不可变、Hook 上下文预算/字段合同、Header fail-open、绝对 deadline、idle recycle、配置 Storage 原子性和 fail-closed 日志。不得恢复被用户删除的 SDK/脚手架包。",
+  "status": "planning",
+  "dev_type": null,
+  "scope": "src-tauri plugin runtime only; exclude packages/plugin-sdk and packages/create-aio-plugin",
+  "package": "aio-coding-hub",
+  "priority": "P1",
+  "creator": "FingerCaster",
+  "assignee": "FingerCaster",
+  "createdAt": "2026-08-09",
+  "completedAt": null,
+  "branch": null,
+  "base_branch": "origin/main",
+  "worktree_path": null,
+  "commit": null,
+  "pr_url": null,
+  "subtasks": [],
+  "children": [],
+  "parent": "08-09-port-candidate-hardening",
+  "relatedFiles": [],
+  "notes": "",
+  "meta": {
+    "awaiting_plugin_scope": "false"
+  }
+}

@@ -1,0 +1,2 @@
+{"file": ".trellis/tasks/08-09-release-hardening/research.md", "reason": "检查并发、密钥和候选制品三类风险"}
+{"file": ".trellis/tasks/08-09-release-hardening/design.md", "reason": "检查 tag 与 SHA 身份分离"}

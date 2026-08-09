@@ -1,0 +1,3 @@
+{"file": ".trellis/tasks/08-09-release-hardening/research.md", "reason": "当前 release 数据流和候选差异"}
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/ci-change-scope-contract.md", "reason": "workflow 与 ci-gate 合同"}
+{"file": "AGENTS.md", "reason": "draft tag 与 immutable checkout SHA 强制规则"}
