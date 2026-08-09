@@ -13,16 +13,21 @@ on:
         type: string
 
 permissions:
+  actions: read
   contents: write
   pull-requests: write
 
 concurrency:
-  group: release-${{ github.ref }}
+  group: release-${{ inputs.release_tag || github.ref_name }}
   cancel-in-progress: false
 
 jobs:
   release-please:
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+      pull-requests: write
     outputs:
       release_created: ${{ steps.manual_release.outputs.release_created || steps.release.outputs.release_created }}
       tag_name: ${{ steps.manual_release.outputs.tag_name || steps.release.outputs.tag_name }}
@@ -41,6 +46,15 @@ jobs:
 
       - name: Validate support matrix contract
         run: node scripts/support-matrix.mjs check
+
+      - name: Validate release source resolution
+        run: node scripts/release-source.selftest.mjs
+
+      - name: Validate release promotion integrity
+        run: node scripts/release-promotion.selftest.mjs
+
+      - name: Validate release signing secret scope
+        run: node scripts/check-release-signing-secret-scope.selftest.mjs && node scripts/check-release-signing-secret-scope.mjs
 
       - id: support_matrix
         name: Load release support matrix
@@ -72,6 +86,11 @@ jobs:
 
           tag="$RELEASE_TAG"
           target="$TARGET_COMMITISH"
+
+          if [[ ! "$tag" =~ ^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
 
           if release_id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId 2>/dev/null)"; then
             echo "Using existing release for $tag"
@@ -105,14 +124,16 @@ jobs:
             checkout_ref="$target"
           fi
 
-          if git fetch --force origin "refs/tags/$tag:refs/tags/$tag" >/dev/null 2>&1; then
-            checkout_ref="$(git rev-parse "$tag^{}")"
+          if git fetch --force --no-tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            checkout_ref="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
           fi
 
-          echo "release_created=true" >> "$GITHUB_OUTPUT"
-          echo "tag_name=$tag" >> "$GITHUB_OUTPUT"
-          echo "id=$release_id" >> "$GITHUB_OUTPUT"
-          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          {
+            echo "release_created=true"
+            echo "tag_name=$tag"
+            echo "id=$release_id"
+            echo "checkout_ref=$checkout_ref"
+          } >> "$GITHUB_OUTPUT"
 
       - id: resolve_release_ref
         name: Resolve release checkout ref
@@ -132,11 +153,17 @@ jobs:
             echo "Cannot resolve release checkout ref without a release tag." >&2
             exit 1
           fi
+          if [[ ! "$tag" =~ ^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
+            echo "Invalid release tag: $tag" >&2
+            exit 1
+          fi
 
           fetch_release_tag() {
             for attempt in 1 2 3; do
-              if git fetch --force origin "refs/tags/$tag:refs/tags/$tag" >/dev/null 2>&1; then
-                return 0
+              if git fetch --force --no-tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+                if fetched_tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"; then
+                  return 0
+                fi
               fi
               sleep "$((attempt * 2))"
             done
@@ -164,7 +191,7 @@ jobs:
           }
 
           if fetch_release_tag; then
-            checkout_ref="$(git rev-parse "$tag^{commit}")"
+            checkout_ref="$fetched_tag_sha"
             echo "Release tag $tag is fetchable at $checkout_ref."
           else
             release_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish // ""' 2>/dev/null || true)"
@@ -186,7 +213,7 @@ jobs:
               fetch_release_tag
             fi
 
-            checkout_ref="$(git rev-parse "$tag^{commit}")"
+            checkout_ref="$fetched_tag_sha"
             if [[ "$checkout_ref" != "$target_sha" ]]; then
               echo "Release tag $tag resolves to $checkout_ref, expected $target_sha." >&2
               exit 1
@@ -195,6 +222,10 @@ jobs:
 
           # Build jobs must checkout an immutable commit SHA. Draft GitHub Releases
           # can exist before their Git tag is fetchable, which breaks tag checkout.
+          if ! [[ "$checkout_ref" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Release checkout ref is not an immutable commit SHA: $checkout_ref" >&2
+            exit 1
+          fi
           echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
 
       - name: Check release PR changelog range
@@ -207,6 +238,9 @@ jobs:
   build:
     needs: release-please
     if: needs.release-please.outputs.release_created == 'true'
+    permissions:
+      actions: read
+      contents: read
     strategy:
       fail-fast: false
       matrix:
@@ -248,57 +282,62 @@ jobs:
       - name: Install deps
         run: pnpm install --frozen-lockfile
 
-      - name: Prepare updater signing key (validate password)
+      - name: Validate updater signing secrets
         shell: bash
+        env:
+          TAURI_SIGNING_PRIVATE_KEY_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         run: |
           set -euo pipefail
 
-          raw_key="${TAURI_SIGNING_PRIVATE_KEY_SECRET:-}"
-          raw_pwd="${TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET:-}"
-
-          if [[ -z "${raw_key//[[:space:]]/}" ]]; then
-            echo "Missing required secret: TAURI_SIGNING_PRIVATE_KEY" >&2
-            exit 1
-          fi
-          if [[ -z "$raw_pwd" ]]; then
-            echo "Missing required secret: TAURI_SIGNING_PRIVATE_KEY_PASSWORD" >&2
-            exit 1
-          fi
-
           # Tauri v2 updater key is stored as a single-line base64 string (as generated by `tauri signer generate --ci`).
           # Normalize by stripping whitespace to avoid accidental newline issues in GitHub Secrets.
-          key_b64="$(printf '%s' "$raw_key" | tr -d '\r\n\t ')"
-          printf '%s' "$key_b64" > tauri-updater.key
-          chmod 600 tauri-updater.key
+          normalized_key="$(printf '%s' "$TAURI_SIGNING_PRIVATE_KEY_SECRET" | tr -d '\r\n\t ')"
+          [[ -n "$normalized_key" ]] || {
+            echo "Required updater signing key is unavailable." >&2
+            exit 1
+          }
+          [[ -n "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET" ]] || {
+            echo "Required updater signing password is unavailable." >&2
+            exit 1
+          }
 
-          echo "::add-mask::$raw_pwd"
-          echo "sign-test" > sign-test.txt
+          umask 077
+          key_path="$RUNNER_TEMP/tauri-updater.key"
+          rm -f "$key_path"
+          temp_dir="$(mktemp -d)"
+          trap 'rm -rf "$temp_dir"' EXIT
+          test_path="$temp_dir/signing-probe.txt"
 
-          if ! pnpm tauri signer sign -f tauri-updater.key -p "$raw_pwd" sign-test.txt >/dev/null 2>sign-check.err; then
-            cat sign-check.err
+          printf '::add-mask::%s\n' "$normalized_key"
+          printf '::add-mask::%s\n' "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET"
+          printf '%s' "$normalized_key" > "$key_path"
+          chmod 600 "$key_path"
+          printf '%s\n' 'signing-probe' > "$test_path"
+
+          if ! pnpm exec tauri signer sign \
+            -f "$key_path" \
+            -p "$TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET" \
+            "$test_path" >/dev/null 2>&1; then
             echo "Signing key/password check failed." >&2
             exit 1
           fi
 
-          rm -f sign-test.txt.sig sign-check.err
-
-          echo "TAURI_SIGNING_PRIVATE_KEY=$key_b64" >> "$GITHUB_ENV"
-          echo "TAURI_SIGNING_PRIVATE_KEY_PASSWORD=$raw_pwd" >> "$GITHUB_ENV"
-        env:
-          TAURI_SIGNING_PRIVATE_KEY_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY }}
-          TAURI_SIGNING_PRIVATE_KEY_PASSWORD_SECRET: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
-
       - id: tauri
-        name: Build & upload (Tauri)
+        name: Build signed Tauri candidate
         uses: tauri-apps/tauri-action@fce9c6108b31ea247710505d3aaaa893ee6768d4 # v0
         env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          TAURI_SIGNING_PRIVATE_KEY: ${{ runner.temp }}/tauri-updater.key
+          TAURI_SIGNING_PRIVATE_KEY_PASSWORD: ${{ secrets.TAURI_SIGNING_PRIVATE_KEY_PASSWORD }}
         with:
-          releaseId: ${{ needs.release-please.outputs.release_id }}
-          tagName: ${{ needs.release-please.outputs.tag_name }}
           args: --target ${{ matrix.target }} --bundles ${{ matrix.bundles }}
-          # Avoid matrix race on the shared `latest.json` asset; we generate/upload it in a dedicated job.
           includeUpdaterJson: false
+
+      - name: Delete updater signing key
+        if: always()
+        shell: bash
+        run: rm -f "$RUNNER_TEMP/tauri-updater.key"
+
       - name: Prepare stable updater assets (+ macOS zip)
         shell: bash
         run: |
@@ -407,28 +446,33 @@ jobs:
           echo "Wayland AppImage: $out"
           ls -lh "$out"
 
-      - name: Upload stable assets (workflow artifact)
+      - name: Upload platform release candidate
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
         with:
-          name: stable-assets-${{ matrix.updater_platform }}
+          name: release-platform-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.updater_platform }}
           path: stable-assets/*
           if-no-files-found: error
+          retention-days: 1
 
-      - name: Upload stable assets (GitHub Release)
-        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
-        env:
-          GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
-        with:
-          tag_name: ${{ needs.release-please.outputs.tag_name }}
-          files: stable-assets/*
-          fail_on_unmatched_files: true
-
-  assemble-latest-json:
+  assemble-release-candidate:
     needs: [release-please, build]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     steps:
-      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+      - name: Checkout candidate manifest helper
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Stage release candidate manifest helper
+        shell: bash
+        run: cp scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
+
+      - name: Checkout immutable candidate source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
           ref: ${{ needs.release-please.outputs.checkout_ref }}
 
@@ -437,12 +481,12 @@ jobs:
         with:
           node-version: 22
 
-      - name: Download stable assets (workflow artifacts)
+      - name: Download platform release candidates
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
         with:
-          pattern: stable-assets-*
+          pattern: release-platform-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}-*
           merge-multiple: true
-          path: stable-assets
+          path: release-assets
 
       - name: Fetch release body
         id: release_body
@@ -472,59 +516,147 @@ jobs:
             --tag "${{ needs.release-please.outputs.tag_name }}" \
             --repo "${{ github.repository }}" \
             --pub-date "$(date -u +'%Y-%m-%dT%H:%M:%SZ')" \
-            --stable-assets-dir stable-assets \
-            --output latest.json
+            --stable-assets-dir release-assets \
+            --output release-assets/latest.json
         env:
           RELEASE_BODY: ${{ steps.release_body.outputs.body }}
           FALLBACK_NOTES: "See release: https://github.com/${{ github.repository }}/releases/tag/${{ needs.release-please.outputs.tag_name }}"
 
-      - name: Delete existing latest.json (best-effort)
+      - name: Create immutable release candidate manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$RUNNER_TEMP/release-promotion.mjs" create-manifest \
+            --directory release-assets \
+            --tag "${{ needs.release-please.outputs.tag_name }}" \
+            --source-sha "${{ needs.release-please.outputs.checkout_ref }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+      - name: Upload immutable release candidate
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-candidate-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-assets/*
+          if-no-files-found: error
+          retention-days: 30
+
+  promote-release:
+    needs: [release-please, assemble-release-candidate]
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.assemble-release-candidate.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout workflow guard
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Stage release promotion guard
+        shell: bash
+        run: cp scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
+
+      - name: Checkout immutable release source
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          ref: ${{ needs.release-please.outputs.checkout_ref }}
+          fetch-depth: 0
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Download exact release candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: release-candidate-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}
+          path: release-candidate
+
+      - name: Verify and stage exact release candidate
+        shell: bash
+        run: |
+          set -euo pipefail
+          node "$RUNNER_TEMP/release-promotion.mjs" verify-and-stage \
+            --directory release-candidate \
+            --staging-directory promotion-assets \
+            --tag "${{ needs.release-please.outputs.tag_name }}" \
+            --source-sha "${{ needs.release-please.outputs.checkout_ref }}" \
+            --run-id "${{ github.run_id }}" \
+            --run-attempt "${{ github.run_attempt }}"
+
+      - name: Verify release tag still matches candidate SHA
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG"
+          tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+          if [[ "$tag_sha" != "$SOURCE_SHA" ]]; then
+            echo "Release tag $RELEASE_TAG resolves to $tag_sha, expected $SOURCE_SHA." >&2
+            exit 1
+          fi
+
+      - name: Verify empty draft release target
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
         with:
           github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           script: |
-            const releaseId = Number('${{ needs.release-please.outputs.release_id }}');
-            if (!Number.isFinite(releaseId) || releaseId <= 0) {
-              core.setFailed(`Invalid release_id: ${releaseId}`);
-              return;
-            }
-
-            const owner = context.repo.owner;
-            const repo = context.repo.repo;
-
-            const assets = await github.paginate(github.rest.repos.listReleaseAssets, {
-              owner,
-              repo,
+            const { readFileSync } = require('node:fs');
+            const { join } = require('node:path');
+            const { pathToFileURL } = require('node:url');
+            const {
+              assertReleasePromotionTarget,
+              parseReleaseCandidateManifest,
+            } = await import(
+              pathToFileURL(`${process.env.RUNNER_TEMP}/release-promotion.mjs`).href,
+            );
+            const releaseId = Number(process.env.RELEASE_ID);
+            const manifest = parseReleaseCandidateManifest(
+              readFileSync(
+                join(process.env.GITHUB_WORKSPACE, 'release-candidate', 'release-candidate.json'),
+                'utf8',
+              ),
+            );
+            const { data: release } = await github.rest.repos.getRelease({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
               release_id: releaseId,
-              per_page: 100,
             });
-
-            const existing = assets.find((a) => a && a.name === 'latest.json');
-            if (!existing) {
-              core.info('No existing latest.json asset found.');
-              return;
-            }
-
-            core.info(`Deleting existing latest.json asset id=${existing.id}`);
-            await github.rest.repos.deleteReleaseAsset({
-              owner,
-              repo,
-              asset_id: existing.id,
+            assertReleasePromotionTarget({
+              release,
+              expectedReleaseId: releaseId,
+              expectedTag: process.env.RELEASE_TAG,
+              candidateAssetNames: manifest.assets.map((asset) => asset.name),
             });
+            core.info(`Release ${process.env.RELEASE_TAG} is an empty verified draft.`);
 
-      - name: Upload latest.json (GitHub Release)
+      - name: Upload verified candidate assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65 # v2
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
         with:
           tag_name: ${{ needs.release-please.outputs.tag_name }}
-          files: latest.json
+          files: promotion-assets/*
           fail_on_unmatched_files: true
+          overwrite_files: false
 
   publish:
-    needs: [release-please, build, assemble-latest-json]
+    needs: [release-please, promote-release]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
     steps:
       - name: Publish GitHub Release (unset draft)
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
@@ -548,6 +680,9 @@ jobs:
     needs: [release-please, publish]
     if: needs.release-please.outputs.release_created == 'true'
     runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: read
     env:
       HOMEBREW_TAP_REPOSITORY: ${{ vars.HOMEBREW_TAP_REPOSITORY || 'FingerCaster/homebrew-aio-coding-hub' }}
       HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
