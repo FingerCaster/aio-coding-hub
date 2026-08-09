@@ -8,7 +8,7 @@
 
 <!-- @@@auto:current-status -->
 - **Active File**: `journal-1.md`
-- **Total Sessions**: 31
+- **Total Sessions**: 32
 - **Last Active**: 2026-08-09
 <!-- @@@/auto:current-status -->
 
@@ -19,7 +19,7 @@
 <!-- @@@auto:active-documents -->
 | File | Lines | Status |
 |------|-------|--------|
-| `journal-1.md` | ~1095 | Active |
+| `journal-1.md` | ~1144 | Active |
 <!-- @@@/auto:active-documents -->
 
 ---
@@ -29,6 +29,7 @@
 <!-- @@@auto:session-history -->
 | # | Date | Title | Commits | Branch |
 |---|------|-------|---------|--------|
+| 32 | 2026-08-09 | 完成候选仓库加固迁移 | `8093ca55`, `1b73df7b`, `02652f42`, `d0edbf78`, `edc13110`, `dc0336f0`, `de3053d5`, `9646f230`, `a174fc24`, `87dc5d62`, `a2295582`, `04f05937`, `43e7380f`, `3d5dc78d` | `FingerCaster/port-hardening-integration` |
 | 31 | 2026-08-09 | 完成可配置模型路由与供应商恢复修复 | `86342292`, `f6773c15`, `8587e5c1`, `eedf1069` | `FingerCaster/configurable-model-routing-implementation` |
 | 30 | 2026-08-08 | Fix repeated balance failback skips | `8757d32c` | `main` |
 | 29 | 2026-08-08 | 自定义余额查询与路由恢复集成 | `708d2965`, `ef8892be` | `FingerCaster/account-usage-routing-build` |

@@ -1093,3 +1093,52 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 32: 完成候选仓库加固迁移
+
+**Date**: 2026-08-09
+**Task**: 完成候选仓库加固迁移
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/port-hardening-integration`
+
+### Summary
+
+在独立 Orca worktree 并行迁移并复核 Provider 路由、设置与价格别名、跨重启重置门、Rust 审计、Sessions/UI、发布链和插件运行时加固；排除鉴权与已删除的 SDK/脚手架，完成全量验证。
+
+### Main Changes
+
+- 迁移并复核七个非鉴权工作流，完成两轮审查修复与跨层契约沉淀。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `8093ca55` | (see git log) |
+| `1b73df7b` | (see git log) |
+| `02652f42` | (see git log) |
+| `d0edbf78` | (see git log) |
+| `edc13110` | (see git log) |
+| `dc0336f0` | (see git log) |
+| `de3053d5` | (see git log) |
+| `9646f230` | (see git log) |
+| `a174fc24` | (see git log) |
+| `87dc5d62` | (see git log) |
+| `a2295582` | (see git log) |
+| `04f05937` | (see git log) |
+| `43e7380f` | (see git log) |
+| `3d5dc78d` | (see git log) |
+
+### Testing
+
+- [OK] 前端 304 个文件、2779 项单测，以及 build、typecheck、lint、generated bindings 全部通过。
+- [OK] Rust fmt/check/clippy/audit 和完整测试通过；主库 2731 项测试及全部集成测试二进制退出码为 0。
+- [OK] 插件、发布源/晋升/签名、CI、支持矩阵与 Homebrew 契约检查全部通过。
+
+### Status
+
+[OK] **Completed**
+
+### Next Steps
+
+- 由用户决定何时把独立集成分支合入 main；本次未触碰脏 main 工作区。
