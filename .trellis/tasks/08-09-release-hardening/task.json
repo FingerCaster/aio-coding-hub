@@ -3,7 +3,7 @@
   "name": "release-hardening",
   "title": "发布链并发与制品不可变",
   "description": "适配 Release 并发键、签名私钥作用域和候选制品精确 SHA 晋升，保留现有 tag 解析和 immutable checkout SHA。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

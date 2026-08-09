@@ -3,7 +3,7 @@
   "name": "cross-restart-data-reset-gate",
   "title": "跨重启数据重置维护门",
   "description": "为现有数据重置流程增加 durable maintenance marker 和启动前恢复/阻断逻辑，保留当前生命周期锁与 DB reset guard。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

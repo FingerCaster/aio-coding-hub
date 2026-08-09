@@ -3,7 +3,7 @@
   "name": "settings-pricing-write-integrity",
   "title": "设置与模型价格数据一致性",
   "description": "串行化普通设置 patch 写入，并让模型价格别名读取失败阻断编辑保存；补并发、失败优先和 schema 回归。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

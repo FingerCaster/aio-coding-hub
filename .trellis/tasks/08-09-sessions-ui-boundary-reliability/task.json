@@ -3,7 +3,7 @@
   "name": "sessions-ui-boundary-reliability",
   "title": "长会话与前端边界可靠性",
   "description": "补长会话双向分页，以及内存诊断、图片响应 fanout、FormField、CodeEditor、AppLayout 五项低风险边界修复。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

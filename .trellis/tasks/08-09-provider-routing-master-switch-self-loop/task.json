@@ -3,7 +3,7 @@
   "name": "provider-routing-master-switch-self-loop",
   "title": "Provider 路由总开关与自环保护",
   "description": "适配候选 Provider master switch 与发送前 self-loop guard，保持当前账户用量门控、熔断探测回切、模型路由和 Provider 专用路由契约。",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",
