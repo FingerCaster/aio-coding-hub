@@ -1,0 +1,2 @@
+{"file": ".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md", "reason": "启动恢复与 fail-closed 边界"}
+{"file": ".trellis/tasks/archive/2026-08/08-09-cross-restart-data-reset-gate/research.md", "reason": "当前 reset 锁、删除顺序与候选 marker 证据"}
