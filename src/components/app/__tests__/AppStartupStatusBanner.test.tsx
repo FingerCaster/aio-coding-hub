@@ -5,6 +5,7 @@ import {
   resetAppStartupStatusStore,
   setAppStartupStatusSnapshot,
 } from "../../../app/startupStatusStore";
+import { appExit } from "../../../services/app/dataManagement";
 import { appStartupRetry, type AppStartupStatus } from "../../../services/app/startupStatus";
 import { logToConsole } from "../../../services/consoleLog";
 import { createDeferred } from "../../../test/utils/deferred";
@@ -18,6 +19,7 @@ vi.mock("react-router-dom", () => ({
 
 vi.mock("sonner", () => ({ toast: vi.fn() }));
 vi.mock("../../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
+vi.mock("../../../services/app/dataManagement", () => ({ appExit: vi.fn() }));
 vi.mock("../../../services/app/startupStatus", async () => {
   const actual = await vi.importActual<typeof import("../../../services/app/startupStatus")>(
     "../../../services/app/startupStatus"
@@ -31,6 +33,7 @@ vi.mock("../../../services/app/startupStatus", async () => {
 function setFailedStatus(partial: Record<string, unknown> = {}) {
   setAppStartupStatusSnapshot({
     running: false,
+    maintenanceMode: false,
     currentStage: "failed",
     failedStage: "starting_gateway",
     errorMessage: "gateway boom",
@@ -55,6 +58,7 @@ describe("components/app/AppStartupStatusBanner", () => {
 
     setAppStartupStatusSnapshot({
       running: true,
+      maintenanceMode: false,
       currentStage: "starting_gateway",
       failedStage: null,
       errorMessage: null,
@@ -93,6 +97,7 @@ describe("components/app/AppStartupStatusBanner", () => {
     setFailedStatus({ failedStage: "reading_settings" });
     vi.mocked(appStartupRetry).mockResolvedValue({
       running: false,
+      maintenanceMode: false,
       currentStage: "ready",
       failedStage: null,
       errorMessage: null,
@@ -118,6 +123,7 @@ describe("components/app/AppStartupStatusBanner", () => {
 
     const readyStatus: AppStartupStatus = {
       running: false,
+      maintenanceMode: false,
       currentStage: "ready",
       failedStage: null,
       errorMessage: null,
@@ -128,6 +134,7 @@ describe("components/app/AppStartupStatusBanner", () => {
     await act(async () => {
       pendingRetry.resolve({
         running: false,
+        maintenanceMode: false,
         currentStage: "failed",
         failedStage: "reading_settings",
         errorMessage: "stale retry response",
@@ -138,6 +145,24 @@ describe("components/app/AppStartupStatusBanner", () => {
 
     expect(getAppStartupStatusSnapshot()).toEqual(readyStatus);
     expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  });
+
+  it("renders maintenance-only retry and exit actions for reset failures", async () => {
+    setFailedStatus({
+      maintenanceMode: true,
+      failedStage: "resetting_data",
+      errorMessage: "reset pending",
+    });
+    vi.mocked(appExit).mockResolvedValue(true as any);
+
+    render(<AppStartupStatusBanner />);
+
+    expect(screen.getByRole("alert")).toHaveTextContent("数据重置维护未完成，普通功能已停用");
+    expect(screen.getByRole("button", { name: "重试数据清理" })).toBeEnabled();
+    expect(screen.queryByRole("button", { name: "打开设置" })).not.toBeInTheDocument();
+
+    fireEvent.click(screen.getByRole("button", { name: "退出应用" }));
+    await waitFor(() => expect(appExit).toHaveBeenCalledTimes(1));
   });
 
   it("logs and restores retry state when retry fails", async () => {

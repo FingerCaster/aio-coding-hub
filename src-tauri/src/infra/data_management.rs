@@ -1,7 +1,7 @@
 //! Usage: App data and DB disk-management helpers (reset, usage stats, cleanup).
 
 use crate::db;
-use crate::shared::error::db_err;
+use crate::shared::error::{db_err, AppError, AppResult};
 use rusqlite::TransactionBehavior;
 use serde::Serialize;
 use std::io;
@@ -34,11 +34,196 @@ fn file_len_or_zero(path: &Path) -> Result<u64, String> {
     }
 }
 
-fn remove_file_if_exists(path: &Path) -> Result<bool, std::io::Error> {
-    match std::fs::remove_file(path) {
-        Ok(()) => Ok(true),
-        Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(err),
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct ResetRootIdentity {
+    volume: u64,
+    file: u64,
+}
+
+struct ResetRootGuard {
+    path: PathBuf,
+    handle: std::fs::File,
+    identity: ResetRootIdentity,
+}
+
+fn reset_path_error() -> AppError {
+    AppError::new(
+        "APP_DATA_RESET_PATH_INVALID",
+        "application data reset root is not a stable owned directory",
+    )
+}
+
+fn metadata_is_link_like(metadata: &std::fs::Metadata) -> bool {
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+
+    #[cfg(windows)]
+    {
+        use std::os::windows::fs::MetadataExt as _;
+        use windows_sys::Win32::Storage::FileSystem::FILE_ATTRIBUTE_REPARSE_POINT;
+
+        metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    }
+
+    #[cfg(not(windows))]
+    false
+}
+
+fn validate_reset_root_components(path: &Path) -> AppResult<()> {
+    if !path.is_absolute() {
+        return Err(reset_path_error());
+    }
+
+    let mut current = PathBuf::new();
+    for component in path.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                current.push(component.as_os_str());
+            }
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                let metadata =
+                    std::fs::symlink_metadata(&current).map_err(|_| reset_path_error())?;
+                if metadata_is_link_like(&metadata) || !metadata.is_dir() {
+                    return Err(reset_path_error());
+                }
+            }
+            std::path::Component::CurDir | std::path::Component::ParentDir => {
+                return Err(reset_path_error());
+            }
+        }
+    }
+    Ok(())
+}
+
+#[cfg(unix)]
+fn open_reset_root(path: &Path) -> AppResult<std::fs::File> {
+    let fd = rustix::fs::open(
+        path,
+        rustix::fs::OFlags::RDONLY
+            | rustix::fs::OFlags::DIRECTORY
+            | rustix::fs::OFlags::NOFOLLOW
+            | rustix::fs::OFlags::CLOEXEC,
+        rustix::fs::Mode::empty(),
+    )
+    .map_err(|_| reset_path_error())?;
+    Ok(fd.into())
+}
+
+#[cfg(windows)]
+fn open_reset_root(path: &Path) -> AppResult<std::fs::File> {
+    use std::os::windows::fs::OpenOptionsExt as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_FLAG_BACKUP_SEMANTICS, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ, FILE_SHARE_WRITE,
+    };
+
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        // Omitting FILE_SHARE_DELETE keeps the validated root from being
+        // rebound to a junction while fixed children are removed.
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_WRITE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_BACKUP_SEMANTICS)
+        .open(path)
+        .map_err(|_| reset_path_error())
+}
+
+#[cfg(not(any(unix, windows)))]
+fn open_reset_root(path: &Path) -> AppResult<std::fs::File> {
+    std::fs::File::open(path).map_err(|_| reset_path_error())
+}
+
+#[cfg(unix)]
+fn reset_root_identity(handle: &std::fs::File) -> AppResult<ResetRootIdentity> {
+    let stat = rustix::fs::fstat(handle).map_err(|_| reset_path_error())?;
+    Ok(ResetRootIdentity {
+        volume: stat.st_dev as u64,
+        file: stat.st_ino as u64,
+    })
+}
+
+#[cfg(windows)]
+fn reset_root_identity(handle: &std::fs::File) -> AppResult<ResetRootIdentity> {
+    use std::os::windows::io::AsRawHandle as _;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+
+    let mut info = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    if unsafe { GetFileInformationByHandle(handle.as_raw_handle() as _, info.as_mut_ptr()) } == 0 {
+        return Err(reset_path_error());
+    }
+    let info = unsafe { info.assume_init() };
+    Ok(ResetRootIdentity {
+        volume: u64::from(info.dwVolumeSerialNumber),
+        file: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    })
+}
+
+#[cfg(not(any(unix, windows)))]
+fn reset_root_identity(_handle: &std::fs::File) -> AppResult<ResetRootIdentity> {
+    Ok(ResetRootIdentity { volume: 0, file: 0 })
+}
+
+impl ResetRootGuard {
+    fn open(path: &Path) -> AppResult<Self> {
+        validate_reset_root_components(path)?;
+        let handle = open_reset_root(path)?;
+        let identity = reset_root_identity(&handle)?;
+        let guard = Self {
+            path: path.to_path_buf(),
+            handle,
+            identity,
+        };
+        guard.revalidate()?;
+        Ok(guard)
+    }
+
+    fn revalidate(&self) -> AppResult<()> {
+        validate_reset_root_components(&self.path)?;
+        let current = open_reset_root(&self.path)?;
+        if reset_root_identity(&current)? != self.identity
+            || reset_root_identity(&self.handle)? != self.identity
+        {
+            return Err(reset_path_error());
+        }
+        Ok(())
+    }
+
+    fn remove_file_if_exists(&self, path: &Path) -> AppResult<bool> {
+        if path.parent() != Some(self.path.as_path()) {
+            return Err(reset_path_error());
+        }
+        self.revalidate()?;
+
+        #[cfg(unix)]
+        let result = {
+            let name = path.file_name().ok_or_else(reset_path_error)?;
+            rustix::fs::unlinkat(&self.handle, name, rustix::fs::AtFlags::empty())
+                .map_err(std::io::Error::from)
+        };
+        #[cfg(not(unix))]
+        let result = std::fs::remove_file(path);
+
+        match result {
+            Ok(()) => Ok(true),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(_) => Err(AppError::new(
+                "APP_DATA_RESET_INCOMPLETE",
+                "failed to remove an application data reset target",
+            )),
+        }
+    }
+
+    fn sync(&self) -> AppResult<()> {
+        self.revalidate()?;
+        self.handle.sync_all().map_err(|_| {
+            AppError::new(
+                "APP_DATA_RESET_INCOMPLETE",
+                "application data reset durability sync failed",
+            )
+        })
     }
 }
 
@@ -167,9 +352,10 @@ pub(crate) fn app_data_reset_at(
         ));
     }
 
+    let root = ResetRootGuard::open(dir)?;
     let mut failed = Vec::new();
     for (label, path) in app_data_reset_targets(dir, db_path) {
-        if remove_file_if_exists(&path).is_err() {
+        if root.remove_file_if_exists(&path).is_err() {
             failed.push(label);
         }
     }
@@ -180,6 +366,8 @@ pub(crate) fn app_data_reset_at(
             format!("failed reset targets: {}", failed.join(", ")),
         ));
     }
+
+    root.sync()?;
 
     Ok(true)
 }
@@ -257,6 +445,31 @@ INSERT INTO request_logs (
             assert!(error.to_string().contains(blocked_label));
             assert!(blocked_path.is_dir(), "failed target must remain untouched");
         }
+    }
+
+    #[test]
+    fn app_data_reset_unlinks_a_target_symlink_without_following_it() {
+        let dir = TempDir::new().expect("temp dir");
+        let outside = TempDir::new().expect("outside temp dir");
+        let outside_file = outside.path().join("outside-settings.json");
+        std::fs::write(&outside_file, b"outside stays").expect("write outside sentinel");
+        let linked_target = dir.path().join("settings.json");
+
+        #[cfg(unix)]
+        std::os::unix::fs::symlink(&outside_file, &linked_target).expect("link reset target");
+        #[cfg(windows)]
+        if std::os::windows::fs::symlink_file(&outside_file, &linked_target).is_err() {
+            return;
+        }
+
+        let db_path = dir.path().join("app.db");
+        app_data_reset_at(dir.path(), &db_path).expect("reset linked target");
+
+        assert!(!linked_target.exists());
+        assert_eq!(
+            std::fs::read(&outside_file).expect("read outside sentinel"),
+            b"outside stays"
+        );
     }
 
     #[test]

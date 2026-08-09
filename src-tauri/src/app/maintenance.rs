@@ -164,7 +164,32 @@ fn validate_owned_directory(path: &Path) -> AppResult<()> {
 }
 
 fn validate_data_dir(data_dir: &Path) -> AppResult<()> {
-    validate_owned_directory(data_dir)
+    if !data_dir.is_absolute() {
+        return Err(AppError::new(
+            "APP_MAINTENANCE_PATH_INVALID",
+            "应用数据维护目录无法验证",
+        ));
+    }
+
+    let mut current = PathBuf::new();
+    for component in data_dir.components() {
+        match component {
+            std::path::Component::Prefix(_) | std::path::Component::RootDir => {
+                current.push(component.as_os_str());
+            }
+            std::path::Component::Normal(part) => {
+                current.push(part);
+                validate_owned_directory(&current)?;
+            }
+            std::path::Component::CurDir | std::path::Component::ParentDir => {
+                return Err(AppError::new(
+                    "APP_MAINTENANCE_PATH_INVALID",
+                    "应用数据维护目录无法验证",
+                ));
+            }
+        }
+    }
+    Ok(())
 }
 
 fn validate_existing_maintenance_dir(data_dir: &Path) -> AppResult<bool> {
@@ -247,16 +272,6 @@ fn sync_parent_directory(path: &Path) -> AppResult<()> {
     sync_directory_for_reset(parent)
 }
 
-fn sync_reset_target_directories(data_dir: &Path, db_path: &Path) -> AppResult<()> {
-    sync_directory_for_reset(data_dir)?;
-    if let Some(db_parent) = db_path.parent() {
-        if db_parent != data_dir {
-            sync_directory_for_reset(db_parent)?;
-        }
-    }
-    Ok(())
-}
-
 fn marker_bytes(path: &Path) -> AppResult<Option<Vec<u8>>> {
     read_optional_file_with_max_len(path, RESET_MARKER_MAX_BYTES)
         .map_err(|_| AppError::new("APP_MAINTENANCE_MARKER_INVALID", "维护 marker 无法验证"))
@@ -291,6 +306,9 @@ fn reset_marker_state(data_dir: &Path) -> AppResult<ResetMarkerState> {
 }
 
 fn remove_completed_marker_if_present(data_dir: &Path) -> AppResult<()> {
+    if !validate_existing_maintenance_dir(data_dir)? {
+        return Ok(());
+    }
     let completed = completed_marker_path_for_data_dir(data_dir);
     if !marker_is_pending(&completed)? {
         return Ok(());
@@ -370,9 +388,8 @@ pub(crate) fn consume_reset_marker_at(data_dir: &Path, db_path: &Path) -> AppRes
     }
 
     crate::infra::data_management::app_data_reset_at(data_dir, db_path)?;
-    // Target unlinks must be durable before marker removal becomes durable.
-    // Otherwise a power loss could restore old data without a reset marker.
-    sync_reset_target_directories(data_dir, db_path)?;
+    // app_data_reset_at syncs the validated root handle before it returns, so
+    // target unlinks are durable before marker removal becomes durable.
     remove_reset_marker_at(data_dir)?;
     Ok(true)
 }
@@ -566,6 +583,13 @@ pub(crate) fn should_skip_exit_cleanup<R: tauri::Runtime>(app: &tauri::AppHandle
         .is_some_and(|state| state.should_skip_exit_cleanup())
 }
 
+pub(crate) fn block_until_maintenance_restart<R: tauri::Runtime>(app: &tauri::AppHandle<R>) {
+    if let Some(state) = app.try_state::<MaintenanceState>() {
+        state.request_reset_exit();
+    }
+    crate::app::startup_state::begin_maintenance_run(app);
+}
+
 pub(crate) fn start_normal_runtime_once<R: tauri::Runtime>(app: &tauri::AppHandle<R>) -> bool {
     let Some(state) = app.try_state::<MaintenanceState>() else {
         return true;
@@ -577,6 +601,26 @@ pub(crate) fn start_normal_runtime_once<R: tauri::Runtime>(app: &tauri::AppHandl
 mod tests {
     use super::*;
     use std::ffi::OsString;
+
+    #[cfg(unix)]
+    fn link_directory(target: &Path, link: &Path) -> std::io::Result<()> {
+        std::os::unix::fs::symlink(target, link)
+    }
+
+    #[cfg(windows)]
+    fn link_directory(target: &Path, link: &Path) -> std::io::Result<()> {
+        junction::create(target, link)
+    }
+
+    #[cfg(unix)]
+    fn remove_directory_link(link: &Path) {
+        std::fs::remove_file(link).expect("remove directory symlink");
+    }
+
+    #[cfg(windows)]
+    fn remove_directory_link(link: &Path) {
+        junction::delete(link).expect("remove directory junction");
+    }
 
     struct EnvRestore {
         key: &'static str,
@@ -638,6 +682,44 @@ mod tests {
 
         let error = write_reset_marker_at(dir.path()).expect_err("unsafe path must fail");
         assert_eq!(error.code(), "APP_MAINTENANCE_PATH_INVALID");
+    }
+
+    #[test]
+    fn relative_data_root_fails_closed() {
+        let error = write_reset_marker_at(Path::new("relative-app-data"))
+            .expect_err("relative reset root must fail");
+        assert_eq!(error.code(), "APP_MAINTENANCE_PATH_INVALID");
+    }
+
+    #[test]
+    fn linked_maintenance_directory_cannot_redirect_marker_writes() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let maintenance_dir = maintenance_dir_for_data_dir(dir.path());
+        link_directory(outside.path(), &maintenance_dir).expect("link maintenance directory");
+
+        let error = write_reset_marker_at(dir.path()).expect_err("linked marker root must fail");
+        assert_eq!(error.code(), "APP_MAINTENANCE_PATH_INVALID");
+        assert!(!outside.path().join(RESET_MARKER_FILE).exists());
+
+        remove_directory_link(&maintenance_dir);
+    }
+
+    #[test]
+    fn linked_data_root_ancestor_cannot_redirect_reset() {
+        let outer = tempfile::tempdir().expect("outer tempdir");
+        let outside = tempfile::tempdir().expect("outside tempdir");
+        let outside_data = outside.path().join("app-data");
+        std::fs::create_dir(&outside_data).expect("outside app data");
+        let linked_home = outer.path().join("linked-home");
+        link_directory(outside.path(), &linked_home).expect("link data root ancestor");
+        let linked_data = linked_home.join("app-data");
+
+        let error = write_reset_marker_at(&linked_data).expect_err("linked ancestor must fail");
+        assert_eq!(error.code(), "APP_MAINTENANCE_PATH_INVALID");
+        assert!(!marker_path_for_data_dir(&outside_data).exists());
+
+        remove_directory_link(&linked_home);
     }
 
     #[test]

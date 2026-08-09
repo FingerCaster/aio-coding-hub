@@ -8,6 +8,7 @@ import { logToConsole } from "../../services/consoleLog";
 import { createDeferred } from "../../test/utils/deferred";
 import {
   getAppStartupStatusSnapshot,
+  getAppStartupStatusReadySnapshot,
   listenAndSyncAppStartupStatusSnapshot,
   resetAppStartupStatusStore,
   setAppStartupStatusSnapshot,
@@ -23,6 +24,7 @@ vi.mock("../../services/consoleLog", () => ({ logToConsole: vi.fn() }));
 
 const READY_STATUS: AppStartupStatus = {
   running: false,
+  maintenanceMode: false,
   currentStage: "ready",
   failedStage: null,
   errorMessage: null,
@@ -31,6 +33,7 @@ const READY_STATUS: AppStartupStatus = {
 
 const INITIALIZING_STATUS: AppStartupStatus = {
   running: true,
+  maintenanceMode: false,
   currentStage: "initializing_db",
   failedStage: null,
   errorMessage: null,
@@ -54,6 +57,7 @@ describe("app/startupStatusStore", () => {
     await sync;
 
     expect(getAppStartupStatusSnapshot()).toEqual(READY_STATUS);
+    expect(getAppStartupStatusReadySnapshot()).toBe(true);
   });
 
   it("invalidates an in-flight GET when the store resets", async () => {
@@ -66,6 +70,7 @@ describe("app/startupStatusStore", () => {
     await sync;
 
     expect(getAppStartupStatusSnapshot().currentStage).toBe("idle");
+    expect(getAppStartupStatusReadySnapshot()).toBe(false);
   });
 
   it("starts the initial GET only after event listener registration succeeds", async () => {

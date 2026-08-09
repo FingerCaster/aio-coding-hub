@@ -473,6 +473,7 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/app_startup_status_get`, () =>
     HttpResponse.json({
       running: false,
+      maintenanceMode: false,
       currentStage: "idle",
       failedStage: null,
       errorMessage: null,
@@ -482,6 +483,7 @@ export const handlers = [
   http.post(`${TAURI_ENDPOINT}/app_startup_retry`, () =>
     HttpResponse.json({
       running: false,
+      maintenanceMode: false,
       currentStage: "idle",
       failedStage: null,
       errorMessage: null,

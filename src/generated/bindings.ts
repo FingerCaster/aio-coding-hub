@@ -2649,6 +2649,7 @@ export type AppMemoryDiagnosticsSnapshot = {
 };
 export type AppStartupStage =
   | "idle"
+  | "resetting_data"
   | "initializing_db"
   | "reading_settings"
   | "starting_gateway"
@@ -2658,6 +2659,7 @@ export type AppStartupStage =
   | "failed";
 export type AppStartupStatus = {
   running: boolean;
+  maintenanceMode: boolean;
   currentStage: AppStartupStage;
   failedStage: AppStartupStage | null;
   errorMessage: string | null;

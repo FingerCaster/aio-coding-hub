@@ -44,8 +44,8 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Settings ownership and rollback contract](./settings-ownership-rollback-contract.md):
   lock-internal field-owned RMW, whole-snapshot CAS, and safe rollback.
 - [Reliability boundary contract](./reliability-boundaries-contract.md):
-  route-draft initialization, retryable startup state, bounded diagnostic
-  redaction, backend-confirmed task notifications, and manual upstream review.
+  route-draft initialization, retryable and maintenance-only startup state,
+  bounded diagnostic redaction, backend-confirmed task notifications, and manual upstream review.
 - [CI change-scope contract](./ci-change-scope-contract.md): fail-closed Git
   range and path classification, documentation tiers, conditional jobs, and
   the stable always-run CI gate.
@@ -192,8 +192,9 @@ Provider route-draft initialization, or the upstream-sync workflow:
 
 1. Read [Reliability boundary contract](./reliability-boundaries-contract.md).
 2. Preserve generation/token invalidation across asynchronous reads and events.
-3. Keep diagnostic projections bounded and fail closed at both frontend and Rust boundaries.
-4. Confirm upstream synchronization and task notification against their authoritative source before acting.
+3. For reset maintenance, trace marker durability, fixed-target deletion, plugin initialization and IPC, generated bindings, and the frontend initial-status gate together.
+4. Keep diagnostic projections bounded and fail closed at both frontend and Rust boundaries.
+5. Confirm upstream synchronization and task notification against their authoritative source before acting.
 
 When changing CI path policy, classification, conditional jobs, or the final gate:
 

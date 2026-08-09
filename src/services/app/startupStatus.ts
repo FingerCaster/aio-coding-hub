@@ -7,6 +7,7 @@ export type { AppStartupStage, AppStartupStatus } from "../../generated/bindings
 
 const APP_STARTUP_STAGE_VALUES = [
   "idle",
+  "resetting_data",
   "initializing_db",
   "reading_settings",
   "starting_gateway",
@@ -64,6 +65,7 @@ export function normalizeAppStartupStatus(value: unknown): AppStartupStatus {
 
   return {
     running: normalizeStartupBoolean(value.running, "startup.running"),
+    maintenanceMode: normalizeStartupBoolean(value.maintenanceMode, "startup.maintenanceMode"),
     currentStage: normalizeStartupStage(value.currentStage, "startup.currentStage"),
     failedStage: normalizeOptionalStartupStage(value.failedStage, "startup.failedStage"),
     errorMessage: normalizeOptionalStartupErrorMessage(value.errorMessage),

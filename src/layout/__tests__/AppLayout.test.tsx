@@ -1,14 +1,14 @@
 import { render, screen } from "@testing-library/react";
 import { MemoryRouter, Route, Routes } from "react-router-dom";
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
+import {
+  resetAppStartupStatusStore,
+  setAppStartupStatusSnapshot,
+} from "../../app/startupStatusStore";
 import { AppLayout } from "../AppLayout";
 
 vi.mock("../../components/UpdateDialog", () => ({
   UpdateDialog: () => <div data-testid="update-dialog">update-dialog</div>,
-}));
-
-vi.mock("../../components/app/AppStartupStatusBanner", () => ({
-  AppStartupStatusBanner: () => <div data-testid="startup-banner">startup-banner</div>,
 }));
 
 vi.mock("../../ui/Sidebar", () => ({
@@ -16,6 +16,10 @@ vi.mock("../../ui/Sidebar", () => ({
 }));
 
 describe("layout/AppLayout", () => {
+  afterEach(() => {
+    resetAppStartupStatusStore();
+  });
+
   function renderAt(pathname: string) {
     render(
       <MemoryRouter initialEntries={[pathname]}>
@@ -36,14 +40,39 @@ describe("layout/AppLayout", () => {
     expect(document.querySelector("[data-tauri-drag-region]")).toBeInTheDocument();
   });
 
+  it("renders only the maintenance surface while reset recovery is blocked", () => {
+    setAppStartupStatusSnapshot({
+      running: false,
+      maintenanceMode: true,
+      currentStage: "failed",
+      failedStage: "resetting_data",
+      errorMessage: "reset pending",
+      canRetry: true,
+    });
+
+    renderAt("/settings");
+
+    expect(screen.getByRole("alert")).toHaveTextContent("数据重置维护未完成");
+    expect(screen.queryByTestId("sidebar")).not.toBeInTheDocument();
+    expect(screen.queryByTestId("update-dialog")).not.toBeInTheDocument();
+  });
+
   it("allocates the Outlet the remaining height below the startup banner", () => {
+    setAppStartupStatusSnapshot({
+      running: false,
+      maintenanceMode: false,
+      currentStage: "failed",
+      failedStage: "initializing_db",
+      errorMessage: "startup pending",
+      canRetry: true,
+    });
     renderAt("/settings");
 
     const main = document.querySelector("#main-content");
     const outletContainer = screen.getByTestId("outlet-content").parentElement;
 
     expect(main).toHaveClass("flex", "flex-col", "min-h-0");
-    expect(screen.getByTestId("startup-banner").parentElement).toBe(main);
+    expect(screen.getByRole("alert").parentElement).toBe(main);
     expect(outletContainer?.parentElement).toBe(main);
     expect(outletContainer).toHaveClass("min-h-0", "flex-1");
   });

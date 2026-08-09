@@ -193,7 +193,19 @@ pub(crate) async fn app_startup_retry(app: tauri::AppHandle) -> AppStartupStatus
     let status = crate::app::startup_state::startup_status_snapshot(&app);
     if status.maintenance_mode {
         if crate::app::maintenance::retry_pending_reset(app.clone()).await {
-            crate::app::bootstrap::start_normal_runtime(&app);
+            // Normal application plugins were intentionally not initialized in
+            // the blocked process. Keep IPC closed and restart into a complete
+            // runtime after maintenance succeeds.
+            crate::app::maintenance::block_until_maintenance_restart(&app);
+            app.state::<crate::app::resident::ResidentState>()
+                .begin_restart();
+            let app_for_restart = app.clone();
+            std::thread::spawn(move || {
+                // Let the retry IPC response reach the maintenance UI before
+                // the event loop exits. Normal IPC remains blocked meanwhile.
+                std::thread::sleep(std::time::Duration::from_millis(200));
+                app_for_restart.request_restart();
+            });
         }
     } else {
         let _ = crate::app::startup_tasks::spawn(app.clone());

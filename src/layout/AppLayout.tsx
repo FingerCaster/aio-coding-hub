@@ -1,4 +1,5 @@
 import { Outlet, useLocation } from "react-router-dom";
+import { useAppStartupStatus } from "../app/startupStatusStore";
 import { AppStartupStatusBanner } from "../components/app/AppStartupStatusBanner";
 import { UpdateDialog } from "../components/UpdateDialog";
 import { Sidebar } from "../ui/Sidebar";
@@ -22,7 +23,21 @@ function getRouteTheme(pathname: string): string {
 
 export function AppLayout() {
   const location = useLocation();
+  const startupStatus = useAppStartupStatus();
   const themeClass = getRouteTheme(location.pathname);
+
+  if (startupStatus.maintenanceMode) {
+    return (
+      <div className="h-screen overflow-hidden bg-background text-foreground">
+        <div data-tauri-drag-region className="h-8" />
+        <main className="mx-auto flex h-[calc(100%-2rem)] max-w-3xl items-center px-6">
+          <div className="w-full">
+            <AppStartupStatusBanner />
+          </div>
+        </main>
+      </div>
+    );
+  }
 
   return (
     <div className="h-screen overflow-hidden bg-background text-foreground">

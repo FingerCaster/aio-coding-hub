@@ -11,6 +11,7 @@ import {
 
 const validStatus = {
   running: false,
+  maintenanceMode: false,
   currentStage: "idle",
   failedStage: null,
   errorMessage: null,
@@ -21,6 +22,7 @@ describe("services/app/startupStatus", () => {
   it("normalizes app startup status command results", async () => {
     vi.mocked(tauriInvoke).mockResolvedValueOnce({
       running: false,
+      maintenanceMode: false,
       currentStage: "failed",
       failedStage: "starting_gateway",
       errorMessage: "  gateway failed  ",
@@ -29,12 +31,33 @@ describe("services/app/startupStatus", () => {
 
     await expect(appStartupStatusGet()).resolves.toEqual({
       running: false,
+      maintenanceMode: false,
       currentStage: "failed",
       failedStage: "starting_gateway",
       errorMessage: "gateway failed",
       canRetry: true,
     });
     expect(tauriInvoke).toHaveBeenCalledWith("app_startup_status_get");
+  });
+
+  it("accepts the maintenance reset wire shape", () => {
+    expect(
+      normalizeAppStartupStatus({
+        running: false,
+        maintenanceMode: true,
+        currentStage: "failed",
+        failedStage: "resetting_data",
+        errorMessage: "reset pending",
+        canRetry: true,
+      })
+    ).toEqual({
+      running: false,
+      maintenanceMode: true,
+      currentStage: "failed",
+      failedStage: "resetting_data",
+      errorMessage: "reset pending",
+      canRetry: true,
+    });
   });
 
   it("rejects invalid app startup status command results", async () => {

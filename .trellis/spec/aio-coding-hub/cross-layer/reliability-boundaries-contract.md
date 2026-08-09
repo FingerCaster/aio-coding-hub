@@ -1,7 +1,7 @@
 # Reliability Boundary Contract
 
-Contracts for route-draft initialization, startup recovery, diagnostic
-redaction, task-complete notification, and upstream-sync review. These rules
+Contracts for route-draft initialization, startup recovery and maintenance,
+diagnostic redaction, task-complete notification, and upstream-sync review. These rules
 apply when asynchronous state or untrusted diagnostic data crosses the Rust,
 generated IPC, frontend service, or workflow boundary.
 
@@ -11,6 +11,7 @@ Apply this contract when changing any of the following:
 
 - Provider route-draft initialization or active sort-mode projection.
 - `DbInitState`, startup retry, startup-status events, or the initial status GET.
+- Cross-restart app-data reset markers, maintenance-only startup, or Tauri plugin registration.
 - Console/IPC/frontend-error diagnostics or the Rust frontend-error receiver.
 - Task-complete quiet-period timers or backend active-request confirmation.
 - `.github/workflows/sync-upstream.yml` permissions, branch updates, or PR handling.
@@ -28,8 +29,12 @@ pub(crate) async fn ensure_db_ready<R: tauri::Runtime>(
     state: &DbInitState,
 ) -> AppResult<db::Db>;
 
+pub(crate) fn run_before_startup<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> bool;
+
 #[tauri::command]
-pub(crate) fn app_startup_retry(app: tauri::AppHandle) -> AppStartupStatus;
+pub(crate) async fn app_startup_retry(app: tauri::AppHandle) -> AppStartupStatus;
 
 #[tauri::command]
 pub(crate) fn app_frontend_error_report(
@@ -40,6 +45,7 @@ pub(crate) fn app_frontend_error_report(
 ```typescript
 export async function listenAndSyncAppStartupStatusSnapshot(): Promise<() => void>;
 export async function retryAppStartupStatusSnapshot(): Promise<void>;
+export function useAppStartupStatusReady(): boolean;
 
 export function redactDiagnosticText(value: string, maxChars?: number): string;
 export function redactDiagnosticValue(
@@ -75,8 +81,15 @@ type ProviderUiState = {
 - Startup:
   - `DbInitState` caches only `Ok(Db)`. An initialization error leaves the cache empty.
   - The async mutex covers the initialization attempt so concurrent successful callers initialize once.
+  - Reset intent is a fixed-content, atomically activated and durably synced marker below a validated, non-link app-data root. Unknown, unreadable, or non-regular markers fail closed.
+  - Reset deletion is limited to the fixed direct-child target list. Target unlinks and their root directory are durably synced before the marker can be cleared; retries remain idempotent.
+  - The maintenance preflight is the first application plugin initialization. It runs before normal Tauri plugins, `setup`, logging, DB initialization, gateway startup, and background workers.
+  - Tauri plugin commands bypass the application invoke handler. Every renderer-facing normal plugin must therefore be skipped and reject its own IPC while maintenance is blocked; only startup status, retry, and exit application commands remain available.
+  - The IPC-free single-instance plugin initializes after the maintenance preflight in both modes. It owns the process boundary so concurrent maintenance launches cannot race the same marker.
+  - A successful maintenance retry restarts into a fully initialized process. It must not start the normal runtime inside the plugin-suppressed process.
   - Frontend startup bootstrap registers the event listener before starting the status GET.
   - Subscription identity plus update generation must reject an unmounted subscription or stale GET/retry result.
+  - Generated bindings and the frontend normalizer must carry `maintenanceMode` and `resetting_data`. The normal frontend runtime does not mount until the initial status is known and non-maintenance.
 - Diagnostics:
   - Sensitive keys, authorization values, bearer tokens, secret assignments, and key-like tokens become `[REDACTED]`.
   - URLs retain only scheme/host/port/path; username, password, query, and fragment are removed.
@@ -104,6 +117,10 @@ type ProviderUiState = {
 | DB initialization returns `Err` | Return the error and leave `DbInitState` empty |
 | Older startup GET/retry resolves late | Ignore the result |
 | Startup listener registration fails | Reject setup; do not start the initial GET |
+| Reset marker is corrupt, unreadable, or redirected | Keep maintenance mode; do not start normal plugins or runtime owners |
+| Reset deletion or directory sync fails | Keep the pending marker and retry the same fixed targets |
+| Maintenance retry succeeds | Block further normal IPC and restart the process |
+| Initial frontend status is unknown or maintenance-only | Do not mount normal routes, listeners, startup tasks, or background tasks |
 | Diagnostic key/text is sensitive | Emit `[REDACTED]`, never the original value |
 | Diagnostic getter/proxy traversal fails | Emit `[REDACTION_FAILED]` or fail the whole projection closed |
 | Diagnostic resource budget is exhausted | Emit a bounded truncation marker |
@@ -133,6 +150,7 @@ type ProviderUiState = {
 - Route draft tests assert persisted-mode selection, deleted-mode fallback, explicit-selection race protection, and per-CLI reset.
 - Rust startup tests assert failure then success performs two attempts, success is cached, and concurrent success initializes once.
 - Frontend startup tests assert listener-before-GET ordering, event-before-GET protection, cleanup invalidation, subscription replacement, retry staleness, and GET failure logging.
+- Maintenance tests assert marker corruption, link/reparse and traversal rejection, fixed-target idempotence, pending/completed crash states, preflight-before-plugin ordering, plugin IPC suppression, retry restart, and frontend normal-runtime suppression.
 - Diagnostic tests assert free-text secrets, structured sensitive keys, URL credentials/query/fragment, cycles, throwing getters, depth/items/keys/nodes/string budgets, IPC argument/error paths, frontend report payloads, and Rust defense in depth.
 - Notification tests assert normal 30-second delivery, overlapping requests, same-CLI backend activity, snapshot failure, generation invalidation, disabled state, and Codex default timing.
 - Sync policy self-tests mutate permissions and commands to prove direct push, local merge, auto-merge, missing PR creation, missing fail-closed states, and topology bypasses are rejected.

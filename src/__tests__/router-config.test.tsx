@@ -38,7 +38,7 @@ describe("router config", () => {
     );
 
     expect(hashRouterPropsRef.current).toBeTruthy();
-    expect(screen.getByTestId("app-routes")).toBeInTheDocument();
+    expect(await screen.findByTestId("app-routes")).toBeInTheDocument();
   }, 30000);
 
   it("prevents default window dragover/drop so stray file drops cannot navigate the webview", async () => {
@@ -50,6 +50,8 @@ describe("router config", () => {
         <App />
       </QueryClientProvider>
     );
+
+    await screen.findByTestId("app-routes");
 
     // fireEvent 返回 false 表示 preventDefault 已被调用。
     expect(fireEvent.dragOver(window)).toBe(false);

@@ -5,9 +5,10 @@ use tauri_plugin_dialog::DialogExt;
 
 pub(crate) fn setup(app: &mut tauri::App<tauri::Wry>) -> Result<(), Box<dyn std::error::Error>> {
     let app_handle = app.handle().clone();
-    if !crate::app::maintenance::run_before_startup(&app_handle) {
+    if crate::app::maintenance::ensure_normal_operation(&app_handle).is_err() {
         // The webview is the only surface kept while maintenance is blocked.
-        // Do not create logs, a DB, gateways, or background tasks.
+        // The preflight plugin has already suppressed logging, DB, gateway,
+        // background, and normal plugin startup.
         init_main_window_chrome(&app_handle);
         return Ok(());
     }

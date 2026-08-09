@@ -1,5 +1,4 @@
 import { useAsyncListener } from "../hooks/useAsyncListener";
-import { listenAndSyncAppStartupStatusSnapshot } from "./startupStatusStore";
 import { listenAppHeartbeat } from "../services/app/appHeartbeat";
 import { listenGatewayEvents } from "../services/gateway/gatewayEvents";
 import { listenNoticeEvents } from "../services/notification/noticeEvents";
@@ -7,11 +6,6 @@ import { listenTaskCompleteNotifyEvents } from "../services/notification/taskCom
 
 export function useAppEventListeners() {
   useAsyncListener(listenAppHeartbeat, "listenAppHeartbeat", "应用心跳监听初始化失败");
-  useAsyncListener(
-    listenAndSyncAppStartupStatusSnapshot,
-    "listenAndSyncAppStartupStatusSnapshot",
-    "应用启动状态监听初始化失败"
-  );
   useAsyncListener(listenGatewayEvents, "listenGatewayEvents", "网关事件监听初始化失败");
   useAsyncListener(listenNoticeEvents, "listenNoticeEvents", "通知事件监听初始化失败");
   useAsyncListener(

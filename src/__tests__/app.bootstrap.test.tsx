@@ -4,6 +4,13 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { createTestQueryClient } from "../test/utils/reactQuery";
 import { createTestAppSettings } from "../test/fixtures/settings";
 
+const { startupGate } = vi.hoisted(() => ({
+  startupGate: {
+    ready: true,
+    maintenanceMode: false,
+  },
+}));
+
 vi.mock("../services/app/appHeartbeat", () => ({
   listenAppHeartbeat: vi.fn().mockResolvedValue(() => {}),
 }));
@@ -58,6 +65,8 @@ vi.mock("../app/settingsRuntimeController", () => ({
 }));
 vi.mock("../app/startupStatusStore", () => ({
   listenAndSyncAppStartupStatusSnapshot: vi.fn().mockResolvedValue(() => {}),
+  useAppStartupStatus: () => ({ maintenanceMode: startupGate.maintenanceMode }),
+  useAppStartupStatusReady: () => startupGate.ready,
 }));
 
 import { listenAppHeartbeat } from "../services/app/appHeartbeat";
@@ -95,6 +104,8 @@ async function renderApp() {
 describe("App bootstrap", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    startupGate.ready = true;
+    startupGate.maintenanceMode = false;
     vi.mocked(listenAppHeartbeat).mockResolvedValue(() => {});
     vi.mocked(listenGatewayEvents).mockResolvedValue(() => {});
     vi.mocked(listenNoticeEvents).mockResolvedValue(() => {});
@@ -134,5 +145,24 @@ describe("App bootstrap", () => {
       expect(updateCheckNow).not.toHaveBeenCalled();
       expect(cliProxyStatusAll).not.toHaveBeenCalled();
     });
+  });
+
+  it("keeps the normal frontend runtime stopped in maintenance mode", async () => {
+    startupGate.maintenanceMode = true;
+
+    await renderApp();
+
+    await vi.waitFor(() => {
+      expect(listenAndSyncAppStartupStatusSnapshot).toHaveBeenCalledTimes(1);
+    });
+    expect(listenAppHeartbeat).not.toHaveBeenCalled();
+    expect(listenGatewayEvents).not.toHaveBeenCalled();
+    expect(listenNoticeEvents).not.toHaveBeenCalled();
+    expect(listenTaskCompleteNotifyEvents).not.toHaveBeenCalled();
+    expect(startupSyncModelPricesOnce).not.toHaveBeenCalled();
+    expect(startupSyncDefaultPromptsFromFilesOncePerSession).not.toHaveBeenCalled();
+    expect(settingsGet).not.toHaveBeenCalled();
+    expect(registerBackgroundTask).not.toHaveBeenCalled();
+    expect(startBackgroundTaskScheduler).not.toHaveBeenCalled();
   });
 });
