@@ -1,5 +1,29 @@
 # Changelog
 
+## [0.60.40](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.39...aio-coding-hub-v0.60.40) (2026-08-09)
+
+
+### Bug Fixes
+
+* **ci:** remove stale Rust audit exemptions ([8093ca5](https://github.com/FingerCaster/aio-coding-hub/commit/8093ca55ac6043ad1ef2158cc80768e374624009))
+* **data:** add cross-restart reset maintenance gate ([9646f23](https://github.com/FingerCaster/aio-coding-hub/commit/9646f23004f132335d273e3eb29f2c4a66642775))
+* **data:** harden reset maintenance boundaries ([a229558](https://github.com/FingerCaster/aio-coding-hub/commit/a229558240c96fae709689e6d24a276b11adb8d3))
+* **gateway:** enforce provider routing safety ([a174fc2](https://github.com/FingerCaster/aio-coding-hub/commit/a174fc24a07a4a0ac5acd7f97cbc846946d2711b))
+* **gateway:** harden provider routing safety checks ([43e7380](https://github.com/FingerCaster/aio-coding-hub/commit/43e7380f152da83b40c941e86d630488a2f1ec37))
+* **plugins:** address runtime hardening review findings ([04f0593](https://github.com/FingerCaster/aio-coding-hub/commit/04f059370eae4a465ec161e9b9d13407dfa79382))
+* **plugins:** harden runtime integrity boundaries ([87dc5d6](https://github.com/FingerCaster/aio-coding-hub/commit/87dc5d6252c741385ba46d581f3b1c84099808b5))
+* **release:** harden candidate promotion and signing scope ([dc0336f](https://github.com/FingerCaster/aio-coding-hub/commit/dc0336f011061784edbe0ec177b27a3fd6d1329f))
+* **release:** keep candidate promotion fail closed ([de3053d](https://github.com/FingerCaster/aio-coding-hub/commit/de3053d53de2fa2b051ee0646c9585a5b1d65c0f))
+* **settings:** harden partial writes and alias reads ([02652f4](https://github.com/FingerCaster/aio-coding-hub/commit/02652f42ef49dcfcee7c17567b27ee6249792269))
+* **settings:** 加固设置与定价别名写入 ([1b73df7](https://github.com/FingerCaster/aio-coding-hub/commit/1b73df7bb3e5c96b16a0cead352ba5451ad3b40d))
+* **ui:** harden sessions and frontend boundaries ([d0edbf7](https://github.com/FingerCaster/aio-coding-hub/commit/d0edbf78cfa0f1b3bb67ed8bc6154eac2b89b1a4))
+* **ui:** retry CodeMirror loading in place ([edc1311](https://github.com/FingerCaster/aio-coding-hub/commit/edc1311073c721e053c0d961d1f6d5aae1d8cd94))
+
+
+### Miscellaneous
+
+* **release:** prepare aio-coding-hub 0.60.40 ([6720409](https://github.com/FingerCaster/aio-coding-hub/commit/6720409a3d39d4af1ec0a143fb138c2a0226a812))
+
 ## [0.60.39](https://github.com/FingerCaster/aio-coding-hub/compare/aio-coding-hub-v0.60.38...aio-coding-hub-v0.60.39) (2026-08-09)
 
 
