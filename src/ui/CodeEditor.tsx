@@ -82,6 +82,7 @@ export function CodeEditor({
   const onChangeRef = useRef(onChange);
   onChangeRef.current = onChange;
   const [loadError, setLoadError] = useState(false);
+  const [loadAttempt, setLoadAttempt] = useState(0);
 
   const heightValue = height ? (typeof height === "number" ? `${height}px` : height) : undefined;
   const containerStyle = heightValue ? { height: heightValue } : { minHeight };
@@ -181,7 +182,7 @@ export function CodeEditor({
       cancelled = true;
       view?.destroy();
     };
-  }, [language, readOnly, minHeight, heightValue, placeholder]);
+  }, [language, readOnly, minHeight, heightValue, placeholder, loadAttempt]);
 
   useEffect(() => {
     const view = viewRef.current;
@@ -214,16 +215,19 @@ export function CodeEditor({
               编辑器加载失败
             </div>
             <div className="mt-1 text-sm text-rose-800 dark:text-rose-400">
-              无法加载编辑器资源，请重新加载页面。
+              无法加载编辑器资源，请重试。
             </div>
           </div>
-          <Tooltip content="重新加载页面">
+          <Tooltip content="重试加载编辑器">
             <Button
               type="button"
               variant="secondary"
               size="icon"
-              aria-label="重新加载页面"
-              onClick={() => window.location.reload()}
+              aria-label="重试加载编辑器"
+              onClick={() => {
+                setLoadError(false);
+                setLoadAttempt((attempt) => attempt + 1);
+              }}
             >
               <RefreshCw className="h-4 w-4" />
             </Button>

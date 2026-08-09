@@ -113,13 +113,13 @@ describe("ui/CodeEditor", () => {
     vi.unstubAllGlobals();
   });
 
-  it("offers a page reload when the initial bundle load rejects", async () => {
+  it("retries the bundle load in place after the initial load rejects", async () => {
     const firstLoad = deferred<never[]>();
+    const secondLoad = deferred<never[]>();
     const promiseAllSpy = vi
       .spyOn(Promise, "all")
-      .mockImplementationOnce(() => firstLoad.promise as never);
-    const reload = vi.fn();
-    vi.stubGlobal("location", { ...window.location, reload });
+      .mockImplementationOnce(() => firstLoad.promise as never)
+      .mockImplementationOnce(() => secondLoad.promise as never);
 
     render(<CodeEditor value="recover" minHeight="260px" />);
     await act(async () => {
@@ -133,9 +133,23 @@ describe("ui/CodeEditor", () => {
     expect(error).toHaveStyle({ minHeight: "260px" });
     expect(getCodeMirrorBundlePromiseForTests()).toBeNull();
 
-    fireEvent.click(screen.getByRole("button", { name: "重新加载页面" }));
-    expect(reload).toHaveBeenCalledTimes(1);
-    expect(promiseAllSpy).toHaveBeenCalledTimes(1);
+    fireEvent.click(screen.getByRole("button", { name: "重试加载编辑器" }));
+    await waitFor(() => expect(promiseAllSpy).toHaveBeenCalledTimes(2));
+
+    await act(async () => {
+      secondLoad.resolve([
+        { EditorView: MockEditorView, basicSetup: "basicSetup" },
+        { EditorState: MockEditorState },
+        { placeholder: mockPlaceholder },
+        { StreamLanguage: { define: mockStreamLanguageDefine } },
+        { toml: mockTomlMode },
+      ] as never[]);
+      await secondLoad.promise;
+    });
+
+    await waitForEditorCreated();
+    expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+    expect(getCodeMirrorBundlePromiseForTests()).not.toBeNull();
   });
 
   it("does not let an older rejection clear a newer bundle load", async () => {
