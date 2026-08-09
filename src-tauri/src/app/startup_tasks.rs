@@ -8,6 +8,9 @@ use std::future::Future;
 use tauri::Manager;
 
 pub(crate) fn spawn(app_handle: tauri::AppHandle) -> bool {
+    if crate::app::maintenance::ensure_normal_operation(&app_handle).is_err() {
+        return false;
+    }
     if !try_begin_startup_run(&app_handle) {
         return false;
     }

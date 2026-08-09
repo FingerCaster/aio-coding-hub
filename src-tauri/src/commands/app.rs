@@ -162,6 +162,7 @@ pub(crate) fn app_exit(app: tauri::AppHandle) -> Result<bool, String> {
 #[tauri::command]
 #[specta::specta]
 pub(crate) fn app_restart(app: tauri::AppHandle) -> Result<bool, String> {
+    crate::app::maintenance::ensure_normal_operation(&app)?;
     std::thread::spawn(move || {
         std::thread::sleep(std::time::Duration::from_millis(200));
         app.state::<crate::app::resident::ResidentState>()
@@ -188,8 +189,15 @@ pub(crate) fn app_startup_status_get(app: tauri::AppHandle) -> AppStartupStatus 
 
 #[tauri::command]
 #[specta::specta]
-pub(crate) fn app_startup_retry(app: tauri::AppHandle) -> AppStartupStatus {
-    let _ = crate::app::startup_tasks::spawn(app.clone());
+pub(crate) async fn app_startup_retry(app: tauri::AppHandle) -> AppStartupStatus {
+    let status = crate::app::startup_state::startup_status_snapshot(&app);
+    if status.maintenance_mode {
+        if crate::app::maintenance::retry_pending_reset(app.clone()).await {
+            crate::app::bootstrap::start_normal_runtime(&app);
+        }
+    } else {
+        let _ = crate::app::startup_tasks::spawn(app.clone());
+    }
     crate::app::startup_state::startup_status_snapshot(&app)
 }
 

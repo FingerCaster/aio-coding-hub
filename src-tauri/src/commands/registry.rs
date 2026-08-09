@@ -5,6 +5,7 @@
 //! runtime-only exception list.
 
 use super::*;
+use tauri::Manager;
 
 #[cfg(test)]
 const HANDWRITTEN_RUNTIME_ONLY_COMMANDS: &[&str] = &["desktop_updater_download_and_install"];
@@ -13,7 +14,7 @@ const HANDWRITTEN_RUNTIME_ONLY_REASON: &str =
     "Requires a Tauri Channel callback, so this desktop updater path stays as the single handwritten desktop IPC exception.";
 
 macro_rules! generated_command_registry {
-    ($callback:ident) => {
+    ($callback:ident) => {{
         $callback! {
             // ── settings ──
             settings_get => crate::commands::settings::settings_get,
@@ -275,7 +276,7 @@ macro_rules! generated_command_registry {
             workspace_preview => crate::commands::workspaces::workspace_preview,
             workspace_apply => crate::commands::workspaces::workspace_apply,
         }
-    };
+    }};
 }
 
 pub(crate) fn register_runtime_commands(
@@ -283,10 +284,28 @@ pub(crate) fn register_runtime_commands(
 ) -> tauri::Builder<tauri::Wry> {
     macro_rules! build_runtime_handler {
         ($($name:ident => $path:path),+ $(,)?) => {
-            builder.invoke_handler(tauri::generate_handler![
+            let runtime_handler: Box<
+                dyn Fn(tauri::ipc::Invoke<tauri::Wry>) -> bool + Send + Sync,
+            > = Box::new(tauri::generate_handler![
                 $($name,)*
                 desktop_updater_download_and_install,
-            ])
+            ]);
+            builder.invoke_handler(move |invoke: tauri::ipc::Invoke<tauri::Wry>| {
+                let allowed = {
+                    let app = invoke.message.webview_ref().app_handle();
+                    crate::app::maintenance::invoke_allowed_during_maintenance(
+                        app,
+                        invoke.message.command(),
+                    )
+                };
+                if !allowed {
+                    invoke.resolver.reject(
+                        "APP_MAINTENANCE_REQUIRED: 应用正在维护中，只能重试数据清理或退出",
+                    );
+                    return true;
+                }
+                runtime_handler(invoke)
+            })
         };
     }
 

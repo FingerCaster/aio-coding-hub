@@ -111,17 +111,27 @@ pub fn init_db<R: tauri::Runtime>(
     crate::infra::db::init(app).map(|_| ())
 }
 
-pub fn app_data_reset<R: tauri::Runtime>(
+pub fn app_data_reset_register<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
 ) -> crate::shared::error::AppResult<bool> {
-    let state = crate::app::app_state::DbInitState::default();
-    let app_handle = app.clone();
+    let data_dir = crate::infra::app_paths::app_data_dir(app)?;
+    crate::app::maintenance::write_reset_marker_at(&data_dir)
+}
 
-    tauri::async_runtime::block_on(async move {
-        let _ = crate::app::app_state::ensure_db_ready(app_handle.clone(), &state).await?;
-        let _db_reset_guard = crate::app::app_state::prepare_db_reset(&state).await;
-        crate::infra::data_management::app_data_reset(&app_handle)
-    })
+pub fn app_data_reset_apply_pending<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<bool> {
+    let data_dir = crate::infra::app_paths::app_data_dir(app)?;
+    let db_path = crate::infra::db::db_path(app)?;
+    crate::app::maintenance::consume_reset_marker_at(&data_dir, &db_path)
+}
+
+pub fn app_data_reset_marker_path<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> crate::shared::error::AppResult<PathBuf> {
+    Ok(crate::app::maintenance::marker_path_for_data_dir(
+        &crate::infra::app_paths::app_data_dir(app)?,
+    ))
 }
 
 pub fn mcp_read_target_bytes<R: tauri::Runtime>(

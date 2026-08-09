@@ -263,6 +263,10 @@ pub fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent) {
     };
 
     let resident = window.state::<ResidentState>();
+    if crate::app::maintenance::should_skip_exit_cleanup(window.app_handle()) {
+        resident.begin_exit();
+        return;
+    }
     match resident.close_request_action() {
         CloseRequestAction::AllowClose => {}
         CloseRequestAction::HideToTray => {

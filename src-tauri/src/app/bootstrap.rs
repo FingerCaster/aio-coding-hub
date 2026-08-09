@@ -4,19 +4,35 @@ use super::resident;
 use tauri_plugin_dialog::DialogExt;
 
 pub(crate) fn setup(app: &mut tauri::App<tauri::Wry>) -> Result<(), Box<dyn std::error::Error>> {
-    crate::app::logging::init(app.handle());
+    let app_handle = app.handle().clone();
+    if !crate::app::maintenance::run_before_startup(&app_handle) {
+        // The webview is the only surface kept while maintenance is blocked.
+        // Do not create logs, a DB, gateways, or background tasks.
+        init_main_window_chrome(&app_handle);
+        return Ok(());
+    }
+
+    start_normal_runtime(&app_handle);
+    Ok(())
+}
+
+pub(crate) fn start_normal_runtime(app: &tauri::AppHandle) {
+    if !crate::app::maintenance::start_normal_runtime_once(app) {
+        return;
+    }
+
+    crate::app::logging::init(app);
     guard_restart_storm(app);
-    crate::app::heartbeat_watchdog::install(app.handle());
+    crate::app::heartbeat_watchdog::install(app);
     install_panic_hook();
     init_desktop_integrations(app);
     init_main_window_chrome(app);
     log_dev_diagnostics(app);
-    crate::app::startup_tasks::spawn(app.handle().clone());
-    Ok(())
+    let _ = crate::app::startup_tasks::spawn(app.clone());
 }
 
-fn guard_restart_storm(app: &mut tauri::App<tauri::Wry>) {
-    if crate::app::heartbeat_watchdog::check_and_clear_restart_marker(app.handle()) {
+fn guard_restart_storm(app: &tauri::AppHandle) {
+    if crate::app::heartbeat_watchdog::check_and_clear_restart_marker(app) {
         tracing::error!("startup: restart storm detected, auto-recovery disabled for this session");
         app.dialog()
             .message(
@@ -41,23 +57,20 @@ fn install_panic_hook() {
     }));
 }
 
-fn init_desktop_integrations(app: &mut tauri::App<tauri::Wry>) {
+fn init_desktop_integrations(app: &tauri::AppHandle) {
     #[cfg(desktop)]
     {
-        if let Err(err) = app
-            .handle()
-            .plugin(tauri_plugin_updater::Builder::new().build())
-        {
+        if let Err(err) = app.plugin(tauri_plugin_updater::Builder::new().build()) {
             tracing::error!("updater initialization failed: {}", err);
         }
 
-        if let Err(err) = resident::setup_tray(app.handle()) {
+        if let Err(err) = resident::setup_tray(app) {
             tracing::error!("system tray initialization failed: {}", err);
         }
     }
 }
 
-fn init_main_window_chrome(app: &tauri::App<tauri::Wry>) {
+fn init_main_window_chrome(app: &tauri::AppHandle) {
     use tauri::Manager;
 
     if let Some(window) = app.get_webview_window("main") {
@@ -66,7 +79,7 @@ fn init_main_window_chrome(app: &tauri::App<tauri::Wry>) {
 }
 
 #[cfg(debug_assertions)]
-fn log_dev_diagnostics(app: &tauri::App<tauri::Wry>) {
+fn log_dev_diagnostics(app: &tauri::AppHandle) {
     let enabled = std::env::var("AIO_CODING_HUB_DEV_DIAGNOSTICS")
         .ok()
         .map(|v| v.trim().to_ascii_lowercase())
@@ -79,11 +92,11 @@ fn log_dev_diagnostics(app: &tauri::App<tauri::Wry>) {
         if let Ok(dotdir_name) = std::env::var("AIO_CODING_HUB_DOTDIR_NAME") {
             tracing::info!(dotdir_name = %dotdir_name, "[dev] AIO_CODING_HUB_DOTDIR_NAME");
         }
-        if let Ok(dir) = crate::app_paths::app_data_dir(app.handle()) {
+        if let Ok(dir) = crate::app_paths::app_data_dir(app) {
             tracing::info!(dir = %dir.display(), "[dev] app data dir");
         }
     }
 }
 
 #[cfg(not(debug_assertions))]
-fn log_dev_diagnostics(_app: &tauri::App<tauri::Wry>) {}
+fn log_dev_diagnostics(_app: &tauri::AppHandle) {}

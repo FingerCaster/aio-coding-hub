@@ -15,6 +15,7 @@ pub(crate) mod image_gen_service;
 pub(crate) mod lifecycle;
 pub(crate) mod linux_webkit_compat;
 pub(crate) mod logging;
+pub(crate) mod maintenance;
 pub(crate) mod notice;
 pub(crate) mod notification_sound;
 pub(crate) mod plugin_registry;

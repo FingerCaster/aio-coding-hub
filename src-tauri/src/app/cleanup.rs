@@ -52,6 +52,10 @@ fn cleanup_notify() -> &'static Notify {
 }
 
 pub(crate) async fn cleanup_before_exit(app: &tauri::AppHandle) {
+    if crate::app::maintenance::should_skip_exit_cleanup(app) {
+        return;
+    }
+
     let notify = cleanup_notify();
     match CLEANUP_STATE.compare_exchange(
         CLEANUP_STATE_IDLE,

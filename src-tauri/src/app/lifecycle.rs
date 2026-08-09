@@ -9,6 +9,10 @@ static EXIT_CLEANUP_SPAWNED: AtomicBool = AtomicBool::new(false);
 pub(crate) fn handle_run_event(app_handle: &tauri::AppHandle, event: tauri::RunEvent) {
     if let tauri::RunEvent::ExitRequested { api, code, .. } = &event {
         if *code != Some(tauri::RESTART_EXIT_CODE) {
+            if crate::app::maintenance::should_skip_exit_cleanup(app_handle) {
+                app_handle.state::<resident::ResidentState>().begin_exit();
+                return;
+            }
             app_handle.state::<resident::ResidentState>().begin_exit();
             api.prevent_exit();
 

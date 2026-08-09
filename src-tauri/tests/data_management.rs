@@ -78,7 +78,7 @@ fn disk_usage_after_clear_logs() {
 }
 
 #[test]
-fn app_data_reset_removes_db_files_and_allows_reinit() {
+fn app_data_reset_is_registered_before_next_startup_consumes_it() {
     let app = support::TestApp::new();
     let handle = app.handle();
 
@@ -94,9 +94,20 @@ fn app_data_reset_removes_db_files_and_allows_reinit() {
     let db_path = aio_coding_hub_lib::test_support::db_path(&handle).expect("db path");
     let (wal_path, shm_path) = db_related_paths(&db_path);
 
-    let reset_ok =
-        aio_coding_hub_lib::test_support::app_data_reset(&handle).expect("reset app data");
-    assert!(reset_ok, "app_data_reset should report success");
+    let registered = aio_coding_hub_lib::test_support::app_data_reset_register(&handle)
+        .expect("register app data reset");
+    assert!(registered, "first reset request should create a marker");
+    assert!(
+        aio_coding_hub_lib::test_support::app_data_reset_marker_path(&handle)
+            .expect("marker path")
+            .exists(),
+        "reset marker must survive until the next startup"
+    );
+    assert!(db_path.exists(), "current process must not delete the DB");
+
+    let reset_ok = aio_coding_hub_lib::test_support::app_data_reset_apply_pending(&handle)
+        .expect("consume reset marker");
+    assert!(reset_ok, "pending reset should report success");
 
     assert!(
         !db_path.exists(),
@@ -112,6 +123,12 @@ fn app_data_reset_removes_db_files_and_allows_reinit() {
         !shm_path.exists(),
         "shm file should be removed after reset: {}",
         shm_path.display()
+    );
+    assert!(
+        !aio_coding_hub_lib::test_support::app_data_reset_marker_path(&handle)
+            .expect("marker path")
+            .exists(),
+        "successful next-startup reset must remove the marker"
     );
 
     aio_coding_hub_lib::test_support::init_db(&handle).expect("re-init db after reset");

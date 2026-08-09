@@ -30,13 +30,21 @@ pub(crate) async fn ensure_db_ready<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     state: &DbInitState,
 ) -> AppResult<db::Db> {
-    ensure_db_ready_with(state, || blocking::run("db_init", move || db::init(&app))).await
+    crate::app::maintenance::ensure_normal_operation(&app)?;
+    ensure_db_ready_with(state, || {
+        let app = app.clone();
+        async move {
+            crate::app::maintenance::ensure_normal_operation(&app)?;
+            blocking::run("db_init", move || db::init(&app)).await
+        }
+    })
+    .await
 }
 
 pub(crate) async fn prepare_db_reset<'a>(state: &'a DbInitState) -> MutexGuard<'a, Option<db::Db>> {
     let mut guard = state.0.lock().await;
-    // Hold the cache lock through file deletion so no concurrent command can
-    // recreate the pool midway through a destructive reset.
+    // Hold the cache lock through durable reset registration and process exit
+    // so no concurrent command can reopen SQLite after the handoff begins.
     let _ = guard.take();
     guard
 }

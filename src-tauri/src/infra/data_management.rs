@@ -1,6 +1,5 @@
 //! Usage: App data and DB disk-management helpers (reset, usage stats, cleanup).
 
-use crate::app_paths;
 use crate::db;
 use crate::shared::error::db_err;
 use rusqlite::TransactionBehavior;
@@ -35,14 +34,11 @@ fn file_len_or_zero(path: &Path) -> Result<u64, String> {
     }
 }
 
-fn remove_file_if_exists(path: &Path) -> Result<bool, String> {
+fn remove_file_if_exists(path: &Path) -> Result<bool, std::io::Error> {
     match std::fs::remove_file(path) {
         Ok(()) => Ok(true),
         Err(err) if err.kind() == io::ErrorKind::NotFound => Ok(false),
-        Err(err) => Err(format!(
-            "failed to remove {}: {err}",
-            path.to_string_lossy()
-        )),
+        Err(err) => Err(err),
     }
 }
 
@@ -58,6 +54,18 @@ fn db_related_paths(db_path: &Path) -> (PathBuf, PathBuf) {
         PathBuf::from(out)
     };
     (wal_path, shm_path)
+}
+
+fn app_data_reset_targets(dir: &Path, db_path: &Path) -> [(&'static str, PathBuf); 6] {
+    let (wal_path, shm_path) = db_related_paths(db_path);
+    [
+        ("settings_tmp", dir.join("settings.json.tmp")),
+        ("settings_backup", dir.join("settings.json.bak")),
+        ("settings", dir.join("settings.json")),
+        ("sqlite_wal", wal_path),
+        ("sqlite_shm", shm_path),
+        ("sqlite", db_path.to_path_buf()),
+    ]
 }
 
 fn disk_usage_at(db_path: &Path) -> Result<DbDiskUsage, String> {
@@ -145,37 +153,40 @@ pub fn request_logs_clear_all(
     })
 }
 
-pub fn app_data_reset<R: tauri::Runtime>(
-    app: &tauri::AppHandle<R>,
+/// Delete the complete reset target set. The durable marker is owned by the
+/// caller; this helper is idempotent so a later process can finish a partial
+/// reset without reopening SQLite.
+pub(crate) fn app_data_reset_at(
+    dir: &Path,
+    db_path: &Path,
 ) -> crate::shared::error::AppResult<bool> {
-    tracing::error!(
-        "app data reset initiated (destructive operation: deleting settings and database)"
-    );
+    if db_path.parent() != Some(dir) {
+        return Err(crate::shared::error::AppError::new(
+            "APP_DATA_RESET_PATH_INVALID",
+            "database reset path is outside the app data root",
+        ));
+    }
 
-    // Ensure the app data dir exists.
-    let dir = app_paths::app_data_dir(app)?;
+    let mut failed = Vec::new();
+    for (label, path) in app_data_reset_targets(dir, db_path) {
+        if remove_file_if_exists(&path).is_err() {
+            failed.push(label);
+        }
+    }
 
-    // settings.json (+ temp artifacts)
-    let settings_path = dir.join("settings.json");
-    let settings_tmp_path = dir.join("settings.json.tmp");
-    let settings_bak_path = dir.join("settings.json.bak");
-    let _ = remove_file_if_exists(&settings_tmp_path)?;
-    let _ = remove_file_if_exists(&settings_bak_path)?;
-    let _ = remove_file_if_exists(&settings_path)?;
-
-    // sqlite db (+ wal/shm)
-    let db_path = db::db_path(app)?;
-    let (wal_path, shm_path) = db_related_paths(&db_path);
-    let _ = remove_file_if_exists(&wal_path)?;
-    let _ = remove_file_if_exists(&shm_path)?;
-    let _ = remove_file_if_exists(&db_path)?;
+    if !failed.is_empty() {
+        return Err(crate::shared::error::AppError::new(
+            "APP_DATA_RESET_INCOMPLETE",
+            format!("failed reset targets: {}", failed.join(", ")),
+        ));
+    }
 
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
-    use super::db_compact_at;
+    use super::{app_data_reset_at, app_data_reset_targets, db_compact_at};
     use rusqlite::params;
     use std::path::PathBuf;
     use tempfile::TempDir;
@@ -209,6 +220,43 @@ INSERT INTO request_logs (
         let conn = db.open_connection().expect("open connection");
         conn.query_row("SELECT COUNT(1) FROM request_logs", [], |row| row.get(0))
             .expect("count request logs")
+    }
+
+    #[test]
+    fn app_data_reset_deletes_every_fixed_target() {
+        let dir = TempDir::new().expect("temp dir");
+        let db_path = dir.path().join("app.db");
+        let targets = app_data_reset_targets(dir.path(), &db_path);
+        for (_, path) in &targets {
+            std::fs::write(path, b"stale").expect("write reset target");
+        }
+
+        assert!(app_data_reset_at(dir.path(), &db_path).expect("reset targets"));
+        for (label, path) in targets {
+            assert!(!path.exists(), "{label} should be deleted");
+        }
+    }
+
+    #[test]
+    fn app_data_reset_reports_each_failed_fixed_target() {
+        for (blocked_label, blocked_path) in {
+            let dir = TempDir::new().expect("temp dir");
+            let db_path = dir.path().join("app.db");
+            app_data_reset_targets(dir.path(), &db_path)
+                .into_iter()
+                .map(|(label, path)| (label, path.file_name().expect("file name").to_owned()))
+                .collect::<Vec<_>>()
+        } {
+            let dir = TempDir::new().expect("temp dir");
+            let db_path = dir.path().join("app.db");
+            let blocked_path = dir.path().join(blocked_path);
+            std::fs::create_dir(&blocked_path).expect("create blocking directory");
+
+            let error = app_data_reset_at(dir.path(), &db_path).expect_err("target must fail");
+            assert_eq!(error.code(), "APP_DATA_RESET_INCOMPLETE");
+            assert!(error.to_string().contains(blocked_label));
+            assert!(blocked_path.is_dir(), "failed target must remain untouched");
+        }
     }
 
     #[test]

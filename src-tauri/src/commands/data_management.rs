@@ -64,8 +64,9 @@ pub(crate) async fn app_data_reset(
     confirm: Option<RiskyIpcConfirm>,
 ) -> Result<bool, String> {
     RiskyIpcConfirm::require(confirm, "app_data_reset", "app_data")?;
-    // Stop the gateway and keep lifecycle starts out until destructive file
-    // deletion is complete, so background writers cannot recreate SQLite files.
+    // Keep gateway starts and DB initialization out while the durable reset
+    // intent is committed and the old process exits. Destructive deletion is
+    // owned exclusively by the next startup.
     let _gateway_lifecycle = crate::app::gateway_lifecycle_lock::lock().await;
     crate::app::cleanup::stop_gateway_best_effort_unlocked(&app).await;
     crate::app::cleanup::restore_cli_proxy_keep_state_best_effort(
@@ -76,9 +77,5 @@ pub(crate) async fn app_data_reset(
     )
     .await;
     let _db_reset_guard = prepare_db_reset(db_state.inner()).await;
-    blocking::run("app_data_reset", move || {
-        data_management::app_data_reset(&app)
-    })
-    .await
-    .map_err(Into::into)
+    crate::app::maintenance::request_reset_and_exit(app).map_err(Into::into)
 }
