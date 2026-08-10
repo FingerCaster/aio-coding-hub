@@ -195,6 +195,7 @@ describe("generated/bindings.ts contract", () => {
     const metadata = extractTypeBody(bindingsSource, "DesktopUpdaterMetadata");
     expect(metadata).toContain("rid: number");
     expect(metadata).toContain("channel: UpdateChannel");
+    expect(metadata).toContain("isPrerelease: boolean");
     expect(metadata).toContain("currentVersion: string");
     expect(metadata).toContain("version: string");
     expect(metadata).toContain("releaseUrl: string");

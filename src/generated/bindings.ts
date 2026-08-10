@@ -3091,6 +3091,7 @@ export type DesktopThemeMode = "light" | "dark" | "system";
 export type DesktopUpdaterMetadata = {
   rid: number;
   channel: UpdateChannel;
+  isPrerelease: boolean;
   currentVersion: string;
   version: string;
   date: string | null;

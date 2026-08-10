@@ -38,7 +38,7 @@ import {
 import { useCliProxyControls } from "../hooks/useCliProxyControls";
 import { CliProxyConflictDialog } from "../components/cli-proxy/CliProxyConflictDialog";
 import { openDesktopUrl } from "../services/desktop/opener";
-import { isExactAioReleaseUrl, updaterCandidateChannel } from "../services/app/updater";
+import { isExactAioReleaseUrl, updaterCandidateIsBetaPrerelease } from "../services/app/updater";
 import { logToConsole } from "../services/consoleLog";
 import { Switch } from "./Switch";
 import { cn } from "../utils/cn";
@@ -479,8 +479,7 @@ export function Sidebar({ className }: SidebarProps) {
   const cliProxyState = useCliProxyControls();
   const { pendingCliProxyEnablePrompt } = cliProxyState;
   const gatewayAriaLabel = `网关状态：${statusText}，端口 ${portText}`;
-  const isBetaUpdate =
-    updateCandidate != null && updaterCandidateChannel(updateCandidate) === "beta";
+  const isBetaUpdate = updaterCandidateIsBetaPrerelease(updateCandidate);
   const updateVersion = updateCandidate?.version ?? "未知版本";
   const updateSummary = isBetaUpdate ? `Beta 更新 ${updateVersion}` : `发现新版本 ${updateVersion}`;
   const portableReleaseHref = isExactAioReleaseUrl(updateCandidate?.releaseUrl)

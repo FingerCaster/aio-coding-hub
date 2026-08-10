@@ -540,6 +540,64 @@ await assert.rejects(
   /signature does not match latest\.json/
 );
 
+const invalidUtf8Manifest = fixture.addRelease({
+  tag: "aio-coding-hub-v0.60.42-beta.6",
+  id: 206,
+  prerelease: true,
+});
+const invalidUtf8ManifestAsset = invalidUtf8Manifest.release.assets.find(
+  (asset) => asset.name === "latest.json"
+);
+const invalidUtf8ManifestBytes = Buffer.from([0x7b, 0x22, 0xff, 0x22, 0x7d]);
+fixture.downloads.set(invalidUtf8ManifestAsset.browser_download_url, invalidUtf8ManifestBytes);
+invalidUtf8ManifestAsset.size = invalidUtf8ManifestBytes.length;
+invalidUtf8ManifestAsset.digest = `sha256:${sha256(invalidUtf8ManifestBytes)}`;
+await assert.rejects(
+  () =>
+    publishReleaseChannel({
+      github: fixture.github,
+      fetchImpl: fixture.fetch,
+      owner,
+      repo,
+      action: "promote",
+      tag: invalidUtf8Manifest.release.tag_name,
+      sourceSha,
+      expectedRefSha: paused.newRefSha,
+      ...workflow,
+      updatedAt: "2026-08-10T00:07:50.000Z",
+    }),
+  /Published updater manifest is not valid UTF-8/
+);
+
+const invalidUtf8Signature = fixture.addRelease({
+  tag: "aio-coding-hub-v0.60.42-beta.7",
+  id: 207,
+  prerelease: true,
+});
+const invalidUtf8SignatureAsset = invalidUtf8Signature.release.assets.find(
+  (asset) => asset.name === "aio-coding-hub-win64.msi.sig"
+);
+const invalidUtf8SignatureBytes = Buffer.from([0x73, 0x69, 0x67, 0xff]);
+fixture.downloads.set(invalidUtf8SignatureAsset.browser_download_url, invalidUtf8SignatureBytes);
+invalidUtf8SignatureAsset.size = invalidUtf8SignatureBytes.length;
+invalidUtf8SignatureAsset.digest = `sha256:${sha256(invalidUtf8SignatureBytes)}`;
+await assert.rejects(
+  () =>
+    publishReleaseChannel({
+      github: fixture.github,
+      fetchImpl: fixture.fetch,
+      owner,
+      repo,
+      action: "promote",
+      tag: invalidUtf8Signature.release.tag_name,
+      sourceSha,
+      expectedRefSha: paused.newRefSha,
+      ...workflow,
+      updatedAt: "2026-08-10T00:07:55.000Z",
+    }),
+  /Published updater signature windows-x86_64 is not valid UTF-8/
+);
+
 snapshot = await readReleaseChannelSnapshot({ github: fixture.github, owner, repo });
 fixture.raceOnNextUpdate = true;
 await assert.rejects(

@@ -1,6 +1,10 @@
 import { useId, useState } from "react";
 import type { AppAboutInfo } from "../../services/app/appAbout";
-import { updaterCandidateChannel, type UpdaterCheckUpdate } from "../../services/app/updater";
+import {
+  updaterCandidateChannel,
+  updaterCandidateIsBetaPrerelease,
+  type UpdaterCheckUpdate,
+} from "../../services/app/updater";
 import type { UpdateChannel } from "../../services/app/updateChannel";
 import { Button } from "../../ui/Button";
 import { Card } from "../../ui/Card";
@@ -42,7 +46,7 @@ export function SettingsAboutCard({
   const channelError = updateChannelError ?? localChannelError;
   const candidateIsCurrent =
     updateCandidate != null && updaterCandidateChannel(updateCandidate) === updateChannel;
-  const betaCandidate = candidateIsCurrent && updateChannel === "beta";
+  const betaCandidate = candidateIsCurrent && updaterCandidateIsBetaPrerelease(updateCandidate);
 
   async function requestChannel(channel: UpdateChannel) {
     if (channelBusy) return false;

@@ -338,6 +338,7 @@ describe("components/UpdateDialog", () => {
       updateCandidate: {
         rid: 7,
         channel: "beta",
+        isPrerelease: true,
         version: "1.1.0-beta.4",
         currentVersion: "1.0.0",
         date: null,
@@ -361,5 +362,34 @@ describe("components/UpdateDialog", () => {
     expect(
       screen.getByRole("button", { name: "下载并安装 Beta 更新 1.1.0-beta.4" })
     ).toBeInTheDocument();
+  });
+
+  it("renders a final release from the Beta subscription as a normal update", () => {
+    vi.mocked(useUpdateMeta).mockReturnValue({
+      about: { run_mode: "desktop", app_version: "1.0.0" },
+      updateCandidate: {
+        rid: 8,
+        channel: "beta",
+        isPrerelease: false,
+        version: "1.1.0",
+        currentVersion: "1.1.0-beta.4",
+        date: null,
+        body: null,
+        releaseUrl:
+          "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.1.0",
+      },
+      checkingUpdate: false,
+      dialogOpen: true,
+      installingUpdate: false,
+      installError: null,
+      installTotalBytes: null,
+      installDownloadedBytes: 0,
+    } as any);
+
+    render(<UpdateDialog />);
+
+    expect(screen.getByRole("dialog", { name: "发现新版本" })).toBeInTheDocument();
+    expect(screen.getByRole("button", { name: "下载并安装" })).toBeInTheDocument();
+    expect(screen.queryByText("Beta 更新")).not.toBeInTheDocument();
   });
 });

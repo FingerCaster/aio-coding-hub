@@ -16,6 +16,7 @@ export const DESKTOP_UPDATER_HANDWRITTEN_REASON =
 export type DesktopUpdaterCheck = {
   rid: number;
   channel: UpdateChannel;
+  isPrerelease: boolean;
   currentVersion: string;
   version: string;
   date: string | null;
@@ -74,6 +75,7 @@ export function parseDesktopUpdaterCheck(
   const requiredKeys = [
     "rid",
     "channel",
+    "isPrerelease",
     "currentVersion",
     "version",
     "releaseUrl",
@@ -98,6 +100,7 @@ export function parseDesktopUpdaterCheck(
   }
   const date = asNullableString(obj.date);
   const body = asNullableString(obj.body);
+  const isPrerelease = obj.isPrerelease;
   const versionMatchesChannel =
     version != null &&
     /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/.test(version) &&
@@ -109,6 +112,7 @@ export function parseDesktopUpdaterCheck(
     rid == null ||
     (channel !== "stable" && channel !== "beta") ||
     currentVersion == null ||
+    typeof isPrerelease !== "boolean" ||
     !versionMatchesChannel ||
     releaseUrl == null ||
     releaseUrl !== expectedReleaseUrl ||
@@ -121,6 +125,7 @@ export function parseDesktopUpdaterCheck(
   return {
     rid,
     channel,
+    isPrerelease,
     version,
     currentVersion,
     date,

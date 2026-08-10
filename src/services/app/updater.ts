@@ -30,6 +30,11 @@ export function updaterCandidateChannel(update: UpdaterCheckResult): UpdateChann
   return update?.channel === "stable" || update?.channel === "beta" ? update.channel : null;
 }
 
+/** A Beta subscription can legitimately select a later stable Release. */
+export function updaterCandidateIsBetaPrerelease(update: UpdaterCheckResult): boolean {
+  return updaterCandidateChannel(update) === "beta" && update?.isPrerelease === true;
+}
+
 export function isExactAioReleaseUrl(value: unknown): value is string {
   if (typeof value !== "string") return false;
 

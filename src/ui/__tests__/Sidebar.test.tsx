@@ -322,6 +322,7 @@ describe("ui/Sidebar", () => {
       about: { run_mode: "desktop" },
       updateCandidate: {
         channel: "beta",
+        isPrerelease: true,
         version: "0.1.0-beta.2",
         releaseUrl:
           "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.1.0-beta.2",
@@ -342,6 +343,34 @@ describe("ui/Sidebar", () => {
     expect(
       screen.getByText("Beta 更新 0.1.0-beta.2", { selector: ".sr-only" })
     ).toBeInTheDocument();
+  });
+
+  it("shows a final release from the Beta subscription as NEW", () => {
+    updateMetaRef.current = {
+      ...updateMetaRef.current,
+      about: { run_mode: "desktop" },
+      updateCandidate: {
+        channel: "beta",
+        isPrerelease: false,
+        version: "0.1.0",
+        releaseUrl:
+          "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.1.0",
+      },
+    };
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    expect(
+      screen.getByRole("link", {
+        name: "AIO Coding Hub GitHub：发现新版本 0.1.0，打开更新对话框",
+      })
+    ).toBeInTheDocument();
+    expect(screen.getByText("NEW")).toBeInTheDocument();
+    expect(screen.queryByText("Beta 更新")).not.toBeInTheDocument();
   });
 
   it("renders stopped status with the preferred port when gateway is stopped", () => {

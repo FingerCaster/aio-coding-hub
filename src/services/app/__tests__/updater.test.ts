@@ -10,6 +10,7 @@ function createUpdaterMetadata(
   overrides: Partial<{
     rid: number;
     channel: "stable" | "beta";
+    isPrerelease: boolean;
     version: string;
     currentVersion: string;
     date: string | null;
@@ -21,6 +22,7 @@ function createUpdaterMetadata(
   return {
     rid: 1,
     channel: "stable" as const,
+    isPrerelease: overrides.isPrerelease ?? version.includes("-beta."),
     version,
     currentVersion: "0.59.0",
     date: null,
@@ -60,6 +62,7 @@ describe("services/app/updater", () => {
 
     for (const key of [
       "channel",
+      "isPrerelease",
       "currentVersion",
       "version",
       "releaseUrl",
@@ -134,6 +137,7 @@ describe("services/app/updater", () => {
     expect(await updaterCheck()).toEqual({
       rid: 2,
       channel: "stable",
+      isPrerelease: false,
       version: "0.60.0",
       currentVersion: "0.59.0",
       date: null,
@@ -162,6 +166,7 @@ describe("services/app/updater", () => {
       data: {
         rid: 5,
         channel: "beta",
+        isPrerelease: true,
         version: "0.61.0-beta.1",
         currentVersion: "0.60.0",
         releaseUrl:
@@ -209,6 +214,7 @@ describe("services/app/updater", () => {
     await expect(updaterCheck()).resolves.toEqual({
       rid: 3,
       channel: "stable",
+      isPrerelease: false,
       version: "0.60.0",
       currentVersion: "0.59.0",
       releaseUrl: AIO_RELEASE_TAG_URL,
@@ -240,6 +246,7 @@ describe("services/app/updater", () => {
     await expect(updaterCheck()).resolves.toEqual({
       rid: 4,
       channel: "stable",
+      isPrerelease: false,
       version: "0.60.0",
       currentVersion: "0.59.0",
       date: null,

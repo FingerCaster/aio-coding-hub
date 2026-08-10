@@ -186,14 +186,12 @@ pub(crate) async fn config_import(
         config_migrate::config_import(&app, &db, bundle)
     })
     .await
-    .map_err(|err| -> String { err.into() })?;
+    .map_err(|err| -> String { err.into() });
 
-    // Portable imports always commit the stable channel. Release any Beta
-    // candidate resources that were created before the import winner committed.
-    crate::commands::desktop::discard_updater_resources_for_channel(
-        &app_for_runtime,
-        crate::settings::UpdateChannel::Beta,
-    );
+    // Reconcile against the latest channel+epoch under the transition guard.
+    // This also closes resources invalidated by an import that later rolled back.
+    crate::commands::desktop::discard_stale_updater_resources(&app_for_runtime);
+    let result = result?;
 
     if let Some(runtime) = app_for_runtime.try_state::<
         crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,

@@ -42,18 +42,11 @@ pub(crate) async fn settings_update_channel_set(
     channel: crate::settings::UpdateChannel,
     confirm: Option<RiskyIpcConfirm>,
 ) -> Result<SettingsView, String> {
-    let app_for_discard = app.clone();
+    let app_for_cleanup = app.clone();
     let view = settings_service::settings_update_channel_set(app, channel, confirm).await?;
-    let stale_channel = match channel {
-        crate::settings::UpdateChannel::Stable => crate::settings::UpdateChannel::Beta,
-        crate::settings::UpdateChannel::Beta => crate::settings::UpdateChannel::Stable,
-    };
-    let discarded = crate::commands::desktop::discard_updater_resources_for_channel(
-        &app_for_discard,
-        stale_channel,
-    );
+    let discarded = crate::commands::desktop::discard_stale_updater_resources(&app_for_cleanup);
     tracing::info!(
-        update_channel = %channel,
+        requested_update_channel = %channel,
         discarded_resources = discarded,
         "update channel settings committed"
     );

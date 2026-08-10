@@ -53,6 +53,9 @@ TypeScript bindings, frontend adapters, and React UI.
 - [Release operations contract](./release-operations-contract.md): explicit
   stable version selection, final-head release PR validation, immutable source
   resolution, exact candidate promotion, and post-publication verification.
+- [Beta release and update channel contract](./beta-release-update-channel-contract.md):
+  device-local opt-in, channel/epoch-bound one-shot updater resources, strict
+  static manifests, manual Beta publication, and CAS-audited channel pointers.
 - [Trellis task context archive contract](./trellis-task-context-archive-contract.md):
   exact self-reference rewriting and repository-wide context validation before archive commit.
 - [Usage insights contract](./usage-insights-contract.md): folder identity and
@@ -225,6 +228,16 @@ When changing or running stable release automation:
 4. Resolve the tag to a 40-hex commit SHA before builds and independently
    verify tag, Release target, asset digests, and `latest.json` after publish.
 
+When changing Beta participation, updater channel behavior, or Beta release automation:
+
+1. Read [Beta release and update channel contract](./beta-release-update-channel-contract.md).
+2. Trace the canonical channel and transition epoch through settings, endpoint,
+   query key, metadata, one-shot resource, fresh check, install, and UI copy.
+3. Keep release subscription (`channel`) separate from Release classification
+   (`isPrerelease`), including a stable final Release on the Beta pointer.
+4. Verify stable defaults, explicit opt-in, strict four-platform manifests,
+   CAS pointer/pause behavior, and no changes to GitHub latest or Homebrew.
+
 When changing Trellis task archive or context validation:
 
 1. Read [Trellis task context archive contract](./trellis-task-context-archive-contract.md).
@@ -265,6 +278,10 @@ When changing usage folders, development-time estimates, or provider metrics tre
   promotion, signing-scope, support-matrix, Homebrew, and CI-scope contracts;
   verify the final PR head and all six version files, then verify the published
   tag/source identity, exact asset matrix, digests, and signed updater entries.
+- When changing the Beta update channel, also verify settings error recovery,
+  stale writer responses, one-shot install retry, cleanup against the latest
+  channel+epoch, strict raw manifest shape, stable-on-Beta labeling, UTF-8
+  release assets, and pointer CAS/pause races.
 - When changing gateway selection or failover, verify skipped candidates,
   Ready-provider limits, route projection, and attempt/transition labels together.
 - When changing configured model routing, verify exact case-sensitive one-pass

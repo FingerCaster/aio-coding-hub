@@ -2,9 +2,9 @@
 
 use super::defaults::*;
 use super::types::{
-    AppSettings, CodexHomeMode, ModelRoutingPolicy, ModelRoutingRule, UpstreamErrorMessageBehavior,
-    UpstreamErrorResponseRule, UpstreamErrorStatusBehavior, UpstreamHttpRetryRule,
-    UpstreamRetryPolicy,
+    AppSettings, CodexHomeMode, ModelRoutingPolicy, ModelRoutingRule, UpdateChannel,
+    UpstreamErrorMessageBehavior, UpstreamErrorResponseRule, UpstreamErrorStatusBehavior,
+    UpstreamHttpRetryRule, UpstreamRetryPolicy,
 };
 use crate::shared::error::AppResult;
 use std::collections::HashSet;
@@ -1463,11 +1463,18 @@ fn migrate_add_model_routing_policy(
 }
 
 fn migrate_add_update_channel(settings: &mut AppSettings, schema_version_present: bool) -> bool {
-    migrate_bump_schema_version(
+    let had_beta_before_channel_migration = settings.update_channel == UpdateChannel::Beta
+        && (!schema_version_present || settings.schema_version < SCHEMA_VERSION_ADD_UPDATE_CHANNEL);
+    let mut changed = migrate_bump_schema_version(
         settings,
         schema_version_present,
         SCHEMA_VERSION_ADD_UPDATE_CHANNEL,
-    )
+    );
+    if had_beta_before_channel_migration {
+        settings.update_channel = UpdateChannel::Stable;
+        changed = true;
+    }
+    changed
 }
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
@@ -2046,6 +2053,19 @@ mod tests {
     fn migrate_add_update_channel_bumps_schema_and_keeps_stable_default() {
         let mut settings = AppSettings {
             schema_version: SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
+            ..AppSettings::default()
+        };
+
+        assert!(migrate_add_update_channel(&mut settings, true));
+        assert_eq!(settings.schema_version, SCHEMA_VERSION_ADD_UPDATE_CHANNEL);
+        assert_eq!(settings.update_channel, UpdateChannel::Stable);
+    }
+
+    #[test]
+    fn migrate_add_update_channel_does_not_import_beta_from_an_older_schema() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
+            update_channel: UpdateChannel::Beta,
             ..AppSettings::default()
         };
 

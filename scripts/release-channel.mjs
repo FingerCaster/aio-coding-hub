@@ -48,6 +48,14 @@ function sha256(value) {
   return createHash("sha256").update(value).digest("hex");
 }
 
+function decodeUtf8(bytes, label) {
+  const text = bytes.toString("utf8");
+  if (!Buffer.from(text, "utf8").equals(bytes)) {
+    throw new Error(`${label} is not valid UTF-8`);
+  }
+  return text;
+}
+
 function requireExactKeys(value, expectedKeys, label) {
   const actual = Object.keys(value).sort();
   if (actual.join("\n") !== [...expectedKeys].sort().join("\n")) {
@@ -239,11 +247,7 @@ function decodeBlob(blob, label) {
   if (bytes.length === 0 || bytes.length > MAX_MANIFEST_BYTES) {
     throw new Error(`${label} has an invalid size`);
   }
-  const text = bytes.toString("utf8");
-  if (!Buffer.from(text, "utf8").equals(bytes)) {
-    throw new Error(`${label} is not valid UTF-8`);
-  }
-  return text;
+  return decodeUtf8(bytes, label);
 }
 
 function errorStatus(error) {
@@ -369,7 +373,7 @@ async function downloadVerifiedManifest({ fetchImpl, owner, repo, release, asset
     rawAsset,
     label: "updater manifest",
   });
-  const manifestText = bytes.toString("utf8");
+  const manifestText = decodeUtf8(bytes, "Published updater manifest");
   const manifest = parseUpdaterManifest(manifestText, {
     owner,
     repo,
@@ -391,7 +395,10 @@ async function downloadVerifiedManifest({ fetchImpl, owner, repo, release, asset
       rawAsset: rawSignatureAsset,
       label: `updater signature ${target.updaterPlatform}`,
     });
-    const signature = signatureBytes.toString("utf8").replace(/[\r\n]+/g, "");
+    const signature = decodeUtf8(
+      signatureBytes,
+      `Published updater signature ${target.updaterPlatform}`
+    ).replace(/[\r\n]+/g, "");
     if (signature !== manifest.platforms[target.updaterPlatform].signature) {
       throw new Error(
         `Published updater signature does not match latest.json for ${target.updaterPlatform}`

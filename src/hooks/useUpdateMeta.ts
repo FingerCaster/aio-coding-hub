@@ -27,7 +27,7 @@ import {
   subscribeUpdateChannelImportSuccess,
   type UpdateChannel,
 } from "../services/app/updateChannel";
-import { settingsGet } from "../services/settings/settings";
+import { settingsGet, type AppSettings } from "../services/settings/settings";
 import type { AppAboutInfo } from "../services/app/appAbout";
 import { AIO_REPO_URL } from "../constants/urls";
 
@@ -89,6 +89,8 @@ let checkingOperation: {
   promise: Promise<UpdaterCheckUpdate | null>;
 } | null = null;
 let installingOperation: { context: UpdateContext; promise: Promise<boolean | null> } | null = null;
+let channelWriteEpoch = 0;
+let channelWriteBarrier: { epoch: number; channel: UpdateChannel } | null = null;
 
 let channelRuntime: ChannelRuntimeState = {
   channel: "stable",
@@ -249,6 +251,28 @@ function clearChannelBoundState(previousContext: UpdateContext) {
   }
 }
 
+function failClosedToStable(error?: unknown) {
+  const message = error == null ? null : String(error);
+  channelWriteEpoch += 1;
+  channelWriteBarrier = null;
+  if (channelRuntime.channel === "stable" && !channelRuntime.ready) {
+    setChannelRuntime({ channelError: message });
+    return;
+  }
+
+  const previousContext = currentContext();
+  clearChannelBoundState(previousContext);
+  setChannelRuntime({
+    channel: "stable",
+    ready: false,
+    generation: channelRuntime.generation + 1,
+    saving: false,
+    checkError: null,
+    channelError: message,
+    betaConfirmed: channelRuntime.betaConfirmed,
+  });
+}
+
 /** Apply only the canonical backend channel and invalidate all channel-bound renderer state. */
 export async function syncCanonicalUpdateChannel(value: unknown): Promise<boolean> {
   ensureStarted();
@@ -284,6 +308,10 @@ export async function syncCanonicalUpdateChannel(value: unknown): Promise<boolea
 /** Read canonical settings before any manual/background check. Failure is always stable-only. */
 export async function ensureUpdateChannelReady(): Promise<UpdateChannel> {
   ensureStarted();
+  const settingsState = queryClient.getQueryState(settingsKeys.get());
+  if (settingsState?.status === "error") {
+    failClosedToStable(settingsState.error);
+  }
   if (channelRuntime.ready) return channelRuntime.channel;
 
   try {
@@ -295,12 +323,19 @@ export async function ensureUpdateChannelReady(): Promise<UpdateChannel> {
     await syncCanonicalUpdateChannel(readUpdateChannelFromSettings(settings));
   } catch (error) {
     logToConsole("warn", "读取更新频道失败，按稳定频道处理", { error: String(error) });
+    failClosedToStable(error);
   }
 
   return channelRuntime.channel;
 }
 
 async function refreshCanonicalUpdateChannelAfterImport() {
+  // A successful portable import is defined to normalize the device-local channel to stable.
+  // Clear Beta-bound UI/resource state before the canonical reread so a slow or failed settings
+  // read cannot leave the previously authorized Beta candidate visible.
+  const importEpoch = ++channelWriteEpoch;
+  channelWriteBarrier = { epoch: importEpoch, channel: "stable" };
+  await syncCanonicalUpdateChannel("stable");
   try {
     await queryClient.cancelQueries({ queryKey: settingsKeys.get(), exact: true });
     const settings = await queryClient.fetchQuery({
@@ -308,11 +343,17 @@ async function refreshCanonicalUpdateChannelAfterImport() {
       queryFn: () => settingsGet(),
       staleTime: 0,
     });
-    await syncCanonicalUpdateChannel(readUpdateChannelFromSettings(settings));
+    const canonical = readUpdateChannelFromSettings(settings);
+    // A newer local writer owns the renderer state if it started while this reread was pending.
+    if (channelWriteBarrier?.epoch !== importEpoch) return;
+    channelWriteBarrier = null;
+    await syncCanonicalUpdateChannel(canonical);
   } catch (error) {
     const message = String(error);
     logToConsole("error", "导入后读取更新频道失败", { error: message });
-    setChannelRuntime({ channelError: message });
+    if (channelWriteBarrier?.epoch === importEpoch) {
+      failClosedToStable(error);
+    }
   }
 }
 
@@ -325,6 +366,7 @@ function buildDevPreviewUpdateCandidate(
   return {
     rid: DEV_PREVIEW_UPDATE_RID,
     channel: "stable",
+    isPrerelease: false,
     version,
     currentVersion: currentVersion ?? "0.0.0",
     date: "2026-04-05T11:12:44Z",
@@ -404,6 +446,7 @@ export async function updateCheckNow(options: {
               }
               return attachContext(update, context);
             },
+            retry: false,
             staleTime: 0,
           });
 
@@ -525,9 +568,13 @@ export async function updateDownloadAndInstall(): Promise<boolean | null> {
     } catch (error) {
       const message = String(error);
       if (isUpdateContextCurrent(context)) {
+        // The backend consumes updater resources before confirmation/download. Remove the spent
+        // candidate first, then provision a fresh one so a retry never reuses a closed rid.
+        queryClient.removeQueries({ queryKey: updaterKeys.check(context.channel), exact: true });
         setUiSnapshot({ installError: message });
         logToConsole("error", "安装更新失败", { error: message, channel: context.channel });
         toast("安装更新失败：请稍后重试");
+        await updateCheckNow({ silent: true, openDialogIfUpdate: false });
       }
       return false;
     } finally {
@@ -596,13 +643,22 @@ export async function setUpdateChannel(channel: UpdateChannel): Promise<boolean>
   if (channelRuntime.saving) return false;
   if (channelRuntime.ready && channelRuntime.channel === nextChannel) return true;
 
+  const writeEpoch = ++channelWriteEpoch;
+  channelWriteBarrier = { epoch: writeEpoch, channel: nextChannel };
   setChannelRuntime({ saving: true, channelError: null, checkError: null });
   try {
+    await queryClient.cancelQueries({ queryKey: settingsKeys.get(), exact: true });
     const canonical = await settingsUpdateChannelSet(nextChannel);
     if (canonical !== nextChannel) {
       throw new Error("UPDATER_CHANNEL_CHANGED: backend did not persist the requested channel");
     }
+    queryClient.setQueryData<AppSettings | null>(settingsKeys.get(), (current) =>
+      current ? { ...current, update_channel: canonical } : current
+    );
     await syncCanonicalUpdateChannel(canonical);
+    if (channelWriteBarrier?.epoch === writeEpoch) {
+      channelWriteBarrier = null;
+    }
     await updateCheckNow({
       silent: nextChannel === "stable",
       openDialogIfUpdate: true,
@@ -610,6 +666,9 @@ export async function setUpdateChannel(channel: UpdateChannel): Promise<boolean>
     return true;
   } catch (error) {
     const message = String(error);
+    if (channelWriteBarrier?.epoch === writeEpoch) {
+      channelWriteBarrier = null;
+    }
     setChannelRuntime({ channelError: message });
     toast(`切换更新频道失败：${message}`);
     return false;
@@ -651,17 +710,16 @@ export function useUpdateMeta(): UpdateMeta {
 
   useEffect(() => {
     if (settingsQuery.isError) {
-      // A failed first read cannot authorize Beta. Once a canonical value was read, keep it
-      // instead of changing channel without a matching backend write and generation transition.
-      if (!channelRuntime.ready) {
-        setChannelRuntime({ channel: "stable", ready: false });
-      }
+      failClosedToStable(settingsQuery.error);
       return;
     }
     if (!settingsQuery.data || settingsQuery.isPlaceholderData) return;
     if (settingsQuery.isFetchedAfterMount === false) return;
 
     const canonical = readUpdateChannelFromSettings(settingsQuery.data);
+    if (channelWriteBarrier) {
+      if (canonical !== channelWriteBarrier.channel) return;
+    }
     void syncCanonicalUpdateChannel(canonical).then((changed) => {
       if (changed && canonical === BETA_UPDATE_CHANNEL) {
         void updateCheckNow({ silent: true, openDialogIfUpdate: false });
@@ -670,6 +728,7 @@ export function useUpdateMeta(): UpdateMeta {
   }, [
     settingsQuery.data,
     settingsQuery.isError,
+    settingsQuery.error,
     settingsQuery.isFetchedAfterMount,
     settingsQuery.isPlaceholderData,
   ]);

@@ -27,6 +27,12 @@ const BETA_UPDATER_ENDPOINT: &str =
     "https://raw.githubusercontent.com/FingerCaster/aio-coding-hub/release-channels/latest-beta.json";
 const RELEASES_BASE_URL: &str = "https://github.com/FingerCaster/aio-coding-hub/releases";
 const RELEASE_TAG_PREFIX: &str = "aio-coding-hub-v";
+const OFFICIAL_UPDATER_PLATFORMS: [&str; 4] = [
+    "windows-x86_64",
+    "darwin-x86_64",
+    "darwin-aarch64",
+    "linux-x86_64",
+];
 const UPDATER_ERROR_BETA_FRESH_CHECK_FAILED: &str = "UPDATER_BETA_FRESH_CHECK_FAILED";
 const UPDATER_ERROR_CANDIDATE_STALE: &str = "UPDATER_CANDIDATE_STALE";
 const UPDATER_ERROR_CHANNEL_CHANGED: &str = "UPDATER_CHANNEL_CHANGED";
@@ -96,6 +102,7 @@ impl From<tauri::plugin::PermissionState> for DesktopNotificationPermissionState
 pub(crate) struct DesktopUpdaterMetadata {
     rid: u32,
     channel: crate::settings::UpdateChannel,
+    is_prerelease: bool,
     current_version: String,
     version: String,
     date: Option<String>,
@@ -324,6 +331,133 @@ fn updater_release_tag(
     Ok(format!("{RELEASE_TAG_PREFIX}{version}"))
 }
 
+fn object_has_exact_keys(
+    object: &serde_json::Map<String, serde_json::Value>,
+    expected: &[&str],
+) -> bool {
+    object.len() == expected.len() && expected.iter().all(|key| object.contains_key(*key))
+}
+
+fn validate_beta_updater_manifest(
+    raw_json: &serde_json::Value,
+    parsed_version: &str,
+) -> Result<(), String> {
+    let manifest = raw_json.as_object().ok_or_else(|| {
+        updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "beta updater manifest must be an object",
+        )
+    })?;
+    if !object_has_exact_keys(manifest, &["version", "notes", "pub_date", "platforms"]) {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "beta updater manifest fields do not match the release schema",
+        ));
+    }
+
+    let version = manifest
+        .get("version")
+        .and_then(serde_json::Value::as_str)
+        .ok_or_else(|| {
+            updater_error(
+                UPDATER_ERROR_MANIFEST_INVALID,
+                "beta updater manifest version must be text",
+            )
+        })?;
+    if version != parsed_version {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "beta updater manifest version is not canonical",
+        ));
+    }
+    let release_tag = updater_release_tag(crate::settings::UpdateChannel::Beta, version)?;
+
+    if !manifest
+        .get("notes")
+        .is_some_and(serde_json::Value::is_string)
+    {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "beta updater manifest notes must be text",
+        ));
+    }
+    static UTC_TIMESTAMP: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let utc_timestamp = UTC_TIMESTAMP.get_or_init(|| {
+        regex::Regex::new(r"^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$")
+            .expect("updater UTC timestamp regex")
+    });
+    if manifest
+        .get("pub_date")
+        .and_then(serde_json::Value::as_str)
+        .filter(|value| utc_timestamp.is_match(value))
+        .is_none()
+    {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "beta updater manifest pub_date must use canonical UTC format",
+        ));
+    }
+
+    let platforms = manifest
+        .get("platforms")
+        .and_then(serde_json::Value::as_object)
+        .ok_or_else(|| {
+            updater_error(
+                UPDATER_ERROR_MANIFEST_INVALID,
+                "beta updater manifest must use the static platforms format",
+            )
+        })?;
+    if !object_has_exact_keys(platforms, &OFFICIAL_UPDATER_PLATFORMS) {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "beta updater manifest platform set does not match the official support matrix",
+        ));
+    }
+
+    for target in OFFICIAL_UPDATER_PLATFORMS {
+        let platform = platforms
+            .get(target)
+            .and_then(serde_json::Value::as_object)
+            .ok_or_else(|| {
+                updater_error(
+                    UPDATER_ERROR_MANIFEST_INVALID,
+                    format_args!("beta updater platform {target:?} must be an object"),
+                )
+            })?;
+        if !object_has_exact_keys(platform, &["signature", "url"]) {
+            return Err(updater_error(
+                UPDATER_ERROR_MANIFEST_INVALID,
+                format_args!("beta updater platform {target:?} fields are invalid"),
+            ));
+        }
+        if platform
+            .get("signature")
+            .and_then(serde_json::Value::as_str)
+            .filter(|value| !value.trim().is_empty())
+            .is_none()
+        {
+            return Err(updater_error(
+                UPDATER_ERROR_MANIFEST_INVALID,
+                format_args!("beta updater platform {target:?} signature is missing"),
+            ));
+        }
+        let url = platform
+            .get("url")
+            .and_then(serde_json::Value::as_str)
+            .ok_or_else(|| {
+                updater_error(
+                    UPDATER_ERROR_MANIFEST_INVALID,
+                    format_args!("beta updater platform {target:?} URL is missing"),
+                )
+            })?;
+        let url = tauri::Url::parse(url)
+            .map_err(|error| updater_error(UPDATER_ERROR_MANIFEST_INVALID, error))?;
+        validate_official_download_url(&url, &release_tag, official_updater_asset_name(target)?)?;
+    }
+
+    Ok(())
+}
+
 fn official_updater_asset_name(target: &str) -> Result<&'static str, String> {
     match target {
         "windows-x86_64" => Ok("aio-coding-hub-win64.msi"),
@@ -488,12 +622,45 @@ where
     matching.len()
 }
 
-pub(crate) fn discard_updater_resources_for_channel<R: tauri::Runtime>(
+fn discard_stale_typed_updater_resources<R, T, F>(
     app: &tauri::AppHandle<R>,
-    channel: crate::settings::UpdateChannel,
+    resource_state: F,
+) -> usize
+where
+    R: tauri::Runtime,
+    T: Resource,
+    F: Fn(&T) -> (crate::settings::UpdateChannel, u64),
+{
+    let _channel_guard = crate::settings::lock_update_channel_transition();
+    let canonical_epoch = crate::settings::update_channel_epoch();
+    let canonical_channel = match canonical_update_channel(app) {
+        Ok(channel) => channel,
+        Err(error) => {
+            tracing::warn!(
+                error = %error,
+                "discarding all updater resources because canonical channel is unavailable"
+            );
+            return discard_typed_resources_where::<_, T, _>(app, |_| true);
+        }
+    };
+    let discarded = discard_typed_resources_where::<_, T, _>(app, |resource| {
+        let (resource_channel, resource_epoch) = resource_state(resource);
+        resource_channel != canonical_channel || resource_epoch != canonical_epoch
+    });
+    tracing::info!(
+        canonical_channel = %canonical_channel,
+        canonical_epoch,
+        discarded_resources = discarded,
+        "stale updater resources reconciled"
+    );
+    discarded
+}
+
+pub(crate) fn discard_stale_updater_resources<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
 ) -> usize {
-    discard_typed_resources_where::<_, ChannelBoundUpdate, _>(app, |resource| {
-        resource.channel == channel
+    discard_stale_typed_updater_resources::<_, ChannelBoundUpdate, _>(app, |resource| {
+        (resource.channel, resource.channel_epoch)
     })
 }
 
@@ -967,6 +1134,7 @@ pub(crate) async fn desktop_updater_check(
             let metadata = DesktopUpdaterMetadata {
                 rid: 0,
                 channel: canonical_channel,
+                is_prerelease: update.version.contains('-'),
                 current_version: update.current_version.clone(),
                 version: update.version.clone(),
                 date: update.date.map(|value| value.to_string()),
@@ -1022,6 +1190,11 @@ async fn fetch_updater_candidate<R: tauri::Runtime>(
         .check()
         .await
         .map_err(|error| updater_error(UPDATER_ERROR_CHECK_FAILED, error))?;
+    if channel == crate::settings::UpdateChannel::Beta {
+        if let Some(update) = &update {
+            validate_beta_updater_manifest(&update.raw_json, &update.version)?;
+        }
+    }
     Ok(update)
 }
 
@@ -1107,13 +1280,14 @@ pub(crate) async fn desktop_updater_download_and_install(
 #[cfg(test)]
 mod tests {
     use super::{
-        beta_updater_endpoint, desktop_open_allowed_roots, discard_typed_resource,
-        discard_typed_resources_where, ensure_desktop_open_path_allowed,
+        beta_updater_endpoint, desktop_open_allowed_roots, discard_stale_typed_updater_resources,
+        discard_typed_resource, discard_typed_resources_where, ensure_desktop_open_path_allowed,
         ensure_fresh_beta_candidate, ensure_update_channel, ensure_update_channel_state,
         normalize_existing_path, take_typed_resource, updater_candidate_identity_from_parts,
-        BETA_UPDATER_ENDPOINT, RELEASES_BASE_URL, UPDATER_ERROR_CANDIDATE_STALE,
-        UPDATER_ERROR_CHANNEL_CHANGED, UPDATER_ERROR_MANIFEST_INVALID,
-        UPDATER_ERROR_RESOURCE_CLOSED, UPDATER_ERROR_RESOURCE_INVALID,
+        validate_beta_updater_manifest, BETA_UPDATER_ENDPOINT, RELEASES_BASE_URL,
+        UPDATER_ERROR_CANDIDATE_STALE, UPDATER_ERROR_CHANNEL_CHANGED,
+        UPDATER_ERROR_MANIFEST_INVALID, UPDATER_ERROR_RESOURCE_CLOSED,
+        UPDATER_ERROR_RESOURCE_INVALID,
     };
     use crate::infra::settings::{self, AppSettings, CodexHomeMode};
     use crate::test_support::{clear_settings_cache, test_env_lock};
@@ -1127,6 +1301,7 @@ mod tests {
     #[derive(Debug)]
     struct MockUpdaterResource {
         channel: settings::UpdateChannel,
+        channel_epoch: u64,
     }
 
     impl tauri::Resource for MockUpdaterResource {}
@@ -1227,6 +1402,46 @@ mod tests {
         );
     }
 
+    fn update_channel_confirm() -> crate::shared::ipc_confirm::RiskyIpcConfirm {
+        crate::shared::ipc_confirm::RiskyIpcConfirm {
+            confirm: crate::shared::ipc_confirm::IpcConfirm {
+                action: crate::app::settings_service::UPDATE_CHANNEL_CONFIRM_ACTION.to_string(),
+                resource: crate::app::settings_service::UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE
+                    .to_string(),
+                nonce: "betaDesktopCommandNonce123".to_string(),
+                issued_at_ms: crate::shared::time::now_unix_millis(),
+                ttl_ms: 60_000,
+            },
+        }
+    }
+
+    fn valid_beta_manifest(version: &str) -> serde_json::Value {
+        let tag = format!("aio-coding-hub-v{version}");
+        serde_json::json!({
+            "version": version,
+            "notes": "verified release notes",
+            "pub_date": "2026-08-10T12:34:56.789Z",
+            "platforms": {
+                "windows-x86_64": {
+                    "url": format!("https://github.com/FingerCaster/aio-coding-hub/releases/download/{tag}/aio-coding-hub-win64.msi"),
+                    "signature": "windows-signature"
+                },
+                "darwin-x86_64": {
+                    "url": format!("https://github.com/FingerCaster/aio-coding-hub/releases/download/{tag}/aio-coding-hub-macos-intel.tar.gz"),
+                    "signature": "macos-intel-signature"
+                },
+                "darwin-aarch64": {
+                    "url": format!("https://github.com/FingerCaster/aio-coding-hub/releases/download/{tag}/aio-coding-hub-macos-arm.tar.gz"),
+                    "signature": "macos-arm-signature"
+                },
+                "linux-x86_64": {
+                    "url": format!("https://github.com/FingerCaster/aio-coding-hub/releases/download/{tag}/aio-coding-hub-linux-amd64.AppImage"),
+                    "signature": "linux-signature"
+                }
+            }
+        })
+    }
+
     #[test]
     fn beta_endpoint_is_fixed_and_adds_only_a_controlled_cache_buster() {
         let endpoint = beta_updater_endpoint(123_456).expect("beta endpoint");
@@ -1240,6 +1455,58 @@ mod tests {
             BETA_UPDATER_ENDPOINT
         );
         assert_eq!(endpoint.query(), Some("aioCheck=123456"));
+    }
+
+    #[test]
+    fn beta_manifest_contract_accepts_only_the_exact_four_platform_static_schema() {
+        validate_beta_updater_manifest(&valid_beta_manifest("0.60.41-beta.2"), "0.60.41-beta.2")
+            .expect("canonical beta manifest");
+        validate_beta_updater_manifest(&valid_beta_manifest("0.60.41"), "0.60.41")
+            .expect("beta channel may select a stable release");
+
+        let dynamic = serde_json::json!({
+            "version": "0.60.41-beta.2",
+            "notes": "notes",
+            "pub_date": "2026-08-10T12:34:56Z",
+            "url": "https://example.invalid/update",
+            "signature": "signature"
+        });
+        let error = validate_beta_updater_manifest(&dynamic, "0.60.41-beta.2").unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let mut partial = valid_beta_manifest("0.60.41-beta.2");
+        partial["platforms"]
+            .as_object_mut()
+            .expect("platforms")
+            .remove("linux-x86_64");
+        let error = validate_beta_updater_manifest(&partial, "0.60.41-beta.2").unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let mut extra = valid_beta_manifest("0.60.41-beta.2");
+        extra["platforms"]
+            .as_object_mut()
+            .expect("platforms")
+            .insert(
+                "windows-aarch64".to_string(),
+                serde_json::json!({ "url": "https://example.invalid/update", "signature": "x" }),
+            );
+        let error = validate_beta_updater_manifest(&extra, "0.60.41-beta.2").unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+    }
+
+    #[test]
+    fn beta_manifest_contract_rejects_v_prefixed_and_noncanonical_release_assets() {
+        let mut prefixed = valid_beta_manifest("0.60.41-beta.2");
+        prefixed["version"] = serde_json::json!("v0.60.41-beta.2");
+        let error = validate_beta_updater_manifest(&prefixed, "0.60.41-beta.2").unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let mut wrong_asset = valid_beta_manifest("0.60.41-beta.2");
+        wrong_asset["platforms"]["darwin-aarch64"]["url"] = serde_json::json!(
+            "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.2/aio-coding-hub-macos-intel.tar.gz"
+        );
+        let error = validate_beta_updater_manifest(&wrong_asset, "0.60.41-beta.2").unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
     }
 
     #[test]
@@ -1503,13 +1770,16 @@ mod tests {
             (
                 resources.add(MockUpdaterResource {
                     channel: settings::UpdateChannel::Beta,
+                    channel_epoch: 1,
                 }),
                 resources.add(MockUpdaterResource {
                     channel: settings::UpdateChannel::Stable,
+                    channel_epoch: 1,
                 }),
                 resources.add(OtherResource),
                 resources.add(MockUpdaterResource {
                     channel: settings::UpdateChannel::Beta,
+                    channel_epoch: 1,
                 }),
             )
         };
@@ -1533,6 +1803,7 @@ mod tests {
 
         let fresh_take_rid = handle.resources_table().add(MockUpdaterResource {
             channel: settings::UpdateChannel::Stable,
+            channel_epoch: 1,
         });
         let _taken = take_typed_resource::<_, MockUpdaterResource>(&handle, fresh_take_rid)
             .expect("take updater resource");
@@ -1540,6 +1811,66 @@ mod tests {
         let error =
             take_typed_resource::<_, MockUpdaterResource>(&handle, fresh_take_rid).unwrap_err();
         assert_updater_error_code(&error, UPDATER_ERROR_RESOURCE_CLOSED);
+    }
+
+    #[test]
+    fn delayed_transition_cleanup_preserves_a_new_current_epoch_resource() {
+        let test_app = DesktopCommandTestApp::new();
+        let handle = test_app.handle();
+        let initial_epoch = settings::update_channel_epoch();
+        let old_stable_rid = handle.resources_table().add(MockUpdaterResource {
+            channel: settings::UpdateChannel::Stable,
+            channel_epoch: initial_epoch,
+        });
+
+        crate::app::settings_service::settings_update_channel_set_sync(
+            &handle,
+            settings::UpdateChannel::Beta,
+            Some(update_channel_confirm()),
+        )
+        .expect("first transition enters beta");
+        let beta_epoch = settings::update_channel_epoch();
+        let beta_rid = handle.resources_table().add(MockUpdaterResource {
+            channel: settings::UpdateChannel::Beta,
+            channel_epoch: beta_epoch,
+        });
+
+        // Model the interleaving that used to be unsafe: transition A has
+        // committed but delayed its cleanup while transition B switches back
+        // and a check publishes a valid resource for B's epoch.
+        let worker_handle = handle.clone();
+        let worker = std::thread::spawn(move || {
+            crate::app::settings_service::settings_update_channel_set_sync(
+                &worker_handle,
+                settings::UpdateChannel::Stable,
+                None,
+            )
+            .expect("second transition returns to stable");
+            let _guard = settings::lock_update_channel_transition();
+            let current = settings::read(&worker_handle).expect("current settings");
+            let current_epoch = settings::update_channel_epoch();
+            assert_eq!(current.update_channel, settings::UpdateChannel::Stable);
+            let rid = worker_handle.resources_table().add(MockUpdaterResource {
+                channel: current.update_channel,
+                channel_epoch: current_epoch,
+            });
+            (rid, current_epoch)
+        });
+        let (current_stable_rid, current_epoch) = worker.join().expect("transition worker");
+        assert!(current_epoch > beta_epoch);
+
+        let discarded = discard_stale_typed_updater_resources::<_, MockUpdaterResource, _>(
+            &handle,
+            |resource| (resource.channel, resource.channel_epoch),
+        );
+
+        assert_eq!(discarded, 2);
+        assert!(!handle.resources_table().has(old_stable_rid));
+        assert!(!handle.resources_table().has(beta_rid));
+        assert!(
+            handle.resources_table().has(current_stable_rid),
+            "delayed cleanup must not close the valid rid created after a newer transition"
+        );
     }
 
     #[test]

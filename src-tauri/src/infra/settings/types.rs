@@ -58,7 +58,6 @@ pub enum ProviderFailbackStrategy {
 pub enum UpdateChannel {
     Beta,
     #[default]
-    #[serde(other)]
     Stable,
 }
 
@@ -75,6 +74,17 @@ impl std::fmt::Display for UpdateChannel {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(self.as_str())
     }
+}
+
+fn deserialize_update_channel_lossy<'de, D>(deserializer: D) -> Result<UpdateChannel, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    Ok(match value.as_str() {
+        Some("beta") => UpdateChannel::Beta,
+        _ => UpdateChannel::Stable,
+    })
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
@@ -433,6 +443,7 @@ pub struct AppSettings {
     pub upstream_stream_idle_timeout_seconds: u32,
     pub stream_internal_error_guard_ms: u32,
     pub upstream_request_timeout_non_streaming_seconds: u32,
+    #[serde(default, deserialize_with = "deserialize_update_channel_lossy")]
     pub update_channel: UpdateChannel,
     pub update_releases_url: String,
     pub failover_max_attempts_per_provider: u32,
@@ -621,6 +632,9 @@ mod tests {
 
         let beta: UpdateChannel = serde_json::from_value(serde_json::json!("beta")).unwrap();
         assert_eq!(beta, UpdateChannel::Beta);
+        let unknown_channel: Result<UpdateChannel, _> =
+            serde_json::from_value(serde_json::json!("nightly"));
+        assert!(unknown_channel.is_err());
     }
 
     #[test]

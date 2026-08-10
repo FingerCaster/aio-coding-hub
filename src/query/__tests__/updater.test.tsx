@@ -34,6 +34,7 @@ describe("query/updater", () => {
     vi.mocked(updaterCheck).mockResolvedValue({
       rid: 1,
       channel: "stable",
+      isPrerelease: false,
       version: "0.2.0",
       currentVersion: "0.1.0",
       date: "2026-01-01",
@@ -61,6 +62,7 @@ describe("query/updater", () => {
     vi.mocked(updaterCheck).mockResolvedValue({
       rid: 2,
       channel: "beta",
+      isPrerelease: true,
       version: "0.3.0-beta.1",
       currentVersion: "0.2.0",
       date: null,
@@ -81,6 +83,7 @@ describe("query/updater", () => {
     expect(client.getQueryData(["updater", "check", "beta"])).toEqual({
       rid: 2,
       channel: "beta",
+      isPrerelease: true,
       version: "0.3.0-beta.1",
       currentVersion: "0.2.0",
       date: null,

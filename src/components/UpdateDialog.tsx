@@ -11,7 +11,7 @@ import { toast } from "sonner";
 import { logToConsole } from "../services/consoleLog";
 import { appRestart } from "../services/app/dataManagement";
 import { openDesktopUrl } from "../services/desktop/opener";
-import { updaterCandidateChannel } from "../services/app/updater";
+import { updaterCandidateIsBetaPrerelease } from "../services/app/updater";
 import {
   openUpdateCandidateReleaseUrl,
   updateDialogSetError,
@@ -41,8 +41,7 @@ export function UpdateDialog() {
   const updateCandidate = meta.updateCandidate;
   const about = meta.about;
   const isPortable = about?.run_mode === "portable";
-  const isBetaUpdate =
-    updateCandidate != null && updaterCandidateChannel(updateCandidate) === "beta";
+  const isBetaUpdate = updaterCandidateIsBetaPrerelease(updateCandidate);
   const candidateVersion = updateCandidate?.version ?? "未知版本";
 
   async function openCandidateRelease() {

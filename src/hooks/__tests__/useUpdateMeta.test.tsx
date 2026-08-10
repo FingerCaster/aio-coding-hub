@@ -5,7 +5,7 @@ import { toast } from "sonner";
 import { tauriInvoke } from "../../test/mocks/tauri";
 import { clearTauriRuntime, setTauriRuntime } from "../../test/utils/tauriRuntime";
 import { createDeferred } from "../../test/utils/deferred";
-import { updaterKeys } from "../../query/keys";
+import { settingsKeys, updaterKeys } from "../../query/keys";
 
 vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), { success: vi.fn(), error: vi.fn() }),
@@ -78,9 +78,11 @@ describe("hooks/useUpdateMeta", () => {
       {
         rid: 1,
         channel: "stable",
-        version: "v1",
-        currentVersion: "v0",
-        releaseUrl: "https://github.com/FingerCaster/aio-coding-hub/releases/tag/v1",
+        isPrerelease: false,
+        version: "1.0.1",
+        currentVersion: "1.0.0",
+        releaseUrl:
+          "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.0.1",
         date: null,
         body: null,
       },
@@ -198,6 +200,62 @@ describe("hooks/useUpdateMeta", () => {
 
     vi.clearAllTimers();
     vi.useRealTimers();
+  });
+
+  it("refreshes the one-shot updater resource before retrying a failed install", async () => {
+    vi.resetModules();
+    setTauriRuntime();
+
+    const { queryClient } = await import("../../query/queryClient");
+    queryClient.clear();
+
+    const mod = await import("../useUpdateMeta");
+    await mod.syncCanonicalUpdateChannel("stable");
+    const { generation } = mod.getUpdateChannelSnapshot();
+    queryClient.setQueryData(updaterKeys.check("stable"), {
+      rid: 21,
+      channel: "stable",
+      isPrerelease: false,
+      version: "1.0.1",
+      currentVersion: "1.0.0",
+      releaseUrl:
+        "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.0.1",
+      date: null,
+      body: null,
+      generation,
+    });
+
+    const installedRids: number[] = [];
+    vi.mocked(tauriInvoke).mockImplementation(async (cmd: string, args?: any) => {
+      if (cmd === "desktop_updater_download_and_install") {
+        installedRids.push(args.rid);
+        if (args.rid === 21) throw new Error("temporary download failure");
+        return true as any;
+      }
+      if (cmd === "desktop_updater_check") {
+        return {
+          rid: 22,
+          channel: "stable",
+          isPrerelease: false,
+          version: "1.0.1",
+          currentVersion: "1.0.0",
+          releaseUrl:
+            "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.0.1",
+          date: null,
+          body: null,
+        } as any;
+      }
+      return null as any;
+    });
+
+    await expect(mod.updateDownloadAndInstall()).resolves.toBe(false);
+    expect(queryClient.getQueryData(updaterKeys.check("stable"))).toMatchObject({
+      rid: 22,
+      generation,
+    });
+
+    await expect(mod.updateDownloadAndInstall()).resolves.toBe(true);
+    expect(installedRids).toEqual([21, 22]);
   });
 
   it("keeps UI state subscribers isolated when one listener throws", async () => {
@@ -364,9 +422,11 @@ describe("hooks/useUpdateMeta", () => {
     checkDeferred.resolve({
       rid: 20,
       channel: "stable",
+      isPrerelease: false,
       version: "1.0.0",
       currentVersion: "0.9.0",
-      releaseUrl: "https://github.com/FingerCaster/aio-coding-hub/releases/tag/v1.0.0",
+      releaseUrl:
+        "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.0.0",
       date: null,
       body: null,
     });
@@ -508,6 +568,108 @@ describe("hooks/useUpdateMeta", () => {
     delete (commands as any).desktopUpdaterDiscard;
   });
 
+  it("fails closed to stable when the canonical settings reread after import fails", async () => {
+    vi.resetModules();
+    setTauriRuntime();
+
+    vi.mocked(tauriInvoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "settings_get") throw new Error("import settings reread failed");
+      if (cmd === "desktop_updater_discard") return true as any;
+      return null as any;
+    });
+
+    const { queryClient } = await import("../../query/queryClient");
+    queryClient.clear();
+    queryClient.setQueryData(settingsKeys.get(), { update_channel: "beta" });
+
+    const mod = await import("../useUpdateMeta");
+    await mod.syncCanonicalUpdateChannel("beta");
+    const betaGeneration = mod.getUpdateChannelSnapshot().generation;
+    queryClient.setQueryData(updaterKeys.check("beta"), {
+      rid: 31,
+      channel: "beta",
+      generation: betaGeneration,
+    } as any);
+
+    const wrapper = ({ children }: any) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => mod.useUpdateMeta(), { wrapper });
+    await act(async () => Promise.resolve());
+    mod.updateDialogSetOpen(true);
+
+    await act(async () => {
+      const { notifyUpdateChannelImportSucceeded } =
+        await import("../../services/app/updateChannel");
+      await notifyUpdateChannelImportSucceeded();
+    });
+
+    expect(result.current.updateChannel).toBe("stable");
+    expect(result.current.updateCandidate).toBeNull();
+    expect(result.current.dialogOpen).toBe(false);
+    expect(result.current.updateChannelError).toContain("import settings reread failed");
+    expect(queryClient.getQueryData(updaterKeys.check("beta"))).toBeUndefined();
+    expect(tauriInvoke).not.toHaveBeenCalledWith("desktop_updater_check", expect.anything());
+  });
+
+  it("recovers canonical Beta after a transient settings read failure", async () => {
+    vi.resetModules();
+    setTauriRuntime();
+
+    let settingsReadFails = false;
+    vi.mocked(tauriInvoke).mockImplementation(async (cmd: string) => {
+      if (cmd === "settings_get") {
+        if (settingsReadFails) throw new Error("temporary settings failure");
+        return { update_channel: "beta" } as any;
+      }
+      return null as any;
+    });
+
+    const { queryClient } = await import("../../query/queryClient");
+    const { settingsGet } = await import("../../services/settings/settings");
+    queryClient.clear();
+    const mod = await import("../useUpdateMeta");
+
+    const wrapper = ({ children }: any) => (
+      <QueryClientProvider client={queryClient}>{children}</QueryClientProvider>
+    );
+    const { result } = renderHook(() => mod.useUpdateMeta(), { wrapper });
+    await waitFor(() => {
+      expect(result.current.updateChannel).toBe("beta");
+      expect(result.current.updateChannelReady).toBe(true);
+    });
+
+    settingsReadFails = true;
+    await act(async () => {
+      await expect(
+        queryClient.fetchQuery({
+          queryKey: settingsKeys.get(),
+          queryFn: settingsGet,
+          staleTime: 0,
+          retry: false,
+        })
+      ).rejects.toThrow("temporary settings failure");
+    });
+    await waitFor(() => {
+      expect(result.current.updateChannel).toBe("stable");
+      expect(result.current.updateChannelReady).toBe(false);
+    });
+
+    settingsReadFails = false;
+    await act(async () => {
+      await queryClient.fetchQuery({
+        queryKey: settingsKeys.get(),
+        queryFn: settingsGet,
+        staleTime: 0,
+        retry: false,
+      });
+    });
+    await waitFor(() => {
+      expect(result.current.updateChannel).toBe("beta");
+      expect(result.current.updateChannelReady).toBe(true);
+    });
+  });
+
   it("rolls back to the canonical stable channel when the dedicated Beta save fails", async () => {
     vi.resetModules();
     setTauriRuntime();
@@ -550,6 +712,7 @@ describe("hooks/useUpdateMeta", () => {
         return {
           rid: 41,
           channel: "stable",
+          isPrerelease: false,
           version: "1.0.0",
           currentVersion: "1.0.0-beta.2",
           releaseUrl:

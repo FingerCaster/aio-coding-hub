@@ -208,6 +208,7 @@ describe("pages/settings/SettingsAboutCard", () => {
         updateCandidate={{
           rid: 4,
           channel: "beta",
+          isPrerelease: true,
           version: "1.1.0-beta.3",
           currentVersion: "1.0.0",
           date: null,
@@ -226,6 +227,40 @@ describe("pages/settings/SettingsAboutCard", () => {
 
     await waitFor(() => expect(setUpdateChannel).toHaveBeenCalledWith("stable"));
     expect(screen.queryByRole("dialog", { name: "参与 Beta 测试" })).not.toBeInTheDocument();
+  });
+
+  it("labels a final release from the Beta subscription as a normal update", () => {
+    render(
+      <SettingsAboutCard
+        about={{
+          os: "windows",
+          arch: "x86_64",
+          profile: "release",
+          app_version: "1.1.0-beta.3",
+          bundle_type: "msi",
+          run_mode: "desktop",
+        }}
+        checkingUpdate={false}
+        checkUpdate={vi.fn()}
+        updateChannel="beta"
+        betaParticipationConfirmed
+        updateCandidate={{
+          rid: 5,
+          channel: "beta",
+          isPrerelease: false,
+          version: "1.1.0",
+          currentVersion: "1.1.0-beta.3",
+          date: null,
+          body: null,
+          releaseUrl:
+            "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.1.0",
+          generation: 2,
+        }}
+      />
+    );
+
+    expect(screen.getByLabelText("可用更新 1.1.0")).toBeInTheDocument();
+    expect(screen.queryByLabelText("Beta 更新 1.1.0")).not.toBeInTheDocument();
   });
 
   it("does not repeat the risk dialog after participation was confirmed", async () => {
