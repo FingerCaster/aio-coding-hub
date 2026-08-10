@@ -91,3 +91,9 @@
 `task.py list` 的 5 个条目为 beta 根任务、这三个子任务和本清理任务；当前
 `task.py validate --all` 为 142 manifests。三个子任务及其根目录均只读保留，未被本任务比较、移动、
 删除、暂存或提交；136 manifests / 2 active tasks 是归档操作完成时的历史快照。
+
+## 提交收口
+
+- 工作提交：`a04c9624`（`chore(task): reconcile completed task archives`）。
+- 提交后 `get_context.py --mode record` 只显示 `AGENTS.md`、`.orca/`、HTML 和 4 个 beta 任务为 dirty；
+  这些路径继续排除。当前任务由 finish-work 单独归档，journal 只引用上述工作提交，不推送。

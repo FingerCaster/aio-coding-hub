@@ -34,7 +34,7 @@
 - [x] 所有受影响 `implement.jsonl` / `check.jsonl` 自引用均指向归档路径，且全仓 context validation 通过。
 - [x] `git diff --check` 通过；最终差异只包含任务归档/研究、archive contract、本任务和 journal，不包含业务代码或用户文件。
 - [x] `AGENTS.md`、`.orca/`、其他用户未跟踪文件、分支、stash 和 `origin/main` 均保持不变。
-- [ ] 完成 `trellis-check`、spec 评估、受控提交、本任务归档和 session journal。
+- [x] 完成 `trellis-check`、spec 评估、受控提交、本任务归档和 session journal。
 
 ## Out Of Scope
 
