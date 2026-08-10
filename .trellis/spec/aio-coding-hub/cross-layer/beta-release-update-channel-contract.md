@@ -185,7 +185,9 @@ prefix.
 - Release: source, tag/channel, version overlay, exact 14 assets, promotion,
   signing-secret scope, strict UTF-8 manifest/signatures, pointer state/parent,
   CAS race, pause, support matrix, stable default, Homebrew, and CI scope
-  self-tests.
+  self-tests. Pointer timestamp fixtures must exercise the workflow's actual
+  `Date.toISOString()` shape with non-zero milliseconds, while retaining valid
+  second-only and `.000Z` cases and rejecting impossible or non-canonical dates.
 - Regenerate bindings and run frontend type/lint/unit tests, Rust fmt/check/
   Clippy/tests, release self-tests, and `git diff --check`.
 
