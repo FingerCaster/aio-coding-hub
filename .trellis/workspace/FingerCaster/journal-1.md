@@ -1178,3 +1178,25 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 34: 收口已完成 Trellis 任务归档
+
+**Date**: 2026-08-10
+**Task**: 收口已完成 Trellis 任务归档
+**Package**: aio-coding-hub
+**Branch**: `main`
+
+### Summary
+
+合并重复 active 独有资料，归档 10 个旧任务，补充归档安全合同与验证；保留并发 beta 任务。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `a04c9624` | (see git log) |
+
+### Status
+
+[OK] **Completed**
