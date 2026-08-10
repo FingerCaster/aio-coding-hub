@@ -5,6 +5,8 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import { fileURLToPath } from "node:url";
 
+import { parseAnyReleaseTag } from "./release-contract.mjs";
+
 const releaseWorkflowPath = fileURLToPath(
   new URL("../.github/workflows/release.yml", import.meta.url)
 );
@@ -30,7 +32,7 @@ assert.equal(
   "release workflow must not replace checkout-created local tag refs"
 );
 assert.ok(
-  releaseWorkflow.includes('echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"'),
+  releaseWorkflow.includes('echo "checkout_ref=$checkout_ref"'),
   "release workflow must pass the resolved immutable SHA to downstream jobs"
 );
 assert.ok(
@@ -38,10 +40,27 @@ assert.ok(
   "release workflow must reject a non-SHA checkout ref"
 );
 assert.ok(
+  releaseWorkflow.includes("node scripts/release-contract.mjs describe"),
+  "release workflow must use the shared stable/Beta tag and SHA parser"
+);
+assert.ok(
+  releaseWorkflow.includes("default: stable") && releaseWorkflow.includes("- beta"),
+  "release workflow must preserve stable default while exposing explicit Beta"
+);
+assert.ok(
+  releaseWorkflow.includes("Beta releases require release_tag and target_commitish."),
+  "Beta dispatch must require an explicit tag and full target SHA"
+);
+assert.ok(
   releaseWorkflow.includes(
-    '[[ ! "$tag" =~ ^aio-coding-hub-v(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)\\.(0|[1-9][0-9]*)$ ]]'
+    "Release target $target_sha is not reachable from origin/main; refusing to create a tag."
   ),
-  "release workflow must reject non-canonical release tags before mutation"
+  "stable fallback tag creation must verify origin/main ancestry first"
+);
+assert.equal(
+  releaseWorkflow.includes("ref: ${{ needs.release-please.outputs.tag_name }}"),
+  false,
+  "downstream jobs must never checkout a release tag"
 );
 
 function workflowJobBlock(jobName) {
@@ -69,6 +88,23 @@ function assertImmediateFetchHeadPeel(jobName) {
 
 assertImmediateFetchHeadPeel("promote-release");
 assertImmediateFetchHeadPeel("publish");
+assertImmediateFetchHeadPeel("publish-release-channel");
+
+const manualJob = workflowJobBlock("release-please");
+const tagMutationIndex = manualJob.indexOf('"repos/$GITHUB_REPOSITORY/git/refs"');
+const releaseMutationIndex = manualJob.indexOf('"repos/$GITHUB_REPOSITORY/releases"');
+assert.ok(
+  tagMutationIndex !== -1 && releaseMutationIndex !== -1 && tagMutationIndex < releaseMutationIndex,
+  "manual releases must resolve or create the immutable tag before creating the draft Release"
+);
+for (const jobName of ["release-please", "publish", "publish-release-channel"]) {
+  assert.ok(
+    workflowJobBlock(jobName).includes(
+      'git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main'
+    ) || workflowJobBlock(jobName).includes("git merge-base --is-ancestor"),
+    `${jobName} must verify origin/main ancestry`
+  );
+}
 
 function runGit(cwd, args, { allowFailure = false } = {}) {
   const result = spawnSync("git", args, { cwd, encoding: "utf8" });
@@ -91,11 +127,24 @@ function createConsumer(root, name, origin) {
 }
 
 function resolveRemoteTag(cwd, tagName) {
-  if (!/^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/.test(tagName)) {
-    throw new Error(`Invalid release tag: ${tagName}`);
-  }
+  parseAnyReleaseTag(tagName);
   runGit(cwd, ["fetch", "--force", "--no-tags", "origin", `refs/tags/${tagName}`]);
   return runGit(cwd, ["rev-parse", "--verify", "FETCH_HEAD^{commit}"]).stdout.trim();
+}
+
+function isOriginMainAncestor(cwd, sourceSha) {
+  runGit(cwd, [
+    "fetch",
+    "--force",
+    "--no-tags",
+    "origin",
+    "+refs/heads/main:refs/remotes/origin/main",
+  ]);
+  return (
+    runGit(cwd, ["merge-base", "--is-ancestor", sourceSha, "refs/remotes/origin/main"], {
+      allowFailure: true,
+    }).status === 0
+  );
 }
 
 const root = mkdtempSync(join(tmpdir(), "aio-release-source-"));
@@ -106,6 +155,8 @@ try {
   const annotatedTag = "aio-coding-hub-v0.60.40";
   const lightweightTag = "aio-coding-hub-v0.60.41";
   const missingDraftTag = "aio-coding-hub-v0.60.42";
+  const betaTag = "aio-coding-hub-v0.60.43-beta.1";
+  const nonMainBetaTag = "aio-coding-hub-v0.60.43-beta.2";
 
   runGit(root, ["init", "--bare", "--initial-branch=main", origin]);
   runGit(root, ["init", "--initial-branch=main", source]);
@@ -119,8 +170,16 @@ try {
   runGit(source, ["push", "--set-upstream", "origin", "main"]);
   runGit(source, ["tag", "-a", annotatedTag, "-m", annotatedTag, releaseSha]);
   runGit(source, ["tag", lightweightTag, releaseSha]);
+  runGit(source, ["tag", betaTag, releaseSha]);
   runGit(source, ["push", "origin", `refs/tags/${annotatedTag}`]);
   runGit(source, ["push", "origin", `refs/tags/${lightweightTag}`]);
+  runGit(source, ["push", "origin", `refs/tags/${betaTag}`]);
+  runGit(source, ["checkout", "--detach", baseSha]);
+  runGit(source, ["commit", "--allow-empty", "-m", "non-main source"]);
+  const nonMainSha = runGit(source, ["rev-parse", "HEAD"]).stdout.trim();
+  runGit(source, ["tag", nonMainBetaTag, nonMainSha]);
+  runGit(source, ["push", "origin", `refs/tags/${nonMainBetaTag}`]);
+  runGit(source, ["checkout", "main"]);
 
   const tagCheckout = createConsumer(root, "tag-checkout", origin);
   runGit(tagCheckout, ["tag", annotatedTag, baseSha]);
@@ -134,6 +193,14 @@ try {
   const manualCheckout = createConsumer(root, "manual-checkout", origin);
   assert.equal(resolveRemoteTag(manualCheckout, annotatedTag), releaseSha);
   assert.equal(resolveRemoteTag(manualCheckout, lightweightTag), releaseSha);
+  assert.equal(resolveRemoteTag(manualCheckout, betaTag), releaseSha);
+  assert.equal(resolveRemoteTag(manualCheckout, nonMainBetaTag), nonMainSha);
+  assert.equal(isOriginMainAncestor(manualCheckout, releaseSha), true);
+  assert.equal(
+    isOriginMainAncestor(manualCheckout, nonMainSha),
+    false,
+    "a canonical Beta tag must still be rejected when its SHA is not reachable from origin/main"
+  );
   assert.notEqual(
     runGit(manualCheckout, ["show-ref", "--verify", "--quiet", `refs/tags/${annotatedTag}`], {
       allowFailure: true,
@@ -142,7 +209,7 @@ try {
     "remote tag resolution must not create a local tag"
   );
 
-  assert.throws(() => resolveRemoteTag(manualCheckout, "invalid-tag"), /Invalid release tag/);
+  assert.throws(() => resolveRemoteTag(manualCheckout, "invalid-tag"), /Release tag is invalid/);
   assert.throws(() => resolveRemoteTag(manualCheckout, missingDraftTag), /git fetch/);
   runGit(origin, ["update-ref", `refs/tags/${missingDraftTag}`, releaseSha]);
   assert.equal(
@@ -161,4 +228,4 @@ try {
   rmSync(root, { recursive: true, force: true });
 }
 
-console.log("[release-source:selftest] annotated, lightweight, and missing draft tags passed");
+console.log("[release-source:selftest] stable/Beta tags and origin/main ancestry passed");

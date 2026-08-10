@@ -8,6 +8,7 @@ import { fileURLToPath } from "node:url";
 import {
   RELEASE_CANDIDATE_MANIFEST,
   EXPECTED_RELEASE_ASSET_NAMES,
+  assertPublishedReleaseTarget,
   assertReleasePublicationTarget,
   assertReleasePromotionTarget,
   createReleaseCandidateManifest,
@@ -20,16 +21,41 @@ import {
 const releaseWorkflowPath = fileURLToPath(
   new URL("../.github/workflows/release.yml", import.meta.url)
 );
+const releasePleaseConfigPath = fileURLToPath(
+  new URL("../release-please-config.json", import.meta.url)
+);
 const releasePromotionPath = fileURLToPath(new URL("./release-promotion.mjs", import.meta.url));
 const releaseWorkflow = readFileSync(releaseWorkflowPath, "utf8").replace(/\r\n/g, "\n");
+const releasePleaseConfig = JSON.parse(readFileSync(releasePleaseConfigPath, "utf8"));
 const sourceSha = "d".repeat(40);
 const otherSha = "e".repeat(40);
 const releaseTag = "aio-coding-hub-v0.60.40";
+const releaseVersion = "0.60.40";
+const overlayDigest = "f".repeat(64);
 const runId = 123456;
 const runAttempt = 2;
+const candidateIdentity = Object.freeze({
+  channel: "stable",
+  tag: releaseTag,
+  sourceSha,
+  releaseVersion,
+  overlayDigest,
+  runId,
+  runAttempt,
+});
 const root = mkdtempSync(join(tmpdir(), "aio-release-promotion-"));
 
 assert.equal(EXPECTED_RELEASE_ASSET_NAMES.length, 14, "the current release must keep 14 assets");
+assert.deepEqual(
+  EXPECTED_RELEASE_ASSET_NAMES.filter((name) => name.endsWith(".sig")).sort(),
+  [
+    "aio-coding-hub-linux-amd64.AppImage.sig",
+    "aio-coding-hub-macos-arm.tar.gz.sig",
+    "aio-coding-hub-macos-intel.tar.gz.sig",
+    "aio-coding-hub-win64.msi.sig",
+  ].sort(),
+  "the exact standard updater signature asset matrix must remain published"
+);
 assert.deepEqual(
   [...EXPECTED_RELEASE_ASSET_NAMES].sort(),
   [
@@ -51,7 +77,7 @@ assert.deepEqual(
   "candidate verification must pin the current release and Homebrew asset matrix"
 );
 
-async function createFixture(name) {
+async function createFixture(name, identity = candidateIdentity) {
   const directory = join(root, name);
   mkdirSync(directory);
   for (const assetName of EXPECTED_RELEASE_ASSET_NAMES) {
@@ -62,10 +88,7 @@ async function createFixture(name) {
   }
   const manifest = await createReleaseCandidateManifest({
     directory,
-    tag: releaseTag,
-    sourceSha,
-    runId,
-    runAttempt,
+    ...identity,
   });
   writeFileSync(
     join(directory, RELEASE_CANDIDATE_MANIFEST),
@@ -83,10 +106,7 @@ async function expectStageRejected(name, mutate, expected) {
       stageReleaseCandidate({
         directory: fixture.directory,
         stagingDirectory,
-        tag: releaseTag,
-        sourceSha,
-        runId,
-        runAttempt,
+        ...candidateIdentity,
       }),
     expected,
     name
@@ -107,10 +127,7 @@ try {
   assert.deepEqual(
     await verifyReleaseCandidate({
       directory: fixture.directory,
-      tag: releaseTag,
-      sourceSha,
-      runId,
-      runAttempt,
+      ...candidateIdentity,
     }),
     fixture.manifest
   );
@@ -119,10 +136,7 @@ try {
   await stageReleaseCandidate({
     directory: fixture.directory,
     stagingDirectory,
-    tag: releaseTag,
-    sourceSha,
-    runId,
-    runAttempt,
+    ...candidateIdentity,
   });
   assert.deepEqual(
     readdirSync(stagingDirectory).sort(),
@@ -148,10 +162,16 @@ try {
       "create-manifest",
       "--directory",
       cliDirectory,
+      "--channel",
+      "stable",
       "--tag",
       releaseTag,
       "--source-sha",
       sourceSha,
+      "--release-version",
+      releaseVersion,
+      "--overlay-digest",
+      overlayDigest,
       "--run-id",
       String(runId),
       "--run-attempt",
@@ -169,10 +189,16 @@ try {
       cliDirectory,
       "--staging-directory",
       cliStagingDirectory,
+      "--channel",
+      "stable",
       "--tag",
       releaseTag,
       "--source-sha",
       sourceSha,
+      "--release-version",
+      releaseVersion,
+      "--overlay-digest",
+      overlayDigest,
       "--run-id",
       String(runId),
       "--run-attempt",
@@ -192,10 +218,8 @@ try {
       stageReleaseCandidate({
         directory: wrongSourceFixture.directory,
         stagingDirectory: join(root, "wrong-source-argument-staged"),
-        tag: releaseTag,
+        ...candidateIdentity,
         sourceSha: otherSha,
-        runId,
-        runAttempt,
       }),
     /sourceSha mismatch/
   );
@@ -207,10 +231,8 @@ try {
       stageReleaseCandidate({
         directory: wrongRunFixture.directory,
         stagingDirectory: join(root, "wrong-run-argument-staged"),
-        tag: releaseTag,
-        sourceSha,
+        ...candidateIdentity,
         runId: runId + 1,
-        runAttempt,
       }),
     /runId mismatch/
   );
@@ -222,9 +244,7 @@ try {
       stageReleaseCandidate({
         directory: wrongAttemptFixture.directory,
         stagingDirectory: join(root, "wrong-attempt-argument-staged"),
-        tag: releaseTag,
-        sourceSha,
-        runId,
+        ...candidateIdentity,
         runAttempt: runAttempt + 1,
       }),
     /runAttempt mismatch/
@@ -234,7 +254,9 @@ try {
   await expectStageRejected(
     "tampered-asset",
     async ({ directory }) => {
-      writeFileSync(join(directory, "aio-coding-hub-win64.msi"), "different-bytes");
+      const path = join(directory, "aio-coding-hub-win64.msi");
+      const original = readFileSync(path, "utf8");
+      writeFileSync(path, `${original[0] === "x" ? "y" : "x"}${original.slice(1)}`);
     },
     /asset digest mismatch/
   );
@@ -260,7 +282,7 @@ try {
         `${JSON.stringify({ ...manifest, tag: "aio-coding-hub-v0.60.41" }, null, 2)}\n`
       );
     },
-    /tag mismatch/
+    /release version mismatch/
   );
   await expectStageRejected(
     "manifest-identity-field",
@@ -278,8 +300,8 @@ try {
         JSON.stringify({
           ...fixture.manifest,
           assets: [
-            { name: "Asset.bin", sha256: "a".repeat(64) },
-            { name: "asset.bin", sha256: "b".repeat(64) },
+            { name: "Asset.bin", size: 1, sha256: "a".repeat(64) },
+            { name: "asset.bin", size: 1, sha256: "b".repeat(64) },
           ],
         })
       ),
@@ -292,10 +314,7 @@ try {
     () =>
       createReleaseCandidateManifest({
         directory: emptyDirectory,
-        tag: releaseTag,
-        sourceSha,
-        runId,
-        runAttempt,
+        ...candidateIdentity,
       }),
     /has no assets/
   );
@@ -304,6 +323,7 @@ try {
   const emptyDraft = {
     id: 77,
     tag_name: releaseTag,
+    target_commitish: sourceSha,
     draft: true,
     prerelease: false,
     assets: [],
@@ -313,6 +333,8 @@ try {
       release: emptyDraft,
       expectedReleaseId: 77,
       expectedTag: releaseTag,
+      expectedChannel: "stable",
+      expectedSourceSha: sourceSha,
       candidateAssetNames,
     })
   );
@@ -322,6 +344,8 @@ try {
         release: { ...emptyDraft, assets: [{ name: candidateAssetNames[0] }] },
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateAssetNames,
       }),
     /already contains assets/
@@ -332,9 +356,11 @@ try {
         release: { ...emptyDraft, draft: false },
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateAssetNames,
       }),
-    /must be a non-prerelease draft/
+    /stable draft/
   );
   assert.throws(
     () =>
@@ -342,6 +368,8 @@ try {
         release: emptyDraft,
         expectedReleaseId: 78,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateAssetNames,
       }),
     /Release ID mismatch/
@@ -351,6 +379,7 @@ try {
     id: 1000 + index,
     name: asset.name,
     state: "uploaded",
+    size: asset.size,
     digest: `sha256:${asset.sha256}`,
   }));
   const uploadedAssets = publishedAssets.map(({ id, name }) => ({ id, name }));
@@ -360,6 +389,8 @@ try {
       release: completeDraft,
       expectedReleaseId: 77,
       expectedTag: releaseTag,
+      expectedChannel: "stable",
+      expectedSourceSha: sourceSha,
       candidateManifest: fixture.manifest,
       uploadedReleaseId: 77,
       uploadedAssets,
@@ -371,6 +402,8 @@ try {
         release: completeDraft,
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateManifest: fixture.manifest,
         uploadedReleaseId: 78,
         uploadedAssets,
@@ -383,6 +416,8 @@ try {
         release: completeDraft,
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateManifest: fixture.manifest,
         uploadedReleaseId: 77,
         uploadedAssets: uploadedAssets.map((asset, index) =>
@@ -397,6 +432,8 @@ try {
         release: completeDraft,
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateManifest: fixture.manifest,
         uploadedAssets: uploadedAssets.slice(1),
       }),
@@ -413,6 +450,8 @@ try {
         },
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateManifest: fixture.manifest,
       }),
     /asset digest mismatch/
@@ -423,6 +462,8 @@ try {
         release: { ...completeDraft, assets: publishedAssets.slice(1) },
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateManifest: fixture.manifest,
       }),
     /GitHub Release assets does not match the current release asset matrix/
@@ -433,9 +474,110 @@ try {
         release: { ...completeDraft, draft: false },
         expectedReleaseId: 77,
         expectedTag: releaseTag,
+        expectedChannel: "stable",
+        expectedSourceSha: sourceSha,
         candidateManifest: fixture.manifest,
       }),
-    /must be a non-prerelease draft/
+    /stable draft/
+  );
+
+  const publishedStable = {
+    ...completeDraft,
+    draft: false,
+    published_at: "2026-08-10T00:00:00Z",
+  };
+  assert.doesNotThrow(() =>
+    assertPublishedReleaseTarget({
+      release: publishedStable,
+      expectedReleaseId: 77,
+      expectedTag: releaseTag,
+      expectedChannel: "stable",
+      expectedSourceSha: sourceSha,
+      candidateManifest: fixture.manifest,
+    })
+  );
+
+  const betaIdentity = Object.freeze({
+    ...candidateIdentity,
+    channel: "beta",
+    tag: "aio-coding-hub-v0.60.41-beta.1",
+    releaseVersion: "0.60.41-beta.1",
+  });
+  const betaFixture = await createFixture("valid-beta", betaIdentity);
+  const betaDraft = {
+    ...emptyDraft,
+    id: 88,
+    tag_name: betaIdentity.tag,
+    target_commitish: sourceSha,
+    prerelease: true,
+  };
+  assert.doesNotThrow(() =>
+    assertReleasePromotionTarget({
+      release: betaDraft,
+      expectedReleaseId: 88,
+      expectedTag: betaIdentity.tag,
+      expectedChannel: "beta",
+      expectedSourceSha: sourceSha,
+      candidateAssetNames: betaFixture.manifest.assets.map((asset) => asset.name),
+    })
+  );
+  assert.throws(
+    () =>
+      assertReleasePromotionTarget({
+        release: { ...betaDraft, prerelease: false },
+        expectedReleaseId: 88,
+        expectedTag: betaIdentity.tag,
+        expectedChannel: "beta",
+        expectedSourceSha: sourceSha,
+        candidateAssetNames: betaFixture.manifest.assets.map((asset) => asset.name),
+      }),
+    /beta draft/
+  );
+
+  const betaPublishedAssets = betaFixture.manifest.assets.map((asset, index) => ({
+    id: 2000 + index,
+    name: asset.name,
+    state: "uploaded",
+    size: asset.size,
+    digest: `sha256:${asset.sha256}`,
+  }));
+  const completeBetaDraft = { ...betaDraft, assets: betaPublishedAssets };
+  assert.doesNotThrow(() =>
+    assertReleasePublicationTarget({
+      release: completeBetaDraft,
+      expectedReleaseId: 88,
+      expectedTag: betaIdentity.tag,
+      expectedChannel: "beta",
+      expectedSourceSha: sourceSha,
+      candidateManifest: betaFixture.manifest,
+    })
+  );
+  const publishedBeta = {
+    ...completeBetaDraft,
+    draft: false,
+    published_at: "2026-08-10T00:00:00Z",
+  };
+  assert.doesNotThrow(() =>
+    assertPublishedReleaseTarget({
+      release: publishedBeta,
+      expectedReleaseId: 88,
+      expectedTag: betaIdentity.tag,
+      expectedChannel: "beta",
+      expectedSourceSha: sourceSha,
+      candidateManifest: betaFixture.manifest,
+    })
+  );
+  assert.throws(
+    () =>
+      assertPublishedReleaseTarget({
+        release: { ...publishedBeta, prerelease: false },
+        expectedReleaseId: 88,
+        expectedTag: betaIdentity.tag,
+        expectedChannel: "beta",
+        expectedSourceSha: sourceSha,
+        candidateManifest: betaFixture.manifest,
+      }),
+    /beta publication/
   );
 
   assert.equal(
@@ -461,11 +603,42 @@ requireWorkflowText(
   "release concurrency identity"
 );
 requireWorkflowText("cancel-in-progress: false", "same-tag releases must queue");
+assert.match(
+  releaseWorkflow,
+  /release_channel:\n\s+description: "Release channel"\n\s+required: false\n\s+default: stable\n\s+type: choice/,
+  "stable must remain the default release channel"
+);
 assert.equal(
   /^  push:/m.test(releaseWorkflow),
   false,
   "release publication must remain manual-only under the current local-validation contract"
 );
+requireWorkflowText(
+  "if: ${{ inputs.release_channel == 'stable' && inputs.release_tag == '' }}",
+  "stable default release-please first stage"
+);
+requireWorkflowText(
+  "uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5",
+  "stable release-please action"
+);
+assert.equal(
+  releasePleaseConfig.packages?.["."]?.draft,
+  true,
+  "stable release-please must create a draft for verified promotion"
+);
+requireWorkflowText(
+  "if: steps.release.outputs.prs_created == 'true' && steps.release.outputs.release_created != 'true'",
+  "stable release-please PR phase"
+);
+requireWorkflowText(
+  "if: ${{ steps.manual_release.outputs.release_created == 'true' || steps.release.outputs.release_created == 'true' }}",
+  "release-please second-stage immutable source resolution"
+);
+requireWorkflowText(
+  'if [[ "$channel" == "beta" ]]; then prerelease=true; fi',
+  "manual Beta draft prerelease state"
+);
+requireWorkflowText("make_latest: 'false'", "manual drafts must not affect GitHub latest");
 requireWorkflowText(
   "include: ${{ fromJson(needs.release-please.outputs.build_matrix) }}",
   "current release asset matrix"
@@ -517,6 +690,11 @@ requireWorkflowText("files: promotion-assets/*", "single staged publication set"
 requireWorkflowText("overwrite_files: false", "release asset no-overwrite policy");
 requireWorkflowText("draft: true", "candidate uploads must leave the release as a draft");
 requireWorkflowText(
+  "prerelease: ${{ needs.release-please.outputs.release_channel == 'beta' }}",
+  "Beta candidate draft prerelease state"
+);
+requireWorkflowText("make_latest: false", "draft asset upload latest-release guard");
+requireWorkflowText(
   "UPLOADED_RELEASE_ID: ${{ steps.upload_assets.outputs.id }}",
   "exact upload target verification"
 );
@@ -533,24 +711,78 @@ assert.equal(
   releaseWorkflow.match(
     /name: \$\{\{ needs\.assemble-release-candidate\.outputs\.candidate_artifact_name \}\}/g
   )?.length,
-  2,
-  "promotion and publication must download the candidate-producing attempt artifact"
+  3,
+  "promotion, publication, and channel publication must download the candidate-producing attempt artifact"
 );
 assert.equal(
   releaseWorkflow.match(
     /RUN_ATTEMPT: \$\{\{ needs\.assemble-release-candidate\.outputs\.candidate_run_attempt \}\}/g
   )?.length,
-  2,
-  "promotion and publication must verify the candidate-producing attempt"
+  3,
+  "promotion, publication, and channel publication must verify the candidate-producing attempt"
 );
 requireWorkflowText(
   "name: Reverify release tag before publication",
   "publication-time exact tag verification"
 );
+assert.match(
+  releaseWorkflow,
+  /name: Checkout publication guard[\s\S]*?fetch-depth: 0[\s\S]*?persist-credentials: false[\s\S]*?name: Stage release publication guard/,
+  "publication ancestry verification requires a full non-credentialed checkout"
+);
 requireWorkflowText(
   "needs: [release-please, assemble-release-candidate, promote-release]",
   "publication must wait for verified promotion"
 );
+requireWorkflowText("prerelease: beta,", "published Beta must remain a prerelease");
+requireWorkflowText(
+  "make_latest: beta ? 'false' : 'true',",
+  "Beta must not become GitHub latest while stable keeps the existing latest behavior"
+);
+requireWorkflowText("assertPublishedReleaseTarget({", "public release state verification");
+requireWorkflowText("publish-release-channel:", "release channel pointer publication job");
+requireWorkflowText(
+  "needs: [release-please, assemble-release-candidate, publish]",
+  "release channel pointer must wait for public release verification"
+);
+requireWorkflowText(
+  "needs.publish.result == 'success'",
+  "release channel pointer must require successful public release verification"
+);
+requireWorkflowText(
+  "const result = await publishReleaseChannel({",
+  "release channel Git Data CAS publication"
+);
+requireWorkflowText(
+  "expectedRefSha: snapshot?.refSha ?? null,",
+  "release channel expected-ref CAS input"
+);
+requireWorkflowText(
+  "if (confirmed?.refSha !== result.newRefSha)",
+  "release channel post-CAS ref confirmation"
+);
+requireWorkflowText(
+  "needs.release-please.outputs.release_channel == 'stable'",
+  "Homebrew publication must remain stable-only"
+);
+const channelJobStart = releaseWorkflow.indexOf("  publish-release-channel:");
+const channelJobEnd = releaseWorkflow.indexOf("\n  publish-homebrew-cask:", channelJobStart);
+assert.ok(
+  channelJobStart !== -1 && channelJobEnd > channelJobStart,
+  "pointer job block is bounded"
+);
+const channelJob = releaseWorkflow.slice(channelJobStart, channelJobEnd);
+assert.match(
+  channelJob,
+  /RELEASE_CHANNEL: \$\{\{ needs\.release-please\.outputs\.release_channel \}\}/,
+  "pointer job must receive both stable and Beta channel identities"
+);
+assert.match(
+  channelJob,
+  /action: 'promote'/,
+  "published stable and Beta releases use promotion CAS"
+);
+assert.doesNotMatch(channelJob, /release_channel == 'beta'/, "pointer job must not be Beta-only");
 assert.equal(
   releaseWorkflow.includes("Number('${{ needs.release-please.outputs.release_id }}')"),
   false,
@@ -591,6 +823,10 @@ const preflightIndex = releaseWorkflow.indexOf("Verify empty draft release targe
 const uploadIndex = releaseWorkflow.indexOf("Upload verified candidate assets");
 const uploadVerificationIndex = releaseWorkflow.indexOf("Verify uploaded draft assets");
 const publicationVerificationIndex = releaseWorkflow.indexOf("Verify and publish GitHub Release");
+const channelPublicationIndex = releaseWorkflow.indexOf(
+  "Publish verified release channel pointer with CAS"
+);
+const homebrewIndex = releaseWorkflow.indexOf("publish-homebrew-cask:");
 assert.ok(
   guardStageIndex !== -1 &&
     immutablePromotionCheckoutIndex !== -1 &&
@@ -605,7 +841,7 @@ assert.ok(
   "candidate assembly must use helpers staged from the workflow guard"
 );
 requireWorkflowText(
-  'run: cp workflow-guard/scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"',
+  'cp workflow-guard/scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"',
   "candidate manifest helper provenance"
 );
 requireWorkflowText(
@@ -624,6 +860,14 @@ assert.ok(
 assert.ok(
   uploadIndex < uploadVerificationIndex && uploadVerificationIndex < publicationVerificationIndex,
   "the exact upload result must be verified before final publication"
+);
+assert.ok(
+  publicationVerificationIndex < channelPublicationIndex,
+  "release channel pointer publication must occur after public release verification"
+);
+assert.ok(
+  publicationVerificationIndex < homebrewIndex,
+  "stable Homebrew publication must remain downstream of GitHub publication"
 );
 
 console.log("[release-promotion:selftest] all assertions passed");

@@ -122,6 +122,15 @@ jobs:
       - name: Validate Homebrew Cask generator
         run: node scripts/support-matrix.homebrew-cask.selftest.mjs
 
+      - name: Validate release pipeline contracts
+        run: |
+          node scripts/release-source.selftest.mjs
+          node scripts/release-contract.selftest.mjs
+          node scripts/release-version-overlay.selftest.mjs
+          node scripts/release-promotion.selftest.mjs
+          node scripts/release-channel.selftest.mjs
+          node scripts/check-release-signing-secret-scope.selftest.mjs
+
       - name: Validate upstream sync policy self-test
         run: node scripts/check-sync-upstream-policy.selftest.mjs
 

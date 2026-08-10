@@ -3,12 +3,20 @@ name: release
 on:
   workflow_dispatch:
     inputs:
+      release_channel:
+        description: "Release channel"
+        required: false
+        default: stable
+        type: choice
+        options:
+          - stable
+          - beta
       release_tag:
-        description: "Existing or new release tag to build, e.g. aio-coding-hub-v0.60.6"
+        description: "Existing or new tag; Beta requires aio-coding-hub-vX.Y.Z-beta.N"
         required: false
         type: string
       target_commitish:
-        description: "Commit SHA for a new manual release tag"
+        description: "Full origin/main commit SHA; required for Beta"
         required: false
         type: string
 
@@ -30,6 +38,8 @@ jobs:
       tag_name: ${{ steps.manual_release.outputs.tag_name || steps.release.outputs.tag_name }}
       release_id: ${{ steps.manual_release.outputs.id || steps.release.outputs.id }}
       checkout_ref: ${{ steps.resolve_release_ref.outputs.checkout_ref }}
+      release_channel: ${{ steps.resolve_release_ref.outputs.release_channel }}
+      release_version: ${{ steps.resolve_release_ref.outputs.release_version }}
       build_matrix: ${{ steps.support_matrix.outputs.build_matrix }}
     steps:
       - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -47,8 +57,17 @@ jobs:
       - name: Validate release source resolution
         run: node scripts/release-source.selftest.mjs
 
+      - name: Validate stable and Beta release contracts
+        run: node scripts/release-contract.selftest.mjs
+
+      - name: Validate deterministic release version overlay
+        run: node scripts/release-version-overlay.selftest.mjs
+
       - name: Validate release promotion integrity
         run: node scripts/release-promotion.selftest.mjs
+
+      - name: Validate release channel pointer integrity
+        run: node scripts/release-channel.selftest.mjs
 
       - name: Validate release signing secret scope
         run: node scripts/check-release-signing-secret-scope.selftest.mjs && node scripts/check-release-signing-secret-scope.mjs
@@ -60,8 +79,33 @@ jobs:
           set -euo pipefail
           echo "build_matrix=$(node scripts/support-matrix.mjs build-matrix)" >> "$GITHUB_OUTPUT"
 
+      - name: Validate release dispatch inputs
+        shell: bash
+        env:
+          RELEASE_CHANNEL: ${{ inputs.release_channel }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          TARGET_COMMITISH: ${{ inputs.target_commitish }}
+        run: |
+          set -euo pipefail
+          if [[ "$RELEASE_CHANNEL" == "beta" ]]; then
+            if [[ -z "$RELEASE_TAG" || -z "$TARGET_COMMITISH" ]]; then
+              echo "Beta releases require release_tag and target_commitish." >&2
+              exit 1
+            fi
+            node scripts/release-contract.mjs describe \
+              --channel "$RELEASE_CHANNEL" \
+              --tag "$RELEASE_TAG" \
+              --source-sha "$TARGET_COMMITISH" >/dev/null
+          elif [[ "$RELEASE_CHANNEL" != "stable" ]]; then
+            echo "Unsupported release channel: $RELEASE_CHANNEL" >&2
+            exit 1
+          elif [[ -z "$RELEASE_TAG" && -n "$TARGET_COMMITISH" ]]; then
+            echo "target_commitish requires an explicit release_tag." >&2
+            exit 1
+          fi
+
       - id: release
-        if: ${{ github.event_name != 'workflow_dispatch' || inputs.release_tag == '' }}
+        if: ${{ inputs.release_channel == 'stable' && inputs.release_tag == '' }}
         uses: googleapis/release-please-action@8b8fd2cc23b2e18957157a9d923d75aa0c6f6ad5 # v4
         with:
           config-file: release-please-config.json
@@ -76,26 +120,86 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          RELEASE_CHANNEL: ${{ inputs.release_channel }}
           RELEASE_TAG: ${{ inputs.release_tag }}
-          TARGET_COMMITISH: ${{ inputs.target_commitish || github.sha }}
+          TARGET_COMMITISH: ${{ inputs.target_commitish }}
         run: |
           set -euo pipefail
 
+          channel="$RELEASE_CHANNEL"
           tag="$RELEASE_TAG"
-          target="$TARGET_COMMITISH"
+          target_input="$TARGET_COMMITISH"
+          node scripts/release-contract.mjs describe \
+            --channel "$channel" \
+            --tag "$tag" \
+            --source-sha "${target_input:-$GITHUB_SHA}" >/dev/null
 
-          if [[ ! "$tag" =~ ^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Invalid release tag: $tag" >&2
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+
+          tag_exists=false
+          if git fetch --force --no-tags origin "refs/tags/$tag" >/dev/null 2>&1; then
+            tag_exists=true
+            tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+          fi
+
+          if [[ -n "$target_input" ]]; then
+            target="$target_input"
+          elif [[ "$tag_exists" == "true" ]]; then
+            target="$tag_sha"
+          else
+            target="$GITHUB_SHA"
+          fi
+          if ! [[ "$target" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "Manual release target must be a lowercase full commit SHA: $target" >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "$target"
+          target_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+          if [[ "$target_sha" != "$target" ]]; then
+            echo "Resolved target $target_sha does not match requested SHA $target." >&2
+            exit 1
+          fi
+          if ! git merge-base --is-ancestor "$target_sha" refs/remotes/origin/main; then
+            echo "Release target $target_sha is not reachable from origin/main." >&2
             exit 1
           fi
 
-          if release_id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId 2>/dev/null)"; then
-            echo "Using existing release for $tag"
-            checkout_ref="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq .targetCommitish)"
-          else
+          if [[ "$tag_exists" == "true" ]]; then
+            if [[ "$tag_sha" != "$target_sha" ]]; then
+              echo "Release tag $tag resolves to $tag_sha, expected $target_sha." >&2
+              exit 1
+            fi
+          elif ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
+            -f "ref=refs/tags/$tag" \
+            -f "sha=$target_sha" >/dev/null; then
+            git fetch --force --no-tags origin "refs/tags/$tag"
+            raced_tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+            if [[ "$raced_tag_sha" != "$target_sha" ]]; then
+              echo "Concurrent tag creation selected $raced_tag_sha, expected $target_sha." >&2
+              exit 1
+            fi
+          fi
+
+          git fetch --force --no-tags origin "refs/tags/$tag"
+          checkout_ref="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+          if [[ "$checkout_ref" != "$target_sha" ]]; then
+            echo "Release tag $tag resolves to $checkout_ref, expected $target_sha." >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$checkout_ref" refs/remotes/origin/main; then
+            echo "Tagged release source $checkout_ref drifted outside origin/main." >&2
+            exit 1
+          fi
+
+          release_file="$RUNNER_TEMP/manual-release.json"
+          release_error="$RUNNER_TEMP/manual-release.err"
+          if gh api "repos/$GITHUB_REPOSITORY/releases/tags/$tag" >"$release_file" 2>"$release_error"; then
+            echo "Using matching empty draft Release for $tag."
+          elif grep -q "HTTP 404" "$release_error"; then
             version="${tag#aio-coding-hub-v}"
-            notes_file="$(mktemp)"
-            node - "$version" > "$notes_file" <<'NODE'
+            notes_file="$RUNNER_TEMP/manual-release-notes.md"
+            node - "$version" >"$notes_file" <<'NODE'
           const fs = require('fs');
           const version = process.argv[2];
           const changelog = fs.readFileSync('CHANGELOG.md', 'utf8');
@@ -109,21 +213,35 @@ jobs:
           const end = lines.findIndex((line, index) => index > start && line.startsWith('## '));
           console.log(lines.slice(start + 1, end === -1 ? lines.length : end).join('\n').trim());
           NODE
-
-            gh release create "$tag" \
-              --repo "$GITHUB_REPOSITORY" \
-              --target "$target" \
-              --title "aio-coding-hub: v$version" \
-              --notes-file "$notes_file" \
-              --draft
-
-            release_id="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json databaseId --jq .databaseId)"
-            checkout_ref="$target"
+            payload_file="$RUNNER_TEMP/manual-release-payload.json"
+            prerelease=false
+            if [[ "$channel" == "beta" ]]; then prerelease=true; fi
+            node - "$tag" "$checkout_ref" "$version" "$notes_file" "$prerelease" "$payload_file" <<'NODE'
+          const fs = require('fs');
+          const [tag, target, version, notesPath, prerelease, outputPath] = process.argv.slice(2);
+          fs.writeFileSync(outputPath, JSON.stringify({
+            tag_name: tag,
+            target_commitish: target,
+            name: `aio-coding-hub: v${version}`,
+            body: fs.readFileSync(notesPath, 'utf8'),
+            draft: true,
+            prerelease: prerelease === 'true',
+            make_latest: 'false',
+          }));
+          NODE
+            gh api --method POST "repos/$GITHUB_REPOSITORY/releases" \
+              --input "$payload_file" >"$release_file"
+          else
+            cat "$release_error" >&2
+            exit 1
           fi
 
-          if git fetch --force --no-tags origin "refs/tags/$tag" >/dev/null 2>&1; then
-            checkout_ref="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
-          fi
+          node scripts/release-contract.mjs assert-empty-draft \
+            --channel "$channel" \
+            --tag "$tag" \
+            --source-sha "$checkout_ref" \
+            --release-json "$release_file"
+          release_id="$(node -e "const r=require(process.argv[1]); process.stdout.write(String(r.id))" "$release_file")"
 
           {
             echo "release_created=true"
@@ -138,22 +256,22 @@ jobs:
         shell: bash
         env:
           GH_TOKEN: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          RELEASE_CHANNEL: ${{ inputs.release_channel }}
           RELEASE_TAG: ${{ steps.manual_release.outputs.tag_name || steps.release.outputs.tag_name }}
           FALLBACK_REF: ${{ steps.manual_release.outputs.checkout_ref || github.sha }}
+          MANUAL_SOURCE: ${{ steps.manual_release.outputs.checkout_ref }}
         run: |
           set -euo pipefail
 
           tag="$RELEASE_TAG"
+          channel="$RELEASE_CHANNEL"
           fallback_ref="$FALLBACK_REF"
 
           if [[ -z "$tag" ]]; then
             echo "Cannot resolve release checkout ref without a release tag." >&2
             exit 1
           fi
-          if [[ ! "$tag" =~ ^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Invalid release tag: $tag" >&2
-            exit 1
-          fi
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
 
           fetch_release_tag() {
             for attempt in 1 2 3; do
@@ -191,12 +309,24 @@ jobs:
             checkout_ref="$fetched_tag_sha"
             echo "Release tag $tag is fetchable at $checkout_ref."
           else
+            if [[ "$channel" == "beta" ]]; then
+              echo "Beta release tag disappeared after draft creation: $tag" >&2
+              exit 1
+            fi
             release_target="$(gh release view "$tag" --repo "$GITHUB_REPOSITORY" --json targetCommitish --jq '.targetCommitish // ""' 2>/dev/null || true)"
             if [[ -z "$release_target" || "$release_target" == "$tag" || ! "$release_target" =~ ^[0-9a-fA-F]{7,40}$ ]]; then
               release_target="$fallback_ref"
             fi
 
             target_sha="$(resolve_commit_sha "$release_target")"
+            if ! [[ "$target_sha" =~ ^[0-9a-f]{40}$ ]]; then
+              echo "Resolved release target is not a lowercase full commit SHA: $target_sha" >&2
+              exit 1
+            fi
+            if ! git merge-base --is-ancestor "$target_sha" refs/remotes/origin/main; then
+              echo "Release target $target_sha is not reachable from origin/main; refusing to create a tag." >&2
+              exit 1
+            fi
             echo "Release tag $tag is not fetchable; creating lightweight tag at $target_sha."
 
             if ! gh api --method POST "repos/$GITHUB_REPOSITORY/git/refs" \
@@ -223,7 +353,24 @@ jobs:
             echo "Release checkout ref is not an immutable commit SHA: $checkout_ref" >&2
             exit 1
           fi
-          echo "checkout_ref=$checkout_ref" >> "$GITHUB_OUTPUT"
+          if [[ -n "$MANUAL_SOURCE" && "$checkout_ref" != "$MANUAL_SOURCE" ]]; then
+            echo "Resolved tag source $checkout_ref does not match manual source $MANUAL_SOURCE." >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$checkout_ref" refs/remotes/origin/main; then
+            echo "Release source $checkout_ref is not reachable from origin/main." >&2
+            exit 1
+          fi
+          identity="$(node scripts/release-contract.mjs describe \
+            --channel "$channel" \
+            --tag "$tag" \
+            --source-sha "$checkout_ref")"
+          {
+            echo "checkout_ref=$checkout_ref"
+            echo "release_channel=$(printf '%s' "$identity" | jq -r .channel)"
+            echo "release_version=$(printf '%s' "$identity" | jq -r .version)"
+          } >> "$GITHUB_OUTPUT"
 
       - name: Check release PR changelog range
         if: steps.release.outputs.prs_created == 'true' && steps.release.outputs.release_created != 'true'
@@ -264,6 +411,27 @@ jobs:
           toolchain: 1.90.0
           components: rustfmt, clippy
           targets: ${{ matrix.target }}
+
+      - name: Apply and attest deterministic release version
+        shell: bash
+        env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.release_version }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          node scripts/release-version-overlay.mjs apply \
+            --root "$GITHUB_WORKSPACE" \
+            --channel "$RELEASE_CHANNEL" \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$SOURCE_SHA" \
+            --output "$RUNNER_TEMP/release-version-attestation-${{ matrix.updater_platform }}.json"
+          actual_version="$(node -p "JSON.parse(require('fs').readFileSync(process.argv[1], 'utf8')).version" package.json)"
+          if [[ "$actual_version" != "$RELEASE_VERSION" ]]; then
+            echo "Overlay version $actual_version does not match workflow version $RELEASE_VERSION." >&2
+            exit 1
+          fi
 
       - name: Rust cache
         uses: Swatinem/rust-cache@42dc69e1aa15d09112580998cf2ef0119e2e91ae # v2
@@ -451,6 +619,14 @@ jobs:
           if-no-files-found: error
           retention-days: 1
 
+      - name: Upload platform version attestation
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: release-attestation-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}-${{ matrix.updater_platform }}
+          path: ${{ runner.temp }}/release-version-attestation-${{ matrix.updater_platform }}.json
+          if-no-files-found: error
+          retention-days: 1
+
   assemble-release-candidate:
     needs: [release-please, build]
     if: needs.release-please.outputs.release_created == 'true'
@@ -462,6 +638,7 @@ jobs:
       candidate_artifact_name: ${{ format('release-candidate-{0}-{1}-{2}', needs.release-please.outputs.checkout_ref, github.run_id, github.run_attempt) }}
       candidate_run_id: ${{ github.run_id }}
       candidate_run_attempt: ${{ github.run_attempt }}
+      overlay_digest: ${{ steps.version_attestations.outputs.overlay_digest }}
     steps:
       - name: Checkout candidate manifest helper
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -471,7 +648,10 @@ jobs:
 
       - name: Stage release candidate manifest helper
         shell: bash
-        run: cp workflow-guard/scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
+        run: |
+          cp workflow-guard/scripts/release-contract.mjs "$RUNNER_TEMP/release-contract.mjs"
+          cp workflow-guard/scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
+          cp workflow-guard/scripts/release-version-overlay.mjs "$RUNNER_TEMP/release-version-overlay.mjs"
 
       - name: Setup Node
         uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
@@ -484,6 +664,30 @@ jobs:
           pattern: release-platform-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}-*
           merge-multiple: true
           path: release-assets
+
+      - name: Download platform version attestations
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          pattern: release-attestation-${{ needs.release-please.outputs.checkout_ref }}-${{ github.run_id }}-${{ github.run_attempt }}-*
+          merge-multiple: true
+          path: release-attestations
+
+      - id: version_attestations
+        name: Verify identical platform version attestations
+        shell: bash
+        env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          overlay_digest="$(node "$RUNNER_TEMP/release-version-overlay.mjs" verify-attestations \
+            --directory release-attestations \
+            --platforms "$(node workflow-guard/scripts/support-matrix.mjs updater-platforms)" \
+            --channel "$RELEASE_CHANNEL" \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$SOURCE_SHA")"
+          echo "overlay_digest=$overlay_digest" >> "$GITHUB_OUTPUT"
 
       - name: Fetch release body
         id: release_body
@@ -526,16 +730,22 @@ jobs:
       - name: Create immutable release candidate manifest
         shell: bash
         env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.release_version }}
           SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+          OVERLAY_DIGEST: ${{ steps.version_attestations.outputs.overlay_digest }}
           RUN_ID: ${{ github.run_id }}
           RUN_ATTEMPT: ${{ github.run_attempt }}
         run: |
           set -euo pipefail
           node "$RUNNER_TEMP/release-promotion.mjs" create-manifest \
             --directory release-assets \
+            --channel "$RELEASE_CHANNEL" \
             --tag "$RELEASE_TAG" \
             --source-sha "$SOURCE_SHA" \
+            --release-version "$RELEASE_VERSION" \
+            --overlay-digest "$OVERLAY_DIGEST" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT"
 
@@ -564,7 +774,9 @@ jobs:
 
       - name: Stage release promotion guard
         shell: bash
-        run: cp scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
+        run: |
+          cp scripts/release-contract.mjs "$RUNNER_TEMP/release-contract.mjs"
+          cp scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
 
       - name: Checkout immutable release source
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
@@ -587,8 +799,11 @@ jobs:
       - name: Verify and stage exact release candidate
         shell: bash
         env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.release_version }}
           SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+          OVERLAY_DIGEST: ${{ needs.assemble-release-candidate.outputs.overlay_digest }}
           RUN_ID: ${{ needs.assemble-release-candidate.outputs.candidate_run_id }}
           RUN_ATTEMPT: ${{ needs.assemble-release-candidate.outputs.candidate_run_attempt }}
         run: |
@@ -596,8 +811,11 @@ jobs:
           node "$RUNNER_TEMP/release-promotion.mjs" verify-and-stage \
             --directory release-candidate \
             --staging-directory promotion-assets \
+            --channel "$RELEASE_CHANNEL" \
             --tag "$RELEASE_TAG" \
             --source-sha "$SOURCE_SHA" \
+            --release-version "$RELEASE_VERSION" \
+            --overlay-digest "$OVERLAY_DIGEST" \
             --run-id "$RUN_ID" \
             --run-attempt "$RUN_ATTEMPT"
 
@@ -619,7 +837,9 @@ jobs:
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
         with:
           github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
           script: |
@@ -652,6 +872,8 @@ jobs:
               release,
               expectedReleaseId: releaseId,
               expectedTag: process.env.RELEASE_TAG,
+              expectedChannel: process.env.RELEASE_CHANNEL,
+              expectedSourceSha: process.env.SOURCE_SHA,
               candidateAssetNames: manifest.assets.map((asset) => asset.name),
             });
             core.info(`Release ${process.env.RELEASE_TAG} is an empty verified draft.`);
@@ -668,12 +890,16 @@ jobs:
           overwrite_files: false
           # Keep the target draft until the separate publication verification passes.
           draft: true
+          prerelease: ${{ needs.release-please.outputs.release_channel == 'beta' }}
+          make_latest: false
 
       - name: Verify uploaded draft assets
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
           UPLOADED_RELEASE_ID: ${{ steps.upload_assets.outputs.id }}
           UPLOADED_ASSETS: ${{ steps.upload_assets.outputs.assets }}
         with:
@@ -716,6 +942,8 @@ jobs:
               release,
               expectedReleaseId: releaseId,
               expectedTag: process.env.RELEASE_TAG,
+              expectedChannel: process.env.RELEASE_CHANNEL,
+              expectedSourceSha: process.env.SOURCE_SHA,
               candidateManifest: manifest,
               uploadedReleaseId,
               uploadedAssets,
@@ -733,11 +961,14 @@ jobs:
       - name: Checkout publication guard
         uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
         with:
+          fetch-depth: 0
           persist-credentials: false
 
       - name: Stage release publication guard
         shell: bash
-        run: cp scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
+        run: |
+          cp scripts/release-contract.mjs "$RUNNER_TEMP/release-contract.mjs"
+          cp scripts/release-promotion.mjs "$RUNNER_TEMP/release-promotion.mjs"
 
       - name: Download exact publication candidate
         uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
@@ -748,22 +979,24 @@ jobs:
       - name: Reverify release tag before publication
         shell: bash
         env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
           SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
         run: |
           set -euo pipefail
-          if [[ ! "$RELEASE_TAG" =~ ^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$ ]]; then
-            echo "Invalid release tag: $RELEASE_TAG" >&2
-            exit 1
-          fi
-          if ! [[ "$SOURCE_SHA" =~ ^[0-9a-f]{40}$ ]]; then
-            echo "Release source is not an immutable commit SHA: $SOURCE_SHA" >&2
-            exit 1
-          fi
+          node "$RUNNER_TEMP/release-contract.mjs" describe \
+            --channel "$RELEASE_CHANNEL" \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$SOURCE_SHA" >/dev/null
           git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG"
           tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
           if [[ "$tag_sha" != "$SOURCE_SHA" ]]; then
             echo "Release tag $RELEASE_TAG resolves to $tag_sha, expected $SOURCE_SHA." >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
+            echo "Release source $SOURCE_SHA is no longer reachable from origin/main." >&2
             exit 1
           fi
 
@@ -771,8 +1004,11 @@ jobs:
         uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
         env:
           RELEASE_ID: ${{ needs.release-please.outputs.release_id }}
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
           RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.release_version }}
           SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+          OVERLAY_DIGEST: ${{ needs.assemble-release-candidate.outputs.overlay_digest }}
           RUN_ID: ${{ needs.assemble-release-candidate.outputs.candidate_run_id }}
           RUN_ATTEMPT: ${{ needs.assemble-release-candidate.outputs.candidate_run_attempt }}
         with:
@@ -781,6 +1017,7 @@ jobs:
             const { join } = require('node:path');
             const { pathToFileURL } = require('node:url');
             const {
+              assertPublishedReleaseTarget,
               assertReleasePublicationTarget,
               verifyReleaseCandidate,
             } = await import(
@@ -795,8 +1032,11 @@ jobs:
             }
             const manifest = await verifyReleaseCandidate({
               directory: join(process.env.GITHUB_WORKSPACE, 'release-candidate'),
+              channel: process.env.RELEASE_CHANNEL,
               tag: process.env.RELEASE_TAG,
               sourceSha: process.env.SOURCE_SHA,
+              releaseVersion: process.env.RELEASE_VERSION,
+              overlayDigest: process.env.OVERLAY_DIGEST,
               runId,
               runAttempt,
             });
@@ -809,27 +1049,176 @@ jobs:
               release,
               expectedReleaseId: releaseId,
               expectedTag: process.env.RELEASE_TAG,
+              expectedChannel: process.env.RELEASE_CHANNEL,
+              expectedSourceSha: process.env.SOURCE_SHA,
               candidateManifest: manifest,
             });
+            const beta = process.env.RELEASE_CHANNEL === 'beta';
             const { data: published } = await github.rest.repos.updateRelease({
               owner: context.repo.owner,
               repo: context.repo.repo,
               release_id: releaseId,
               draft: false,
+              prerelease: beta,
+              make_latest: beta ? 'false' : 'true',
             });
             if (
               published.id !== releaseId ||
               published.tag_name !== process.env.RELEASE_TAG ||
-              published.draft !== false
+              published.draft !== false ||
+              published.prerelease !== beta
             ) {
               core.setFailed('Published release identity did not match the verified draft.');
               return;
             }
+            assertPublishedReleaseTarget({
+              release: published,
+              expectedReleaseId: releaseId,
+              expectedTag: process.env.RELEASE_TAG,
+              expectedChannel: process.env.RELEASE_CHANNEL,
+              expectedSourceSha: process.env.SOURCE_SHA,
+              candidateManifest: manifest,
+            });
             core.info(`Published verified release ${process.env.RELEASE_TAG}.`);
+
+  publish-release-channel:
+    needs: [release-please, assemble-release-candidate, publish]
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.publish.result == 'success'
+    runs-on: ubuntu-latest
+    permissions:
+      actions: read
+      contents: write
+    steps:
+      - name: Checkout release channel guard
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Download exact channel candidate
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: ${{ needs.assemble-release-candidate.outputs.candidate_artifact_name }}
+          path: release-candidate
+
+      - name: Reverify release source before channel publication
+        shell: bash
+        env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+        run: |
+          set -euo pipefail
+          node scripts/release-contract.mjs describe \
+            --channel "$RELEASE_CHANNEL" \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$SOURCE_SHA" >/dev/null
+          git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG"
+          tag_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+          if [[ "$tag_sha" != "$SOURCE_SHA" ]]; then
+            echo "Release tag $RELEASE_TAG resolves to $tag_sha, expected $SOURCE_SHA." >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$SOURCE_SHA" refs/remotes/origin/main; then
+            echo "Release source $SOURCE_SHA is no longer reachable from origin/main." >&2
+            exit 1
+          fi
+
+      - name: Publish verified release channel pointer with CAS
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          RELEASE_CHANNEL: ${{ needs.release-please.outputs.release_channel }}
+          RELEASE_TAG: ${{ needs.release-please.outputs.tag_name }}
+          RELEASE_VERSION: ${{ needs.release-please.outputs.release_version }}
+          SOURCE_SHA: ${{ needs.release-please.outputs.checkout_ref }}
+          OVERLAY_DIGEST: ${{ needs.assemble-release-candidate.outputs.overlay_digest }}
+          RUN_ID: ${{ needs.assemble-release-candidate.outputs.candidate_run_id }}
+          RUN_ATTEMPT: ${{ needs.assemble-release-candidate.outputs.candidate_run_attempt }}
+        with:
+          github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          script: |
+            const { join } = require('node:path');
+            const { pathToFileURL } = require('node:url');
+            const { compareReleaseVersions } = await import(
+              pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-contract.mjs')).href,
+            );
+            const { verifyReleaseCandidate } = await import(
+              pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-promotion.mjs')).href,
+            );
+            const { publishReleaseChannel, readReleaseChannelSnapshot } = await import(
+              pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-channel.mjs')).href,
+            );
+            const runId = Number(process.env.RUN_ID);
+            const runAttempt = Number(process.env.RUN_ATTEMPT);
+            const manifest = await verifyReleaseCandidate({
+              directory: join(process.env.GITHUB_WORKSPACE, 'release-candidate'),
+              channel: process.env.RELEASE_CHANNEL,
+              tag: process.env.RELEASE_TAG,
+              sourceSha: process.env.SOURCE_SHA,
+              releaseVersion: process.env.RELEASE_VERSION,
+              overlayDigest: process.env.OVERLAY_DIGEST,
+              runId,
+              runAttempt,
+            });
+            const snapshot = await readReleaseChannelSnapshot({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            if (
+              process.env.RELEASE_CHANNEL === 'stable' &&
+              snapshot &&
+              compareReleaseVersions(
+                process.env.RELEASE_VERSION,
+                snapshot.state.selected_version,
+              ) <= 0
+            ) {
+              core.info(
+                `Stable ${process.env.RELEASE_VERSION} does not advance Beta pointer ${snapshot.state.selected_version}.`,
+              );
+              return;
+            }
+            const result = await publishReleaseChannel({
+              github,
+              fetchImpl: fetch,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              action: 'promote',
+              tag: process.env.RELEASE_TAG,
+              sourceSha: process.env.SOURCE_SHA,
+              expectedRefSha: snapshot?.refSha ?? null,
+              candidateManifest: manifest,
+              workflowRunId: runId,
+              workflowRunAttempt: runAttempt,
+              operator: context.actor,
+              updatedAt: new Date().toISOString(),
+            });
+            const confirmed = await readReleaseChannelSnapshot({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            if (confirmed?.refSha !== result.newRefSha) {
+              core.setFailed('Release channel ref did not retain the verified CAS commit.');
+              return;
+            }
+            core.info(
+              `Published ${process.env.RELEASE_TAG} to release-channels at ${result.newRefSha}.`,
+            );
 
   publish-homebrew-cask:
     needs: [release-please, publish]
-    if: needs.release-please.outputs.release_created == 'true'
+    if: >-
+      needs.release-please.outputs.release_created == 'true' &&
+      needs.release-please.outputs.release_channel == 'stable'
     runs-on: ubuntu-latest
     permissions:
       actions: read

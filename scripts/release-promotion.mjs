@@ -9,10 +9,20 @@ import {
   readdirSync,
   renameSync,
   rmSync,
+  statSync,
   writeFileSync,
 } from "node:fs";
 import { basename, dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
+
+import {
+  assertReleaseState,
+  parseReleaseTag,
+  requirePlainObject,
+  requirePositiveInteger,
+  requireSha256,
+  requireSourceSha,
+} from "./release-contract.mjs";
 
 export const RELEASE_CANDIDATE_MANIFEST = "release-candidate.json";
 export const EXPECTED_RELEASE_ASSET_NAMES = Object.freeze([
@@ -31,19 +41,9 @@ export const EXPECTED_RELEASE_ASSET_NAMES = Object.freeze([
   "aio-coding-hub-win64.msi.sig",
   "latest.json",
 ]);
-const MANIFEST_VERSION = 1;
-const RELEASE_TAG_PATTERN = /^aio-coding-hub-v(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)\.(0|[1-9][0-9]*)$/;
-const SHA_PATTERN = /^[0-9a-f]{40}$/;
-const SHA256_PATTERN = /^[0-9a-f]{64}$/;
+const MANIFEST_VERSION = 2;
 const WINDOWS_RESERVED_SEGMENT = /^(con|prn|aux|nul|com[1-9]|lpt[1-9])(?:\.|$)/i;
 const modulePath = fileURLToPath(import.meta.url);
-
-function requirePlainObject(value, label) {
-  if (value === null || typeof value !== "object" || Array.isArray(value)) {
-    throw new Error(`${label} must be an object`);
-  }
-  return value;
-}
 
 function requireExactKeys(value, expectedKeys, label) {
   const actual = Object.keys(value).sort();
@@ -51,27 +51,6 @@ function requireExactKeys(value, expectedKeys, label) {
   if (actual.length !== expected.length || actual.some((key, index) => key !== expected[index])) {
     throw new Error(`${label} fields are invalid`);
   }
-}
-
-function requireReleaseTag(value, label = "Release tag") {
-  if (typeof value !== "string" || !RELEASE_TAG_PATTERN.test(value)) {
-    throw new Error(`${label} is invalid`);
-  }
-  return value;
-}
-
-function requireSourceSha(value, label = "Release source SHA") {
-  if (typeof value !== "string" || !SHA_PATTERN.test(value)) {
-    throw new Error(`${label} must be a lowercase full commit SHA`);
-  }
-  return value;
-}
-
-function requirePositiveInteger(value, label) {
-  if (!Number.isSafeInteger(value) || value <= 0) {
-    throw new Error(`${label} must be a positive integer`);
-  }
-  return value;
 }
 
 function requireAssetName(value, label = "Release asset name") {
@@ -91,13 +70,6 @@ function requireAssetName(value, label = "Release asset name") {
     WINDOWS_RESERVED_SEGMENT.test(value)
   ) {
     throw new Error(`${label} is invalid`);
-  }
-  return value;
-}
-
-function requireSha256(value, label) {
-  if (typeof value !== "string" || !SHA256_PATTERN.test(value)) {
-    throw new Error(`${label} must be a lowercase SHA-256 digest`);
   }
   return value;
 }
@@ -153,10 +125,27 @@ async function sha256File(path) {
   return digest.digest("hex");
 }
 
-function normalizeIdentity({ tag, sourceSha, runId, runAttempt }) {
+function normalizeIdentity({
+  channel,
+  tag,
+  sourceSha,
+  releaseVersion,
+  overlayDigest,
+  runId,
+  runAttempt,
+}) {
+  const identity = parseReleaseTag(tag, channel);
+  if (releaseVersion !== identity.version) {
+    throw new Error(
+      `Candidate release version mismatch: expected ${identity.version}, received ${releaseVersion}`
+    );
+  }
   return {
-    tag: requireReleaseTag(tag),
+    channel: identity.channel,
+    tag: identity.tag,
     sourceSha: requireSourceSha(sourceSha),
+    releaseVersion: identity.version,
+    overlayDigest: requireSha256(overlayDigest, "Candidate overlay digest"),
     runId: requirePositiveInteger(runId, "Candidate run ID"),
     runAttempt: requirePositiveInteger(runAttempt, "Candidate run attempt"),
   };
@@ -175,17 +164,33 @@ export function releaseConcurrencyGroup({ releaseTag, refName }) {
 
 export async function createReleaseCandidateManifest({
   directory,
+  channel,
   tag,
   sourceSha,
+  releaseVersion,
+  overlayDigest,
   runId,
   runAttempt,
 }) {
-  const identity = normalizeIdentity({ tag, sourceSha, runId, runAttempt });
+  const identity = normalizeIdentity({
+    channel,
+    tag,
+    sourceSha,
+    releaseVersion,
+    overlayDigest,
+    runId,
+    runAttempt,
+  });
   const names = listCandidateFiles(directory);
   requireCurrentAssetMatrix(names, "Release candidate assets");
   const assets = [];
   for (const name of names) {
-    assets.push({ name, sha256: await sha256File(join(directory, name)) });
+    const path = join(directory, name);
+    const size = statSync(path).size;
+    if (!Number.isSafeInteger(size) || size <= 0) {
+      throw new Error(`Release candidate asset must be non-empty: ${name}`);
+    }
+    assets.push({ name, size, sha256: await sha256File(path) });
   }
   return { version: MANIFEST_VERSION, ...identity, assets };
 }
@@ -194,7 +199,17 @@ function normalizeReleaseCandidateManifest(parsed) {
   const manifest = requirePlainObject(parsed, "Release candidate manifest");
   requireExactKeys(
     manifest,
-    ["version", "tag", "sourceSha", "runId", "runAttempt", "assets"],
+    [
+      "version",
+      "channel",
+      "tag",
+      "sourceSha",
+      "releaseVersion",
+      "overlayDigest",
+      "runId",
+      "runAttempt",
+      "assets",
+    ],
     "Release candidate manifest"
   );
   if (manifest.version !== MANIFEST_VERSION) {
@@ -209,7 +224,7 @@ function normalizeReleaseCandidateManifest(parsed) {
   const names = new Set();
   for (const [index, value] of manifest.assets.entries()) {
     const asset = requirePlainObject(value, `Release candidate asset ${index}`);
-    requireExactKeys(asset, ["name", "sha256"], `Release candidate asset ${index}`);
+    requireExactKeys(asset, ["name", "size", "sha256"], `Release candidate asset ${index}`);
     const name = requireAssetName(asset.name, `Release candidate asset ${index} name`);
     const foldedName = name.toLowerCase();
     if (names.has(foldedName)) {
@@ -218,6 +233,7 @@ function normalizeReleaseCandidateManifest(parsed) {
     names.add(foldedName);
     assets.push({
       name,
+      size: requirePositiveInteger(asset.size, `Release candidate asset ${name} size`),
       sha256: requireSha256(asset.sha256, `Release candidate asset ${name}`),
     });
   }
@@ -248,12 +264,37 @@ export function parseReleaseCandidateManifest(manifestText) {
   }
 }
 
-export async function verifyReleaseCandidate({ directory, tag, sourceSha, runId, runAttempt }) {
-  const expected = normalizeIdentity({ tag, sourceSha, runId, runAttempt });
+export async function verifyReleaseCandidate({
+  directory,
+  channel,
+  tag,
+  sourceSha,
+  releaseVersion,
+  overlayDigest,
+  runId,
+  runAttempt,
+}) {
+  const expected = normalizeIdentity({
+    channel,
+    tag,
+    sourceSha,
+    releaseVersion,
+    overlayDigest,
+    runId,
+    runAttempt,
+  });
   const manifestPath = join(directory, RELEASE_CANDIDATE_MANIFEST);
   const manifest = parseReleaseCandidateManifest(readFileSync(manifestPath, "utf8"));
 
-  for (const field of ["tag", "sourceSha", "runId", "runAttempt"]) {
+  for (const field of [
+    "channel",
+    "tag",
+    "sourceSha",
+    "releaseVersion",
+    "overlayDigest",
+    "runId",
+    "runAttempt",
+  ]) {
     if (manifest[field] !== expected[field]) {
       throw new Error(
         `Release candidate ${field} mismatch: expected ${expected[field]}, received ${manifest[field]}`
@@ -268,7 +309,11 @@ export async function verifyReleaseCandidate({ directory, tag, sourceSha, runId,
     throw new Error("Release candidate asset set does not match its manifest");
   }
   for (const asset of manifest.assets) {
-    const actual = await sha256File(join(directory, asset.name));
+    const path = join(directory, asset.name);
+    if (statSync(path).size !== asset.size) {
+      throw new Error(`Release candidate asset size mismatch: ${asset.name}`);
+    }
+    const actual = await sha256File(path);
     if (actual !== asset.sha256) {
       throw new Error(`Release candidate asset digest mismatch: ${asset.name}`);
     }
@@ -301,24 +346,21 @@ export async function stageReleaseCandidate({ stagingDirectory, ...candidate }) 
   return manifest;
 }
 
-function requireReleaseTarget({ release, expectedReleaseId, expectedTag }) {
-  const target = requirePlainObject(release, "GitHub Release");
-  requirePositiveInteger(expectedReleaseId, "Expected release ID");
-  requireReleaseTag(expectedTag, "Expected release tag");
-  if (target.id !== expectedReleaseId) {
-    throw new Error(
-      `GitHub Release ID mismatch: expected ${expectedReleaseId}, received ${target.id}`
-    );
-  }
-  if (target.tag_name !== expectedTag) {
-    throw new Error(
-      `GitHub Release tag mismatch: expected ${expectedTag}, received ${target.tag_name}`
-    );
-  }
-  if (target.draft !== true || target.prerelease !== false) {
-    throw new Error("Release promotion target must be a non-prerelease draft");
-  }
-  return target;
+function requireReleaseTarget({
+  release,
+  expectedReleaseId,
+  expectedTag,
+  expectedChannel,
+  expectedSourceSha,
+}) {
+  return assertReleaseState({
+    release,
+    expectedReleaseId,
+    expectedTag,
+    expectedChannel,
+    expectedSourceSha,
+    state: "draft",
+  }).release;
 }
 
 function normalizeCandidateAssetNames(candidateAssetNames) {
@@ -345,9 +387,17 @@ export function assertReleasePromotionTarget({
   release,
   expectedReleaseId,
   expectedTag,
+  expectedChannel,
+  expectedSourceSha,
   candidateAssetNames,
 }) {
-  const target = requireReleaseTarget({ release, expectedReleaseId, expectedTag });
+  const target = requireReleaseTarget({
+    release,
+    expectedReleaseId,
+    expectedTag,
+    expectedChannel,
+    expectedSourceSha,
+  });
   normalizeCandidateAssetNames(candidateAssetNames);
   if (!Array.isArray(target.assets)) {
     throw new Error("GitHub Release assets must be an array");
@@ -414,6 +464,7 @@ function normalizePublishedAssets(releaseAssets) {
     assets.push({
       id,
       name,
+      size: requirePositiveInteger(asset.size, `GitHub Release asset ${name} size`),
       sha256: requireSha256(digest.slice("sha256:".length), `GitHub Release asset ${name}`),
     });
   }
@@ -429,12 +480,31 @@ export function assertReleasePublicationTarget({
   release,
   expectedReleaseId,
   expectedTag,
+  expectedChannel,
+  expectedSourceSha,
   candidateManifest,
   uploadedReleaseId,
   uploadedAssets,
 }) {
-  const target = requireReleaseTarget({ release, expectedReleaseId, expectedTag });
+  const target = requireReleaseTarget({
+    release,
+    expectedReleaseId,
+    expectedTag,
+    expectedChannel,
+    expectedSourceSha,
+  });
   const manifest = normalizeReleaseCandidateManifest(candidateManifest);
+  const expectedIdentity = normalizeIdentity({
+    ...manifest,
+    channel: expectedChannel,
+    tag: expectedTag,
+    sourceSha: expectedSourceSha,
+  });
+  for (const field of ["channel", "tag", "sourceSha", "releaseVersion"]) {
+    if (manifest[field] !== expectedIdentity[field]) {
+      throw new Error(`Release candidate ${field} does not match the promotion target`);
+    }
+  }
   const candidateNames = normalizeCandidateAssetNames(manifest.assets.map((asset) => asset.name));
   if (uploadedReleaseId !== undefined) {
     const normalizedUploadedReleaseId = requirePositiveInteger(
@@ -477,10 +547,72 @@ export function assertReleasePublicationTarget({
     throw new Error("GitHub Release assets do not match the current upload IDs");
   }
   for (let index = 0; index < manifest.assets.length; index += 1) {
+    if (publishedAssets[index].size !== manifest.assets[index].size) {
+      throw new Error(`GitHub Release asset size mismatch: ${manifest.assets[index].name}`);
+    }
     if (publishedAssets[index].sha256 !== manifest.assets[index].sha256) {
       throw new Error(`GitHub Release asset digest mismatch: ${manifest.assets[index].name}`);
     }
   }
+}
+
+export function assertPublishedReleaseTarget({
+  release,
+  expectedReleaseId,
+  expectedTag,
+  expectedChannel,
+  expectedSourceSha,
+  candidateManifest,
+}) {
+  const { release: target, assets } = assertPublishedReleaseAssetMatrix({
+    release,
+    expectedReleaseId,
+    expectedTag,
+    expectedChannel,
+    expectedSourceSha,
+  });
+  const manifest = normalizeReleaseCandidateManifest(candidateManifest);
+  const expectedIdentity = normalizeIdentity({
+    ...manifest,
+    channel: expectedChannel,
+    tag: expectedTag,
+    sourceSha: expectedSourceSha,
+  });
+  for (const field of ["channel", "tag", "sourceSha", "releaseVersion", "overlayDigest"]) {
+    if (manifest[field] !== expectedIdentity[field]) {
+      throw new Error(`Published release candidate ${field} does not match`);
+    }
+  }
+  for (let index = 0; index < manifest.assets.length; index += 1) {
+    const expected = manifest.assets[index];
+    const actual = assets[index];
+    if (
+      actual.name !== expected.name ||
+      actual.size !== expected.size ||
+      actual.sha256 !== expected.sha256
+    ) {
+      throw new Error(`Published GitHub Release asset mismatch: ${expected.name}`);
+    }
+  }
+  return { release: target, manifest, assets };
+}
+
+export function assertPublishedReleaseAssetMatrix({
+  release,
+  expectedReleaseId,
+  expectedTag,
+  expectedChannel,
+  expectedSourceSha,
+}) {
+  const target = assertReleaseState({
+    release,
+    expectedReleaseId,
+    expectedTag,
+    expectedChannel,
+    expectedSourceSha,
+    state: "published",
+  }).release;
+  return { release: target, assets: normalizePublishedAssets(target.assets) };
 }
 
 function parseCliArgs(values) {
@@ -517,14 +649,26 @@ async function runCli() {
   const args = parseCliArgs(process.argv.slice(3));
   const candidate = {
     directory: resolve(cliValue(args, "directory")),
+    channel: cliValue(args, "channel"),
     tag: cliValue(args, "tag"),
     sourceSha: cliValue(args, "source-sha"),
+    releaseVersion: cliValue(args, "release-version"),
+    overlayDigest: cliValue(args, "overlay-digest"),
     runId: cliPositiveInteger(args, "run-id"),
     runAttempt: cliPositiveInteger(args, "run-attempt"),
   };
 
   if (command === "create-manifest") {
-    const allowed = new Set(["directory", "tag", "source-sha", "run-id", "run-attempt"]);
+    const allowed = new Set([
+      "directory",
+      "channel",
+      "tag",
+      "source-sha",
+      "release-version",
+      "overlay-digest",
+      "run-id",
+      "run-attempt",
+    ]);
     if ([...args.keys()].some((key) => !allowed.has(key))) {
       throw new Error("create-manifest received an unknown argument");
     }
@@ -542,8 +686,11 @@ async function runCli() {
     const allowed = new Set([
       "directory",
       "staging-directory",
+      "channel",
       "tag",
       "source-sha",
+      "release-version",
+      "overlay-digest",
       "run-id",
       "run-attempt",
     ]);
@@ -557,7 +704,7 @@ async function runCli() {
   }
 
   throw new Error(
-    "Usage: node scripts/release-promotion.mjs <create-manifest|verify-and-stage> --directory <path> --tag <tag> --source-sha <sha> --run-id <id> --run-attempt <attempt> [--staging-directory <path>]"
+    "Usage: node scripts/release-promotion.mjs <create-manifest|verify-and-stage> --directory <path> --channel <stable|beta> --tag <tag> --source-sha <sha> --release-version <version> --overlay-digest <sha256> --run-id <id> --run-attempt <attempt> [--staging-directory <path>]"
   );
 }
 

@@ -3,7 +3,7 @@
   "name": "beta-release-pipeline",
   "title": "Beta 发布流水线与频道指针",
   "description": "",
-  "status": "planning",
+  "status": "in_progress",
   "dev_type": null,
   "scope": null,
   "package": "aio-coding-hub",

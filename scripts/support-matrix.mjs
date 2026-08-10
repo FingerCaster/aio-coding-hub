@@ -1,5 +1,5 @@
 import { copyFileSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const logger = {
@@ -13,6 +13,7 @@ const logger = {
 
 const scriptDir = dirname(fileURLToPath(import.meta.url));
 const repoRoot = dirname(scriptDir);
+const modulePath = fileURLToPath(import.meta.url);
 
 /*
  * ============================================================================
@@ -28,7 +29,7 @@ const repoRoot = dirname(scriptDir);
  *   1) 进入官方矩阵的目标必须同时具备 release 产物与 updater 合约
  *   2) 仅本地构建目标保留脚本，但不进入 release / latest.json
  */
-const OFFICIAL_RELEASE_TARGETS = Object.freeze([
+export const OFFICIAL_RELEASE_TARGETS = Object.freeze([
   {
     id: "windows-x64",
     osFamily: "windows",
@@ -189,6 +190,7 @@ const README_LOCALES = Object.freeze([
 const EXPECTED_DESKTOP_OS_FAMILIES = Object.freeze(["windows", "macos", "linux"]);
 
 const WORKFLOW_PATHS = Object.freeze({
+  betaChannel: join(repoRoot, ".github/workflows/beta-channel.yml"),
   ci: join(repoRoot, ".github/workflows/ci.yml"),
   release: join(repoRoot, ".github/workflows/release.yml"),
   releasePrSyncCargoLock: join(repoRoot, ".github/workflows/release-pr-sync-cargo-lock.yml"),
@@ -557,6 +559,7 @@ function checkPinnedGithubActions(workflowPath) {
 }
 
 function checkWorkflowContracts() {
+  const betaChannelWorkflow = readFileSync(WORKFLOW_PATHS.betaChannel, "utf8");
   const ciWorkflow = readFileSync(WORKFLOW_PATHS.ci, "utf8");
   const releaseWorkflow = readFileSync(WORKFLOW_PATHS.release, "utf8");
 
@@ -575,6 +578,11 @@ function checkWorkflowContracts() {
     ciWorkflow,
     "run: node scripts/support-matrix.homebrew-cask.selftest.mjs",
     "ci Homebrew Cask generator check"
+  );
+  assertWorkflowContains(
+    ciWorkflow,
+    "node scripts/release-channel.selftest.mjs",
+    "ci release channel contract check"
   );
   assertWorkflowContains(ciWorkflow, "run: pnpm audit:deps", "ci fail-close dependency audit");
 
@@ -620,6 +628,36 @@ function checkWorkflowContracts() {
     "fork-owned Homebrew tap default"
   );
   assertWorkflowContains(releaseWorkflow, "HOMEBREW_TAP_TOKEN", "optional Homebrew tap sync token");
+
+  assertWorkflowContains(betaChannelWorkflow, "workflow_dispatch:", "manual Beta channel trigger");
+  assertWorkflowContains(
+    betaChannelWorkflow,
+    'description: "Current release-channels commit SHA, or absent for first publication"',
+    "explicit release channel expected ref"
+  );
+  assertWorkflowContains(
+    betaChannelWorkflow,
+    'git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main',
+    "release channel origin/main reachability"
+  );
+  assertWorkflowContains(
+    betaChannelWorkflow,
+    "const result = await publishReleaseChannel({",
+    "release channel Git Data API delegation"
+  );
+  assertWorkflowContains(
+    betaChannelWorkflow,
+    "expectedRefSha,",
+    "release channel compare-and-swap input"
+  );
+  assertWorkflowContains(
+    betaChannelWorkflow,
+    "withdrawnTag: process.env.WITHDRAWN_TAG || null,",
+    "release channel pause audit input"
+  );
+  if (/softprops\/action-gh-release|homebrew-cask|HOMEBREW_TAP_TOKEN/.test(betaChannelWorkflow)) {
+    throw new Error("Beta channel pointer workflow must not publish Release or Homebrew assets");
+  }
 }
 
 function runSupportMatrixCheck() {
@@ -655,6 +693,7 @@ function runSupportMatrixCheck() {
 
   // 2.3 校验 workflow 契约和 action pin
   checkWorkflowContracts();
+  checkPinnedGithubActions(WORKFLOW_PATHS.betaChannel);
   checkPinnedGithubActions(WORKFLOW_PATHS.ci);
   checkPinnedGithubActions(WORKFLOW_PATHS.release);
   checkPinnedGithubActions(WORKFLOW_PATHS.releasePrSyncCargoLock);
@@ -851,6 +890,10 @@ function printDesktopCiMatrix() {
   process.stdout.write(JSON.stringify(buildDesktopCiMatrix()));
 }
 
+function printUpdaterPlatforms() {
+  process.stdout.write(OFFICIAL_RELEASE_TARGETS.map((item) => item.updaterPlatform).join(","));
+}
+
 function printReadmeBlock(args) {
   const locale = requireArg(args, "locale");
   const section = requireArg(args, "section");
@@ -862,7 +905,7 @@ function printReadmeBlock(args) {
 
 function printUsageAndExit() {
   logger.error(
-    "Usage: node scripts/support-matrix.mjs <build-matrix|ci-matrix|check|prepare-stable-assets|generate-latest-json|homebrew-cask|readme-block> [--key value]"
+    "Usage: node scripts/support-matrix.mjs <build-matrix|ci-matrix|updater-platforms|check|prepare-stable-assets|generate-latest-json|homebrew-cask|readme-block> [--key value]"
   );
   process.exit(1);
 }
@@ -881,6 +924,9 @@ function main() {
       return;
     case "ci-matrix":
       printDesktopCiMatrix();
+      return;
+    case "updater-platforms":
+      printUpdaterPlatforms();
       return;
     case "check":
       runSupportMatrixCheck();
@@ -902,4 +948,6 @@ function main() {
   }
 }
 
-main();
+if (process.argv[1] && resolve(process.argv[1]) === modulePath) {
+  main();
+}

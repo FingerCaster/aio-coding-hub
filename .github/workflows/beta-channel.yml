@@ -1,0 +1,129 @@
+name: beta-channel
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: "Promote a verified Release or pause the current Beta target"
+        required: true
+        type: choice
+        options:
+          - promote
+          - pause
+      release_tag:
+        description: "Verified stable or Beta Release tag to select"
+        required: true
+        type: string
+      expected_ref_sha:
+        description: "Current release-channels commit SHA, or absent for first publication"
+        required: true
+        type: string
+      withdrawn_tag:
+        description: "Current unsafe tag; required only for pause"
+        required: false
+        type: string
+
+permissions: {}
+
+concurrency:
+  group: release-channel-pointer
+  cancel-in-progress: false
+
+jobs:
+  update-release-channel:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout channel guard
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node
+        uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4.4.0
+        with:
+          node-version: 22
+
+      - name: Validate release channel contracts
+        run: |
+          node scripts/release-contract.selftest.mjs
+          node scripts/release-promotion.selftest.mjs
+          node scripts/release-channel.selftest.mjs
+
+      - id: source
+        name: Resolve verified channel target source
+        shell: bash
+        env:
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          EXPECTED_REF_SHA: ${{ inputs.expected_ref_sha }}
+        run: |
+          set -euo pipefail
+          if [[ "$EXPECTED_REF_SHA" != "absent" && ! "$EXPECTED_REF_SHA" =~ ^[0-9a-f]{40}$ ]]; then
+            echo "expected_ref_sha must be a lowercase full SHA or absent." >&2
+            exit 1
+          fi
+          git fetch --force --no-tags origin "refs/tags/$RELEASE_TAG"
+          source_sha="$(git rev-parse --verify "FETCH_HEAD^{commit}")"
+          git fetch --force --no-tags origin "+refs/heads/main:refs/remotes/origin/main"
+          if ! git merge-base --is-ancestor "$source_sha" refs/remotes/origin/main; then
+            echo "Selected Release source $source_sha is not reachable from origin/main." >&2
+            exit 1
+          fi
+          channel=stable
+          if [[ "$RELEASE_TAG" == *-beta.* ]]; then channel=beta; fi
+          identity="$(node scripts/release-contract.mjs describe \
+            --channel "$channel" \
+            --tag "$RELEASE_TAG" \
+            --source-sha "$source_sha")"
+          {
+            echo "source_sha=$source_sha"
+            echo "channel=$(printf '%s' "$identity" | jq -r .channel)"
+          } >> "$GITHUB_OUTPUT"
+
+      - name: Publish channel pointer with expected-ref CAS
+        uses: actions/github-script@f28e40c7f34bde8b3046d885e986cb6290c5673b # v7
+        env:
+          CHANNEL_ACTION: ${{ inputs.action }}
+          RELEASE_TAG: ${{ inputs.release_tag }}
+          SOURCE_SHA: ${{ steps.source.outputs.source_sha }}
+          EXPECTED_REF_SHA: ${{ inputs.expected_ref_sha }}
+          WITHDRAWN_TAG: ${{ inputs.withdrawn_tag }}
+        with:
+          github-token: ${{ secrets.RELEASE_PLEASE_TOKEN }}
+          script: |
+            const { join } = require('node:path');
+            const { pathToFileURL } = require('node:url');
+            const { publishReleaseChannel, readReleaseChannelSnapshot } = await import(
+              pathToFileURL(join(process.env.GITHUB_WORKSPACE, 'scripts', 'release-channel.mjs')).href,
+            );
+            const expectedRefSha =
+              process.env.EXPECTED_REF_SHA === 'absent' ? null : process.env.EXPECTED_REF_SHA;
+            const result = await publishReleaseChannel({
+              github,
+              fetchImpl: fetch,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              action: process.env.CHANNEL_ACTION,
+              tag: process.env.RELEASE_TAG,
+              sourceSha: process.env.SOURCE_SHA,
+              expectedRefSha,
+              withdrawnTag: process.env.WITHDRAWN_TAG || null,
+              workflowRunId: Number(process.env.GITHUB_RUN_ID),
+              workflowRunAttempt: Number(process.env.GITHUB_RUN_ATTEMPT),
+              operator: context.actor,
+              updatedAt: new Date().toISOString(),
+            });
+            const confirmed = await readReleaseChannelSnapshot({
+              github,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+            });
+            if (confirmed?.refSha !== result.newRefSha) {
+              core.setFailed('Release channel CAS commit was not retained.');
+              return;
+            }
+            core.info(
+              `${process.env.CHANNEL_ACTION} selected ${process.env.RELEASE_TAG} at ${result.newRefSha}.`,
+            );
