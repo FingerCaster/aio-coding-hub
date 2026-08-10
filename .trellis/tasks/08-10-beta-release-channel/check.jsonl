@@ -1,0 +1,7 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"检查 stable 默认行为、Beta prerelease、SHA 归属、精确资产、签名、无覆盖和发布后验证。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"检查专用频道 writer、并发设置保存、错误回滚和候选资源清理。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"检查导入、恢复和旧配置迁移不会绕过设备本地 Beta 确认。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"审计 release workflow、Rust、生成 bindings、query、Hook 和组件之间的契约一致性。"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"检查 Rust 格式、单元/集成测试、cargo check 与 clippy，以及 Tauri 资源生命周期。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查频道值和候选从公开指针到所有用户可见入口的端到端传递。"}
+{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"根据已确认代码事实复核端点、版本比较、暂停和缓存隔离。"}

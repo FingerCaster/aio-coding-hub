@@ -1,0 +1,8 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"约束 stable 与 Beta 发布的 immutable SHA、候选资产、签名、晋升、公开和 Homebrew 隔离。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"约束 Beta 频道的专用设置写入、并发普通保存和失败回退。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"约束配置导入导出不能跨设备静默开启 Beta，并保持原有原子恢复。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"覆盖 workflow、Rust updater、生成 bindings、React query 与 UI 的跨层实施入口。"}
+{"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"约束 Rust 命令、资源生命周期、格式化、测试、check 和 clippy。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"频道、版本、manifest 和候选生命周期必须使用单一实现，避免 stable/Beta 分支漂移。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"规划发布指针到客户端设置、检查、缓存、提示和安装的完整数据流。"}
+{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"固定当前发布 workflow、版本来源、updater endpoint、配置导入和 UI 入口的代码证据。"}
