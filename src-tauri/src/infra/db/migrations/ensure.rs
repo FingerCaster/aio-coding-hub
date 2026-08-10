@@ -29,6 +29,41 @@ pub(super) fn apply_ensure_patches(conn: &mut Connection) -> crate::shared::erro
     ensure_provider_circuit_probe_columns(conn)?;
     ensure_skills_update_columns(conn)?;
     ensure_plugin_tables(conn)?;
+    ensure_infinite_retry_provider_usage(conn)?;
+    Ok(())
+}
+
+fn ensure_infinite_retry_provider_usage(conn: &Connection) -> crate::shared::error::AppResult<()> {
+    conn.execute_batch(
+        r#"
+CREATE TABLE IF NOT EXISTS infinite_retry_provider_usage (
+  trace_id TEXT NOT NULL,
+  provider_key TEXT NOT NULL,
+  provider_id INTEGER,
+  provider_name TEXT NOT NULL,
+  attempt_count TEXT NOT NULL,
+  usage_known_attempts TEXT NOT NULL,
+  usage_unknown_attempts TEXT NOT NULL,
+  input_tokens TEXT,
+  output_tokens TEXT,
+  total_tokens TEXT,
+  reasoning_tokens TEXT,
+  cache_read_input_tokens TEXT,
+  cache_creation_input_tokens TEXT,
+  cache_creation_5m_input_tokens TEXT,
+  cache_creation_1h_input_tokens TEXT,
+  cost_usd_femto TEXT,
+  unpriced_attempts TEXT NOT NULL,
+  complete INTEGER NOT NULL DEFAULT 0 CHECK(complete IN (0, 1)),
+  overflowed INTEGER NOT NULL DEFAULT 0 CHECK(overflowed IN (0, 1)),
+  updated_at INTEGER NOT NULL,
+  PRIMARY KEY(trace_id, provider_key)
+);
+CREATE INDEX IF NOT EXISTS idx_infinite_retry_provider_usage_provider
+  ON infinite_retry_provider_usage(provider_id, updated_at);
+"#,
+    )
+    .map_err(|error| format!("failed to ensure infinite retry provider usage: {error}"))?;
     Ok(())
 }
 

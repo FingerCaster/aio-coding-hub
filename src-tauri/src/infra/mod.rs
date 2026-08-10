@@ -17,6 +17,7 @@ pub(crate) mod db;
 pub(crate) mod env_conflicts;
 pub(crate) mod gemini_config;
 pub(crate) mod grok_config;
+pub(crate) mod infinite_retry_provider_usage;
 pub(crate) mod mcp_sync;
 pub(crate) mod model_price_aliases;
 pub(crate) mod model_prices;

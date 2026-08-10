@@ -7,6 +7,10 @@ fn default_codex_provider_test_model() -> String {
     DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
 }
 
+fn default_codex_infinite_retry_test_interval_ms() -> u32 {
+    DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayListenMode {
@@ -483,6 +487,10 @@ pub struct AppSettings {
     pub codex_oauth_compatible_proxy_mode: bool,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
+    #[serde(default)]
+    pub codex_infinite_retry_test_enabled: bool,
+    #[serde(default = "default_codex_infinite_retry_test_interval_ms")]
+    pub codex_infinite_retry_test_interval_ms: u32,
     pub grok_proxy_preferences: Option<crate::grok_config::GrokProxyPreferences>,
     // Image generation storage directory override. None/empty = default
     // `<app data dir>/image-gen`.
@@ -590,6 +598,8 @@ impl Default for AppSettings {
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
+            codex_infinite_retry_test_enabled: DEFAULT_CODEX_INFINITE_RETRY_TEST_ENABLED,
+            codex_infinite_retry_test_interval_ms: DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
             grok_proxy_preferences: None,
             image_gen_storage_dir: None,
             image_gen_storage_roots: Vec::new(),

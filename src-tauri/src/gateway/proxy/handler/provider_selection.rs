@@ -7,17 +7,17 @@ use tauri::Manager;
 
 pub(super) mod probe_planner;
 
-pub(super) struct ProviderSelection {
-    pub(super) effective_sort_mode_id: Option<i64>,
-    pub(super) providers: Vec<providers::ProviderForGateway>,
-    pub(super) bound_provider_order: Option<Vec<i64>>,
-    pub(super) active_sort_mode_id: Option<i64>,
-    pub(super) session_bound_sort_mode_id: Option<Option<i64>>,
-    pub(super) latest_provider_order: Vec<i64>,
-    pub(super) route_changed: bool,
+pub(in crate::gateway::proxy) struct ProviderSelection {
+    pub(in crate::gateway::proxy) effective_sort_mode_id: Option<i64>,
+    pub(in crate::gateway::proxy) providers: Vec<providers::ProviderForGateway>,
+    pub(in crate::gateway::proxy) bound_provider_order: Option<Vec<i64>>,
+    pub(in crate::gateway::proxy) active_sort_mode_id: Option<i64>,
+    pub(in crate::gateway::proxy) session_bound_sort_mode_id: Option<Option<i64>>,
+    pub(in crate::gateway::proxy) latest_provider_order: Vec<i64>,
+    pub(in crate::gateway::proxy) route_changed: bool,
 }
 
-pub(super) fn select_providers_with_session_binding<R: tauri::Runtime>(
+pub(in crate::gateway::proxy) fn select_providers_with_session_binding<R: tauri::Runtime>(
     state: &GatewayAppState<R>,
     cli_key: &str,
     session_id: Option<&str>,
@@ -150,6 +150,36 @@ pub(super) fn resolve_session_bound_provider_id(
         }
     }
 
+    apply_session_reuse_provider_binding(
+        allow_session_reuse,
+        providers,
+        bound_provider_id,
+        bound_provider_order,
+    )
+}
+
+pub(in crate::gateway::proxy) fn resolve_session_bound_provider_id_without_circuit(
+    session: &session_manager::SessionManager,
+    cli_key: &str,
+    session_id: Option<&str>,
+    created_at: i64,
+    allow_session_reuse: bool,
+    forced_provider_id: Option<i64>,
+    providers: &mut [providers::ProviderForGateway],
+    bound_provider_order: Option<&[i64]>,
+) -> Option<i64> {
+    let bound_provider_id =
+        session_id.and_then(|sid| session.get_bound_provider(cli_key, sid, created_at));
+    if allow_session_reuse && forced_provider_id.is_none() {
+        if let (Some(session_id), Some(bound_provider_id)) = (session_id, bound_provider_id) {
+            if !providers
+                .iter()
+                .any(|provider| provider.id == bound_provider_id)
+            {
+                session.clear_bound_provider(cli_key, session_id, created_at);
+            }
+        }
+    }
     apply_session_reuse_provider_binding(
         allow_session_reuse,
         providers,

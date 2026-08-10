@@ -7,7 +7,9 @@ pub(super) const DEFAULT_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER: u32 = 5;
 pub(super) const DEFAULT_FAILOVER_MAX_PROVIDERS_TO_TRY: u32 = 5;
 
 #[derive(Debug, Clone)]
-pub(super) struct HandlerRuntimeSettings {
+pub(in crate::gateway::proxy) struct HandlerRuntimeSettings {
+    pub(super) codex_infinite_retry_test_enabled: bool,
+    pub(super) codex_infinite_retry_test_interval_ms: u32,
     pub(super) verbose_provider_error: bool,
     pub(super) intercept_warmup: bool,
     pub(super) enable_thinking_signature_rectifier: bool,
@@ -17,14 +19,15 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) enable_response_fixer: bool,
     pub(super) response_fixer_stream_config: response_fixer::ResponseFixerConfig,
     pub(super) response_fixer_non_stream_config: response_fixer::ResponseFixerConfig,
-    pub(super) provider_base_url_ping_cache_ttl_seconds: u32,
+    pub(in crate::gateway::proxy) provider_base_url_ping_cache_ttl_seconds: u32,
     pub(super) enable_codex_session_id_completion: bool,
     pub(super) enable_claude_metadata_user_id_injection: bool,
-    pub(super) max_attempts_per_provider: u32,
-    pub(super) max_providers_to_try: u32,
-    pub(super) upstream_retry_policy: settings::UpstreamRetryPolicy,
-    pub(super) model_routing_policy: settings::ModelRoutingPolicy,
-    pub(super) upstream_error_response_rules: Vec<settings::UpstreamErrorResponseRule>,
+    pub(in crate::gateway::proxy) max_attempts_per_provider: u32,
+    pub(in crate::gateway::proxy) max_providers_to_try: u32,
+    pub(in crate::gateway::proxy) upstream_retry_policy: settings::UpstreamRetryPolicy,
+    pub(in crate::gateway::proxy) model_routing_policy: settings::ModelRoutingPolicy,
+    pub(in crate::gateway::proxy) upstream_error_response_rules:
+        Vec<settings::UpstreamErrorResponseRule>,
     pub(super) provider_cooldown_secs: i64,
     pub(super) provider_failback_strategy: settings::ProviderFailbackStrategy,
     pub(super) upstream_first_byte_timeout_secs: u32,
@@ -33,7 +36,7 @@ pub(super) struct HandlerRuntimeSettings {
     pub(super) upstream_request_timeout_non_streaming_secs: u32,
 }
 
-pub(super) fn handler_runtime_settings(
+pub(in crate::gateway::proxy) fn handler_runtime_settings(
     settings_cfg: Option<&settings::AppSettings>,
     is_claude_count_tokens: bool,
     is_codex_model_discovery: bool,
@@ -92,6 +95,12 @@ pub(super) fn handler_runtime_settings(
     }
 
     HandlerRuntimeSettings {
+        codex_infinite_retry_test_enabled: settings_cfg
+            .map(|cfg| cfg.codex_infinite_retry_test_enabled)
+            .unwrap_or(false),
+        codex_infinite_retry_test_interval_ms: settings_cfg
+            .map(|cfg| cfg.codex_infinite_retry_test_interval_ms)
+            .unwrap_or(settings::DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS),
         verbose_provider_error,
         intercept_warmup: settings_cfg
             .map(|cfg| cfg.intercept_anthropic_warmup_requests)

@@ -1,0 +1,9 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"定义 HTTP、transport、SSE 提交边界、重试/错误投影分离与敏感证据处理；无限模式必须只接管全轮终态。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"约束 Provider-local retry budget、backoff 和 attempt indexing；实现不得把单 Provider 预算改成无限。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"约束 Provider 选择、session binding、dispatch intent、gate/probe 与路由可观测性，供 round planner 和 neutral health mode 复用。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"新增持久开关和间隔必须同步 settings owner、patch、canonical write、rollback、bindings 与前端。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md","reason":"ActiveRequestRegistry、abort/shutdown、活动快照和 request log 是长请求生命周期的权威边界。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/usage-insights-contract.md","reason":"跨 Provider 累计 usage/cost 会影响父日志、Provider 维度聚合与前端投影，必须保持查询和计费口径一致。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"本任务跨越 Rust gateway、settings、SQLite、生成绑定、服务 adapter 与 Codex UI，需要逐层核对字段所有权。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"要求复用共享 final-wire parser、现有 retry executor、active registry、cost calculator 和设置管线，避免平行实现。"}
+{"file":".trellis/tasks/08-10-codex-infinite-retry-test-switch/research/infinite-retry-flow.md","reason":"记录当前单轮 failover、final-wire pipeline、circuit 读写、日志计费和前置终态任务的代码锚点。"}

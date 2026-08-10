@@ -7,6 +7,7 @@ mod finalize;
 mod request_end;
 
 mod terminal_firewall;
+pub(crate) use terminal_firewall::validate_complete_codex_sse;
 
 mod relay;
 pub(super) use relay::FirstChunkStream;

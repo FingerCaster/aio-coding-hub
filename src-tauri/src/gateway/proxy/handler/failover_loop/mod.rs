@@ -84,7 +84,8 @@ use codex_chatgpt::{
 };
 use event_helpers::{
     emit_attempt_event_and_log, emit_attempt_event_and_log_with_circuit_before,
-    finalize_probe_failure_and_emit, AttemptCircuitFields,
+    finalize_infinite_retry_activity, finalize_probe_failure_and_emit,
+    observe_infinite_attempt_usage, AttemptCircuitFields,
 };
 use loop_helpers::{
     apply_cx2cc_request_settings, counted_provider_attempts, finalize_owned_from_input,
@@ -255,7 +256,19 @@ fn sync_codex_prepared_active_requested_model<R: tauri::Runtime>(
 /// - `provider_iterator` for provider preparation (gate, credential, CX2CC)
 /// - `retry_engine` for the per-provider retry loop
 /// - `finalize` for terminal states (all unavailable / all failed)
-pub(super) async fn run<R>(mut input: RequestContext<R>) -> Response
+pub(super) async fn run<R>(input: RequestContext<R>) -> Response
+where
+    R: tauri::Runtime + 'static,
+    R::Handle: Unpin,
+{
+    if input.codex_infinite_retry.is_some() {
+        run_infinite_rounds(input).await
+    } else {
+        run_standard(input).await
+    }
+}
+
+async fn run_standard<R>(mut input: RequestContext<R>) -> Response
 where
     R: tauri::Runtime + 'static,
     R::Handle: Unpin,
@@ -289,6 +302,8 @@ where
         special_settings: &input.special_settings,
         upstream_error_response_rules: &input.upstream_error_response_rules,
         provider_health_neutral: input.provider_health_neutral,
+        provider_health_mode: input.provider_health_mode,
+        infinite_retry_ledger: None,
         provider_cooldown_secs: input.provider_cooldown_secs,
         upstream_first_byte_timeout_secs: input.upstream_first_byte_timeout_secs,
         upstream_first_byte_timeout: input.upstream_first_byte_timeout,
@@ -418,6 +433,381 @@ where
         verbose_provider_error: input.verbose_provider_error,
     })
     .await
+}
+
+async fn execute_infinite_round<R>(
+    input: &mut RequestContext<R>,
+    abort_guard: &mut crate::gateway::proxy::abort_guard::RequestAbortGuard<R>,
+    ledger: &crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
+) -> (Option<Response>, Vec<FailoverAttempt>)
+where
+    R: tauri::Runtime + 'static,
+    R::Handle: Unpin,
+{
+    let introspection_body =
+        body_for_introspection(&input.base_headers, input.body_bytes.as_ref()).into_owned();
+    let ctx = CommonCtx::from(CommonCtxArgs {
+        state: &input.state,
+        cli_key: &input.cli_key,
+        forwarded_path: &input.forwarded_path,
+        observe: input.observe_request,
+        method_hint: &input.method_hint,
+        query: &input.query,
+        trace_id: &input.trace_id,
+        started: input.started,
+        created_at_ms: input.created_at_ms,
+        created_at: input.created_at,
+        session_id: &input.session_id,
+        session_binding_request: input.session_binding_request,
+        requested_model: &input.requested_model,
+        managed_model_route: input.managed_model_route.as_ref(),
+        is_compact_request: input.is_compact_request,
+        cx2cc_settings: &input.cx2cc_settings,
+        effective_sort_mode_id: input.effective_sort_mode_id,
+        special_settings: &input.special_settings,
+        upstream_error_response_rules: &input.upstream_error_response_rules,
+        provider_health_neutral: true,
+        provider_health_mode: crate::gateway::infinite_retry::ProviderHealthMode::InfiniteRetryTest,
+        infinite_retry_ledger: Some(ledger),
+        provider_cooldown_secs: input.provider_cooldown_secs,
+        upstream_first_byte_timeout_secs: input.upstream_first_byte_timeout_secs,
+        upstream_first_byte_timeout: input.upstream_first_byte_timeout,
+        upstream_stream_idle_timeout: input.upstream_stream_idle_timeout,
+        stream_internal_error_guard: input.stream_internal_error_guard,
+        upstream_request_timeout_non_streaming: input.upstream_request_timeout_non_streaming,
+        verbose_provider_error: input.verbose_provider_error,
+        enable_response_fixer: input.enable_response_fixer,
+        response_fixer_stream_config: input.response_fixer_stream_config,
+        response_fixer_non_stream_config: input.response_fixer_non_stream_config,
+        introspection_body: introspection_body.as_ref(),
+    });
+
+    let mut run_state = FailoverRunState::new();
+    run_state.attempts = std::mem::take(&mut input.probe_observations);
+    run_state.active_requested_model = input.requested_model.clone();
+    let mut counters =
+        provider_iterator::IterationCounters::new((input.max_providers_to_try as usize).max(1));
+    let anthropic_stream_requested =
+        original_anthropic_stream_requested(input.introspection_json.as_ref())
+            || stream_flag_from_raw_body(&introspection_body);
+    let providers = input.providers.clone();
+
+    for provider in &providers {
+        let preparation = provider_iterator::prepare_provider(
+            ctx,
+            input,
+            provider,
+            &mut counters,
+            &mut run_state.attempts,
+            &run_state.failed_provider_ids,
+            anthropic_stream_requested,
+        )
+        .await;
+        let mut prepared = match preparation {
+            provider_iterator::PreparationOutcome::Ready(prepared) => *prepared,
+            provider_iterator::PreparationOutcome::ReadyLimitReached => break,
+            provider_iterator::PreparationOutcome::Skipped => continue,
+        };
+        sync_codex_prepared_active_requested_model(
+            input,
+            &mut prepared,
+            run_state.active_requested_model.as_deref(),
+        );
+        let mut circuit_snapshot = prepared.circuit_snapshot.clone();
+        if let Some(response) = retry_engine::run_retry_loop(
+            ctx,
+            input,
+            &mut prepared,
+            &mut counters,
+            LoopState::new(
+                &mut run_state.attempts,
+                &mut run_state.failed_provider_ids,
+                &mut run_state.last_outcome,
+                &mut run_state.active_requested_model,
+                &mut circuit_snapshot,
+                abort_guard,
+            ),
+        )
+        .await
+        {
+            return (Some(response), run_state.attempts);
+        }
+    }
+
+    (None, run_state.attempts)
+}
+
+async fn refresh_infinite_round_plan<R>(input: &mut RequestContext<R>)
+where
+    R: tauri::Runtime + 'static,
+{
+    let state = input.state.clone();
+    let cli_key = input.cli_key.clone();
+    let session_id = input.session_id.clone();
+    let managed_provider_identity = input
+        .managed_model_route
+        .as_ref()
+        .map(|route| (route.provider_id, route.provider_uuid.clone()));
+    let selected = crate::blocking::run("gateway_infinite_retry_round_plan", move || {
+        let settings_cfg = crate::settings::read(&state.app)?;
+        let runtime = crate::gateway::proxy::handler::runtime_settings::handler_runtime_settings(
+            Some(&settings_cfg),
+            false,
+            false,
+        );
+        let selection = if let Some((provider_id, provider_uuid)) = managed_provider_identity {
+            let providers = crate::providers::get_enabled_direct_codex_for_gateway_by_identity(
+                &state.db,
+                provider_id,
+                &provider_uuid,
+            )?
+            .into_iter()
+            .collect();
+            crate::gateway::proxy::handler::provider_selection::ProviderSelection {
+                effective_sort_mode_id: None,
+                providers,
+                bound_provider_order: None,
+                active_sort_mode_id: None,
+                session_bound_sort_mode_id: None,
+                latest_provider_order: Vec::new(),
+                route_changed: false,
+            }
+        } else {
+            crate::gateway::proxy::handler::provider_selection::select_providers_with_session_binding(
+                &state,
+                &cli_key,
+                session_id.as_deref(),
+                None,
+                crate::gateway::util::now_unix_seconds() as i64,
+            )?
+        };
+        Ok::<_, crate::shared::error::AppError>((selection, runtime))
+    })
+    .await;
+
+    let Ok((selection, runtime)) = selected else {
+        input.providers.clear();
+        input.session_bound_provider_id = None;
+        return;
+    };
+
+    input.effective_sort_mode_id = selection.effective_sort_mode_id;
+    input.providers = selection.providers;
+    if let Some(provider_id) = input.forced_provider_id {
+        if let Some(index) = input
+            .providers
+            .iter()
+            .position(|provider| provider.id == provider_id)
+        {
+            input.providers.rotate_left(index);
+            input.providers.truncate(1);
+        } else {
+            input.providers.clear();
+        }
+    }
+    input.session_bound_provider_id =
+        crate::gateway::proxy::handler::provider_selection::resolve_session_bound_provider_id_without_circuit(
+            input.state.session.as_ref(),
+            &input.cli_key,
+            input.session_id.as_deref(),
+            crate::gateway::util::now_unix_seconds() as i64,
+            input.allow_session_reuse,
+            input.forced_provider_id,
+            &mut input.providers,
+            selection.bound_provider_order.as_deref(),
+        );
+    input.max_attempts_per_provider = runtime.max_attempts_per_provider;
+    input.max_providers_to_try = runtime.max_providers_to_try;
+    input.upstream_retry_policy = runtime.upstream_retry_policy;
+    input.model_routing_policy = runtime.model_routing_policy;
+    input.upstream_error_response_rules = runtime.upstream_error_response_rules;
+    input.provider_base_url_ping_cache_ttl_seconds =
+        runtime.provider_base_url_ping_cache_ttl_seconds;
+}
+
+fn infinite_failure_category(
+    attempt: &FailoverAttempt,
+) -> crate::gateway::infinite_retry::FailureCategory {
+    use crate::gateway::infinite_retry::FailureCategory;
+    match attempt.error_code {
+        Some("GW_UPSTREAM_TIMEOUT") => FailureCategory::Timeout,
+        Some("GW_RESPONSE_TOO_LARGE") => FailureCategory::ResponseTooLarge,
+        Some("GW_STREAM_ERROR") => FailureCategory::Transport,
+        Some("GW_BRIDGE_UNSUPPORTED_FEATURE" | "GW_RESPONSE_BUILD_ERROR") => {
+            FailureCategory::Transform
+        }
+        Some(_) if attempt.status.is_some() => FailureCategory::Http,
+        Some(_) => FailureCategory::Preparation,
+        None if attempt.status.is_some_and(|status| status >= 400) => FailureCategory::Http,
+        None => FailureCategory::Unknown,
+    }
+}
+
+fn record_infinite_round_attempts(
+    ledger: &crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
+    attempts: &mut [FailoverAttempt],
+) {
+    let Ok(mut ledger) = ledger.lock() else {
+        return;
+    };
+    for attempt in attempts {
+        attempt.circuit_state_before = None;
+        attempt.circuit_state_after = None;
+        attempt.circuit_failure_count = None;
+        attempt.circuit_failure_threshold = None;
+        attempt.probe = None;
+        attempt.probe_trigger = None;
+        attempt.probe_result = None;
+        attempt.probe_generation = None;
+        attempt.circuit_recover_at_unix = None;
+        attempt.circuit_trigger_error_code = None;
+        let Some(key) = attempt.retry_index.zip(attempt.attempt_started_ms).map(
+            |(retry_index, attempt_started_ms)| {
+                crate::gateway::infinite_retry::AttemptKey::new(
+                    attempt.provider_id,
+                    retry_index,
+                    attempt_started_ms,
+                )
+            },
+        ) else {
+            ledger.record_attempt(
+                attempt.provider_id,
+                attempt.provider_name.as_str(),
+                attempt.status,
+                attempt.error_code.unwrap_or("unknown"),
+                infinite_failure_category(attempt),
+                attempt
+                    .attempt_duration_ms
+                    .unwrap_or_default()
+                    .min(u128::from(u64::MAX)) as u64,
+                None,
+                None,
+            );
+            continue;
+        };
+        ledger.record_attempt_once(
+            key,
+            attempt.provider_name.as_str(),
+            attempt.status,
+            attempt.error_code.unwrap_or("unknown"),
+            infinite_failure_category(attempt),
+            attempt
+                .attempt_duration_ms
+                .unwrap_or_default()
+                .min(u128::from(u64::MAX)) as u64,
+        );
+    }
+}
+
+async fn flush_infinite_activity<R: tauri::Runtime>(
+    input: &RequestContext<R>,
+    ledger: &crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
+    last_flush: &mut Instant,
+    force: bool,
+) {
+    if !force && last_flush.elapsed() < std::time::Duration::from_secs(1) {
+        return;
+    }
+    *last_flush = Instant::now();
+    let snapshot = match ledger.lock() {
+        Ok(ledger) => ledger.snapshot(),
+        Err(_) => return,
+    };
+    input.state.active_requests.update_infinite_retry_progress(
+        input.trace_id.as_str(),
+        snapshot.phase,
+        snapshot.rounds.parse().unwrap_or(u64::MAX),
+        snapshot.attempts.parse().unwrap_or(u64::MAX),
+        crate::gateway::util::now_unix_millis() as i64,
+    );
+    let Ok(details) = serde_json::to_string(&snapshot) else {
+        return;
+    };
+    let db = input.state.db.clone();
+    let trace_id = input.trace_id.clone();
+    let cli_key = input.cli_key.clone();
+    let last_activity_ms = crate::gateway::util::now_unix_millis() as i64;
+    let _ = crate::blocking::run("gateway_infinite_retry_activity", move || {
+        crate::infinite_retry_provider_usage::replace_for_trace(
+            &db,
+            trace_id.as_str(),
+            snapshot.providers.as_slice(),
+            last_activity_ms,
+        )?;
+        crate::request_logs::touch_activity(
+            &db,
+            trace_id.as_str(),
+            cli_key.as_str(),
+            last_activity_ms,
+            Some(details),
+        )
+        .map(|_| ())
+    })
+    .await;
+}
+
+async fn run_infinite_rounds<R>(mut input: RequestContext<R>) -> Response
+where
+    R: tauri::Runtime + 'static,
+    R::Handle: Unpin,
+{
+    let config = input
+        .codex_infinite_retry
+        .expect("infinite retry dispatcher requires request config");
+    let mut abort_guard = input.abort_guard.take();
+    let ledger = Arc::new(Mutex::new(
+        crate::gateway::infinite_retry::InfiniteRetryLedger::default(),
+    ));
+    abort_guard.attach_infinite_retry_ledger(Arc::clone(&ledger));
+    let mut last_flush = Instant::now()
+        .checked_sub(std::time::Duration::from_secs(1))
+        .unwrap_or_else(Instant::now);
+    let mut first_round = true;
+
+    loop {
+        if !first_round {
+            refresh_infinite_round_plan(&mut input).await;
+        }
+        first_round = false;
+        let empty = input.providers.is_empty();
+        let (round_count, attempt_count) = match ledger.lock() {
+            Ok(mut ledger) => {
+                ledger.start_round(empty);
+                (ledger.round_count(), ledger.attempt_count())
+            }
+            Err(_) => (u64::MAX, u64::MAX),
+        };
+        input.state.active_requests.update_infinite_retry_progress(
+            input.trace_id.as_str(),
+            if empty {
+                "empty_round"
+            } else {
+                "running_round"
+            },
+            round_count,
+            attempt_count,
+            crate::gateway::util::now_unix_millis() as i64,
+        );
+
+        if !empty {
+            let (response, mut attempts) =
+                execute_infinite_round(&mut input, &mut abort_guard, &ledger).await;
+            record_infinite_round_attempts(&ledger, &mut attempts);
+            if let Some(response) = response {
+                if let Ok(mut ledger) = ledger.lock() {
+                    ledger.stop("succeeded");
+                }
+                flush_infinite_activity(&input, &ledger, &mut last_flush, true).await;
+                return response;
+            }
+        }
+
+        if let Ok(mut ledger) = ledger.lock() {
+            ledger.finish_failed_round();
+        }
+        flush_infinite_activity(&input, &ledger, &mut last_flush, false).await;
+        crate::gateway::infinite_retry::wait_between_rounds(config.retry_interval_ms).await;
+    }
 }
 
 #[cfg(test)]

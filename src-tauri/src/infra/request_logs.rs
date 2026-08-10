@@ -344,6 +344,95 @@ pub(crate) fn effective_cost_basis(
     })
 }
 
+/// Price one observed upstream attempt using that attempt's Provider/model
+/// snapshot. Infinite-retry accounting calls this before discarding a failed
+/// response, so a later successful Provider cannot reattribute earlier cost.
+pub(crate) fn calculate_attempt_cost_usd_femto<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    database: &db::Db,
+    cli_key: &str,
+    requested_model: Option<&str>,
+    special_settings_json: Option<&str>,
+    provider_id: i64,
+    metrics: &crate::usage::UsageMetrics,
+) -> AppResult<Option<u128>> {
+    let usage = cost::CostUsage {
+        input_tokens: metrics.input_tokens.unwrap_or_default(),
+        output_tokens: metrics.output_tokens.unwrap_or_default(),
+        cache_read_input_tokens: metrics.cache_read_input_tokens.unwrap_or_default(),
+        cache_creation_input_tokens: metrics.cache_creation_input_tokens.unwrap_or_default(),
+        cache_creation_5m_input_tokens: metrics.cache_creation_5m_input_tokens.unwrap_or_default(),
+        cache_creation_1h_input_tokens: metrics.cache_creation_1h_input_tokens.unwrap_or_default(),
+    };
+    if !has_any_cost_usage(&usage) {
+        return Ok(None);
+    }
+    let Some(cost_basis) = effective_cost_basis(
+        cli_key,
+        requested_model,
+        special_settings_json,
+        (provider_id > 0).then_some(provider_id),
+    ) else {
+        return Ok(None);
+    };
+
+    let conn = database.open_connection()?;
+    let multiplier = conn
+        .query_row(EFFECTIVE_COST_MULTIPLIER_SQL, params![provider_id], |row| {
+            row.get::<_, f64>(0)
+        })
+        .optional()
+        .map_err(|error| db_err!("failed to read attempt cost multiplier: {error}"))?
+        .filter(|value| value.is_finite() && *value >= 0.0)
+        .unwrap_or(1.0);
+    if multiplier == 0.0 {
+        return Ok(Some(0));
+    }
+
+    let aliases = model_price_aliases::read_fail_open(app);
+    let mut priced_model = cost_basis.model;
+    let mut price_json = conn
+        .query_row(
+            "SELECT price_json FROM model_prices WHERE cli_key = ?1 AND model = ?2",
+            params![cost_basis.cli_key, priced_model],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()
+        .map_err(|error| db_err!("failed to read attempt model price: {error}"))?;
+    if price_json.is_none() {
+        if let Some(alias) = aliases.resolve_target_model(&cost_basis.cli_key, &priced_model) {
+            if alias != priced_model {
+                priced_model = alias.to_string();
+                price_json = conn
+                    .query_row(
+                        "SELECT price_json FROM model_prices WHERE cli_key = ?1 AND model = ?2",
+                        params![cost_basis.cli_key, priced_model],
+                        |row| row.get::<_, String>(0),
+                    )
+                    .optional()
+                    .map_err(|error| {
+                        db_err!("failed to read aliased attempt model price: {error}")
+                    })?;
+            }
+        }
+    }
+    let Some(price_json) = price_json else {
+        return Ok(None);
+    };
+    let options = cost::CostCalculationOptions {
+        priority_service_tier_applied: parse_effective_priority(special_settings_json),
+    };
+    Ok(cost::calculate_cost_usd_femto_with_options(
+        &usage,
+        &price_json,
+        multiplier,
+        &cost_basis.cli_key,
+        &priced_model,
+        &options,
+    )
+    .and_then(|value| u128::try_from(value).ok()))
+}
+
 fn write_through_limiter() -> Arc<Semaphore> {
     WRITE_THROUGH_LIMITER
         .get_or_init(|| Arc::new(Semaphore::new(WRITE_THROUGH_MAX_CONCURRENT)))
@@ -745,75 +834,77 @@ fn insert_batch_once(
                 1.0
             };
 
-            let cost_usd_femto = if is_success_status(item.status, item.error_code.as_deref()) {
-                match effective_cost_basis(
-                    &item.cli_key,
-                    item.requested_model.as_deref(),
-                    item.special_settings_json.as_deref(),
-                    final_provider_id_db,
-                ) {
-                    Some(cost_basis) => {
-                        let usage = usage_for_cost(item);
-                        if !has_any_cost_usage(&usage) {
-                            None
-                        } else if cost_multiplier == 0.0 {
-                            Some(0)
-                        } else {
-                            let mut priced_model = cost_basis.model.as_str();
-                            let priced_cli_key = cost_basis.cli_key.as_str();
-                            let mut price_json = fetch_model_price_json(
-                                &mut stmt_price_json,
-                                cache,
-                                &mut batch_price_json,
-                                now_unix,
-                                priced_cli_key,
-                                priced_model,
-                            );
+            let calculated_cost_usd_femto =
+                if is_success_status(item.status, item.error_code.as_deref()) {
+                    match effective_cost_basis(
+                        &item.cli_key,
+                        item.requested_model.as_deref(),
+                        item.special_settings_json.as_deref(),
+                        final_provider_id_db,
+                    ) {
+                        Some(cost_basis) => {
+                            let usage = usage_for_cost(item);
+                            if !has_any_cost_usage(&usage) {
+                                None
+                            } else if cost_multiplier == 0.0 {
+                                Some(0)
+                            } else {
+                                let mut priced_model = cost_basis.model.as_str();
+                                let priced_cli_key = cost_basis.cli_key.as_str();
+                                let mut price_json = fetch_model_price_json(
+                                    &mut stmt_price_json,
+                                    cache,
+                                    &mut batch_price_json,
+                                    now_unix,
+                                    priced_cli_key,
+                                    priced_model,
+                                );
 
-                            if price_json.is_none() {
-                                if let Some(target_model) =
-                                    price_aliases.resolve_target_model(priced_cli_key, priced_model)
-                                {
-                                    if target_model != priced_model {
-                                        priced_model = target_model;
-                                        price_json = fetch_model_price_json(
-                                            &mut stmt_price_json,
-                                            cache,
-                                            &mut batch_price_json,
-                                            now_unix,
-                                            priced_cli_key,
-                                            target_model,
-                                        );
+                                if price_json.is_none() {
+                                    if let Some(target_model) = price_aliases
+                                        .resolve_target_model(priced_cli_key, priced_model)
+                                    {
+                                        if target_model != priced_model {
+                                            priced_model = target_model;
+                                            price_json = fetch_model_price_json(
+                                                &mut stmt_price_json,
+                                                cache,
+                                                &mut batch_price_json,
+                                                now_unix,
+                                                priced_cli_key,
+                                                target_model,
+                                            );
+                                        }
                                     }
                                 }
-                            }
 
-                            match price_json {
-                                Some(price_json) => {
-                                    let priority_applied = parse_effective_priority(
-                                        item.special_settings_json.as_deref(),
-                                    );
-                                    let options = cost::CostCalculationOptions {
-                                        priority_service_tier_applied: priority_applied,
-                                    };
-                                    cost::calculate_cost_usd_femto_with_options(
-                                        &usage,
-                                        &price_json,
-                                        cost_multiplier,
-                                        priced_cli_key,
-                                        priced_model,
-                                        &options,
-                                    )
+                                match price_json {
+                                    Some(price_json) => {
+                                        let priority_applied = parse_effective_priority(
+                                            item.special_settings_json.as_deref(),
+                                        );
+                                        let options = cost::CostCalculationOptions {
+                                            priority_service_tier_applied: priority_applied,
+                                        };
+                                        cost::calculate_cost_usd_femto_with_options(
+                                            &usage,
+                                            &price_json,
+                                            cost_multiplier,
+                                            priced_cli_key,
+                                            priced_model,
+                                            &options,
+                                        )
+                                    }
+                                    None => None,
                                 }
-                                None => None,
                             }
                         }
+                        None => None,
                     }
-                    None => None,
-                }
-            } else {
-                None
-            };
+                } else {
+                    None
+                };
+            let cost_usd_femto = item.cost_usd_femto_override.or(calculated_cost_usd_femto);
 
             stmt.execute(params![
                 item.trace_id,
@@ -985,6 +1076,7 @@ mod tests {
             cache_creation_1h_input_tokens: None,
             usage_json: None,
             requested_model: None,
+            cost_usd_femto_override: None,
             provider_chain_json: None,
             error_details_json: None,
             created_at_ms: 1_770_000_000_000,

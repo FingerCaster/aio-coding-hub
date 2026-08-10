@@ -138,6 +138,7 @@ fn request_log_insert_from_args(
         created_at,
         usage_metrics,
         usage,
+        cost_usd_femto_override,
         provider_chain_json,
         error_details_json,
     } = args;
@@ -146,10 +147,12 @@ fn request_log_insert_from_args(
         return None;
     }
 
-    let (metrics, usage_json) = match usage {
-        Some(extract) => (extract.metrics, Some(extract.usage_json)),
-        None => (usage_metrics.unwrap_or_default(), None),
-    };
+    // Raw usage belongs to the final client-visible attempt, while the token
+    // columns may intentionally contain a cumulative internal aggregate.
+    let usage_json = usage.as_ref().map(|extract| extract.usage_json.clone());
+    let metrics = usage_metrics
+        .or_else(|| usage.map(|extract| extract.metrics))
+        .unwrap_or_default();
 
     let duration_ms = duration_ms.min(i64::MAX as u128) as i64;
     let ttfb_ms = ttfb_ms.and_then(|v| {
@@ -192,6 +195,7 @@ fn request_log_insert_from_args(
         cache_creation_1h_input_tokens: metrics.cache_creation_1h_input_tokens,
         usage_json: bound_optional_json_object(usage_json, "usage_json"),
         requested_model: bound_optional_chars(requested_model, REQUEST_LOG_SHORT_TEXT_MAX_CHARS),
+        cost_usd_femto_override,
         created_at_ms,
         last_activity_ms,
         activity_details_json: bound_optional_json_object(
@@ -695,6 +699,7 @@ WHERE trace_id = ?1
             created_at: 0,
             usage_metrics: None,
             usage: None,
+            cost_usd_femto_override: None,
             provider_chain_json: None,
             error_details_json: None,
         }
@@ -777,7 +782,7 @@ WHERE trace_id = ?1
     }
 
     #[test]
-    fn request_log_insert_prefers_usage_extract_over_usage_metrics() {
+    fn request_log_insert_keeps_aggregate_metrics_and_final_raw_usage() {
         let mut args = base_args();
         args.usage_metrics = Some(UsageMetrics {
             input_tokens: Some(99),
@@ -804,13 +809,13 @@ WHERE trace_id = ?1
         });
 
         let insert = request_log_insert_from_args(args).expect("insert");
-        assert_eq!(insert.input_tokens, Some(1));
-        assert_eq!(insert.output_tokens, Some(2));
-        assert_eq!(insert.total_tokens, Some(3));
-        assert_eq!(insert.cache_read_input_tokens, Some(4));
-        assert_eq!(insert.cache_creation_input_tokens, Some(5));
-        assert_eq!(insert.cache_creation_5m_input_tokens, Some(6));
-        assert_eq!(insert.cache_creation_1h_input_tokens, Some(7));
+        assert_eq!(insert.input_tokens, Some(99));
+        assert_eq!(insert.output_tokens, Some(99));
+        assert_eq!(insert.total_tokens, Some(99));
+        assert_eq!(insert.cache_read_input_tokens, Some(99));
+        assert_eq!(insert.cache_creation_input_tokens, Some(99));
+        assert_eq!(insert.cache_creation_5m_input_tokens, Some(99));
+        assert_eq!(insert.cache_creation_1h_input_tokens, Some(99));
         assert_eq!(insert.usage_json, Some("{\"input_tokens\":1}".to_string()));
     }
 

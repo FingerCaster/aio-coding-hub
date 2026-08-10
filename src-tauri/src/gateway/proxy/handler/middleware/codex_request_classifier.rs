@@ -25,6 +25,9 @@ impl CodexRequestClassifierMiddleware {
         ) {
             push_special_setting(&ctx.special_settings, setting);
             ctx.provider_health_neutral = true;
+            ctx.provider_health_mode =
+                crate::gateway::infinite_retry::ProviderHealthMode::PassiveSystemRequest;
+            ctx.is_codex_system_request = true;
         }
 
         MiddlewareAction::Continue(Box::new(ctx))

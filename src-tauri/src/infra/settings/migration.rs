@@ -1506,6 +1506,26 @@ fn migrate_stream_terminal_firewall_legacy_fields(
     changed |= sanitize_upstream_retry_policy(&mut settings.upstream_retry_policy);
     changed
 }
+fn migrate_add_codex_infinite_retry_test(
+    settings: &mut AppSettings,
+    schema_version_present: bool,
+) -> bool {
+    let mut changed = migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_CODEX_INFINITE_RETRY_TEST,
+    );
+    changed |= sanitize_codex_infinite_retry_test(settings);
+    changed
+}
+
+pub(super) fn sanitize_codex_infinite_retry_test(settings: &mut AppSettings) -> bool {
+    if settings.codex_infinite_retry_test_interval_ms <= MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
+        return false;
+    }
+    settings.codex_infinite_retry_test_interval_ms = DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS;
+    true
+}
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -1551,6 +1571,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_update_channel,
     migrate_add_stream_terminal_firewall,
     migrate_stream_terminal_firewall_legacy_fields,
+    migrate_add_codex_infinite_retry_test,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1583,6 +1604,7 @@ pub(super) fn repair_settings(
     repaired |= sanitize_codex_home_override(settings);
     repaired |= sanitize_codex_provider_test_model(settings);
     repaired |= sanitize_cli_priority_order(settings);
+    repaired |= sanitize_codex_infinite_retry_test(settings);
     let canonical = super::persistence::canonical_settings_json(settings)?;
     repaired |= raw_settings_json != &canonical;
     Ok(repaired)
@@ -2528,10 +2550,7 @@ mod tests {
             serde_json::from_value(raw.clone()).expect("deserialize legacy settings");
 
         assert!(repair_settings(&mut settings, true, &raw).unwrap());
-        assert_eq!(
-            settings.schema_version,
-            SCHEMA_VERSION_MIGRATE_STREAM_TERMINAL_FIREWALL
-        );
+        assert_eq!(settings.schema_version, SCHEMA_VERSION);
         assert!(
             !settings
                 .upstream_retry_policy

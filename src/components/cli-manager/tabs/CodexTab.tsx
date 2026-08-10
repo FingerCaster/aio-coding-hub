@@ -21,6 +21,7 @@ import {
   type SimpleCliInfo,
 } from "../../../services/cli/cliManager";
 import type { AppSettings, CodexHomeMode } from "../../../services/settings/settings";
+import { activeRequestLogsSnapshot } from "../../../services/gateway/activeRequests";
 import { normalizeCustomCodexHome, buildConfigTomlPath } from "../../../utils/codexPaths";
 import { isWindowsRuntime } from "../../../utils/platform";
 import { cn } from "../../../utils/cn";
@@ -67,6 +68,7 @@ const LazyCodeEditor = lazy(() =>
 );
 
 const DEFAULT_CODEX_PROVIDER_TEST_MODEL = "gpt-5.4-mini";
+const MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS = 60_000;
 const FAST_SERVICE_TIER = "fast";
 const CODEX_CONFIG_LOCATION_MODE_LABEL = "目录来源";
 const MODEL_REASONING_EFFORT_LABEL = "推理强度 (model_reasoning_effort)";
@@ -830,6 +832,173 @@ function CodexOauthProxySection({
             onCheckedChange={(checked) => void persistCodexOauthCompatibleProxyMode?.(checked)}
             disabled={proxyModeControlsDisabled}
           />
+        </div>
+      </div>
+    </div>
+  );
+}
+
+function useCodexInfiniteRetryActiveCount() {
+  const [activeCount, setActiveCount] = useState(0);
+
+  useEffect(() => {
+    let mounted = true;
+
+    async function refresh() {
+      try {
+        const rows = await activeRequestLogsSnapshot();
+        if (!mounted) return;
+        setActiveCount(
+          rows.filter(
+            (row) => row.cli_key.trim().toLowerCase() === "codex" && row.codex_infinite_retry_test
+          ).length
+        );
+      } catch {
+        // Keep the last known count when the lightweight snapshot is temporarily unavailable.
+      }
+    }
+
+    void refresh();
+    const intervalId = window.setInterval(() => void refresh(), 1000);
+    return () => {
+      mounted = false;
+      window.clearInterval(intervalId);
+    };
+  }, []);
+
+  return activeCount;
+}
+
+function CodexInfiniteRetryTestSection({
+  appSettings,
+  commonSettingsSaving,
+  persistCommonSettings,
+}: {
+  appSettings: AppSettings;
+  commonSettingsSaving: boolean;
+  persistCommonSettings?: CliManagerCodexTabProps["persistCommonSettings"];
+}) {
+  const savedInterval = appSettings.codex_infinite_retry_test_interval_ms;
+  const [intervalText, setIntervalText] = useState(String(savedInterval));
+  const [intervalError, setIntervalError] = useState<string | null>(null);
+  const [localSaving, setLocalSaving] = useState(false);
+  const activeCount = useCodexInfiniteRetryActiveCount();
+  const controlsDisabled = commonSettingsSaving || localSaving || !persistCommonSettings;
+
+  useEffect(() => {
+    setIntervalText(String(savedInterval));
+    setIntervalError(null);
+  }, [savedInterval]);
+
+  async function persistPatch(patch: Partial<AppSettings>) {
+    if (!persistCommonSettings || controlsDisabled) return null;
+    setLocalSaving(true);
+    try {
+      return await persistCommonSettings(patch);
+    } finally {
+      setLocalSaving(false);
+    }
+  }
+
+  async function toggleEnabled(enabled: boolean) {
+    try {
+      await persistPatch({ codex_infinite_retry_test_enabled: enabled });
+    } catch {
+      // The switch is controlled by the persisted settings, so a failed write rolls back naturally.
+    }
+  }
+
+  async function saveInterval() {
+    const normalized = intervalText.trim();
+    const parsed = Number(normalized);
+    if (
+      !/^\d+$/u.test(normalized) ||
+      !Number.isSafeInteger(parsed) ||
+      parsed < 0 ||
+      parsed > MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS
+    ) {
+      setIntervalError("请输入 0 到 60000 之间的整数毫秒数。");
+      return;
+    }
+
+    setIntervalError(null);
+    try {
+      const updated = await persistPatch({ codex_infinite_retry_test_interval_ms: parsed });
+      setIntervalText(String(updated?.codex_infinite_retry_test_interval_ms ?? parsed));
+    } catch {
+      setIntervalText(String(savedInterval));
+    }
+  }
+
+  return (
+    <div className="rounded-xl border border-amber-300/80 bg-amber-50/70 p-4 dark:border-amber-900 dark:bg-amber-950/20">
+      <div className="flex flex-col gap-4">
+        <div className="flex flex-col gap-3 sm:flex-row sm:items-start sm:justify-between">
+          <div className="min-w-0">
+            <div className="flex items-center gap-2 text-sm font-semibold text-foreground">
+              <AlertTriangle className="h-4 w-4 text-amber-600 dark:text-amber-400" />
+              Codex 无限重试测试模式
+            </div>
+            <p className="mt-1 text-xs leading-relaxed text-muted-foreground">
+              仅覆盖用户发起的 Codex Responses 请求。失败时会持续进行真实 Provider
+              调用，可能产生费用， 直到收到严格合法的最终响应或请求被取消。
+            </p>
+          </div>
+          <div className="flex h-6 shrink-0 items-center gap-2">
+            {localSaving ? (
+              <RefreshCw
+                aria-label="正在更新 Codex 无限重试测试模式"
+                className="h-3.5 w-3.5 animate-spin text-muted-foreground"
+              />
+            ) : null}
+            <Switch
+              aria-label="切换 Codex 无限重试测试模式"
+              checked={appSettings.codex_infinite_retry_test_enabled}
+              onCheckedChange={(checked) => void toggleEnabled(checked)}
+              disabled={controlsDisabled}
+            />
+          </div>
+        </div>
+
+        <div className="grid gap-3 border-t border-amber-200/80 pt-3 dark:border-amber-900/80 sm:grid-cols-[minmax(0,1fr)_9rem] sm:items-start">
+          <div>
+            <div className="text-xs font-medium text-secondary-foreground">完整轮次间隔</div>
+            <div className="mt-1 text-[11px] leading-relaxed text-muted-foreground">
+              每轮遍历所有候选 Provider 后等待；0 ms 仍会主动让出执行权。范围 0–60000 ms。
+            </div>
+          </div>
+          <div>
+            <Input
+              aria-label="Codex 无限重试完整轮次间隔（毫秒）"
+              type="number"
+              min={0}
+              max={MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS}
+              step={1}
+              value={intervalText}
+              disabled={controlsDisabled}
+              onChange={(event) => {
+                setIntervalText(event.currentTarget.value);
+                setIntervalError(null);
+              }}
+              onBlur={() => void saveInterval()}
+              onKeyDown={(event) => {
+                if (event.key === "Enter") event.currentTarget.blur();
+              }}
+            />
+            {intervalError ? (
+              <div className="mt-1 text-[11px] text-rose-600 dark:text-rose-400" role="alert">
+                {intervalError}
+              </div>
+            ) : null}
+          </div>
+        </div>
+
+        <div
+          className="flex flex-wrap items-center justify-between gap-2 text-[11px] leading-relaxed text-amber-800 dark:text-amber-300"
+          aria-live="polite"
+        >
+          <span>每个活动请求最多占用 20 MiB 最终响应缓冲；请仅在受控测试中开启。</span>
+          <span className="font-medium">当前活动无限请求：{activeCount}</span>
         </div>
       </div>
     </div>
@@ -2199,6 +2368,14 @@ export function CliManagerCodexTab(props: CliManagerCodexTabProps) {
       </Card>
 
       <CodexRetryGatewayRecommendation />
+
+      {appSettings ? (
+        <CodexInfiniteRetryTestSection
+          appSettings={appSettings}
+          commonSettingsSaving={props.commonSettingsSaving ?? false}
+          persistCommonSettings={props.persistCommonSettings}
+        />
+      ) : null}
 
       {codexConfig ? (
         <div className="space-y-4">

@@ -1,0 +1,9 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"检查下游提交前后边界、全部失败轮的隐藏、final-wire 成功条件和错误证据脱敏。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"检查普通 attempt budget 无回归、Provider-local retry 仍有界、全局计数不再依赖 ring 长度。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/gateway-failover-route-contract.md","reason":"检查轮内计划固定、轮间刷新、session/dispatch intent 单次所有权及 circuit/probe 完整旁路。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"检查默认值、迁移、校验、partial patch、rollback、generated bindings 和 CodexTab 保存一致。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/reliability-boundaries-contract.md","reason":"检查 client abort、disconnect、gateway shutdown、active registry 清理、1 Hz activity persistence 和 stop reason。"}
+{"file":".trellis/spec/aio-coding-hub/cross-layer/usage-insights-contract.md","reason":"检查 client final usage、父累计总量、Provider 子账本、quota/cost 查询与 unknown/overflow 语义不双计。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"按完整数据流检查 backend DTO、SQLite、bindings、frontend adapter、query key 和 UI 字段没有漂移。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查没有复制终态 parser、retry loop、pricing、active registry 或 settings normalization。"}
+{"file":".trellis/tasks/08-10-codex-infinite-retry-test-switch/research/infinite-retry-flow.md","reason":"提供审查所需的现有代码锚点、重构边界和相邻终态任务串行依赖。"}

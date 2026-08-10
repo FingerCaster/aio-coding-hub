@@ -16,6 +16,7 @@ use crate::gateway::proxy::status_override;
 use crate::gateway::proxy::upstream_client_error_rules;
 use futures_core::Stream;
 use std::pin::Pin;
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Duration;
 use tokio::time::Instant;
 
@@ -23,6 +24,53 @@ const MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES: usize = 1024 * 1024;
 
 type DecodedEventStream =
     Pin<Box<dyn Stream<Item = Result<Bytes, reqwest::Error>> + Send + 'static>>;
+
+struct BoundedUpstreamBytes<S> {
+    inner: S,
+    remaining: usize,
+    exceeded: Arc<AtomicBool>,
+    stopped: bool,
+}
+
+impl<S> BoundedUpstreamBytes<S> {
+    fn new(inner: S, limit: usize, exceeded: Arc<AtomicBool>) -> Self {
+        Self {
+            inner,
+            remaining: limit,
+            exceeded,
+            stopped: false,
+        }
+    }
+}
+
+impl<S> Stream for BoundedUpstreamBytes<S>
+where
+    S: Stream<Item = Result<Bytes, reqwest::Error>> + Unpin,
+{
+    type Item = Result<Bytes, reqwest::Error>;
+
+    fn poll_next(
+        mut self: Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        if self.stopped {
+            return std::task::Poll::Ready(None);
+        }
+        match Pin::new(&mut self.inner).poll_next(cx) {
+            std::task::Poll::Ready(Some(Ok(chunk))) => {
+                if chunk.len() > self.remaining {
+                    self.exceeded.store(true, Ordering::Release);
+                    self.stopped = true;
+                    std::task::Poll::Ready(None)
+                } else {
+                    self.remaining -= chunk.len();
+                    std::task::Poll::Ready(Some(Ok(chunk)))
+                }
+            }
+            other => other,
+        }
+    }
+}
 
 fn decode_event_stream<S>(upstream: S, gzip: bool) -> DecodedEventStream
 where
@@ -49,6 +97,37 @@ async fn next_event_stream_chunk(
     std::future::poll_fn(|cx| stream.as_mut().poll_next(cx))
         .await
         .transpose()
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum BufferedFinalWireError {
+    Read,
+    IdleTimeout,
+    TooLarge,
+}
+
+async fn collect_bounded_final_wire(
+    mut stream: DecodedEventStream,
+    idle_timeout: Option<Duration>,
+) -> Result<Bytes, BufferedFinalWireError> {
+    let mut output = Vec::new();
+    loop {
+        let next = match idle_timeout {
+            Some(timeout) => tokio::time::timeout(timeout, next_event_stream_chunk(&mut stream))
+                .await
+                .map_err(|_| BufferedFinalWireError::IdleTimeout)?,
+            None => next_event_stream_chunk(&mut stream).await,
+        }
+        .map_err(|_| BufferedFinalWireError::Read)?;
+        let Some(chunk) = next else {
+            return Ok(Bytes::from(output));
+        };
+        if chunk.len() > MAX_NON_SSE_BODY_BYTES.saturating_sub(output.len()) {
+            output.clear();
+            return Err(BufferedFinalWireError::TooLarge);
+        }
+        output.extend_from_slice(chunk.as_ref());
+    }
 }
 
 struct ProbeTerminalCommit {
@@ -1117,6 +1196,354 @@ fn buffered_provider_failure_reason(error_code: &str, quota_exhausted: bool) -> 
 }
 
 #[allow(clippy::too_many_arguments)]
+async fn handle_infinite_buffered_event_stream<R>(
+    ctx: CommonCtx<'_, R>,
+    common: CommonCtxOwned<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    provider: ProviderCtxOwned,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    first_chunk: Option<Bytes>,
+    upstream: DecodedEventStream,
+    should_gunzip: bool,
+    decode_gzip_before_guard: bool,
+    status: StatusCode,
+    mut response_headers: HeaderMap,
+    enable_response_fixer: bool,
+    response_fixer_stream_config: response_fixer::ResponseFixerConfig,
+    upstream_stream_idle_timeout: Option<Duration>,
+    initial_first_byte_ms: Option<u128>,
+    upstream_read_limit_exceeded: Option<Arc<AtomicBool>>,
+) -> LoopControl
+where
+    R: tauri::Runtime,
+    R::Handle: Unpin,
+{
+    let AttemptCtx {
+        retry_index,
+        attempt_started_ms,
+        attempt_started,
+        active_bridge_type,
+        gemini_oauth_response_mode,
+        ..
+    } = attempt_ctx;
+    let provider_id = provider.provider_id;
+    let provider_index = provider.provider_index;
+    let session_reuse = provider.session_reuse;
+    let selection_method = dc::selection_method(provider_index, retry_index, session_reuse);
+    let reason_code = dc::success_reason_code(provider_index, retry_index);
+    let LoopState {
+        attempts,
+        failed_provider_ids,
+        last_outcome,
+        active_requested_model,
+        circuit_snapshot,
+        abort_guard,
+    } = loop_state;
+
+    let active_requested_model_for_bridge = provider
+        .active_requested_model
+        .clone()
+        .or_else(|| common.requested_model.clone());
+    let upstream = prepend_and_decode_event_stream(
+        first_chunk,
+        upstream,
+        should_gunzip && !decode_gzip_before_guard,
+    );
+    let upstream = gemini_oauth::GeminiOAuthSseStream::new(upstream, gemini_oauth_response_mode);
+    let upstream = protocol_bridge::stream::BridgeStream::for_bridge_type(
+        upstream,
+        active_bridge_type,
+        active_requested_model_for_bridge,
+        common.cx2cc_settings.clone(),
+    );
+    let transformed: DecodedEventStream =
+        if enable_response_fixer && !has_non_identity_content_encoding(&response_headers) {
+            response_headers.remove(header::CONTENT_LENGTH);
+            response_headers.insert(
+                "x-cch-response-fixer",
+                HeaderValue::from_static("processed"),
+            );
+            Box::pin(MaybePluginChunkStream::new(
+                response_fixer::ResponseFixerStream::new(
+                    upstream,
+                    response_fixer_stream_config,
+                    common.special_settings.clone(),
+                ),
+                common.state.plugin_pipeline.clone(),
+                common.state.db.clone(),
+                common.trace_id.clone(),
+            ))
+        } else {
+            Box::pin(MaybePluginChunkStream::new(
+                upstream,
+                common.state.plugin_pipeline.clone(),
+                common.state.db.clone(),
+                common.trace_id.clone(),
+            ))
+        };
+
+    let final_wire = collect_bounded_final_wire(transformed, upstream_stream_idle_timeout).await;
+    let final_wire = if upstream_read_limit_exceeded
+        .as_ref()
+        .is_some_and(|flag| flag.load(Ordering::Acquire))
+    {
+        Err(BufferedFinalWireError::TooLarge)
+    } else {
+        final_wire
+    };
+    let final_bytes = match final_wire {
+        Ok(bytes) => bytes,
+        Err(kind) => {
+            let (error_code, outcome, reason, timeout_secs) = match kind {
+                BufferedFinalWireError::Read => (
+                    GatewayErrorCode::StreamError.as_str(),
+                    "final_wire_read_error",
+                    "failed to read buffered final-wire stream".to_string(),
+                    None,
+                ),
+                BufferedFinalWireError::IdleTimeout => (
+                    GatewayErrorCode::StreamIdleTimeout.as_str(),
+                    "final_wire_idle_timeout",
+                    "buffered final-wire stream reached its idle timeout".to_string(),
+                    upstream_stream_idle_timeout
+                        .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32),
+                ),
+                BufferedFinalWireError::TooLarge => (
+                    GatewayErrorCode::UpstreamBodyReadError.as_str(),
+                    "final_wire_too_large",
+                    format!("final-wire stream exceeded {MAX_NON_SSE_BODY_BYTES} bytes"),
+                    None,
+                ),
+            };
+            return record_system_failure_and_decide_no_cooldown(RecordSystemFailureArgs {
+                ctx,
+                provider_ctx,
+                attempt_ctx,
+                loop_state: LoopState {
+                    attempts,
+                    failed_provider_ids,
+                    last_outcome,
+                    active_requested_model,
+                    circuit_snapshot,
+                    abort_guard,
+                },
+                status: Some(status.as_u16()),
+                error_code,
+                decision: FailoverDecision::SwitchProvider,
+                outcome: format!(
+                    "{outcome}: category={} code={} decision={}",
+                    ErrorCategory::SystemError.as_str(),
+                    error_code,
+                    FailoverDecision::SwitchProvider.as_str(),
+                ),
+                reason,
+                record_circuit_failure: false,
+                configured_retry_backoff: None,
+                timeout_secs,
+            })
+            .await;
+        }
+    };
+
+    let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &final_bytes);
+    observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, usage.as_ref(), None);
+
+    if let Err(reason) = crate::gateway::streams::validate_complete_codex_sse(
+        final_bytes.as_ref(),
+        &provider
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords,
+    ) {
+        return record_system_failure_and_decide_no_cooldown(RecordSystemFailureArgs {
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            loop_state: LoopState {
+                attempts,
+                failed_provider_ids,
+                last_outcome,
+                active_requested_model,
+                circuit_snapshot,
+                abort_guard,
+            },
+            status: Some(status.as_u16()),
+            error_code: GatewayErrorCode::StreamError.as_str(),
+            decision: FailoverDecision::SwitchProvider,
+            outcome: format!(
+                "invalid_final_wire_sse: category={} code={} decision={}",
+                ErrorCategory::ProviderError.as_str(),
+                GatewayErrorCode::StreamError.as_str(),
+                FailoverDecision::SwitchProvider.as_str(),
+            ),
+            reason: format!("invalid Codex final SSE: {reason}"),
+            record_circuit_failure: false,
+            configured_retry_backoff: None,
+            timeout_secs: None,
+        })
+        .await;
+    }
+
+    crate::gateway::model_route_mapping::observe_model_route_from_bytes(
+        crate::gateway::model_route_mapping::ModelRouteBytesInput {
+            cli_key: common.cli_key.as_str(),
+            requested_model: provider
+                .active_requested_model
+                .as_deref()
+                .or(common.requested_model.as_deref()),
+            response_bytes: final_bytes.as_ref(),
+            special_settings: &common.special_settings,
+            provider_id,
+            provider_name: provider.provider_name_base.as_str(),
+        },
+    );
+
+    let outcome = "success".to_string();
+    attempts.push(FailoverAttempt {
+        provider_id,
+        provider_name: provider.provider_name_base.clone(),
+        base_url: provider.provider_base_url_base.clone(),
+        outcome: outcome.clone(),
+        status: Some(status.as_u16()),
+        provider_index: Some(provider_index),
+        retry_index: Some(retry_index),
+        session_reuse,
+        error_category: None,
+        error_code: None,
+        decision: Some("success"),
+        reason: None,
+        selection_method,
+        reason_code: Some(reason_code),
+        attempt_started_ms: Some(attempt_started_ms),
+        attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+        circuit_state_before: None,
+        circuit_state_after: None,
+        circuit_failure_count: None,
+        circuit_failure_threshold: None,
+        probe: None,
+        probe_trigger: None,
+        probe_result: None,
+        probe_generation: None,
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        provider_bridged: Some(provider.provider_bridged),
+        timeout_secs: None,
+        stream_internal_error: None,
+        requested_upstream_model: provider.active_requested_model.clone(),
+    });
+    emit_attempt_event_and_log_with_circuit_before(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        outcome,
+        Some(status.as_u16()),
+    )
+    .await;
+    codex_service_tier::append_result_if_detected(
+        common.cli_key.as_str(),
+        common.introspection_body.as_slice(),
+        Some(final_bytes.as_ref()),
+        &common.special_settings,
+    );
+
+    let usage_metrics = usage.as_ref().map(|value| value.metrics.clone());
+    let requested_model_for_log = resolve_requested_model_for_log(
+        requested_model_for_audit(
+            &common.special_settings,
+            common.managed_model_route.as_ref(),
+            common.requested_model.as_deref(),
+            provider.active_requested_model.as_deref(),
+        ),
+        provider.active_requested_model.as_deref(),
+        common.cli_key.as_str(),
+        final_bytes.as_ref(),
+    );
+    response_headers.remove(header::CONTENT_LENGTH);
+    let mut builder = Response::builder().status(status);
+    for (name, value) in &response_headers {
+        builder = builder.header(name, value);
+    }
+    builder = builder.header("x-trace-id", common.trace_id.as_str());
+    let response = match builder.body(Body::from(final_bytes)) {
+        Ok(response) => response,
+        Err(_) => {
+            if let Some(last) = attempts.last_mut() {
+                last.outcome = "response_build_error".to_string();
+                last.error_category = Some(ErrorCategory::SystemError.as_str());
+                last.error_code = Some(GatewayErrorCode::ResponseBuildError.as_str());
+                last.decision = Some(FailoverDecision::SwitchProvider.as_str());
+            }
+            failed_provider_ids.insert(provider_id);
+            *last_outcome = Some(AttemptOutcome::new(
+                ErrorCategory::SystemError.as_str(),
+                GatewayErrorCode::ResponseBuildError.as_str(),
+            ));
+            return LoopControl::BreakRetry;
+        }
+    };
+
+    let infinite_terminal = finalize_infinite_retry_activity(&common, "succeeded").await;
+
+    let now_unix = now_unix_seconds() as i64;
+    if common.managed_model_route.is_none() {
+        if let (Some(session_id), Some(binding_request)) =
+            (common.session_id.as_deref(), common.session_binding_request)
+        {
+            common.state.session.bind_success_for_request(
+                common.cli_key.as_str(),
+                session_id,
+                provider_id,
+                common.effective_sort_mode_id,
+                binding_request,
+                now_unix,
+            );
+        }
+    }
+    let duration_ms = common.started.elapsed().as_millis();
+    emit_request_event_and_enqueue_request_log(
+        RequestEndArgs::from_context(RequestEndContextArgs {
+            deps: RequestEndDeps::new(
+                &common.state.app,
+                &common.state.db,
+                &common.state.log_tx,
+                &common.state.plugin_pipeline,
+                &common.state.active_requests,
+            ),
+            trace_id: common.trace_id.as_str(),
+            cli_key: common.cli_key.as_str(),
+            method: common.method_hint.as_str(),
+            path: common.forwarded_path.as_str(),
+            observe: common.observe,
+            query: common.query.as_deref(),
+            excluded_from_stats: false,
+            duration_ms,
+            attempts: attempts.as_slice(),
+            special_settings_json: response_fixer::special_settings_json(&common.special_settings),
+            session_id: common.session_id.clone(),
+            requested_model: requested_model_for_log,
+            created_at_ms: common.created_at_ms,
+            created_at: common.created_at,
+        })
+        .with_completion(
+            RequestCompletion::success_with_visible_ttfb(
+                status.as_u16(),
+                initial_first_byte_ms,
+                Some(duration_ms),
+                usage_metrics,
+                infinite_terminal.log_usage_metrics,
+                usage,
+            )
+            .with_log_cost_usd_femto(infinite_terminal.log_cost_usd_femto)
+            .with_log_activity_details_json(infinite_terminal.activity_details_json),
+        ),
+    )
+    .await;
+    abort_guard.disarm();
+    LoopControl::Return(response)
+}
+
+#[allow(clippy::too_many_arguments)]
 pub(super) async fn handle_success_event_stream<R>(
     ctx: CommonCtx<'_, R>,
     _input: &RequestContext<R>,
@@ -1220,7 +1647,23 @@ where
                 active_bridge_type,
                 provider_ctx_owned.provider_bridged,
             );
-        let mut upstream = decode_event_stream(resp.bytes_stream(), decode_gzip_before_guard);
+        let upstream_read_limit_exceeded = common
+            .provider_health_mode
+            .bypasses_circuit()
+            .then(|| Arc::new(AtomicBool::new(false)));
+        let raw_upstream = resp.bytes_stream();
+        let mut upstream = if let Some(exceeded) = upstream_read_limit_exceeded.as_ref() {
+            decode_event_stream(
+                BoundedUpstreamBytes::new(
+                    raw_upstream,
+                    MAX_NON_SSE_BODY_BYTES,
+                    Arc::clone(exceeded),
+                ),
+                decode_gzip_before_guard,
+            )
+        } else {
+            decode_event_stream(raw_upstream, decode_gzip_before_guard)
+        };
 
         enum FirstChunkProbe {
             Skipped,
@@ -1372,6 +1815,7 @@ where
             && first_chunk.is_none()
             && initial_first_byte_ms.is_none()
             && probe_is_empty_event_stream
+            && !common.provider_health_mode.bypasses_circuit()
         {
             let error_code = GatewayErrorCode::StreamError.as_str();
             let (decision, configured_retry) = stream_transport_decision(
@@ -1429,145 +1873,151 @@ where
             .take()
             .map(|chunk| chunk.to_vec())
             .unwrap_or_default();
-        let mut prefix_state = BufferedStreamPrefixState::default();
-        let prefix_config = BufferedStreamPrefixConfig {
-            cli_key: common.cli_key.as_str(),
-            path: common.forwarded_path.as_str(),
-            status: status.as_u16(),
-            active_bridge_type,
-            provider_bridged: provider_ctx_owned.provider_bridged,
-            retry_policy: &provider_ctx_owned.upstream_retry_policy,
-            guard: common.stream_internal_error_guard,
-        };
-        loop {
-            match inspect_buffered_event_stream_prefix(
-                &prefix_config,
-                &mut prefix_state,
-                buffered_prefix.as_slice(),
-            ) {
-                BufferedStreamPrefixDecision::ProviderFailure {
-                    error_code,
-                    evidence,
-                } => {
-                    return record_buffered_provider_failure(
-                        ctx,
-                        provider_ctx,
-                        attempt_ctx,
-                        LoopState {
-                            attempts,
-                            failed_provider_ids,
-                            last_outcome,
-                            active_requested_model,
-                            circuit_snapshot,
-                            abort_guard,
-                        },
-                        status,
-                        buffered_prefix.as_slice(),
-                        error_code,
-                        evidence,
-                        retry_state,
-                    )
-                    .await;
-                }
-                BufferedStreamPrefixDecision::SanitizedTerminal { evidence } => {
-                    return finalize_sanitized_stream_terminal(
-                        ctx,
-                        provider_ctx,
-                        attempt_ctx,
-                        LoopState {
-                            attempts,
-                            failed_provider_ids,
-                            last_outcome,
-                            active_requested_model,
-                            circuit_snapshot,
-                            abort_guard,
-                        },
-                        status,
-                        buffered_prefix.as_slice(),
-                        evidence,
-                    )
-                    .await;
-                }
-                BufferedStreamPrefixDecision::StartStreaming { guard_cap_reached } => {
-                    if guard_cap_reached {
-                        tracing::warn!(
-                            trace_id = %common.trace_id,
-                            provider_id,
-                            buffered_bytes = buffered_prefix.len(),
-                            cap_bytes = MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
-                            "stream-internal-error guard reached its buffer cap; committing response"
-                        );
-                        response_fixer::push_special_setting(
-                            &common.special_settings,
-                            serde_json::json!({
-                                "type": "stream_internal_error_guard",
-                                "reason": "buffer_cap_reached",
-                                "buffered_bytes": buffered_prefix.len(),
-                                "cap_bytes": MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
-                            }),
-                        );
-                    }
-                    first_chunk =
-                        (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
-                    break;
-                }
-                BufferedStreamPrefixDecision::FinalizeAsEmptyBody(error_code) => {
-                    return finalize_buffered_stream_error_response(
-                        ctx,
-                        provider_ctx,
-                        attempt_ctx,
-                        LoopState {
-                            attempts,
-                            failed_provider_ids,
-                            last_outcome,
-                            active_requested_model,
-                            circuit_snapshot,
-                            abort_guard,
-                        },
-                        status,
-                        response_headers,
-                        buffered_prefix.as_slice(),
-                        initial_first_byte_ms,
-                        error_code,
-                    )
-                    .await;
-                }
-                BufferedStreamPrefixDecision::NeedMore => {}
-            }
-
-            let guard_remaining = prefix_state.guard_remaining(common.stream_internal_error_guard);
-            let wait = match (upstream_stream_idle_timeout, guard_remaining) {
-                (Some(idle), Some(guard)) => Some((idle.min(guard), guard <= idle)),
-                (Some(idle), None) => Some((idle, false)),
-                (None, Some(guard)) => Some((guard, true)),
-                (None, None) => None,
+        if common.provider_health_mode.bypasses_circuit() {
+            first_chunk = (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
+        } else {
+            let mut prefix_state = BufferedStreamPrefixState::default();
+            let prefix_config = BufferedStreamPrefixConfig {
+                cli_key: common.cli_key.as_str(),
+                path: common.forwarded_path.as_str(),
+                status: status.as_u16(),
+                active_bridge_type,
+                provider_bridged: provider_ctx_owned.provider_bridged,
+                retry_policy: &provider_ctx_owned.upstream_retry_policy,
+                guard: common.stream_internal_error_guard,
             };
-            let chunk_result = match wait {
-                Some((wait, guard_timeout)) => {
-                    match tokio::time::timeout(wait, next_event_stream_chunk(&mut upstream)).await {
-                        Ok(result) => result,
-                        Err(_) if guard_timeout => {
-                            first_chunk =
-                                (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
-                            break;
-                        }
-                        Err(_) => {
-                            let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
-                            let (decision, configured_retry) = stream_transport_decision(
-                                crate::settings::UpstreamTransportRetryKind::Timeout,
-                                &provider_ctx_owned.upstream_retry_policy,
-                                retry_state.configured_transient_retries_used,
-                                retry_index,
-                                provider_max_attempts,
+            loop {
+                match inspect_buffered_event_stream_prefix(
+                    &prefix_config,
+                    &mut prefix_state,
+                    buffered_prefix.as_slice(),
+                ) {
+                    BufferedStreamPrefixDecision::ProviderFailure {
+                        error_code,
+                        evidence,
+                    } => {
+                        return record_buffered_provider_failure(
+                            ctx,
+                            provider_ctx,
+                            attempt_ctx,
+                            LoopState {
+                                attempts,
+                                failed_provider_ids,
+                                last_outcome,
+                                active_requested_model,
+                                circuit_snapshot,
+                                abort_guard,
+                            },
+                            status,
+                            buffered_prefix.as_slice(),
+                            error_code,
+                            evidence,
+                            retry_state,
+                        )
+                        .await;
+                    }
+                    BufferedStreamPrefixDecision::SanitizedTerminal { evidence } => {
+                        return finalize_sanitized_stream_terminal(
+                            ctx,
+                            provider_ctx,
+                            attempt_ctx,
+                            LoopState {
+                                attempts,
+                                failed_provider_ids,
+                                last_outcome,
+                                active_requested_model,
+                                circuit_snapshot,
+                                abort_guard,
+                            },
+                            status,
+                            buffered_prefix.as_slice(),
+                            evidence,
+                        )
+                        .await;
+                    }
+                    BufferedStreamPrefixDecision::StartStreaming { guard_cap_reached } => {
+                        if guard_cap_reached {
+                            tracing::warn!(
+                                trace_id = %common.trace_id,
+                                provider_id,
+                                buffered_bytes = buffered_prefix.len(),
+                                cap_bytes = MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+                                "stream-internal-error guard reached its buffer cap; committing response"
                             );
-                            if configured_retry {
-                                retry_state.configured_transient_retries_used = retry_state
-                                    .configured_transient_retries_used
-                                    .saturating_add(1);
+                            response_fixer::push_special_setting(
+                                &common.special_settings,
+                                serde_json::json!({
+                                    "type": "stream_internal_error_guard",
+                                    "reason": "buffer_cap_reached",
+                                    "buffered_bytes": buffered_prefix.len(),
+                                    "cap_bytes": MAX_STREAM_INTERNAL_ERROR_GUARD_BYTES,
+                                }),
+                            );
+                        }
+                        first_chunk =
+                            (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
+                        break;
+                    }
+                    BufferedStreamPrefixDecision::FinalizeAsEmptyBody(error_code) => {
+                        return finalize_buffered_stream_error_response(
+                            ctx,
+                            provider_ctx,
+                            attempt_ctx,
+                            LoopState {
+                                attempts,
+                                failed_provider_ids,
+                                last_outcome,
+                                active_requested_model,
+                                circuit_snapshot,
+                                abort_guard,
+                            },
+                            status,
+                            response_headers,
+                            buffered_prefix.as_slice(),
+                            initial_first_byte_ms,
+                            error_code,
+                        )
+                        .await;
+                    }
+                    BufferedStreamPrefixDecision::NeedMore => {}
+                }
+
+                let guard_remaining =
+                    prefix_state.guard_remaining(common.stream_internal_error_guard);
+                let wait = match (upstream_stream_idle_timeout, guard_remaining) {
+                    (Some(idle), Some(guard)) => Some((idle.min(guard), guard <= idle)),
+                    (Some(idle), None) => Some((idle, false)),
+                    (None, Some(guard)) => Some((guard, true)),
+                    (None, None) => None,
+                };
+                let chunk_result = match wait {
+                    Some((wait, guard_timeout)) => {
+                        match tokio::time::timeout(wait, next_event_stream_chunk(&mut upstream))
+                            .await
+                        {
+                            Ok(result) => result,
+                            Err(_) if guard_timeout => {
+                                first_chunk = (!buffered_prefix.is_empty())
+                                    .then(|| Bytes::from(buffered_prefix));
+                                break;
                             }
-                            let timeout_secs = upstream_stream_idle_timeout
-                                .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32);
-                            let outcome = format!(
+                            Err(_) => {
+                                let error_code = GatewayErrorCode::UpstreamTimeout.as_str();
+                                let (decision, configured_retry) = stream_transport_decision(
+                                    crate::settings::UpstreamTransportRetryKind::Timeout,
+                                    &provider_ctx_owned.upstream_retry_policy,
+                                    retry_state.configured_transient_retries_used,
+                                    retry_index,
+                                    provider_max_attempts,
+                                );
+                                if configured_retry {
+                                    retry_state.configured_transient_retries_used = retry_state
+                                        .configured_transient_retries_used
+                                        .saturating_add(1);
+                                }
+                                let timeout_secs = upstream_stream_idle_timeout
+                                    .map(|value| value.as_secs().min(u64::from(u32::MAX)) as u32);
+                                let outcome = format!(
                                 "stream_prefix_idle_timeout: category={} code={} decision={} timeout_secs={}",
                                 ErrorCategory::SystemError.as_str(),
                                 error_code,
@@ -1575,103 +2025,135 @@ where
                                 timeout_secs.unwrap_or_default(),
                             );
 
-                            return record_system_failure_and_decide(RecordSystemFailureArgs {
-                                ctx,
-                                provider_ctx,
-                                attempt_ctx,
-                                loop_state: LoopState {
-                                    attempts,
-                                    failed_provider_ids,
-                                    last_outcome,
-                                    active_requested_model,
-                                    circuit_snapshot,
-                                    abort_guard,
-                                },
-                                status: Some(status.as_u16()),
-                                error_code,
-                                decision,
-                                outcome,
-                                reason: "event-stream idle timeout while inspecting prefix"
-                                    .to_string(),
-                                record_circuit_failure: should_record_circuit_failure(
-                                    &provider_ctx_owned.upstream_retry_policy,
-                                    configured_retry,
-                                ),
-                                configured_retry_backoff: configured_retry_backoff_delay(
-                                    &provider_ctx_owned.upstream_retry_policy,
-                                    configured_retry,
-                                ),
-                                timeout_secs,
-                            })
-                            .await;
+                                return record_system_failure_and_decide(RecordSystemFailureArgs {
+                                    ctx,
+                                    provider_ctx,
+                                    attempt_ctx,
+                                    loop_state: LoopState {
+                                        attempts,
+                                        failed_provider_ids,
+                                        last_outcome,
+                                        active_requested_model,
+                                        circuit_snapshot,
+                                        abort_guard,
+                                    },
+                                    status: Some(status.as_u16()),
+                                    error_code,
+                                    decision,
+                                    outcome,
+                                    reason: "event-stream idle timeout while inspecting prefix"
+                                        .to_string(),
+                                    record_circuit_failure: should_record_circuit_failure(
+                                        &provider_ctx_owned.upstream_retry_policy,
+                                        configured_retry,
+                                    ),
+                                    configured_retry_backoff: configured_retry_backoff_delay(
+                                        &provider_ctx_owned.upstream_retry_policy,
+                                        configured_retry,
+                                    ),
+                                    timeout_secs,
+                                })
+                                .await;
+                            }
                         }
                     }
-                }
-                None => next_event_stream_chunk(&mut upstream).await,
-            };
+                    None => next_event_stream_chunk(&mut upstream).await,
+                };
 
-            let next_chunk = match chunk_result {
-                Ok(chunk) => chunk,
-                Err(err) => {
-                    let error_code = GatewayErrorCode::StreamError.as_str();
-                    let (decision, configured_retry) = stream_transport_decision(
-                        crate::settings::UpstreamTransportRetryKind::Read,
-                        &provider_ctx_owned.upstream_retry_policy,
-                        retry_state.configured_transient_retries_used,
-                        retry_index,
-                        provider_max_attempts,
-                    );
-                    if configured_retry {
-                        retry_state.configured_transient_retries_used = retry_state
-                            .configured_transient_retries_used
-                            .saturating_add(1);
+                let next_chunk = match chunk_result {
+                    Ok(chunk) => chunk,
+                    Err(err) => {
+                        let error_code = GatewayErrorCode::StreamError.as_str();
+                        let (decision, configured_retry) = stream_transport_decision(
+                            crate::settings::UpstreamTransportRetryKind::Read,
+                            &provider_ctx_owned.upstream_retry_policy,
+                            retry_state.configured_transient_retries_used,
+                            retry_index,
+                            provider_max_attempts,
+                        );
+                        if configured_retry {
+                            retry_state.configured_transient_retries_used = retry_state
+                                .configured_transient_retries_used
+                                .saturating_add(1);
+                        }
+                        let outcome = format!(
+                            "stream_prefix_read_error: category={} code={} decision={}",
+                            ErrorCategory::SystemError.as_str(),
+                            error_code,
+                            decision.as_str(),
+                        );
+
+                        return record_system_failure_and_decide(RecordSystemFailureArgs {
+                            ctx,
+                            provider_ctx,
+                            attempt_ctx,
+                            loop_state: LoopState {
+                                attempts,
+                                failed_provider_ids,
+                                last_outcome,
+                                active_requested_model,
+                                circuit_snapshot,
+                                abort_guard,
+                            },
+                            status: Some(status.as_u16()),
+                            error_code,
+                            decision,
+                            outcome,
+                            reason: format!("failed to inspect event-stream prefix: {err}"),
+                            record_circuit_failure: should_record_circuit_failure(
+                                &provider_ctx_owned.upstream_retry_policy,
+                                configured_retry,
+                            ),
+                            configured_retry_backoff: configured_retry_backoff_delay(
+                                &provider_ctx_owned.upstream_retry_policy,
+                                configured_retry,
+                            ),
+                            timeout_secs: None,
+                        })
+                        .await;
                     }
-                    let outcome = format!(
-                        "stream_prefix_read_error: category={} code={} decision={}",
-                        ErrorCategory::SystemError.as_str(),
-                        error_code,
-                        decision.as_str(),
-                    );
+                };
 
-                    return record_system_failure_and_decide(RecordSystemFailureArgs {
-                        ctx,
-                        provider_ctx,
-                        attempt_ctx,
-                        loop_state: LoopState {
-                            attempts,
-                            failed_provider_ids,
-                            last_outcome,
-                            active_requested_model,
-                            circuit_snapshot,
-                            abort_guard,
-                        },
-                        status: Some(status.as_u16()),
-                        error_code,
-                        decision,
-                        outcome,
-                        reason: format!("failed to inspect event-stream prefix: {err}"),
-                        record_circuit_failure: should_record_circuit_failure(
-                            &provider_ctx_owned.upstream_retry_policy,
-                            configured_retry,
-                        ),
-                        configured_retry_backoff: configured_retry_backoff_delay(
-                            &provider_ctx_owned.upstream_retry_policy,
-                            configured_retry,
-                        ),
-                        timeout_secs: None,
-                    })
-                    .await;
+                let Some(chunk) = next_chunk else {
+                    first_chunk =
+                        (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
+                    break;
+                };
+                if initial_first_byte_ms.is_none() {
+                    initial_first_byte_ms = Some(attempt_started.elapsed().as_millis());
                 }
-            };
-
-            let Some(chunk) = next_chunk else {
-                first_chunk = (!buffered_prefix.is_empty()).then(|| Bytes::from(buffered_prefix));
-                break;
-            };
-            if initial_first_byte_ms.is_none() {
-                initial_first_byte_ms = Some(attempt_started.elapsed().as_millis());
+                buffered_prefix.extend_from_slice(chunk.as_ref());
             }
-            buffered_prefix.extend_from_slice(chunk.as_ref());
+        }
+
+        if common.provider_health_mode.bypasses_circuit() {
+            return handle_infinite_buffered_event_stream(
+                ctx,
+                common,
+                provider_ctx,
+                provider_ctx_owned,
+                attempt_ctx,
+                LoopState {
+                    attempts,
+                    failed_provider_ids,
+                    last_outcome,
+                    active_requested_model,
+                    circuit_snapshot,
+                    abort_guard,
+                },
+                first_chunk,
+                upstream,
+                should_gunzip,
+                decode_gzip_before_guard,
+                status,
+                response_headers,
+                enable_response_fixer,
+                response_fixer_stream_config,
+                upstream_stream_idle_timeout,
+                initial_first_byte_ms,
+                upstream_read_limit_exceeded,
+            )
+            .await;
         }
 
         let outcome = "success".to_string();

@@ -83,6 +83,10 @@ pub(super) struct ProxyContext<R: tauri::Runtime = tauri::Wry> {
     pub(super) strip_request_content_encoding_seed: bool,
     pub(super) special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
     pub(super) provider_health_neutral: bool,
+    pub(super) provider_health_mode: crate::gateway::infinite_retry::ProviderHealthMode,
+    pub(super) is_codex_system_request: bool,
+    pub(super) codex_infinite_retry:
+        Option<crate::gateway::infinite_retry::InfiniteRetryRequestConfig>,
 
     // -- model inference results --
     pub(super) requested_model: Option<String>,
@@ -149,6 +153,8 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             effective_sort_mode_id: self.effective_sort_mode_id,
             providers: self.providers,
             session_bound_provider_id: self.session_bound_provider_id,
+            allow_session_reuse: self.allow_session_reuse,
+            forced_provider_id: self.forced_provider_id,
             dispatch_intent: self.dispatch_intent,
             probe_observations: self.probe_observations,
             is_compact_request: self.is_compact_request,
@@ -159,6 +165,9 @@ impl<R: tauri::Runtime> ProxyContext<R> {
             strip_request_content_encoding_seed: self.strip_request_content_encoding_seed,
             special_settings: self.special_settings,
             provider_health_neutral: self.provider_health_neutral,
+            provider_health_mode: self.provider_health_mode,
+            is_codex_system_request: self.is_codex_system_request,
+            codex_infinite_retry: self.codex_infinite_retry,
             is_codex_model_discovery: self.is_codex_model_discovery,
             provider_base_url_ping_cache_ttl_seconds: rs.provider_base_url_ping_cache_ttl_seconds,
             verbose_provider_error: rs.verbose_provider_error,

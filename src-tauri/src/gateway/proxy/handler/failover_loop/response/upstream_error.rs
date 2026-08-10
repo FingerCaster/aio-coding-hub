@@ -8,6 +8,7 @@ use super::context::{
     requested_model_for_audit, AttemptCtx, AttemptOutcome, CommonCtx, CommonCtxOwned, LoopControl,
     LoopState, ProviderCtx, MAX_NON_SSE_BODY_BYTES,
 };
+use super::event_helpers::observe_infinite_attempt_usage;
 use super::thinking_signature_rectifier_400;
 use super::upstream_retry_policy::{
     configured_retry_backoff_delay, has_content_http_retry_rule, match_code_only_http_retry_rule,
@@ -43,6 +44,7 @@ use crate::gateway::response_fixer;
 use crate::gateway::streams::GunzipStream;
 use crate::gateway::util::{now_unix_seconds, strip_hop_headers};
 use crate::shared::mutex_ext::MutexExt;
+use crate::usage;
 use axum::body::{Body, Bytes};
 use axum::http::{header, HeaderValue};
 
@@ -462,7 +464,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         ) || matches!(status.as_u16(), 402 | 429));
     // Error classification and diagnostic capture are separate concerns. Authentication bodies
     // may be scanned in memory when required, but must never reach console or persisted previews.
-    let persist_error_body_preview = !matches!(status.as_u16(), 401 | 403);
+    let health_bypass = ctx.provider_health_mode.bypasses_circuit();
+    let persist_error_body_preview = !health_bypass && !matches!(status.as_u16(), 401 | 403);
     let need_error_body_preview = !is_count_tokens
         && persist_error_body_preview
         && (status.is_client_error() || status.is_server_error())
@@ -665,11 +668,15 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
             upstream.configured_transient_retries_used.saturating_add(1);
     }
 
+    if health_bypass && matches!(decision, FailoverDecision::Abort) {
+        decision = FailoverDecision::SwitchProvider;
+    }
+
     let oauth_quota_exhausted = auth_mode == "oauth" && matched_rule_id == Some("quota_exhausted");
-    let mut circuit_state_before = Some(circuit_before.state.as_str());
+    let mut circuit_state_before = (!health_bypass).then_some(circuit_before.state.as_str());
     let mut circuit_state_after: Option<&'static str> = None;
-    let mut circuit_failure_count = Some(circuit_before.failure_count);
-    let circuit_failure_threshold = Some(circuit_before.failure_threshold);
+    let mut circuit_failure_count = (!health_bypass).then_some(circuit_before.failure_count);
+    let circuit_failure_threshold = (!health_bypass).then_some(circuit_before.failure_threshold);
 
     let now_unix = now_unix_seconds() as i64;
     if oauth_quota_exhausted {
@@ -680,7 +687,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         );
     }
 
-    if !is_count_tokens
+    if !health_bypass
+        && !is_count_tokens
         && !oauth_quota_exhausted
         && should_record_http_circuit_failure(category, upstream_retry_policy, configured_retry)
     {
@@ -725,7 +733,8 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         }
     }
 
-    if !is_count_tokens
+    if !health_bypass
+        && !is_count_tokens
         && !probe_active
         && provider_cooldown_secs > 0
         && matches!(category, ErrorCategory::ProviderError)
@@ -804,6 +813,12 @@ pub(super) async fn handle_non_success_response<R: tauri::Runtime>(
         dc::selection_method(provider_index, retry_index, session_reuse)
     };
     let reason_code = category.reason_code();
+
+    let failed_usage = response_rule_body
+        .as_deref()
+        .or_else(|| abort_body_bytes.as_deref())
+        .and_then(|body| usage::parse_usage_from_json_or_sse_bytes(ctx.cli_key.as_str(), body));
+    observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, failed_usage.as_ref(), None);
 
     attempts.push(FailoverAttempt {
         provider_id,

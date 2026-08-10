@@ -96,12 +96,13 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
         is_claude_count_tokens_request(ctx.cli_key.as_str(), ctx.forwarded_path.as_str());
     let now_unix = now_unix_seconds() as i64;
 
-    let mut circuit_state_before = Some(circuit_before.state.as_str());
+    let health_bypass = ctx.provider_health_mode.bypasses_circuit();
+    let mut circuit_state_before = (!health_bypass).then_some(circuit_before.state.as_str());
     let mut circuit_state_after: Option<&'static str> = None;
-    let mut circuit_failure_count = Some(circuit_before.failure_count);
-    let circuit_failure_threshold = Some(circuit_before.failure_threshold);
+    let mut circuit_failure_count = (!health_bypass).then_some(circuit_before.failure_count);
+    let circuit_failure_threshold = (!health_bypass).then_some(circuit_before.failure_threshold);
 
-    if !is_count_tokens && record_circuit_failure {
+    if !health_bypass && !is_count_tokens && record_circuit_failure {
         let change = if let Some(ownership) = dispatch_ownership.filter(|value| value.is_probe()) {
             match ownership.record_probe_attempt_failure(now_unix, true, Some(error_code)) {
                 Some(circuit_breaker::ProbeCommitResult::Applied(change)) => change,
@@ -203,6 +204,7 @@ async fn record_system_failure_and_decide_impl<R: tauri::Runtime>(
     *last_outcome = Some(AttemptOutcome::new(category.as_str(), error_code));
 
     let should_apply_cooldown = matches!(cooldown_policy, CooldownPolicy::Apply)
+        && !health_bypass
         && !probe_active
         && !is_claude_count_tokens_request(ctx.cli_key.as_str(), ctx.forwarded_path.as_str());
 

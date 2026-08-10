@@ -14,8 +14,8 @@ use crate::gateway::proxy::handler::provider_selection::probe_planner::{
     PlannedFailbackTarget, ProbePlannerDecision, ProbePlannerInput,
 };
 use crate::gateway::proxy::handler::provider_selection::{
-    resolve_session_bound_provider_id, resolve_session_routing_decision,
-    select_providers_with_session_binding, ProviderSelection,
+    resolve_session_bound_provider_id, resolve_session_bound_provider_id_without_circuit,
+    resolve_session_routing_decision, select_providers_with_session_binding, ProviderSelection,
 };
 use crate::gateway::response_fixer;
 use crate::session_manager::{SessionProbeTrigger, SessionRouteFingerprint};
@@ -50,6 +50,7 @@ impl ProviderResolutionMiddleware {
             let cli_key = ctx.cli_key.clone();
             let session_id = ctx.session_id.clone();
             let session_binding_request = ctx.session_binding_request;
+            let bypass_circuit = ctx.provider_health_mode.bypasses_circuit();
             let created_at = ctx.created_at;
             let managed_provider_identity = ctx
                 .managed_model_route
@@ -79,7 +80,9 @@ impl ProviderResolutionMiddleware {
                         &state,
                         &cli_key,
                         session_id.as_deref(),
-                        session_binding_request,
+                        (!bypass_circuit)
+                            .then_some(session_binding_request)
+                            .flatten(),
                         created_at,
                     )
                 }
@@ -133,20 +136,33 @@ impl ProviderResolutionMiddleware {
         );
 
         // --- session bound provider ---
-        ctx.session_bound_provider_id = resolve_session_bound_provider_id(
-            ctx.state.session.as_ref(),
-            ctx.state.circuit.as_ref(),
-            &ctx.cli_key,
-            ctx.session_id.as_deref(),
-            ctx.created_at,
-            ctx.allow_session_reuse,
-            ctx.forced_provider_id,
-            &mut ctx.providers,
-            selection.bound_provider_order.as_deref(),
-        );
+        ctx.session_bound_provider_id = if ctx.provider_health_mode.bypasses_circuit() {
+            resolve_session_bound_provider_id_without_circuit(
+                ctx.state.session.as_ref(),
+                &ctx.cli_key,
+                ctx.session_id.as_deref(),
+                ctx.created_at,
+                ctx.allow_session_reuse,
+                ctx.forced_provider_id,
+                &mut ctx.providers,
+                selection.bound_provider_order.as_deref(),
+            )
+        } else {
+            resolve_session_bound_provider_id(
+                ctx.state.session.as_ref(),
+                ctx.state.circuit.as_ref(),
+                &ctx.cli_key,
+                ctx.session_id.as_deref(),
+                ctx.created_at,
+                ctx.allow_session_reuse,
+                ctx.forced_provider_id,
+                &mut ctx.providers,
+                selection.bound_provider_order.as_deref(),
+            )
+        };
 
         // --- no enabled provider guard ---
-        if ctx.providers.is_empty() {
+        if ctx.providers.is_empty() && ctx.codex_infinite_retry.is_none() {
             let final_provider_ids = provider_ids(&ctx.providers);
 
             push_special_setting(
@@ -195,6 +211,11 @@ fn plan_request_failback<R: tauri::Runtime>(
     latest_route: &SessionRouteFingerprint,
     route_changed: bool,
 ) {
+    if ctx.provider_health_mode.bypasses_circuit() {
+        ctx.dispatch_intent = None;
+        ctx.probe_observations.clear();
+        return;
+    }
     let Some(runtime_settings) = ctx.runtime_settings.as_ref() else {
         return;
     };
