@@ -6,6 +6,8 @@ pub(super) use types::{StreamActivityTracker, StreamFinalizeCtx};
 mod finalize;
 mod request_end;
 
+mod terminal_firewall;
+
 mod relay;
 pub(super) use relay::FirstChunkStream;
 #[cfg(test)]

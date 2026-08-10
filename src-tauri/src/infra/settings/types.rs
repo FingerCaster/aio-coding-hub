@@ -101,21 +101,80 @@ impl Default for UpstreamHttpRetryRule {
     }
 }
 
-#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type)]
-#[serde(default)]
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, specta::Type)]
 pub struct UpstreamStreamInternalErrorPolicy {
     pub enabled: bool,
-    pub retry_keywords: Vec<String>,
-    pub non_retry_keywords: Vec<String>,
+    pub passthrough_keywords: Vec<String>,
+    /// One-release compatibility state. New UI/config writers must not add
+    /// entries here; old retry keywords are only allowed to upgrade an
+    /// otherwise-unknown pre-commit classification.
+    pub legacy_retry_keywords: Vec<String>,
 }
 
 impl Default for UpstreamStreamInternalErrorPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            retry_keywords: Vec::new(),
-            non_retry_keywords: Vec::new(),
+            passthrough_keywords: Vec::new(),
+            legacy_retry_keywords: Vec::new(),
         }
+    }
+}
+
+#[derive(Deserialize)]
+#[serde(default, deny_unknown_fields)]
+struct UpstreamStreamInternalErrorPolicyWire {
+    enabled: bool,
+    passthrough_keywords: WireField<Vec<String>>,
+    non_retry_keywords: WireField<Vec<String>>,
+    legacy_retry_keywords: WireField<Vec<String>>,
+    retry_keywords: WireField<Vec<String>>,
+}
+
+impl Default for UpstreamStreamInternalErrorPolicyWire {
+    fn default() -> Self {
+        Self {
+            enabled: true,
+            passthrough_keywords: WireField::Missing,
+            non_retry_keywords: WireField::Missing,
+            legacy_retry_keywords: WireField::Missing,
+            retry_keywords: WireField::Missing,
+        }
+    }
+}
+
+impl<'de> Deserialize<'de> for UpstreamStreamInternalErrorPolicy {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        let wire = UpstreamStreamInternalErrorPolicyWire::deserialize(deserializer)?;
+        let mut passthrough_keywords = match wire.passthrough_keywords {
+            WireField::Value(values) => values,
+            WireField::Null => vec![String::new()],
+            WireField::Missing => Vec::new(),
+        };
+        match wire.non_retry_keywords {
+            WireField::Value(values) => passthrough_keywords.extend(values),
+            WireField::Null => passthrough_keywords.push(String::new()),
+            WireField::Missing => {}
+        };
+        let mut legacy_retry_keywords = match wire.legacy_retry_keywords {
+            WireField::Value(values) => values,
+            WireField::Null => vec![String::new()],
+            WireField::Missing => Vec::new(),
+        };
+        match wire.retry_keywords {
+            WireField::Value(values) => legacy_retry_keywords.extend(values),
+            WireField::Null => legacy_retry_keywords.push(String::new()),
+            WireField::Missing => {}
+        }
+
+        Ok(Self {
+            enabled: wire.enabled,
+            passthrough_keywords,
+            legacy_retry_keywords,
+        })
     }
 }
 
@@ -155,7 +214,7 @@ impl Default for UpstreamRetryPolicy {
 }
 
 #[derive(Deserialize)]
-#[serde(default)]
+#[serde(default, deny_unknown_fields)]
 struct UpstreamRetryPolicyWire {
     enabled: bool,
     http_rules: WireField<Vec<UpstreamHttpRetryRule>>,
@@ -570,8 +629,8 @@ pub(super) fn default_cli_priority_order() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, ModelRoutingPolicy, UpstreamRetryPolicy, UpstreamTransportRetryKind,
-        DEFAULT_CAPACITY_RETRY_KEYWORD,
+        AppSettings, ModelRoutingPolicy, UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy,
+        UpstreamTransportRetryKind, DEFAULT_CAPACITY_RETRY_KEYWORD,
     };
 
     #[test]
@@ -595,8 +654,40 @@ mod tests {
             ]
         );
         assert!(policy.stream_internal_errors.enabled);
-        assert!(policy.stream_internal_errors.retry_keywords.is_empty());
-        assert!(policy.stream_internal_errors.non_retry_keywords.is_empty());
+        assert!(policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
+        assert!(policy
+            .stream_internal_errors
+            .legacy_retry_keywords
+            .is_empty());
+    }
+
+    #[test]
+    fn stream_terminal_firewall_wire_defaults_and_migrates_legacy_fields() {
+        let missing_enabled: UpstreamStreamInternalErrorPolicy =
+            serde_json::from_value(serde_json::json!({"passthrough_keywords": ["new"]}))
+                .expect("missing enabled defaults");
+        assert!(missing_enabled.enabled);
+
+        let migrated: UpstreamStreamInternalErrorPolicy =
+            serde_json::from_value(serde_json::json!({
+                "enabled": false,
+                "passthrough_keywords": ["new"],
+                "non_retry_keywords": ["old-pass"],
+                "legacy_retry_keywords": ["kept"],
+                "retry_keywords": ["old-retry"]
+            }))
+            .expect("legacy aliases migrate");
+        assert!(!migrated.enabled);
+        assert_eq!(migrated.passthrough_keywords, vec!["new", "old-pass"]);
+        assert_eq!(migrated.legacy_retry_keywords, vec!["kept", "old-retry"]);
+
+        let serialized = serde_json::to_value(migrated).expect("serialize migrated policy");
+        assert!(serialized.get("retry_keywords").is_none());
+        assert!(serialized.get("non_retry_keywords").is_none());
+        assert_eq!(serialized["enabled"], false);
     }
 
     #[test]

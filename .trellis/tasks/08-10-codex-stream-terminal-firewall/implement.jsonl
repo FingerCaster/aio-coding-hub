@@ -1,0 +1,4 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"定义共享 retry budget、原生 Codex SSE 提交前恢复、终态改写、诊断脱敏和必须保留的非目标路径。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"确认瞬态流重试如何预留请求级 attempt budget，以及 Provider override、backoff、circuit 的边界。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"本任务同时修改 Rust 设置、生成绑定、前端 adapter/UI 和流 relay，需要按跨层数据流检查。"}
+{"file":".trellis/tasks/08-10-codex-stream-terminal-firewall/research/stream-terminal-flow.md","reason":"记录已核对的调用链、现有测试锚点、配置复用关系和实现约束，避免子代理重新猜测路径。"}

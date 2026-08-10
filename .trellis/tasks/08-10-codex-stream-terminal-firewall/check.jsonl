@@ -1,0 +1,5 @@
+{"file":".trellis/spec/aio-coding-hub/cross-layer/upstream-error-handling-contract.md","reason":"按上游错误契约检查 retry/rewrite 分离、提交前恢复、终态状态码和证据脱敏。"}
+{"file":".trellis/spec/aio-coding-hub/backend/gateway-attempt-budget-contract.md","reason":"检查共享预算、Provider override、backoff 和 circuit 计数没有被 firewall 分支绕过。"}
+{"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查 Rust、bindings、前端 adapter/UI、Provider share 和 stream relay 的跨层字段一致性。"}
+{"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"检查是否复用了现有 SSE parser、tracker、错误投影和设置规范化，避免新增重复逻辑。"}
+{"file":".trellis/tasks/08-10-codex-stream-terminal-firewall/research/stream-terminal-flow.md","reason":"提供审查用的代码锚点、已知回归测试和安全边界，核对实现是否覆盖复现问题。"}

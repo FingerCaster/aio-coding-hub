@@ -17,6 +17,7 @@ use std::sync::Arc;
 
 const MAX_PLUGIN_ERROR_BODY_BYTES: usize = 256 * 1024;
 const CLIENT_TRANSIENT_FAILURE_MESSAGE: &str = "upstream transient failure";
+const CLIENT_STREAM_TERMINAL_FAILURE_MESSAGE: &str = "upstream stream terminated";
 
 #[derive(Debug, Serialize)]
 struct GatewayErrorResponse {
@@ -30,21 +31,20 @@ struct GatewayErrorResponse {
 
 fn sanitize_attempts_for_client(mut attempts: Vec<FailoverAttempt>) -> Vec<FailoverAttempt> {
     for attempt in &mut attempts {
-        let capacity_evidence = attempt
-            .stream_internal_error
-            .as_ref()
-            .is_some_and(crate::usage::StreamInternalErrorEvidence::contains_codex_capacity_signal);
+        let has_stream_evidence = attempt.stream_internal_error.is_some();
         let capacity_reason = attempt
             .reason
             .as_deref()
             .is_some_and(crate::usage::contains_codex_capacity_signal);
 
-        if capacity_evidence || capacity_reason {
-            attempt.reason = Some(CLIENT_TRANSIENT_FAILURE_MESSAGE.to_string());
-            // The full bounded evidence remains in gateway events and request
-            // logs. Client-facing diagnostics must not expose any capacity
-            // signal that could make Codex stop instead of retrying.
+        if has_stream_evidence {
+            attempt.reason = Some(CLIENT_STREAM_TERMINAL_FAILURE_MESSAGE.to_string());
+            // Bounded evidence remains available to gateway events and request
+            // logs only. Client diagnostics never receive upstream terminal
+            // type/code/message/keyword fields, regardless of classification.
             attempt.stream_internal_error = None;
+        } else if capacity_reason {
+            attempt.reason = Some(CLIENT_TRANSIENT_FAILURE_MESSAGE.to_string());
         }
     }
 
@@ -283,7 +283,7 @@ pub(super) async fn apply_gateway_error_hook(
 mod tests {
     use super::{
         classify_upstream_status, sanitize_attempts_for_client, sanitize_message_for_client,
-        FailoverDecision, CLIENT_TRANSIENT_FAILURE_MESSAGE,
+        FailoverDecision, CLIENT_STREAM_TERMINAL_FAILURE_MESSAGE, CLIENT_TRANSIENT_FAILURE_MESSAGE,
     };
     use crate::gateway::events::FailoverAttempt;
     use crate::gateway::proxy::{ErrorCategory, GatewayErrorCode};
@@ -371,7 +371,7 @@ mod tests {
             )]);
             assert_eq!(
                 sanitized[0].reason.as_deref(),
-                Some(CLIENT_TRANSIENT_FAILURE_MESSAGE)
+                Some(CLIENT_STREAM_TERMINAL_FAILURE_MESSAGE)
             );
             assert!(sanitized[0].stream_internal_error.is_none());
         }
@@ -395,7 +395,7 @@ mod tests {
     }
 
     #[test]
-    fn client_attempts_preserve_unrelated_verbose_evidence() {
+    fn client_attempts_remove_all_verbose_stream_evidence() {
         let mut evidence = stream_evidence();
         evidence.error_code = Some("service_unavailable_error".to_string());
         evidence.message = Some("temporary provider failure".to_string());
@@ -406,9 +406,9 @@ mod tests {
 
         assert_eq!(
             sanitized[0].reason.as_deref(),
-            Some("upstream returned a terminal stream error")
+            Some(CLIENT_STREAM_TERMINAL_FAILURE_MESSAGE)
         );
-        assert_eq!(sanitized[0].stream_internal_error, Some(evidence));
+        assert!(sanitized[0].stream_internal_error.is_none());
     }
 
     #[test]

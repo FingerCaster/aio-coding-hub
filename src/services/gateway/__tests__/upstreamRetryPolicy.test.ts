@@ -20,8 +20,8 @@ describe("upstreamRetryPolicy", () => {
     expect(cloned.transport_errors).toEqual(["connect", "timeout", "read"]);
     expect(cloned.stream_internal_errors).toEqual({
       enabled: true,
-      retry_keywords: [],
-      non_retry_keywords: [],
+      passthrough_keywords: [],
+      legacy_retry_keywords: [],
     });
     cloned.http_rules[0].body_contains.push("changed");
     expect(DEFAULT_UPSTREAM_RETRY_POLICY.http_rules[0].body_contains).toEqual([

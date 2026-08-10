@@ -20,6 +20,15 @@ function Harness() {
   );
 }
 
+function LegacyKeywordHarness() {
+  const [policy, setPolicy] = useState<UpstreamRetryPolicy>(() => {
+    const initial = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
+    initial.stream_internal_errors.legacy_retry_keywords = ["legacy one", "legacy two"];
+    return initial;
+  });
+  return <RetryPolicyFields policy={policy} disabled={false} onChange={setPolicy} />;
+}
+
 describe("RetryPolicyFields", () => {
   it("adds, edits, disables, and deletes HTTP rules", () => {
     render(<Harness />);
@@ -69,38 +78,43 @@ describe("RetryPolicyFields", () => {
     expect(deleted.http_rules).toHaveLength(1);
   });
 
-  it("edits and disables the stream-internal-error keyword policy", () => {
+  it("edits and disables the stream terminal firewall passthrough policy", () => {
     render(<Harness />);
 
     expect(screen.getByText("网络与传输失败")).toBeInTheDocument();
     expect(screen.getByText("无法与供应商建立连接。")).toBeInTheDocument();
     expect(screen.getByText("每个供应商最多重试次数")).toBeInTheDocument();
-    expect(screen.queryByLabelText("重试关键词（每行一项）")).not.toBeInTheDocument();
-    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 200 流内部错误规则" }));
-    expect(screen.getByText(/网关返回 502 \/ GW_FAKE_200/)).toBeInTheDocument();
-    const retryKeywords = screen.getByLabelText("重试关键词（每行一项）");
-    const nonRetryKeywords = screen.getByLabelText("不重试关键词（每行一项）");
-    fireEvent.change(retryKeywords, { target: { value: "capacity\noverloaded" } });
-    fireEvent.change(nonRetryKeywords, { target: { value: "policy\nsafety" } });
+    expect(screen.queryByLabelText("终态帧透传例外（每行一项）")).not.toBeInTheDocument();
+    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
+    expect(screen.getByText(/502 \/ GW_FAKE_200/)).toBeInTheDocument();
+    const passthroughKeywords = screen.getByLabelText("终态帧透传例外（每行一项）");
+    fireEvent.change(passthroughKeywords, { target: { value: "ticket-123\nvendor oddity" } });
 
     let edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as {
       stream_internal_errors: {
         enabled: boolean;
-        retry_keywords: string[];
-        non_retry_keywords: string[];
+        passthrough_keywords: string[];
+        legacy_retry_keywords: string[];
       };
     };
     expect(edited.stream_internal_errors).toEqual({
       enabled: true,
-      retry_keywords: ["capacity", "overloaded"],
-      non_retry_keywords: ["policy", "safety"],
+      passthrough_keywords: ["ticket-123", "vendor oddity"],
+      legacy_retry_keywords: [],
     });
 
-    fireEvent.click(screen.getByRole("switch", { name: "启用流内部错误重试" }));
+    fireEvent.click(screen.getByRole("switch", { name: "启用 Codex 流终态防火墙" }));
     edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as typeof edited;
     expect(edited.stream_internal_errors.enabled).toBe(false);
-    expect(retryKeywords).toBeDisabled();
-    expect(nonRetryKeywords).toBeDisabled();
+    expect(passthroughKeywords).toBeDisabled();
+  });
+
+  it("shows migrated retry keywords as a read-only compatibility notice", () => {
+    render(<LegacyKeywordHarness />);
+
+    fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
+    expect(screen.getByText(/已迁移 2 条旧版重试词/)).toBeInTheDocument();
+    expect(screen.queryByLabelText(/旧版兼容重试词/)).not.toBeInTheDocument();
   });
 
   it("allows the backend character limit for astral descriptions", () => {

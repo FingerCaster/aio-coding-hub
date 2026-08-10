@@ -264,6 +264,9 @@ enum BufferedStreamPrefixDecision {
         error_code: &'static str,
         evidence: Option<usage::StreamInternalErrorEvidence>,
     },
+    SanitizedTerminal {
+        evidence: usage::StreamInternalErrorEvidence,
+    },
     FinalizeAsEmptyBody(&'static str),
 }
 
@@ -336,28 +339,27 @@ fn inspect_buffered_event_stream_prefix(
             if let Some(evidence) = usage::classify_codex_stream_internal_error(
                 &event_name,
                 &data,
-                config.retry_policy.enabled && config.retry_policy.stream_internal_errors.enabled,
-                &config.retry_policy.stream_internal_errors.retry_keywords,
+                config.retry_policy.stream_internal_errors.enabled,
+                &[],
                 &config
                     .retry_policy
                     .stream_internal_errors
-                    .non_retry_keywords,
+                    .legacy_retry_keywords,
+                true,
                 "buffered_before_commit",
             ) {
-                // Capacity failures must never be committed to Codex. Disabling
-                // configured retries changes the decision to provider switch,
-                // but does not opt back into forwarding the upstream SSE error.
-                if evidence.is_retryable()
-                    || usage::is_codex_capacity_stream_internal_error(&event_name, &data)
-                {
+                if !config.retry_policy.stream_internal_errors.enabled {
+                    return BufferedStreamPrefixDecision::StartStreaming {
+                        guard_cap_reached: false,
+                    };
+                }
+                if evidence.is_retryable() {
                     return BufferedStreamPrefixDecision::ProviderFailure {
                         error_code: GatewayErrorCode::Fake200.as_str(),
                         evidence: Some(evidence),
                     };
                 }
-                return BufferedStreamPrefixDecision::StartStreaming {
-                    guard_cap_reached: false,
-                };
+                return BufferedStreamPrefixDecision::SanitizedTerminal { evidence };
             }
             if usage::has_codex_meaningful_output(&data)
                 && state.meaningful_output_started_at.is_none()
@@ -618,7 +620,10 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
             decision.as_str()
         )
     };
-    if let Some(evidence) = evidence.as_mut() {
+    if let Some(evidence) = evidence
+        .as_mut()
+        .filter(|evidence| !evidence.is_legacy_retry_override())
+    {
         evidence.set_disposition(match decision {
             FailoverDecision::RetrySameProvider => "retry_same_provider",
             FailoverDecision::SwitchProvider => "switch_provider",
@@ -695,6 +700,168 @@ async fn record_buffered_provider_failure<R: tauri::Runtime>(
         }
         LoopControl::BreakRetry
     }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn finalize_sanitized_stream_terminal<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    status: StatusCode,
+    raw: &[u8],
+    mut evidence: usage::StreamInternalErrorEvidence,
+) -> LoopControl {
+    let verbose_provider_error = ctx.verbose_provider_error;
+    let common = CommonCtxOwned::from(ctx);
+    let provider = ProviderCtxOwned::from(provider_ctx);
+    let AttemptCtx {
+        retry_index,
+        attempt_started_ms,
+        attempt_started,
+        circuit_before,
+        ..
+    } = attempt_ctx;
+    let LoopState {
+        attempts,
+        last_outcome,
+        circuit_snapshot,
+        abort_guard,
+        ..
+    } = loop_state;
+    let error_code = GatewayErrorCode::Fake200.as_str();
+    let error_category = ErrorCategory::ProviderError;
+    let effective_status = effective_terminal_failure_status(status, error_code);
+    let neutral_reason =
+        "upstream Codex Responses stream terminated before response commit".to_string();
+
+    evidence.set_disposition("sanitized_before_commit");
+    crate::gateway::model_route_mapping::observe_model_route_from_bytes(
+        crate::gateway::model_route_mapping::ModelRouteBytesInput {
+            cli_key: common.cli_key.as_str(),
+            requested_model: provider
+                .active_requested_model
+                .as_deref()
+                .or(common.requested_model.as_deref()),
+            response_bytes: raw,
+            special_settings: &common.special_settings,
+            provider_id: provider.provider_id,
+            provider_name: provider.provider_name_base.as_str(),
+        },
+    );
+
+    let probe_active = provider
+        .dispatch_ownership
+        .as_ref()
+        .is_some_and(|ownership| ownership.is_probe());
+    let probe_trigger = provider
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe())
+        .and_then(|ownership| ownership.probe_trigger())
+        .map(|trigger| trigger.as_str());
+    let probe_generation = provider
+        .dispatch_ownership
+        .as_ref()
+        .filter(|ownership| ownership.is_probe())
+        .and_then(|ownership| ownership.probe_generation());
+    let outcome = format!(
+        "stream_internal_error: category={} code={} decision={}",
+        error_category.as_str(),
+        error_code,
+        FailoverDecision::Abort.as_str()
+    );
+
+    attempts.push(FailoverAttempt {
+        provider_id: provider.provider_id,
+        provider_name: provider.provider_name_base.clone(),
+        base_url: provider.provider_base_url_base.clone(),
+        outcome: outcome.clone(),
+        status: Some(effective_status.as_u16()),
+        provider_index: Some(provider.provider_index),
+        retry_index: Some(retry_index),
+        session_reuse: provider.session_reuse,
+        provider_bridged: Some(provider.provider_bridged),
+        error_category: Some(error_category.as_str()),
+        error_code: Some(error_code),
+        decision: Some(FailoverDecision::Abort.as_str()),
+        reason: Some(neutral_reason.clone()),
+        selection_method: if probe_active {
+            Some(dc::SELECTION_METHOD_CIRCUIT_PROBE)
+        } else {
+            dc::selection_method(provider.provider_index, retry_index, provider.session_reuse)
+        },
+        reason_code: Some(error_category.reason_code()),
+        attempt_started_ms: Some(attempt_started_ms),
+        attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+        circuit_state_before: Some(circuit_before.state.as_str()),
+        circuit_state_after: Some(circuit_before.state.as_str()),
+        circuit_failure_count: Some(circuit_before.failure_count),
+        circuit_failure_threshold: Some(circuit_before.failure_threshold),
+        probe: probe_active.then_some(true),
+        probe_trigger,
+        probe_result: probe_active.then_some("failed"),
+        probe_generation,
+        circuit_recover_at_unix: None,
+        circuit_trigger_error_code: None,
+        timeout_secs: None,
+        stream_internal_error: Some(evidence),
+        requested_upstream_model: provider.active_requested_model.clone(),
+    });
+
+    emit_attempt_event_and_log_with_circuit_before(
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        outcome,
+        Some(effective_status.as_u16()),
+    )
+    .await;
+    finalize_probe_failure_and_emit(
+        &common.state.app,
+        common.trace_id.as_str(),
+        common.cli_key.as_str(),
+        common.upstream_first_byte_timeout_secs,
+        provider.dispatch_ownership.as_ref(),
+        provider.provider_id,
+        provider.provider_name_base.as_str(),
+        provider.provider_base_url_base.as_str(),
+        circuit_snapshot,
+        Some(error_code),
+    );
+    *last_outcome = Some(AttemptOutcome::new(error_category.as_str(), error_code));
+
+    let requested_model = requested_model_for_audit(
+        &common.special_settings,
+        common.managed_model_route.as_ref(),
+        common.requested_model.as_deref(),
+        provider.active_requested_model.as_deref(),
+    );
+    let response =
+        super::finalize::terminal_request_error(super::finalize::TerminalRequestErrorInput {
+            state: common.state,
+            abort_guard,
+            status: effective_status,
+            observe: common.observe,
+            attempts: std::mem::take(attempts),
+            cli_key: common.cli_key,
+            method_hint: common.method_hint,
+            forwarded_path: common.forwarded_path,
+            query: common.query,
+            trace_id: common.trace_id,
+            started: common.started,
+            created_at_ms: common.created_at_ms,
+            created_at: common.created_at,
+            session_id: common.session_id,
+            requested_model,
+            special_settings: common.special_settings,
+            verbose_provider_error,
+            error_category: error_category.as_str(),
+            error_code,
+            reason: neutral_reason,
+        })
+        .await;
+    LoopControl::Return(response)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -1302,6 +1469,25 @@ where
                     )
                     .await;
                 }
+                BufferedStreamPrefixDecision::SanitizedTerminal { evidence } => {
+                    return finalize_sanitized_stream_terminal(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        status,
+                        buffered_prefix.as_slice(),
+                        evidence,
+                    )
+                    .await;
+                }
                 BufferedStreamPrefixDecision::StartStreaming { guard_cap_reached } => {
                     if guard_cap_reached {
                         tracing::warn!(
@@ -1545,11 +1731,9 @@ where
             attempts.as_slice(),
             status.as_u16(),
             attempt_started,
-            is_native_codex_responses_event_stream_path(
+            is_codex_responses_event_stream_path(
                 common.cli_key.as_str(),
                 common.forwarded_path.as_str(),
-                active_bridge_type,
-                provider_ctx_owned.provider_bridged,
             ),
         );
 
@@ -1935,7 +2119,7 @@ mod tests {
                 evidence: Some(evidence),
             } => {
                 assert_eq!(error_code, "GW_FAKE_200");
-                assert_eq!(evidence.classification, "retryable");
+                assert_eq!(evidence.classification, "transient_capacity");
                 assert_eq!(
                     evidence.message.as_deref(),
                     Some("Selected model is at capacity")
@@ -1984,7 +2168,7 @@ mod tests {
                     evidence: Some(evidence),
                 } => {
                     assert_eq!(error_code, "GW_FAKE_200");
-                    assert_eq!(evidence.classification, "retryable");
+                    assert_eq!(evidence.classification, "transient_capacity");
                     assert_eq!(evidence.error_code.as_deref(), Some(expected_code));
                     assert!(evidence.matched_keyword.is_none());
                 }
@@ -1994,33 +2178,51 @@ mod tests {
     }
 
     #[test]
-    fn buffered_native_stream_forwards_nonretry_and_unknown_terminal_errors() {
+    fn buffered_native_stream_sanitizes_hard_and_unknown_terminal_errors() {
         let terminal_errors = [
-            r#"{"error":{"message":"content policy rejected"}}"#,
-            r#"{"error":{"message":"unrecognized terminal failure"}}"#,
-            r#"{"error":{"code":"service_unavailable_error"}}"#,
+            (
+                r#"{"error":{"message":"content policy rejected"}}"#,
+                "policy",
+            ),
+            (
+                r#"{"error":{"message":"unrecognized terminal failure"}}"#,
+                "unknown",
+            ),
         ];
-        for data in terminal_errors {
+        for (data, expected_classification) in terminal_errors {
             let raw = format!("event: response.failed\ndata: {data}\n\n");
             let mut state = BufferedStreamPrefixState::default();
-            assert!(matches!(
-                inspect_buffered_event_stream_prefix(
-                    &native_prefix_config(
-                        &crate::settings::UpstreamRetryPolicy::default(),
-                        Duration::from_millis(500),
-                    ),
-                    &mut state,
-                    raw.as_bytes(),
+            match inspect_buffered_event_stream_prefix(
+                &native_prefix_config(
+                    &crate::settings::UpstreamRetryPolicy::default(),
+                    Duration::from_millis(500),
                 ),
-                BufferedStreamPrefixDecision::StartStreaming {
-                    guard_cap_reached: false
+                &mut state,
+                raw.as_bytes(),
+            ) {
+                BufferedStreamPrefixDecision::SanitizedTerminal { evidence } => {
+                    assert_eq!(evidence.classification, expected_classification);
                 }
-            ));
+                _ => panic!("hard/unknown terminal error must be sanitized before commit"),
+            }
         }
+
+        let mut state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(
+                    &crate::settings::UpstreamRetryPolicy::default(),
+                    Duration::from_millis(500),
+                ),
+                &mut state,
+                b"event: response.failed\ndata: {\"error\":{\"code\":\"service_unavailable_error\"}}\n\n",
+            ),
+            BufferedStreamPrefixDecision::ProviderFailure { .. }
+        ));
     }
 
     #[test]
-    fn buffered_native_stream_intercepts_capacity_when_retries_are_disabled() {
+    fn buffered_native_stream_uses_failover_when_configured_retries_are_disabled() {
         let disabled_policy = crate::settings::UpstreamRetryPolicy {
             enabled: false,
             stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
@@ -2042,16 +2244,124 @@ mod tests {
                 evidence: Some(evidence),
             } => {
                 assert_eq!(error_code, "GW_FAKE_200");
-                assert_eq!(evidence.classification, "disabled");
+                assert_eq!(evidence.classification, "transient_capacity");
                 assert_eq!(evidence.error_code.as_deref(), Some("SLOW_DOWN"));
                 assert_eq!(evidence.disposition, "buffered_before_commit");
             }
-            _ => panic!("capacity terminal event must not reach Codex when retries are disabled"),
+            _ => panic!("capacity terminal event must enter shared failover handling"),
         }
     }
 
     #[test]
-    fn buffered_native_stream_does_not_promote_legacy_broad_terminal_signals() {
+    fn buffered_native_stream_master_switch_restores_raw_terminal_passthrough() {
+        let disabled_policy = crate::settings::UpstreamRetryPolicy {
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: false,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        for data in [
+            b"event: response.failed\ndata: {\"response\":{\"error\":{\"code\":\"SLOW_DOWN\"}}}\n\n".as_slice(),
+            b"event: response.error\ndata: {\"type\":\"response.error\",\"error\":{\"code\":\"vendor_oddity\"}}\n\n".as_slice(),
+        ] {
+            let mut state = BufferedStreamPrefixState::default();
+            assert!(matches!(
+                inspect_buffered_event_stream_prefix(
+                    &native_prefix_config(&disabled_policy, Duration::from_millis(500)),
+                    &mut state,
+                    data,
+                ),
+                BufferedStreamPrefixDecision::StartStreaming {
+                    guard_cap_reached: false
+                }
+            ));
+        }
+    }
+
+    #[test]
+    fn buffered_native_stream_legacy_retry_only_upgrades_unknown() {
+        let policy = crate::settings::UpstreamRetryPolicy {
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: true,
+                passthrough_keywords: Vec::new(),
+                legacy_retry_keywords: vec!["vendor-odd".to_string()],
+            },
+            ..Default::default()
+        };
+        let mut state = BufferedStreamPrefixState::default();
+        match inspect_buffered_event_stream_prefix(
+            &native_prefix_config(&policy, Duration::from_millis(500)),
+            &mut state,
+            b"event: response.failed\ndata: {\"error\":{\"message\":\"vendor-odd\"}}\n\n",
+        ) {
+            BufferedStreamPrefixDecision::ProviderFailure {
+                evidence: Some(evidence),
+                ..
+            } => {
+                assert_eq!(evidence.classification, "unknown");
+                assert_eq!(evidence.disposition, "legacy_retry_override");
+            }
+            _ => panic!("legacy keyword must only upgrade unknown before commit"),
+        }
+
+        let mut state = BufferedStreamPrefixState::default();
+        match inspect_buffered_event_stream_prefix(
+            &native_prefix_config(&policy, Duration::from_millis(500)),
+            &mut state,
+            b"event: response.failed\ndata: {\"error\":{\"message\":\"invalid_api_key vendor-odd\"}}\n\n",
+        ) {
+            BufferedStreamPrefixDecision::SanitizedTerminal { evidence } => {
+                assert_eq!(evidence.classification, "auth");
+            }
+            _ => panic!("legacy keyword must not override hard non-retry classification"),
+        }
+    }
+
+    #[test]
+    fn buffered_native_stream_passthrough_is_post_commit_only() {
+        let policy = crate::settings::UpstreamRetryPolicy {
+            stream_internal_errors: crate::settings::UpstreamStreamInternalErrorPolicy {
+                enabled: true,
+                passthrough_keywords: vec!["ticket-123".to_string()],
+                legacy_retry_keywords: Vec::new(),
+            },
+            ..Default::default()
+        };
+
+        let mut state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut state,
+                b"event: response.failed\ndata: {\"error\":{\"message\":\"ticket-123\"}}\n\n",
+            ),
+            BufferedStreamPrefixDecision::SanitizedTerminal { .. }
+        ));
+
+        let mut state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut state,
+                b"event: response.failed\ndata: {\"error\":{\"message\":\"at capacity ticket-123\"}}\n\n",
+            ),
+            BufferedStreamPrefixDecision::ProviderFailure { .. }
+        ));
+
+        let mut state = BufferedStreamPrefixState::default();
+        assert!(matches!(
+            inspect_buffered_event_stream_prefix(
+                &native_prefix_config(&policy, Duration::from_millis(500)),
+                &mut state,
+                b"event: response.failed\ndata: {\"error\":{\"message\":\"content_policy_violation ticket-123\"}}\n\n",
+            ),
+            BufferedStreamPrefixDecision::SanitizedTerminal { .. }
+        ));
+    }
+
+    #[test]
+    fn buffered_native_stream_classifies_normalized_terminal_status() {
         let raw = concat!(
             "event: response.output_text.delta\n",
             "data: {\"type\":\"response.output_text.delta\",\"delta\":\"hello\"}\n\n",
@@ -2062,19 +2372,22 @@ mod tests {
         );
         let mut state = BufferedStreamPrefixState::default();
 
-        assert!(matches!(
-            inspect_buffered_event_stream_prefix(
-                &native_prefix_config(
-                    &crate::settings::UpstreamRetryPolicy::default(),
-                    Duration::from_millis(500),
-                ),
-                &mut state,
-                raw.as_bytes(),
+        match inspect_buffered_event_stream_prefix(
+            &native_prefix_config(
+                &crate::settings::UpstreamRetryPolicy::default(),
+                Duration::from_millis(500),
             ),
-            BufferedStreamPrefixDecision::StartStreaming {
-                guard_cap_reached: false
+            &mut state,
+            raw.as_bytes(),
+        ) {
+            BufferedStreamPrefixDecision::ProviderFailure {
+                evidence: Some(evidence),
+                ..
+            } => {
+                assert_eq!(evidence.classification, "transient_capacity");
             }
-        ));
+            _ => panic!("normalized failed status must enter structured handling"),
+        }
     }
 
     #[test]

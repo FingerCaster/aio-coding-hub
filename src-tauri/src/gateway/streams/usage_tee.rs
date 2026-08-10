@@ -21,6 +21,7 @@ use super::super::util::{
 };
 use super::plugin_chunk::PLUGIN_STREAM_ERROR_MARKER;
 use super::request_end::{emit_request_event_and_spawn_request_log, StreamRequestCompletion};
+use super::terminal_firewall::CodexTerminalFirewall;
 use super::types::{StreamTerminalEvidence, StreamTerminalOrigin};
 #[cfg(test)]
 use super::RelayBodyStream;
@@ -299,6 +300,7 @@ where
     finalized: bool,
     defer_terminal_error: bool,
     stop_after_terminal_error: bool,
+    completion_override: Option<bool>,
 }
 
 impl<S, B, R> UsageSseTeeStream<S, B, R>
@@ -317,14 +319,14 @@ where
         let tracker = usage::SseUsageTracker::new(&ctx.cli_key);
         let tracker = if ctx.detect_stream_internal_errors {
             tracker.with_stream_internal_error_classifier(
-                ctx.upstream_retry_policy.enabled
-                    && ctx.upstream_retry_policy.stream_internal_errors.enabled,
+                ctx.upstream_retry_policy.stream_internal_errors.enabled,
                 &ctx.upstream_retry_policy
                     .stream_internal_errors
-                    .retry_keywords,
+                    .passthrough_keywords,
                 &ctx.upstream_retry_policy
                     .stream_internal_errors
-                    .non_retry_keywords,
+                    .legacy_retry_keywords,
+                false,
             )
         } else {
             tracker
@@ -339,6 +341,7 @@ where
             finalized: false,
             defer_terminal_error: false,
             stop_after_terminal_error: false,
+            completion_override: None,
         }
     }
 
@@ -386,9 +389,7 @@ where
                 // When defer_terminal_error is set and the tracker saw a terminal
                 // error, skip finalization here — the relay task will decide the
                 // final error_code with Codex-specific tolerance logic.
-                if finalize_terminal
-                    && !(self.defer_terminal_error && self.tracker.terminal_error_seen())
-                {
+                if finalize_terminal && !self.defer_terminal_error {
                     self.finalize(
                         self.ctx.error_code,
                         StreamTerminalEvidence::new(
@@ -532,12 +533,15 @@ where
         self.finalized = true;
 
         let usage = self.tracker.finalize();
-        terminal_evidence.completion_seen |= self.tracker.completion_seen();
+        let completion_seen = self
+            .completion_override
+            .unwrap_or_else(|| self.tracker.completion_seen());
+        terminal_evidence.completion_seen |= completion_seen;
         terminal_evidence.usage_seen |= usage.is_some();
         terminal_evidence.terminal_error_seen |= self.tracker.terminal_error_seen();
         let terminal_signal = if error_code.is_some() {
             Some("error")
-        } else if self.tracker.completion_seen() {
+        } else if completion_seen {
             Some("completed")
         } else {
             None
@@ -670,7 +674,9 @@ where
             // Best-effort flush for trailing partial SSE data before deciding abort/success.
             let usage = self.tracker.finalize();
             let usage_seen = usage.is_some();
-            let completion_seen = self.tracker.completion_seen();
+            let completion_seen = self
+                .completion_override
+                .unwrap_or_else(|| self.tracker.completion_seen());
             let terminal_error_seen = self.tracker.terminal_error_seen();
 
             let codex_successish = is_codex_drop_successish(
@@ -780,6 +786,19 @@ where
         let mut relay_drain_timed_out = false;
 
         let is_codex_responses = is_codex_responses_path(&tee.ctx.cli_key, &tee.ctx.path);
+        let firewall_enabled =
+            is_codex_responses && tee.ctx.upstream_retry_policy.stream_internal_errors.enabled;
+        let mut terminal_firewall = firewall_enabled.then(|| {
+            CodexTerminalFirewall::new(
+                &tee.ctx
+                    .upstream_retry_policy
+                    .stream_internal_errors
+                    .passthrough_keywords,
+            )
+        });
+        let mut visible_completion_seen = false;
+        let mut firewall_terminal_error = false;
+        let mut firewall_stopped_normally = false;
         let mut drain_deadline: Option<tokio::time::Instant> = None;
         let drain_grace = {
             // Codex ChatGPT backend: response.completed (carrying usage) may arrive
@@ -863,14 +882,69 @@ where
                 item = next_item(&mut tee) => {
                     let Some(item) = item else {
                         upstream_ended_normally = true;
+                        if let Some(firewall) = terminal_firewall.as_mut() {
+                            let output = firewall.finish();
+                            if let Some(reason) = output.fail_closed_reason {
+                                firewall_terminal_error = true;
+                                response_fixer::push_special_setting(
+                                    &tee.ctx.special_settings,
+                                    serde_json::json!({
+                                        "type": "stream_terminal_firewall",
+                                        "disposition": "dropped_after_commit",
+                                        "reason": reason,
+                                    }),
+                                );
+                            }
+                        }
                         break;
                     };
 
                     match item {
-                        Ok(chunk) => {
+                        Ok(mut chunk) => {
+                            let mut completion_seen = tee.tracker.completion_seen();
+                            let mut stop_after_chunk = false;
+                            if let Some(firewall) = terminal_firewall.as_mut() {
+                                let output = firewall.ingest(chunk.as_ref());
+                                visible_completion_seen |= output.completion_seen;
+                                completion_seen = output.completion_seen;
+                                stop_after_chunk = output.stop;
+                                let terminal_error = output.terminal_error;
+                                firewall_terminal_error |= terminal_error;
+                                firewall_stopped_normally |= output.stop && !terminal_error;
+
+                                if let Some(evidence) = output.evidence.as_ref() {
+                                    tee.tracker.set_stream_internal_error_disposition(
+                                        evidence.disposition.as_str(),
+                                    );
+                                    response_fixer::push_special_setting(
+                                        &tee.ctx.special_settings,
+                                        serde_json::json!({
+                                            "type": "stream_terminal_firewall",
+                                            "disposition": evidence.disposition,
+                                            "classification": evidence.classification,
+                                        }),
+                                    );
+                                } else if let Some(reason) = output.fail_closed_reason {
+                                    response_fixer::push_special_setting(
+                                        &tee.ctx.special_settings,
+                                        serde_json::json!({
+                                            "type": "stream_terminal_firewall",
+                                            "disposition": "dropped_after_commit",
+                                            "reason": reason,
+                                        }),
+                                    );
+                                }
+                                chunk = output.bytes;
+                            }
+
+                            if chunk.is_empty() {
+                                if stop_after_chunk {
+                                    break;
+                                }
+                                continue;
+                            }
                             let chunk_len = chunk.len().min(i64::MAX as usize) as i64;
 
-                            let completion_seen = tee.tracker.completion_seen();
                             if tx
                                 .send(DownstreamRelayItem {
                                     item: Ok(chunk),
@@ -890,8 +964,26 @@ where
 
                             forwarded_chunks = forwarded_chunks.saturating_add(1);
                             forwarded_bytes = forwarded_bytes.saturating_add(chunk_len);
+                            if stop_after_chunk {
+                                break;
+                            }
                         }
                         Err(err) => {
+                            if let Some(firewall) = terminal_firewall.as_mut() {
+                                let output = firewall.finish();
+                                if let Some(reason) = output.fail_closed_reason {
+                                    firewall_terminal_error = true;
+                                    response_fixer::push_special_setting(
+                                        &tee.ctx.special_settings,
+                                        serde_json::json!({
+                                            "type": "stream_terminal_firewall",
+                                            "disposition": "dropped_after_commit",
+                                            "reason": reason,
+                                        }),
+                                    );
+                                    break;
+                                }
+                            }
                             // 尽力把流错误透传给客户端
                             let _ = tx
                                 .send(DownstreamRelayItem {
@@ -910,8 +1002,16 @@ where
         // detected a terminal-error-like SSE event, apply Codex-specific
         // tolerance: if we already saw output AND completion/usage, treat the
         // request as successful instead of marking it GW_STREAM_ERROR.
-        if client_abort_detected_by.is_none() && tee.tracker.terminal_error_seen() {
-            let completion_seen = tee.tracker.completion_seen();
+        let terminal_error_seen = firewall_terminal_error || tee.tracker.terminal_error_seen();
+        if client_abort_detected_by.is_none() && terminal_error_seen {
+            let completion_seen = if firewall_enabled {
+                visible_completion_seen
+            } else {
+                tee.tracker.completion_seen()
+            };
+            if firewall_enabled {
+                tee.completion_override = Some(completion_seen);
+            }
             let saw_stream_output = tee.first_byte_ms.is_some()
                 || forwarded_chunks > 0
                 || forwarded_bytes > 0
@@ -966,6 +1066,31 @@ where
                     ),
                 );
             }
+        }
+
+        if client_abort_detected_by.is_none()
+            && !tee.finalized
+            && !terminal_error_seen
+            && (upstream_ended_normally || firewall_stopped_normally)
+        {
+            let completion_seen = if firewall_enabled {
+                visible_completion_seen
+            } else {
+                tee.tracker.completion_seen()
+            };
+            if firewall_enabled {
+                tee.completion_override = Some(completion_seen);
+            }
+            tee.finalize(
+                tee.ctx.error_code,
+                StreamTerminalEvidence::new(
+                    StreamTerminalOrigin::NormalEof,
+                    completion_seen,
+                    true,
+                    completion_seen,
+                    false,
+                ),
+            );
         }
 
         if let Some(detected_by) = client_abort_detected_by {

@@ -4626,8 +4626,13 @@ export type UpstreamRetryPolicy = {
 };
 export type UpstreamStreamInternalErrorPolicy = {
   enabled: boolean;
-  retry_keywords: string[];
-  non_retry_keywords: string[];
+  passthrough_keywords: string[];
+  /**
+   * One-release compatibility state. New UI/config writers must not add
+   * entries here; old retry keywords are only allowed to upgrade an
+   * otherwise-unknown pre-commit classification.
+   */
+  legacy_retry_keywords: string[];
 };
 export type UpstreamTransportRetryKind = "connect" | "timeout" | "read";
 export type UsageDayDetailParams = {
