@@ -84,6 +84,15 @@ export type AppSettingsPatch = Partial<Omit<AppSettings, "update_channel">> & {
 };
 
 type AssertNever<TValue extends never> = TValue;
+type DedicatedUpdateChannelViewKey = Extract<keyof AppSettings, "update_channel">;
+type OrdinaryUpdateChannelInputKey = Extract<
+  keyof FrontendSettingsUpdate | keyof FrontendSettingsPatch,
+  "updateChannel" | "update_channel"
+>;
+
+/** update_channel is read-only in SettingsView and owned only by settings_update_channel_set. */
+export type __AssertUpdateChannelExcludedFromOrdinarySettings =
+  AssertNever<OrdinaryUpdateChannelInputKey>;
 
 export type SettingsViewBackedInputKey = Exclude<
   keyof FrontendSettingsUpdate,
@@ -167,6 +176,7 @@ type SettingsViewKeysHandledByCreateInput =
 
 type SettingsViewKeysHandledOutsideCreateInput =
   | "schema_version"
+  | DedicatedUpdateChannelViewKey
   | "enable_circuit_breaker_notice"
   | "enable_codex_session_id_completion"
   | "verbose_provider_error"

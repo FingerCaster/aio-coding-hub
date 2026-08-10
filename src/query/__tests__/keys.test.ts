@@ -201,7 +201,8 @@ describe("query/keys", () => {
 
   it("builds updater keys", () => {
     expect(updaterKeys.all).toEqual(["updater"]);
-    expect(updaterKeys.check()).toEqual(["updater", "check"]);
+    expect(updaterKeys.check()).toEqual(["updater", "check", "stable"]);
+    expect(updaterKeys.check("beta")).toEqual(["updater", "check", "beta"]);
   });
 
   it("builds wsl keys", () => {

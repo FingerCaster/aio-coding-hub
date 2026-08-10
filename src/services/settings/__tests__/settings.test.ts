@@ -202,6 +202,21 @@ describe("services/settings/settings", () => {
     ).toEqual({ providerCooldownSeconds: 99 });
   });
 
+  it("never forwards update_channel through the ordinary settings writer", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue({ schema_version: 1 } as any);
+
+    const { settingsPatch } = await import("../settings");
+    await settingsPatch(createTestAppSettings(), { update_channel: "beta" } as any);
+
+    const calls = vi.mocked(tauriInvoke).mock.calls;
+    const sentPatch = calls[calls.length - 1]?.[1]?.patch as Record<string, unknown>;
+    expect(sentPatch).not.toHaveProperty("updateChannel");
+    expect(sentPatch).not.toHaveProperty("update_channel");
+    expect(Object.values(sentPatch).every((value) => value === null)).toBe(true);
+  });
+
   it("only sends auto-start intent when the patch owns auto_start", async () => {
     setTauriRuntime();
     vi.resetModules();

@@ -1,3 +1,4 @@
+import { AIO_REPO_URL } from "../../constants/urls";
 import {
   desktopUpdaterCheck,
   desktopUpdaterDiscard,
@@ -6,20 +7,11 @@ import {
   type DesktopUpdaterCheck,
   type DesktopUpdaterDownloadEvent,
 } from "../desktop/updater";
-import type { UpdateChannel } from "../../generated/bindings";
-import { AIO_REPO_URL } from "../../constants/urls";
+import { normalizeUpdateChannel, type UpdateChannel } from "./updateChannel";
 
-export type UpdaterCheckUpdate =
-  | DesktopUpdaterCheck
-  | {
-      rid: 9_999_001;
-      channel?: never;
-      version: string;
-      currentVersion?: string;
-      date?: string;
-      body?: string;
-      releaseUrl?: never;
-    };
+export type UpdaterCheckUpdate = DesktopUpdaterCheck & {
+  generation?: number;
+};
 
 export type UpdaterCheckResult = UpdaterCheckUpdate | null;
 
@@ -27,11 +19,45 @@ const GITHUB_RELEASE_FALLBACK_RE = /^See release:\s+(\S+)$/;
 const GITHUB_RELEASE_BODY_TIMEOUT_MS = 5_000;
 const AIO_REPO_PATH = new URL(AIO_REPO_URL).pathname.split("/").filter(Boolean);
 
-export function parseUpdaterCheckResult(value: unknown): UpdaterCheckResult {
-  return parseDesktopUpdaterCheck(value);
+export function parseUpdaterCheckResult(
+  value: unknown,
+  expectedChannel: UpdateChannel = "stable"
+): UpdaterCheckResult {
+  return parseDesktopUpdaterCheck(value, expectedChannel);
 }
 
-function parseGitHubReleaseFallbackBody(body?: string) {
+export function updaterCandidateChannel(update: UpdaterCheckResult): UpdateChannel | null {
+  return update?.channel === "stable" || update?.channel === "beta" ? update.channel : null;
+}
+
+export function isExactAioReleaseUrl(value: unknown): value is string {
+  if (typeof value !== "string") return false;
+
+  let url: URL;
+  try {
+    url = new URL(value);
+  } catch {
+    return false;
+  }
+
+  const [owner, repo, releases, tagMarker, tag, ...rest] = url.pathname.split("/").filter(Boolean);
+  return (
+    url.protocol === "https:" &&
+    url.host === "github.com" &&
+    url.username.length === 0 &&
+    url.password.length === 0 &&
+    url.search.length === 0 &&
+    url.hash.length === 0 &&
+    owner === AIO_REPO_PATH[0] &&
+    repo === AIO_REPO_PATH[1] &&
+    releases === "releases" &&
+    tagMarker === "tag" &&
+    Boolean(tag) &&
+    rest.length === 0
+  );
+}
+
+function parseGitHubReleaseFallbackBody(body?: string | null) {
   const match = typeof body === "string" ? GITHUB_RELEASE_FALLBACK_RE.exec(body.trim()) : null;
   if (!match) return null;
 
@@ -109,7 +135,8 @@ async function resolveGitHubReleaseFallbackBody(
 }
 
 export async function updaterCheck(channel: UpdateChannel = "stable"): Promise<UpdaterCheckResult> {
-  return resolveGitHubReleaseFallbackBody(await desktopUpdaterCheck({ channel }));
+  const expectedChannel = normalizeUpdateChannel(channel);
+  return resolveGitHubReleaseFallbackBody(await desktopUpdaterCheck({ channel: expectedChannel }));
 }
 
 export async function updaterDiscard(rid: number): Promise<boolean> {
@@ -125,3 +152,5 @@ export async function updaterDownloadAndInstall(options: {
 }
 
 export type UpdaterDownloadEvent = DesktopUpdaterDownloadEvent;
+export { settingsUpdateChannelSet } from "./updateChannel";
+export type { UpdateChannel } from "./updateChannel";

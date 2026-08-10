@@ -1,6 +1,7 @@
 import type { MouseEvent as ReactMouseEvent } from "react";
 import { NavLink } from "react-router-dom";
 import type { LucideIcon } from "lucide-react";
+import { toast } from "sonner";
 import {
   Activity,
   Boxes,
@@ -27,12 +28,18 @@ import grokLogo from "../assets/brand/grok-logo.svg";
 import { cliShortLabel, clisWith, type CliKey } from "../constants/clis";
 import { AIO_REPO_URL } from "../constants/urls";
 import { useDevPreviewData } from "../hooks/useDevPreviewData";
-import { useGatewayStatus, openReleasesUrl } from "../hooks/useGatewayStatus";
+import { useGatewayStatus } from "../hooks/useGatewayStatus";
 import { useTheme } from "../hooks/useTheme";
-import { updateDialogSetOpen } from "../hooks/useUpdateMeta";
+import {
+  openUpdateCandidateReleaseUrl,
+  updateDialogSetError,
+  updateDialogSetOpen,
+} from "../hooks/useUpdateMeta";
 import { useCliProxyControls } from "../hooks/useCliProxyControls";
 import { CliProxyConflictDialog } from "../components/cli-proxy/CliProxyConflictDialog";
 import { openDesktopUrl } from "../services/desktop/opener";
+import { isExactAioReleaseUrl, updaterCandidateChannel } from "../services/app/updater";
+import { logToConsole } from "../services/consoleLog";
 import { Switch } from "./Switch";
 import { cn } from "../utils/cn";
 
@@ -110,14 +117,20 @@ type ThemeValue = (typeof THEME_OPTIONS)[number]["value"];
 type CliProxyState = ReturnType<typeof useCliProxyControls>;
 
 function SidebarHeader({
+  repoHref,
   repoLinkLabel,
   repoLinkTitle,
   hasUpdate,
+  updateBadgeText,
+  updateBadgeAccessibleText,
   handleRepoClick,
 }: {
+  repoHref: string;
   repoLinkLabel: string;
   repoLinkTitle: string;
   hasUpdate: boolean;
+  updateBadgeText: string;
+  updateBadgeAccessibleText: string;
   handleRepoClick: (event: ReactMouseEvent<HTMLAnchorElement>) => void;
 }) {
   return (
@@ -134,7 +147,7 @@ function SidebarHeader({
           </div>
         </div>
         <a
-          href={AIO_REPO_URL}
+          href={repoHref}
           target="_blank"
           rel="noopener noreferrer"
           aria-label={repoLinkLabel}
@@ -148,12 +161,15 @@ function SidebarHeader({
           )}
         >
           {hasUpdate ? (
-            <span
-              aria-hidden="true"
-              className="absolute -top-2 left-1/2 -translate-x-1/2 rounded-full bg-success/15 px-1 text-[7px] font-extrabold leading-normal tracking-wider text-success ring-1 ring-success/30"
-            >
-              NEW
-            </span>
+            <>
+              <span
+                aria-hidden="true"
+                className="absolute -top-2 left-1/2 -translate-x-1/2 whitespace-nowrap rounded-full bg-success/15 px-1 text-[7px] font-extrabold leading-normal tracking-wider text-success ring-1 ring-success/30"
+              >
+                {updateBadgeText}
+              </span>
+              <span className="sr-only">{updateBadgeAccessibleText}</span>
+            </>
           ) : null}
           <svg className="h-4 w-4" fill="currentColor" viewBox="0 0 24 24" aria-hidden="true">
             <path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z" />
@@ -456,21 +472,31 @@ export function Sidebar({ className }: SidebarProps) {
     isGatewayStopped,
     hasUpdate,
     isPortable,
+    updateCandidate,
   } = useGatewayStatus();
   const { theme, setTheme } = useTheme();
   const devPreview = useDevPreviewData();
   const cliProxyState = useCliProxyControls();
   const { pendingCliProxyEnablePrompt } = cliProxyState;
   const gatewayAriaLabel = `网关状态：${statusText}，端口 ${portText}`;
+  const isBetaUpdate =
+    updateCandidate != null && updaterCandidateChannel(updateCandidate) === "beta";
+  const updateVersion = updateCandidate?.version ?? "未知版本";
+  const updateSummary = isBetaUpdate ? `Beta 更新 ${updateVersion}` : `发现新版本 ${updateVersion}`;
+  const portableReleaseHref = isExactAioReleaseUrl(updateCandidate?.releaseUrl)
+    ? updateCandidate.releaseUrl
+    : "#";
+  const repoHref =
+    hasUpdate && isPortable && !devPreview.enabled ? portableReleaseHref : AIO_REPO_URL;
   const repoLinkLabel = hasUpdate
     ? isPortable && !devPreview.enabled
-      ? "AIO Coding Hub GitHub：发现新版本，打开下载页"
-      : "AIO Coding Hub GitHub：发现新版本，打开更新对话框"
+      ? `AIO Coding Hub GitHub：${updateSummary}，打开精确 Release`
+      : `AIO Coding Hub GitHub：${updateSummary}，打开更新对话框`
     : "AIO Coding Hub GitHub 仓库";
   const repoLinkTitle = hasUpdate
     ? isPortable && !devPreview.enabled
-      ? "发现新版本（portable：打开下载页）"
-      : "发现新版本（点击更新）"
+      ? `${updateSummary}（portable：打开精确 Release）`
+      : `${updateSummary}（点击更新）`
     : "AIO Coding Hub GitHub 仓库";
 
   function handleRepoClick(event: ReactMouseEvent<HTMLAnchorElement>) {
@@ -478,7 +504,15 @@ export function Sidebar({ className }: SidebarProps) {
     event.stopPropagation();
     if (hasUpdate) {
       if (isPortable && !devPreview.enabled) {
-        openReleasesUrl().catch(() => {});
+        openUpdateCandidateReleaseUrl(updateCandidate).catch((error) => {
+          const message = error instanceof Error ? error.message : String(error);
+          updateDialogSetError(message);
+          logToConsole("error", "打开候选 Release 失败", {
+            error: message,
+            url: updateCandidate?.releaseUrl ?? null,
+          });
+          toast("打开候选 Release 失败：请稍后重试");
+        });
         return;
       }
       updateDialogSetOpen(true);
@@ -497,9 +531,12 @@ export function Sidebar({ className }: SidebarProps) {
     >
       <div className="flex h-full flex-col">
         <SidebarHeader
+          repoHref={repoHref}
           repoLinkLabel={repoLinkLabel}
           repoLinkTitle={repoLinkTitle}
           hasUpdate={hasUpdate}
+          updateBadgeText={isBetaUpdate ? "Beta 更新" : "NEW"}
+          updateBadgeAccessibleText={updateSummary}
           handleRepoClick={handleRepoClick}
         />
 

@@ -16,10 +16,10 @@ export const DESKTOP_UPDATER_HANDWRITTEN_REASON =
 export type DesktopUpdaterCheck = {
   rid: number;
   channel: UpdateChannel;
-  version: string;
   currentVersion: string;
-  date?: string;
-  body?: string;
+  version: string;
+  date: string | null;
+  body: string | null;
   releaseUrl: string;
 };
 
@@ -50,8 +50,8 @@ function normalizeDesktopUpdaterChannel(channel: unknown): UpdateChannel {
   return channel;
 }
 
-function asOptionalString(value: unknown) {
-  return typeof value === "string" ? value : undefined;
+function asNullableString(value: unknown) {
+  return value === null || typeof value === "string" ? value : undefined;
 }
 
 function asRequiredNonEmptyString(value: unknown) {
@@ -62,19 +62,42 @@ function asOptionalNonNegativeSafeInteger(value: unknown) {
   return typeof value === "number" && Number.isSafeInteger(value) && value >= 0 ? value : undefined;
 }
 
-export function parseDesktopUpdaterCheck(value: unknown): DesktopUpdaterCheck | null {
+export function parseDesktopUpdaterCheck(
+  value: unknown,
+  expectedChannel: UpdateChannel = "stable"
+): DesktopUpdaterCheck | null {
   if (value == null || value === false || typeof value !== "object") {
     return null;
   }
 
   const obj = value as Record<string, unknown>;
+  const requiredKeys = [
+    "rid",
+    "channel",
+    "currentVersion",
+    "version",
+    "releaseUrl",
+    "date",
+    "body",
+  ];
+  if (requiredKeys.some((key) => !Object.prototype.hasOwnProperty.call(obj, key))) {
+    return null;
+  }
+
   const rid = asOptionalNonNegativeSafeInteger(obj.rid);
-  const channel = obj.channel;
   const currentVersion = asRequiredNonEmptyString(obj.currentVersion);
   const version = asRequiredNonEmptyString(obj.version);
   const releaseUrl = asRequiredNonEmptyString(obj.releaseUrl);
-  const date = asOptionalString(obj.date);
-  const body = asOptionalString(obj.body);
+  const rawChannel = obj.channel;
+  if (rawChannel !== "stable" && rawChannel !== "beta") {
+    return null;
+  }
+  const channel = rawChannel;
+  if (channel !== expectedChannel) {
+    return null;
+  }
+  const date = asNullableString(obj.date);
+  const body = asNullableString(obj.body);
   const versionMatchesChannel =
     version != null &&
     /^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$/.test(version) &&
@@ -89,8 +112,8 @@ export function parseDesktopUpdaterCheck(value: unknown): DesktopUpdaterCheck | 
     !versionMatchesChannel ||
     releaseUrl == null ||
     releaseUrl !== expectedReleaseUrl ||
-    (obj.date != null && date == null) ||
-    (obj.body != null && body == null)
+    date === undefined ||
+    body === undefined
   ) {
     return null;
   }
@@ -159,7 +182,7 @@ export async function desktopUpdaterCheck(options?: {
     nullResultBehavior: "return_fallback",
     fallback: null,
   });
-  return parseDesktopUpdaterCheck(result);
+  return parseDesktopUpdaterCheck(result, expectedChannel);
 }
 
 export async function desktopUpdaterDiscard(rid: number): Promise<boolean> {

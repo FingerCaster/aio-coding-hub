@@ -2,8 +2,11 @@ import { fireEvent, render, screen, waitFor, within } from "@testing-library/rea
 import { beforeEach, describe, expect, it, vi } from "vitest";
 import { MemoryRouter } from "react-router-dom";
 import { NAV, NAV_SECTIONS, Sidebar } from "../Sidebar";
-import { AIO_RELEASES_URL, AIO_REPO_URL } from "../../constants/urls";
+import { AIO_REPO_URL } from "../../constants/urls";
 import { tauriOpenUrl } from "../../test/mocks/tauri";
+
+const EXACT_RELEASE_URL =
+  "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.0.0";
 
 const gatewayMetaRef = vi.hoisted(() => ({
   current: { gatewayAvailable: "checking", gateway: null, preferredPort: 37123 } as any,
@@ -23,6 +26,8 @@ const updateMetaRef = vi.hoisted(() => ({
 }));
 
 const updateDialogSetOpenMock = vi.hoisted(() => vi.fn());
+const updateDialogSetErrorMock = vi.hoisted(() => vi.fn());
+const openUpdateCandidateReleaseUrlMock = vi.hoisted(() => vi.fn());
 const devPreviewRef = vi.hoisted(() => ({
   current: { enabled: false, setEnabled: vi.fn(), toggle: vi.fn() } as any,
 }));
@@ -59,6 +64,8 @@ vi.mock("../../hooks/useGatewayMeta", () => ({
 vi.mock("../../hooks/useUpdateMeta", () => ({
   useUpdateMeta: () => updateMetaRef.current,
   updateDialogSetOpen: updateDialogSetOpenMock,
+  updateDialogSetError: updateDialogSetErrorMock,
+  openUpdateCandidateReleaseUrl: openUpdateCandidateReleaseUrlMock,
 }));
 vi.mock("../../hooks/useDevPreviewData", () => ({
   useDevPreviewData: () => devPreviewRef.current,
@@ -73,6 +80,7 @@ vi.mock("../../hooks/useCliProxyControls", () => ({
 describe("ui/Sidebar", () => {
   beforeEach(() => {
     vi.clearAllMocks();
+    openUpdateCandidateReleaseUrlMock.mockResolvedValue(undefined);
     devPreviewRef.current = { enabled: false, setEnabled: vi.fn(), toggle: vi.fn() };
     themeRef.current = { theme: "system", resolvedTheme: "light", setTheme: vi.fn() };
     cliProxyMocks.current = {
@@ -112,6 +120,7 @@ describe("ui/Sidebar", () => {
     expect(within(gatewayStatus).getByText("网关检查中")).toBeInTheDocument();
     expect(screen.getByText("Port: —")).toBeInTheDocument();
     expect(screen.queryByText("NEW")).not.toBeInTheDocument();
+    expect(screen.queryByText("Beta 更新")).not.toBeInTheDocument();
   });
 
   it("switches theme from the sidebar control", () => {
@@ -233,7 +242,7 @@ describe("ui/Sidebar", () => {
     );
 
     const updateLink = screen.getByRole("link", {
-      name: "AIO Coding Hub GitHub：发现新版本，打开更新对话框",
+      name: "AIO Coding Hub GitHub：发现新版本 0.0.0，打开更新对话框",
     });
 
     expect(updateLink).toHaveAttribute("href", AIO_REPO_URL);
@@ -252,11 +261,8 @@ describe("ui/Sidebar", () => {
     updateMetaRef.current = {
       ...updateMetaRef.current,
       about: { run_mode: "portable" },
-      updateCandidate: { version: "0.0.0" },
+      updateCandidate: { version: "0.0.0", releaseUrl: EXACT_RELEASE_URL },
     };
-
-    vi.mocked(tauriOpenUrl).mockRejectedValue(new Error("boom"));
-    const windowOpen = vi.spyOn(window, "open").mockImplementation(() => null as any);
 
     render(
       <MemoryRouter>
@@ -265,19 +271,19 @@ describe("ui/Sidebar", () => {
     );
 
     const updateLink = screen.getByRole("link", {
-      name: "AIO Coding Hub GitHub：发现新版本，打开下载页",
+      name: "AIO Coding Hub GitHub：发现新版本 0.0.0，打开精确 Release",
     });
 
-    expect(updateLink).toHaveAttribute("href", AIO_REPO_URL);
+    expect(updateLink).toHaveAttribute("href", EXACT_RELEASE_URL);
     expect(screen.getByText("NEW")).toBeInTheDocument();
 
     fireEvent.click(updateLink);
 
     await waitFor(() => {
-      expect(tauriOpenUrl).toHaveBeenCalledWith(AIO_RELEASES_URL);
-      expect(windowOpen).toHaveBeenCalledWith(AIO_RELEASES_URL, "_blank", "noopener,noreferrer");
+      expect(openUpdateCandidateReleaseUrlMock).toHaveBeenCalledWith(
+        expect.objectContaining({ releaseUrl: EXACT_RELEASE_URL })
+      );
     });
-    windowOpen.mockRestore();
   });
 
   it("opens update dialog when portable app has dev preview enabled", () => {
@@ -300,7 +306,7 @@ describe("ui/Sidebar", () => {
     );
 
     const updateLink = screen.getByRole("link", {
-      name: "AIO Coding Hub GitHub：发现新版本，打开更新对话框",
+      name: "AIO Coding Hub GitHub：发现新版本 0.0.0，打开更新对话框",
     });
 
     expect(updateLink).toHaveAttribute("href", AIO_REPO_URL);
@@ -308,6 +314,34 @@ describe("ui/Sidebar", () => {
 
     fireEvent.click(updateLink);
     expect(updateDialogSetOpenMock).toHaveBeenCalledWith(true);
+  });
+
+  it("shows the exact prerelease version on every Beta sidebar surface", () => {
+    updateMetaRef.current = {
+      ...updateMetaRef.current,
+      about: { run_mode: "desktop" },
+      updateCandidate: {
+        channel: "beta",
+        version: "0.1.0-beta.2",
+        releaseUrl:
+          "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.1.0-beta.2",
+      },
+    };
+
+    render(
+      <MemoryRouter>
+        <Sidebar />
+      </MemoryRouter>
+    );
+
+    const updateLink = screen.getByRole("link", {
+      name: "AIO Coding Hub GitHub：Beta 更新 0.1.0-beta.2，打开更新对话框",
+    });
+    expect(updateLink).toHaveAttribute("title", "Beta 更新 0.1.0-beta.2（点击更新）");
+    expect(screen.getByText("Beta 更新")).toBeInTheDocument();
+    expect(
+      screen.getByText("Beta 更新 0.1.0-beta.2", { selector: ".sr-only" })
+    ).toBeInTheDocument();
   });
 
   it("renders stopped status with the preferred port when gateway is stopped", () => {

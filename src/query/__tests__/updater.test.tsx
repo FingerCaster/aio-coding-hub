@@ -52,7 +52,42 @@ describe("query/updater", () => {
     });
 
     expect(updaterCheck).toHaveBeenCalledTimes(1);
+    expect(updaterCheck).toHaveBeenCalledWith("stable");
     expect(result.current.data?.version).toBe("0.2.0");
+  });
+
+  it("uses an isolated Beta query key and passes the channel to the adapter", async () => {
+    setTauriRuntime();
+    vi.mocked(updaterCheck).mockResolvedValue({
+      rid: 2,
+      channel: "beta",
+      version: "0.3.0-beta.1",
+      currentVersion: "0.2.0",
+      date: null,
+      body: null,
+      releaseUrl:
+        "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.3.0-beta.1",
+    });
+
+    const client = createTestQueryClient();
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(() => useUpdaterCheckQuery({ channel: "beta", enabled: true }), {
+      wrapper,
+    });
+
+    await waitFor(() => expect(result.current.isSuccess).toBe(true));
+    expect(updaterCheck).toHaveBeenCalledWith("beta");
+    expect(client.getQueryData(["updater", "check", "stable"])).toBeUndefined();
+    expect(client.getQueryData(["updater", "check", "beta"])).toEqual({
+      rid: 2,
+      channel: "beta",
+      version: "0.3.0-beta.1",
+      currentVersion: "0.2.0",
+      date: null,
+      body: null,
+      releaseUrl:
+        "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.3.0-beta.1",
+    });
   });
 
   it("useUpdaterCheckQuery enters error state when updaterCheck rejects", async () => {

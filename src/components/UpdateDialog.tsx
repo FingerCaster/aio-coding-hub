@@ -8,11 +8,13 @@ import {
 } from "@mdxeditor/editor";
 import type { MouseEvent } from "react";
 import { toast } from "sonner";
-import { AIO_RELEASES_URL } from "../constants/urls";
 import { logToConsole } from "../services/consoleLog";
 import { appRestart } from "../services/app/dataManagement";
 import { openDesktopUrl } from "../services/desktop/opener";
+import { updaterCandidateChannel } from "../services/app/updater";
 import {
+  openUpdateCandidateReleaseUrl,
+  updateDialogSetError,
   updateDialogSetOpen,
   updateDownloadAndInstall,
   useUpdateMeta,
@@ -39,16 +41,24 @@ export function UpdateDialog() {
   const updateCandidate = meta.updateCandidate;
   const about = meta.about;
   const isPortable = about?.run_mode === "portable";
+  const isBetaUpdate =
+    updateCandidate != null && updaterCandidateChannel(updateCandidate) === "beta";
+  const candidateVersion = updateCandidate?.version ?? "未知版本";
 
-  async function openReleases() {
+  async function openCandidateRelease() {
     try {
-      await openDesktopUrl(AIO_RELEASES_URL);
+      await openUpdateCandidateReleaseUrl(updateCandidate);
+      updateDialogSetError(null);
+      return true;
     } catch (err) {
-      logToConsole("error", "打开 Releases 失败", { error: String(err), url: AIO_RELEASES_URL });
-      try {
-        window.open(AIO_RELEASES_URL, "_blank", "noopener,noreferrer");
-      } catch {}
-      toast("打开下载页失败：请查看控制台日志");
+      const message = err instanceof Error ? err.message : String(err);
+      updateDialogSetError(message);
+      logToConsole("error", "打开候选 Release 失败", {
+        error: String(err),
+        url: updateCandidate?.releaseUrl ?? null,
+      });
+      toast("打开候选 Release 失败：请稍后重试");
+      return false;
     }
   }
 
@@ -76,8 +86,7 @@ export function UpdateDialog() {
 
     if (isPortable) {
       toast("portable 模式请手动下载");
-      await openReleases();
-      updateDialogSetOpen(false);
+      if (await openCandidateRelease()) updateDialogSetOpen(false);
       return;
     }
 
@@ -118,8 +127,12 @@ export function UpdateDialog() {
     <Dialog
       open={meta.dialogOpen}
       onOpenChange={(open) => updateDialogSetOpen(open)}
-      title="发现新版本"
-      description="下载并安装需要确认；安装完成后将自动重启生效。"
+      title={isBetaUpdate ? "Beta 更新" : "发现新版本"}
+      description={
+        isBetaUpdate
+          ? `确认下载并安装 Beta 更新 ${candidateVersion}；预发布版本可能不稳定。`
+          : "下载并安装需要确认；安装完成后将自动重启生效。"
+      }
       className="max-w-xl"
     >
       <div className="space-y-4">
@@ -131,9 +144,17 @@ export function UpdateDialog() {
             </span>
           </div>
           <div className="flex items-center justify-between gap-4">
-            <span className="text-muted-foreground">最新版本</span>
+            <span className="text-muted-foreground">
+              {isBetaUpdate ? "Beta 更新版本" : "最新版本"}
+            </span>
             <span className="font-mono">{updateCandidate?.version ?? "—"}</span>
           </div>
+          {isBetaUpdate ? (
+            <div className="flex items-center justify-between gap-4">
+              <span className="text-muted-foreground">更新频道</span>
+              <span className="font-medium">Beta 更新</span>
+            </div>
+          ) : null}
           {updateCandidate?.date ? (
             <div className="flex items-center justify-between gap-4">
               <span className="text-muted-foreground">发布日期</span>
@@ -167,7 +188,9 @@ export function UpdateDialog() {
 
         {meta.installingUpdate ? (
           <div className="rounded-lg border border-border bg-white dark:bg-secondary p-3 text-sm text-secondary-foreground">
-            <div className="font-medium">下载并安装中…</div>
+            <div className="font-medium">
+              {isBetaUpdate ? `Beta 更新 ${candidateVersion} 安装中…` : "下载并安装中…"}
+            </div>
             <div className="mt-1 font-mono text-xs text-muted-foreground">
               {formatBytes(meta.installDownloadedBytes)}
               {meta.installTotalBytes != null ? ` / ${formatBytes(meta.installTotalBytes)}` : ""}
@@ -194,10 +217,13 @@ export function UpdateDialog() {
             <Button
               type="button"
               variant="primary"
-              onClick={openReleases}
+              onClick={() => void openCandidateRelease()}
               disabled={!updateCandidate}
+              aria-label={
+                isBetaUpdate ? `打开 Beta 更新 ${candidateVersion} 的 GitHub Release` : undefined
+              }
             >
-              打开下载页
+              {isBetaUpdate ? "打开 Beta Release" : "打开下载页"}
             </Button>
           ) : (
             <Button
@@ -205,8 +231,9 @@ export function UpdateDialog() {
               variant="primary"
               onClick={installUpdate}
               disabled={!updateCandidate || meta.installingUpdate}
+              aria-label={isBetaUpdate ? `下载并安装 Beta 更新 ${candidateVersion}` : undefined}
             >
-              {meta.installingUpdate ? "安装中…" : "下载并安装"}
+              {meta.installingUpdate ? "安装中…" : isBetaUpdate ? "下载并安装 Beta" : "下载并安装"}
             </Button>
           )}
         </div>

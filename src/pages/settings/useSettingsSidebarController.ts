@@ -1,13 +1,11 @@
 import { useCallback, useMemo, useRef, useState } from "react";
-import { toast } from "sonner";
 import type { UpdateMeta } from "../../hooks/useUpdateMeta";
-import { AIO_RELEASES_URL } from "../../constants/urls";
 import { runBackgroundTask } from "../../services/backgroundTasks";
 import type { ConfigImportResult } from "../../services/app/configMigrate";
 import { appDataDirGet, appDataReset, appExit, dbCompact } from "../../services/app/dataManagement";
 import type { ClearRequestLogsResult } from "../../services/app/dataManagement";
 import { openDesktopSinglePath, saveDesktopFilePath } from "../../services/desktop/dialog";
-import { openDesktopPath, openDesktopUrl } from "../../services/desktop/opener";
+import { openDesktopPath } from "../../services/desktop/opener";
 import {
   getLastModelPricesSync,
   setLastModelPricesSync,
@@ -26,7 +24,6 @@ import {
 
 type SettingsSidebarControllerInput = {
   updateMeta: UpdateMeta;
-  devPreviewEnabled: boolean;
   refreshDbDiskUsage: () => Promise<unknown>;
   clearAppDataResetCaches: () => Promise<unknown> | unknown;
   clearRequestLogsMutation: {
@@ -64,7 +61,6 @@ type ConfigImportDialogController = PendingDialogController & {
 export function useSettingsSidebarController(input: SettingsSidebarControllerInput) {
   const {
     updateMeta,
-    devPreviewEnabled,
     refreshDbDiskUsage,
     clearAppDataResetCaches,
     clearRequestLogsMutation,
@@ -110,28 +106,9 @@ export function useSettingsSidebarController(input: SettingsSidebarControllerInp
     }, [])
   );
 
-  const openUpdateLog = useCallback(async () => {
-    try {
-      await openDesktopUrl(AIO_RELEASES_URL);
-    } catch (error) {
-      presentSettingsSidebarFailure({
-        logTitle: "打开更新日志失败",
-        toastMessage: "打开更新日志失败",
-        error,
-        meta: { url: AIO_RELEASES_URL },
-      });
-    }
-  }, []);
-
   const checkUpdate = useCallback(async () => {
     try {
       if (!about) {
-        return;
-      }
-
-      if (about.run_mode === "portable" && !devPreviewEnabled) {
-        toast("portable 模式请手动下载");
-        await openUpdateLog();
         return;
       }
 
@@ -141,7 +118,7 @@ export function useSettingsSidebarController(input: SettingsSidebarControllerInp
     } catch {
       // noop: registered update task already owns failure feedback
     }
-  }, [about, devPreviewEnabled, openUpdateLog]);
+  }, [about]);
 
   const openAppDataDir = useCallback(async () => {
     try {

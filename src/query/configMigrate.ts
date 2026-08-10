@@ -20,6 +20,7 @@ import {
   wslKeys,
 } from "./keys";
 import { advanceProviderModelsGlobalGeneration } from "./providerModels";
+import { notifyUpdateChannelImportSucceeded } from "../services/app/updateChannel";
 
 export function useConfigExportMutation() {
   const [isPending, setIsPending] = useState(false);
@@ -50,6 +51,9 @@ export function useConfigImportMutation() {
     },
     onSuccess: async (result) => {
       if (!result) return;
+      // updater-core normalizes imported channel state to stable on the backend. Hide any
+      // channel-bound candidate before the invalidated settings query repaints the page.
+      await notifyUpdateChannelImportSucceeded();
       await Promise.all([
         queryClient.invalidateQueries({ queryKey: settingsKeys.all }),
         queryClient.invalidateQueries({ queryKey: gatewayKeys.all }),

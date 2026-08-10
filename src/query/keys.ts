@@ -1,6 +1,7 @@
 import type { CliKey } from "../services/providers/providers";
 import type { UsagePeriod, UsageRange, UsageScope } from "../services/usage/usage";
 import type { CliSessionsSource } from "../services/cli/cliSessions";
+import type { UpdateChannel } from "../services/app/updateChannel";
 
 function normalizeKeyParts(values: readonly string[]): string[] {
   const unique: string[] = [];
@@ -356,7 +357,8 @@ export const appAboutKeys = {
 const updaterAllKey = ["updater"] as const;
 export const updaterKeys = {
   all: updaterAllKey,
-  check: () => [...updaterAllKey, "check"] as const,
+  /** Channel is part of the cache namespace; never reuse a candidate across channels. */
+  check: (channel: UpdateChannel = "stable") => [...updaterAllKey, "check", channel] as const,
 };
 
 const wslAllKey = ["wsl"] as const;

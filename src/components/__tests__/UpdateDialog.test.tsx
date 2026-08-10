@@ -1,7 +1,6 @@
 import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { describe, expect, it, vi } from "vitest";
 import { toast } from "sonner";
-import { AIO_RELEASES_URL } from "../../constants/urls";
 import { logToConsole } from "../../services/consoleLog";
 import { appRestart } from "../../services/app/dataManagement";
 import {
@@ -11,6 +10,9 @@ import {
 } from "../../hooks/useUpdateMeta";
 import { tauriOpenUrl } from "../../test/mocks/tauri";
 import { UpdateDialog } from "../UpdateDialog";
+
+const EXACT_RELEASE_URL =
+  "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.0.0";
 
 vi.mock("sonner", () => ({
   toast: Object.assign(vi.fn(), { loading: vi.fn().mockReturnValue("toast-id") }),
@@ -76,6 +78,7 @@ describe("components/UpdateDialog", () => {
 
     expect(screen.getByText("更新日志")).toBeInTheDocument();
     expect(screen.getByText("新增功能")).toBeInTheDocument();
+    expect(screen.queryByText("Beta 更新")).not.toBeInTheDocument();
   });
 
   it("opens changelog markdown links in the system browser", async () => {
@@ -267,7 +270,13 @@ describe("components/UpdateDialog", () => {
   it("opens releases successfully in portable mode", async () => {
     vi.mocked(useUpdateMeta).mockReturnValue({
       about: { run_mode: "portable", app_version: "0.0.0" },
-      updateCandidate: { version: "1.0.0", currentVersion: "0.0.0", date: null, rid: "rid" },
+      updateCandidate: {
+        version: "1.0.0",
+        currentVersion: "0.0.0",
+        date: null,
+        rid: "rid",
+        releaseUrl: EXACT_RELEASE_URL,
+      },
       checkingUpdate: false,
       dialogOpen: true,
       installingUpdate: false,
@@ -283,7 +292,7 @@ describe("components/UpdateDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开下载页" }));
 
     await waitFor(() => {
-      expect(tauriOpenUrl).toHaveBeenCalledWith(AIO_RELEASES_URL);
+      expect(tauriOpenUrl).toHaveBeenCalledWith(EXACT_RELEASE_URL);
     });
     expect(logToConsole).not.toHaveBeenCalled();
   });
@@ -291,7 +300,13 @@ describe("components/UpdateDialog", () => {
   it("opens releases (portable mode) and reports openUrl errors", async () => {
     vi.mocked(useUpdateMeta).mockReturnValue({
       about: { run_mode: "portable", app_version: "0.0.0" },
-      updateCandidate: { version: "1.0.0", currentVersion: "0.0.0", date: null, rid: "rid" },
+      updateCandidate: {
+        version: "1.0.0",
+        currentVersion: "0.0.0",
+        date: null,
+        rid: "rid",
+        releaseUrl: EXACT_RELEASE_URL,
+      },
       checkingUpdate: false,
       dialogOpen: true,
       installingUpdate: false,
@@ -308,8 +323,43 @@ describe("components/UpdateDialog", () => {
     fireEvent.click(screen.getByRole("button", { name: "打开下载页" }));
 
     await waitFor(() => {
-      expect(logToConsole).toHaveBeenCalledWith("error", "打开 Releases 失败", expect.any(Object));
+      expect(logToConsole).toHaveBeenCalledWith(
+        "error",
+        "打开候选 Release 失败",
+        expect.objectContaining({ url: EXACT_RELEASE_URL })
+      );
     });
-    expect(toast).toHaveBeenCalledWith("打开下载页失败：请查看控制台日志");
+    expect(toast).toHaveBeenCalledWith("打开候选 Release 失败：请稍后重试");
+  });
+
+  it("labels every Beta surface with the exact prerelease version", () => {
+    vi.mocked(useUpdateMeta).mockReturnValue({
+      about: { run_mode: "desktop", app_version: "1.0.0" },
+      updateCandidate: {
+        rid: 7,
+        channel: "beta",
+        version: "1.1.0-beta.4",
+        currentVersion: "1.0.0",
+        date: null,
+        body: null,
+        releaseUrl:
+          "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v1.1.0-beta.4",
+      },
+      checkingUpdate: false,
+      dialogOpen: true,
+      installingUpdate: false,
+      installError: null,
+      installTotalBytes: null,
+      installDownloadedBytes: 0,
+    } as any);
+
+    render(<UpdateDialog />);
+
+    expect(screen.getByRole("dialog", { name: "Beta 更新" })).toBeInTheDocument();
+    expect(screen.getByText("1.1.0-beta.4")).toBeInTheDocument();
+    expect(screen.getByText("Beta 更新", { selector: "span" })).toBeInTheDocument();
+    expect(
+      screen.getByRole("button", { name: "下载并安装 Beta 更新 1.1.0-beta.4" })
+    ).toBeInTheDocument();
   });
 });

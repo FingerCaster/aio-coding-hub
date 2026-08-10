@@ -39,7 +39,7 @@ describe("services/app/updater", () => {
     vi.unstubAllGlobals();
   });
 
-  it("parseUpdaterCheckResult requires well-formed channel-bound metadata", async () => {
+  it("parseUpdaterCheckResult requires exact channel-bound metadata", async () => {
     const { parseUpdaterCheckResult } = await import("../updater");
 
     expect(parseUpdaterCheckResult(null)).toBeNull();
@@ -58,7 +58,14 @@ describe("services/app/updater", () => {
     });
     expect(parseUpdaterCheckResult(valid)).toEqual(valid);
 
-    for (const key of ["channel", "currentVersion", "version", "releaseUrl"] as const) {
+    for (const key of [
+      "channel",
+      "currentVersion",
+      "version",
+      "releaseUrl",
+      "date",
+      "body",
+    ] as const) {
       const malformed = { ...valid } as Record<string, unknown>;
       delete malformed[key];
       expect(parseUpdaterCheckResult(malformed)).toBeNull();
@@ -72,12 +79,14 @@ describe("services/app/updater", () => {
       )
     ).toBeNull();
     expect(
+      parseUpdaterCheckResult(
+        createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }),
+        "beta"
+      )
+    ).toEqual(createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }));
+    expect(
       parseUpdaterCheckResult(createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }))
-    ).toEqual({
-      ...createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }),
-      date: undefined,
-      body: undefined,
-    });
+    ).toBeNull();
     expect(
       parseUpdaterCheckResult(createUpdaterMetadata({ channel: "beta", version: "0.60.0-rc.1" }))
     ).toBeNull();
@@ -87,6 +96,26 @@ describe("services/app/updater", () => {
     ).toBeNull();
     expect(parseUpdaterCheckResult({ ...valid, date: 123 })).toBeNull();
     expect(parseUpdaterCheckResult({ ...valid, body: { text: "notes" } })).toBeNull();
+  });
+
+  it("accepts only the exact AIO GitHub release URL", async () => {
+    const { isExactAioReleaseUrl } = await import("../updater");
+
+    expect(isExactAioReleaseUrl(AIO_RELEASE_TAG_URL)).toBe(true);
+    expect(isExactAioReleaseUrl(`${AIO_REPO_URL}/releases/tag/aio-coding-hub-v0.60.0/extra`)).toBe(
+      false
+    );
+    expect(isExactAioReleaseUrl(`${AIO_REPO_URL}/releases/tag/aio-coding-hub-v0.60.0?x=1`)).toBe(
+      false
+    );
+    expect(
+      isExactAioReleaseUrl(
+        "https://github.com.evil.example/FingerCaster/aio-coding-hub/releases/tag/v1"
+      )
+    ).toBe(false);
+    expect(
+      isExactAioReleaseUrl("https://user@github.com/FingerCaster/aio-coding-hub/releases/tag/v1")
+    ).toBe(false);
   });
 
   it("updaterCheck parses tauri result", async () => {
@@ -107,8 +136,8 @@ describe("services/app/updater", () => {
       channel: "stable",
       version: "0.60.0",
       currentVersion: "0.59.0",
-      date: undefined,
-      body: undefined,
+      date: null,
+      body: null,
       releaseUrl: AIO_RELEASE_TAG_URL,
     });
 
@@ -123,6 +152,37 @@ describe("services/app/updater", () => {
       expectedChannel: "beta",
       timeout: null,
     });
+  });
+
+  it("calls the generated updater command with the explicit channel and timeout", async () => {
+    const { commands } = await import("../../../generated/bindings");
+    const original = commands.desktopUpdaterCheck;
+    const generatedCheck = vi.fn(async () => ({
+      status: "ok",
+      data: {
+        rid: 5,
+        channel: "beta",
+        version: "0.61.0-beta.1",
+        currentVersion: "0.60.0",
+        releaseUrl:
+          "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.61.0-beta.1",
+        date: null,
+        body: null,
+      },
+    }));
+    (commands as any).desktopUpdaterCheck = generatedCheck;
+
+    try {
+      const { updaterCheck } = await import("../updater");
+      await expect(updaterCheck("beta")).resolves.toMatchObject({
+        rid: 5,
+        channel: "beta",
+        version: "0.61.0-beta.1",
+      });
+      expect(generatedCheck).toHaveBeenCalledWith("beta", null);
+    } finally {
+      commands.desktopUpdaterCheck = original;
+    }
   });
 
   it("updaterCheck replaces GitHub release fallback notes with release body", async () => {
@@ -151,9 +211,9 @@ describe("services/app/updater", () => {
       channel: "stable",
       version: "0.60.0",
       currentVersion: "0.59.0",
+      releaseUrl: AIO_RELEASE_TAG_URL,
       date: "2026-06-14T15:58:48Z",
       body: "## 0.60.0\n\n- 具体更新内容",
-      releaseUrl: AIO_RELEASE_TAG_URL,
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -182,7 +242,7 @@ describe("services/app/updater", () => {
       channel: "stable",
       version: "0.60.0",
       currentVersion: "0.59.0",
-      date: undefined,
+      date: null,
       body: fallbackBody,
       releaseUrl: AIO_RELEASE_TAG_URL,
     });
@@ -258,7 +318,7 @@ describe("services/app/updater", () => {
     await expect(updaterDownloadAndInstall({ rid: 1, timeoutMs: 0 })).rejects.toThrow(
       "SEC_INVALID_INPUT"
     );
-    await expect(desktopUpdaterCheck({ timeoutMs: Number.NaN })).rejects.toThrow(
+    await expect(desktopUpdaterCheck({ channel: "stable", timeoutMs: Number.NaN })).rejects.toThrow(
       "SEC_INVALID_INPUT"
     );
     await expect(desktopUpdaterCheck({ channel: "nightly" as any })).rejects.toThrow(

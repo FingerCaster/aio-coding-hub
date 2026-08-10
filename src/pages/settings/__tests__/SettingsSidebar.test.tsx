@@ -25,7 +25,7 @@ import {
 } from "../../../services/app/dataManagement";
 import { runBackgroundTask } from "../../../services/backgroundTasks";
 import { logToConsole } from "../../../services/consoleLog";
-import { tauriDialogOpen, tauriOpenPath, tauriOpenUrl } from "../../../test/mocks/tauri";
+import { tauriDialogOpen, tauriOpenPath } from "../../../test/mocks/tauri";
 import { notifyModelPricesUpdated } from "../../../services/usage/modelPrices";
 import {
   appAboutKeys,
@@ -217,6 +217,14 @@ function createUpdateMeta(overrides: Partial<any> = {}) {
     installError: null,
     installTotalBytes: null,
     installDownloadedBytes: 0,
+    updateChannel: "stable" as const,
+    updateChannelReady: true,
+    updateChannelSaving: false,
+    updateChannelError: null,
+    updateCheckError: null,
+    updateGeneration: 1,
+    betaParticipationConfirmed: false,
+    setUpdateChannel: vi.fn().mockResolvedValue(true),
     ...overrides,
   };
 }
@@ -270,7 +278,6 @@ describe("pages/settings/SettingsSidebar", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "check-update" }));
 
-    vi.mocked(tauriOpenUrl).mockResolvedValueOnce(undefined as any);
     rerender(
       <QueryClientProvider client={createTestQueryClient()}>
         <MemoryRouter>
@@ -280,8 +287,10 @@ describe("pages/settings/SettingsSidebar", () => {
     );
 
     fireEvent.click(screen.getByRole("button", { name: "check-update" }));
-    expect(toast).toHaveBeenCalledWith("portable 模式请手动下载");
-    await waitFor(() => expect(tauriOpenUrl).toHaveBeenCalled());
+    await waitFor(() =>
+      expect(runBackgroundTask).toHaveBeenCalledWith("app-update-check", { trigger: "manual" })
+    );
+    expect(toast).not.toHaveBeenCalledWith("portable 模式请手动下载");
 
     rerender(
       <QueryClientProvider client={createTestQueryClient()}>

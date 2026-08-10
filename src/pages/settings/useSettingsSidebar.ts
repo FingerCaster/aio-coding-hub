@@ -1,6 +1,5 @@
 import { useQueryClient } from "@tanstack/react-query";
 import { useCallback } from "react";
-import { useDevPreviewData } from "../../hooks/useDevPreviewData";
 import type { UpdateMeta } from "../../hooks/useUpdateMeta";
 import { useConfigExportMutation, useConfigImportMutation } from "../../query/configMigrate";
 import {
@@ -21,7 +20,6 @@ export function useSettingsSidebar(
   requestLogRetentionDays: number | null = null
 ) {
   const about = updateMeta.about;
-  const devPreview = useDevPreviewData();
   const queryClient = useQueryClient();
   const clearAppDataResetCaches = useCallback(
     () => resetAppDataQueryCaches(queryClient),
@@ -38,7 +36,6 @@ export function useSettingsSidebar(
 
   const controller = useSettingsSidebarController({
     updateMeta,
-    devPreviewEnabled: devPreview.enabled,
     refreshDbDiskUsage: dbDiskUsageQuery.refetch,
     clearAppDataResetCaches,
     clearRequestLogsMutation: {
@@ -66,8 +63,16 @@ export function useSettingsSidebar(
   return {
     aboutCardProps: {
       about,
+      updateCandidate: updateMeta.updateCandidate,
       checkingUpdate: updateMeta.checkingUpdate,
       checkUpdate: controller.checkUpdate,
+      updateChannel: updateMeta.updateChannel,
+      updateChannelReady: updateMeta.updateChannelReady,
+      updateChannelSaving: updateMeta.updateChannelSaving,
+      updateChannelError: updateMeta.updateChannelError,
+      updateCheckError: updateMeta.updateCheckError,
+      betaParticipationConfirmed: updateMeta.betaParticipationConfirmed,
+      setUpdateChannel: updateMeta.setUpdateChannel,
     },
     dataManagementCardProps: {
       about,

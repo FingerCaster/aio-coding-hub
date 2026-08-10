@@ -9,7 +9,7 @@ import {
   setBackgroundTaskSchedulerForeground,
   startBackgroundTaskScheduler,
 } from "../services/backgroundTasks";
-import { updateCheckNow } from "../hooks/useUpdateMeta";
+import { getUpdateChannelSnapshot, updateCheckNow } from "../hooks/useUpdateMeta";
 import {
   appBackgroundTaskIds,
   backgroundTaskVisibilityTriggers,
@@ -51,7 +51,9 @@ function buildAppUpdateCheckTask(): BackgroundTaskDefinition {
               openDialogIfUpdate: false,
             };
       await updateCheckNow(options);
-      queryClient.invalidateQueries({ queryKey: updaterKeys.check() });
+      queryClient.invalidateQueries({
+        queryKey: updaterKeys.check(getUpdateChannelSnapshot().channel),
+      });
     },
   };
 }

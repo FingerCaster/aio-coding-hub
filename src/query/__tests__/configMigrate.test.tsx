@@ -17,6 +17,7 @@ import {
   wslKeys,
 } from "../keys";
 import { useConfigExportMutation, useConfigImportMutation } from "../configMigrate";
+import { notifyUpdateChannelImportSucceeded } from "../../services/app/updateChannel";
 
 const PROVIDER_UUID = "11111111-1111-4111-8111-111111111111";
 
@@ -29,6 +30,12 @@ vi.mock("../../services/app/configMigrate", async () => {
     configExport: vi.fn(),
     configImport: vi.fn(),
   };
+});
+vi.mock("../../services/app/updateChannel", async () => {
+  const actual = await vi.importActual<typeof import("../../services/app/updateChannel")>(
+    "../../services/app/updateChannel"
+  );
+  return { ...actual, notifyUpdateChannelImportSucceeded: vi.fn() };
 });
 
 describe("query/configMigrate", () => {
@@ -78,6 +85,7 @@ describe("query/configMigrate", () => {
     });
 
     expect(configImport).toHaveBeenCalledWith("/tmp/import.json");
+    expect(notifyUpdateChannelImportSucceeded).toHaveBeenCalledTimes(1);
     expect(cancelSpy).toHaveBeenCalledWith({ queryKey: providerModelsKeys.all });
     expect(cancelSpy).toHaveBeenCalledWith({ queryKey: codexManagedProfilesKeys.all });
     expect(invalidateSpy).toHaveBeenCalledTimes(12);
@@ -149,6 +157,22 @@ describe("query/configMigrate", () => {
     });
 
     expect(configImport).toHaveBeenCalledWith("/tmp/import.json");
+    expect(notifyUpdateChannelImportSucceeded).not.toHaveBeenCalled();
+    expect(invalidateSpy).not.toHaveBeenCalled();
+  });
+
+  it("does not roll back or announce a failed import", async () => {
+    vi.mocked(configImport).mockRejectedValue(new Error("import failed"));
+
+    const client = createTestQueryClient();
+    const invalidateSpy = vi.spyOn(client, "invalidateQueries");
+    const wrapper = createQueryWrapper(client);
+    const { result } = renderHook(() => useConfigImportMutation(), { wrapper });
+
+    await expect(
+      act(async () => result.current.mutateAsync({ filePath: "/tmp/import.json" }))
+    ).rejects.toThrow("import failed");
+    expect(notifyUpdateChannelImportSucceeded).not.toHaveBeenCalled();
     expect(invalidateSpy).not.toHaveBeenCalled();
   });
 
