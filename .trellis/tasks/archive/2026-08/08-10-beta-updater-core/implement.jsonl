@@ -2,4 +2,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Config bundle export/import must sanitize the channel without weakening existing bounded parsing and rollback."}
 {"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Rust command, settings, updater resource and focused/full test conventions."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"Backend must consume the release/pointer identity and stable signature guarantees without inventing a second source."}
-{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"Existing desktop updater, resource table, settings and config migration evidence."}
+{"file":".trellis/tasks/archive/2026-08/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"Existing desktop updater, resource table, settings and config migration evidence."}

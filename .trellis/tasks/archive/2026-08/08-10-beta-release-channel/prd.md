@@ -75,15 +75,15 @@ Beta 构建在验证过的源 SHA 上应用由 tag 唯一决定的版本覆盖�
 
 ## Acceptance Criteria
 
-- [ ] AC1：默认新安装、升级旧安装、导入配置和设置读取失败均只走稳定端点；不会请求或显示任何 Beta 候选。
-- [ ] AC2：启用必须经过风险确认与成功专用写入，随后立即按 Beta 检查；取消或失败保持稳定且无 Beta cache/resource。
-- [ ] AC3：内置配置导出/导入往返不能迁移 Beta 授权；同一设备重启与普通升级能保留已确认授权。
-- [ ] AC4：Beta 候选在更新对话框、侧栏可访问文案和 portable 精确 Release 链接中清晰标识，仅保留普通安装确认。
-- [ ] AC5：关闭 Beta 会取消或隔离在途检查、清除 UI/cache/resource 并改查稳定；低版本稳定包不触发降级。
-- [ ] AC6：保持参与者可从 `0.60.41-beta.N` 更新到 `0.60.41`，参与状态不变，之后仍可收到下一版本线 Beta。
-- [ ] AC7：Beta 只能由手动规范 tag + `origin/main` 可达 40 位 SHA 发布；开始与公开前的可达性、tag 和 source identity 一致。
-- [ ] AC8：所有官方平台产物内的应用版本、候选 manifest、tag、签名 URL 和 source/overlay attestation 一致。
-- [ ] AC9：Beta Release 公开且 `prerelease=true`、`make_latest=false`；稳定 `latest.json`、GitHub `latest` 和 Homebrew 不变。
-- [ ] AC10：Beta 频道指针只选择已复核 Release，竞争推进失败关闭；暂停后旧候选在下载前被拒绝，原 Release/资产不变。
-- [ ] AC11：跨频道 query/rid、迟到检查、损坏设置、未知频道、无效 manifest、网络失败和 stale candidate 均不会安装另一频道资产。
-- [ ] AC12：发布脚本自测、Rust 设置/updater 测试、生成绑定检查、前端查询/交互测试及稳定发布回归全部通过。
+- [x] AC1：默认新安装、升级旧安装、导入配置和设置读取失败均只走稳定端点；不会请求或显示任何 Beta 候选。
+- [x] AC2：启用必须经过风险确认与成功专用写入，随后立即按 Beta 检查；取消或失败保持稳定且无 Beta cache/resource。
+- [x] AC3：内置配置导出/导入往返不能迁移 Beta 授权；同一设备重启与普通升级能保留已确认授权。
+- [x] AC4：Beta 候选在更新对话框、侧栏可访问文案和 portable 精确 Release 链接中清晰标识，仅保留普通安装确认。
+- [x] AC5：关闭 Beta 会取消或隔离在途检查、清除 UI/cache/resource 并改查稳定；低版本稳定包不触发降级。
+- [x] AC6：保持参与者可从 `0.60.41-beta.N` 更新到 `0.60.41`，参与状态不变，之后仍可收到下一版本线 Beta。
+- [x] AC7：Beta 只能由手动规范 tag + `origin/main` 可达 40 位 SHA 发布；开始与公开前的可达性、tag 和 source identity 一致。
+- [x] AC8：所有官方平台产物内的应用版本、候选 manifest、tag、签名 URL 和 source/overlay attestation 一致。
+- [x] AC9：Beta Release 公开且 `prerelease=true`、`make_latest=false`；稳定 `latest.json`、GitHub `latest` 和 Homebrew 不变。
+- [x] AC10：Beta 频道指针只选择已复核 Release，竞争推进失败关闭；暂停后旧候选在下载前被拒绝，原 Release/资产不变。
+- [x] AC11：跨频道 query/rid、迟到检查、损坏设置、未知频道、无效 manifest、网络失败和 stale candidate 均不会安装另一频道资产。
+- [x] AC12：发布脚本自测、Rust 设置/updater 测试、生成绑定检查、前端查询/交互测试及稳定发布回归全部通过。

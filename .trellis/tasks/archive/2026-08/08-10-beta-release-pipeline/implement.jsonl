@@ -1,4 +1,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/release-operations-contract.md","reason":"稳定 tag、immutable SHA、候选资产、晋升、公开和 Homebrew 门禁必须保持并参数化为 Beta。"}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"发布脚本与 generated/support-matrix 变更需要跨层检查入口。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"频道状态、tag 校验和资产矩阵必须拥有单一解析/验证实现，避免稳定与 Beta 漂移。"}
-{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"记录现有 workflow、版本来源、Tauri manifest 和 pointer 方案的代码证据。"}
+{"file":".trellis/tasks/archive/2026-08/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"记录现有 workflow、版本来源、Tauri manifest 和 pointer 方案的代码证据。"}

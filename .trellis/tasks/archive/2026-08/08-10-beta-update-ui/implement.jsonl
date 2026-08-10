@@ -3,4 +3,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"复核 query、Hook、组件、生成绑定和 Rust 命令之间的跨层变更范围。"}
 {"file":".trellis/spec/guides/code-reuse-thinking-guide.md","reason":"确保频道标签、候选失效和错误回退复用单一 updater-core 规范化结果，不在多个 UI 入口重复实现。"}
 {"file": ".trellis/tasks/archive/2026-08/08-10-beta-update-ui/research/current-ui-update-paths.md", "reason": "记录当前设置、后台检查、query、侧栏和弹窗入口，防止实现遗漏或跨频道缓存泄漏。"}
-{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"对照稳定/Beta 端点、版本比较和精确 Release URL 的父任务事实。"}
+{"file":".trellis/tasks/archive/2026-08/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"对照稳定/Beta 端点、版本比较和精确 Release URL 的父任务事实。"}

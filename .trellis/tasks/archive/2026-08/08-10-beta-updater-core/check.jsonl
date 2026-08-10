@@ -1,5 +1,5 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/settings-ownership-rollback-contract.md","reason":"Check dedicated channel writer, concurrent ordinary saves, whole-import CAS and no stale whole-snapshot overwrite."}
 {"file":".trellis/spec/aio-coding-hub/cross-layer/config-migration-skill-bundle-contract.md","reason":"Check export/import normalization and preservation of bounded, atomic recovery behavior."}
 {"file":".trellis/spec/aio-coding-hub/backend/index.md","reason":"Check Rust formatting, generated bindings, command tests, cargo check/clippy and full test scope."}
-{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"Check endpoint, manifest, release URL, state and version evidence against the shared researched contract."}
-{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"Audit stable default behavior, updater comparator and resource lifecycle evidence."}
+{"file":".trellis/tasks/archive/2026-08/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"Check endpoint, manifest, release URL, state and version evidence against the shared researched contract."}
+{"file":".trellis/tasks/archive/2026-08/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"Audit stable default behavior, updater comparator and resource lifecycle evidence."}

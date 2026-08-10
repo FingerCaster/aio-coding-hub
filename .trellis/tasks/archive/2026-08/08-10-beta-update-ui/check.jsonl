@@ -3,4 +3,4 @@
 {"file":".trellis/spec/aio-coding-hub/cross-layer/index.md","reason":"检查 React、query、Tauri bindings 与 updater-core 的字段和生命周期契约一致。"}
 {"file":".trellis/spec/guides/cross-layer-thinking-guide.md","reason":"检查频道状态从设置到后台检查、候选、弹窗和侧栏的完整数据流。"}
 {"file": ".trellis/tasks/archive/2026-08/08-10-beta-update-ui/research/current-ui-update-paths.md", "reason": "以代码入口证据复核 query key、generation、清理和可见 UI 规则。"}
-{"file":".trellis/tasks/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"检查 UI 使用的 endpoint、版本和 release URL 与发布端契约一致。"}
+{"file":".trellis/tasks/archive/2026-08/08-10-beta-release-channel/research/current-beta-release-evidence.md","reason":"检查 UI 使用的 endpoint、版本和 release URL 与发布端契约一致。"}
