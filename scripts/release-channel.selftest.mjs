@@ -279,7 +279,7 @@ const first = await publishReleaseChannel({
   sourceSha,
   expectedRefSha: null,
   ...workflow,
-  updatedAt: "2026-08-10T00:00:00.000Z",
+  updatedAt: new Date("2026-08-10T00:00:00.789Z").toISOString(),
 });
 assert.equal(first.previousRefSha, null);
 assert.equal(first.state.selected_channel, "beta");

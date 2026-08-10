@@ -85,7 +85,7 @@ function requireUtcTimestamp(value, label) {
     throw new Error(`${label} must be a UTC timestamp`);
   }
   const parsed = new Date(value);
-  const canonicalValue = value.endsWith(".000Z") ? value : value.replace(/Z$/, ".000Z");
+  const canonicalValue = /\.\d{3}Z$/.test(value) ? value : value.replace(/Z$/, ".000Z");
   if (Number.isNaN(parsed.getTime()) || parsed.toISOString() !== canonicalValue) {
     throw new Error(`${label} must use canonical UTC ISO format`);
   }
