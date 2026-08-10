@@ -114,6 +114,12 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   read v1-v3 and export strict v4. Unknown/future versions and old field names
   inside v4 are explicitly rejected so older clients cannot silently discard
   the new semantics.
+- The persisted global `AppSettings.upstream_retry_policy` decoder is a
+  compatibility boundary: additive future policy and stream-policy fields are
+  ignored while known valid fields are retained, and malformed content falls
+  back to the default policy. The direct `UpstreamRetryPolicy` decoder used by
+  Provider overrides and strict share/import wire formats remains strict;
+  global forward compatibility must not weaken those boundaries.
 - Final response rewriting considers only the terminal upstream HTTP 4xx/5xx
   candidate after retry, failover, quota, cooldown, and circuit decisions use
   the real upstream facts. HTTP 200 stream errors and transport errors never

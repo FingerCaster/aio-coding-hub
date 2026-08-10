@@ -824,6 +824,28 @@ After implementation:
 
 ---
 
+### Mistake 8: Compatibility Added At The Wrong Boundary
+
+**Bad**: Remove strict decoding from a shared wire type just because the
+persisted global settings object needs to survive additive fields. Provider
+share/import payloads then silently accept fields from a future schema.
+
+**Good**: Put lossy compatibility on the persisted owner field only. Keep the
+direct reusable wire decoder strict, and add one regression for both the global
+forward-compatible read and the strict Provider/share read.
+
+The same ownership rule applies to frontend adapters: keep one canonical
+normalizer/response validator and re-export it from convenience service
+modules. Do not maintain a second IPC wrapper that can drift in confirmation,
+normalization, or malformed-response behavior.
+
+For buffered final event streams, bind the completion to the upstream response
+identity when the transcript exposes one. Record the first canonical response
+ID and fail closed on a different ID or a missing completion ID; preserve
+completion-only compatibility only when no ID was exposed.
+
+---
+
 ## When to Create Flow Documentation
 
 Create detailed flow docs when:

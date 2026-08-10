@@ -89,6 +89,7 @@ pub(super) struct CodexTerminalFirewall {
     stopped: bool,
     completion_forwarded: bool,
     strict_complete: bool,
+    strict_response_id: Option<String>,
 }
 
 impl CodexTerminalFirewall {
@@ -99,6 +100,7 @@ impl CodexTerminalFirewall {
             stopped: false,
             completion_forwarded: false,
             strict_complete: false,
+            strict_response_id: None,
         }
     }
 
@@ -224,7 +226,7 @@ impl CodexTerminalFirewall {
         TerminalFirewallOutput::stopped(Vec::new(), true, false, None, Some("partial_frame_at_eof"))
     }
 
-    fn inspect_frame(&self, frame: &[u8]) -> FrameDecision {
+    fn inspect_frame(&mut self, frame: &[u8]) -> FrameDecision {
         let Ok(text) = std::str::from_utf8(frame) else {
             return FrameDecision::FailClosed("invalid_utf8");
         };
@@ -237,6 +239,19 @@ impl CodexTerminalFirewall {
                 }
                 if self.completion_forwarded {
                     return FrameDecision::FailClosed("semantic_frame_after_completed");
+                }
+                let response_id = canonical_response_id(&event_name, &data).map(str::to_owned);
+                match (self.strict_response_id.as_deref(), response_id.as_deref()) {
+                    (Some(expected), Some(actual)) if expected != actual => {
+                        return FrameDecision::FailClosed("response_id_mismatch");
+                    }
+                    (Some(_), None) if completion => {
+                        return FrameDecision::FailClosed("response_id_mismatch");
+                    }
+                    (None, Some(response_id)) => {
+                        self.strict_response_id = Some(response_id.to_string());
+                    }
+                    _ => {}
                 }
             }
 
@@ -335,6 +350,22 @@ fn is_valid_completion_frame(data: &serde_json::Value) -> bool {
         == Some("completed")
 }
 
+fn canonical_response_id<'a>(event_name: &str, data: &'a serde_json::Value) -> Option<&'a str> {
+    data.pointer("/response/id")
+        .and_then(serde_json::Value::as_str)
+        .or_else(|| data.get("response_id").and_then(serde_json::Value::as_str))
+        .or_else(|| {
+            (matches!(event_name, "response.created" | "response.completed")
+                || matches!(
+                    data.get("type").and_then(serde_json::Value::as_str),
+                    Some("response.created" | "response.completed")
+                ))
+            .then(|| data.get("id").and_then(serde_json::Value::as_str))
+            .flatten()
+        })
+        .filter(|response_id| !response_id.is_empty())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -415,6 +446,41 @@ mod tests {
         );
 
         assert_eq!(validate_complete_codex_sse(success.as_bytes(), &[]), Ok(()));
+    }
+
+    #[test]
+    fn complete_validator_rejects_mismatched_response_ids() {
+        let mixed = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-a\",\"status\":\"in_progress\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-b\",\"status\":\"completed\"}}\n\n"
+        );
+
+        assert_eq!(
+            validate_complete_codex_sse(mixed.as_bytes(), &[]),
+            Err("response_id_mismatch")
+        );
+
+        let missing_completion_id = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-a\",\"status\":\"in_progress\"}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        assert_eq!(
+            validate_complete_codex_sse(missing_completion_id.as_bytes(), &[]),
+            Err("response_id_mismatch")
+        );
+
+        let data_type_only = concat!(
+            "data: {\"type\":\"response.created\",\"id\":\"resp-a\",\"response\":{\"status\":\"in_progress\"}}\n\n",
+            "data: {\"type\":\"response.completed\",\"id\":\"resp-a\",\"response\":{\"status\":\"completed\"}}\n\n"
+        );
+        assert_eq!(
+            validate_complete_codex_sse(data_type_only.as_bytes(), &[]),
+            Ok(())
+        );
     }
 
     #[test]

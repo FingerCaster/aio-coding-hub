@@ -81,6 +81,9 @@ beta-channel.yml:
 - Query keys, in-flight checks, cached candidates, dialogs, and last-check
   timestamps are channel/generation scoped. Late results are discarded and
   never cross the stable/Beta boundary.
+- `settingsUpdateChannelSet` has one implementation in the updater-core
+  adapter. Settings services re-export that function instead of rebuilding its
+  confirmation payload or accepting an unvalidated mutation response.
 - `channel` describes the subscription/cache boundary. `isPrerelease`
   describes the selected Release and owns Beta labeling. A Beta subscription
   may select a later stable Release without labeling it as a Beta update.
@@ -111,6 +114,11 @@ beta-channel.yml:
 - Beta install performs a fresh check and requires identical version, target,
   URL, and signature. A final guarded channel/epoch check occurs after download
   and before install.
+- The strict buffered Codex final-wire validator records the first canonical
+  response ID exposed by the upstream transcript and, when present, requires
+  `response.created` and `response.completed` to carry the same ID. A created
+  ID with a missing completion ID fails closed; completion-only fixtures remain
+  valid when the upstream does not expose an ID.
 
 ### Release And Pointer
 

@@ -342,6 +342,75 @@ impl<'de> Deserialize<'de> for UpstreamRetryPolicy {
     }
 }
 
+fn retain_global_upstream_retry_policy_fields(value: &mut serde_json::Value) {
+    let Some(policy) = value.as_object_mut() else {
+        return;
+    };
+    policy.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "enabled"
+                | "http_rules"
+                | "status_codes"
+                | "transport_errors"
+                | "stream_internal_errors"
+                | "max_retries"
+                | "backoff_ms"
+                | "counts_toward_circuit_breaker"
+        )
+    });
+
+    let Some(stream) = policy
+        .get_mut("stream_internal_errors")
+        .and_then(serde_json::Value::as_object_mut)
+    else {
+        return;
+    };
+    stream.retain(|key, _| {
+        matches!(
+            key.as_str(),
+            "enabled"
+                | "passthrough_keywords"
+                | "non_retry_keywords"
+                | "legacy_retry_keywords"
+                | "retry_keywords"
+        )
+    });
+}
+
+fn deserialize_upstream_retry_policy_lossy<'de, D>(
+    deserializer: D,
+) -> Result<UpstreamRetryPolicy, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    let value = serde_json::Value::deserialize(deserializer)?;
+    if let Ok(policy) = serde_json::from_value::<UpstreamRetryPolicy>(value.clone()) {
+        return Ok(policy);
+    }
+
+    let mut compatible = value;
+    retain_global_upstream_retry_policy_fields(&mut compatible);
+    match serde_json::from_value::<UpstreamRetryPolicy>(compatible) {
+        Ok(policy) => {
+            tracing::warn!(
+                target: "settings",
+                error_class = "unknown_upstream_retry_policy_fields",
+                "ignored unknown fields in global upstream retry policy"
+            );
+            Ok(policy)
+        }
+        Err(_) => {
+            tracing::warn!(
+                target: "settings",
+                error_class = "invalid_upstream_retry_policy",
+                "reset malformed global upstream retry policy to defaults"
+            );
+            Ok(UpstreamRetryPolicy::default())
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(default, deny_unknown_fields)]
 pub struct ModelRoutingRule {
@@ -521,7 +590,7 @@ pub struct AppSettings {
     pub update_releases_url: String,
     pub failover_max_attempts_per_provider: u32,
     pub failover_max_providers_to_try: u32,
-    #[serde(default)]
+    #[serde(default, deserialize_with = "deserialize_upstream_retry_policy_lossy")]
     pub upstream_retry_policy: UpstreamRetryPolicy,
     #[serde(default, deserialize_with = "deserialize_model_routing_policy_lossy")]
     pub model_routing_policy: ModelRoutingPolicy,
@@ -798,5 +867,53 @@ mod tests {
         let settings: AppSettings = serde_json::from_value(value).unwrap();
 
         assert_eq!(settings.model_routing_policy, ModelRoutingPolicy::default());
+    }
+
+    #[test]
+    fn global_upstream_retry_policy_ignores_future_fields_without_losing_known_values() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["upstream_retry_policy"]["enabled"] = serde_json::json!(false);
+        value["upstream_retry_policy"]["future_policy_field"] = serde_json::json!(1);
+        value["upstream_retry_policy"]["stream_internal_errors"]["enabled"] =
+            serde_json::json!(false);
+        value["upstream_retry_policy"]["stream_internal_errors"]["passthrough_keywords"] =
+            serde_json::json!([]);
+        value["upstream_retry_policy"]["stream_internal_errors"]["future_stream_field"] =
+            serde_json::json!(true);
+
+        let settings: AppSettings =
+            serde_json::from_value(value).expect("future fields must not brick global settings");
+
+        assert!(!settings.upstream_retry_policy.enabled);
+        assert!(
+            !settings
+                .upstream_retry_policy
+                .stream_internal_errors
+                .enabled
+        );
+        assert!(settings
+            .upstream_retry_policy
+            .stream_internal_errors
+            .passthrough_keywords
+            .is_empty());
+
+        let strict_policy = serde_json::json!({
+            "enabled": false,
+            "future_policy_field": 1
+        });
+        assert!(serde_json::from_value::<UpstreamRetryPolicy>(strict_policy).is_err());
+    }
+
+    #[test]
+    fn malformed_global_upstream_retry_policy_decodes_as_defaults() {
+        let mut value = serde_json::to_value(AppSettings::default()).unwrap();
+        value["upstream_retry_policy"]["http_rules"] = serde_json::json!("not-an-array");
+
+        let settings: AppSettings = serde_json::from_value(value).unwrap();
+
+        assert_eq!(
+            settings.upstream_retry_policy,
+            UpstreamRetryPolicy::default()
+        );
     }
 }

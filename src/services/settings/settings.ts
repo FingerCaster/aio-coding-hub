@@ -21,7 +21,6 @@ import {
   type WslTargetCli,
 } from "../../generated/bindings";
 import { invokeGeneratedIpc, type GeneratedCommandResult } from "../generatedIpc";
-import { createRiskyIpcConfirm } from "../ipcConfirm";
 import { type OptionalNullableGeneratedFields } from "../generatedTypeUtils";
 import { validateSettingsSetInput } from "./settingsValidation";
 import type {
@@ -366,19 +365,7 @@ export async function settingsGet() {
   });
 }
 
-export async function settingsUpdateChannelSet(channel: UpdateChannel) {
-  const confirm =
-    channel === "beta"
-      ? createRiskyIpcConfirm("settings_update_channel_set", "update_channel:beta")
-      : null;
-
-  return invokeGeneratedIpc<AppSettings>({
-    title: "更新更新频道失败",
-    cmd: "settings_update_channel_set",
-    args: { channel, confirm },
-    invoke: () => commands.settingsUpdateChannelSet(channel, confirm),
-  });
-}
+export { settingsUpdateChannelSet } from "../app/updateChannel";
 
 export async function settingsSet(input: SettingsSetInput) {
   validateSettingsInputOrThrow(input);

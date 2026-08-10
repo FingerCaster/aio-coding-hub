@@ -143,11 +143,13 @@ describe("services/settings/settings", () => {
   it("uses the dedicated generated command for update-channel ownership", async () => {
     setTauriRuntime();
     vi.resetModules();
-    vi.mocked(tauriInvoke).mockResolvedValue(createTestAppSettings() as any);
+    vi.mocked(tauriInvoke)
+      .mockResolvedValueOnce(createTestAppSettings({ update_channel: "beta" }) as any)
+      .mockResolvedValueOnce(createTestAppSettings({ update_channel: "stable" }) as any);
 
     const { settingsUpdateChannelSet } = await import("../settings");
 
-    await settingsUpdateChannelSet("beta");
+    await expect(settingsUpdateChannelSet("beta")).resolves.toBe("beta");
     expect(tauriInvoke).toHaveBeenLastCalledWith("settings_update_channel_set", {
       channel: "beta",
       confirm: {
@@ -161,11 +163,23 @@ describe("services/settings/settings", () => {
       },
     });
 
-    await settingsUpdateChannelSet("stable");
+    await expect(settingsUpdateChannelSet("stable")).resolves.toBe("stable");
     expect(tauriInvoke).toHaveBeenLastCalledWith("settings_update_channel_set", {
       channel: "stable",
       confirm: null,
     });
+  });
+
+  it("uses the canonical update-channel adapter response validation", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue({ unexpected: true } as any);
+
+    const { settingsUpdateChannelSet } = await import("../settings");
+
+    await expect(settingsUpdateChannelSet("beta")).rejects.toThrow(
+      "UPDATER_CHANNEL_INVALID_RESPONSE"
+    );
   });
 
   it("sends only caller-owned fields through the partial settings command", async () => {
