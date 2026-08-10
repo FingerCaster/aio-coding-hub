@@ -13,6 +13,7 @@ export const MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORDS = 16;
 export const MAX_UPSTREAM_STREAM_INTERNAL_ERROR_KEYWORD_CHARS = 512;
 export const MAX_UPSTREAM_RETRY_POLICY_MAX_RETRIES = 10;
 export const MAX_UPSTREAM_RETRY_POLICY_BACKOFF_MS = 60_000;
+export const DEFAULT_CYBER_PASSTHROUGH_KEYWORD = "high-risk cyber";
 
 export function createUpstreamHttpRetryRule(statusCode = 500): UpstreamHttpRetryRule {
   return {
@@ -36,7 +37,7 @@ export const DEFAULT_UPSTREAM_RETRY_POLICY: UpstreamRetryPolicy = {
   transport_errors: ["connect", "timeout", "read"],
   stream_internal_errors: {
     enabled: true,
-    passthrough_keywords: [],
+    passthrough_keywords: [DEFAULT_CYBER_PASSTHROUGH_KEYWORD],
     legacy_retry_keywords: [],
   },
   max_retries: 1,

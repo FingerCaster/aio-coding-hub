@@ -55,7 +55,7 @@ describe("MSW defaults", () => {
         transport_errors: ["connect", "timeout", "read"],
         stream_internal_errors: {
           enabled: true,
-          passthrough_keywords: [],
+          passthrough_keywords: ["high-risk cyber"],
           legacy_retry_keywords: [],
         },
       },

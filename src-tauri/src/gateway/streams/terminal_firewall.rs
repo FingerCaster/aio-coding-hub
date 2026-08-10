@@ -390,6 +390,27 @@ mod tests {
     }
 
     #[test]
+    fn default_policy_passes_through_high_risk_cyber_terminal_frame() {
+        let policy = crate::infra::settings::UpstreamStreamInternalErrorPolicy::default();
+        let terminal = frame(
+            "response.failed",
+            r#"{"type":"response.failed","response":{"error":{"code":"content_policy_violation","message":"high-risk cyber request"}}}"#,
+            "\n",
+        );
+        let mut firewall = CodexTerminalFirewall::new(&policy.passthrough_keywords);
+
+        let output = firewall.ingest(terminal.as_bytes());
+
+        assert_eq!(output.bytes.as_ref(), terminal.as_bytes());
+        assert!(output.stop);
+        assert!(output
+            .evidence
+            .as_ref()
+            .is_some_and(|value| value.classification == "policy"
+                && value.disposition == "passthrough_exception"));
+    }
+
+    #[test]
     fn normalized_bridge_codex_terminal_frame_uses_the_same_firewall() {
         let normalized = frame(
             "response.error",

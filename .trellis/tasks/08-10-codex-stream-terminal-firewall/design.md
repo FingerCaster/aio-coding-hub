@@ -131,15 +131,16 @@ passthrough_keywords[]
 - `false`：完整旁路新增动作层，capacity 与其他终态都不拦截、不重试、不改写；tracker
   仍可被动记录 evidence，并标记 `disabled_passthrough`。
 
-缺失字段按默认 `true` 补齐；已有显式 `false` 不由迁移覆盖，避免把用户的关闭选择误判为旧
-配置缺失。
+缺失的 `enabled` 按默认 `true` 补齐；已有显式 `false` 不由迁移覆盖，避免把用户的关闭选择
+误判为旧配置缺失。`passthrough_keywords` 与旧别名都缺失时默认补入 `high-risk cyber`；任一字段
+显式存在（包括空数组）时保留该选择，避免用户清空后又被自动加回。
 
 后端在一个兼容窗口内另存 `legacy_retry_keywords[]`（只读高级兼容状态），不再向新 UI
 暴露。`non_retry_keywords` 只作为旧 wire alias 读取并合并到
 `passthrough_keywords`，归一化、去重、限长后再保存。
 
-硬性安全类别永远不能被透传例外覆盖；Provider 完整 override 仍按现有“替换全局策略”
-语义解析，因此 Cyber 供应商可以在自己的 override 中配置透传词而不影响其他 Provider。
+容量与敏感硬性安全类别永远不能被透传例外覆盖；Provider 完整 override 仍按现有“替换全局
+策略”语义解析，新建默认策略中的 `high-risk cyber` 可由全局或 Provider override 显式清除。
 
 ### 7.2 持久化/分享
 
