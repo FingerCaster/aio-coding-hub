@@ -10,6 +10,8 @@ pub(super) const MAX_TERMINAL_FIREWALL_FRAME_BYTES: usize = 1024 * 1024;
 /// This deliberately reuses the live firewall state machine. Exact-byte
 /// equality additionally rejects duplicate terminals and any bytes after
 /// `[DONE]`, both of which the live relay safely suppresses after commit.
+/// Responses SSE may end at a complete frame without a `[DONE]` sentinel;
+/// when present, `[DONE]` must still follow the one valid completion.
 pub(crate) fn validate_complete_codex_sse(
     bytes: &[u8],
     passthrough_keywords: &[String],
@@ -22,9 +24,15 @@ pub(crate) fn validate_complete_codex_sse(
     if !output.stop {
         let eof = firewall.finish();
         if eof.terminal_error {
-            return Err(eof.fail_closed_reason.unwrap_or("missing_done"));
+            return Err(eof.fail_closed_reason.unwrap_or("terminal_error"));
         }
-        return Err("missing_done");
+        if !output.completion_seen {
+            return Err("missing_completed");
+        }
+        if output.bytes.as_ref() != bytes {
+            return Err("trailing_or_duplicate_terminal");
+        }
+        return Ok(());
     }
     if !output.completion_seen {
         return Err("missing_completed");
@@ -336,21 +344,28 @@ mod tests {
     }
 
     #[test]
-    fn complete_validator_requires_one_completed_then_done_and_exact_eof() {
+    fn complete_validator_accepts_clean_eof_or_done_after_one_completed() {
         let completed = frame(
             "response.completed",
             r#"{"type":"response.completed","response":{"id":"r","status":"completed"}}"#,
             "\n",
         );
-        let valid = format!("{completed}data: [DONE]\n\n");
-        assert_eq!(validate_complete_codex_sse(valid.as_bytes(), &[]), Ok(()));
+        let valid_with_done = format!("{completed}data: [DONE]\n\n");
         assert_eq!(
             validate_complete_codex_sse(completed.as_bytes(), &[]),
-            Err("missing_done")
+            Ok(())
         );
         assert_eq!(
-            validate_complete_codex_sse(format!("{valid}: trailing\n\n").as_bytes(), &[]),
+            validate_complete_codex_sse(valid_with_done.as_bytes(), &[]),
+            Ok(())
+        );
+        assert_eq!(
+            validate_complete_codex_sse(format!("{valid_with_done}: trailing\n\n").as_bytes(), &[],),
             Err("trailing_or_duplicate_terminal")
+        );
+        assert_eq!(
+            validate_complete_codex_sse(b"data: [DONE]\n\n", &[]),
+            Err("missing_completed")
         );
         let invalid_completed = frame(
             "response.completed",
@@ -388,6 +403,18 @@ mod tests {
             validate_complete_codex_sse(terminal_after_completed.as_bytes(), &[]),
             Err("semantic_frame_after_completed")
         );
+    }
+
+    #[test]
+    fn complete_validator_accepts_real_codex_responses_shape_without_done() {
+        let success = concat!(
+            "event: response.created\n",
+            "data: {\"type\":\"response.created\",\"response\":{\"id\":\"resp-x\",\"status\":\"in_progress\",\"model\":\"gpt-5\",\"output\":[]}}\n\n",
+            "event: response.completed\n",
+            "data: {\"type\":\"response.completed\",\"response\":{\"id\":\"resp-x\",\"status\":\"completed\",\"model\":\"gpt-5\",\"output\":[{\"type\":\"message\",\"content\":[{\"type\":\"output_text\",\"text\":\"ok\"}]}],\"usage\":{\"input_tokens\":11,\"output_tokens\":1,\"total_tokens\":12}}}\n\n"
+        );
+
+        assert_eq!(validate_complete_codex_sse(success.as_bytes(), &[]), Ok(()));
     }
 
     #[test]
