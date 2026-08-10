@@ -233,8 +233,7 @@ pub fn contains_codex_capacity_signal(value: &str) -> bool {
 
 fn contains_codex_capacity_message(value: &str) -> bool {
     let value = value.to_ascii_lowercase();
-    value.contains(CODEX_CAPACITY_MESSAGE)
-        || value.contains("model is at capacity")
+    value.contains("at capacity")
         || value.contains("server is overloaded")
         || value.contains("service is overloaded")
         || value.contains("service overloaded")
