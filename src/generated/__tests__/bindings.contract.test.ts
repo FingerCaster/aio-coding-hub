@@ -4,7 +4,9 @@ import { HOME_USAGE_PERIOD_VALUES } from "../../constants/homeUsagePeriods";
 import bindingsSource from "../bindings.ts?raw";
 import heartbeatSource from "../../../src-tauri/src/app/heartbeat_watchdog.rs?raw";
 import noticeSource from "../../../src-tauri/src/app/notice.rs?raw";
+import settingsServiceSource from "../../../src-tauri/src/app/settings_service.rs?raw";
 import startupStateSource from "../../../src-tauri/src/app/startup_state.rs?raw";
+import settingsServiceFrontendSource from "../../services/settings/settings.ts?raw";
 
 function extractStringUnionLiterals(source: string, typeName: string) {
   const match = source.match(new RegExp(`export type ${typeName} = (.+)$`, "m"));
@@ -120,6 +122,29 @@ describe("generated/bindings.ts contract", () => {
     expect(bindingsSource).toContain("export type SettingsMutationResult");
   });
 
+  it("gives update channel a dedicated generated settings ownership surface", () => {
+    expect(extractStringUnionLiterals(bindingsSource, "UpdateChannel")).toEqual(["beta", "stable"]);
+    expect(extractTypeBody(bindingsSource, "SettingsView")).toContain(
+      "update_channel: UpdateChannel"
+    );
+    expect(extractTypeBody(bindingsSource, "SettingsUpdate")).not.toContain("updateChannel");
+    expect(extractTypeBody(bindingsSource, "SettingsPatch")).not.toContain("updateChannel");
+
+    const command = extractGeneratedCommand(bindingsSource, "settingsUpdateChannelSet");
+    expect(command).toMatch(
+      /settingsUpdateChannelSet\(\s*channel: UpdateChannel,\s*confirm: RiskyIpcConfirm \| null\s*\)/
+    );
+    expect(command).toContain('TAURI_INVOKE("settings_update_channel_set", { channel, confirm })');
+  });
+
+  it("freezes the Beta confirmation resource across Rust and frontend owners", () => {
+    const resource = "update_channel:beta";
+    expect(settingsServiceSource).toContain(
+      `UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE: &str = "${resource}"`
+    );
+    expect(settingsServiceFrontendSource).toContain(`"${resource}"`);
+  });
+
   it("pins acronym casing for usage bridge filter DTO fields", () => {
     expect(extractTypeBody(bindingsSource, "UsageQueryParams")).toContain(
       "dayStartHour: number | null"
@@ -161,8 +186,24 @@ describe("generated/bindings.ts contract", () => {
 
   it("leaves updater install outside generated bindings when a Channel callback is required", () => {
     expect(bindingsSource).toContain("desktop_updater_check");
+    expect(bindingsSource).toContain("desktop_updater_discard");
     expect(bindingsSource).not.toContain("desktop_updater_download_and_install");
     expect(bindingsSource).not.toContain("desktopUpdaterDownloadAndInstall");
+  });
+
+  it("requires channel-bound updater metadata in generated bindings", () => {
+    const metadata = extractTypeBody(bindingsSource, "DesktopUpdaterMetadata");
+    expect(metadata).toContain("rid: number");
+    expect(metadata).toContain("channel: UpdateChannel");
+    expect(metadata).toContain("currentVersion: string");
+    expect(metadata).toContain("version: string");
+    expect(metadata).toContain("releaseUrl: string");
+
+    const check = extractGeneratedCommand(bindingsSource, "desktopUpdaterCheck");
+    expect(check).toMatch(
+      /desktopUpdaterCheck\(\s*expectedChannel: UpdateChannel,\s*timeout: number \| null\s*\)/
+    );
+    expect(check).toContain('TAURI_INVOKE("desktop_updater_check", { expectedChannel, timeout })');
   });
 
   it("keeps Rust app event emitters aligned with shared frontend constants", () => {

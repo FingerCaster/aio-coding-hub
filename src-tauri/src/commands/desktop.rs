@@ -5,13 +5,15 @@
 //! directly.
 
 use crate::shared::blocking;
+use sha2::{Digest as _, Sha256};
 use std::borrow::Cow;
 use std::path::{Path, PathBuf};
+use std::sync::Arc;
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::ipc::Channel;
-use tauri::{Manager, ResourceId, WebviewWindow};
+use tauri::{Manager, Resource, ResourceId, WebviewWindow};
 use tauri_plugin_clipboard_manager::ClipboardExt;
 use tauri_plugin_dialog::{DialogExt, FileAccessMode, FilePath, PickerMode};
 use tauri_plugin_notification::NotificationExt;
@@ -20,6 +22,29 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 use tokio::sync::oneshot;
 
 use crate::shared::ipc_confirm::RiskyIpcConfirm;
+
+const BETA_UPDATER_ENDPOINT: &str =
+    "https://raw.githubusercontent.com/FingerCaster/aio-coding-hub/release-channels/latest-beta.json";
+const RELEASES_BASE_URL: &str = "https://github.com/FingerCaster/aio-coding-hub/releases";
+const RELEASE_TAG_PREFIX: &str = "aio-coding-hub-v";
+const UPDATER_ERROR_BETA_FRESH_CHECK_FAILED: &str = "UPDATER_BETA_FRESH_CHECK_FAILED";
+const UPDATER_ERROR_CANDIDATE_STALE: &str = "UPDATER_CANDIDATE_STALE";
+const UPDATER_ERROR_CHANNEL_CHANGED: &str = "UPDATER_CHANNEL_CHANGED";
+const UPDATER_ERROR_CHECK_FAILED: &str = "UPDATER_CHECK_FAILED";
+const UPDATER_ERROR_CLIENT_BUILD_FAILED: &str = "UPDATER_CLIENT_BUILD_FAILED";
+const UPDATER_ERROR_DOWNLOAD_FAILED: &str = "UPDATER_DOWNLOAD_FAILED";
+const UPDATER_ERROR_ENDPOINT_INVALID: &str = "UPDATER_ENDPOINT_INVALID";
+const UPDATER_ERROR_INSTALL_FAILED: &str = "UPDATER_INSTALL_FAILED";
+const UPDATER_ERROR_MANIFEST_INVALID: &str = "UPDATER_MANIFEST_INVALID";
+const UPDATER_ERROR_PLATFORM_UNSUPPORTED: &str = "UPDATER_PLATFORM_UNSUPPORTED";
+const UPDATER_ERROR_RESOURCE_CLOSE_FAILED: &str = "UPDATER_RESOURCE_CLOSE_FAILED";
+const UPDATER_ERROR_RESOURCE_CLOSED: &str = "UPDATER_RESOURCE_CLOSED";
+const UPDATER_ERROR_RESOURCE_INVALID: &str = "UPDATER_RESOURCE_INVALID";
+const UPDATER_ERROR_SETTINGS_UNAVAILABLE: &str = "UPDATER_SETTINGS_UNAVAILABLE";
+
+fn updater_error(code: &'static str, detail: impl std::fmt::Display) -> String {
+    format!("{code}: {detail}")
+}
 
 #[derive(Debug, Clone, Copy, serde::Deserialize, specta::Type)]
 #[serde(rename_all = "snake_case")]
@@ -70,11 +95,31 @@ impl From<tauri::plugin::PermissionState> for DesktopNotificationPermissionState
 #[serde(rename_all = "camelCase")]
 pub(crate) struct DesktopUpdaterMetadata {
     rid: u32,
+    channel: crate::settings::UpdateChannel,
     current_version: String,
     version: String,
     date: Option<String>,
     body: Option<String>,
+    release_url: String,
 }
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct UpdaterCandidateIdentity {
+    version: String,
+    target: String,
+    download_url: String,
+    signature_sha256: String,
+}
+
+#[derive(Clone)]
+struct ChannelBoundUpdate {
+    update: Update,
+    channel: crate::settings::UpdateChannel,
+    channel_epoch: u64,
+    identity: UpdaterCandidateIdentity,
+}
+
+impl Resource for ChannelBoundUpdate {}
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(tag = "event", content = "data")]
@@ -187,6 +232,269 @@ fn trim_to_non_empty(input: &str, max_len: usize) -> Option<String> {
 
 fn to_duration(timeout_ms: Option<u64>) -> Option<Duration> {
     timeout_ms.map(Duration::from_millis)
+}
+
+fn beta_updater_endpoint(cache_buster: i64) -> Result<tauri::Url, String> {
+    let mut endpoint = tauri::Url::parse(BETA_UPDATER_ENDPOINT)
+        .map_err(|error| updater_error(UPDATER_ERROR_ENDPOINT_INVALID, error))?;
+    endpoint
+        .query_pairs_mut()
+        .append_pair("aioCheck", &cache_buster.to_string());
+    Ok(endpoint)
+}
+
+fn canonical_update_channel<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<crate::settings::UpdateChannel, String> {
+    crate::settings::read(app)
+        .map(|settings| settings.update_channel)
+        .map_err(|error| updater_error(UPDATER_ERROR_SETTINGS_UNAVAILABLE, error))
+}
+
+fn ensure_update_channel(
+    expected: crate::settings::UpdateChannel,
+    canonical: crate::settings::UpdateChannel,
+) -> Result<(), String> {
+    if expected == canonical {
+        return Ok(());
+    }
+    Err(updater_error(
+        UPDATER_ERROR_CHANNEL_CHANGED,
+        format_args!("expected {expected}, canonical {canonical}"),
+    ))
+}
+
+fn ensure_update_channel_state(
+    expected_channel: crate::settings::UpdateChannel,
+    expected_epoch: u64,
+    canonical_channel: crate::settings::UpdateChannel,
+    canonical_epoch: u64,
+) -> Result<(), String> {
+    ensure_update_channel(expected_channel, canonical_channel)?;
+    if expected_epoch == canonical_epoch {
+        return Ok(());
+    }
+    Err(updater_error(
+        UPDATER_ERROR_CHANNEL_CHANGED,
+        format_args!("expected epoch {expected_epoch}, canonical epoch {canonical_epoch}"),
+    ))
+}
+
+fn canonical_update_channel_snapshot<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+) -> Result<(crate::settings::UpdateChannel, u64), String> {
+    let _channel_guard = crate::settings::lock_update_channel_transition();
+    Ok((
+        canonical_update_channel(app)?,
+        crate::settings::update_channel_epoch(),
+    ))
+}
+
+fn ensure_canonical_update_channel_state<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    expected_channel: crate::settings::UpdateChannel,
+    expected_epoch: u64,
+) -> Result<(), String> {
+    let _channel_guard = crate::settings::lock_update_channel_transition();
+    ensure_update_channel_state(
+        expected_channel,
+        expected_epoch,
+        canonical_update_channel(app)?,
+        crate::settings::update_channel_epoch(),
+    )
+}
+
+fn updater_release_tag(
+    channel: crate::settings::UpdateChannel,
+    version: &str,
+) -> Result<String, String> {
+    static RELEASE_VERSION: std::sync::OnceLock<regex::Regex> = std::sync::OnceLock::new();
+    let release_version = RELEASE_VERSION.get_or_init(|| {
+        regex::Regex::new(r"^(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)\.(?:0|[1-9]\d*)(?:-beta\.[1-9]\d*)?$")
+            .expect("updater release version regex")
+    });
+    if !release_version.is_match(version)
+        || (channel == crate::settings::UpdateChannel::Stable && version.contains("-beta."))
+    {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            format_args!("version {version:?} is not valid for {channel}"),
+        ));
+    }
+    Ok(format!("{RELEASE_TAG_PREFIX}{version}"))
+}
+
+fn official_updater_asset_name(target: &str) -> Result<&'static str, String> {
+    match target {
+        "windows-x86_64" => Ok("aio-coding-hub-win64.msi"),
+        "darwin-x86_64" => Ok("aio-coding-hub-macos-intel.tar.gz"),
+        "darwin-aarch64" => Ok("aio-coding-hub-macos-arm.tar.gz"),
+        "linux-x86_64" => Ok("aio-coding-hub-linux-amd64.AppImage"),
+        _ => Err(updater_error(
+            UPDATER_ERROR_PLATFORM_UNSUPPORTED,
+            format_args!("target {target:?} is not in the official updater matrix"),
+        )),
+    }
+}
+
+fn validate_official_download_url(
+    download_url: &tauri::Url,
+    expected_tag: &str,
+    expected_asset: &str,
+) -> Result<(), String> {
+    let segments = download_url
+        .path_segments()
+        .map(|segments| segments.collect::<Vec<_>>())
+        .unwrap_or_default();
+    let valid_path = segments.len() == 6
+        && segments[0] == "FingerCaster"
+        && segments[1] == "aio-coding-hub"
+        && segments[2] == "releases"
+        && segments[3] == "download"
+        && segments[4] == expected_tag
+        && segments[5] == expected_asset;
+    if download_url.scheme() != "https"
+        || download_url.host_str() != Some("github.com")
+        || !download_url.username().is_empty()
+        || download_url.password().is_some()
+        || download_url.port().is_some()
+        || download_url.query().is_some()
+        || download_url.fragment().is_some()
+        || !valid_path
+    {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "platform URL does not match the canonical Release tag and asset",
+        ));
+    }
+    Ok(())
+}
+
+fn updater_candidate_identity_from_parts(
+    channel: crate::settings::UpdateChannel,
+    version: &str,
+    target: &str,
+    expected_target: &str,
+    download_url: &tauri::Url,
+    signature: &str,
+) -> Result<(UpdaterCandidateIdentity, String), String> {
+    let release_tag = updater_release_tag(channel, version)?;
+    if target != expected_target || signature.trim().is_empty() {
+        return Err(updater_error(
+            UPDATER_ERROR_MANIFEST_INVALID,
+            "target must match the current platform and signature must be non-empty",
+        ));
+    }
+    let expected_asset = official_updater_asset_name(expected_target)?;
+    validate_official_download_url(download_url, &release_tag, expected_asset)?;
+
+    let identity = UpdaterCandidateIdentity {
+        version: version.to_string(),
+        target: target.to_string(),
+        download_url: download_url.as_str().to_string(),
+        signature_sha256: format!("{:x}", Sha256::digest(signature.as_bytes())),
+    };
+    let release_url = format!("{RELEASES_BASE_URL}/tag/{release_tag}");
+    Ok((identity, release_url))
+}
+
+fn updater_candidate_identity(
+    channel: crate::settings::UpdateChannel,
+    update: &Update,
+) -> Result<(UpdaterCandidateIdentity, String), String> {
+    let expected_target = tauri_plugin_updater::target().ok_or_else(|| {
+        updater_error(
+            UPDATER_ERROR_PLATFORM_UNSUPPORTED,
+            "cannot determine the current updater target",
+        )
+    })?;
+    updater_candidate_identity_from_parts(
+        channel,
+        &update.version,
+        &update.target,
+        &expected_target,
+        &update.download_url,
+        &update.signature,
+    )
+}
+
+fn ensure_fresh_beta_candidate(
+    expected: &UpdaterCandidateIdentity,
+    fresh: &UpdaterCandidateIdentity,
+) -> Result<(), String> {
+    if expected == fresh {
+        return Ok(());
+    }
+    Err(updater_error(
+        UPDATER_ERROR_CANDIDATE_STALE,
+        "beta pointer no longer selects this candidate",
+    ))
+}
+
+fn take_typed_resource<R, T>(app: &tauri::AppHandle<R>, rid: ResourceId) -> Result<Arc<T>, String>
+where
+    R: tauri::Runtime,
+    T: Resource,
+{
+    app.resources_table().take::<T>(rid).map_err(|_| {
+        updater_error(
+            UPDATER_ERROR_RESOURCE_CLOSED,
+            format_args!("updater resource {rid} is unavailable"),
+        )
+    })
+}
+
+fn discard_typed_resource<R, T>(app: &tauri::AppHandle<R>, rid: ResourceId) -> Result<bool, String>
+where
+    R: tauri::Runtime,
+    T: Resource,
+{
+    let mut resources = app.resources_table();
+    if !resources.has(rid) {
+        return Ok(false);
+    }
+    resources.get::<T>(rid).map_err(|_| {
+        updater_error(
+            UPDATER_ERROR_RESOURCE_INVALID,
+            format_args!("resource {rid} is not an updater resource"),
+        )
+    })?;
+    resources
+        .close(rid)
+        .map_err(|error| updater_error(UPDATER_ERROR_RESOURCE_CLOSE_FAILED, error))?;
+    Ok(true)
+}
+
+fn discard_typed_resources_where<R, T, F>(app: &tauri::AppHandle<R>, predicate: F) -> usize
+where
+    R: tauri::Runtime,
+    T: Resource,
+    F: Fn(&T) -> bool,
+{
+    let mut resources = app.resources_table();
+    let matching = resources
+        .names()
+        .filter_map(|(rid, _)| {
+            resources
+                .get::<T>(rid)
+                .ok()
+                .filter(|resource| predicate(resource))
+                .map(|_| rid)
+        })
+        .collect::<Vec<_>>();
+    for rid in &matching {
+        let _ = resources.close(*rid);
+    }
+    matching.len()
+}
+
+pub(crate) fn discard_updater_resources_for_channel<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: crate::settings::UpdateChannel,
+) -> usize {
+    discard_typed_resources_where::<_, ChannelBoundUpdate, _>(app, |resource| {
+        resource.channel == channel
+    })
 }
 
 fn simplify_path(path: PathBuf) -> PathBuf {
@@ -646,38 +954,84 @@ pub(crate) fn desktop_notification_play_sound() -> Result<bool, String> {
 #[specta::specta]
 pub(crate) async fn desktop_updater_check(
     app: tauri::AppHandle,
+    expected_channel: crate::settings::UpdateChannel,
     timeout: Option<u64>,
 ) -> Result<Option<DesktopUpdaterMetadata>, String> {
+    let (canonical_channel, channel_epoch) = canonical_update_channel_snapshot(&app)?;
+    ensure_update_channel(expected_channel, canonical_channel)?;
+
+    let update = fetch_updater_candidate(&app, canonical_channel, timeout).await?;
+    let prepared = update
+        .map(|update| {
+            let (identity, release_url) = updater_candidate_identity(canonical_channel, &update)?;
+            let metadata = DesktopUpdaterMetadata {
+                rid: 0,
+                channel: canonical_channel,
+                current_version: update.current_version.clone(),
+                version: update.version.clone(),
+                date: update.date.map(|value| value.to_string()),
+                body: update.body.clone(),
+                release_url,
+            };
+            Ok::<_, String>((update, identity, metadata))
+        })
+        .transpose()?;
+
+    let _channel_guard = crate::settings::lock_update_channel_transition();
+    ensure_update_channel_state(
+        canonical_channel,
+        channel_epoch,
+        canonical_update_channel(&app)?,
+        crate::settings::update_channel_epoch(),
+    )?;
+    if let Some((update, identity, metadata)) = prepared {
+        let rid = app.resources_table().add(ChannelBoundUpdate {
+            update,
+            channel: canonical_channel,
+            channel_epoch,
+            identity,
+        });
+
+        return Ok(Some(DesktopUpdaterMetadata { rid, ..metadata }));
+    }
+
+    Ok(None)
+}
+
+async fn fetch_updater_candidate<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: crate::settings::UpdateChannel,
+    timeout: Option<u64>,
+) -> Result<Option<Update>, String> {
     let mut builder = app.updater_builder();
+    if channel == crate::settings::UpdateChannel::Beta {
+        builder = builder
+            .endpoints(vec![beta_updater_endpoint(
+                crate::shared::time::now_unix_millis(),
+            )?])
+            .map_err(|error| updater_error(UPDATER_ERROR_ENDPOINT_INVALID, error))?;
+    }
     if let Some(timeout) = to_duration(timeout) {
         builder = builder.timeout(timeout);
     }
 
     let updater = builder
         .build()
-        .map_err(|error| format!("failed to build updater: {error}"))?;
+        .map_err(|error| updater_error(UPDATER_ERROR_CLIENT_BUILD_FAILED, error))?;
     let update = updater
         .check()
         .await
-        .map_err(|error| format!("failed to check updater: {error}"))?;
+        .map_err(|error| updater_error(UPDATER_ERROR_CHECK_FAILED, error))?;
+    Ok(update)
+}
 
-    if let Some(update) = update {
-        let current_version = update.current_version.clone();
-        let version = update.version.clone();
-        let body = update.body.clone();
-        let date = update.date.map(|value| value.to_string());
-        let rid = app.resources_table().add(update);
-
-        return Ok(Some(DesktopUpdaterMetadata {
-            rid,
-            current_version,
-            version,
-            date,
-            body,
-        }));
-    }
-
-    Ok(None)
+#[tauri::command]
+#[specta::specta]
+pub(crate) fn desktop_updater_discard(
+    app: tauri::AppHandle,
+    rid: ResourceId,
+) -> Result<bool, String> {
+    discard_typed_resource::<_, ChannelBoundUpdate>(&app, rid)
 }
 
 #[tauri::command]
@@ -688,21 +1042,39 @@ pub(crate) async fn desktop_updater_download_and_install(
     timeout: Option<u64>,
     confirm: Option<RiskyIpcConfirm>,
 ) -> Result<bool, String> {
+    // Taking the resource first makes install a one-shot operation. Confirmation,
+    // channel validation, fresh-check, download, and install errors all leave the
+    // rid closed instead of retaining a stale or cross-channel candidate.
+    let bound = take_typed_resource::<_, ChannelBoundUpdate>(&app, rid)?;
     RiskyIpcConfirm::require(
         confirm,
         "desktop_updater_download_and_install",
         format!("updater:{rid}"),
     )?;
-    let update = app
-        .resources_table()
-        .get::<Update>(rid)
-        .map_err(|error| format!("failed to resolve updater resource: {error}"))?;
-    let mut update = (*update).clone();
+
+    ensure_canonical_update_channel_state(&app, bound.channel, bound.channel_epoch)?;
+    if bound.channel == crate::settings::UpdateChannel::Beta {
+        let fresh = fetch_updater_candidate(&app, bound.channel, timeout)
+            .await
+            .map_err(|error| updater_error(UPDATER_ERROR_BETA_FRESH_CHECK_FAILED, error))?
+            .ok_or_else(|| {
+                updater_error(
+                    UPDATER_ERROR_CANDIDATE_STALE,
+                    "beta pointer no longer offers an update",
+                )
+            })?;
+        let (fresh_identity, _) = updater_candidate_identity(bound.channel, &fresh)
+            .map_err(|error| updater_error(UPDATER_ERROR_BETA_FRESH_CHECK_FAILED, error))?;
+        ensure_fresh_beta_candidate(&bound.identity, &fresh_identity)?;
+        ensure_canonical_update_channel_state(&app, bound.channel, bound.channel_epoch)?;
+    }
+
+    let mut update = bound.update.clone();
     update.timeout = to_duration(timeout);
 
     let mut first_chunk = true;
-    update
-        .download_and_install(
+    let bytes = update
+        .download(
             |chunk_length, content_length| {
                 if first_chunk {
                     first_chunk = false;
@@ -715,24 +1087,54 @@ pub(crate) async fn desktop_updater_download_and_install(
             },
         )
         .await
-        .map_err(|error| format!("failed to download and install update: {error}"))?;
+        .map_err(|error| updater_error(UPDATER_ERROR_DOWNLOAD_FAILED, error))?;
 
-    let _ = app.resources_table().close(rid);
+    // The transition guard closes the final check-to-install window. Dedicated
+    // channel changes and portable imports cannot commit until install returns.
+    let _channel_guard = crate::settings::lock_update_channel_transition();
+    ensure_update_channel_state(
+        bound.channel,
+        bound.channel_epoch,
+        canonical_update_channel(&app)?,
+        crate::settings::update_channel_epoch(),
+    )?;
+    update
+        .install(bytes)
+        .map_err(|error| updater_error(UPDATER_ERROR_INSTALL_FAILED, error))?;
     Ok(true)
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
-        desktop_open_allowed_roots, ensure_desktop_open_path_allowed, normalize_existing_path,
+        beta_updater_endpoint, desktop_open_allowed_roots, discard_typed_resource,
+        discard_typed_resources_where, ensure_desktop_open_path_allowed,
+        ensure_fresh_beta_candidate, ensure_update_channel, ensure_update_channel_state,
+        normalize_existing_path, take_typed_resource, updater_candidate_identity_from_parts,
+        BETA_UPDATER_ENDPOINT, RELEASES_BASE_URL, UPDATER_ERROR_CANDIDATE_STALE,
+        UPDATER_ERROR_CHANNEL_CHANGED, UPDATER_ERROR_MANIFEST_INVALID,
+        UPDATER_ERROR_RESOURCE_CLOSED, UPDATER_ERROR_RESOURCE_INVALID,
     };
     use crate::infra::settings::{self, AppSettings, CodexHomeMode};
     use crate::test_support::{clear_settings_cache, test_env_lock};
     use std::ffi::OsString;
     use std::path::Path;
     use std::sync::atomic::{AtomicU64, Ordering};
+    use tauri::Manager;
 
     static TEST_ENV_SEQ: AtomicU64 = AtomicU64::new(1);
+
+    #[derive(Debug)]
+    struct MockUpdaterResource {
+        channel: settings::UpdateChannel,
+    }
+
+    impl tauri::Resource for MockUpdaterResource {}
+
+    #[derive(Debug)]
+    struct OtherResource;
+
+    impl tauri::Resource for OtherResource {}
 
     #[derive(Default)]
     struct EnvRestore {
@@ -816,6 +1218,328 @@ mod tests {
             ..AppSettings::default()
         };
         settings::write(app, &settings).expect("write settings");
+    }
+
+    fn assert_updater_error_code(error: &str, expected: &str) {
+        assert_eq!(
+            error.split_once(':').map_or(error, |(code, _)| code),
+            expected
+        );
+    }
+
+    #[test]
+    fn beta_endpoint_is_fixed_and_adds_only_a_controlled_cache_buster() {
+        let endpoint = beta_updater_endpoint(123_456).expect("beta endpoint");
+        assert_eq!(
+            format!(
+                "{}://{}{}",
+                endpoint.scheme(),
+                endpoint.host_str().expect("host"),
+                endpoint.path()
+            ),
+            BETA_UPDATER_ENDPOINT
+        );
+        assert_eq!(endpoint.query(), Some("aioCheck=123456"));
+    }
+
+    #[test]
+    fn updater_candidate_contract_binds_channel_release_url_and_official_asset() {
+        let beta_url = tauri::Url::parse(
+            "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.2/aio-coding-hub-win64.msi",
+        )
+        .unwrap();
+        let (identity, release_url) = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41-beta.2",
+            "windows-x86_64",
+            "windows-x86_64",
+            &beta_url,
+            "signed-candidate",
+        )
+        .expect("valid beta candidate");
+        assert_eq!(identity.version, "0.60.41-beta.2");
+        assert_eq!(
+            release_url,
+            format!("{RELEASES_BASE_URL}/tag/aio-coding-hub-v0.60.41-beta.2")
+        );
+
+        let stable_on_beta = tauri::Url::parse(
+            "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41/aio-coding-hub-win64.msi",
+        )
+        .unwrap();
+        assert!(updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41",
+            "windows-x86_64",
+            "windows-x86_64",
+            &stable_on_beta,
+            "signed-stable",
+        )
+        .is_ok());
+
+        let error = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Stable,
+            "0.60.41-beta.2",
+            "windows-x86_64",
+            "windows-x86_64",
+            &beta_url,
+            "signed-candidate",
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let arbitrary = tauri::Url::parse("https://example.invalid/update.exe").unwrap();
+        let error = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41-beta.2",
+            "windows-x86_64",
+            "windows-x86_64",
+            &arbitrary,
+            "signed-candidate",
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let wrong_asset = tauri::Url::parse(
+            "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.2/aio-coding-hub.exe",
+        )
+        .unwrap();
+        let error = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41-beta.2",
+            "windows-x86_64",
+            "windows-x86_64",
+            &wrong_asset,
+            "signed-candidate",
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+
+        let error = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41-beta.2",
+            "darwin-aarch64",
+            "windows-x86_64",
+            &beta_url,
+            "signed-candidate",
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+    }
+
+    #[test]
+    fn updater_candidate_contract_rejects_leading_zero_versions() {
+        let url = tauri::Url::parse(
+            "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v1.2.3/aio-coding-hub-win64.msi",
+        )
+        .unwrap();
+        for version in ["01.2.3", "1.02.3", "1.2.03", "1.2.3-beta.01"] {
+            let error = updater_candidate_identity_from_parts(
+                settings::UpdateChannel::Beta,
+                version,
+                "windows-x86_64",
+                "windows-x86_64",
+                &url,
+                "signed-candidate",
+            )
+            .unwrap_err();
+            assert_updater_error_code(&error, UPDATER_ERROR_MANIFEST_INVALID);
+        }
+    }
+
+    #[test]
+    fn updater_candidate_contract_pins_every_official_platform_asset() {
+        for (target, asset) in [
+            ("windows-x86_64", "aio-coding-hub-win64.msi"),
+            ("darwin-x86_64", "aio-coding-hub-macos-intel.tar.gz"),
+            ("darwin-aarch64", "aio-coding-hub-macos-arm.tar.gz"),
+            ("linux-x86_64", "aio-coding-hub-linux-amd64.AppImage"),
+        ] {
+            let url = tauri::Url::parse(&format!(
+                "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v1.2.3/{asset}"
+            ))
+            .unwrap();
+            updater_candidate_identity_from_parts(
+                settings::UpdateChannel::Stable,
+                "1.2.3",
+                target,
+                target,
+                &url,
+                "signed-candidate",
+            )
+            .expect("official platform asset");
+        }
+    }
+
+    #[test]
+    fn beta_fresh_check_rejects_every_candidate_identity_change() {
+        let url = tauri::Url::parse(
+            "https://github.com/FingerCaster/aio-coding-hub/releases/download/aio-coding-hub-v0.60.41-beta.2/aio-coding-hub-win64.msi",
+        )
+        .unwrap();
+        let (expected, _) = updater_candidate_identity_from_parts(
+            settings::UpdateChannel::Beta,
+            "0.60.41-beta.2",
+            "windows-x86_64",
+            "windows-x86_64",
+            &url,
+            "signature-a",
+        )
+        .unwrap();
+        assert!(ensure_fresh_beta_candidate(&expected, &expected).is_ok());
+
+        for changed in [
+            {
+                let mut value = expected.clone();
+                value.version = "0.60.41-beta.3".to_string();
+                value
+            },
+            {
+                let mut value = expected.clone();
+                value.target = "windows-aarch64-nsis".to_string();
+                value
+            },
+            {
+                let mut value = expected.clone();
+                value.download_url.push_str(".changed");
+                value
+            },
+            {
+                let mut value = expected.clone();
+                value.signature_sha256 = "changed".to_string();
+                value
+            },
+        ] {
+            let error = ensure_fresh_beta_candidate(&expected, &changed).unwrap_err();
+            assert_updater_error_code(&error, UPDATER_ERROR_CANDIDATE_STALE);
+        }
+    }
+
+    #[test]
+    fn updater_channel_mismatch_is_typed_and_never_coerces_to_beta() {
+        assert!(ensure_update_channel(
+            settings::UpdateChannel::Stable,
+            settings::UpdateChannel::Stable
+        )
+        .is_ok());
+        let error = ensure_update_channel(
+            settings::UpdateChannel::Beta,
+            settings::UpdateChannel::Stable,
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_CHANNEL_CHANGED);
+    }
+
+    #[test]
+    fn updater_switch_during_fresh_check_is_rejected_even_after_switching_back() {
+        let error = ensure_update_channel_state(
+            settings::UpdateChannel::Beta,
+            10,
+            settings::UpdateChannel::Beta,
+            12,
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_CHANNEL_CHANGED);
+    }
+
+    #[test]
+    fn updater_switch_during_download_is_rejected_before_install() {
+        let error = ensure_update_channel_state(
+            settings::UpdateChannel::Beta,
+            10,
+            settings::UpdateChannel::Stable,
+            11,
+        )
+        .unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_CHANNEL_CHANGED);
+    }
+
+    #[test]
+    fn updater_switch_during_install_waits_for_the_install_gate() {
+        let test_app = DesktopCommandTestApp::new();
+        let handle = test_app.handle();
+        settings::write(
+            &handle,
+            &AppSettings {
+                update_channel: settings::UpdateChannel::Beta,
+                ..AppSettings::default()
+            },
+        )
+        .expect("seed beta channel");
+
+        let install_guard = settings::lock_update_channel_transition();
+        let (started_tx, started_rx) = std::sync::mpsc::channel();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+        let worker = std::thread::spawn(move || {
+            started_tx.send(()).expect("signal switch start");
+            let result = crate::app::settings_service::settings_update_channel_set_sync(
+                &handle,
+                settings::UpdateChannel::Stable,
+                None,
+            );
+            result_tx.send(result).expect("send switch result");
+        });
+
+        started_rx.recv().expect("switch worker started");
+        assert!(result_rx
+            .recv_timeout(std::time::Duration::from_millis(100))
+            .is_err());
+        drop(install_guard);
+
+        let view = result_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .expect("switch completes after install gate")
+            .expect("switch succeeds");
+        assert_eq!(view.update_channel, settings::UpdateChannel::Stable);
+        worker.join().expect("switch worker");
+    }
+
+    #[test]
+    fn updater_resource_take_and_discard_are_typed_and_idempotent() {
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+        let (beta_rid, stable_rid, other_rid, take_rid) = {
+            let mut resources = handle.resources_table();
+            (
+                resources.add(MockUpdaterResource {
+                    channel: settings::UpdateChannel::Beta,
+                }),
+                resources.add(MockUpdaterResource {
+                    channel: settings::UpdateChannel::Stable,
+                }),
+                resources.add(OtherResource),
+                resources.add(MockUpdaterResource {
+                    channel: settings::UpdateChannel::Beta,
+                }),
+            )
+        };
+
+        assert_eq!(
+            discard_typed_resources_where::<_, MockUpdaterResource, _>(&handle, |resource| {
+                resource.channel == settings::UpdateChannel::Beta
+            }),
+            2
+        );
+        assert!(!handle.resources_table().has(beta_rid));
+        assert!(!handle.resources_table().has(take_rid));
+        assert!(handle.resources_table().has(stable_rid));
+
+        assert!(discard_typed_resource::<_, MockUpdaterResource>(&handle, stable_rid).unwrap());
+        assert!(!discard_typed_resource::<_, MockUpdaterResource>(&handle, stable_rid).unwrap());
+        let error =
+            discard_typed_resource::<_, MockUpdaterResource>(&handle, other_rid).unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_RESOURCE_INVALID);
+        assert!(handle.resources_table().has(other_rid));
+
+        let fresh_take_rid = handle.resources_table().add(MockUpdaterResource {
+            channel: settings::UpdateChannel::Stable,
+        });
+        let _taken = take_typed_resource::<_, MockUpdaterResource>(&handle, fresh_take_rid)
+            .expect("take updater resource");
+        assert!(!handle.resources_table().has(fresh_take_rid));
+        let error =
+            take_typed_resource::<_, MockUpdaterResource>(&handle, fresh_take_rid).unwrap_err();
+        assert_updater_error_code(&error, UPDATER_ERROR_RESOURCE_CLOSED);
     }
 
     #[test]

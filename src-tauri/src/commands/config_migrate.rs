@@ -188,6 +188,13 @@ pub(crate) async fn config_import(
     .await
     .map_err(|err| -> String { err.into() })?;
 
+    // Portable imports always commit the stable channel. Release any Beta
+    // candidate resources that were created before the import winner committed.
+    crate::commands::desktop::discard_updater_resources_for_channel(
+        &app_for_runtime,
+        crate::settings::UpdateChannel::Beta,
+    );
+
     if let Some(runtime) = app_for_runtime.try_state::<
         crate::app::provider_account_usage_runtime::ProviderAccountUsageRuntimeState,
     >() {

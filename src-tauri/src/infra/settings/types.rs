@@ -51,6 +51,32 @@ pub enum ProviderFailbackStrategy {
     Natural,
 }
 
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize, specta::Type, Default,
+)]
+#[serde(rename_all = "snake_case")]
+pub enum UpdateChannel {
+    Beta,
+    #[default]
+    #[serde(other)]
+    Stable,
+}
+
+impl UpdateChannel {
+    pub const fn as_str(self) -> &'static str {
+        match self {
+            Self::Stable => "stable",
+            Self::Beta => "beta",
+        }
+    }
+}
+
+impl std::fmt::Display for UpdateChannel {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(self.as_str())
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum CodexHomeMode {
@@ -407,6 +433,7 @@ pub struct AppSettings {
     pub upstream_stream_idle_timeout_seconds: u32,
     pub stream_internal_error_guard_ms: u32,
     pub upstream_request_timeout_non_streaming_seconds: u32,
+    pub update_channel: UpdateChannel,
     pub update_releases_url: String,
     pub failover_max_attempts_per_provider: u32,
     pub failover_max_providers_to_try: u32,
@@ -506,6 +533,7 @@ impl Default for AppSettings {
             stream_internal_error_guard_ms: DEFAULT_STREAM_INTERNAL_ERROR_GUARD_MS,
             upstream_request_timeout_non_streaming_seconds:
                 DEFAULT_UPSTREAM_REQUEST_TIMEOUT_NON_STREAMING_SECONDS,
+            update_channel: UpdateChannel::Stable,
             update_releases_url: DEFAULT_UPDATE_RELEASES_URL.to_string(),
             failover_max_attempts_per_provider: DEFAULT_FAILOVER_MAX_ATTEMPTS_PER_PROVIDER,
             failover_max_providers_to_try: DEFAULT_FAILOVER_MAX_PROVIDERS_TO_TRY,
@@ -570,9 +598,30 @@ pub(super) fn default_cli_priority_order() -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::{
-        AppSettings, ModelRoutingPolicy, UpstreamRetryPolicy, UpstreamTransportRetryKind,
-        DEFAULT_CAPACITY_RETRY_KEYWORD,
+        AppSettings, ModelRoutingPolicy, UpdateChannel, UpstreamRetryPolicy,
+        UpstreamTransportRetryKind, DEFAULT_CAPACITY_RETRY_KEYWORD,
     };
+
+    #[test]
+    fn update_channel_defaults_and_unknown_values_fail_closed_to_stable() {
+        assert_eq!(AppSettings::default().update_channel, UpdateChannel::Stable);
+
+        let mut missing = serde_json::to_value(AppSettings::default()).unwrap();
+        missing
+            .as_object_mut()
+            .expect("settings object")
+            .remove("update_channel");
+        let missing: AppSettings = serde_json::from_value(missing).unwrap();
+        assert_eq!(missing.update_channel, UpdateChannel::Stable);
+
+        let mut unknown = serde_json::to_value(AppSettings::default()).unwrap();
+        unknown["update_channel"] = serde_json::json!("nightly");
+        let unknown: AppSettings = serde_json::from_value(unknown).unwrap();
+        assert_eq!(unknown.update_channel, UpdateChannel::Stable);
+
+        let beta: UpdateChannel = serde_json::from_value(serde_json::json!("beta")).unwrap();
+        assert_eq!(beta, UpdateChannel::Beta);
+    }
 
     #[test]
     fn upstream_retry_defaults_keep_only_behavior_bearing_visible_rules() {

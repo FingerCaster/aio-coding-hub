@@ -137,6 +137,35 @@ describe("services/settings/settings", () => {
     expect(Object.keys(input).filter((key) => key.includes("ReasoningGuard"))).toEqual([]);
     expect(input).not.toHaveProperty("cx2ccFallbackModelMain");
     expect(input).not.toHaveProperty("codex_oauth_compatible_proxy_mode");
+    expect(input).not.toHaveProperty("updateChannel");
+  });
+
+  it("uses the dedicated generated command for update-channel ownership", async () => {
+    setTauriRuntime();
+    vi.resetModules();
+    vi.mocked(tauriInvoke).mockResolvedValue(createTestAppSettings() as any);
+
+    const { settingsUpdateChannelSet } = await import("../settings");
+
+    await settingsUpdateChannelSet("beta");
+    expect(tauriInvoke).toHaveBeenLastCalledWith("settings_update_channel_set", {
+      channel: "beta",
+      confirm: {
+        confirm: {
+          action: "settings_update_channel_set",
+          resource: "update_channel:beta",
+          nonce: expect.any(String),
+          issuedAtMs: expect.any(Number),
+          ttlMs: 60_000,
+        },
+      },
+    });
+
+    await settingsUpdateChannelSet("stable");
+    expect(tauriInvoke).toHaveBeenLastCalledWith("settings_update_channel_set", {
+      channel: "stable",
+      confirm: null,
+    });
   });
 
   it("sends only caller-owned fields through the partial settings command", async () => {
@@ -167,6 +196,7 @@ describe("services/settings/settings", () => {
     );
     const calls = vi.mocked(tauriInvoke).mock.calls;
     const sentPatch = calls[calls.length - 1]?.[1]?.patch as Record<string, unknown>;
+    expect(sentPatch).not.toHaveProperty("updateChannel");
     expect(
       Object.fromEntries(Object.entries(sentPatch).filter(([, value]) => value !== null))
     ).toEqual({ providerCooldownSeconds: 99 });

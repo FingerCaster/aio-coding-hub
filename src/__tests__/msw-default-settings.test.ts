@@ -6,7 +6,7 @@ describe("MSW defaults", () => {
     resetMswState();
 
     expect(getSettingsState()).toEqual({
-      schema_version: 57,
+      schema_version: 58,
       preferred_port: 37123,
       show_home_heatmap: true,
       show_home_usage: true,
@@ -36,6 +36,7 @@ describe("MSW defaults", () => {
       upstream_stream_idle_timeout_seconds: 300,
       stream_internal_error_guard_ms: 500,
       upstream_request_timeout_non_streaming_seconds: 0,
+      update_channel: "stable",
       update_releases_url: "https://github.com/FingerCaster/aio-coding-hub/releases",
       failover_max_attempts_per_provider: 5,
       failover_max_providers_to_try: 5,

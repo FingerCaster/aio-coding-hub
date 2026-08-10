@@ -20,6 +20,7 @@ macro_rules! generated_command_registry {
             settings_get => crate::commands::settings::settings_get,
             settings_set => crate::commands::settings::settings_set,
             settings_patch => crate::commands::settings::settings_patch,
+            settings_update_channel_set => crate::commands::settings::settings_update_channel_set,
             settings_gateway_rectifier_set => crate::commands::settings::settings_gateway_rectifier_set,
             settings_circuit_breaker_notice_set => crate::commands::settings::settings_circuit_breaker_notice_set,
             settings_codex_session_id_completion_set => crate::commands::settings::settings_codex_session_id_completion_set,
@@ -46,6 +47,7 @@ macro_rules! generated_command_registry {
             desktop_opener_open_url => crate::commands::desktop::desktop_opener_open_url,
             desktop_opener_reveal_item_in_dir => crate::commands::desktop::desktop_opener_reveal_item_in_dir,
             desktop_updater_check => crate::commands::desktop::desktop_updater_check,
+            desktop_updater_discard => crate::commands::desktop::desktop_updater_discard,
             desktop_window_set_theme => crate::commands::desktop::desktop_window_set_theme,
             // ── notice ──
             notice_send => crate::commands::notice::notice_send,

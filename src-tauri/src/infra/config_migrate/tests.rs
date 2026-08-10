@@ -220,6 +220,39 @@ fn make_test_bundle(schema_version: u32) -> ConfigBundle {
 }
 
 #[test]
+fn prepare_config_import_normalizes_beta_participation_to_stable() {
+    let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
+    let mut imported = serde_json::to_value(settings::AppSettings::default()).unwrap();
+    imported["update_channel"] = serde_json::json!("beta");
+    bundle.settings = serde_json::to_string(&imported).expect("beta settings");
+
+    let prepared = prepare_config_import(bundle).expect("prepare imported settings");
+    assert_eq!(
+        prepared.settings_to_write.update_channel,
+        settings::UpdateChannel::Stable
+    );
+}
+
+#[test]
+fn config_export_always_serializes_stable_update_channel() {
+    let test_app = ConfigMigrateTestApp::new();
+    let app = test_app.handle();
+    let mut beta = settings::read(&app).expect("settings");
+    beta.update_channel = settings::UpdateChannel::Beta;
+    settings::write(&app, &beta).expect("seed beta settings");
+
+    let bundle = config_export(&app, &test_app.db).expect("config export");
+    let exported: settings::AppSettings =
+        serde_json::from_str(&bundle.settings).expect("exported settings");
+    assert_eq!(exported.update_channel, settings::UpdateChannel::Stable);
+    assert_eq!(
+        serde_json::from_str::<serde_json::Value>(&bundle.settings).expect("exported json")
+            ["update_channel"],
+        serde_json::json!("stable")
+    );
+}
+
+#[test]
 fn config_v4_round_trips_model_routing_and_v1_to_v3_clear_injected_policies() {
     let test_app = ConfigMigrateTestApp::new();
     let app = test_app.handle();
@@ -842,6 +875,7 @@ fn config_import_cas_loser_preserves_winner_without_autostart_side_effect() {
     let previous = settings::read(&app).expect("previous settings");
     let mut imported = previous.clone();
     imported.auto_start = !previous.auto_start;
+    imported.update_channel = settings::UpdateChannel::Beta;
     imported.log_retention_days = previous.log_retention_days.saturating_add(1);
     let mut bundle = make_test_bundle(CONFIG_BUNDLE_SCHEMA_VERSION);
     bundle.settings = serde_json::to_string(&imported).expect("import settings");
@@ -851,6 +885,7 @@ fn config_import_cas_loser_preserves_winner_without_autostart_side_effect() {
     set_before_config_import_settings_cas_test_hook(Box::new(move || {
         settings::update(&hook_app, |winner| {
             winner.log_retention_days = winner_retention;
+            winner.update_channel = settings::UpdateChannel::Beta;
             Ok(())
         })
         .expect("commit concurrent winner");
@@ -865,6 +900,7 @@ fn config_import_cas_loser_preserves_winner_without_autostart_side_effect() {
     let canonical = settings::read(&app).expect("canonical winner");
     assert_eq!(canonical.log_retention_days, winner_retention);
     assert_eq!(canonical.auto_start, previous.auto_start);
+    assert_eq!(canonical.update_channel, settings::UpdateChannel::Beta);
     assert_eq!(crate::app::autostart::auto_start_sync_test_calls(), 0);
 }
 

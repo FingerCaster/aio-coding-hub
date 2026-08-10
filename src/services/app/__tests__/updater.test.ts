@@ -6,6 +6,30 @@ import { setTauriRuntime } from "../../../test/utils/tauriRuntime";
 const AIO_REPO_PATH = new URL(AIO_REPO_URL).pathname.split("/").filter(Boolean);
 const AIO_RELEASE_TAG_URL = `${AIO_REPO_URL}/releases/tag/aio-coding-hub-v0.60.0`;
 
+function createUpdaterMetadata(
+  overrides: Partial<{
+    rid: number;
+    channel: "stable" | "beta";
+    version: string;
+    currentVersion: string;
+    date: string | null;
+    body: string | null;
+    releaseUrl: string;
+  }> = {}
+) {
+  const version = overrides.version ?? "0.60.0";
+  return {
+    rid: 1,
+    channel: "stable" as const,
+    version,
+    currentVersion: "0.59.0",
+    date: null,
+    body: null,
+    releaseUrl: `${AIO_REPO_URL}/releases/tag/aio-coding-hub-v${version}`,
+    ...overrides,
+  };
+}
+
 describe("services/app/updater", () => {
   beforeEach(() => {
     vi.clearAllMocks();
@@ -15,7 +39,7 @@ describe("services/app/updater", () => {
     vi.unstubAllGlobals();
   });
 
-  it("parseUpdaterCheckResult rejects invalid values and keeps optional fields", async () => {
+  it("parseUpdaterCheckResult requires well-formed channel-bound metadata", async () => {
     const { parseUpdaterCheckResult } = await import("../updater");
 
     expect(parseUpdaterCheckResult(null)).toBeNull();
@@ -27,21 +51,42 @@ describe("services/app/updater", () => {
     expect(parseUpdaterCheckResult({ rid: 1.5 })).toBeNull();
     expect(parseUpdaterCheckResult({ rid: Number.NaN })).toBeNull();
 
-    expect(
-      parseUpdaterCheckResult({
-        rid: 1,
-        version: "v1",
-        currentVersion: "v0",
-        date: "2026-02-01",
-        body: "notes",
-      })
-    ).toEqual({
+    const valid = createUpdaterMetadata({
       rid: 1,
-      version: "v1",
-      currentVersion: "v0",
       date: "2026-02-01",
       body: "notes",
     });
+    expect(parseUpdaterCheckResult(valid)).toEqual(valid);
+
+    for (const key of ["channel", "currentVersion", "version", "releaseUrl"] as const) {
+      const malformed = { ...valid } as Record<string, unknown>;
+      delete malformed[key];
+      expect(parseUpdaterCheckResult(malformed)).toBeNull();
+    }
+
+    expect(parseUpdaterCheckResult({ ...valid, channel: "nightly" })).toBeNull();
+    expect(parseUpdaterCheckResult({ ...valid, currentVersion: "" })).toBeNull();
+    expect(
+      parseUpdaterCheckResult(
+        createUpdaterMetadata({ channel: "stable", version: "0.60.0-beta.1" })
+      )
+    ).toBeNull();
+    expect(
+      parseUpdaterCheckResult(createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }))
+    ).toEqual({
+      ...createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }),
+      date: undefined,
+      body: undefined,
+    });
+    expect(
+      parseUpdaterCheckResult(createUpdaterMetadata({ channel: "beta", version: "0.60.0-rc.1" }))
+    ).toBeNull();
+    expect(parseUpdaterCheckResult(createUpdaterMetadata({ version: "01.60.0" }))).toBeNull();
+    expect(
+      parseUpdaterCheckResult(createUpdaterMetadata({ releaseUrl: "https://example.com/release" }))
+    ).toBeNull();
+    expect(parseUpdaterCheckResult({ ...valid, date: 123 })).toBeNull();
+    expect(parseUpdaterCheckResult({ ...valid, body: { text: "notes" } })).toBeNull();
   });
 
   it("updaterCheck parses tauri result", async () => {
@@ -51,14 +96,32 @@ describe("services/app/updater", () => {
 
     vi.mocked(tauriInvoke).mockResolvedValueOnce(false as any);
     expect(await updaterCheck()).toBeNull();
+    expect(tauriInvoke).toHaveBeenLastCalledWith("desktop_updater_check", {
+      expectedChannel: "stable",
+      timeout: null,
+    });
 
-    vi.mocked(tauriInvoke).mockResolvedValueOnce({ rid: 2, version: "v2" } as any);
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(createUpdaterMetadata({ rid: 2 }) as any);
     expect(await updaterCheck()).toEqual({
       rid: 2,
-      version: "v2",
-      currentVersion: undefined,
+      channel: "stable",
+      version: "0.60.0",
+      currentVersion: "0.59.0",
       date: undefined,
       body: undefined,
+      releaseUrl: AIO_RELEASE_TAG_URL,
+    });
+
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(
+      createUpdaterMetadata({ channel: "beta", version: "0.60.0-beta.1" }) as any
+    );
+    expect(await updaterCheck("beta")).toMatchObject({
+      channel: "beta",
+      version: "0.60.0-beta.1",
+    });
+    expect(tauriInvoke).toHaveBeenLastCalledWith("desktop_updater_check", {
+      expectedChannel: "beta",
+      timeout: null,
     });
   });
 
@@ -67,13 +130,13 @@ describe("services/app/updater", () => {
 
     setTauriRuntime();
 
-    vi.mocked(tauriInvoke).mockResolvedValueOnce({
-      rid: 3,
-      version: "0.60.0",
-      currentVersion: "0.59.0",
-      date: "2026-06-14T15:58:48Z",
-      body: `See release: ${AIO_RELEASE_TAG_URL}`,
-    } as any);
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(
+      createUpdaterMetadata({
+        rid: 3,
+        date: "2026-06-14T15:58:48Z",
+        body: `See release: ${AIO_RELEASE_TAG_URL}`,
+      }) as any
+    );
 
     const fetchMock = vi.fn().mockResolvedValue({
       ok: true,
@@ -85,10 +148,12 @@ describe("services/app/updater", () => {
 
     await expect(updaterCheck()).resolves.toEqual({
       rid: 3,
+      channel: "stable",
       version: "0.60.0",
       currentVersion: "0.59.0",
       date: "2026-06-14T15:58:48Z",
       body: "## 0.60.0\n\n- 具体更新内容",
+      releaseUrl: AIO_RELEASE_TAG_URL,
     });
 
     expect(fetchMock).toHaveBeenCalledWith(
@@ -104,23 +169,33 @@ describe("services/app/updater", () => {
 
     setTauriRuntime();
 
-    const fallbackBody = AIO_RELEASE_TAG_URL;
-    vi.mocked(tauriInvoke).mockResolvedValueOnce({
-      rid: 4,
-      version: "0.60.0",
-      body: fallbackBody,
-    } as any);
+    const fallbackBody = `See release: ${AIO_RELEASE_TAG_URL}`;
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(
+      createUpdaterMetadata({ rid: 4, body: fallbackBody }) as any
+    );
 
     const fetchMock = vi.fn().mockResolvedValue({ ok: false });
     vi.stubGlobal("fetch", fetchMock);
 
     await expect(updaterCheck()).resolves.toEqual({
       rid: 4,
+      channel: "stable",
       version: "0.60.0",
-      currentVersion: undefined,
+      currentVersion: "0.59.0",
       date: undefined,
       body: fallbackBody,
+      releaseUrl: AIO_RELEASE_TAG_URL,
     });
+  });
+
+  it("updaterDiscard uses the generated one-shot resource command", async () => {
+    const { updaterDiscard } = await import("../updater");
+
+    setTauriRuntime();
+    vi.mocked(tauriInvoke).mockResolvedValueOnce(true as any);
+
+    await expect(updaterDiscard(7)).resolves.toBe(true);
+    expect(tauriInvoke).toHaveBeenCalledWith("desktop_updater_discard", { rid: 7 });
   });
 
   it("updaterDownloadAndInstall maps events and supports timeout option", async () => {
@@ -173,7 +248,7 @@ describe("services/app/updater", () => {
   });
 
   it("updaterDownloadAndInstall rejects invalid rid and timeout before handwritten IPC", async () => {
-    const { updaterDownloadAndInstall } = await import("../updater");
+    const { updaterDiscard, updaterDownloadAndInstall } = await import("../updater");
     const { desktopUpdaterCheck } = await import("../../desktop/updater");
 
     setTauriRuntime();
@@ -186,6 +261,10 @@ describe("services/app/updater", () => {
     await expect(desktopUpdaterCheck({ timeoutMs: Number.NaN })).rejects.toThrow(
       "SEC_INVALID_INPUT"
     );
+    await expect(desktopUpdaterCheck({ channel: "nightly" as any })).rejects.toThrow(
+      "SEC_INVALID_INPUT"
+    );
+    await expect(updaterDiscard(-1)).rejects.toThrow("SEC_INVALID_INPUT");
 
     expect(tauriInvoke).not.toHaveBeenCalled();
   });

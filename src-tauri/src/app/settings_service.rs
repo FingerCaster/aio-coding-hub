@@ -6,8 +6,12 @@ use crate::gateway_control::{
     app_start_gateway_with_config, try_app_gateway_update_circuit_config,
 };
 use crate::gateway_runtime_access::app_gateway_status;
+use crate::shared::ipc_confirm::RiskyIpcConfirm;
 use crate::{blocking, cli_proxy, resident, settings};
 use tauri::Manager;
+
+pub(crate) const UPDATE_CHANNEL_CONFIRM_ACTION: &str = "settings_update_channel_set";
+pub(crate) const UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE: &str = "update_channel:beta";
 
 fn write_settings_view<R, F>(
     app: &tauri::AppHandle<R>,
@@ -498,6 +502,7 @@ pub(crate) struct SettingsView {
     pub upstream_stream_idle_timeout_seconds: u32,
     pub stream_internal_error_guard_ms: u32,
     pub upstream_request_timeout_non_streaming_seconds: u32,
+    pub update_channel: settings::UpdateChannel,
     pub update_releases_url: String,
     pub failover_max_attempts_per_provider: u32,
     pub failover_max_providers_to_try: u32,
@@ -627,6 +632,7 @@ impl From<&settings::AppSettings> for SettingsView {
             stream_internal_error_guard_ms: value.stream_internal_error_guard_ms,
             upstream_request_timeout_non_streaming_seconds: value
                 .upstream_request_timeout_non_streaming_seconds,
+            update_channel: value.update_channel,
             update_releases_url: value.update_releases_url.clone(),
             failover_max_attempts_per_provider: value.failover_max_attempts_per_provider,
             failover_max_providers_to_try: value.failover_max_providers_to_try,
@@ -2328,6 +2334,48 @@ pub(crate) fn settings_gateway_rectifier_set_sync<R: tauri::Runtime>(
     .map_err(|err| err.to_string())
 }
 
+/// Synchronous production body for the device-local updater channel owner.
+pub(crate) fn settings_update_channel_set_sync<R: tauri::Runtime>(
+    app: &tauri::AppHandle<R>,
+    channel: settings::UpdateChannel,
+    confirm: Option<RiskyIpcConfirm>,
+) -> Result<SettingsView, String> {
+    let _channel_guard = settings::lock_update_channel_transition();
+    let mut channel_changed = false;
+    let view = write_settings_view(app, |latest| {
+        if latest.update_channel == settings::UpdateChannel::Stable
+            && channel == settings::UpdateChannel::Beta
+        {
+            RiskyIpcConfirm::require(
+                confirm,
+                UPDATE_CHANNEL_CONFIRM_ACTION,
+                UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE,
+            )?;
+        }
+        channel_changed = latest.update_channel != channel;
+        latest.update_channel = channel;
+        Ok(())
+    })
+    .map_err(|err| err.to_string())?;
+    if channel_changed {
+        settings::mark_update_channel_transition();
+    }
+    Ok(view)
+}
+
+pub(crate) async fn settings_update_channel_set<R: tauri::Runtime>(
+    app: tauri::AppHandle<R>,
+    channel: settings::UpdateChannel,
+    confirm: Option<RiskyIpcConfirm>,
+) -> Result<SettingsView, String> {
+    let app_for_work = app.clone();
+    blocking::run("settings_update_channel_set", move || {
+        settings_update_channel_set_sync(&app_for_work, channel, confirm)
+    })
+    .await
+    .map_err(Into::into)
+}
+
 pub(crate) async fn settings_gateway_rectifier_set<R: tauri::Runtime>(
     app: tauri::AppHandle<R>,
     update: GatewayRectifierSettingsUpdate,
@@ -2411,6 +2459,18 @@ async fn wsl_auto_sync_after_settings(app: &tauri::AppHandle) -> Result<(), Stri
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn update_channel_confirm() -> RiskyIpcConfirm {
+        RiskyIpcConfirm {
+            confirm: crate::shared::ipc_confirm::IpcConfirm {
+                action: UPDATE_CHANNEL_CONFIRM_ACTION.to_string(),
+                resource: UPDATE_CHANNEL_BETA_CONFIRM_RESOURCE.to_string(),
+                nonce: "betaChannelTestNonce123".to_string(),
+                issued_at_ms: crate::shared::time::now_unix_millis(),
+                ttl_ms: 60_000,
+            },
+        }
+    }
 
     struct SettingsTestEnv {
         old_home: Option<std::ffi::OsString>,
@@ -2658,6 +2718,41 @@ mod tests {
     }
 
     #[test]
+    fn update_channel_requires_confirmation_only_when_entering_beta() {
+        let _env = SettingsTestEnv::new();
+        let app = tauri::test::mock_app();
+        let handle = app.handle().clone();
+
+        let error = settings_update_channel_set_sync(&handle, settings::UpdateChannel::Beta, None)
+            .expect_err("stable to beta must require confirmation");
+        assert!(error.starts_with("SEC_CONFIRM_REQUIRED:"));
+        assert_eq!(
+            settings::read(&handle)
+                .expect("canonical after rejected beta")
+                .update_channel,
+            settings::UpdateChannel::Stable
+        );
+
+        let beta = settings_update_channel_set_sync(
+            &handle,
+            settings::UpdateChannel::Beta,
+            Some(update_channel_confirm()),
+        )
+        .expect("confirmed beta enable");
+        assert_eq!(beta.update_channel, settings::UpdateChannel::Beta);
+
+        let repeated =
+            settings_update_channel_set_sync(&handle, settings::UpdateChannel::Beta, None)
+                .expect("already-enabled beta does not grant new participation");
+        assert_eq!(repeated.update_channel, settings::UpdateChannel::Beta);
+
+        let stable =
+            settings_update_channel_set_sync(&handle, settings::UpdateChannel::Stable, None)
+                .expect("leaving beta is immediate");
+        assert_eq!(stable.update_channel, settings::UpdateChannel::Stable);
+    }
+
+    #[test]
     fn partial_patch_merges_with_canonical_settings_after_a_concurrent_writer() {
         let _env = SettingsTestEnv::new();
         let app = tauri::test::mock_app();
@@ -2896,6 +2991,12 @@ mod tests {
             },
         )
         .expect("codex completion production command path");
+        settings_update_channel_set_sync(
+            &handle,
+            settings::UpdateChannel::Beta,
+            Some(update_channel_confirm()),
+        )
+        .expect("updater channel production command path");
         settings_gateway_rectifier_set_sync(
             &handle,
             GatewayRectifierSettingsUpdate {
@@ -2945,6 +3046,11 @@ mod tests {
         );
         assert!(canonical.enable_circuit_breaker_notice);
         assert!(canonical.enable_codex_session_id_completion);
+        assert_eq!(canonical.update_channel, settings::UpdateChannel::Beta);
+        assert_eq!(
+            result.settings.update_channel,
+            settings::UpdateChannel::Beta
+        );
         assert!(canonical.verbose_provider_error);
         assert!(canonical.intercept_anthropic_warmup_requests);
         assert!(!canonical.enable_thinking_signature_rectifier);

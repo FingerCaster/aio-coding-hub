@@ -1461,6 +1461,14 @@ fn migrate_add_model_routing_policy(
         SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
     )
 }
+
+fn migrate_add_update_channel(settings: &mut AppSettings, schema_version_present: bool) -> bool {
+    migrate_bump_schema_version(
+        settings,
+        schema_version_present,
+        SCHEMA_VERSION_ADD_UPDATE_CHANNEL,
+    )
+}
 type SettingsMigration = fn(&mut AppSettings, bool) -> bool;
 
 const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
@@ -1503,6 +1511,7 @@ const SETTINGS_MIGRATIONS: &[SettingsMigration] = &[
     migrate_add_upstream_error_response_rules,
     migrate_add_stream_internal_error_retry,
     migrate_add_model_routing_policy,
+    migrate_add_update_channel,
 ];
 
 fn apply_settings_migrations(settings: &mut AppSettings, schema_version_present: bool) -> bool {
@@ -1544,6 +1553,7 @@ pub(super) fn repair_settings(
 mod tests {
     use super::*;
     use crate::infra::settings::types::default_cli_priority_order;
+    use crate::infra::settings::UpdateChannel;
 
     fn upstream_error_response_rule() -> UpstreamErrorResponseRule {
         UpstreamErrorResponseRule {
@@ -2030,6 +2040,18 @@ mod tests {
     fn app_settings_default_has_current_schema_version() {
         let s = AppSettings::default();
         assert_eq!(s.schema_version, SCHEMA_VERSION);
+    }
+
+    #[test]
+    fn migrate_add_update_channel_bumps_schema_and_keeps_stable_default() {
+        let mut settings = AppSettings {
+            schema_version: SCHEMA_VERSION_ADD_MODEL_ROUTING_POLICY,
+            ..AppSettings::default()
+        };
+
+        assert!(migrate_add_update_channel(&mut settings, true));
+        assert_eq!(settings.schema_version, SCHEMA_VERSION_ADD_UPDATE_CHANNEL);
+        assert_eq!(settings.update_channel, UpdateChannel::Stable);
     }
 
     #[test]

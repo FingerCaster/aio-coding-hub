@@ -5,6 +5,25 @@ mod migration;
 mod persistence;
 mod types;
 
+static UPDATE_CHANNEL_TRANSITION_LOCK: std::sync::OnceLock<std::sync::Mutex<()>> =
+    std::sync::OnceLock::new();
+static UPDATE_CHANNEL_EPOCH: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn lock_update_channel_transition() -> std::sync::MutexGuard<'static, ()> {
+    UPDATE_CHANNEL_TRANSITION_LOCK
+        .get_or_init(|| std::sync::Mutex::new(()))
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+}
+
+pub(crate) fn update_channel_epoch() -> u64 {
+    UPDATE_CHANNEL_EPOCH.load(std::sync::atomic::Ordering::SeqCst)
+}
+
+pub(crate) fn mark_update_channel_transition() {
+    UPDATE_CHANNEL_EPOCH.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+}
+
 // Re-export public API (preserves identical surface for all consumers).
 pub use defaults::{
     DEFAULT_CAPACITY_RETRY_KEYWORD, DEFAULT_CODEX_PROVIDER_TEST_MODEL,
@@ -35,8 +54,8 @@ pub use persistence::{
 pub use types::ModelRoutingRule;
 pub use types::{
     AppSettings, CodexHomeMode, GatewayListenMode, HomeUsagePeriod, ModelRoutingPolicy,
-    ProviderFailbackStrategy, UpstreamErrorMessageBehavior, UpstreamErrorResponseMatchMode,
-    UpstreamErrorResponseRule, UpstreamErrorStatusBehavior, UpstreamHttpRetryRule,
-    UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy, UpstreamTransportRetryKind,
-    WslHostAddressMode, WslTargetCli,
+    ProviderFailbackStrategy, UpdateChannel, UpstreamErrorMessageBehavior,
+    UpstreamErrorResponseMatchMode, UpstreamErrorResponseRule, UpstreamErrorStatusBehavior,
+    UpstreamHttpRetryRule, UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy,
+    UpstreamTransportRetryKind, WslHostAddressMode, WslTargetCli,
 };

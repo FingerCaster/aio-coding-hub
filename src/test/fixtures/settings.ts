@@ -37,6 +37,7 @@ export function createTestAppSettings(overrides?: Partial<AppSettings>): AppSett
     upstream_stream_idle_timeout_seconds: 0,
     stream_internal_error_guard_ms: 500,
     upstream_request_timeout_non_streaming_seconds: 0,
+    update_channel: "stable",
     update_releases_url: "",
     failover_max_attempts_per_provider: 5,
     failover_max_providers_to_try: 5,

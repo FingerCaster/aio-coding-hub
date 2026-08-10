@@ -2,6 +2,7 @@
 
 use crate::app::settings_service;
 use crate::app_state::DbInitState;
+use crate::shared::ipc_confirm::RiskyIpcConfirm;
 
 pub(crate) use crate::app::settings_service::{
     CircuitBreakerNoticeUpdate, CodexSessionIdCompletionUpdate, GatewayRectifierSettingsUpdate,
@@ -32,6 +33,31 @@ pub(crate) async fn settings_patch(
     patch: SettingsPatch,
 ) -> Result<SettingsMutationResult, String> {
     settings_service::settings_patch_impl(app, db_state.inner(), patch).await
+}
+
+#[tauri::command]
+#[specta::specta]
+pub(crate) async fn settings_update_channel_set(
+    app: tauri::AppHandle,
+    channel: crate::settings::UpdateChannel,
+    confirm: Option<RiskyIpcConfirm>,
+) -> Result<SettingsView, String> {
+    let app_for_discard = app.clone();
+    let view = settings_service::settings_update_channel_set(app, channel, confirm).await?;
+    let stale_channel = match channel {
+        crate::settings::UpdateChannel::Stable => crate::settings::UpdateChannel::Beta,
+        crate::settings::UpdateChannel::Beta => crate::settings::UpdateChannel::Stable,
+    };
+    let discarded = crate::commands::desktop::discard_updater_resources_for_channel(
+        &app_for_discard,
+        stale_channel,
+    );
+    tracing::info!(
+        update_channel = %channel,
+        discarded_resources = discarded,
+        "update channel settings committed"
+    );
+    Ok(view)
 }
 
 #[tauri::command]

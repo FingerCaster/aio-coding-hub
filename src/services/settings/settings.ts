@@ -16,10 +16,12 @@ import {
   type UpstreamRetryPolicy,
   type UpstreamStreamInternalErrorPolicy,
   type UpstreamTransportRetryKind,
+  type UpdateChannel,
   type WslHostAddressMode,
   type WslTargetCli,
 } from "../../generated/bindings";
 import { invokeGeneratedIpc, type GeneratedCommandResult } from "../generatedIpc";
+import { createRiskyIpcConfirm } from "../ipcConfirm";
 import { type OptionalNullableGeneratedFields } from "../generatedTypeUtils";
 import { validateSettingsSetInput } from "./settingsValidation";
 import type {
@@ -41,6 +43,7 @@ export type {
   UpstreamRetryPolicy,
   UpstreamStreamInternalErrorPolicy,
   UpstreamTransportRetryKind,
+  UpdateChannel,
   WslHostAddressMode,
   WslTargetCli,
 };
@@ -76,7 +79,7 @@ export type SettingsMutationResult = Omit<GeneratedSettingsMutationResult, "sett
 };
 export type SettingsSetInput = OptionalNullableGeneratedFields<FrontendSettingsUpdate>;
 
-export type AppSettingsPatch = Partial<AppSettings> & {
+export type AppSettingsPatch = Partial<Omit<AppSettings, "update_channel">> & {
   upstream_proxy_password?: SensitiveStringUpdate;
 };
 
@@ -91,6 +94,10 @@ export type __AssertNoSettingsPatchOnlyKeys = AssertNever<
 >;
 export type __AssertNoSettingsUpdateOnlyKeys = AssertNever<
   Exclude<keyof FrontendSettingsUpdate, keyof FrontendSettingsPatch>
+>;
+export type __AssertUpdateChannelNotOwnedByOrdinaryWriters = AssertNever<
+  | Extract<keyof FrontendSettingsUpdate, "updateChannel">
+  | Extract<keyof FrontendSettingsPatch, "updateChannel">
 >;
 
 const SETTINGS_VIEW_TO_UPDATE_FIELD_MAP = {
@@ -174,6 +181,7 @@ type SettingsViewKeysHandledOutsideCreateInput =
   | "response_fixer_fix_truncated_json"
   | "response_fixer_max_json_depth"
   | "response_fixer_max_fix_size"
+  | "update_channel"
   | "upstream_proxy_password_configured";
 
 export type __AssertNoUnhandledSettingsViewKeys = AssertNever<
@@ -341,6 +349,20 @@ export async function settingsGet() {
     title: "读取设置失败",
     cmd: "settings_get",
     invoke: () => commands.settingsGet() as Promise<GeneratedCommandResult<AppSettings>>,
+  });
+}
+
+export async function settingsUpdateChannelSet(channel: UpdateChannel) {
+  const confirm =
+    channel === "beta"
+      ? createRiskyIpcConfirm("settings_update_channel_set", "update_channel:beta")
+      : null;
+
+  return invokeGeneratedIpc<AppSettings>({
+    title: "更新更新频道失败",
+    cmd: "settings_update_channel_set",
+    args: { channel, confirm },
+    invoke: () => commands.settingsUpdateChannelSet(channel, confirm),
   });
 }
 

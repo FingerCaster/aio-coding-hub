@@ -33,10 +33,13 @@ describe("query/updater", () => {
 
     vi.mocked(updaterCheck).mockResolvedValue({
       rid: 1,
+      channel: "stable",
       version: "0.2.0",
       currentVersion: "0.1.0",
       date: "2026-01-01",
       body: "notes",
+      releaseUrl:
+        "https://github.com/FingerCaster/aio-coding-hub/releases/tag/aio-coding-hub-v0.2.0",
     });
 
     const client = createTestQueryClient();

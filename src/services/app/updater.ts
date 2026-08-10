@@ -1,18 +1,25 @@
 import {
   desktopUpdaterCheck,
+  desktopUpdaterDiscard,
   desktopUpdaterDownloadAndInstall,
   parseDesktopUpdaterCheck,
+  type DesktopUpdaterCheck,
   type DesktopUpdaterDownloadEvent,
 } from "../desktop/updater";
+import type { UpdateChannel } from "../../generated/bindings";
 import { AIO_REPO_URL } from "../../constants/urls";
 
-export type UpdaterCheckUpdate = {
-  rid: number;
-  version?: string;
-  currentVersion?: string;
-  date?: string;
-  body?: string;
-};
+export type UpdaterCheckUpdate =
+  | DesktopUpdaterCheck
+  | {
+      rid: 9_999_001;
+      channel?: never;
+      version: string;
+      currentVersion?: string;
+      date?: string;
+      body?: string;
+      releaseUrl?: never;
+    };
 
 export type UpdaterCheckResult = UpdaterCheckUpdate | null;
 
@@ -101,8 +108,12 @@ async function resolveGitHubReleaseFallbackBody(
   }
 }
 
-export async function updaterCheck(): Promise<UpdaterCheckResult> {
-  return resolveGitHubReleaseFallbackBody(await desktopUpdaterCheck());
+export async function updaterCheck(channel: UpdateChannel = "stable"): Promise<UpdaterCheckResult> {
+  return resolveGitHubReleaseFallbackBody(await desktopUpdaterCheck({ channel }));
+}
+
+export async function updaterDiscard(rid: number): Promise<boolean> {
+  return desktopUpdaterDiscard(rid);
 }
 
 export async function updaterDownloadAndInstall(options: {

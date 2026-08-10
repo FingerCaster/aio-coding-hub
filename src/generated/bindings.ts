@@ -30,6 +30,20 @@ export const commands = {
       else return { status: "error", error: e as any };
     }
   },
+  async settingsUpdateChannelSet(
+    channel: UpdateChannel,
+    confirm: RiskyIpcConfirm | null
+  ): Promise<Result<SettingsView, string>> {
+    try {
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("settings_update_channel_set", { channel, confirm }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
   async settingsGatewayRectifierSet(
     update: GatewayRectifierSettingsUpdate
   ): Promise<Result<SettingsView, string>> {
@@ -242,10 +256,22 @@ export const commands = {
     }
   },
   async desktopUpdaterCheck(
+    expectedChannel: UpdateChannel,
     timeout: number | null
   ): Promise<Result<DesktopUpdaterMetadata | null, string>> {
     try {
-      return { status: "ok", data: await TAURI_INVOKE("desktop_updater_check", { timeout }) };
+      return {
+        status: "ok",
+        data: await TAURI_INVOKE("desktop_updater_check", { expectedChannel, timeout }),
+      };
+    } catch (e) {
+      if (e instanceof Error) throw e;
+      else return { status: "error", error: e as any };
+    }
+  },
+  async desktopUpdaterDiscard(rid: number): Promise<Result<boolean, string>> {
+    try {
+      return { status: "ok", data: await TAURI_INVOKE("desktop_updater_discard", { rid }) };
     } catch (e) {
       if (e instanceof Error) throw e;
       else return { status: "error", error: e as any };
@@ -3064,10 +3090,12 @@ export type DesktopRevealItemRequest = { path: string };
 export type DesktopThemeMode = "light" | "dark" | "system";
 export type DesktopUpdaterMetadata = {
   rid: number;
+  channel: UpdateChannel;
   currentVersion: string;
   version: string;
   date: string | null;
   body: string | null;
+  releaseUrl: string;
 };
 export type EnvConflict = { var_name: string; source_type: string; source_path: string };
 export type FailoverAttempt = {
@@ -4496,6 +4524,7 @@ export type SettingsView = {
   upstream_stream_idle_timeout_seconds: number;
   stream_internal_error_guard_ms: number;
   upstream_request_timeout_non_streaming_seconds: number;
+  update_channel: UpdateChannel;
   update_releases_url: string;
   failover_max_attempts_per_provider: number;
   failover_max_providers_to_try: number;
@@ -4588,6 +4617,7 @@ export type UiContribution = {
   schema: HostRenderedSchema;
   when?: string | null;
 };
+export type UpdateChannel = "beta" | "stable";
 export type UpstreamErrorMessageBehavior =
   | { mode: "passthrough" }
   | { mode: "override"; message: string };

@@ -363,7 +363,11 @@ pub fn config_export<R: tauri::Runtime>(
     app: &tauri::AppHandle<R>,
     db: &db::Db,
 ) -> AppResult<ConfigBundle> {
-    let app_settings = settings::read(app)?;
+    // Beta participation is device-local and must never travel in a portable
+    // configuration bundle. Keep the field present for schema stability, but
+    // always serialize the fail-closed stable value.
+    let mut app_settings = settings::read(app)?;
+    app_settings.update_channel = settings::UpdateChannel::Stable;
     let settings_string = serde_json::to_string(&app_settings)
         .map_err(|e| format!("SYSTEM_ERROR: failed to serialize settings: {e}"))?;
 
@@ -523,6 +527,9 @@ pub(crate) fn prepare_config_import(bundle: ConfigBundle) -> AppResult<PreparedC
         settings_to_write.model_routing_policy = settings::ModelRoutingPolicy::default();
     }
     settings_to_write.schema_version = settings::SCHEMA_VERSION;
+    // Imported settings are committed through the existing whole-snapshot CAS,
+    // so normalize the device-local updater authorization before that boundary.
+    settings_to_write.update_channel = settings::UpdateChannel::Stable;
 
     Ok(PreparedConfigImport {
         bundle_schema_version,
@@ -572,9 +579,10 @@ pub fn config_import<R: tauri::Runtime>(
     let _import_guard = config_import_lock()
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
-    // Global lock order is config import -> managed Profile lifecycle. Profile
-    // operations never acquire the import lock in the opposite direction.
+    // Global lock order is config import -> managed Profile lifecycle -> updater
+    // channel transition. None of those owners acquire an earlier lock later.
     let _profile_lifecycle_guard = crate::codex_managed_profiles::lock_profile_lifecycle();
+    let _update_channel_guard = settings::lock_update_channel_transition();
     #[cfg(test)]
     run_after_config_import_lock_acquired_test_hook();
 
@@ -596,6 +604,8 @@ pub fn config_import<R: tauri::Runtime>(
     } = prepared;
 
     let previous_settings = settings::read(app)?;
+    let update_channel_changed =
+        previous_settings.update_channel != settings_to_write.update_channel;
     let runtime_backups = rollback::capture_cli_runtime_backups(app)?;
     let imported_codex_home =
         crate::codex_paths::codex_home_dir_for_settings(app, &settings_to_write)?;
@@ -734,6 +744,9 @@ pub fn config_import<R: tauri::Runtime>(
             });
         }
     };
+    if update_channel_changed {
+        settings::mark_update_channel_transition();
+    }
 
     let runtime_sync_error = {
         #[cfg(test)]
