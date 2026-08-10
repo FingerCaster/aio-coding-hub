@@ -1200,3 +1200,28 @@ Suppress trusted blocked providers only from stable-session failback planning, p
 ### Status
 
 [OK] **Completed**
+
+
+## Session 35: 完整 Beta 发布频道
+
+**Date**: 2026-08-10
+**Task**: 完整 Beta 发布频道
+**Package**: aio-coding-hub
+**Branch**: `FingerCaster/beta-release-channel`
+
+### Summary
+
+并行完成 Beta 发布流水线、受控更新频道和逐设备参与 UI；补齐严格 manifest、频道竞态、一次性资源重试、UTF-8 发布合同与跨层规范，并通过全量前后端及发布自测。
+
+### Git Commits
+
+| Hash | Message |
+|------|---------|
+| `f743e28c` | (see git log) |
+| `bdf24388` | (see git log) |
+| `67a3ed37` | (see git log) |
+| `bc0b1cb2` | (see git log) |
+
+### Status
+
+[OK] **Completed**
