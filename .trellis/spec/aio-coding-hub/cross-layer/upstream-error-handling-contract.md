@@ -46,9 +46,10 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   budgets.
 - New retry-policy defaults expose only the behavior-bearing HTTP 400 capacity
   content rule. Native 5xx handling does not require visible `502` / `503` /
-  `504` status-only rows. Stream terminal handling defaults to enabled with an
-  empty passthrough list because classification is built in. Connect, timeout,
-  and read transport retries remain selected by default.
+  `504` status-only rows. Stream terminal handling defaults to enabled with
+  `high-risk cyber` as its sole passthrough exception. An explicitly persisted
+  empty list stays empty. Connect, timeout, and read transport retries remain
+  selected by default.
 - `stream_internal_errors.enabled` is the sole master switch for every new
   terminal action. Missing/new values default to `true`; an explicit persisted
   `false` is preserved. `true` enables classification, pre-commit retry or
@@ -106,10 +107,13 @@ non-Codex and unnormalized bridge streams keep their existing behavior.
   evidence.
 - Settings schema is `59`. Reads merge old `non_retry_keywords` into
   `passthrough_keywords` and old `retry_keywords` into hidden
-  `legacy_retry_keywords`; canonical writes emit neither old field. Provider
-  shares read v1-v3 and export strict v4. Unknown/future versions and old field
-  names inside v4 are explicitly rejected so older clients cannot silently
-  discard the new semantics.
+  `legacy_retry_keywords`; canonical writes emit neither old field. When both
+  the canonical passthrough field and its legacy alias are missing, reads use
+  the `high-risk cyber` default; either field being explicitly present,
+  including as an empty list, preserves the persisted choice. Provider shares
+  read v1-v3 and export strict v4. Unknown/future versions and old field names
+  inside v4 are explicitly rejected so older clients cannot silently discard
+  the new semantics.
 - Final response rewriting considers only the terminal upstream HTTP 4xx/5xx
   candidate after retry, failover, quota, cooldown, and circuit decisions use
   the real upstream facts. HTTP 200 stream errors and transport errors never

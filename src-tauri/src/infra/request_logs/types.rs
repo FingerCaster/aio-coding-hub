@@ -27,6 +27,7 @@ pub struct RequestLogInsert {
     pub cache_creation_1h_input_tokens: Option<i64>,
     pub usage_json: Option<String>,
     pub requested_model: Option<String>,
+    pub cost_usd_femto_override: Option<i64>,
     pub provider_chain_json: Option<String>,
     pub error_details_json: Option<String>,
     pub created_at_ms: i64,

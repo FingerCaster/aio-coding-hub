@@ -297,6 +297,15 @@ pub fn request_log_retention_days_fail_open<R: tauri::Runtime>(app: &tauri::AppH
 }
 
 pub(crate) fn validate_bounds(settings: &AppSettings) -> AppResult<()> {
+    if settings.codex_infinite_retry_test_interval_ms > MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS {
+        return Err(AppError::new(
+            "SEC_INVALID_INPUT",
+            format!(
+                "codex_infinite_retry_test_interval_ms must be between 0 and {}",
+                MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS
+            ),
+        ));
+    }
     if settings.preferred_port < 1024 {
         return Err("SEC_INVALID_INPUT: preferred_port must be between 1024 and 65535".into());
     }

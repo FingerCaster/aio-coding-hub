@@ -2586,6 +2586,10 @@ export type ActiveRequestSnapshotItem = {
   created_at_ms: number;
   last_activity_ms: number;
   current_attempt: GatewayAttemptEvent | null;
+  codex_infinite_retry_test: boolean;
+  infinite_retry_phase: string | null;
+  infinite_retry_round: string | null;
+  infinite_retry_attempt: string | null;
 };
 export type ActiveUiContribution = {
   pluginId: string;
@@ -4383,6 +4387,8 @@ export type SettingsPatch = {
   codexHomeOverride: string | null;
   codexOauthCompatibleProxyMode: boolean | null;
   codexProviderTestModel: string | null;
+  codexInfiniteRetryTestEnabled: boolean | null;
+  codexInfiniteRetryTestIntervalMs: number | null;
   cx2CcFallbackModelOpus: string | null;
   cx2CcFallbackModelSonnet: string | null;
   cx2CcFallbackModelHaiku: string | null;
@@ -4449,6 +4455,8 @@ export type SettingsUpdate = {
   codexHomeOverride: string | null;
   codexOauthCompatibleProxyMode: boolean | null;
   codexProviderTestModel: string | null;
+  codexInfiniteRetryTestEnabled: boolean | null;
+  codexInfiniteRetryTestIntervalMs: number | null;
   cx2CcFallbackModelOpus: string | null;
   cx2CcFallbackModelSonnet: string | null;
   cx2CcFallbackModelHaiku: string | null;
@@ -4482,6 +4490,8 @@ export type SettingsView = {
   codex_home_override: string;
   codex_oauth_compatible_proxy_mode: boolean;
   codex_provider_test_model: string;
+  codex_infinite_retry_test_enabled: boolean;
+  codex_infinite_retry_test_interval_ms: number;
   auto_start: boolean;
   start_minimized: boolean;
   tray_enabled: boolean;

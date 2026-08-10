@@ -22,6 +22,7 @@ describe("services/settings/settingsValidation", () => {
         failoverMaxProvidersToTry: 5,
         circuitBreakerFailureThreshold: 50,
         circuitBreakerOpenDurationMinutes: 1440,
+        codexInfiniteRetryTestIntervalMs: 60_000,
       })
     ).toBeNull();
 
@@ -59,6 +60,9 @@ describe("services/settings/settingsValidation", () => {
     );
     expect(validateSettingsSetInput({ circuitBreakerOpenDurationMinutes: 1441 })).toContain(
       "熔断打开时长必须 <= 1440"
+    );
+    expect(validateSettingsSetInput({ codexInfiniteRetryTestIntervalMs: 60_001 })).toContain(
+      "Codex 无限重试测试间隔必须 <= 60000"
     );
   });
 

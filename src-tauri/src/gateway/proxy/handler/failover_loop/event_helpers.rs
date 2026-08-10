@@ -1,6 +1,8 @@
 //! Usage: Small helpers to build/emit attempt events consistently across failover_loop.
 
-use super::context::{requested_model_for_audit, AttemptCtx, CommonCtx, ProviderCtx};
+use super::context::{
+    requested_model_for_audit, AttemptCtx, CommonCtx, CommonCtxOwned, ProviderCtx,
+};
 use crate::gateway::events::{emit_attempt_event, emit_circuit_transition, GatewayAttemptEvent};
 use crate::gateway::proxy::GatewayErrorCode;
 use crate::gateway::response_fixer;
@@ -12,6 +14,110 @@ pub(super) struct AttemptCircuitFields {
     pub(super) state_after: Option<&'static str>,
     pub(super) failure_count: Option<u32>,
     pub(super) failure_threshold: Option<u32>,
+}
+
+pub(super) fn observe_infinite_attempt_usage<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    usage: Option<&crate::usage::UsageExtract>,
+    cost_usd_femto: Option<u128>,
+) {
+    let Some(ledger) = ctx.infinite_retry_ledger else {
+        return;
+    };
+    let key = crate::gateway::infinite_retry::AttemptKey::new(
+        provider_ctx.provider_id,
+        attempt_ctx.retry_index,
+        attempt_ctx.attempt_started_ms,
+    );
+    let sample = usage
+        .map(|usage| crate::gateway::infinite_retry::UsageSample::from_metrics(&usage.metrics));
+    let cost_usd_femto = cost_usd_femto.or_else(|| {
+        let usage = usage?;
+        let special_settings_json = response_fixer::special_settings_json(ctx.special_settings);
+        crate::request_logs::calculate_attempt_cost_usd_femto(
+            &ctx.state.app,
+            &ctx.state.db,
+            ctx.cli_key.as_str(),
+            provider_ctx
+                .active_requested_model
+                .or(ctx.requested_model.as_deref()),
+            special_settings_json.as_deref(),
+            provider_ctx.provider_id,
+            &usage.metrics,
+        )
+        .ok()
+        .flatten()
+    });
+    if let Ok(mut ledger) = ledger.lock() {
+        ledger.observe_attempt_usage(key, sample, cost_usd_femto);
+    }
+}
+
+#[derive(Default)]
+pub(super) struct InfiniteRetryTerminalProjection {
+    pub(super) log_usage_metrics: Option<crate::usage::UsageMetrics>,
+    pub(super) log_cost_usd_femto: Option<i64>,
+    pub(super) activity_details_json: Option<String>,
+}
+
+pub(super) async fn finalize_infinite_retry_activity<R: tauri::Runtime + 'static>(
+    ctx: &CommonCtxOwned<'_, R>,
+    stop_reason: &'static str,
+) -> InfiniteRetryTerminalProjection {
+    let Some(ledger) = ctx.infinite_retry_ledger.as_ref() else {
+        return InfiniteRetryTerminalProjection::default();
+    };
+    let (snapshot, log_usage_metrics, log_cost_usd_femto) = match ledger.lock() {
+        Ok(mut ledger) => {
+            ledger.stop(stop_reason);
+            (
+                ledger.snapshot(),
+                ledger.usage_metrics(),
+                ledger.cost_usd_femto(),
+            )
+        }
+        Err(_) => return InfiniteRetryTerminalProjection::default(),
+    };
+    let now_ms = crate::gateway::util::now_unix_millis() as i64;
+    ctx.state.active_requests.update_infinite_retry_progress(
+        ctx.trace_id.as_str(),
+        snapshot.phase,
+        snapshot.rounds.parse().unwrap_or(u64::MAX),
+        snapshot.attempts.parse().unwrap_or(u64::MAX),
+        now_ms,
+    );
+    let activity_details_json = serde_json::to_string(&snapshot).ok();
+
+    let database = ctx.state.db.clone();
+    let trace_id = ctx.trace_id.clone();
+    let cli_key = ctx.cli_key.clone();
+    let providers = snapshot.providers;
+    let details_for_touch = activity_details_json.clone();
+    let _ = crate::blocking::run("gateway_infinite_retry_terminal_activity", move || {
+        crate::infinite_retry_provider_usage::replace_for_trace(
+            &database,
+            trace_id.as_str(),
+            providers.as_slice(),
+            now_ms,
+        )?;
+        crate::request_logs::touch_activity(
+            &database,
+            trace_id.as_str(),
+            cli_key.as_str(),
+            now_ms,
+            details_for_touch,
+        )
+        .map(|_| ())
+    })
+    .await;
+
+    InfiniteRetryTerminalProjection {
+        log_usage_metrics,
+        log_cost_usd_femto,
+        activity_details_json,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -98,6 +204,30 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
     status: Option<u16>,
     circuit: AttemptCircuitFields,
 ) {
+    if let Some(ledger) = ctx.infinite_retry_ledger {
+        let key = crate::gateway::infinite_retry::AttemptKey::new(
+            provider_ctx.provider_id,
+            attempt_ctx.retry_index,
+            attempt_ctx.attempt_started_ms,
+        );
+        let (outcome_code, failure_category) =
+            crate::gateway::infinite_retry::classify_attempt_outcome(&outcome, status);
+        if let Ok(mut ledger) = ledger.lock() {
+            ledger.record_attempt_once(
+                key,
+                provider_ctx.provider_name_base,
+                status,
+                outcome_code,
+                failure_category,
+                attempt_ctx
+                    .attempt_started
+                    .elapsed()
+                    .as_millis()
+                    .min(u128::from(u64::MAX)) as u64,
+            );
+        }
+    }
+
     if !ctx.observe {
         return;
     }
@@ -122,6 +252,7 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
         ..
     } = attempt_ctx;
 
+    let health_bypass = ctx.provider_health_mode.bypasses_circuit();
     let attempt_event = GatewayAttemptEvent {
         trace_id: ctx.trace_id.clone(),
         cli_key: ctx.cli_key.clone(),
@@ -146,21 +277,31 @@ pub(super) async fn emit_attempt_event_and_log<R: tauri::Runtime>(
         status,
         attempt_started_ms,
         attempt_duration_ms: attempt_started.elapsed().as_millis(),
-        circuit_state_before: circuit.state_before,
-        circuit_state_after: circuit.state_after,
-        circuit_failure_count: circuit.failure_count,
-        circuit_failure_threshold: circuit.failure_threshold,
-        probe: dispatch_ownership
+        circuit_state_before: (!health_bypass).then_some(circuit.state_before).flatten(),
+        circuit_state_after: (!health_bypass).then_some(circuit.state_after).flatten(),
+        circuit_failure_count: (!health_bypass).then_some(circuit.failure_count).flatten(),
+        circuit_failure_threshold: (!health_bypass)
+            .then_some(circuit.failure_threshold)
+            .flatten(),
+        probe: (!health_bypass)
+            .then_some(dispatch_ownership)
+            .flatten()
             .filter(|ownership| ownership.is_probe())
             .map(|_| true),
-        probe_trigger: dispatch_ownership
+        probe_trigger: (!health_bypass)
+            .then_some(dispatch_ownership)
+            .flatten()
             .filter(|ownership| ownership.is_probe())
             .and_then(|ownership| ownership.probe_trigger())
             .map(|trigger| trigger.as_str()),
-        probe_result: dispatch_ownership
+        probe_result: (!health_bypass)
+            .then_some(dispatch_ownership)
+            .flatten()
             .filter(|ownership| ownership.is_probe())
             .map(|_| "started"),
-        probe_generation: dispatch_ownership
+        probe_generation: (!health_bypass)
+            .then_some(dispatch_ownership)
+            .flatten()
             .filter(|ownership| ownership.is_probe())
             .and_then(|ownership| ownership.probe_generation()),
         claude_model_mapping: claude_model_mapping.cloned(),

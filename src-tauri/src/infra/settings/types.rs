@@ -7,6 +7,10 @@ fn default_codex_provider_test_model() -> String {
     DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string()
 }
 
+fn default_codex_infinite_retry_test_interval_ms() -> u32 {
+    DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, specta::Type, Default)]
 #[serde(rename_all = "snake_case")]
 pub enum GatewayListenMode {
@@ -115,7 +119,7 @@ impl Default for UpstreamStreamInternalErrorPolicy {
     fn default() -> Self {
         Self {
             enabled: true,
-            passthrough_keywords: Vec::new(),
+            passthrough_keywords: vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD.to_string()],
             legacy_retry_keywords: Vec::new(),
         }
     }
@@ -149,6 +153,8 @@ impl<'de> Deserialize<'de> for UpstreamStreamInternalErrorPolicy {
         D: serde::Deserializer<'de>,
     {
         let wire = UpstreamStreamInternalErrorPolicyWire::deserialize(deserializer)?;
+        let use_default_passthrough = matches!(&wire.passthrough_keywords, WireField::Missing)
+            && matches!(&wire.non_retry_keywords, WireField::Missing);
         let mut passthrough_keywords = match wire.passthrough_keywords {
             WireField::Value(values) => values,
             WireField::Null => vec![String::new()],
@@ -159,6 +165,9 @@ impl<'de> Deserialize<'de> for UpstreamStreamInternalErrorPolicy {
             WireField::Null => passthrough_keywords.push(String::new()),
             WireField::Missing => {}
         };
+        if use_default_passthrough {
+            passthrough_keywords.push(DEFAULT_CYBER_PASSTHROUGH_KEYWORD.to_string());
+        }
         let mut legacy_retry_keywords = match wire.legacy_retry_keywords {
             WireField::Value(values) => values,
             WireField::Null => vec![String::new()],
@@ -441,6 +450,10 @@ pub struct AppSettings {
     pub codex_oauth_compatible_proxy_mode: bool,
     #[serde(default = "default_codex_provider_test_model")]
     pub codex_provider_test_model: String,
+    #[serde(default)]
+    pub codex_infinite_retry_test_enabled: bool,
+    #[serde(default = "default_codex_infinite_retry_test_interval_ms")]
+    pub codex_infinite_retry_test_interval_ms: u32,
     pub grok_proxy_preferences: Option<crate::grok_config::GrokProxyPreferences>,
     // Image generation storage directory override. None/empty = default
     // `<app data dir>/image-gen`.
@@ -546,6 +559,8 @@ impl Default for AppSettings {
             codex_home_override: String::new(),
             codex_oauth_compatible_proxy_mode: DEFAULT_CODEX_OAUTH_COMPATIBLE_PROXY_MODE,
             codex_provider_test_model: DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string(),
+            codex_infinite_retry_test_enabled: DEFAULT_CODEX_INFINITE_RETRY_TEST_ENABLED,
+            codex_infinite_retry_test_interval_ms: DEFAULT_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
             grok_proxy_preferences: None,
             image_gen_storage_dir: None,
             image_gen_storage_roots: Vec::new(),
@@ -631,6 +646,7 @@ mod tests {
     use super::{
         AppSettings, ModelRoutingPolicy, UpstreamRetryPolicy, UpstreamStreamInternalErrorPolicy,
         UpstreamTransportRetryKind, DEFAULT_CAPACITY_RETRY_KEYWORD,
+        DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
     };
 
     #[test]
@@ -654,10 +670,10 @@ mod tests {
             ]
         );
         assert!(policy.stream_internal_errors.enabled);
-        assert!(policy
-            .stream_internal_errors
-            .passthrough_keywords
-            .is_empty());
+        assert_eq!(
+            policy.stream_internal_errors.passthrough_keywords,
+            vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD]
+        );
         assert!(policy
             .stream_internal_errors
             .legacy_retry_keywords
@@ -666,6 +682,23 @@ mod tests {
 
     #[test]
     fn stream_terminal_firewall_wire_defaults_and_migrates_legacy_fields() {
+        let missing_keywords: UpstreamStreamInternalErrorPolicy =
+            serde_json::from_value(serde_json::json!({})).expect("missing keywords default");
+        assert_eq!(
+            missing_keywords.passthrough_keywords,
+            vec![DEFAULT_CYBER_PASSTHROUGH_KEYWORD]
+        );
+
+        let explicit_empty: UpstreamStreamInternalErrorPolicy =
+            serde_json::from_value(serde_json::json!({"passthrough_keywords": []}))
+                .expect("explicit empty passthrough is preserved");
+        assert!(explicit_empty.passthrough_keywords.is_empty());
+
+        let legacy_explicit_empty: UpstreamStreamInternalErrorPolicy =
+            serde_json::from_value(serde_json::json!({"non_retry_keywords": []}))
+                .expect("explicit empty legacy passthrough is preserved");
+        assert!(legacy_explicit_empty.passthrough_keywords.is_empty());
+
         let missing_enabled: UpstreamStreamInternalErrorPolicy =
             serde_json::from_value(serde_json::json!({"passthrough_keywords": ["new"]}))
                 .expect("missing enabled defaults");

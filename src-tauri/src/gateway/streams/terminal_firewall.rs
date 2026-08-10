@@ -5,6 +5,36 @@ use axum::body::Bytes;
 
 pub(super) const MAX_TERMINAL_FIREWALL_FRAME_BYTES: usize = 1024 * 1024;
 
+/// Validates a fully buffered final-wire Codex Responses SSE payload.
+///
+/// This deliberately reuses the live firewall state machine. Exact-byte
+/// equality additionally rejects duplicate terminals and any bytes after
+/// `[DONE]`, both of which the live relay safely suppresses after commit.
+pub(crate) fn validate_complete_codex_sse(
+    bytes: &[u8],
+    passthrough_keywords: &[String],
+) -> Result<(), &'static str> {
+    let mut firewall = CodexTerminalFirewall::new_strict_complete(passthrough_keywords);
+    let output = firewall.ingest(bytes);
+    if output.terminal_error {
+        return Err(output.fail_closed_reason.unwrap_or("terminal_error"));
+    }
+    if !output.stop {
+        let eof = firewall.finish();
+        if eof.terminal_error {
+            return Err(eof.fail_closed_reason.unwrap_or("missing_done"));
+        }
+        return Err("missing_done");
+    }
+    if !output.completion_seen {
+        return Err("missing_completed");
+    }
+    if output.bytes.as_ref() != bytes {
+        return Err("trailing_or_duplicate_terminal");
+    }
+    Ok(())
+}
+
 #[derive(Debug)]
 pub(super) struct TerminalFirewallOutput {
     pub(super) bytes: Bytes,
@@ -50,6 +80,7 @@ pub(super) struct CodexTerminalFirewall {
     pending: Vec<u8>,
     stopped: bool,
     completion_forwarded: bool,
+    strict_complete: bool,
 }
 
 impl CodexTerminalFirewall {
@@ -59,6 +90,14 @@ impl CodexTerminalFirewall {
             pending: Vec::new(),
             stopped: false,
             completion_forwarded: false,
+            strict_complete: false,
+        }
+    }
+
+    fn new_strict_complete(passthrough_keywords: &[String]) -> Self {
+        Self {
+            strict_complete: true,
+            ..Self::new(passthrough_keywords)
         }
     }
 
@@ -199,9 +238,16 @@ impl CodexTerminalFirewall {
                 };
             }
 
-            return FrameDecision::Forward {
-                completion: is_completion_frame(&event_name, &data),
-            };
+            let completion = is_completion_frame(&event_name, &data);
+            if self.strict_complete {
+                if completion && !is_valid_completion_frame(&data) {
+                    return FrameDecision::FailClosed("invalid_completed");
+                }
+                if self.completion_forwarded {
+                    return FrameDecision::FailClosed("semantic_frame_after_completed");
+                }
+            }
+            return FrameDecision::Forward { completion };
         }
 
         match classify_non_json_frame(text) {
@@ -272,12 +318,63 @@ fn is_completion_frame(event_name: &str, data: &serde_json::Value) -> bool {
         || data.get("type").and_then(serde_json::Value::as_str) == Some("response.completed")
 }
 
+fn is_valid_completion_frame(data: &serde_json::Value) -> bool {
+    data.get("response")
+        .and_then(serde_json::Value::as_object)
+        .and_then(|response| response.get("status"))
+        .and_then(serde_json::Value::as_str)
+        == Some("completed")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn frame(event: &str, data: &str, newline: &str) -> String {
         format!("event: {event}{newline}data: {data}{newline}{newline}")
+    }
+
+    #[test]
+    fn complete_validator_requires_one_completed_then_done_and_exact_eof() {
+        let completed = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"id":"r","status":"completed"}}"#,
+            "\n",
+        );
+        let valid = format!("{completed}data: [DONE]\n\n");
+        assert_eq!(validate_complete_codex_sse(valid.as_bytes(), &[]), Ok(()));
+        assert_eq!(
+            validate_complete_codex_sse(completed.as_bytes(), &[]),
+            Err("missing_done")
+        );
+        assert_eq!(
+            validate_complete_codex_sse(format!("{valid}: trailing\n\n").as_bytes(), &[]),
+            Err("trailing_or_duplicate_terminal")
+        );
+        let invalid_completed = frame(
+            "response.completed",
+            r#"{"type":"response.completed","response":{"status":"incomplete"}}"#,
+            "\n",
+        );
+        assert_eq!(
+            validate_complete_codex_sse(
+                format!("{invalid_completed}data: [DONE]\n\n").as_bytes(),
+                &[],
+            ),
+            Err("invalid_completed")
+        );
+        let semantic_after_completed = format!(
+            "{completed}{}data: [DONE]\n\n",
+            frame(
+                "response.output_text.delta",
+                r#"{"type":"response.output_text.delta","delta":"late"}"#,
+                "\n",
+            )
+        );
+        assert_eq!(
+            validate_complete_codex_sse(semantic_after_completed.as_bytes(), &[]),
+            Err("semantic_frame_after_completed")
+        );
     }
 
     #[test]
@@ -387,6 +484,27 @@ mod tests {
             .evidence
             .as_ref()
             .is_some_and(|value| value.classification == "auth"));
+    }
+
+    #[test]
+    fn default_policy_passes_through_high_risk_cyber_terminal_frame() {
+        let policy = crate::infra::settings::UpstreamStreamInternalErrorPolicy::default();
+        let terminal = frame(
+            "response.failed",
+            r#"{"type":"response.failed","response":{"error":{"code":"content_policy_violation","message":"high-risk cyber request"}}}"#,
+            "\n",
+        );
+        let mut firewall = CodexTerminalFirewall::new(&policy.passthrough_keywords);
+
+        let output = firewall.ingest(terminal.as_bytes());
+
+        assert_eq!(output.bytes.as_ref(), terminal.as_bytes());
+        assert!(output.stop);
+        assert!(output
+            .evidence
+            .as_ref()
+            .is_some_and(|value| value.classification == "policy"
+                && value.disposition == "passthrough_exception"));
     }
 
     #[test]

@@ -152,6 +152,9 @@ OAuth authentication replaces `api_key` with `provider_type`, `access_token`,
 `stream_internal_errors.enabled` and `passthrough_keywords`; optional
 `legacy_retry_keywords` is one-release compatibility state. V1-v3 readers
 convert old `retry_keywords` / `non_retry_keywords` to the canonical v4 shape.
+V1, and v2/v3 payloads that omit the stream policy, use the canonical default
+with `high-risk cyber` passthrough; an explicitly present empty list remains
+empty. V4 never applies this default because omission must fail validation.
 Each extension contains `plugin_id`, `plugin_version`, `namespace`, and
 plugin-owned open JSON `values`.
 

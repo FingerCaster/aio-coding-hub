@@ -4,6 +4,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import { confirm } from "@tauri-apps/plugin-dialog";
 import { cliManagerCodexConfigTomlValidate } from "../../../../services/cli/cliManager";
 import { openDesktopUrl } from "../../../../services/desktop/opener";
+import { activeRequestLogsSnapshot } from "../../../../services/gateway/activeRequests";
 import { CliManagerCodexTab } from "../CodexTab";
 import { createTestAppSettings } from "../../../../test/fixtures/settings";
 
@@ -28,6 +29,10 @@ vi.mock("../../../../ui/CodeEditor", () => ({
 
 vi.mock("../../../../services/desktop/opener", () => ({
   openDesktopUrl: vi.fn().mockResolvedValue(true),
+}));
+
+vi.mock("../../../../services/gateway/activeRequests", () => ({
+  activeRequestLogsSnapshot: vi.fn().mockResolvedValue([]),
 }));
 
 vi.mock("../../../../services/cli/cliManager", async () => {
@@ -180,6 +185,8 @@ describe("components/cli-manager/tabs/CodexTab", () => {
     vi.mocked(confirm).mockReset();
     vi.mocked(openDesktopUrl).mockReset();
     vi.mocked(openDesktopUrl).mockResolvedValue(true);
+    vi.mocked(activeRequestLogsSnapshot).mockReset();
+    vi.mocked(activeRequestLogsSnapshot).mockResolvedValue([]);
     vi.mocked(cliManagerCodexConfigTomlValidate).mockResolvedValue({
       ok: true,
       error: null,
@@ -555,6 +562,80 @@ describe("components/cli-manager/tabs/CodexTab", () => {
 
     expect(screen.queryByLabelText("正在更新 Codex OAuth 兼容代理模式")).not.toBeInTheDocument();
     expect(screen.getByRole("switch", { name: "切换 Codex OAuth 兼容代理模式" })).toBeEnabled();
+  });
+
+  it("persists the infinite retry test switch and validates the round interval", async () => {
+    const persistCommonSettings = vi.fn().mockImplementation(async (patch) =>
+      createAppSettings({
+        codex_infinite_retry_test_enabled: false,
+        codex_infinite_retry_test_interval_ms: 1000,
+        ...patch,
+      })
+    );
+
+    renderTab({
+      appSettings: createAppSettings({
+        codex_infinite_retry_test_enabled: false,
+        codex_infinite_retry_test_interval_ms: 1000,
+      }),
+      persistCommonSettings,
+    });
+
+    fireEvent.click(screen.getByRole("switch", { name: "切换 Codex 无限重试测试模式" }));
+    await waitFor(() =>
+      expect(persistCommonSettings).toHaveBeenCalledWith({
+        codex_infinite_retry_test_enabled: true,
+      })
+    );
+
+    const intervalInput = screen.getByRole("spinbutton", {
+      name: "Codex 无限重试完整轮次间隔（毫秒）",
+    });
+    fireEvent.change(intervalInput, { target: { value: "60001" } });
+    fireEvent.blur(intervalInput);
+    expect(screen.getByRole("alert")).toHaveTextContent("0 到 60000");
+    expect(persistCommonSettings).toHaveBeenCalledTimes(1);
+
+    fireEvent.change(intervalInput, { target: { value: "0" } });
+    fireEvent.blur(intervalInput);
+    await waitFor(() =>
+      expect(persistCommonSettings).toHaveBeenNthCalledWith(2, {
+        codex_infinite_retry_test_interval_ms: 0,
+      })
+    );
+  });
+
+  it("shows only active Codex infinite retry requests and the 20 MiB warning", async () => {
+    vi.mocked(activeRequestLogsSnapshot).mockResolvedValue([
+      { cli_key: "codex", codex_infinite_retry_test: true },
+      { cli_key: "CODEX", codex_infinite_retry_test: true },
+      { cli_key: "codex", codex_infinite_retry_test: false },
+      { cli_key: "claude", codex_infinite_retry_test: true },
+    ] as any);
+
+    renderTab({
+      appSettings: createAppSettings(),
+      persistCommonSettings: vi.fn().mockResolvedValue(createAppSettings()),
+    });
+
+    await waitFor(() => expect(screen.getByText("当前活动无限请求：2")).toBeInTheDocument());
+    expect(screen.getByText(/20 MiB 最终响应缓冲/)).toBeInTheDocument();
+  });
+
+  it("restores the persisted interval after a failed write", async () => {
+    const persistCommonSettings = vi.fn().mockRejectedValue(new Error("write failed"));
+    renderTab({
+      appSettings: createAppSettings({ codex_infinite_retry_test_interval_ms: 1000 }),
+      persistCommonSettings,
+    });
+
+    const intervalInput = screen.getByRole("spinbutton", {
+      name: "Codex 无限重试完整轮次间隔（毫秒）",
+    });
+    fireEvent.change(intervalInput, { target: { value: "2500" } });
+    fireEvent.blur(intervalInput);
+
+    await waitFor(() => expect(intervalInput).toHaveValue(1000));
   });
 
   it("persists the global provider test model and supports manual Provider Sync", async () => {

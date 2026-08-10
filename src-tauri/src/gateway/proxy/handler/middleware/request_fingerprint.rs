@@ -21,16 +21,18 @@ impl RequestFingerprintMiddleware {
             &ctx.body_bytes,
         );
 
-        match fp::apply_recent_error_cache_gate(
-            &ctx.state.recent_errors,
-            &fingerprints,
-            ctx.trace_id,
-        ) {
-            Ok(next_trace_id) => {
-                ctx.trace_id = next_trace_id;
-            }
-            Err(resp) => {
-                return MiddlewareAction::ShortCircuit(*resp);
+        if !ctx.provider_health_mode.bypasses_circuit() {
+            match fp::apply_recent_error_cache_gate(
+                &ctx.state.recent_errors,
+                &fingerprints,
+                ctx.trace_id,
+            ) {
+                Ok(next_trace_id) => {
+                    ctx.trace_id = next_trace_id;
+                }
+                Err(resp) => {
+                    return MiddlewareAction::ShortCircuit(*resp);
+                }
             }
         }
 

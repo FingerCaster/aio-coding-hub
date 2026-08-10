@@ -28,9 +28,9 @@ use std::time::Instant;
 mod early_error;
 mod middleware;
 mod provider_order;
-mod provider_selection;
+pub(super) mod provider_selection;
 mod request_fingerprint;
-mod runtime_settings;
+pub(super) mod runtime_settings;
 
 use early_error::extract_forced_provider_id;
 use middleware::{
@@ -55,7 +55,12 @@ fn new_special_settings() -> SpecialSettings {
 fn build_in_progress_request_log_args<R: tauri::Runtime>(
     ctx: &middleware::ProxyContext<R>,
 ) -> Option<super::RequestLogEnqueueArgs> {
-    if !should_seed_in_progress_request_log(&ctx.cli_key, &ctx.forwarded_path, ctx.observe_request)
+    if ctx.codex_infinite_retry.is_none()
+        && !should_seed_in_progress_request_log(
+            &ctx.cli_key,
+            &ctx.forwarded_path,
+            ctx.observe_request,
+        )
     {
         return None;
     }
@@ -82,6 +87,7 @@ fn build_in_progress_request_log_args<R: tauri::Runtime>(
         created_at: ctx.created_at,
         usage_metrics: None,
         usage: None,
+        cost_usd_femto_override: None,
         provider_chain_json: None,
         error_details_json: None,
     })
@@ -103,6 +109,7 @@ fn register_active_request_from_proxy_context<R: tauri::Runtime>(
         session_id: ctx.session_id.clone(),
         requested_model: ctx.requested_model.clone(),
         created_at_ms: ctx.created_at_ms,
+        codex_infinite_retry_test: ctx.codex_infinite_retry.is_some(),
     });
 }
 
@@ -190,6 +197,13 @@ where
         strip_request_content_encoding_seed: false,
         special_settings: new_special_settings(),
         provider_health_neutral: is_codex_model_discovery,
+        provider_health_mode: if is_codex_model_discovery {
+            crate::gateway::infinite_retry::ProviderHealthMode::PassiveSystemRequest
+        } else {
+            crate::gateway::infinite_retry::ProviderHealthMode::Normal
+        },
+        is_codex_system_request: false,
+        codex_infinite_retry: None,
         requested_model: None,
         requested_model_location: None,
         managed_model_route: None,
@@ -266,6 +280,32 @@ where
         MiddlewareAction::Continue(ctx) => *ctx,
         MiddlewareAction::ShortCircuit(resp) => return resp,
     };
+
+    let mut ctx = ctx;
+    let runtime_settings = ctx
+        .runtime_settings
+        .as_ref()
+        .expect("runtime settings populated before infinite retry eligibility");
+    ctx.codex_infinite_retry = crate::gateway::infinite_retry::request_config(
+        runtime_settings.codex_infinite_retry_test_enabled,
+        runtime_settings.codex_infinite_retry_test_interval_ms,
+        crate::gateway::infinite_retry::EligibilityFacts {
+            cli_key: &ctx.cli_key,
+            method: &ctx.req_method,
+            path: &ctx.forwarded_path,
+            observe_request: ctx.observe_request,
+            is_compact_request: ctx.is_compact_request,
+            is_model_discovery: ctx.is_codex_model_discovery,
+            is_provider_test_or_warmup: ctx.is_warmup_request,
+            is_token_count: ctx.is_claude_count_tokens,
+            is_system_request: ctx.is_codex_system_request,
+        },
+    );
+    if ctx.codex_infinite_retry.is_some() {
+        ctx.provider_health_neutral = true;
+        ctx.provider_health_mode =
+            crate::gateway::infinite_retry::ProviderHealthMode::InfiniteRetryTest;
+    }
 
     // 10. Codex session ID completion.
     let ctx = match CodexSessionCompletionMiddleware::run(ctx) {
@@ -481,6 +521,9 @@ mod tests {
             strip_request_content_encoding_seed: false,
             special_settings: Arc::new(Mutex::new(Vec::new())),
             provider_health_neutral: false,
+            provider_health_mode: crate::gateway::infinite_retry::ProviderHealthMode::Normal,
+            is_codex_system_request: false,
+            codex_infinite_retry: None,
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
             managed_model_route: None,
@@ -550,6 +593,9 @@ mod tests {
             strip_request_content_encoding_seed: false,
             special_settings: Arc::new(Mutex::new(Vec::new())),
             provider_health_neutral: false,
+            provider_health_mode: crate::gateway::infinite_retry::ProviderHealthMode::Normal,
+            is_codex_system_request: false,
+            codex_infinite_retry: None,
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
             managed_model_route: None,
@@ -610,6 +656,9 @@ mod tests {
             strip_request_content_encoding_seed: false,
             special_settings: Arc::new(Mutex::new(Vec::new())),
             provider_health_neutral: false,
+            provider_health_mode: crate::gateway::infinite_retry::ProviderHealthMode::Normal,
+            is_codex_system_request: false,
+            codex_infinite_retry: None,
             requested_model: Some("claude-sonnet-4".to_string()),
             requested_model_location: None,
             managed_model_route: None,

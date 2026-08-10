@@ -2122,6 +2122,10 @@ mod tests {
         assert_eq!(policy.http_rules.len(), 2);
         assert_eq!(policy.http_rules[0].status_code, 429);
         assert!(!policy.enabled);
+        assert_eq!(
+            policy.stream_internal_errors.passthrough_keywords,
+            vec!["high-risk cyber"]
+        );
 
         let exported = serialize_provider_share_v4(&parsed).expect("serialize v4");
         let exported: serde_json::Value = serde_json::from_slice(&exported).expect("parse v4");
@@ -2129,6 +2133,40 @@ mod tests {
         let retry = &exported["provider"]["configuration"]["upstream_retry_policy_override"];
         assert!(retry.get("status_codes").is_none());
         assert_eq!(retry["http_rules"][1]["status_code"], 502);
+        assert_eq!(
+            retry["stream_internal_errors"]["passthrough_keywords"],
+            serde_json::json!(["high-risk cyber"])
+        );
+    }
+
+    #[test]
+    fn strict_v2_and_v3_missing_stream_policy_use_cyber_default() {
+        for schema_version in [2, 3] {
+            let mut value = serde_json::to_value(minimal_share()).expect("serialize fixture");
+            value["schema_version"] = serde_json::json!(schema_version);
+            value["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+                "enabled": true,
+                "http_rules": [],
+                "transport_errors": ["timeout"],
+                "max_retries": 1,
+                "backoff_ms": 100,
+                "counts_toward_circuit_breaker": false
+            });
+
+            let parsed = parse_provider_share(value.to_string().as_bytes())
+                .unwrap_or_else(|error| panic!("parse v{schema_version}: {error}"));
+            let policy = parsed
+                .provider
+                .configuration
+                .upstream_retry_policy_override
+                .as_ref()
+                .expect("retry policy");
+            assert_eq!(
+                policy.stream_internal_errors.passthrough_keywords,
+                vec!["high-risk cyber"],
+                "schema v{schema_version}"
+            );
+        }
     }
 
     #[test]
@@ -2298,6 +2336,32 @@ mod tests {
     #[test]
     fn strict_v4_requires_complete_retry_rules_and_rejects_rule_extensions() {
         let bytes = serialize_provider_share_v4(&minimal_share()).expect("serialize");
+        let mut explicit_empty_passthrough: serde_json::Value =
+            serde_json::from_slice(&bytes).expect("json");
+        explicit_empty_passthrough["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({
+            "enabled": true,
+            "http_rules": [],
+            "transport_errors": [],
+            "stream_internal_errors": {
+                "enabled": true,
+                "passthrough_keywords": []
+            },
+            "max_retries": 1,
+            "backoff_ms": 100,
+            "counts_toward_circuit_breaker": false
+        });
+        let explicit_empty =
+            parse_provider_share(explicit_empty_passthrough.to_string().as_bytes())
+                .expect("v4 explicit empty passthrough");
+        assert!(explicit_empty
+            .provider
+            .configuration
+            .upstream_retry_policy_override
+            .is_some_and(|policy| policy
+                .stream_internal_errors
+                .passthrough_keywords
+                .is_empty()));
+
         let mut missing_stream_policy: serde_json::Value =
             serde_json::from_slice(&bytes).expect("json");
         missing_stream_policy["provider"]["configuration"]["upstream_retry_policy_override"] = serde_json::json!({

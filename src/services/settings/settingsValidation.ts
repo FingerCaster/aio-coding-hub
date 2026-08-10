@@ -40,6 +40,7 @@ export const MAX_UPSTREAM_PROXY_PASSWORD_LEN = 4096;
 export const MAX_CX2CC_MODEL_NAME_LEN = 128;
 export const MAX_CX2CC_OPTIONAL_FIELD_LEN = 64;
 export const MAX_CODEX_PROVIDER_TEST_MODEL_NAME_LEN = 128;
+export const MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS = 60_000;
 export const MIN_PREFERRED_PORT = 1024;
 export const MAX_PREFERRED_PORT = 65535;
 export const MIN_LOG_RETENTION_DAYS = 1;
@@ -79,6 +80,7 @@ export const SETTINGS_VALIDATION_LIMITS = {
   MAX_UPSTREAM_PROXY_PASSWORD_LEN,
   MAX_CX2CC_MODEL_NAME_LEN,
   MAX_CX2CC_OPTIONAL_FIELD_LEN,
+  MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
   MIN_PREFERRED_PORT,
   MAX_PREFERRED_PORT,
   MIN_LOG_RETENTION_DAYS,
@@ -433,6 +435,7 @@ export type SettingsSetValidationInput = {
   cx2CcModelReasoningEffort?: string | null;
   cx2CcServiceTier?: string | null;
   codexProviderTestModel?: string | null;
+  codexInfiniteRetryTestIntervalMs?: number | null;
 };
 
 export function validateSettingsSetInput(input: SettingsSetValidationInput): string | null {
@@ -494,6 +497,12 @@ export function validateSettingsSetInput(input: SettingsSetValidationInput): str
       input.circuitBreakerOpenDurationMinutes,
       MIN_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
       MAX_CIRCUIT_BREAKER_OPEN_DURATION_MINUTES,
+    ],
+    [
+      "Codex 无限重试测试间隔",
+      input.codexInfiniteRetryTestIntervalMs,
+      0,
+      MAX_CODEX_INFINITE_RETRY_TEST_INTERVAL_MS,
     ],
   ] as const) {
     const message = validateIntegerRange(fieldLabel, value, min, max);

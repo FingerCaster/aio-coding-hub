@@ -73,6 +73,8 @@ pub(crate) struct SettingsUpdate {
     pub codex_home_override: Option<String>,
     pub codex_oauth_compatible_proxy_mode: Option<bool>,
     pub codex_provider_test_model: Option<String>,
+    pub codex_infinite_retry_test_enabled: Option<bool>,
+    pub codex_infinite_retry_test_interval_ms: Option<u32>,
     #[serde(rename = "cx2CcFallbackModelOpus")]
     #[specta(rename = "cx2CcFallbackModelOpus")]
     pub cx2cc_fallback_model_opus: Option<String>,
@@ -160,6 +162,8 @@ pub(crate) struct SettingsPatch {
     pub codex_home_override: Option<String>,
     pub codex_oauth_compatible_proxy_mode: Option<bool>,
     pub codex_provider_test_model: Option<String>,
+    pub codex_infinite_retry_test_enabled: Option<bool>,
+    pub codex_infinite_retry_test_interval_ms: Option<u32>,
     #[serde(rename = "cx2CcFallbackModelOpus")]
     #[specta(rename = "cx2CcFallbackModelOpus")]
     pub cx2cc_fallback_model_opus: Option<String>,
@@ -248,6 +252,8 @@ impl SettingsPatch {
             codex_home_override: self.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: self.codex_oauth_compatible_proxy_mode,
             codex_provider_test_model: self.codex_provider_test_model.clone(),
+            codex_infinite_retry_test_enabled: self.codex_infinite_retry_test_enabled,
+            codex_infinite_retry_test_interval_ms: self.codex_infinite_retry_test_interval_ms,
             cx2cc_fallback_model_opus: self.cx2cc_fallback_model_opus.clone(),
             cx2cc_fallback_model_sonnet: self.cx2cc_fallback_model_sonnet.clone(),
             cx2cc_fallback_model_haiku: self.cx2cc_fallback_model_haiku.clone(),
@@ -310,6 +316,8 @@ struct SettingsServiceOwnedToken {
     codex_home_override: String,
     codex_oauth_compatible_proxy_mode: bool,
     codex_provider_test_model: String,
+    codex_infinite_retry_test_enabled: bool,
+    codex_infinite_retry_test_interval_ms: u32,
     cx2cc_fallback_model_opus: String,
     cx2cc_fallback_model_sonnet: String,
     cx2cc_fallback_model_haiku: String,
@@ -372,6 +380,8 @@ impl SettingsServiceOwnedToken {
             codex_home_override: settings.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: settings.codex_oauth_compatible_proxy_mode,
             codex_provider_test_model: settings.codex_provider_test_model.clone(),
+            codex_infinite_retry_test_enabled: settings.codex_infinite_retry_test_enabled,
+            codex_infinite_retry_test_interval_ms: settings.codex_infinite_retry_test_interval_ms,
             cx2cc_fallback_model_opus: settings.cx2cc_fallback_model_opus.clone(),
             cx2cc_fallback_model_sonnet: settings.cx2cc_fallback_model_sonnet.clone(),
             cx2cc_fallback_model_haiku: settings.cx2cc_fallback_model_haiku.clone(),
@@ -440,6 +450,8 @@ impl SettingsServiceOwnedToken {
         settings.codex_home_override = self.codex_home_override.clone();
         settings.codex_oauth_compatible_proxy_mode = self.codex_oauth_compatible_proxy_mode;
         settings.codex_provider_test_model = self.codex_provider_test_model.clone();
+        settings.codex_infinite_retry_test_enabled = self.codex_infinite_retry_test_enabled;
+        settings.codex_infinite_retry_test_interval_ms = self.codex_infinite_retry_test_interval_ms;
         settings.cx2cc_fallback_model_opus = self.cx2cc_fallback_model_opus.clone();
         settings.cx2cc_fallback_model_sonnet = self.cx2cc_fallback_model_sonnet.clone();
         settings.cx2cc_fallback_model_haiku = self.cx2cc_fallback_model_haiku.clone();
@@ -484,6 +496,8 @@ pub(crate) struct SettingsView {
     pub codex_home_override: String,
     pub codex_oauth_compatible_proxy_mode: bool,
     pub codex_provider_test_model: String,
+    pub codex_infinite_retry_test_enabled: bool,
+    pub codex_infinite_retry_test_interval_ms: u32,
     pub auto_start: bool,
     pub start_minimized: bool,
     pub tray_enabled: bool,
@@ -611,6 +625,8 @@ impl From<&settings::AppSettings> for SettingsView {
             codex_home_override: value.codex_home_override.clone(),
             codex_oauth_compatible_proxy_mode: value.codex_oauth_compatible_proxy_mode,
             codex_provider_test_model: value.codex_provider_test_model.clone(),
+            codex_infinite_retry_test_enabled: value.codex_infinite_retry_test_enabled,
+            codex_infinite_retry_test_interval_ms: value.codex_infinite_retry_test_interval_ms,
             auto_start: value.auto_start,
             start_minimized: value.start_minimized,
             tray_enabled: value.tray_enabled,
@@ -957,6 +973,12 @@ fn apply_settings_update_owned_patch(
     if codex_provider_test_model.is_empty() {
         codex_provider_test_model = settings::DEFAULT_CODEX_PROVIDER_TEST_MODEL.to_string();
     }
+    let codex_infinite_retry_test_enabled = update
+        .codex_infinite_retry_test_enabled
+        .unwrap_or(previous_token.codex_infinite_retry_test_enabled);
+    let codex_infinite_retry_test_interval_ms = update
+        .codex_infinite_retry_test_interval_ms
+        .unwrap_or(previous_token.codex_infinite_retry_test_interval_ms);
 
     let cx2cc_fallback_model_opus = update
         .cx2cc_fallback_model_opus
@@ -1131,6 +1153,8 @@ fn apply_settings_update_owned_patch(
         codex_home_override,
         codex_oauth_compatible_proxy_mode,
         codex_provider_test_model,
+        codex_infinite_retry_test_enabled,
+        codex_infinite_retry_test_interval_ms,
         cx2cc_fallback_model_opus,
         cx2cc_fallback_model_sonnet,
         cx2cc_fallback_model_haiku,
@@ -2604,6 +2628,10 @@ mod tests {
             enable_debug_log: Some(settings.enable_debug_log),
             enable_task_complete_notify: Some(settings.enable_task_complete_notify),
             enable_notification_sound: Some(settings.enable_notification_sound),
+            codex_infinite_retry_test_enabled: Some(settings.codex_infinite_retry_test_enabled),
+            codex_infinite_retry_test_interval_ms: Some(
+                settings.codex_infinite_retry_test_interval_ms,
+            ),
             failover_max_attempts_per_provider: settings.failover_max_attempts_per_provider,
             failover_max_providers_to_try: settings.failover_max_providers_to_try,
             upstream_retry_policy: Some(settings.upstream_retry_policy.clone()),

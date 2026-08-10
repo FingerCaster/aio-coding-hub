@@ -13,6 +13,7 @@ pub(crate) struct ActiveRequestStart {
     pub(crate) session_id: Option<String>,
     pub(crate) requested_model: Option<String>,
     pub(crate) created_at_ms: i64,
+    pub(crate) codex_infinite_retry_test: bool,
 }
 
 #[derive(Debug, Clone, Serialize, specta::Type, PartialEq, Eq)]
@@ -27,6 +28,10 @@ pub(crate) struct ActiveRequestSnapshotItem {
     pub created_at_ms: i64,
     pub last_activity_ms: i64,
     pub current_attempt: Option<GatewayAttemptEvent>,
+    pub codex_infinite_retry_test: bool,
+    pub infinite_retry_phase: Option<String>,
+    pub infinite_retry_round: Option<String>,
+    pub infinite_retry_attempt: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -42,6 +47,9 @@ struct ActiveRequestEntry {
     start: ActiveRequestStart,
     last_activity_ms: i64,
     current_attempt: Option<GatewayAttemptEvent>,
+    infinite_retry_phase: Option<String>,
+    infinite_retry_round: Option<String>,
+    infinite_retry_attempt: Option<String>,
 }
 
 #[derive(Debug, Default)]
@@ -52,6 +60,9 @@ pub(crate) struct ActiveRequestRegistry {
 impl ActiveRequestRegistry {
     pub(crate) fn register(&self, start: ActiveRequestStart) {
         let last_activity_ms = start.created_at_ms.max(0);
+        let infinite_retry_phase = start
+            .codex_infinite_retry_test
+            .then(|| "starting".to_string());
         if let Ok(mut entries) = self.entries.write() {
             entries.insert(
                 start.trace_id.clone(),
@@ -59,6 +70,9 @@ impl ActiveRequestRegistry {
                     start,
                     last_activity_ms,
                     current_attempt: None,
+                    infinite_retry_phase,
+                    infinite_retry_round: None,
+                    infinite_retry_attempt: None,
                 },
             );
         }
@@ -86,6 +100,28 @@ impl ActiveRequestRegistry {
             }
             entry.last_activity_ms = entry.last_activity_ms.max(last_activity_ms.max(0));
             entry.current_attempt = Some(attempt);
+        }
+    }
+
+    pub(crate) fn update_infinite_retry_progress(
+        &self,
+        trace_id: &str,
+        phase: &'static str,
+        round: u64,
+        attempt: u64,
+        last_activity_ms: i64,
+    ) {
+        if let Ok(mut entries) = self.entries.write() {
+            let Some(entry) = entries.get_mut(trace_id) else {
+                return;
+            };
+            if !entry.start.codex_infinite_retry_test {
+                return;
+            }
+            entry.last_activity_ms = entry.last_activity_ms.max(last_activity_ms.max(0));
+            entry.infinite_retry_phase = Some(phase.to_string());
+            entry.infinite_retry_round = Some(round.to_string());
+            entry.infinite_retry_attempt = Some(attempt.to_string());
         }
     }
 
@@ -143,6 +179,10 @@ impl ActiveRequestEntry {
             created_at_ms: self.start.created_at_ms,
             last_activity_ms: self.last_activity_ms,
             current_attempt: self.current_attempt,
+            codex_infinite_retry_test: self.start.codex_infinite_retry_test,
+            infinite_retry_phase: self.infinite_retry_phase,
+            infinite_retry_round: self.infinite_retry_round,
+            infinite_retry_attempt: self.infinite_retry_attempt,
         }
     }
 }
@@ -170,6 +210,7 @@ mod tests {
             session_id: None,
             requested_model: Some("claude-sonnet-4".to_string()),
             created_at_ms: 1_000,
+            codex_infinite_retry_test: false,
         }
     }
 

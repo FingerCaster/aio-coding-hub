@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 import {
   bodyContainsFromTextarea,
   cloneUpstreamRetryPolicy,
+  DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
   DEFAULT_UPSTREAM_RETRY_POLICY,
   validateUpstreamRetryPolicy,
 } from "../upstreamRetryPolicy";
@@ -20,12 +21,16 @@ describe("upstreamRetryPolicy", () => {
     expect(cloned.transport_errors).toEqual(["connect", "timeout", "read"]);
     expect(cloned.stream_internal_errors).toEqual({
       enabled: true,
-      passthrough_keywords: [],
+      passthrough_keywords: [DEFAULT_CYBER_PASSTHROUGH_KEYWORD],
       legacy_retry_keywords: [],
     });
     cloned.http_rules[0].body_contains.push("changed");
     expect(DEFAULT_UPSTREAM_RETRY_POLICY.http_rules[0].body_contains).toEqual([
       "selected model is at capacity",
+    ]);
+    cloned.stream_internal_errors.passthrough_keywords.push("changed");
+    expect(DEFAULT_UPSTREAM_RETRY_POLICY.stream_internal_errors.passthrough_keywords).toEqual([
+      DEFAULT_CYBER_PASSTHROUGH_KEYWORD,
     ]);
   });
 
@@ -35,6 +40,15 @@ describe("upstreamRetryPolicy", () => {
       "*.json",
       "[a-z]+",
     ]);
+  });
+
+  it("preserves an explicitly empty passthrough list", () => {
+    const policy = cloneUpstreamRetryPolicy(DEFAULT_UPSTREAM_RETRY_POLICY);
+    policy.stream_internal_errors.passthrough_keywords = [];
+
+    expect(cloneUpstreamRetryPolicy(policy).stream_internal_errors.passthrough_keywords).toEqual(
+      []
+    );
   });
 
   it("validates rule boundaries and enabled matcher requirements", () => {

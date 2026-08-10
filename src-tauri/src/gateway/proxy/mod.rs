@@ -164,6 +164,7 @@ pub(super) struct RequestLogEnqueueArgs {
     pub(super) created_at: i64,
     pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) usage: Option<crate::usage::UsageExtract>,
+    pub(super) cost_usd_femto_override: Option<i64>,
     pub(super) provider_chain_json: Option<String>,
     pub(super) error_details_json: Option<String>,
 }

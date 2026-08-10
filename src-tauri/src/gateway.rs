@@ -9,6 +9,7 @@ mod configured_model_route;
 pub(crate) mod control_service;
 pub(crate) mod events;
 pub(crate) mod http_client;
+pub(crate) mod infinite_retry;
 pub(crate) mod listen;
 mod managed_model_route;
 pub(crate) mod manager;

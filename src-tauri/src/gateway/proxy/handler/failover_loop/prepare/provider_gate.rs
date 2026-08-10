@@ -43,6 +43,13 @@ pub(super) fn gate_provider<R: tauri::Runtime>(
         dispatch_intent,
     } = input;
 
+    if ctx.provider_health_mode.bypasses_circuit() {
+        return Some(ProviderGateAllow {
+            circuit_after: neutral_circuit_snapshot(),
+            dispatch_ownership: None,
+        });
+    }
+
     let now_unix = now_unix_seconds() as i64;
     let mut probe_token = None;
     let targeted_intent = dispatch_intent.filter(|intent| intent.targets_provider(provider_id));
@@ -78,4 +85,22 @@ pub(super) fn gate_provider<R: tauri::Runtime>(
         circuit_after,
         dispatch_ownership,
     })
+}
+
+fn neutral_circuit_snapshot() -> circuit_breaker::CircuitSnapshot {
+    circuit_breaker::CircuitSnapshot {
+        state: circuit_breaker::CircuitState::Closed,
+        failure_count: 0,
+        failure_threshold: 0,
+        open_until: None,
+        cooldown_until: None,
+        probe_reference_at: None,
+        next_probe_at: None,
+        natural_probe_due_at: None,
+        recovery_guard_until: None,
+        recovery_epoch: 0,
+        probe_in_flight: false,
+        state_revision: 0,
+        last_trigger_error_code: None,
+    }
 }

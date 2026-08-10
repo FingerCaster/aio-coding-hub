@@ -52,6 +52,8 @@ pub(super) struct RequestCompletion {
     pub(super) usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) log_usage_metrics: Option<crate::usage::UsageMetrics>,
     pub(super) usage: Option<crate::usage::UsageExtract>,
+    pub(super) log_cost_usd_femto: Option<i64>,
+    pub(super) log_activity_details_json: Option<String>,
 }
 
 impl RequestCompletion {
@@ -73,6 +75,8 @@ impl RequestCompletion {
             usage_metrics,
             log_usage_metrics,
             usage,
+            log_cost_usd_femto: None,
+            log_activity_details_json: None,
         }
     }
 
@@ -95,6 +99,8 @@ impl RequestCompletion {
             usage_metrics,
             log_usage_metrics,
             usage,
+            log_cost_usd_femto: None,
+            log_activity_details_json: None,
         }
     }
 
@@ -114,6 +120,8 @@ impl RequestCompletion {
             usage_metrics: None,
             log_usage_metrics: None,
             usage: None,
+            log_cost_usd_femto: None,
+            log_activity_details_json: None,
         }
     }
 
@@ -150,6 +158,8 @@ impl RequestCompletion {
             usage_metrics: None,
             log_usage_metrics: None,
             usage: None,
+            log_cost_usd_femto: None,
+            log_activity_details_json: None,
         }
     }
 
@@ -165,7 +175,30 @@ impl RequestCompletion {
             usage_metrics: None,
             log_usage_metrics: None,
             usage: None,
+            log_cost_usd_femto: None,
+            log_activity_details_json: None,
         }
+    }
+
+    pub(super) fn client_abort_with_log_usage(
+        log_usage_metrics: Option<crate::usage::UsageMetrics>,
+        log_cost_usd_femto: Option<i64>,
+    ) -> Self {
+        Self {
+            log_usage_metrics,
+            log_cost_usd_femto,
+            ..Self::client_abort()
+        }
+    }
+
+    pub(super) fn with_log_cost_usd_femto(mut self, value: Option<i64>) -> Self {
+        self.log_cost_usd_femto = value;
+        self
+    }
+
+    pub(super) fn with_log_activity_details_json(mut self, value: Option<String>) -> Self {
+        self.log_activity_details_json = value;
+        self
     }
 }
 
@@ -213,6 +246,8 @@ pub(super) struct RequestEndArgs<'a, R: tauri::Runtime = tauri::Wry> {
     usage_metrics: Option<crate::usage::UsageMetrics>,
     log_usage_metrics: Option<crate::usage::UsageMetrics>,
     usage: Option<crate::usage::UsageExtract>,
+    log_cost_usd_femto: Option<i64>,
+    log_activity_details_json: Option<String>,
 }
 
 impl<'a, R: tauri::Runtime> RequestEndArgs<'a, R> {
@@ -243,6 +278,8 @@ impl<'a, R: tauri::Runtime> RequestEndArgs<'a, R> {
             usage_metrics: None,
             log_usage_metrics: None,
             usage: None,
+            log_cost_usd_femto: None,
+            log_activity_details_json: None,
         }
     }
 
@@ -257,6 +294,8 @@ impl<'a, R: tauri::Runtime> RequestEndArgs<'a, R> {
         self.usage_metrics = completion.usage_metrics;
         self.log_usage_metrics = completion.log_usage_metrics;
         self.usage = completion.usage;
+        self.log_cost_usd_femto = completion.log_cost_usd_femto;
+        self.log_activity_details_json = completion.log_activity_details_json;
         self
     }
 }
@@ -739,6 +778,7 @@ fn build_request_end_payload(
         created_at,
         usage_metrics,
         usage,
+        cost_usd_femto_override: None,
         provider_chain_json,
         error_details_json,
     };
@@ -892,7 +932,7 @@ impl RequestLogEnqueueArgs {
 fn prepare_request_end<R: tauri::Runtime>(
     args: RequestEndArgs<'_, R>,
 ) -> PreparedRequestEnd<'_, R> {
-    let (log_args, attempts) = RequestLogEnqueueArgs::from_proxy_request_end_parts(
+    let (mut log_args, attempts) = RequestLogEnqueueArgs::from_proxy_request_end_parts(
         args.trace_id,
         args.cli_key,
         args.session_id,
@@ -913,6 +953,10 @@ fn prepare_request_end<R: tauri::Runtime>(
         args.log_usage_metrics,
         args.usage,
     );
+    log_args.cost_usd_femto_override = args.log_cost_usd_femto;
+    if args.log_activity_details_json.is_some() {
+        log_args.activity_details_json = args.log_activity_details_json;
+    }
 
     PreparedRequestEnd {
         deps: args.deps,
@@ -1140,6 +1184,7 @@ mod tests {
             session_id: Some("session-active".to_string()),
             requested_model: Some("claude-sonnet-4".to_string()),
             created_at_ms: 1_700_000_000_000,
+            codex_infinite_retry_test: false,
         }
     }
 

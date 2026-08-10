@@ -30,6 +30,7 @@ pub(super) struct RequestAbortGuard<R: tauri::Runtime = tauri::Wry> {
     special_settings: Arc<Mutex<Vec<serde_json::Value>>>,
     in_flight_attempt: Option<FailoverAttempt>,
     dispatch_ownership: Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
+    infinite_retry_ledger: Option<crate::gateway::infinite_retry::SharedInfiniteRetryLedger>,
     created_at_ms: i64,
     created_at: i64,
     started: Instant,
@@ -74,6 +75,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             special_settings,
             in_flight_attempt: None,
             dispatch_ownership: None,
+            infinite_retry_ledger: None,
             created_at_ms,
             created_at,
             started,
@@ -110,6 +112,7 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
             special_settings: Arc::clone(&self.special_settings),
             in_flight_attempt: self.in_flight_attempt.take(),
             dispatch_ownership: self.dispatch_ownership.take(),
+            infinite_retry_ledger: self.infinite_retry_ledger.take(),
             created_at_ms: self.created_at_ms,
             created_at: self.created_at,
             started: self.started,
@@ -128,6 +131,13 @@ impl<R: tauri::Runtime> RequestAbortGuard<R> {
         ownership: Option<Arc<crate::gateway::proxy::dispatch::ProviderDispatchOwnership>>,
     ) {
         self.dispatch_ownership = ownership;
+    }
+
+    pub(super) fn attach_infinite_retry_ledger(
+        &mut self,
+        ledger: crate::gateway::infinite_retry::SharedInfiniteRetryLedger,
+    ) {
+        self.infinite_retry_ledger = Some(ledger);
     }
 }
 
@@ -159,6 +169,51 @@ impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
                 attempt.probe_result = Some("failed");
             }
         }
+        let completion = if let Some(ledger) = self.infinite_retry_ledger.as_ref() {
+            let (snapshot, usage_metrics, cost_usd_femto) = match ledger.lock() {
+                Ok(mut ledger) => {
+                    ledger.stop("client_cancelled");
+                    (
+                        Some(ledger.snapshot()),
+                        ledger.usage_metrics(),
+                        ledger.cost_usd_femto(),
+                    )
+                }
+                Err(_) => (None, None, None),
+            };
+            let mut activity_details_json = None;
+            if let Some(snapshot) = snapshot {
+                let now_ms = crate::gateway::util::now_unix_millis() as i64;
+                self.active_requests.update_infinite_retry_progress(
+                    self.trace_id.as_str(),
+                    snapshot.phase,
+                    snapshot.rounds.parse().unwrap_or(u64::MAX),
+                    snapshot.attempts.parse().unwrap_or(u64::MAX),
+                    now_ms,
+                );
+                let _ = crate::infinite_retry_provider_usage::replace_for_trace(
+                    &self.db,
+                    self.trace_id.as_str(),
+                    snapshot.providers.as_slice(),
+                    now_ms,
+                );
+                if let Ok(details) = serde_json::to_string(&snapshot) {
+                    activity_details_json = Some(details.clone());
+                    let _ = request_logs::touch_activity(
+                        &self.db,
+                        self.trace_id.as_str(),
+                        self.cli_key.as_str(),
+                        now_ms,
+                        Some(details),
+                    );
+                }
+            }
+            RequestCompletion::client_abort_with_log_usage(usage_metrics, cost_usd_femto)
+                .with_log_activity_details_json(activity_details_json)
+        } else {
+            RequestCompletion::client_abort()
+        };
+
         emit_request_event_and_spawn_request_log(
             RequestEndArgs::from_context(RequestEndContextArgs {
                 deps: RequestEndDeps::new(
@@ -185,7 +240,7 @@ impl<R: tauri::Runtime> Drop for RequestAbortGuard<R> {
                 created_at_ms: self.created_at_ms,
                 created_at: self.created_at,
             })
-            .with_completion(RequestCompletion::client_abort()),
+            .with_completion(completion),
         );
     }
 }

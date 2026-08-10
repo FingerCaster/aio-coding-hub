@@ -88,6 +88,7 @@ describe("RetryPolicyFields", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看 Codex 流终态防火墙设置" }));
     expect(screen.getByText(/502 \/ GW_FAKE_200/)).toBeInTheDocument();
     const passthroughKeywords = screen.getByLabelText("终态帧透传例外（每行一项）");
+    expect(passthroughKeywords).toHaveValue("high-risk cyber");
     fireEvent.change(passthroughKeywords, { target: { value: "ticket-123\nvendor oddity" } });
 
     let edited = JSON.parse(screen.getByTestId("policy-state").textContent ?? "{}") as {

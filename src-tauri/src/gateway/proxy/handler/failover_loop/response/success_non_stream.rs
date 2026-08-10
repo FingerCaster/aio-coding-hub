@@ -205,6 +205,37 @@ fn looks_like_sse_payload(body_bytes: &[u8]) -> bool {
     trimmed.starts_with(b"event:") || trimmed.starts_with(b"data:") || trimmed.starts_with(b":")
 }
 
+async fn record_infinite_transform_failure<R: tauri::Runtime>(
+    ctx: CommonCtx<'_, R>,
+    provider_ctx: ProviderCtx<'_>,
+    attempt_ctx: AttemptCtx<'_>,
+    loop_state: LoopState<'_, R>,
+    error_code: &'static str,
+    outcome_code: &'static str,
+    reason: String,
+) -> LoopControl {
+    record_system_failure_and_decide_no_cooldown(RecordSystemFailureArgs {
+        ctx,
+        provider_ctx,
+        attempt_ctx,
+        loop_state,
+        status: Some(StatusCode::OK.as_u16()),
+        error_code,
+        decision: FailoverDecision::SwitchProvider,
+        outcome: format!(
+            "{outcome_code}: category={} code={} decision={}",
+            ErrorCategory::SystemError.as_str(),
+            error_code,
+            FailoverDecision::SwitchProvider.as_str(),
+        ),
+        reason,
+        record_circuit_failure: false,
+        configured_retry_backoff: None,
+        timeout_secs: None,
+    })
+    .await
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Cx2ccSuccessPayloadKind {
     NonStreamJson,
@@ -880,14 +911,16 @@ where
 
     let (mut body_bytes, provider_ttfb_ms) = match bytes_result {
         Ok((b, first_byte_ms)) => {
-            emit_gateway_debug_log_lazy(&state.app, || {
-                format!(
-                    "[RESP_BODY] trace_id={} body({} bytes)={}",
-                    common.trace_id,
-                    b.len(),
-                    lossy_utf8_preview(&b, MAX_DEBUG_BODY_PREVIEW_BYTES),
-                )
-            });
+            if !common.provider_health_mode.bypasses_circuit() {
+                emit_gateway_debug_log_lazy(&state.app, || {
+                    format!(
+                        "[RESP_BODY] trace_id={} body({} bytes)={}",
+                        common.trace_id,
+                        b.len(),
+                        lossy_utf8_preview(&b, MAX_DEBUG_BODY_PREVIEW_BYTES),
+                    )
+                });
+            }
             (b, first_byte_ms)
         }
         Err(kind) => {
@@ -1094,12 +1127,16 @@ where
         let quota_exhausted =
             upstream_client_error_rules::match_quota_exhausted(body_bytes.as_ref());
         let oauth_quota_exhausted = quota_exhausted && provider_ctx_owned.auth_mode == "oauth";
-        let decision = if quota_exhausted {
+        let decision = if quota_exhausted || common.provider_health_mode.bypasses_circuit() {
             FailoverDecision::SwitchProvider
         } else {
             FailoverDecision::Abort
         };
         let outcome = format!("body_error: code={error_code}");
+
+        let failed_usage =
+            usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+        observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, failed_usage.as_ref(), None);
 
         attempts.push(FailoverAttempt {
             provider_id,
@@ -1157,6 +1194,15 @@ where
                     "failed to save OAuth exhausted quota snapshot: {err}"
                 );
             }
+        }
+
+        if common.provider_health_mode.bypasses_circuit() {
+            failed_provider_ids.insert(provider_id);
+            *last_outcome = Some(AttemptOutcome::new(
+                ErrorCategory::ProviderError.as_str(),
+                error_code,
+            ));
+            return LoopControl::BreakRetry;
         }
 
         let probe_commit = complete_probe_terminal(
@@ -1288,6 +1334,13 @@ where
         .active_requested_model
         .clone()
         .or_else(|| common.requested_model.clone());
+    let pre_bridge_usage = common
+        .provider_health_mode
+        .bypasses_circuit()
+        .then(|| {
+            usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), body_bytes.as_ref())
+        })
+        .flatten();
     match translate_bridge_non_stream_body(
         active_bridge_type,
         anthropic_stream_requested,
@@ -1332,6 +1385,33 @@ where
                 "BRIDGE_RESPONSE_TRANSLATE_FAILED",
                 format!("[Bridge] response translation failed: {err}"),
             );
+
+            if common.provider_health_mode.bypasses_circuit() {
+                observe_infinite_attempt_usage(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    pre_bridge_usage.as_ref(),
+                    None,
+                );
+                return record_infinite_transform_failure(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    LoopState {
+                        attempts,
+                        failed_provider_ids,
+                        last_outcome,
+                        active_requested_model,
+                        circuit_snapshot,
+                        abort_guard,
+                    },
+                    GatewayErrorCode::BridgeUnsupportedFeature.as_str(),
+                    "bridge_response_translate_error",
+                    "bridge response translation failed".to_string(),
+                )
+                .await;
+            }
 
             attempts.push(FailoverAttempt {
                 provider_id,
@@ -1413,6 +1493,26 @@ where
         }
     }
 
+    if common.provider_health_mode.bypasses_circuit() && body_bytes.len() > MAX_NON_SSE_BODY_BYTES {
+        return record_infinite_transform_failure(
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            LoopState {
+                attempts,
+                failed_provider_ids,
+                last_outcome,
+                active_requested_model,
+                circuit_snapshot,
+                abort_guard,
+            },
+            GatewayErrorCode::UpstreamBodyReadError.as_str(),
+            "response_too_large_after_bridge",
+            format!("final response exceeded {MAX_NON_SSE_BODY_BYTES} bytes after bridge"),
+        )
+        .await;
+    }
+
     let enable_response_fixer_for_this_response = enable_response_fixer
         && !is_event_stream(&response_headers)
         && !has_non_identity_content_encoding(&response_headers);
@@ -1430,56 +1530,79 @@ where
         body_bytes = outcome.body;
     }
 
+    if common.provider_health_mode.bypasses_circuit() && body_bytes.len() > MAX_NON_SSE_BODY_BYTES {
+        return record_infinite_transform_failure(
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            LoopState {
+                attempts,
+                failed_provider_ids,
+                last_outcome,
+                active_requested_model,
+                circuit_snapshot,
+                abort_guard,
+            },
+            GatewayErrorCode::UpstreamBodyReadError.as_str(),
+            "response_too_large_after_fixer",
+            format!("final response exceeded {MAX_NON_SSE_BODY_BYTES} bytes after response fixer"),
+        )
+        .await;
+    }
+
+    let defer_success_commit = common.provider_health_mode.bypasses_circuit();
     let outcome = "success".to_string();
 
-    attempts.push(FailoverAttempt {
-        provider_id,
-        provider_name: provider_ctx_owned.provider_name_base.clone(),
-        base_url: provider_ctx_owned.provider_base_url_base.clone(),
-        outcome: outcome.clone(),
-        status: Some(status.as_u16()),
-        provider_index: Some(provider_index),
-        retry_index: Some(retry_index),
-        session_reuse,
-        provider_bridged: Some(provider_ctx_owned.provider_bridged),
-        error_category: None,
-        error_code: None,
-        decision: Some("success"),
-        reason: None,
-        selection_method,
-        reason_code: Some(reason_code),
-        attempt_started_ms: Some(attempt_started_ms),
-        attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
-        circuit_state_before: Some(circuit_before.state.as_str()),
-        circuit_state_after: None,
-        circuit_failure_count: Some(circuit_before.failure_count),
-        circuit_failure_threshold: Some(circuit_before.failure_threshold),
-        probe: probe_active.then_some(true),
-        probe_trigger,
-        probe_result: probe_active.then_some("started"),
-        probe_generation,
-        circuit_recover_at_unix: None,
-        circuit_trigger_error_code: None,
-        timeout_secs: None,
-        stream_internal_error: None,
-        requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
-    });
+    if !defer_success_commit {
+        attempts.push(FailoverAttempt {
+            provider_id,
+            provider_name: provider_ctx_owned.provider_name_base.clone(),
+            base_url: provider_ctx_owned.provider_base_url_base.clone(),
+            outcome: outcome.clone(),
+            status: Some(status.as_u16()),
+            provider_index: Some(provider_index),
+            retry_index: Some(retry_index),
+            session_reuse,
+            provider_bridged: Some(provider_ctx_owned.provider_bridged),
+            error_category: None,
+            error_code: None,
+            decision: Some("success"),
+            reason: None,
+            selection_method,
+            reason_code: Some(reason_code),
+            attempt_started_ms: Some(attempt_started_ms),
+            attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+            circuit_state_before: Some(circuit_before.state.as_str()),
+            circuit_state_after: None,
+            circuit_failure_count: Some(circuit_before.failure_count),
+            circuit_failure_threshold: Some(circuit_before.failure_threshold),
+            probe: probe_active.then_some(true),
+            probe_trigger,
+            probe_result: probe_active.then_some("started"),
+            probe_generation,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            timeout_secs: None,
+            stream_internal_error: None,
+            requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+        });
 
-    emit_attempt_event_and_log_with_circuit_before(
-        ctx,
-        provider_ctx,
-        attempt_ctx,
-        outcome,
-        Some(status.as_u16()),
-    )
-    .await;
+        emit_attempt_event_and_log_with_circuit_before(
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            outcome.clone(),
+            Some(status.as_u16()),
+        )
+        .await;
 
-    codex_service_tier::append_result_if_detected(
-        common.cli_key.as_str(),
-        common.introspection_body.as_slice(),
-        Some(body_bytes.as_ref()),
-        &common.special_settings,
-    );
+        codex_service_tier::append_result_if_detected(
+            common.cli_key.as_str(),
+            common.introspection_body.as_slice(),
+            Some(body_bytes.as_ref()),
+            &common.special_settings,
+        );
+    }
 
     let hook_input = GatewayResponseHookInput {
         hook_name: GatewayPluginHookName::ResponseAfter,
@@ -1504,21 +1627,52 @@ where
                     reason = %blocked.reason,
                     "plugin blocked gateway response after upstream success"
                 );
-                mark_last_attempt_terminal_failure(
-                    attempts,
-                    StatusCode::BAD_GATEWAY,
-                    GatewayErrorCode::InternalError.as_str(),
-                    "gateway response hook blocked response",
-                    attempt_started.elapsed().as_millis(),
-                );
-                let terminal_snapshot = complete_probe_failure_or_current_snapshot(
-                    &common,
-                    &provider_ctx_owned,
-                    false,
-                    GatewayErrorCode::InternalError.as_str(),
-                );
-                apply_circuit_snapshot_to_last_attempt(attempts, &terminal_snapshot);
-                *circuit_snapshot = terminal_snapshot;
+                if defer_success_commit {
+                    let failed_usage = usage::parse_usage_from_json_or_sse_bytes(
+                        common.cli_key.as_str(),
+                        body_bytes.as_ref(),
+                    );
+                    observe_infinite_attempt_usage(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        failed_usage.as_ref(),
+                        None,
+                    );
+                    let _ = record_infinite_transform_failure(
+                        ctx,
+                        provider_ctx,
+                        attempt_ctx,
+                        LoopState {
+                            attempts,
+                            failed_provider_ids,
+                            last_outcome,
+                            active_requested_model,
+                            circuit_snapshot,
+                            abort_guard,
+                        },
+                        GatewayErrorCode::InternalError.as_str(),
+                        "response_plugin_blocked",
+                        "gateway response hook blocked response".to_string(),
+                    )
+                    .await;
+                } else {
+                    mark_last_attempt_terminal_failure(
+                        attempts,
+                        StatusCode::BAD_GATEWAY,
+                        GatewayErrorCode::InternalError.as_str(),
+                        "gateway response hook blocked response",
+                        attempt_started.elapsed().as_millis(),
+                    );
+                    let terminal_snapshot = complete_probe_failure_or_current_snapshot(
+                        &common,
+                        &provider_ctx_owned,
+                        false,
+                        GatewayErrorCode::InternalError.as_str(),
+                    );
+                    apply_circuit_snapshot_to_last_attempt(attempts, &terminal_snapshot);
+                    *circuit_snapshot = terminal_snapshot;
+                }
                 emit_response_hook_failure_request_end(&common, attempts.as_slice()).await;
                 abort_guard.disarm();
                 return LoopControl::Return(error_response(
@@ -1545,6 +1699,36 @@ where
                 "plugin response.after hook failed: {}",
                 err
             );
+            if defer_success_commit {
+                let failed_usage = usage::parse_usage_from_json_or_sse_bytes(
+                    common.cli_key.as_str(),
+                    body_bytes.as_ref(),
+                );
+                observe_infinite_attempt_usage(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    failed_usage.as_ref(),
+                    None,
+                );
+                return record_infinite_transform_failure(
+                    ctx,
+                    provider_ctx,
+                    attempt_ctx,
+                    LoopState {
+                        attempts,
+                        failed_provider_ids,
+                        last_outcome,
+                        active_requested_model,
+                        circuit_snapshot,
+                        abort_guard,
+                    },
+                    GatewayErrorCode::InternalError.as_str(),
+                    "response_plugin_error",
+                    "gateway response hook failed".to_string(),
+                )
+                .await;
+            }
             mark_last_attempt_terminal_failure(
                 attempts,
                 StatusCode::BAD_GATEWAY,
@@ -1573,6 +1757,95 @@ where
     }
 
     let usage = usage::parse_usage_from_json_or_sse_bytes(common.cli_key.as_str(), &body_bytes);
+    if defer_success_commit {
+        observe_infinite_attempt_usage(ctx, provider_ctx, attempt_ctx, usage.as_ref(), None);
+        let validation_error = if body_bytes.len() > MAX_NON_SSE_BODY_BYTES {
+            Some((
+                GatewayErrorCode::UpstreamBodyReadError.as_str(),
+                "response_too_large_after_plugin",
+                format!(
+                    "final response exceeded {MAX_NON_SSE_BODY_BYTES} bytes after response plugin"
+                ),
+            ))
+        } else {
+            crate::gateway::infinite_retry::validate_complete_codex_json(body_bytes.as_ref())
+                .err()
+                .map(|reason| {
+                    (
+                        GatewayErrorCode::StreamError.as_str(),
+                        "invalid_final_wire_json",
+                        format!("invalid Codex final JSON: {reason}"),
+                    )
+                })
+        };
+        if let Some((error_code, outcome_code, reason)) = validation_error {
+            return record_infinite_transform_failure(
+                ctx,
+                provider_ctx,
+                attempt_ctx,
+                LoopState {
+                    attempts,
+                    failed_provider_ids,
+                    last_outcome,
+                    active_requested_model,
+                    circuit_snapshot,
+                    abort_guard,
+                },
+                error_code,
+                outcome_code,
+                reason,
+            )
+            .await;
+        }
+
+        attempts.push(FailoverAttempt {
+            provider_id,
+            provider_name: provider_ctx_owned.provider_name_base.clone(),
+            base_url: provider_ctx_owned.provider_base_url_base.clone(),
+            outcome: outcome.clone(),
+            status: Some(status.as_u16()),
+            provider_index: Some(provider_index),
+            retry_index: Some(retry_index),
+            session_reuse,
+            provider_bridged: Some(provider_ctx_owned.provider_bridged),
+            error_category: None,
+            error_code: None,
+            decision: Some("success"),
+            reason: None,
+            selection_method,
+            reason_code: Some(reason_code),
+            attempt_started_ms: Some(attempt_started_ms),
+            attempt_duration_ms: Some(attempt_started.elapsed().as_millis()),
+            circuit_state_before: None,
+            circuit_state_after: None,
+            circuit_failure_count: None,
+            circuit_failure_threshold: None,
+            probe: None,
+            probe_trigger: None,
+            probe_result: None,
+            probe_generation: None,
+            circuit_recover_at_unix: None,
+            circuit_trigger_error_code: None,
+            timeout_secs: None,
+            stream_internal_error: None,
+            requested_upstream_model: provider_ctx_owned.active_requested_model.clone(),
+        });
+        emit_attempt_event_and_log_with_circuit_before(
+            ctx,
+            provider_ctx,
+            attempt_ctx,
+            outcome,
+            Some(status.as_u16()),
+        )
+        .await;
+        codex_service_tier::append_result_if_detected(
+            common.cli_key.as_str(),
+            common.introspection_body.as_slice(),
+            Some(body_bytes.as_ref()),
+            &common.special_settings,
+        );
+    }
+
     let usage_metrics = usage.as_ref().map(|u| u.metrics.clone());
     let requested_model_for_log = if common.managed_model_route.is_some()
         || response_fixer::has_configured_model_route(&common.special_settings)
@@ -1603,7 +1876,10 @@ where
         finish_downstream_response(builder, body, common.trace_id.as_str());
     if !response_build_failed {
         let now_unix = now_unix_seconds() as i64;
-        let probe_commit = complete_probe_terminal(&common, &provider_ctx_owned, true, false, None);
+        let health_bypass = common.provider_health_mode.bypasses_circuit();
+        let probe_commit = (!health_bypass)
+            .then(|| complete_probe_terminal(&common, &provider_ctx_owned, true, false, None))
+            .flatten();
         let bind_probe_success = probe_commit
             .as_ref()
             .is_some_and(|probe_commit| probe_commit.applied);
@@ -1619,7 +1895,7 @@ where
                 last.circuit_failure_threshold = Some(probe_commit.snapshot.failure_threshold);
             }
             *circuit_snapshot = probe_commit.snapshot;
-        } else {
+        } else if !health_bypass {
             let change = provider_router::record_success_and_emit_transition(
                 provider_router::RecordCircuitArgs::from_state(
                     state,
@@ -1671,6 +1947,14 @@ where
             "failed to build downstream response",
             attempt_started.elapsed().as_millis(),
         );
+        if common.provider_health_mode.bypasses_circuit() {
+            failed_provider_ids.insert(provider_id);
+            *last_outcome = Some(AttemptOutcome::new(
+                ErrorCategory::SystemError.as_str(),
+                GatewayErrorCode::ResponseBuildError.as_str(),
+            ));
+            return LoopControl::BreakRetry;
+        }
         let terminal_snapshot = complete_probe_failure_or_current_snapshot(
             &common,
             &provider_ctx_owned,
@@ -1682,6 +1966,11 @@ where
     }
 
     let duration_ms = started.elapsed().as_millis();
+    let infinite_terminal = if response_build_failed {
+        event_helpers::InfiniteRetryTerminalProjection::default()
+    } else {
+        finalize_infinite_retry_activity(&common, "succeeded").await
+    };
     let completion = if response_build_failed {
         RequestCompletion::failure_with_visible_ttfb(
             StatusCode::INTERNAL_SERVER_ERROR.as_u16(),
@@ -1696,9 +1985,11 @@ where
             provider_ttfb_ms,
             Some(duration_ms),
             usage_metrics,
-            None,
+            infinite_terminal.log_usage_metrics,
             usage,
         )
+        .with_log_cost_usd_femto(infinite_terminal.log_cost_usd_femto)
+        .with_log_activity_details_json(infinite_terminal.activity_details_json)
     };
     emit_request_event_and_enqueue_request_log(
         RequestEndArgs::from_context(RequestEndContextArgs {

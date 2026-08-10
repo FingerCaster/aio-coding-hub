@@ -371,6 +371,7 @@ mod tests {
             session_id: Some("sess-stream-end".to_string()),
             requested_model: Some("gpt-5".to_string()),
             created_at_ms: 1_700_000_000_000,
+            codex_infinite_retry_test: false,
         }
     }
 
